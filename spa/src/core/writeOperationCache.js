@@ -2,11 +2,13 @@
 // boundary, but live in stores that replica resets and lifetime sweeps never clear.
 import { abortForError, putOrAbort } from "./idbDatabase.js";
 import { createAnnouncer, randomToken, recordKey, writeStamp } from "./idbRecords.js";
-import { announceWriteOperationCache, recordWriteOf, transactWriteOperations } from "./localCache.js";
+import { announceWriteOperationCache, transactWriteOperations } from "./localCache.js";
 import {
   activateOperationProjection, clearOperationProjections, deactivateOperationProjection, layerPublished,
   leaseKey, operationKey, operationNamespace, validPublicationFence,
 } from "./writeOperationProjection.js";
+
+import { publicationReadAddresses, publicationGuardMatches, preparePublicationWrites } from "./writeOperationPublication.js";
 
 const notifications = createAnnouncer("build-write-operations");
 const terminalStates = new Set(["succeeded", "failed"]);
@@ -62,19 +64,29 @@ function readRecords(store, keys, done) {
 }
 
 function writeCanonical(records, entries, accept, done) {
-  readRecords(records, entries.map(({ address }) => recordKey(address)), (held) => {
+  readRecords(records, publicationReadAddresses(entries).map(recordKey), (held) => {
     try {
       if (!accept()) return done([]);
       const written = [];
-      for (const { address, value, publication = [], guard } of entries) {
-        validateFences(publication);
-        if (guard && recordWriteOf(held.get(recordKey(address))) !== guard.written) continue;
-        if (!putOrAbort(records, { ...writeStamp(), value, publication }, recordKey(address))) return;
-        written.push(address);
+      for (const entry of entries) {
+        validateFences(entry.publication || []);
+        if (!publicationGuardMatches(entry, held)) continue;
+        if (!putPublication(records, preparePublicationWrites(entry, held), held, written)) return;
       }
       done(written);
     } catch (error) { abortForError(records, error); }
   });
+}
+
+function putPublication(records, entries, held, written) {
+  for (const { address, value, publication = [], notify = true } of entries) {
+    const record = { ...writeStamp(), value, publication };
+    const key = recordKey(address);
+    if (!putOrAbort(records, record, key)) return false;
+    held.set(key, record);
+    if (notify) written.push(address);
+  }
+  return true;
 }
 
 function effectsAddresses(...rows) {
@@ -126,7 +138,7 @@ export function createWriteOperationCache(scope) {
     return next;
   }
 
-  async function update(operationId, updater, { canonical = [], accept = () => true } = {}) {
+  async function update(operationId, updater, { canonical = [], accept = () => true, migrateProvisional = false } = {}) {
     let result, changed, addresses;
     await strictTransaction("readwrite", (stores) => {
       result = undefined;
@@ -146,6 +158,7 @@ export function createWriteOperationCache(scope) {
           writeCanonical(stores.records, canonical, accept, () => {
             readRecords(stores.records, addresses.map(recordKey), (records) => {
               if (!accept()) return;
+              if (migrateProvisional) migrateProvisionalThreadItems(stores.records, next, records);
               if (layerPublished(next, records)) next.overlayActive = false;
               indexOverlay(next);
               changed = putOrAbort(stores.operations, next, operationKey(scope, operationId));
@@ -164,7 +177,7 @@ export function createWriteOperationCache(scope) {
     if (!previous) return record;
     if (intentIdentity(previous) !== intentIdentity(record)) throw new Error("operation_conflict: the saved intent differs");
     return null;
-  });
+  }, { migrateProvisional: true });
   function accept(operationId, input) {
     const { accept: authority = () => true, ...evidence } = input;
     return update(operationId, (previous) => {
@@ -200,6 +213,7 @@ export function createWriteOperationCache(scope) {
     });
     for (const row of changed) announce(row.operationId, effectsAddresses(row));
     announceWriteOperationCache(written);
+    return written;
   }
 
   function retirePublished(stores, held, accept, changed) {
@@ -279,4 +293,20 @@ const intentIdentity = (record) => JSON.stringify(sortedJson({ request: record.r
 function indexOverlay(record) {
   if (record.overlayActive) record.overlayNamespace = record.namespace;
   else delete record.overlayNamespace;
+}
+
+
+function migrateProvisionalThreadItems(store, operation, held) {
+  if (operation.request?.method !== "thread.post") return;
+  for (const address of effectsAddresses(operation).filter((address) => address.kind === "thread")) {
+    const key = recordKey(address);
+    const record = held.get(key);
+    const items = record?.value?.items;
+    if (!Array.isArray(items)) continue;
+    const kept = items.filter((item) => !(item?.data?.provisional === true && item.data.operation_id === operation.operationId));
+    if (kept.length === items.length) continue;
+    const migrated = { ...record, ...writeStamp(), value: { ...record.value, items: kept } };
+    if (!putOrAbort(store, migrated, key)) return;
+    held.set(key, migrated);
+  }
 }

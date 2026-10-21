@@ -395,3 +395,78 @@ it("distinguishes inferred dependencies from an explicit empty dependency overri
   await operations.put(intent());
   await expect(operations.put(intent("op-a", { after: [] }))).rejects.toThrow("operation_conflict");
 });
+
+describe("task publication admission", () => {
+  it("fences an older detail read before removing the accepted comment layer", async () => {
+    const tracker = await import("../src/core/trackerCache.js");
+    const task = { id: "task-a", updated_at: "2026-10-20T00:00:00Z" };
+    const detailAddress = tracker.taskAddress(scope.deviceId, "project", task.id);
+    const old = { task, timeline: [] };
+    await tracker.writeTaskRecord(scope.deviceId, "project", task.id, old);
+    const detailBasis = await tracker.captureTaskDetailRead(scope.deviceId, "project", task.id);
+    await operations.put(intent());
+    await operations.accept("op-a", { ack: {}, revision: 1, overlay: [{ address: detailAddress, kind: "upsert", path: ["timeline"], value: { id: "comment-a", body: "accepted" } }] });
+    await operations.confirm("op-a", { revision: 2, confirmation: { state: "succeeded", published: publication } });
+    await operations.observePublication({ canonical: [{ address: detailAddress, value: { task, timeline: [{ id: "comment-a", body: "committed" }] }, publication }] });
+    expect((await operations.get("op-a")).overlayActive).toBe(false);
+    const publishedBasis = await tracker.captureTaskDetailRead(scope.deviceId, "project", task.id);
+    const { nextTaskRead } = await import("../src/core/taskReadOrder.js");
+    expect(publishedBasis).toBeGreaterThan(detailBasis);
+    expect(await nextTaskRead()).toBeGreaterThan(publishedBasis);
+    await tracker.writeTaskRecord(scope.deviceId, "project", task.id, old, { detailBasis });
+    expect((await tracker.readTaskRecord(scope.deviceId, "project", task.id)).timeline).toEqual([{ id: "comment-a", body: "committed" }]);
+  });
+
+  it("preserves accepted task read and review floors during publication", async () => {
+    const tracker = await import("../src/core/trackerCache.js");
+    const task = { id: "task-a", updated_at: "2026-10-20T00:00:00Z", read_through: "tc-Z", review_summary: { task_id: "review-a", version: 7 } };
+    const detailAddress = tracker.taskAddress(scope.deviceId, "project", task.id);
+    await tracker.writeTaskRecord(scope.deviceId, "project", task.id, { task, timeline: [] });
+    await operations.observePublication({ canonical: [{ address: detailAddress, value: { task: { ...task, read_through: "tc-A", review_summary: { task_id: "review-a", version: 6 } }, timeline: [] }, publication }] });
+    const saved = await tracker.readTaskRecord(scope.deviceId, "project", task.id);
+    expect(saved.task.read_through).toBe("tc-Z");
+    expect(saved.task.review_summary.version).toBe(7);
+  });
+
+  it("skips a publication whose captured task detail action note was replaced", async () => {
+    const tracker = await import("../src/core/trackerCache.js");
+    const { noteWritten } = await import("../src/core/taskReadOrder.js");
+    const detailAddress = tracker.taskAddress(scope.deviceId, "project", "task-a");
+    const detailBasis = await tracker.captureTaskDetailRead(scope.deviceId, "project", "task-a");
+    await noteWritten([detailAddress], ["task-a"]);
+    const written = await operations.observePublication({ canonical: [{ address: detailAddress, value: { task: { id: "task-a" }, timeline: [] }, publication, guard: { written: null, detailBasis } }] });
+    expect(written).toEqual([]);
+    expect(await cache.readCanonicalCached(detailAddress)).toBeUndefined();
+  });
+});
+
+it("atomically moves only matching legacy provisional thread rows into a durable layer", async () => {
+  const threadAddress = { ...address, kind: "thread" };
+  const legacy = { data: { provisional: true, operation_id: "op-a", body: "legacy" } };
+  const echo = { data: { provisional: false, operation_id: "op-a", body: "canonical" } };
+  const unrelated = { data: { provisional: true, operation_id: "op-b", body: "other draft" } };
+  await cache.writeCached(threadAddress, { items: [legacy, echo, unrelated] });
+  const row = intent("op-a", { request: { method: "thread.post", params: {} }, overlayActive: true,
+    overlay: [{ address: threadAddress, kind: "upsert", path: ["items"], key: ["data", "operation_id"], insertOnly: true, value: legacy }] });
+  await operations.put(row);
+  expect((await cache.readCanonicalCached(threadAddress)).value.items).toEqual([echo, unrelated]);
+  expect((await cache.readCached(threadAddress)).value.items).toEqual([echo, unrelated]);
+});
+
+
+it("rolls back canonical stand-in migration when durable intent persistence fails", async () => {
+  const threadAddress = { ...address, kind: "thread" };
+  const item = { data: { provisional: true, operation_id: "op-a" } };
+  await cache.writeCached(threadAddress, { items: [item] });
+  const original = IDBObjectStore.prototype.put;
+  const put = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (...args) {
+    if (this.name === "write-operations-v1") throw new DOMException("full", "QuotaExceededError");
+    return original.apply(this, args);
+  });
+  try {
+    await expect(operations.put(intent("op-a", { request: { method: "thread.post", params: {} }, overlayActive: true,
+      overlay: [{ address: threadAddress, kind: "upsert", path: ["items"], value: item }] }))).rejects.toThrow();
+  } finally { put.mockRestore(); }
+  expect(await operations.get("op-a")).toBeUndefined();
+  expect((await cache.readCanonicalCached(threadAddress)).value.items).toEqual([item]);
+});

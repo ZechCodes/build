@@ -975,6 +975,11 @@ impl FrameIntake {
         carrier: &CarrierHandle,
     ) -> Result<(), CarrierError> {
         let arrived = WaitTimer::start();
+        #[cfg(test)]
+        self.dispatcher
+            .handler()
+            .clock
+            .mark_intake_received(&envelope.session_id, arrived.started_at());
         let (frame, sender) = self.registry.admit(&envelope, carrier)?;
         #[cfg(test)]
         {

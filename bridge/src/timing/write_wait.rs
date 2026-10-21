@@ -12,6 +12,14 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 mod tests;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WriteCohort {
+    PendingIntake,
+    SemanticWrite,
+    ExemptRead,
+    ExemptProtocol,
+}
+
 pub(crate) const WAIT_BUDGET: Duration = Duration::from_secs(5);
 type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 type WatchSink = Arc<dyn Fn(WriteSnapshot) + Send + Sync>;
@@ -56,6 +64,7 @@ pub(crate) struct WriteSnapshot {
     pub id: WriteId,
     pub original_id: String,
     pub method: String,
+    pub cohort: WriteCohort,
     pub intake: Instant,
     pub admitted_at: Option<Instant>,
     pub acknowledged_at: Option<Instant>,
@@ -83,9 +92,34 @@ impl WriteSnapshot {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CompletedInterval {
+    pub id: WaitId,
+    pub origins: Vec<WriteId>,
+    pub obligation: ObligationId,
+    pub category: IntervalCategory,
+    pub started: Instant,
+    pub ended: Instant,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CollectorOverhead {
+    pub writer_acquisitions: u64,
+    pub writer_lock_wait: Duration,
+    pub writer_mutation_hold: Duration,
+    pub max_writer_lock_wait: Duration,
+    pub max_writer_mutation_hold: Duration,
+}
+pub(super) struct ActiveWriteCapture(Arc<OrdMap<WriteId, WriteSnapshot>>);
+impl ActiveWriteCapture {
+    pub(super) fn snapshot_at(&self, _now: Instant) -> Vec<WriteSnapshot> {
+        self.0.values().cloned().collect()
+    }
+}
+
 pub(crate) struct WriteWaitRegistry {
     clock: Clock,
     next: AtomicU64,
+    closing: AtomicU64,
     // Only mutators use this lock. The independent watchdog must never do so.
     writer: Mutex<()>,
     // Only live obligations belong here; completed raw/archive rows stay separate.
@@ -101,6 +135,7 @@ impl WriteWaitRegistry {
         Arc::new(Self {
             clock,
             next: AtomicU64::new(1),
+            closing: AtomicU64::new(0),
             writer: Mutex::new(()),
             active: ArcSwap::from_pointee(OrdMap::new()),
         })
@@ -122,6 +157,7 @@ impl WriteWaitRegistry {
             id,
             original_id: original_id.into(),
             method: method.into(),
+            cohort: WriteCohort::SemanticWrite,
             intake,
             admitted_at: None,
             acknowledged_at: None,
@@ -151,6 +187,30 @@ impl WriteWaitRegistry {
                 obligation,
             },
         }
+    }
+
+    pub(crate) fn begin_pending(
+        self: &Arc<Self>,
+        correlation_id: impl Into<String>,
+        intake: Instant,
+    ) -> LogicalWrite {
+        let write = self.begin(correlation_id, "rpc.unclassified", intake);
+        let _writer = self.writer.lock().unwrap();
+        let mut active = (**self.active.load()).clone();
+        let mut row = active.get(&write.id()).unwrap().clone();
+        row.cohort = WriteCohort::PendingIntake;
+        active.insert(write.id(), row);
+        self.active.store(Arc::new(active));
+        write
+    }
+    pub(super) fn capture_active(&self) -> ActiveWriteCapture {
+        ActiveWriteCapture(self.active.load_full())
+    }
+    pub(crate) fn completed_intervals(&self) -> Vec<CompletedInterval> {
+        vec![]
+    }
+    pub(crate) fn collector_overhead(&self) -> CollectorOverhead {
+        CollectorOverhead::default()
     }
 
     pub(crate) fn coalesced(self: &Arc<Self>, origins: &[WriteId]) -> Obligation {
@@ -210,6 +270,13 @@ impl LogicalWrite {
     pub(crate) fn child(&self) -> Obligation {
         self.context.child()
     }
+    pub(crate) fn classify(
+        &self,
+        _original_id: impl Into<String>,
+        _method: impl Into<String>,
+        _cohort: WriteCohort,
+    ) {
+    }
     pub(crate) fn admitted(&self) {}
     pub(crate) fn acknowledged(&self) {}
     pub(crate) fn complete(self) {}
@@ -250,6 +317,9 @@ pub(crate) struct WriteContext {
     obligation: ObligationId,
 }
 impl WriteContext {
+    pub(crate) fn original_ids(&self) -> Vec<String> {
+        vec![]
+    }
     pub(crate) fn origins(&self) -> &[WriteId] {
         &self.origins
     }
@@ -260,6 +330,7 @@ impl WriteContext {
         WaitGuard {
             id: WaitId(self.registry.next()),
             category,
+            registry: Arc::clone(&self.registry),
         }
     }
     /// Synchronous scopes only: callers must carry context explicitly across await.
@@ -275,6 +346,7 @@ impl WriteContext {
 pub(crate) struct WaitGuard {
     id: WaitId,
     category: IntervalCategory,
+    registry: Arc<WriteWaitRegistry>,
 }
 impl WaitGuard {
     pub(crate) fn id(&self) -> WaitId {
@@ -284,6 +356,7 @@ impl WaitGuard {
 impl Drop for WaitGuard {
     fn drop(&mut self) {
         let _category = self.category;
+        self.registry.closing.store(self.id.0, Ordering::Release);
     }
 }
 

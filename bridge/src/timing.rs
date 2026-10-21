@@ -31,6 +31,9 @@ pub(crate) mod phase_samples;
 #[cfg(test)]
 pub(crate) mod write_wait;
 
+#[cfg(test)]
+type IntakeObserver = dyn Fn(&str, Instant) + Send + Sync;
+
 /// A frame that takes longer than this, end to end and queue wait included, is
 /// worth one line of stderr on its own. Below it the histograms are the record;
 /// above it a human is already waiting and wants to know which wait or hold
@@ -197,6 +200,8 @@ pub struct FrameClock {
     request_observed: AtomicBool,
     #[cfg(test)]
     write_wait_registry: RwLock<Option<Arc<write_wait::WriteWaitRegistry>>>,
+    #[cfg(test)]
+    intake_observer: RwLock<Option<Arc<IntakeObserver>>>,
 }
 
 impl FrameClock {
@@ -238,6 +243,8 @@ impl FrameClock {
             request_observed: AtomicBool::new(false),
             #[cfg(test)]
             write_wait_registry: RwLock::new(None),
+            #[cfg(test)]
+            intake_observer: RwLock::new(None),
         })
     }
 
@@ -246,6 +253,19 @@ impl FrameClock {
         let registry = write_wait::WriteWaitRegistry::new();
         *self.write_wait_registry.write().unwrap() = Some(Arc::clone(&registry));
         registry
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_intake(&self, observer: Arc<IntakeObserver>) {
+        *self.intake_observer.write().unwrap() = Some(observer);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_intake_received(&self, session: &str, arrived: Instant) {
+        let observer = self.intake_observer.read().unwrap().clone();
+        if let Some(observer) = observer {
+            observer(session, arrived);
+        }
     }
 
     /// A frame has joined the dispatch queue. It counts against the queue depth

@@ -26,3 +26,4 @@ pub(in crate::app::tests) mod terminals;
 
 mod lock_hold_busy;
 mod write_wait_qualification;
+mod finite_service;

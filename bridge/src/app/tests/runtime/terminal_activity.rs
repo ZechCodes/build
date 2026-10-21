@@ -2,6 +2,8 @@
 //! while holding application state.
 use super::*;
 
+mod equivalence;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn terminal_activity_waits_for_store_without_holding_app_state() {
     let directory = tempfile::tempdir().unwrap();

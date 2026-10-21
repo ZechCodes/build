@@ -81,11 +81,10 @@ fn assert_active_fault(row: Option<&WriteSnapshot>, fired: bool) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn logical_write_rpc_six_second_app_wait_is_visible_while_active() {
     let directory = tempfile::tempdir().unwrap();
-    let clock = FrameClock::new();
-    let mut app = AppState::new_unrooted(directory.path(), "main", true, "unused");
-    app.frame_clock = Arc::clone(&clock);
+    let app = AppState::new_unrooted(directory.path(), "main", true, "unused");
     let state = Arc::new(Mutex::new(app));
     let handler = AppState::handler(Arc::clone(&state));
+    let clock = Arc::clone(&handler.clock);
     let registry = clock.capture_write_waits();
     let fired = Arc::new(Mutex::new(Vec::new()));
     let observe = Arc::clone(&fired);

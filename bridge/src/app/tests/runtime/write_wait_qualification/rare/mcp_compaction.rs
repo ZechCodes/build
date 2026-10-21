@@ -1,4 +1,5 @@
 //! A queued MCP compaction remains owned through its final published detail.
+mod status_origins;
 use super::*;
 use crate::app::runtime::pumps::status_timing::MeasuredStatusPump;
 use crate::app::tests::runtime::compaction::{CompactingAgent, RUN};

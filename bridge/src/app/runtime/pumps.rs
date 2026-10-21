@@ -22,6 +22,8 @@ pub(in crate::app) mod status_timing;
 /// closing ([`open_session`] refuses a session with no stream at all).
 pub(in crate::app) fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, pumps: TabPumps) {
     let TabPumps {
+        #[cfg(test)]
+        compaction_attribution,
         session,
         session_instance,
         screen,
@@ -49,6 +51,16 @@ pub(in crate::app) fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey,
         output.activity,
         output.surfaces,
     );
+    #[cfg(test)]
+    spawn_status_pump_with_attribution(
+        state,
+        key,
+        session,
+        session_instance,
+        status_changed,
+        compaction_attribution,
+    );
+    #[cfg(not(test))]
     spawn_status_pump(state, key, session, session_instance, status_changed);
 }
 
@@ -57,7 +69,28 @@ pub(in crate::app) fn spawn_status_pump(
     key: TabKey,
     session: Arc<dyn AgentSession>,
     instance: Option<SessionInstance>,
+    changed: Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>>,
+) {
+    spawn_status_pump_with_attribution(
+        state,
+        key,
+        session,
+        instance,
+        changed,
+        #[cfg(test)]
+        None,
+    );
+}
+
+fn spawn_status_pump_with_attribution(
+    state: &Arc<Mutex<AppState>>,
+    key: TabKey,
+    session: Arc<dyn AgentSession>,
+    instance: Option<SessionInstance>,
     mut changed: Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>>,
+    #[cfg(test)] compaction_attribution: Option<
+        super::delivery::compaction::attribution::CompactionAttribution,
+    >,
 ) {
     let (Some(mut changed), Some(instance)) = (changed.take(), instance) else {
         return;
@@ -72,6 +105,8 @@ pub(in crate::app) fn spawn_status_pump(
         instance,
         #[cfg(test)]
         frame_clock: None,
+        #[cfg(test)]
+        compaction_attribution,
         recorded_context: None,
         recorded_context_reset_count: 0,
         recorded_limit: super::usage_limits::UsageObservation::default(),
@@ -102,6 +137,8 @@ struct StatusPump {
     instance: SessionInstance,
     #[cfg(test)]
     frame_clock: Option<Arc<crate::timing::FrameClock>>,
+    #[cfg(test)]
+    compaction_attribution: Option<super::delivery::compaction::attribution::CompactionAttribution>,
     recorded_context: Option<crate::harness::TurnContext>,
     recorded_context_reset_count: u64,
     recorded_limit: super::usage_limits::UsageObservation,
@@ -115,6 +152,12 @@ impl StatusPump {
         let Some(state) = self.state.upgrade() else {
             return false;
         };
+        #[cfg(test)]
+        let admission = self.compaction_attribution.as_ref().and_then(|table| {
+            table.status_admission(&self.key, &self.instance, &self.session, snapshot.context)
+        });
+        #[cfg(test)]
+        let _admission_binding = admission.as_ref().map(|admission| admission.bind());
         #[cfg(test)]
         let status_timer = self
             .frame_clock
@@ -157,7 +200,17 @@ impl StatusPump {
                 self.recorded_context = None;
                 self.recorded_context_reset_count = snapshot.context_reset_count;
             }
-            record_new_turn_context(app, instance, snapshot, &mut self.recorded_context);
+            #[cfg(test)]
+            let compaction_identity =
+                app.compaction_stamp_identity_for_pump(&self.key, instance, &self.session);
+            record_new_turn_context(
+                app,
+                instance,
+                snapshot,
+                &mut self.recorded_context,
+                #[cfg(test)]
+                compaction_identity,
+            );
             // A limit recorded wants its reset waited for, and one cleared
             // may have left agents to start again: either is a drain.
             let usage_limit_moved = app.record_usage_limit(
@@ -217,6 +270,7 @@ fn record_new_turn_context(
     instance: &SessionInstance,
     snapshot: &crate::harness::SessionStatusSnapshot,
     recorded: &mut Option<crate::harness::TurnContext>,
+    #[cfg(test)] identity: Option<super::delivery::compaction::attribution::SessionIdentity>,
 ) {
     let Some(context) = snapshot
         .context
@@ -224,6 +278,14 @@ fn record_new_turn_context(
     else {
         return;
     };
+    #[cfg(test)]
+    app.record_agent_turn_context_scoped(
+        &instance.entity_id,
+        &instance.agent_id,
+        context,
+        identity,
+    );
+    #[cfg(not(test))]
     app.record_agent_turn_context(&instance.entity_id, &instance.agent_id, context);
     *recorded = Some(context);
 }

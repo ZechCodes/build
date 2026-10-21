@@ -239,6 +239,8 @@ impl Tab {
             screen: self.screen.clone(),
             output,
             push_runtime: None,
+            #[cfg(test)]
+            compaction_attribution: None,
         }
     }
 
@@ -353,6 +355,9 @@ impl Tab {
 /// for it. The session travels because the EOF a pump sees belongs to the
 /// session it was started for and to no replacement that took the tab since.
 pub(in crate::app) struct TabPumps {
+    #[cfg(test)]
+    pub(in crate::app) compaction_attribution:
+        Option<crate::app::runtime::delivery::compaction::attribution::CompactionAttribution>,
     pub(in crate::app) session: Arc<dyn AgentSession>,
     pub(in crate::app) session_instance: Option<SessionInstance>,
     pub(in crate::app) screen: Option<ScreenHandle>,

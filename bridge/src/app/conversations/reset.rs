@@ -609,6 +609,10 @@ impl AppState {
         let root = self.entity_agent_root(&agent.owner_id)?;
         self.retire_agent(&root, &agent.id);
         self.compactions.forget(&agent.owner_id, &agent.id);
+        #[cfg(test)]
+        self.session_registry
+            .compaction_attribution()
+            .forget(&agent.owner_id, &agent.id);
         self.usage_limits.forget_agent(&agent.owner_id, &agent.id);
         self.dispatched_task.remove(&agent.id);
         self.agent_failures.forget_agent(&agent.id);

@@ -47,6 +47,8 @@ impl AppState {
         self.refuse_what_cannot_compact(sender.entity_id, sender.agent_id, OWN_SESSION)?;
         self.compactions
             .request(sender.entity_id, sender.agent_id, instructions, true);
+        #[cfg(test)]
+        self.capture_compaction_origin(sender.entity_id, sender.agent_id);
         Ok(json!({ "message": "Build will compact your session when this turn ends." }))
     }
 
@@ -72,6 +74,8 @@ impl AppState {
             .is_some_and(|agent| agent.working_since.is_some());
         self.compactions
             .request(&owner, agent_id, instructions, working);
+        #[cfg(test)]
+        self.capture_compaction_origin(&owner, agent_id);
         let message = match working {
             true => format!("Build will compact {name} when its current turn ends."),
             false => format!("Build is compacting {name} now."),
@@ -156,23 +160,43 @@ impl AppState {
             })
         else {
             self.compactions.withdraw(owner, agent_id);
+            #[cfg(test)]
+            self.session_registry
+                .compaction_attribution()
+                .forget(owner, agent_id);
             return None;
         };
         if queued || working {
             return None;
         }
         let instructions = self.compactions.withdraw(owner, agent_id)?;
-        let session = self.live_agent_session(owner, agent_id)?;
+        let Some(session) = self.live_agent_session(owner, agent_id) else {
+            #[cfg(test)]
+            self.session_registry
+                .compaction_attribution()
+                .forget(owner, agent_id);
+            return None;
+        };
+        let thread_id = match self.agent_conversation(owner, Some(agent_id)) {
+            Ok(thread) => thread.id.clone(),
+            Err(_) => {
+                #[cfg(test)]
+                self.session_registry
+                    .compaction_attribution()
+                    .forget(owner, agent_id);
+                return None;
+            }
+        };
         Some(CompactionSend {
-            thread_id: self
-                .agent_conversation(owner, Some(agent_id))
-                .ok()?
-                .id
-                .clone(),
+            thread_id,
             owner: owner.to_string(),
             agent_id: agent_id.to_string(),
             model_choice,
             choice_revision,
+            #[cfg(test)]
+            attribution: self
+                .prepare_compaction_send_origin(owner, agent_id, &session, false)
+                .map(|entry| Arc::downgrade(&entry)),
             session,
             instructions: Some(instructions),
         })

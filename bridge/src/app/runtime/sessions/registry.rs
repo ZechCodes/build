@@ -43,6 +43,9 @@ pub(in crate::app) struct SessionRegistry {
     waiting_screens: HashMap<TabKey, ScreenHandle>,
     mcp_tokens: HashMap<String, String>,
     mcp_read_authority: super::McpReadAuthority,
+    #[cfg(test)]
+    compaction_attribution:
+        crate::app::runtime::delivery::compaction::attribution::CompactionAttribution,
     /// A failed roster save cannot undo an agent binding's actual retirement.
     /// Agent IDs are shared by aliases; owner IDs only support deletion cleanup.
     retired_bindings: HashMap<String, String>,
@@ -223,6 +226,8 @@ impl SessionRegistry {
             waiting_screens: HashMap::new(),
             mcp_tokens: HashMap::new(),
             mcp_read_authority: super::McpReadAuthority::new(),
+            #[cfg(test)]
+            compaction_attribution: Default::default(),
             retired_bindings: HashMap::new(),
             next_terminal: 1,
             push_runtime: None,
@@ -233,9 +238,18 @@ impl SessionRegistry {
         self.push_runtime = Some(runtime);
     }
 
+    #[cfg(test)]
+    pub(in crate::app) fn compaction_attribution(
+        &self,
+    ) -> crate::app::runtime::delivery::compaction::attribution::CompactionAttribution {
+        self.compaction_attribution.clone()
+    }
+
     /// A tab's pumps, told where to paint.
     fn pumps_of(&self, tab: &Tab, output: SessionOutput) -> TabPumps {
         TabPumps {
+            #[cfg(test)]
+            compaction_attribution: Some(self.compaction_attribution.clone()),
             push_runtime: self.push_runtime.clone(),
             ..tab.pumps(output)
         }
@@ -292,6 +306,11 @@ impl SessionRegistry {
         output: SessionOutput,
     ) -> TabPumps {
         let pumps = self.pumps_of(&tab, output);
+        #[cfg(test)]
+        if let Some(old) = self.tabs.get(&key) {
+            self.compaction_attribution
+                .forget_session(&key, &old.session);
+        }
         self.tabs.insert(key, tab);
         pumps
     }
@@ -388,6 +407,8 @@ impl SessionRegistry {
 
     pub(in crate::app) fn retire_agent_binding(&mut self, owner: &str, agent: &str) {
         self.retired_bindings.insert(agent.into(), owner.into());
+        #[cfg(test)]
+        self.compaction_attribution.forget(owner, agent);
     }
 
     pub(in crate::app) fn agent_binding_retired(&self, agent: &str) -> bool {
@@ -892,6 +913,11 @@ impl SessionRegistry {
         if let Some((_, agent)) = tab.role.agent() {
             self.forget_retired_agent(agent);
         }
+        #[cfg(test)]
+        if let Some(old) = self.tabs.get(&key) {
+            self.compaction_attribution
+                .forget_session(&key, &old.session);
+        }
         self.tabs.insert(key, tab);
     }
 
@@ -906,6 +932,11 @@ impl SessionRegistry {
             .tabs
             .get_mut(key)
             .expect("the published tab remains present during one app acquisition");
+        #[cfg(test)]
+        if tab.session_instance != instance {
+            self.compaction_attribution
+                .forget_session(key, &tab.session);
+        }
         tab.session_instance = instance;
         let tab = &self.tabs[key];
         self.pumps_of(tab, output)
@@ -917,6 +948,9 @@ impl SessionRegistry {
         diagnostic: LifecycleDiagnostic<'_>,
     ) -> Option<RetainedTab> {
         let tab = self.tabs.remove(key)?;
+        #[cfg(test)]
+        self.compaction_attribution
+            .forget_session(key, &tab.session);
         tab.log_lifecycle(diagnostic);
         Some(RetainedTab {
             retirement: Retirement::begin(tab.session),
@@ -932,6 +966,9 @@ impl SessionRegistry {
         diagnostic: LifecycleDiagnostic<'_>,
     ) -> Option<RetiredAgent> {
         let tab = self.tabs.remove(key)?;
+        #[cfg(test)]
+        self.compaction_attribution
+            .forget_session(key, &tab.session);
         tab.log_lifecycle(diagnostic);
         let wire_id = tab.wire_id();
         if let Some(screen) = &tab.screen {
@@ -958,6 +995,10 @@ impl SessionRegistry {
 
     #[cfg(test)]
     pub(in crate::app) fn test_insert_tab(&mut self, key: TabKey, tab: Tab) -> Option<Tab> {
+        if let Some(old) = self.tabs.get(&key) {
+            self.compaction_attribution
+                .forget_session(&key, &old.session);
+        }
         self.tabs.insert(key, tab)
     }
 
@@ -973,7 +1014,10 @@ impl SessionRegistry {
 
     #[cfg(test)]
     pub(in crate::app) fn test_remove_tab(&mut self, key: &TabKey) -> Option<Tab> {
-        self.tabs.remove(key)
+        let removed = self.tabs.remove(key)?;
+        self.compaction_attribution
+            .forget_session(key, &removed.session);
+        Some(removed)
     }
 
     #[cfg(test)]

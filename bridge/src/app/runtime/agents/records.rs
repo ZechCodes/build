@@ -785,7 +785,27 @@ impl AppState {
         agent_id: &str,
         context: crate::harness::TurnContext,
     ) {
-        self.stamp_sent_compaction(owner, agent_id, context.context_tokens);
+        self.record_agent_turn_context_scoped(
+            owner,
+            agent_id,
+            context,
+            #[cfg(test)]
+            None,
+        );
+    }
+
+    pub(in crate::app) fn record_agent_turn_context_scoped(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        context: crate::harness::TurnContext,
+        #[cfg(test)] identity: Option<
+            crate::app::runtime::delivery::compaction::attribution::SessionIdentity,
+        >,
+    ) {
+        #[cfg(test)]
+        let mut attribution = self.compaction_stamp_scope(owner, agent_id, identity);
+        let _stamped = self.stamp_sent_compaction(owner, agent_id, context.context_tokens);
         let unchanged = self
             .entity_agents(owner)
             .ok()
@@ -795,14 +815,33 @@ impl AppState {
                     && agent.session_cache_read_tokens == Some(context.cache_read_tokens)
             });
         if unchanged {
+            #[cfg(test)]
+            if let Some(attribution) = attribution.as_mut() {
+                attribution.native_stamp_result(_stamped);
+            }
             return;
         }
         let now = crate::store::now_rfc3339();
-        self.edit_agent_record("record_agent_turn_context", owner, agent_id, |agent| {
+        let persisted = self.edit_agent_record_checked(owner, agent_id, |agent| {
             agent.last_context_tokens = Some(context.context_tokens);
             agent.last_context_at = Some(now);
             agent.session_cache_read_tokens = Some(context.cache_read_tokens);
         });
+        if let Err(error) = &persisted {
+            eprintln!("record_agent_turn_context {owner}: {error}");
+        }
+        #[cfg(test)]
+        if let Some(attribution) = attribution.as_mut() {
+            let exact_tail = self
+                .entity_agents(owner)
+                .ok()
+                .and_then(|agents| agents.by_id(agent_id))
+                .is_some_and(|agent| {
+                    agent.last_context_tokens == Some(context.context_tokens)
+                        && agent.session_cache_read_tokens == Some(context.cache_read_tokens)
+                });
+            attribution.native_stamp_result(_stamped && persisted.is_ok() && exact_tail);
+        }
     }
 
     /// Forget the context an agent's last turn left, once a compaction has

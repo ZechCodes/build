@@ -14,6 +14,8 @@ use crate::thread::CompactionDetail;
 use crate::timing::FrameTimer;
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+pub(in crate::app) mod attribution;
 mod ledger;
 mod tools;
 
@@ -29,6 +31,8 @@ fn is_compaction(prompt: &str) -> bool {
 /// One compaction about to be sent: who to, on what settings, through which
 /// session, and the focus it was asked for — `None` for an automatic one.
 pub(in crate::app) struct CompactionSend {
+    #[cfg(test)]
+    attribution: Option<std::sync::Weak<attribution::Entry>>,
     owner: String,
     agent_id: String,
     thread_id: String,
@@ -119,16 +123,26 @@ impl AppState {
         if instructions.is_some() {
             self.compactions.withdraw(&turn.owner, &turn.agent_id);
         }
+        let thread_id = match self.agent_conversation(&turn.owner, Some(&turn.agent_id)) {
+            Ok(thread) => thread.id.clone(),
+            Err(_) => {
+                #[cfg(test)]
+                self.session_registry
+                    .compaction_attribution()
+                    .forget(&turn.owner, &turn.agent_id);
+                return None;
+            }
+        };
         Some(CompactionSend {
-            thread_id: self
-                .agent_conversation(&turn.owner, Some(&turn.agent_id))
-                .ok()?
-                .id
-                .clone(),
+            thread_id,
             owner: turn.owner.clone(),
             agent_id: turn.agent_id.clone(),
             model_choice: turn.model_choice.clone(),
             choice_revision: turn.choice_revision,
+            #[cfg(test)]
+            attribution: self
+                .prepare_compaction_send_origin(&turn.owner, &turn.agent_id, &session, true)
+                .map(|entry| Arc::downgrade(&entry)),
             session,
             instructions,
         })
@@ -169,9 +183,9 @@ impl AppState {
         owner: &str,
         agent_id: &str,
         context_after: u64,
-    ) {
+    ) -> bool {
         let Some(sent) = self.compactions.take_sent(owner, agent_id) else {
-            return;
+            return false;
         };
         let detail = CompactionDetail {
             context_after: Some(context_after),
@@ -180,12 +194,14 @@ impl AppState {
         let stamped = self.edit_agent_conversation(owner, agent_id, |thread, _| {
             Ok(thread.stamp_compaction(sent.sent_after, &detail))
         });
-        if !matches!(stamped, Ok(true)) {
+        let succeeded = matches!(stamped, Ok(true));
+        if !succeeded {
             eprintln!(
                 "stamp compaction {owner}/{agent_id}: no row since {}",
                 sent.sent_after
             );
         }
+        succeeded
     }
 }
 
@@ -225,11 +241,29 @@ pub(in crate::app) fn send_compaction(
     timer: &FrameTimer,
     send: &CompactionSend,
 ) -> bool {
+    #[cfg(test)]
+    let attribution = send.attribution.as_ref().and_then(std::sync::Weak::upgrade);
+    #[cfg(test)]
+    if let Some(entry) = attribution.as_ref() {
+        entry.start_service();
+    }
+    #[cfg(test)]
+    let _source = attribution.as_ref().map(|entry| entry.bind());
     let command =
         harness_for(send.model_choice.provider).compaction_command(send.instructions.as_deref());
     let sent = {
+        #[cfg(test)]
+        let wait = attribution.as_ref().map(|entry| entry.app_wait());
         let mut app = timer.lock(state);
+        #[cfg(test)]
+        drop(wait);
+        #[cfg(test)]
+        let _source = attribution.as_ref().map(|entry| entry.bind());
         if !app.compaction_generation_is_current(send) {
+            #[cfg(test)]
+            if let Some(entry) = attribution.as_ref() {
+                app.session_registry.compaction_attribution().cancel(entry);
+            }
             return false;
         }
         app.compaction_about_to_send(send, &command)
@@ -241,10 +275,26 @@ pub(in crate::app) fn send_compaction(
     );
     if let Err(refused) = send.session.send_turn(&compaction) {
         eprintln!("compact {}/{}: {refused}", send.owner, send.agent_id);
+        #[cfg(test)]
+        if let Some(entry) = attribution.as_ref() {
+            // No extra app acquisition for instrumentation: the table handle
+            // was captured together with the exact send entry.
+            entry.cancel();
+        }
         return false;
     }
+    #[cfg(test)]
+    let wait = attribution.as_ref().map(|entry| entry.app_wait());
     let mut app = timer.lock(state);
+    #[cfg(test)]
+    drop(wait);
+    #[cfg(test)]
+    let _source = attribution.as_ref().map(|entry| entry.bind());
     if !app.compaction_generation_is_current(send) {
+        #[cfg(test)]
+        if let Some(entry) = attribution.as_ref() {
+            app.session_registry.compaction_attribution().cancel(entry);
+        }
         return false;
     }
     if send.session.terminal().is_some() && !send.session.observes_compaction_start() {
@@ -257,5 +307,9 @@ pub(in crate::app) fn send_compaction(
     }
     app.forget_agent_context(&send.owner, &send.agent_id);
     app.compactions.sent(&send.owner, &send.agent_id, sent);
+    #[cfg(test)]
+    if let Some(entry) = attribution.as_ref() {
+        app.session_registry.compaction_attribution().sent(entry);
+    }
     true
 }

@@ -61,12 +61,14 @@ impl MeasuredStatusPump {
         session: &Arc<dyn AgentSession>,
         instance: SessionInstance,
     ) -> Self {
+        let app = state.lock().unwrap();
         Self(StatusPump {
             state: Arc::downgrade(state),
             key,
             session: Arc::downgrade(session),
             instance,
-            frame_clock: Some(Arc::clone(&state.lock().unwrap().frame_clock)),
+            frame_clock: Some(Arc::clone(&app.frame_clock)),
+            compaction_attribution: Some(app.session_registry.compaction_attribution()),
             recorded_context: None,
             recorded_context_reset_count: 0,
             recorded_limit: super::super::usage_limits::UsageObservation::default(),

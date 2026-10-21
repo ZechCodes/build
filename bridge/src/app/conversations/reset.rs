@@ -52,6 +52,7 @@ impl AppState {
             let held = state.reserve_reset_turns(&address, &agents);
             let refusal = held.as_ref().err().cloned();
             let held = held.ok();
+            let owns_reset_authority = held.is_some();
             let completions = state.reset_delivery_completions(&agents);
             let native = if refusal.is_none() {
                 state.retire_reset_sessions(native)
@@ -88,6 +89,14 @@ impl AppState {
                     if let Some(held) = held {
                         state.delivery_queue.restore_conversation(held);
                     }
+                }
+                // Keep independent readers fenced through the complete commit
+                // (including committed cleanup errors) or failure restoration.
+                // A refused operation never clears another reset's reservation.
+                if owns_reset_authority {
+                    state
+                        .session_registry
+                        .set_mcp_resetting(&address.conversation_id, false);
                 }
                 outcome
             };
@@ -342,9 +351,13 @@ impl AppState {
         self.guard_conversation_reservation(address)?;
         self.resetting_conversations
             .insert(address.conversation_id.clone());
+        self.session_registry
+            .set_mcp_resetting(&address.conversation_id, true);
         if let Err(error) = self.refuse_reset_in_flight(address, agents) {
             self.resetting_conversations
                 .remove(&address.conversation_id);
+            self.session_registry
+                .set_mcp_resetting(&address.conversation_id, false);
             return Err(error);
         }
         Ok(self

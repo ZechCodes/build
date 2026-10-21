@@ -1,4 +1,8 @@
+mod capabilities;
 mod registry;
+pub(in crate::app) use capabilities::{
+    McpAuthoritySnapshot, McpIssuer, McpReadAuthority, RouterAuthority,
+};
 #[cfg(test)]
 mod registry_tests;
 

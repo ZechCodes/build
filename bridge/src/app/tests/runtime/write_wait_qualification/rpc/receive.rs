@@ -82,7 +82,7 @@ fn deliver_final(
                 } else {
                     FinalOutcome::ProtocolError
                 };
-                watch.complete_with_outcome(id, outcome);
+                watch.decoded_final_at(id, outcome, final_reply_at);
             }
             if sender.send((reply, final_reply_at)).is_err() {
                 record_identity_error(watch, errors, id, format!("abandoned original {id}"));

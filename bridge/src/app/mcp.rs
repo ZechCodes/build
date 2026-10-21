@@ -1,5 +1,7 @@
 #[cfg(unix)]
 mod read_lane;
+#[cfg(unix)]
+mod reply;
 
 use crate::app::{
     apply_thread_action, off_the_workers, AppState, DeferredJob, DeferredNext, DeliveryRunner,
@@ -11,7 +13,7 @@ use crate::timing::{FrameClock, FrameTimer, WaitTimer};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::io::AsyncBufReadExt;
 
 /// Who is on the other end of an authenticated MCP control frame.
 ///
@@ -336,27 +338,17 @@ pub(in crate::app) async fn handle_done_stream(
         #[cfg(test)]
         let arrived = arrived.with_write_origin(origin.clone());
         let response = plane.answer_since(Arc::clone(&state), frame, arrived).await;
-        #[cfg(test)]
-        let response_expected = response.is_some();
-        #[cfg(test)]
-        let mut reply_sent = true;
         if let Some(response) = response {
-            let _content_written = write_half.write_all(response.to_string().as_bytes()).await;
-            let _newline_written = write_half.write_all(b"\n").await;
-            let _flushed = write_half.flush().await;
+            reply::emit(
+                &mut write_half,
+                response,
+                #[cfg(test)]
+                origin.as_deref(),
+            )
+            .await;
+        } else {
             #[cfg(test)]
-            {
-                reply_sent =
-                    _content_written.is_ok() && _newline_written.is_ok() && _flushed.is_ok();
-            }
-        }
-        #[cfg(test)]
-        if let Some(origin) = origin {
-            if !reply_sent {
-                origin.cancel();
-            } else if response_expected {
-                origin.complete();
-            } else {
+            if let Some(origin) = origin {
                 origin.settled();
             }
         }

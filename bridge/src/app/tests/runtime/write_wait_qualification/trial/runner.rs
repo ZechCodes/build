@@ -56,6 +56,8 @@ struct RunState<'a> {
 }
 #[path = "runner/control.rs"]
 mod control;
+#[path = "runner/credits.rs"]
+mod credits;
 #[path = "runner/dispatch.rs"]
 mod dispatch;
 #[path = "runner/drain.rs"]

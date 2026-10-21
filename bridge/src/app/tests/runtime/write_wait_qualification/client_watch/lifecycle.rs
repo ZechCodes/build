@@ -27,6 +27,7 @@ impl ClientWatch {
                 relative_base: Arc::new(OnceLock::new()),
                 ready: AtomicBool::new(false),
                 unmatched_replies: Mutex::new(Vec::new()),
+                decoded_observer: OnceLock::new(),
             }),
         }
     }
@@ -279,6 +280,28 @@ impl ClientWatch {
         }
         assert!(row.admitted_at.is_none(), "original is admitted once");
         row.admitted_at = Some(observed_actual);
+    }
+
+    /// Attach once before dispatch. Notification is only the actual validated
+    /// decoded reply boundary, never a transport error, cancellation or proof.
+    pub fn observe_decoded_replies(&self, observer: DecodedObserver) -> Result<(), String> {
+        self.inner
+            .decoded_observer
+            .set(observer)
+            .map_err(|_| "decoded reply observer already installed".into())
+    }
+
+    pub fn decoded_final_at(&self, original_id: &str, outcome: FinalOutcome, actual_at: Instant) {
+        assert!(matches!(
+            outcome,
+            FinalOutcome::Reply | FinalOutcome::ProtocolError
+        ));
+        self.complete_with_outcome(original_id, outcome);
+        self.notify_decoded(original_id, actual_at);
+    }
+
+    fn notify_decoded(&self, _original_id: &str, _actual_at: Instant) {
+        // TESTFIRST: current harness has no actual decoded event for runner credits.
     }
 
     pub fn complete(&self, original_id: &str) {

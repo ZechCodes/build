@@ -122,3 +122,53 @@ fn independent_client_watch_observes_unregistered_pending_without_snapshot_or_ru
         "independent watchdog must retain unfinished client breach before server registration"
     );
 }
+
+#[test]
+fn decoded_observer_preserves_actual_timestamp_without_converting_transport_failure_to_reply() {
+    let (watch, clock) = fixture();
+    let (events, decoded) = mpsc::channel();
+    watch
+        .observe_decoded_replies(Arc::new(move |id, actual_at| {
+            events.send((id.to_owned(), actual_at)).unwrap();
+        }))
+        .unwrap();
+    for original in [
+        "decoded-ok",
+        "decoded-error",
+        "transport-error",
+        "cancelled",
+    ] {
+        watch.offer(original);
+        watch.sent(original);
+    }
+    let actual_at = *clock.lock().unwrap();
+    *clock.lock().unwrap() += Duration::from_millis(7);
+    watch.decoded_final_at("decoded-ok", FinalOutcome::Reply, actual_at);
+    watch.decoded_final_at("decoded-error", FinalOutcome::ProtocolError, actual_at);
+    watch.complete_with_outcome("transport-error", FinalOutcome::TransportError);
+    watch.cancel("cancelled");
+    let events = decoded.try_iter().collect::<Vec<_>>();
+    assert_eq!(
+        events,
+        vec![
+            ("decoded-ok".into(), actual_at),
+            ("decoded-error".into(), actual_at),
+        ],
+        "only validated decoded replies notify; the actual parsed timestamp is unchanged"
+    );
+    assert!(watch.observe_decoded_replies(Arc::new(|_, _| {})).is_err());
+    let rows = watch.snapshot();
+    assert!(
+        rows.iter()
+            .find(|row| row.original_id == "cancelled")
+            .unwrap()
+            .cancelled
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.original_id == "transport-error")
+            .unwrap()
+            .final_outcome,
+        Some(FinalOutcome::TransportError)
+    );
+}

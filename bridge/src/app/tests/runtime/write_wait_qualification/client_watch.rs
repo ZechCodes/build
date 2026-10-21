@@ -17,6 +17,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 pub(super) type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+pub(super) type DecodedObserver = Arc<dyn Fn(&str, Instant) + Send + Sync>;
 const LIMIT: Duration = Duration::from_secs(5);
 // A memory safety bound, not a workload credit or a mechanism to drop intents.
 // Exceeding it fails setup explicitly. The driver can specify its exact bound.
@@ -153,6 +154,7 @@ struct Inner {
     relative_base: Arc<OnceLock<Instant>>,
     ready: AtomicBool,
     unmatched_replies: Mutex<Vec<String>>,
+    decoded_observer: OnceLock<DecodedObserver>,
 }
 
 #[derive(Clone)]

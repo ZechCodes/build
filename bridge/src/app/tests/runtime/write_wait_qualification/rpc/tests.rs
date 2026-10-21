@@ -231,3 +231,62 @@ fn saved_created_task(rpc: &RpcHarness, reply: &Value) -> Option<crate::tracker:
         .ok()
         .flatten()
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn actual_rpc_decoded_notification_precedes_owned_proof_tail() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, app, project) = tracked(root.path());
+    let registry = WriteWaitRegistry::new();
+    let mut rpc = RpcHarness::new(app.shared(), registry);
+    let watch = ClientWatch::new(Arc::new(Instant::now));
+    let original = "qual/decoded-credit/write/00000";
+    watch.register_at(original, Instant::now());
+    let guard = watch.watch();
+    let (events, mut decoded) = mpsc::unbounded_channel();
+    watch
+        .observe_decoded_replies(Arc::new(move |id, actual_at| {
+            events.send((id.to_owned(), actual_at)).unwrap();
+        }))
+        .unwrap();
+    rpc.attach_client_watch(watch.clone());
+    watch.offer(original);
+    let (finish, pending) = oneshot::channel::<()>();
+    let (returned, after_reply) = oneshot::channel();
+    // This is a real RPC plus a deliberately pending harness proof-tail owner;
+    // it does not claim that the product itself has a delayed child here.
+    let owned = tokio::spawn(async move {
+        let proof = rpc
+            .request(
+                0,
+                original,
+                "tasks.create",
+                json!({
+                    "project_id":project,"title":"actual decoded credit boundary"
+                }),
+            )
+            .await;
+        returned.send(()).unwrap();
+        pending.await.unwrap();
+        let cleanup = rpc.finish_report().await;
+        (proof, cleanup)
+    });
+    after_reply.await.unwrap();
+    let first = decoded.try_recv();
+    let tail_was_pending = !owned.is_finished();
+    // Complete ownership cleanup before an expected notification RED.
+    finish.send(()).unwrap();
+    let (proof, cleanup) = owned.await.unwrap();
+    let watched = guard.finish();
+    assert_eq!(proof.reply["ok"], true, "{}", proof.reply);
+    assert!(cleanup.is_clean(), "{cleanup:?}");
+    assert!(!watched.panicked);
+    let (observed_id, observed_at) =
+        first.expect("validated decoded RPC final must notify before owned proof tail completion");
+    assert_eq!(observed_id, original);
+    assert_eq!(observed_at, proof.final_reply_at);
+    assert!(tail_was_pending);
+    assert!(
+        decoded.try_recv().is_err(),
+        "one original produces exactly one decoded event"
+    );
+}

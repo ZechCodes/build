@@ -137,7 +137,7 @@ impl RequestWorker {
         };
         self.inner
             .watch
-            .complete_with_outcome(&self.original, outcome);
+            .decoded_final_at(&self.original, outcome, final_reply_at);
         self.inner.update(&self.original, |row| {
             row.final_reply_at = Some(final_reply_at);
             row.actual_wire_id = reply["id"].as_str().map(str::to_owned);

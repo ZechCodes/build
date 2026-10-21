@@ -77,6 +77,16 @@ impl<S: GitCallScope> DeferredGitWork for ScopedGitCall<S> {
         if let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) {
             self.scope.validate(&state.lock().unwrap())?;
         }
+        #[cfg(test)]
+        if self.serialized {
+            if let Some(path) = self.scope.mutation_path() {
+                return crate::test_support::finite_service::run(
+                    path,
+                    crate::test_support::finite_service::ServiceKind::Git,
+                    || (self.work)(&self.scope, params),
+                );
+            }
+        }
         (self.work)(&self.scope, params)
     }
 

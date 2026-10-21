@@ -395,17 +395,36 @@ impl AppState {
         }
 
         self.refuse_writers_while_reserved(&root)?;
-        let current = self.fs_read(params)?;
-        if current.get("editable") != Some(&Value::Bool(true)) {
-            return Err("file is not editable UTF-8 text".to_string());
-        }
-        replace_text(&root, &path, &expected_revision, &replacement)?;
+        #[cfg(test)]
+        crate::test_support::finite_service::run(
+            &root,
+            crate::test_support::finite_service::ServiceKind::Filesystem,
+            || self.replace_editor_text(params, &root, &path, &expected_revision, &replacement),
+        )?;
+        #[cfg(not(test))]
+        self.replace_editor_text(params, &root, &path, &expected_revision, &replacement)?;
         self.invalidate_snapshot_checkout_observations(&root);
         if let FileScope::WorkspaceSource { workspace_id, .. } = &scope {
             self.reopen_workspace(workspace_id)?;
         }
         self.invalidate_file_scope(&scope);
         self.fs_read(params)
+    }
+
+    /// Keep the same fenced read and replacement inside the caller's app guard.
+    fn replace_editor_text(
+        &mut self,
+        params: &Value,
+        root: &std::path::Path,
+        path: &str,
+        expected_revision: &str,
+        replacement: &[u8],
+    ) -> Result<(), String> {
+        let current = self.fs_read(params)?;
+        if current.get("editable") != Some(&Value::Bool(true)) {
+            return Err("file is not editable UTF-8 text".to_string());
+        }
+        replace_text(root, path, expected_revision, replacement)
     }
 
     fn invalidate_file_scope(&mut self, scope: &FileScope) {

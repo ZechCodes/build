@@ -35,12 +35,32 @@ protocol versions; see
 
 - Account → Sign Out clears saved credentials and the desktop session (#615).
 
-## [0.2.13] - Unreleased
+## [0.2.13] - 2026-10-21
 
-Wire 3.21.0.
+Wire 3.24.0.
 
 ### Fixed
 
+- Publish newly opened workspace reviews before notifying clients, and
+  acknowledge review closes only after durable completion.
+- Restore startup and message delivery for capture agents.
+- Load the user's Claude MCP servers and connectors alongside Build's server.
+- Keep slow MCP replies alive for a bounded five-minute wait without resending
+  actions; Pi budgets each queued tool call from dispatch and timeouts advise
+  checking the outcome before retrying.
+- Retain Codex provider-recovery state across restarts, avoid retrying permanent
+  failures, and deliver sanitized failure notices once to the requester and
+  assigned task.
+- Keep quiet-workspace reminders informational and limit reminders for locked
+  workspaces to once a week.
+- Preserve parked projects when their home folder is unavailable, and restore
+  their coordinator and workers when it returns (#533).
+- Fence source change subscriptions against replaced scopes and stale watcher
+  passes, preserving separate cache keys for each source (#550).
+- Close failed WebRTC peers after a replacement client session is established,
+  while retaining peers that recover (#373).
+- Accept repeated Linux ARP-table configuration records so safe LAN discovery
+  is not disabled (#674).
 - Source Git mutations and settings edits serialize with base sync off the app
   mutex. Queued syncs and mutations recheck source location after waiting;
   `project.sync_source` accepts captured `source_path` (`sources.syncBasePath`).
@@ -59,6 +79,20 @@ Wire 3.21.0.
 
 ### Added
 
+- Keep one pinned project coordinator and add source-writing project workers,
+  including retry-safe task assignment without creating a workspace (#532, #533).
+- Open terminal tabs against an explicit original project source, including
+  plain folders; live shells hold that source's location until closed (#531).
+- Load newest-only activity pages with exact whole-run digests, while retaining
+  on-demand access to the full activity (#496).
+- Add per-harness compaction thresholds at device, project and workspace scopes,
+  with conversation overrides and inherited/configured settings kept separate
+  from the policy applied when a session opens (wire 3.22.0, #655, #660).
+- Attach agent-created files to chat replies and agent handoffs, preserving
+  stored copies and ranged reads for larger recordings (wire 3.23.0, #696).
+- Introduce the durable write journal, bounded status and confirmation
+  subscriptions, and authenticated process epochs (wire 3.24.0, #739). No write
+  methods are enabled for acknowledgement/confirmation yet.
 - Waiting-on task orchestration (wire 3.21.0, #558/#562): atomic create and
   scoped dependency tools, bounded reverse reads, saved assignment/retry
   answers and quiet delivery notices. Blocked user assignments preserve
@@ -112,6 +146,15 @@ Wire 3.21.0.
 
 ### Changed
 
+- Use an eight-hour gap to start new task and conversation activity streaks,
+  including silent task edits (#628).
+- Reserve agent task comments for decisions, questions, handoffs and evidenced
+  results; routine progress remains in the board's column and assignee (#620).
+- Serve supported task/history, snapshot and filesystem/Git observation reads
+  independently of the app mutex, using committed snapshots and bounded workers;
+  supported MCP reads also bypass mutation turns (#681).
+- Page MCP task lists in batches of at most 20 with continuation cursors, and
+  assemble compact project work lists without loading the full board (#738).
 - Keep every project visible alphabetically on the Projects face, removing the
   project-level Recent fold and filled block backgrounds while preserving
   workspace Recent and unread counts (#480).
@@ -201,6 +244,11 @@ Wire 3.21.0.
 - Keep long task comments and loaded images in place when ages, references or
   review metadata refresh, and follow new comments when reading at the bottom
   (#410).
+
+### Security
+
+- Update the bridge's Rust CA bundles to remove a compromised root certificate
+  (#753).
 
 ## [0.2.12] - 2026-10-07
 

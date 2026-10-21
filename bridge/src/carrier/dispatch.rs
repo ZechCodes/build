@@ -599,6 +599,10 @@ impl Dispatcher {
         // an ended opening must not so much as open a lane, since the lane
         // would outlive the session whose close already took its lanes away.
         if !sender.session_is_open() {
+            #[cfg(test)]
+            if let Some(origin) = arrived.write_origin() {
+                origin.cancel();
+            }
             return;
         }
         if crate::api::effects::is_observation_read(&frame.payload) {
@@ -1063,6 +1067,8 @@ async fn run_job(handler: &FrameHandler, job: Job) {
         frame,
         queued,
     } = job;
+    #[cfg(test)]
+    let origin = queued.write_origin();
     let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
     #[cfg(test)]
     let observed = handler.clock.request_frame(&frame);
@@ -1071,14 +1077,28 @@ async fn run_job(handler: &FrameHandler, job: Job) {
         .clock
         .mark_request(&frame, "lane_pop", std::time::Instant::now());
     match run_handler(handler, &sender, frame, queued).await {
-        None => {}
+        None =>
+        {
+            #[cfg(test)]
+            if let Some(origin) = &origin {
+                origin.cancel();
+            }
+        }
         Some(Ok(payload)) => {
             #[cfg(test)]
             handler
                 .clock
                 .mark_observed(&observed, "reply_start", std::time::Instant::now());
             #[cfg(test)]
-            sender.push_observed(payload, &handler.clock, &observed, false);
+            let replied = sender.push_observed(payload, &handler.clock, &observed, false);
+            #[cfg(test)]
+            if let Some(origin) = &origin {
+                if replied {
+                    origin.complete();
+                } else {
+                    origin.cancel();
+                }
+            }
             #[cfg(not(test))]
             sender.push(payload);
             #[cfg(test)]
@@ -1088,6 +1108,10 @@ async fn run_job(handler: &FrameHandler, job: Job) {
         }
         Some(Err(_)) => {
             sender.push(json!({ "id": id, "ok": false, "error": "handler failed" }));
+            #[cfg(test)]
+            if let Some(origin) = &origin {
+                origin.cancel();
+            }
         }
     }
 }
@@ -1116,7 +1140,27 @@ async fn run_handler(
     }
     let handler = handler.clone();
     let answering = sender.clone();
-    Some(tokio::task::spawn_blocking(move || handler.run(queued, answering, frame)).await)
+    #[cfg(test)]
+    let origin = queued.write_origin();
+    #[cfg(test)]
+    let child = origin.as_ref().map(|origin| origin.context().child());
+    #[cfg(test)]
+    let pool_wait = origin
+        .as_ref()
+        .map(|origin| origin.wait(crate::timing::write_wait::WaitKind::BlockingPool));
+    Some(
+        tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            drop(pool_wait);
+            let result = handler.run(queued, answering, frame);
+            #[cfg(test)]
+            if let Some(child) = child {
+                child.complete();
+            }
+            result
+        })
+        .await,
+    )
 }
 
 #[cfg(test)]

@@ -1,14 +1,22 @@
 //! Opt-in logical-write qualification, independent of frame completion.
 //!
-//! This first-stage scaffold preserves the intended API so the semantic tests
-//! can fail against missing accounting before implementation. It has no hooks.
+//! Independent active records remain readable while application and collector
+//! mutators are blocked. Completed rows are archived outside the active index.
 use arc_swap::ArcSwap;
 use imbl::OrdMap;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+#[path = "write_wait/deep_test_support.rs"]
+pub(crate) mod deep_test_support;
+mod handles;
+mod intervals;
+pub(crate) mod mutex;
+mod records;
+mod registry;
 #[cfg(test)]
 mod tests;
 
@@ -49,6 +57,8 @@ pub(crate) enum IntervalCategory {
     /// Caller-labelled external-service wall time, including nested waits.
     /// This is reported separately and is not exclusive active I/O time.
     OwnExternal,
+    /// Only the actual finite service effect/padding, excluding outer preflight.
+    FiniteService,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +111,7 @@ pub(crate) struct CompletedInterval {
     pub started: Instant,
     pub ended: Instant,
 }
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CollectorOverhead {
     pub writer_acquisitions: u64,
@@ -109,10 +120,19 @@ pub(crate) struct CollectorOverhead {
     pub max_writer_lock_wait: Duration,
     pub max_writer_mutation_hold: Duration,
 }
-pub(super) struct ActiveWriteCapture(Arc<OrdMap<WriteId, WriteSnapshot>>);
+#[derive(Default)]
+struct OverheadCounters {
+    calls: AtomicU64,
+    wait: AtomicU64,
+    hold: AtomicU64,
+    max_wait: AtomicU64,
+    max_hold: AtomicU64,
+}
+
+pub(super) struct ActiveWriteCapture(Arc<OrdMap<WriteId, Arc<records::Record>>>);
 impl ActiveWriteCapture {
-    pub(super) fn snapshot_at(&self, _now: Instant) -> Vec<WriteSnapshot> {
-        self.0.values().cloned().collect()
+    pub(super) fn snapshot_at(&self, now: Instant) -> Vec<WriteSnapshot> {
+        self.0.values().map(|record| record.snapshot(now)).collect()
     }
 }
 
@@ -120,195 +140,20 @@ pub(crate) struct WriteWaitRegistry {
     clock: Clock,
     next: AtomicU64,
     closing: AtomicU64,
-    // Only mutators use this lock. The independent watchdog must never do so.
-    writer: Mutex<()>,
-    // Only live obligations belong here; completed raw/archive rows stay separate.
-    active: ArcSwap<OrdMap<WriteId, WriteSnapshot>>,
-}
-
-impl WriteWaitRegistry {
-    pub(crate) fn new() -> Arc<Self> {
-        Self::with_clock(Arc::new(Instant::now))
-    }
-
-    pub(crate) fn with_clock(clock: Clock) -> Arc<Self> {
-        Arc::new(Self {
-            clock,
-            next: AtomicU64::new(1),
-            closing: AtomicU64::new(0),
-            writer: Mutex::new(()),
-            active: ArcSwap::from_pointee(OrdMap::new()),
-        })
-    }
-
-    fn next(&self) -> u64 {
-        self.next.fetch_add(1, Ordering::Relaxed)
-    }
-
-    pub(crate) fn begin(
-        self: &Arc<Self>,
-        original_id: impl Into<String>,
-        method: impl Into<String>,
-        intake: Instant,
-    ) -> LogicalWrite {
-        let id = WriteId(self.next());
-        let obligation = ObligationId(self.next());
-        let row = WriteSnapshot {
-            id,
-            original_id: original_id.into(),
-            method: method.into(),
-            cohort: WriteCohort::SemanticWrite,
-            intake,
-            admitted_at: None,
-            acknowledged_at: None,
-            root_finished: false,
-            outstanding: vec![obligation],
-            active: vec![],
-            known_wait_union: Duration::ZERO,
-            sql_service_union: Duration::ZERO,
-            blocked_or_sql_union: Duration::ZERO,
-            conservative_upper: Duration::ZERO,
-            own_external_union: Duration::ZERO,
-            own_external_active: Duration::ZERO,
-            max_chargeable_interval: Duration::ZERO,
-            interval_breached: false,
-            cumulative_breached: false,
-            cancelled: false,
-            abandoned: false,
-        };
-        let _writer = self.writer.lock().unwrap();
-        let mut active = (**self.active.load()).clone();
-        active.insert(id, row);
-        self.active.store(Arc::new(active));
-        LogicalWrite {
-            context: WriteContext {
-                registry: Arc::clone(self),
-                origins: vec![id],
-                obligation,
-            },
-        }
-    }
-
-    pub(crate) fn begin_pending(
-        self: &Arc<Self>,
-        correlation_id: impl Into<String>,
-        intake: Instant,
-    ) -> LogicalWrite {
-        let write = self.begin(correlation_id, "rpc.unclassified", intake);
-        let _writer = self.writer.lock().unwrap();
-        let mut active = (**self.active.load()).clone();
-        let mut row = active.get(&write.id()).unwrap().clone();
-        row.cohort = WriteCohort::PendingIntake;
-        active.insert(write.id(), row);
-        self.active.store(Arc::new(active));
-        write
-    }
-    pub(super) fn capture_active(&self) -> ActiveWriteCapture {
-        ActiveWriteCapture(self.active.load_full())
-    }
-    pub(crate) fn completed_intervals(&self) -> Vec<CompletedInterval> {
-        vec![]
-    }
-    pub(crate) fn collector_overhead(&self) -> CollectorOverhead {
-        CollectorOverhead::default()
-    }
-
-    pub(crate) fn coalesced(self: &Arc<Self>, origins: &[WriteId]) -> Obligation {
-        assert!(!origins.is_empty(), "an obligation needs an original write");
-        Obligation {
-            context: WriteContext {
-                registry: Arc::clone(self),
-                origins: origins.to_vec(),
-                obligation: ObligationId(self.next()),
-            },
-        }
-    }
-
-    /// Scaffold: lifecycle, accounting and archival are implemented after RED.
-    pub(crate) fn snapshot(&self) -> Vec<WriteSnapshot> {
-        self.active_snapshot()
-    }
-
-    /// The watchdog reads only this immutable active index, never the writer lock.
-    pub(crate) fn active_snapshot(&self) -> Vec<WriteSnapshot> {
-        let _now = (self.clock)();
-        self.active.load().values().cloned().collect()
-    }
-
-    pub(crate) fn watchdog(self: &Arc<Self>, period: Duration, sink: WatchSink) -> Watchdog {
-        let registry = Arc::clone(self);
-        let stopped = Arc::new(AtomicBool::new(false));
-        let stop = Arc::clone(&stopped);
-        let thread = std::thread::spawn(move || {
-            while !stop.load(Ordering::Acquire) {
-                for row in registry.active_snapshot() {
-                    if row.breached() {
-                        sink(row);
-                    }
-                }
-                std::thread::park_timeout(period);
-            }
-        });
-        Watchdog {
-            stopped,
-            thread: Some(thread),
-        }
-    }
+    writer: Mutex<records::RegistryState>,
+    active: ArcSwap<OrdMap<WriteId, Arc<records::Record>>>,
+    ever_breached: Arc<AtomicBool>,
+    overhead: OverheadCounters,
 }
 
 pub(crate) struct LogicalWrite {
     context: WriteContext,
+    finished: bool,
 }
-
-impl LogicalWrite {
-    pub(crate) fn id(&self) -> WriteId {
-        self.context.origins[0]
-    }
-    pub(crate) fn context(&self) -> WriteContext {
-        self.context.clone()
-    }
-    pub(crate) fn child(&self) -> Obligation {
-        self.context.child()
-    }
-    pub(crate) fn classify(
-        &self,
-        _original_id: impl Into<String>,
-        _method: impl Into<String>,
-        _cohort: WriteCohort,
-    ) {
-    }
-    pub(crate) fn admitted(&self) {}
-    pub(crate) fn acknowledged(&self) {}
-    pub(crate) fn complete(self) {}
-    pub(crate) fn cancel(self) {}
-}
-impl Drop for LogicalWrite {
-    fn drop(&mut self) {}
-}
-
 pub(crate) struct Obligation {
     context: WriteContext,
+    finished: bool,
 }
-impl Obligation {
-    pub(crate) fn id(&self) -> ObligationId {
-        self.context.obligation
-    }
-    pub(crate) fn context(&self) -> WriteContext {
-        self.context.clone()
-    }
-    pub(crate) fn child(&self) -> Obligation {
-        self.context.child()
-    }
-    pub(crate) fn interval(&self, category: IntervalCategory) -> WaitGuard {
-        self.context.interval(category)
-    }
-    pub(crate) fn complete(self) {}
-    pub(crate) fn cancel(self) {}
-}
-impl Drop for Obligation {
-    fn drop(&mut self) {}
-}
-
 /// Cloneable attribution only. Holding this does not complete or create work.
 #[derive(Clone)]
 pub(crate) struct WriteContext {
@@ -316,84 +161,23 @@ pub(crate) struct WriteContext {
     origins: Vec<WriteId>,
     obligation: ObligationId,
 }
-impl WriteContext {
-    pub(crate) fn original_ids(&self) -> Vec<String> {
-        vec![]
-    }
-    pub(crate) fn origins(&self) -> &[WriteId] {
-        &self.origins
-    }
-    pub(crate) fn child(&self) -> Obligation {
-        self.registry.coalesced(&self.origins)
-    }
-    pub(crate) fn interval(&self, category: IntervalCategory) -> WaitGuard {
-        WaitGuard {
-            id: WaitId(self.registry.next()),
-            category,
-            registry: Arc::clone(&self.registry),
-        }
-    }
-    /// Synchronous scopes only: callers must carry context explicitly across await.
-    pub(crate) fn bind_sync(&self) -> SyncContextGuard {
-        let previous = CURRENT.with(|current| current.replace(Some(self.clone())));
-        SyncContextGuard {
-            previous,
-            not_send: std::marker::PhantomData,
-        }
-    }
-}
-
 pub(crate) struct WaitGuard {
     id: WaitId,
-    category: IntervalCategory,
-    registry: Arc<WriteWaitRegistry>,
+    context: WriteContext,
+    ended: Arc<OnceLock<Instant>>,
 }
-impl WaitGuard {
-    pub(crate) fn id(&self) -> WaitId {
-        self.id
-    }
-}
-impl Drop for WaitGuard {
-    fn drop(&mut self) {
-        let _category = self.category;
-        self.registry.closing.store(self.id.0, Ordering::Release);
-    }
-}
-
 thread_local! { static CURRENT: RefCell<Option<WriteContext>> = const { RefCell::new(None) }; }
 pub(crate) fn current_context() -> Option<WriteContext> {
     CURRENT.with(|current| current.borrow().clone())
 }
 pub(crate) fn current_interval(category: IntervalCategory) -> Option<WaitGuard> {
-    CURRENT.with(|current| {
-        current
-            .borrow()
-            .as_ref()
-            .map(|context| context.interval(category))
-    })
+    current_context().map(|context| context.interval(category))
 }
 pub(crate) struct SyncContextGuard {
     previous: Option<WriteContext>,
     not_send: std::marker::PhantomData<std::rc::Rc<()>>,
 }
-impl Drop for SyncContextGuard {
-    fn drop(&mut self) {
-        CURRENT.with(|current| {
-            current.replace(self.previous.take());
-        });
-    }
-}
-
 pub(crate) struct Watchdog {
     stopped: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
-}
-impl Drop for Watchdog {
-    fn drop(&mut self) {
-        self.stopped.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
-            thread.thread().unpark();
-            thread.join().unwrap();
-        }
-    }
 }

@@ -29,6 +29,8 @@ use crate::logline::Throttle;
 #[cfg(test)]
 pub(crate) mod phase_samples;
 #[cfg(test)]
+pub(crate) mod write_origin;
+#[cfg(test)]
 pub(crate) mod write_wait;
 
 #[cfg(test)]
@@ -251,7 +253,7 @@ impl FrameClock {
     #[cfg(test)]
     pub(crate) fn capture_write_waits(&self) -> Arc<write_wait::WriteWaitRegistry> {
         let registry = write_wait::WriteWaitRegistry::new();
-        *self.write_wait_registry.write().unwrap() = Some(Arc::clone(&registry));
+        self.set_write_wait_registry(Arc::clone(&registry));
         registry
     }
 
@@ -294,6 +296,8 @@ impl FrameClock {
             since: arrived.0,
             counted: true,
             priority,
+            #[cfg(test)]
+            write_origin: arrived.1,
         }
     }
 
@@ -434,6 +438,8 @@ pub struct QueuedFrame {
     since: Instant,
     counted: bool,
     priority: Priority,
+    #[cfg(test)]
+    write_origin: Option<Arc<write_origin::WriteOrigin>>,
 }
 
 impl QueuedFrame {
@@ -447,6 +453,10 @@ impl QueuedFrame {
     /// A worker took the frame. The queue wait ends here and the frame's own
     /// record begins.
     pub fn start(mut self, method: &str) -> FrameTimer {
+        #[cfg(test)]
+        if let Some(origin) = &self.write_origin {
+            origin.execution_started();
+        }
         self.counted = false;
         self.clock
             .queue(self.priority)
@@ -470,6 +480,8 @@ impl QueuedFrame {
             phase_capture: phase_samples::start_frame(&self.clock),
             #[cfg(test)]
             request: None,
+            #[cfg(test)]
+            write_origin: self.write_origin.take(),
         }
     }
 }
@@ -528,16 +540,22 @@ pub struct FrameTimer {
     phase_capture: Option<phase_samples::PhaseSamples>,
     #[cfg(test)]
     request: Option<crate::transport::Frame>,
+    #[cfg(test)]
+    write_origin: Option<Arc<write_origin::WriteOrigin>>,
 }
 
 /// A wait whose endpoint may run on a different thread from its frame.
 /// Stop it at admission, before doing the work, then record that duration on
 /// the frame. Moving this marker into a blocking closure needs no allocation.
-pub(crate) struct WaitTimer(Instant);
+pub(crate) struct WaitTimer(Instant, #[cfg(test)] Option<Arc<write_origin::WriteOrigin>>);
 
 impl WaitTimer {
     pub(crate) fn start() -> Self {
-        Self(Instant::now())
+        Self(
+            Instant::now(),
+            #[cfg(test)]
+            None,
+        )
     }
 
     pub(crate) fn elapsed(self) -> Duration {
@@ -568,7 +586,11 @@ impl FrameTimer {
         #[cfg(test)]
         self.mark_request("app_wait_start");
         let asked_at = Instant::now();
+        #[cfg(test)]
+        let wait = self.write_wait(write_wait::WaitKind::AppLock);
         let guard = state.lock().unwrap();
+        #[cfg(test)]
+        drop(wait);
         #[cfg(test)]
         self.mark_request("app_wait_end");
         #[cfg(test)]
@@ -582,6 +604,8 @@ impl FrameTimer {
             acquired_at: Instant::now(),
             #[cfg(test)]
             phase_sample: phase_samples::LockSample::begin(self),
+            #[cfg(test)]
+            write_binding: self.write_context().map(|context| context.bind_sync()),
         }
     }
 
@@ -636,6 +660,8 @@ pub struct LockedFor<'a, T> {
     acquired_at: Instant,
     #[cfg(test)]
     phase_sample: Option<phase_samples::LockSample>,
+    #[cfg(test)]
+    write_binding: Option<write_wait::SyncContextGuard>,
 }
 
 impl<'a, T> LockedFor<'a, T> {
@@ -697,6 +723,8 @@ impl<T> Drop for LockedFor<'_, T> {
         self.phase_sample.take();
         self.timer.clock.hold_ended();
         self.guard.take();
+        #[cfg(test)]
+        self.write_binding.take();
         #[cfg(test)]
         self.timer.mark_request("app_hold_end");
         self.timer

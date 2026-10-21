@@ -242,3 +242,65 @@ fn unclassified_intake_remains_visible_to_independent_watchdog() {
     assert_eq!(row.intake, case.base);
     assert!(row.breached());
 }
+
+#[test]
+fn finite_service_is_visible_and_accounted_as_exclusive_external_work() {
+    let case = Case::new();
+    let write = case.begin("finite-service");
+    let context = write.context();
+    let outside = lock(&context);
+    case.seconds(1);
+    drop(outside);
+    let service = context.interval(IntervalCategory::FiniteService);
+    case.seconds(2);
+    let nested = lock(&context);
+    case.seconds(2);
+    drop(nested);
+    case.seconds(4);
+    let active = case.row(write.id());
+    assert_eq!(active.active.len(), 1);
+    assert_eq!(active.active[0].id, service.id());
+    assert_eq!(active.active[0].category, IntervalCategory::FiniteService);
+    assert_eq!(active.own_external_union, Duration::from_secs(8));
+    assert_eq!(active.own_external_active, Duration::from_secs(6));
+    assert_eq!(active.conservative_upper, Duration::from_secs(3));
+    assert_eq!(active.max_chargeable_interval, Duration::from_secs(2));
+    assert!(
+        !active.breached(),
+        "finite work is not a known blocked interval"
+    );
+    drop(service);
+    write.complete();
+    let raw = case.registry.completed_intervals();
+    assert_eq!(
+        raw.iter()
+            .filter(|interval| interval.category == IntervalCategory::FiniteService)
+            .count(),
+        1
+    );
+    assert_eq!(
+        case.registry.snapshot()[0].own_external_active,
+        Duration::from_secs(6)
+    );
+}
+
+#[test]
+fn context_registry_identity_cannot_be_inferred_from_colliding_write_ids() {
+    let first = Case::new();
+    let second = Case::new();
+    let one = first.begin("first-registry");
+    let other = second.begin("second-registry");
+    assert_eq!(
+        one.id(),
+        other.id(),
+        "the collision is a positive fixture control"
+    );
+    let context = one.context();
+    assert!(context.same_registry(&context.clone()));
+    assert!(
+        !context.same_registry(&other.context()),
+        "same numeric WriteId must not merge separate registries"
+    );
+    one.complete();
+    other.complete();
+}

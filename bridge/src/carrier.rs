@@ -216,26 +216,23 @@ impl SessionSender {
         clock: &crate::timing::FrameClock,
         observed: &Option<Frame>,
         read_fenced: bool,
-    ) {
+    ) -> bool {
         let Some(frame) = observed else {
             if read_fenced {
                 self.push_read_reply(payload);
-            } else {
-                self.push(payload);
+                return true;
             }
-            return;
+            return self.push(payload);
         };
         let Some(sealed) = self.seal(payload) else {
-            return;
+            return false;
         };
         clock.mark_request(frame, "reply_sealed", std::time::Instant::now());
         if read_fenced {
             let _reply = self.reply_gate.lock().unwrap();
-            if self.read_is_live() {
-                self.send_sealed(sealed);
-            }
+            self.read_is_live() && self.send_sealed(sealed)
         } else {
-            self.send_sealed(sealed);
+            self.send_sealed(sealed)
         }
     }
 
@@ -715,7 +712,15 @@ impl SessionRegistry {
         envelope: &Envelope,
         carrier: &CarrierHandle,
     ) -> Result<(Frame, SessionSender), CarrierError> {
+        #[cfg(test)]
+        let wait = crate::timing::write_wait::current_interval(
+            crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::Admission,
+            ),
+        );
         let mut sessions = self.sessions.lock().unwrap();
+        #[cfg(test)]
+        drop(wait);
         if carrier.released.load(Ordering::SeqCst) {
             return Err(CarrierError::UnknownSession(envelope.session_id.clone()));
         }
@@ -976,11 +981,32 @@ impl FrameIntake {
     ) -> Result<(), CarrierError> {
         let arrived = WaitTimer::start();
         #[cfg(test)]
+        let origin = self
+            .dispatcher
+            .handler()
+            .clock
+            .pending_write(&envelope.session_id, arrived.started_at());
+        #[cfg(test)]
+        let arrived = arrived.with_write_origin(origin.clone());
+        #[cfg(test)]
         self.dispatcher
             .handler()
             .clock
             .mark_intake_received(&envelope.session_id, arrived.started_at());
-        let (frame, sender) = self.registry.admit(&envelope, carrier)?;
+        let (frame, sender) = {
+            #[cfg(test)]
+            let _binding = origin.as_ref().map(|origin| origin.context().bind_sync());
+            self.registry.admit(&envelope, carrier)
+        }?;
+        #[cfg(test)]
+        let arrived = if origin
+            .as_ref()
+            .is_some_and(|origin| !origin.classify(&frame))
+        {
+            arrived.with_write_origin(None)
+        } else {
+            arrived
+        };
         #[cfg(test)]
         {
             let clock = &self.dispatcher.handler().clock;
@@ -990,15 +1016,27 @@ impl FrameIntake {
         if frame.frame_type == transport::CLOSE_FRAME_TYPE {
             crate::rtc::diagnostic(&envelope.session_id, "client_close_frame");
             self.close_ended(self.registry.end(&envelope.session_id));
+            #[cfg(test)]
+            if let Some(origin) = &origin {
+                origin.complete();
+            }
             return Ok(());
         }
         if carrier.kind == CarrierKind::Relay && !is_signaling(&frame) {
             self.refuse_as_not_a_data_plane(&sender, &frame);
+            #[cfg(test)]
+            if let Some(origin) = &origin {
+                origin.complete();
+            }
             return Ok(());
         }
         if let Some(pong) = pong_for(&frame) {
             sender.push(pong);
             self.registry.ledger.pinged(&envelope.session_id);
+            #[cfg(test)]
+            if let Some(origin) = &origin {
+                origin.complete();
+            }
             return Ok(());
         }
         // The receipt goes out the moment the frame is admitted, before
@@ -1014,11 +1052,19 @@ impl FrameIntake {
         );
         if frame.payload["method"] == "bridge.stats" {
             self.answer_stats(sender, frame, arrived);
+            #[cfg(test)]
+            if let Some(origin) = &origin {
+                origin.complete();
+            }
             return Ok(());
         }
         let arrived = match self.dispatcher.handler().snapshot_since(&frame, arrived) {
             Ok(answer) => {
                 sender.push_read_reply(answer);
+                #[cfg(test)]
+                if let Some(origin) = &origin {
+                    origin.complete();
+                }
                 return Ok(());
             }
             Err(arrived) => arrived,
@@ -1081,12 +1127,27 @@ impl FrameIntake {
             arrived,
         }) {
             Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(Admitted { sender, frame, .. })) => {
+            Err(mpsc::error::TrySendError::Full(Admitted {
+                sender,
+                frame,
+                arrived,
+            })) => {
                 self.refuse_as_behind(&sender, &frame);
+                #[cfg(test)]
+                if let Some(origin) = arrived.write_origin() {
+                    origin.cancel();
+                }
+                #[cfg(not(test))]
+                drop(arrived);
             }
             // The wire closed under the frame: its session's end is the
             // registry's to report, and nobody is left to answer.
-            Err(mpsc::error::TrySendError::Closed(_)) => {}
+            Err(mpsc::error::TrySendError::Closed(_rejected)) => {
+                #[cfg(test)]
+                if let Some(origin) = _rejected.arrived.write_origin() {
+                    origin.cancel();
+                }
+            }
         }
     }
 
@@ -1143,17 +1204,37 @@ impl FrameIntake {
     /// has to go on reading, not least so the parts of the NEXT upload arrive.
     fn answer_without_queueing(&self, sender: SessionSender, frame: Frame, arrived: WaitTimer) {
         let handler = self.dispatcher.handler();
+        #[cfg(test)]
+        let origin = arrived.write_origin();
+        #[cfg(test)]
+        let pool_wait = origin
+            .as_ref()
+            .map(|origin| origin.wait(crate::timing::write_wait::WaitKind::BlockingPool));
         tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            drop(pool_wait);
             // The rule the dispatcher keeps for every queued frame
             // (`dispatch::run_handler`), kept for the frames that skip its
             // queues: nothing runs for a session after its close. An offer
             // that ran for an ended opening would register a peer nobody
             // will ever close.
             if !sender.session_is_open() {
+                #[cfg(test)]
+                if let Some(origin) = origin {
+                    origin.cancel();
+                }
                 return;
             }
             let answer = handler.call_since(sender.clone(), frame, arrived);
-            sender.push(answer);
+            let _replied = sender.push(answer);
+            #[cfg(test)]
+            if let Some(origin) = origin {
+                if _replied {
+                    origin.complete();
+                } else {
+                    origin.cancel();
+                }
+            }
         });
     }
 
@@ -1264,6 +1345,10 @@ async fn admit_in_order(mut admitted: mpsc::Receiver<Admitted>, dispatcher: Arc<
         // lane, and a lane opened for a session that is gone is a lane
         // nothing ever closes.
         if !sender.session_is_open() {
+            #[cfg(test)]
+            if let Some(origin) = arrived.write_origin() {
+                origin.cancel();
+            }
             continue;
         }
         dispatcher.dispatch_since(sender, frame, arrived).await;

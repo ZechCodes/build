@@ -108,9 +108,22 @@ impl ControlPlane {
 
     /// Route exact supported reads independently; other frames take a writer
     /// turn. The arrival timer includes permit, pool and app-lock waits.
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     async fn answer(self: &Arc<Self>, state: Arc<Mutex<AppState>>, frame: Value) -> Option<Value> {
-        let timer = self.clock.frame(MCP_CONTROL_METHOD);
+        self.answer_since(state, frame, WaitTimer::start()).await
+    }
+
+    #[cfg(unix)]
+    async fn answer_since(
+        self: &Arc<Self>,
+        state: Arc<Mutex<AppState>>,
+        frame: Value,
+        arrived: WaitTimer,
+    ) -> Option<Value> {
+        let timer = self
+            .clock
+            .queued_since(crate::timing::Priority::Foreground, arrived)
+            .start(MCP_CONTROL_METHOD);
         if let Some(action) = read_lane::action(&frame) {
             return Some(read_lane::answer(Arc::clone(&self.reads), frame, action, timer).await);
         }
@@ -164,11 +177,15 @@ impl Turn {
 
     async fn take_again(&mut self, timer: &FrameTimer) {
         let waiting = WaitTimer::start();
+        #[cfg(test)]
+        let logical_wait = timer.write_wait(crate::timing::write_wait::WaitKind::Permit);
         let permit = Arc::clone(&self.plane.turns)
             .acquire_owned()
             .await
             .expect("the control plane's turns are never closed");
         timer.record_permit_wait(waiting.elapsed());
+        #[cfg(test)]
+        drop(logical_wait);
         #[cfg(test)]
         {
             use std::sync::atomic::Ordering::SeqCst;
@@ -304,13 +321,40 @@ pub(in crate::app) async fn handle_done_stream(
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = tokio::io::BufReader::new(read_half).lines();
     while let Ok(Some(line)) = lines.next_line().await {
+        let arrived = WaitTimer::start();
         let Ok(frame) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        if let Some(response) = plane.answer(Arc::clone(&state), frame).await {
-            let _ = write_half.write_all(response.to_string().as_bytes()).await;
-            let _ = write_half.write_all(b"\n").await;
-            let _ = write_half.flush().await;
+        #[cfg(test)]
+        let origin = (!is_independent_read(&frame))
+            .then(|| plane.clock.mcp_write(&frame, arrived.started_at()))
+            .flatten();
+        #[cfg(test)]
+        let arrived = arrived.with_write_origin(origin.clone());
+        let response = plane.answer_since(Arc::clone(&state), frame, arrived).await;
+        #[cfg(test)]
+        let response_expected = response.is_some();
+        #[cfg(test)]
+        let mut reply_sent = true;
+        if let Some(response) = response {
+            let _content_written = write_half.write_all(response.to_string().as_bytes()).await;
+            let _newline_written = write_half.write_all(b"\n").await;
+            let _flushed = write_half.flush().await;
+            #[cfg(test)]
+            {
+                reply_sent =
+                    _content_written.is_ok() && _newline_written.is_ok() && _flushed.is_ok();
+            }
+        }
+        #[cfg(test)]
+        if let Some(origin) = origin {
+            if !reply_sent {
+                origin.cancel();
+            } else if response_expected {
+                origin.complete();
+            } else {
+                origin.settled();
+            }
         }
     }
 }
@@ -329,11 +373,22 @@ async fn answer_off_the_workers(
 ) -> Option<Value> {
     let runtime = tokio::runtime::Handle::current();
     let waiting = WaitTimer::start();
+    #[cfg(test)]
+    let child = timer.write_context().map(|context| context.child());
+    #[cfg(test)]
+    let pool_wait = timer.write_wait(crate::timing::write_wait::WaitKind::BlockingPool);
     off_the_workers(move || {
+        #[cfg(test)]
+        drop(pool_wait);
         timer.record_pool_wait(waiting.elapsed());
-        runtime.block_on(handle_authenticated_mcp_frame(
+        let response = runtime.block_on(handle_authenticated_mcp_frame(
             &state, &frame, &timer, &mut turn,
-        ))
+        ));
+        #[cfg(test)]
+        if let Some(child) = child {
+            child.complete();
+        }
+        response
     })
     .await
 }

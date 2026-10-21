@@ -23,6 +23,7 @@ pub(in super::super) struct ControlBackend {
     probe: Arc<probe::Probe>,
     watch: ClientWatch,
     registry: Arc<crate::timing::write_wait::WriteWaitRegistry>,
+    completed: Arc<completed_origins::CompletedOrigins>,
     frames: Arc<archive::FrameArchive>,
     sink: Arc<dyn ArtifactSink>,
     archive: Arc<Mutex<receipt_archive::Pump>>,
@@ -44,6 +45,21 @@ impl ControlBackend {
                 retained: prepared,
             });
         }
+        let completed = match completed_origins::CompletedOrigins::new(
+            prepared
+                .plan
+                .iter()
+                .filter(|slot| slot.traffic == Traffic::Write)
+                .map(|slot| (slot.original_id.clone(), recipe_for(&prepared, slot).method)),
+        ) {
+            Ok(completed) => completed,
+            Err(reason) => {
+                return Err(PreparationFailure {
+                    reason,
+                    retained: prepared,
+                })
+            }
+        };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let watch = prepared
                 .watch
@@ -63,9 +79,13 @@ impl ControlBackend {
                 retained: prepared,
             });
         }
-        Ok(Self::from_attached(prepared, sink))
+        Ok(Self::from_attached(prepared, sink, completed))
     }
-    fn from_attached(prepared: PreparedBackend, sink: Arc<dyn ArtifactSink>) -> Self {
+    fn from_attached(
+        prepared: PreparedBackend,
+        sink: Arc<dyn ArtifactSink>,
+        completed: Arc<completed_origins::CompletedOrigins>,
+    ) -> Self {
         let registry = Arc::clone(&prepared.fixture.as_ref().unwrap().registry);
         let mut provenance = prepared.provenance.clone();
         provenance.fixture_counts = serde_json::json!({
@@ -92,6 +112,7 @@ impl ControlBackend {
             frames: Arc::clone(&prepared.frames),
             archive: Arc::new(Mutex::new(receipt_archive::Pump::new(
                 &registry,
+                Arc::clone(&completed),
                 prepared
                     .plan
                     .iter()
@@ -100,6 +121,7 @@ impl ControlBackend {
                     .collect(),
             ))),
             registry,
+            completed,
             resources: Arc::new(RwLock::new(Some(prepared))),
             sink,
             observation: Arc::new(Mutex::new(None)),

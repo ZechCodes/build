@@ -7,17 +7,13 @@ use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
 pub(super) fn persist(
-    prepared: &PreparedBackend,
+    prepared: &mut PreparedBackend,
+    registry: &crate::timing::write_wait::WriteWaitRegistry,
     rows: &[WriteSnapshot],
     intervals: &[CompletedInterval],
     sink: &dyn ArtifactSink,
 ) -> Result<(), String> {
     let anchor = Instant::now();
-    let registry = &prepared
-        .fixture
-        .as_ref()
-        .ok_or("native final archive lost fixture")?
-        .registry;
     let mut counts = BTreeMap::<String, usize>::new();
     for row in rows {
         *counts
@@ -25,10 +21,10 @@ pub(super) fn persist(
             .or_default() += 1;
     }
     let overhead = registry.collector_overhead();
-    sink.registry_archive(prepared.name, &json!({
+    let record = json!({
         "schema":"build.native-registry-final.v1", "qualification":false,
         "clock":"signed microseconds relative to this final export's single Instant anchor",
-        "scope":"all native rows at pre-cleanup required drain, including prior bootstrap, four explicit producer ticks, autonomous service work and optional notices",
+        "scope":"all native rows after actual native cleanup attempt, including prior bootstrap, four explicit producer ticks, autonomous service work and optional notices",
         "planned_client_originals":prepared.plan.iter().map(|slot| &slot.original_id).collect::<Vec<_>>(),
         "cohort_method_counts":counts,
         "rows":rows.iter().map(|row| native_row(row, anchor)).collect::<Vec<_>>(),
@@ -38,7 +34,13 @@ pub(super) fn persist(
             "writer_lock_wait_us":us(overhead.writer_lock_wait),"writer_mutation_hold_us":us(overhead.writer_mutation_hold),
             "max_writer_lock_wait_us":us(overhead.max_writer_lock_wait),"max_writer_mutation_hold_us":us(overhead.max_writer_mutation_hold)
         }
-    }))
+    });
+    let result = sink.registry_archive(prepared.name, &record);
+    if result.is_err() {
+        // Keep the exact full export even when persistence rejects it.
+        prepared.native_archive = Some(record);
+    }
+    result
 }
 fn native_row(row: &WriteSnapshot, anchor: Instant) -> Value {
     json!({

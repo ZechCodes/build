@@ -8,6 +8,7 @@ struct CloseJob {
     closed: Arc<AtomicBool>,
     errors: Arc<Mutex<Vec<String>>>,
     archive: Arc<Mutex<receipt_archive::Pump>>,
+    registry: Arc<crate::timing::write_wait::WriteWaitRegistry>,
     observation: Option<Observation>,
     sink: Arc<dyn ArtifactSink>,
 }
@@ -21,6 +22,7 @@ impl ControlBackend {
             closed: Arc::clone(&self.closed),
             errors: Arc::clone(&self.close_error),
             archive: Arc::clone(&self.archive),
+            registry: Arc::clone(&self.registry),
             observation: self.observation.lock().unwrap().clone(),
             sink: Arc::clone(&self.sink),
         };
@@ -60,19 +62,21 @@ impl CloseJob {
             self.archive_transport(prepared, None, false);
             return;
         }
-        self.final_archive(prepared);
         let owner = release_app_owners(prepared);
         // Retain the actual joined report even if archive/reconciliation panics.
         // WatchOwner contains no AppState owner and cannot defer native close.
         prepared.lifecycle = owner.clone();
         let native_joined = self.close_native(prepared).await;
+        // One final export after cleanup includes native completions that
+        // arrived after their original proof waiter returned.
+        self.final_archive(prepared);
         let report = if let Some(owner) = &owner {
             self.finish_watch(owner).await
         } else {
             None
         };
         let persisted = self.archive_transport(prepared, report.as_deref(), native_joined);
-        if report.is_none() || !persisted {
+        if report.is_none() || !persisted || prepared.native_archive.is_some() {
             prepared.lifecycle = owner;
             return;
         }
@@ -138,7 +142,7 @@ impl CloseJob {
         }
         result.persisted
     }
-    fn final_archive(&self, prepared: &PreparedBackend) {
+    fn final_archive(&self, prepared: &mut PreparedBackend) {
         let Some(observe) = &self.observation else {
             self.error("actual control observation missing at cleanup");
             return;
@@ -146,11 +150,11 @@ impl CloseJob {
         if let Err(error) = prepared.frames.drain_into(observe) {
             self.error(error);
         }
-        if let Err(error) = self
-            .archive
-            .lock()
-            .unwrap()
-            .finish(prepared, observe, &*self.sink)
+        if let Err(error) =
+            self.archive
+                .lock()
+                .unwrap()
+                .finish(prepared, &self.registry, observe, &*self.sink)
         {
             self.error(error);
         }
@@ -201,7 +205,8 @@ fn release_app_owners(prepared: &mut PreparedBackend) -> Option<Arc<watch_owner:
     prepared.probe.take();
     prepared.mcp.take();
     prepared.producers.take();
-    prepared.services.take();
+    // FixtureServices owns only exact-root test registrations and samples,
+    // not AppState. Retain it through the final post-cleanup native export.
     prepared.reads.take();
     prepared.terminal.take();
     owner

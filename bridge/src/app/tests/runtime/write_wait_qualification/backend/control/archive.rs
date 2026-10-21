@@ -7,6 +7,8 @@ use crate::timing::write_wait::{WriteCohort, WriteSnapshot, WriteWaitRegistry};
 use std::collections::BTreeSet;
 
 pub(super) struct Pump {
+    completed: Arc<completed_origins::CompletedOrigins>,
+    errors: BTreeSet<String>,
     snapshots: CompletedSnapshotsCursor,
     intervals: CompletedIntervalsCursor,
     imported: BTreeSet<String>,
@@ -17,8 +19,14 @@ pub(super) struct Pump {
     finalized: bool,
 }
 impl Pump {
-    pub fn new(registry: &Arc<WriteWaitRegistry>, intended: BTreeSet<String>) -> Self {
+    pub fn new(
+        registry: &Arc<WriteWaitRegistry>,
+        completed: Arc<completed_origins::CompletedOrigins>,
+        intended: BTreeSet<String>,
+    ) -> Self {
         Self {
+            completed,
+            errors: BTreeSet::new(),
             snapshots: registry.completed_snapshots_cursor(),
             intervals: registry.completed_intervals_cursor(),
             imported: BTreeSet::new(),
@@ -34,7 +42,17 @@ impl Pump {
         registry: &WriteWaitRegistry,
         observe: &Observation,
     ) -> Result<(), String> {
-        self.batch(registry, observe).map(|_| ())
+        if let Err(error) = self.batch(registry, observe) {
+            self.errors.insert(error);
+        }
+        self.result()
+    }
+    fn result(&self) -> Result<(), String> {
+        if self.errors.is_empty() {
+            Ok(())
+        } else {
+            Err(self.errors.iter().cloned().collect::<Vec<_>>().join("; "))
+        }
     }
     fn batch(
         &mut self,
@@ -55,8 +73,16 @@ impl Pump {
                 self.imported.insert(row.original_id.clone());
                 // Exact immutable identity set; no prefix filtering/classification.
                 if self.intended.contains(&row.original_id) {
-                    self.import_stages(&row, observe)?;
+                    if let Err(error) = self.import_stages(&row, observe) {
+                        self.errors.insert(error);
+                    }
                 }
+            }
+            // The cursor advanced over this entire batch. Process every row,
+            // even after a prior import error, and validate cohort before any
+            // proof credit. Publish after stages so waiters see real milestones.
+            if let Err(error) = self.completed.import(&row) {
+                self.errors.insert(error);
             }
         }
         let intervals = registry
@@ -79,7 +105,9 @@ impl Pump {
         ] {
             if let Some(at) = at {
                 if self.stages.insert((row.original_id.clone(), stage)) {
-                    observe.stage(&row.original_id, stage, at)?;
+                    if let Err(error) = observe.stage(&row.original_id, stage, at) {
+                        self.errors.insert(error);
+                    }
                 }
             }
         }
@@ -102,23 +130,23 @@ impl Pump {
     }
     pub fn finish(
         &mut self,
-        prepared: &PreparedBackend,
+        prepared: &mut PreparedBackend,
+        registry: &WriteWaitRegistry,
         observe: &Observation,
         sink: &dyn ArtifactSink,
     ) -> Result<(), String> {
         if self.finalized {
             return Ok(());
         }
-        let registry = &prepared
-            .fixture
-            .as_ref()
-            .ok_or("owned fixture missing at final archive")?
-            .registry;
         let cursor_result = self.catch_up(registry, observe);
         self.finalized = true;
         let rows = registry.snapshot(); // Exactly once at final actual drain.
         let intervals = registry.completed_intervals();
-        super::super::native_archive::persist(prepared, &rows, &intervals, sink)?;
+        if let Err(error) =
+            super::super::native_archive::persist(prepared, registry, &rows, &intervals, sink)
+        {
+            self.errors.insert(error);
+        }
         let intended = prepared
             .plan
             .iter()
@@ -129,27 +157,35 @@ impl Pump {
             .iter()
             .filter(|row| intended.contains(&row.original_id))
         {
-            self.import_stages(row, observe)?;
+            if let Err(error) = self.import_stages(row, observe) {
+                self.errors.insert(error);
+            }
         }
-        archive_final_rows(&rows, &intended, observe)?;
-        archive_final_services(
-            &rows,
-            &intervals,
-            prepared
-                .services
-                .as_ref()
-                .ok_or("actual finite services missing")?,
-            observe,
-        )?;
-        cursor_result?;
+        if let Err(error) = archive_final_rows(&rows, &intended, observe) {
+            self.errors.insert(error);
+        }
+        match prepared.services.as_ref() {
+            Some(services) => {
+                if let Err(error) = archive_final_services(&rows, &intervals, services, observe) {
+                    self.errors.insert(error);
+                }
+            }
+            None => {
+                self.errors.insert("actual finite services missing".into());
+            }
+        }
+        if let Err(error) = cursor_result {
+            self.errors.insert(error);
+        }
+        self.errors.extend(self.completed.audit());
         let finite_missing = intervals
             .iter()
             .filter(|interval| interval.category == IntervalCategory::FiniteService)
             .any(|interval| !self.actual_finite_ids.contains(&interval.id));
         if intended.iter().any(|id| !self.imported.contains(id)) || finite_missing {
-            return Err(format!("actual work drained but incremental completion proof RED: {} of{} intended roots observed via real cursor; {} actual interval rows", intended.iter().filter(|id| self.imported.contains(*id)).count(), intended.len(), self.actual_interval_rows));
+            self.errors.insert(format!("actual work drained but incremental completion proof RED: {} of{} intended roots observed via real cursor; {} actual interval rows", intended.iter().filter(|id| self.imported.contains(*id)).count(), intended.len(), self.actual_interval_rows));
         }
-        Ok(())
+        self.result()
     }
 }
 

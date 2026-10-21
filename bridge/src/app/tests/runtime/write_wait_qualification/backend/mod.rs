@@ -58,6 +58,7 @@ pub(super) struct PreparedBackend {
     full_plan: Vec<Slot>,
     // One final failed export only; not a second lifecycle ledger.
     transport_archive: Option<serde_json::Value>,
+    native_archive: Option<serde_json::Value>,
     mcp_shutdown: Option<super::mcp_adapter::McpShutdownReport>,
     catalog: ReadCatalog,
     common: BTreeMap<String, CommonRequest>,
@@ -118,6 +119,7 @@ impl PreparedBackend {
             plan: Vec::new(),
             full_plan: Vec::new(),
             transport_archive: None,
+            native_archive: None,
             mcp_shutdown: None,
             catalog: ReadCatalog {
                 rpc: Vec::new(),

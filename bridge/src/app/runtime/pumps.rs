@@ -171,6 +171,8 @@ impl StatusPump {
             let retry_deferred = usage_limit_moved
                 || !matches!(snapshot.status, AgentStatus::Working)
                     && something_waits_for_the_turn(&mut app, owner, &instance.agent_id);
+            #[cfg(test)]
+            status_publication_probe::before_final_publication();
             if refresh_metadata {
                 let _ownership = app.begin_snapshot_ownership();
                 app.publish_owner_snapshot_projection(owner);

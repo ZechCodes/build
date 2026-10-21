@@ -11,6 +11,7 @@ struct CloseJob {
     registry: Arc<crate::timing::write_wait::WriteWaitRegistry>,
     observation: Option<Observation>,
     sink: Arc<dyn ArtifactSink>,
+    saved_evidence: Arc<saved_evidence::SavedEvidence>,
 }
 impl ControlBackend {
     pub(super) fn start_close(&self) {
@@ -25,6 +26,7 @@ impl ControlBackend {
             registry: Arc::clone(&self.registry),
             observation: self.observation.lock().unwrap().clone(),
             sink: Arc::clone(&self.sink),
+            saved_evidence: Arc::clone(&self.saved_evidence),
         };
         *self.cleanup_task.lock().unwrap() = Some(tokio::spawn(job.run()));
     }
@@ -70,13 +72,25 @@ impl CloseJob {
         // One final export after cleanup includes native completions that
         // arrived after their original proof waiter returned.
         self.final_archive(prepared);
+        let accepted =
+            self.saved_evidence
+                .archive
+                .finish(prepared.name, &*self.sink, native_joined);
+        for error in accepted.errors {
+            self.error(error);
+        }
+
         let report = if let Some(owner) = &owner {
             self.finish_watch(owner).await
         } else {
             None
         };
         let persisted = self.archive_transport(prepared, report.as_deref(), native_joined);
-        if report.is_none() || !persisted || prepared.native_archive.is_some() {
+        if report.is_none()
+            || !persisted
+            || !accepted.persisted
+            || prepared.native_archive.is_some()
+        {
             prepared.lifecycle = owner;
             return;
         }

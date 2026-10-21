@@ -69,3 +69,6 @@ fn assertion(field: &str, value: WitnessScalar) -> OracleAssertion {
         expected: value,
     }
 }
+
+#[path = "common_requests/accepted.rs"]
+mod accepted;

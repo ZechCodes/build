@@ -209,6 +209,7 @@ fn final_export_metadata(plan: Vec<Slot>, root: &std::path::Path) -> PreparedBac
             router_only_mcp: BTreeSet::new(),
         },
         common: BTreeMap::new(),
+        saved_evidence: None,
         targets: None,
         reads: None,
         rpc_cases: Vec::new(),

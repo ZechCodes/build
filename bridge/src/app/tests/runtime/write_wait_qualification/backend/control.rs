@@ -24,6 +24,7 @@ pub(in super::super) struct ControlBackend {
     watch: ClientWatch,
     registry: Arc<crate::timing::write_wait::WriteWaitRegistry>,
     completed: Arc<completed_origins::CompletedOrigins>,
+    saved_evidence: Arc<saved_evidence::SavedEvidence>,
     frames: Arc<archive::FrameArchive>,
     sink: Arc<dyn ArtifactSink>,
     archive: Arc<Mutex<receipt_archive::Pump>>,
@@ -98,6 +99,12 @@ impl ControlBackend {
             .map(|slot| (slot.original_id.clone(), recipe_for(&prepared, slot)))
             .collect();
         Self {
+            saved_evidence: Arc::clone(
+                prepared
+                    .saved_evidence
+                    .as_ref()
+                    .expect("actual saved evidence setup"),
+            ),
             provenance,
             catalog: prepared.catalog.clone(),
             slots: prepared

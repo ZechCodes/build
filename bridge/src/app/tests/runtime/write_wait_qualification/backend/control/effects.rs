@@ -11,44 +11,101 @@ impl ControlBackend {
         recipe: &Recipe,
         observe: &Observation,
     ) -> Result<ControlExecution, String> {
-        let reply = prepared.dispatch_write(slot, observe).await?;
-        if reply.reply["ok"] != true || !reply.reply["error"].is_null() {
-            return Err(format!(
-                "actual control write returned error: {}",
-                reply.reply
-            ));
-        }
+        let result = self
+            .prove_common_write(prepared, slot, recipe, observe)
+            .await;
+        self.saved_evidence.archive.outcome(
+            &slot.original_id,
+            result.as_ref().map(|_| ()).map_err(Clone::clone),
+        );
+        result
+    }
+    async fn prove_common_write(
+        &self,
+        prepared: &PreparedBackend,
+        slot: &Slot,
+        recipe: &Recipe,
+        observe: &Observation,
+    ) -> Result<ControlExecution, String> {
         let request = prepared
             .common
             .get(&slot.original_id)
             .ok_or("actual common request missing")?;
-        let saved = actual_finite_saved(&request.effect).await?;
-        let response_evidence = if let Some(saved) = saved {
-            Some(verify_and_summarize_response(
-                prepared.name,
-                &slot.original_id,
-                &recipe.method,
-                &reply.reply,
-                |decoded| request.verify_saved(decoded, saved),
-                &*self.sink,
-            )?)
-        } else {
-            self.sink.raw_response(
-                prepared.name,
-                &slot.original_id,
-                &recipe.method,
-                true,
-                &reply.reply,
-            )?;
-            None
+        let started_ms = wall_ms()?;
+        let dispatched = prepared.dispatch_write(slot).await;
+        let decoded_ms = wall_ms();
+        let endpoints = match &dispatched {
+            Ok(reply) => super::super::transport::record_reply(slot, reply, observe),
+            Err(error) => Err(error.clone()),
         };
-        let verified = response_evidence.is_some();
-        if verified {
-            observe.stage(&slot.original_id, Stage::EffectVerified, Instant::now())?;
+        // Existing immutable intended+5s bound; no new deadline at wait time.
+        let deadline = tokio::time::Instant::from_std(
+            *self.start.get().ok_or("actual control start missing")?
+                + std::time::Duration::from_micros(slot.due_us)
+                + std::time::Duration::from_secs(5),
+        );
+        let completion = match &dispatched {
+            Ok(_) => self.completed.wait(&slot.original_id, deadline).await,
+            Err(error) => Err(format!(
+                "actual dispatch failed before completion proof: {error}"
+            )),
+        };
+        // Retain the whole vector even after failed dispatch/completion. Later
+        // arrivals remain in the same collector for the final native-quiet audit.
+        let records = self.saved_evidence.archive.take(request);
+        let reply = dispatched?;
+        let witness = async {
+            endpoints?;
+            let completion = completion.as_ref().map_err(Clone::clone)?;
+            let records = records.as_ref().map_err(Clone::clone)?;
+            super::super::saved_effects::check_original_complete(request, &reply, completion)?;
+            if let Some(saved) = actual_finite_saved(&request.effect).await? {
+                request.verify_saved(&reply.reply, saved)
+            } else {
+                self.saved_evidence
+                    .verify(
+                        request,
+                        &reply,
+                        super::super::saved_effects::InvocationWindow {
+                            started_ms,
+                            decoded_ms: decoded_ms?,
+                        },
+                        completion,
+                        records,
+                    )
+                    .await
+            }
         }
-        Ok(ControlExecution::ProofGap(ControlProofGap {
-            original_id: slot.original_id.clone(), method: recipe.method.clone(), actual_effect_verified: verified, response_evidence,
-            detail: if verified { "actual finite effect verified; incremental original-specific completion proof pending test-first cursor release" } else { "actual positive decoded write; exact accepted/saved message/state witness integration missing, no success proof invented" }.into(),
+        .await;
+        // The ordinary response reducer still archives every decoded failure;
+        // none of the async native checks substitutes a reply-success oracle.
+        let evidence = verify_and_summarize_response(
+            prepared.name,
+            &slot.original_id,
+            &recipe.method,
+            &reply.reply,
+            |_| witness,
+            &*self.sink,
+        )?;
+        let completion = completion?;
+        observe.stage(&slot.original_id, Stage::EffectVerified, Instant::now())?;
+        let effect = EffectProof {
+            boundary: "actual-native-original-saved-and-completed".into(),
+            witness: evidence.oracle_witness.clone(),
+            checked_at_us: observe.now_us(),
+        };
+        Ok(ControlExecution::Verified(ExecutionProof {
+            original_id: slot.original_id.clone(),
+            method: recipe.method.clone(),
+            durable_operation_id: reply.reply["result"]["operation_id"]
+                .as_str()
+                .map(str::to_owned),
+            response_evidence: evidence,
+            effect: Some(effect),
+            read_cohort: None,
+            registry_root: Some(format!("{:?}", completion.write_id())),
+            // Only the closed token after exact original/method validation sets this.
+            mandatory_children_complete: true,
         }))
     }
     pub(super) async fn read_actual(
@@ -192,4 +249,14 @@ fn actual_proof(
         registry_root: None,
         mandatory_children_complete: true,
     }
+}
+
+fn wall_ms() -> Result<i64, String> {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_millis(),
+    )
+    .map_err(|error| error.to_string())
 }

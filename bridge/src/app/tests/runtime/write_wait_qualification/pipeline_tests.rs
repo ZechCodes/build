@@ -169,6 +169,7 @@ async fn two_second_native_pipeline_preserves_every_offered_original_and_cleans_
     // This is intentionally NOT should_panic and does NOT assert false as a
     // passing result. Missing real accepted/saved/incremental proof remains RED
     // only after every actual original and native cleanup prerequisite passed.
+    assertions::assert_all_native_write_proofs(&rows, &run.report);
     assert!(
         run.report.pipeline_succeeded,
         "INTENDED PROOF RED after actual 312/80/200/32 transport and clean drain: missing_proofs={}; artifacts={}",

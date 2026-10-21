@@ -144,16 +144,17 @@ fn presence(
                 decoded_final_ms,
             },
         ) => {
-            let replied = result["user_session"]["last_activity_ms"]
-                .as_i64()
+            let replied_session: crate::session_summary::UserSession =
+                serde_json::from_value(result["user_session"].clone())
+                    .map_err(|error| format!("actual presence reply session invalid: {error}"))?;
+            let replied = replied_session
+                .last_activity_ms
                 .ok_or("actual presence reply lacks activity time")?;
             ensure(
                 invocation_start_ms <= replied
                     && replied <= decoded_final_ms
-                    && persisted
-                        .last_activity_ms
-                        .is_some_and(|saved| saved >= replied),
-                "actual presence activity is not inside invocation or persisted summary lost it",
+                    && persisted == replied_session,
+                "actual presence session differs in an original field or falls outside invocation",
             )?;
             fields.push(assertion(
                 "replied_activity_ms",

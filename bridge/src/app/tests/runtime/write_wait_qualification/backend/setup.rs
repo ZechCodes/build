@@ -18,6 +18,14 @@ impl PreparedBackend {
         }
         self.prepare_support().await?;
         self.wait_bootstrap_terminal().await?;
+        self.saved_evidence = Some(saved_evidence::SavedEvidence::capture(
+            self.fixture.as_ref().ok_or("fixture ownership missing")?,
+            self.plan
+                .iter()
+                .filter(|slot| slot.traffic == super::super::trial_complete::Traffic::Write)
+                .map(|slot| slot.original_id.clone())
+                .collect(),
+        )?);
         self.prepare_collectors()?;
         Ok(())
     }

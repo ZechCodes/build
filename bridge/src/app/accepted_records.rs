@@ -127,6 +127,13 @@ impl AcceptedRecords {
             .unwrap_or_default()
     }
 
+    /// Final native-quiet audit only. Preserve unknown and late originals too.
+    pub(crate) fn take_all(&self) -> BTreeMap<String, Vec<AcceptedRecord>> {
+        // TESTFIRST: the native final-audit control must observe missing late
+        // and unknown rows before the final-only drain is implemented.
+        BTreeMap::new()
+    }
+
     fn record(&self, record: AcceptedRecord) {
         let originals = match &record {
             AcceptedRecord::Agent(witness) => &witness.original_ids,

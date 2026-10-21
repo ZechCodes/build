@@ -17,11 +17,7 @@ pub(super) struct NativeReadReply {
     pub native_outcome: NativeReadOutcome,
 }
 impl PreparedBackend {
-    pub async fn dispatch_write(
-        &self,
-        slot: &Slot,
-        observe: &Observation,
-    ) -> Result<ReplyProof, String> {
+    pub async fn dispatch_write(&self, slot: &Slot) -> Result<ReplyProof, String> {
         let request = self
             .common
             .get(&slot.original_id)
@@ -51,7 +47,8 @@ impl PreparedBackend {
                     .await?
             }
         };
-        record_reply(slot, &reply, observe)?;
+        // The write proof owner records endpoint stages while retaining this
+        // decoded value even when an observation fails, so it can archive it.
         Ok(reply)
     }
     pub async fn dispatch_read(

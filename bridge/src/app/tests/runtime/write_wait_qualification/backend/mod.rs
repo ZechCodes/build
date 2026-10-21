@@ -9,6 +9,9 @@ mod git_support;
 mod native_archive;
 mod probe;
 mod producer_bodies;
+#[path = "saved_effects/mod.rs"]
+mod saved_effects;
+mod saved_evidence;
 mod watch_owner;
 pub(super) use control::ControlBackend;
 #[path = "setup.rs"]
@@ -62,6 +65,7 @@ pub(super) struct PreparedBackend {
     mcp_shutdown: Option<super::mcp_adapter::McpShutdownReport>,
     catalog: ReadCatalog,
     common: BTreeMap<String, CommonRequest>,
+    saved_evidence: Option<Arc<saved_evidence::SavedEvidence>>,
     targets: Option<CommonTargets>,
     reads: Option<Arc<ReadyReadInputs>>,
     rpc_cases: Vec<FullRpcCase>,
@@ -127,6 +131,7 @@ impl PreparedBackend {
                 router_only_mcp: Default::default(),
             },
             common: BTreeMap::new(),
+            saved_evidence: None,
             targets: None,
             reads: None,
             rpc_cases: Vec::new(),

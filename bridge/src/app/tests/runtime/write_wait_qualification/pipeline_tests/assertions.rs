@@ -266,3 +266,39 @@ pub(super) fn assert_native_identity(rows: &[Row], native: &serde_json::Value) {
             .is_empty());
     }
 }
+
+/// Tightens the same existing 312 smoke after its observed proof-boundary RED.
+pub(super) fn assert_all_native_write_proofs(rows: &[Row], report: &PipelineControlReport) {
+    assert!(
+        report.explicit_proof_gaps.is_empty(),
+        "native write proof gaps remain"
+    );
+    assert!(
+        report.violations.is_empty(),
+        "native violations: {:?}",
+        report.violations
+    );
+    let writes = rows
+        .iter()
+        .filter(|row| row.slot.traffic == Traffic::Write)
+        .collect::<Vec<_>>();
+    assert_eq!(writes.len(), 80);
+    for row in writes {
+        assert!(
+            row.error.is_none(),
+            "{}: {:?}",
+            row.slot.original_id,
+            row.error
+        );
+        let proof = row
+            .proof
+            .as_ref()
+            .expect("actual write ExecutionProof missing");
+        assert_eq!(proof.original_id, row.slot.original_id);
+        assert_eq!(proof.method, row.recipe.method);
+        assert!(proof.registry_root.is_some() && proof.mandatory_children_complete);
+        assert!(proof.effect.is_some());
+        assert!(row.milestones_us.contains_key(&Stage::EffectVerified));
+        assert!(row.waits.as_ref().is_some_and(|waits| waits.complete));
+    }
+}

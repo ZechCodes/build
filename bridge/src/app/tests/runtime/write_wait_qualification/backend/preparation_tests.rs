@@ -75,7 +75,12 @@ async fn actual_full_read_recipes_survive_normal_support_setup() {
             )?;
         }
         collect_mcp_after_support(&mut prepared, &artifacts, &mut mcp_replies).await?;
-        mcp_expected = Some(prepared.mcp_inputs.remove(0).1);
+        mcp_expected = Some(
+            std::mem::take(&mut prepared.mcp_inputs)
+                .into_iter()
+                .map(|(_, expected)| expected)
+                .collect::<Vec<_>>(),
+        );
         Ok::<(), String>(())
     })
     .catch_unwind()
@@ -139,9 +144,9 @@ async fn actual_full_read_recipes_survive_normal_support_setup() {
         oracle_errors.push(format!("RPC native oracle: {}", panic_detail(&*panic)));
     }
     let expected = mcp_expected.expect("actual MCP saved witness retained");
-    for (action, proof) in mcp_replies {
+    for (owner, action, proof) in mcp_replies {
         if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            assert_mcp_reply(&action, &proof.reply, &expected)
+            assert_mcp_reply(&action, &proof.reply, &expected[owner])
         })) {
             oracle_errors.push(format!("{}: {}", action.tool_name(), panic_detail(&*panic)));
         }
@@ -161,7 +166,7 @@ async fn actual_full_read_recipes_survive_normal_support_setup() {
 async fn collect_mcp_after_support(
     prepared: &mut PreparedBackend,
     artifacts: &Path,
-    replies: &mut Vec<(crate::mcp::BridgeAction, super::super::rpc::ReplyProof)>,
+    replies: &mut Vec<(usize, crate::mcp::BridgeAction, super::super::rpc::ReplyProof)>,
 ) -> Result<(), String> {
     let (inputs, _) = prepared
         .mcp_inputs
@@ -173,18 +178,29 @@ async fn collect_mcp_after_support(
     }
     let mut schedule = Vec::new();
     let watch = ClientWatch::new(Arc::new(Instant::now));
-    for (index, (caller, action)) in cases.into_iter().enumerate() {
-        let method = mcp_read_method(&action);
+    for (index, (_, catalog_action)) in cases.into_iter().enumerate() {
+        let method = mcp_read_method(&catalog_action);
         let source = prepared
             .plan
             .iter()
             .find(|slot| {
                 slot.traffic == super::super::trial_complete::Traffic::Read
                     && slot.route == super::super::trial_complete::Route::AgentMcp
-                    && slot.owner == 0
                     && slot.method.as_deref() == Some(method.as_str())
             })
             .ok_or("actual normal source slot missing")?;
+        let (owner_inputs, _) = prepared
+            .mcp_inputs
+            .get(source.owner)
+            .ok_or("actual scheduled owner read inputs missing")?;
+        let (caller, action) = mcp_cases(owner_inputs)
+            .into_iter()
+            .find(|(_, action)| mcp_read_method(action) == method)
+            .ok_or("actual scheduled owner MCP action missing")?;
+        let endpoint = McpHarness::endpoint_for_caller(source.caller)?;
+        if (caller == McpCaller::Router) != (endpoint == 8) {
+            return Err("actual MCP role differs from scheduled caller".into());
+        }
         let id = format!("compatibility-only/{index}/{}", source.original_id);
         let due = Duration::from_millis(index as u64 * 150);
         watch.register_relative_at(&id, due, TrafficCohort::Read);
@@ -193,10 +209,11 @@ async fn collect_mcp_after_support(
             &format!("mcp-source-{index}.json"),
             &json!({
                 "source_slot":source,"derived_control_id":id,"fixed_due_us":due.as_micros(),
+                "actual_owner":source.owner,"actual_caller":source.caller,"actual_endpoint":endpoint,
                 "qualification":false
             }),
         )?;
-        schedule.push((caller, action, id, due));
+        schedule.push((source.owner, endpoint, action, id, due));
     }
     let fixture = prepared.fixture.as_ref().ok_or("owned fixture missing")?;
     let reads = prepared
@@ -214,13 +231,9 @@ async fn collect_mcp_after_support(
     )?);
     let start = Instant::now();
     watch.start_at(start);
-    for (index, (caller, action, id, due)) in schedule.into_iter().enumerate() {
+    for (index, (owner, endpoint, action, id, due)) in schedule.into_iter().enumerate() {
         tokio::time::sleep_until((start + due).into()).await;
         watch.offer(&id);
-        let endpoint = match caller {
-            McpCaller::Coding => 0,
-            McpCaller::Router => 8,
-        };
         let proof = prepared
             .mcp
             .as_ref()
@@ -232,10 +245,11 @@ async fn collect_mcp_after_support(
             &format!("mcp-{index}.json"),
             &json!({
                 "method":mcp_read_method(&action),"original_id":proof.original_id,
+                "actual_owner":owner,"actual_endpoint":endpoint,
                 "reply":proof.reply,"qualification":false
             }),
         )?;
-        replies.push((action, proof));
+        replies.push((owner, action, proof));
     }
     Ok(())
 }

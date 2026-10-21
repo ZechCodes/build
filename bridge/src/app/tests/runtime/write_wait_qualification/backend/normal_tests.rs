@@ -62,6 +62,9 @@ async fn counts_control(envelope: Envelope) {
     })
     .catch_unwind()
     .await;
+    // Measurements and binding outcomes above are immutable before this
+    // explicit fixture-service proof; it is not a normal scheduled original.
+    let service = exercise_github_cleanup_prerequisite(&prepared, &artifacts).await;
     let cleanup = close_retained(prepared).await;
     save(
         &artifacts.join("cleanup.json"),
@@ -69,6 +72,7 @@ async fn counts_control(envelope: Envelope) {
     )
     .unwrap();
     cleanup.expect("actual native setup resources must close before count assertions");
+    service.expect("actual full-read fixture service proof before cleanup");
     let (actual, bound, binding, mismatch) =
         measured.expect("native count collection panicked").unwrap();
     binding.expect("normal provenance must bind measured native pre-T0 counts");
@@ -86,6 +90,12 @@ async fn counts_control(envelope: Envelope) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_normal_native_read_recipe_has_exact_typed_cohort_before_t0() {
     crate::git_fixture::environment::isolated_git_test!();
+    let artifacts = tempfile::Builder::new()
+        .prefix("qualification-native-forms-NoQualification-")
+        .tempdir()
+        .unwrap()
+        .keep();
+    eprintln!("native_form_control_artifacts={}", artifacts.display());
     let mut prepared = PreparedBackend::unassembled(
         TrialName {
             envelope: Envelope::Small,
@@ -127,13 +137,28 @@ async fn every_normal_native_read_recipe_has_exact_typed_cohort_before_t0() {
             .clone();
         unknown.method = Some("unknown.native.read".into());
         let rejected = control::expected_read_cohort(&prepared, &unknown).is_err();
+        save(
+            &artifacts.join("measured-forms.json"),
+            &json!({
+                "qualification":false,"counts":counts,"unknown_rejected":rejected,
+                "outcomes":outcomes.iter().map(|(method, form, actual)| json!({
+                    "method":method,"form":format!("{form:?}"),"actual":actual
+                })).collect::<Vec<_>>()
+            }),
+        )?;
         Ok::<_, String>((outcomes, counts, rejected))
     })
     .catch_unwind()
     .await;
-    close_retained(prepared)
-        .await
-        .expect("actual native setup cleanup before typed-form assertions");
+    let service = exercise_github_cleanup_prerequisite(&prepared, &artifacts).await;
+    let cleanup = close_retained(prepared).await;
+    save(
+        &artifacts.join("cleanup.json"),
+        &json!({"result":cleanup,"qualification":false}),
+    )
+    .unwrap();
+    cleanup.expect("actual native setup cleanup before typed-form assertions");
+    service.expect("actual full-read fixture service proof before cleanup");
     let (outcomes, counts, rejected) = observed
         .expect("native read classification collection panicked")
         .unwrap();
@@ -171,6 +196,59 @@ fn planned_read<'a>(
                 && slot.method.as_deref() == Some(method)
         })
         .ok_or_else(|| format!("native read slot missing: {method}"))
+}
+
+// Full ReadyReadInputs requires evidence that its isolated GitHub stand-in
+// was exercised. Setup-only controls must obtain that evidence from the actual
+// native endpoint, after their pre-T0 measurement/classification boundary.
+// This is fixture-prerequisite evidence, never a normal original or timing pass.
+async fn exercise_github_cleanup_prerequisite(
+    prepared: &PreparedBackend,
+    artifacts: &std::path::Path,
+) -> Result<(), String> {
+    let result = std::panic::AssertUnwindSafe(async {
+        let case = prepared
+            .rpc_cases
+            .iter()
+            .find(|case| case.method == "github.repos")
+            .ok_or("native GitHub read prerequisite missing")?;
+        let fixture = prepared.fixture.as_ref().ok_or("native fixture missing")?;
+        let reads = prepared.reads.as_deref().ok_or("native read witnesses missing")?;
+        let id = "fixture-prerequisite/after-pre-t0/github.repos";
+        let reply = fixture.rpc.request(0, id, case.method, case.params.clone()).await;
+        save(
+            &artifacts.join("fixture-service-reply.json"),
+            &json!({
+                "qualification":false,"normal_original":false,
+                "boundary":"after pre-T0 measurement/classification; before native cleanup",
+                "original_id":reply.original_id,"method":reply.method,"reply":reply.reply,
+                "elapsed_us":reply.final_reply_at.saturating_duration_since(reply.sent_at).as_micros()
+            }),
+        )?;
+        if reply.original_id != id || reply.reply["id"] != id || reply.method != case.method {
+            return Err("native fixture-service reply identity mismatch".into());
+        }
+        let outcome = reads.assert_rpc_reply(case, &reply.reply);
+        if outcome != super::super::read_recipes::FullReadOutcome::Ready {
+            return Err(format!("native GitHub prerequisite was not Ready: {outcome:?}"));
+        }
+        Ok::<(), String>(())
+    })
+    .catch_unwind()
+    .await
+    .unwrap_or_else(|panic| {
+        let detail = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|text| (*text).to_owned()))
+            .unwrap_or_else(|| "non-string native fixture-service panic".into());
+        Err(detail)
+    });
+    save(
+        &artifacts.join("fixture-service-result.json"),
+        &json!({"qualification":false,"result":result}),
+    )?;
+    result
 }
 
 async fn close_retained(prepared: PreparedBackend) -> Result<(), String> {

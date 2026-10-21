@@ -3,6 +3,7 @@ use super::*;
 use crate::app::tests::runtime::write_wait_qualification::fixture::{
     Envelope, QualificationFixture,
 };
+use crate::app::tests::runtime::write_wait_qualification::read_recipes::FullReadOutcome;
 use futures_util::FutureExt;
 use std::panic::AssertUnwindSafe;
 
@@ -17,6 +18,36 @@ async fn quiet_trial_watch_detaches_before_native_full_read_cleanup() {
         .read_inputs
         .take()
         .expect("genuine full read fixture");
+    // Full native cleanup checks that its isolated gh stand-in actually ran.
+    // Exercise it before watch attachment; this is no trial/timing original.
+    let github = AssertUnwindSafe(async {
+        let case = ready
+            .rpc_cases()
+            .into_iter()
+            .find(|case| case.method == "github.repos")
+            .expect("native GitHub prerequisite case");
+        let id = "fixture-prerequisite/quiet-detach/github.repos";
+        let proof = fixture
+            .rpc
+            .request(0, id, case.method, case.params.clone())
+            .await;
+        eprintln!(
+            "fixture_service_reply={}",
+            json!({
+                "qualification":false,"trial_original":false,"boundary":"before watch attachment",
+                "original_id":proof.original_id,"method":proof.method,"reply":proof.reply,
+            })
+        );
+        assert_eq!(proof.original_id, id);
+        assert_eq!(proof.reply["id"], id);
+        assert_eq!(proof.method, case.method);
+        assert_eq!(
+            ready.assert_rpc_reply(&case, &proof.reply),
+            FullReadOutcome::Ready
+        );
+    })
+    .catch_unwind()
+    .await;
     let task = ready.witness.inputs.task.clone();
     let watch = ClientWatch::new(Arc::new(Instant::now));
     let due = Instant::now() + Duration::from_millis(10);
@@ -60,6 +91,7 @@ async fn quiet_trial_watch_detaches_before_native_full_read_cleanup() {
     let audit = detached
         .expect("quiet originals must permit explicit audited detach")
         .expect("the actual trial watch was attached");
+    assert!(github.is_ok(), "native GitHub fixture prerequisite failed");
     assert!(read_cleanup.is_ok(), "native full read cleanup failed");
     assert!(cleanup.is_empty(), "{cleanup:?}");
     assert!(terminal && !report.panicked && !report.failed);

@@ -1,5 +1,6 @@
 //! A failed real deadline must survive the actual full-fixture CloseJob path.
 use super::*;
+use crate::app::tests::runtime::write_wait_qualification::read_recipes::FullReadOutcome;
 use crate::app::tests::runtime::write_wait_qualification::trial_complete::{
     Envelope, JsonArtifacts, Route, Traffic,
 };
@@ -175,6 +176,42 @@ async fn prepare_one(
     prepared.assemble_support().await?;
     if prepared.watch.is_some() || prepared.lifecycle.is_some() {
         return Err("normal originals enrolled before explicit close control selection".into());
+    }
+    // This setup-only read exercises the isolated gh stand-in required by
+    // full native cleanup. It precedes collectors and trial watch attachment.
+    // The caller catches setup/oracle failure and performs actual cleanup.
+    let case = prepared
+        .rpc_cases
+        .iter()
+        .find(|case| case.method == "github.repos")
+        .ok_or("native GitHub prerequisite case missing")?;
+    let fixture = prepared
+        .fixture
+        .as_ref()
+        .ok_or("owned full fixture missing")?;
+    let reads = prepared
+        .reads
+        .as_ref()
+        .ok_or("native read witnesses missing")?;
+    let id = "fixture-prerequisite/close-job/github.repos";
+    let proof = fixture
+        .rpc
+        .request(0, id, case.method, case.params.clone())
+        .await;
+    std::fs::write(
+        artifacts.join("fixture-service-reply.json"),
+        serde_json::to_vec_pretty(&json!({
+            "qualification":false,"trial_original":false,"boundary":"before watch attachment",
+            "original_id":proof.original_id,"method":proof.method,"reply":proof.reply,
+        }))
+        .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    if proof.original_id != id || proof.reply["id"] != id || proof.method != case.method {
+        return Err("native GitHub fixture prerequisite reply identity mismatch".into());
+    }
+    if reads.assert_rpc_reply(case, &proof.reply) != FullReadOutcome::Ready {
+        return Err("native GitHub fixture prerequisite was not Ready".into());
     }
     let source = prepared
         .plan

@@ -173,7 +173,7 @@ fn native_read_witness(method: &str, cohort: &ReadCohort) -> OracleWitness {
     // Strong full decoded native assert_rpc_reply ran in dispatch_read before
     // this reduction. This is its actual passed outcome, not Value echo/hash.
     OracleWitness::State {
-        oracle: format!("actual-native-core8/{method}"),
+        oracle: format!("actual-native-read/{method}"),
         assertions: vec![OracleAssertion {
             field: "verified_native_read_outcome".into(),
             actual: WitnessScalar::Text(format!("{cohort:?}")),
@@ -215,8 +215,7 @@ fn wall_ms() -> Result<i64, String> {
     .map_err(|error| error.to_string())
 }
 
-/// The same native read proof boundary used by the actual trial backend.
-/// Extraction only: the initial control still exposes its core-eight gap.
+/// The same native read proof boundary used by smoke and all normal recipes.
 pub(in crate::app::tests::runtime::write_wait_qualification::backend) async fn prove_native_read(
     prepared: &PreparedBackend,
     slot: &Slot,
@@ -224,39 +223,37 @@ pub(in crate::app::tests::runtime::write_wait_qualification::backend) async fn p
     observe: &Observation,
     sink: &dyn ArtifactSink,
 ) -> Result<ControlExecution, String> {
-    let case = prepared
-        .bounded_rpc_cases
-        .iter()
-        .find(|case| case.method == recipe.method)
-        .ok_or("actual bounded case missing")?;
-    let reply = prepared
-        .fixture
-        .as_ref()
-        .ok_or("owned fixture missing")?
-        .rpc
-        .request(
-            slot.caller,
-            &slot.original_id,
-            case.method,
-            case.params.clone(),
-        )
-        .await;
-    super::super::transport::record_reply(slot, &reply, observe)?;
+    use super::super::transport::NativeReadOutcome;
+    use crate::app::tests::runtime::write_wait_qualification::read_recipes::FullReadForm;
+    let native = prepared.dispatch_read(slot, observe).await?;
     let mut cohort = None;
     let response_evidence = verify_and_summarize_response(
         prepared.name,
         &slot.original_id,
         &recipe.method,
-        &reply.reply,
-        |decoded| {
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::app::tests::runtime::write_wait_qualification::read_recipes::assert_rpc_reply(case, decoded, prepared.bounded_reads.as_ref().expect("actual bounded seed"))
-        })).map_err(|_| "actual native core oracle failed".to_owned())?;
-            let actual = match outcome {
-                FullReadOutcome::Ready => ReadCohort::ReadyBounded,
-                FullReadOutcome::LegacyFull => ReadCohort::LegacyUnbounded,
-                _ => return Err("actual core read pending/refused/unavailable".into()),
+        &native.reply.reply,
+        |_| {
+            let actual = match native.native_outcome? {
+                NativeReadOutcome::Rpc(FullReadOutcome::Ready) => ReadCohort::ReadyBounded,
+                NativeReadOutcome::Rpc(FullReadOutcome::LegacyFull) => ReadCohort::LegacyUnbounded,
+                NativeReadOutcome::Rpc(_) => {
+                    return Err("actual native RPC read pending/refused/unavailable".into());
+                }
+                NativeReadOutcome::McpVerified { actual_tool, form } => {
+                    if recipe.method != format!("mcp.control:{actual_tool}") {
+                        return Err("actual MCP tool differs from frozen recipe".into());
+                    }
+                    match form {
+                        FullReadForm::Ready => ReadCohort::ReadyBounded,
+                        FullReadForm::LegacyFull => ReadCohort::LegacyUnbounded,
+                    }
+                }
             };
+            if recipe.expected_read_cohort.as_ref() != Some(&actual) {
+                return Err("actual native read form differs from declared typed recipe".into());
+            }
+            // The full decoded native oracle ran inside dispatch_read; this
+            // witness records that result, never a copied expected JSON body.
             let witness = native_read_witness(&recipe.method, &actual);
             cohort = Some(actual);
             Ok(witness)

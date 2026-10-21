@@ -5,16 +5,20 @@ use super::super::rpc::ReplyProof;
 use super::super::trial_complete::{Observation, OracleWitness, Route, Stage};
 use super::*;
 use crate::app::tests::runtime::write_wait_qualification::read_recipes::{
-    assert_mcp_reply, mcp_cases, mcp_read_method, FullReadOutcome, McpCaller,
+    FullReadForm, FullReadOutcome, McpCaller, assert_mcp_reply, mcp_cases, mcp_read_method,
+    mcp_recipe_form,
 };
 
 pub(super) enum NativeReadOutcome {
     Rpc(FullReadOutcome),
-    McpVerified { actual_tool: String },
+    McpVerified {
+        actual_tool: String,
+        form: FullReadForm,
+    },
 }
 pub(super) struct NativeReadReply {
     pub reply: ReplyProof,
-    pub native_outcome: NativeReadOutcome,
+    pub native_outcome: Result<NativeReadOutcome, String>,
 }
 impl PreparedBackend {
     pub async fn dispatch_write(&self, slot: &Slot) -> Result<ReplyProof, String> {
@@ -51,7 +55,7 @@ impl PreparedBackend {
         // decoded value even when an observation fails, so it can archive it.
         Ok(reply)
     }
-    pub async fn dispatch_read(
+    pub(super) async fn dispatch_read(
         &self,
         slot: &Slot,
         observe: &Observation,
@@ -90,18 +94,15 @@ impl PreparedBackend {
                 case.params.clone(),
             )
             .await;
-        record_reply(slot, &reply, observe)?;
-        let outcome =
-            crate::app::tests::runtime::write_wait_qualification::read_recipes::assert_rpc_reply(
-                case,
-                &reply.reply,
-                self.bounded_reads
-                    .as_ref()
-                    .ok_or("actual bounded seed missing")?,
-            );
+        let outcome = record_reply(slot, &reply, observe).and_then(|_| {
+            let seed = self.bounded_reads.as_ref().ok_or("actual bounded seed missing")?;
+            native_oracle(|| {
+                crate::app::tests::runtime::write_wait_qualification::read_recipes::assert_rpc_reply(case, &reply.reply, seed)
+            }).map(NativeReadOutcome::Rpc)
+        });
         Ok(NativeReadReply {
             reply,
-            native_outcome: NativeReadOutcome::Rpc(outcome),
+            native_outcome: outcome,
         })
     }
     async fn rpc_read(
@@ -127,15 +128,13 @@ impl PreparedBackend {
                 case.params.clone(),
             )
             .await;
-        record_reply(slot, &reply, observe)?;
-        let outcome = self
-            .reads
-            .as_deref()
-            .ok_or("native read fixture missing")?
-            .assert_rpc_reply(case, &reply.reply);
+        let outcome = record_reply(slot, &reply, observe).and_then(|_| {
+            let reads = self.reads.as_deref().ok_or("native read fixture missing")?;
+            native_oracle(|| reads.assert_rpc_reply(case, &reply.reply)).map(NativeReadOutcome::Rpc)
+        });
         Ok(NativeReadReply {
             reply,
-            native_outcome: NativeReadOutcome::Rpc(outcome),
+            native_outcome: outcome,
         })
     }
     async fn mcp_read(
@@ -163,11 +162,15 @@ impl PreparedBackend {
             .ok_or("MCP transport missing")?
             .execute(endpoint, &slot.original_id, action.clone(), true)
             .await?;
-        record_reply(slot, &reply, observe)?;
-        assert_mcp_reply(&action, &reply.reply, expected);
+        let outcome = record_reply(slot, &reply, observe).and_then(|_| {
+            native_oracle(|| assert_mcp_reply(&action, &reply.reply, expected))?;
+            let form =
+                mcp_recipe_form(&action).ok_or("actual MCP form is outside reviewed recipes")?;
+            Ok(NativeReadOutcome::McpVerified { actual_tool, form })
+        });
         Ok(NativeReadReply {
             reply,
-            native_outcome: NativeReadOutcome::McpVerified { actual_tool },
+            native_outcome: outcome,
         })
     }
     pub async fn dispatch_exempt(
@@ -215,4 +218,15 @@ pub(super) fn record_reply(
     )?;
     // ClientWatch sent/complete are owned by the actual adapters, not here.
     Ok(())
+}
+
+fn native_oracle<T>(oracle: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(oracle)).map_err(|payload| {
+        let detail = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|text| (*text).into()))
+            .unwrap_or_else(|| "non-string native oracle panic".into());
+        format!("actual native decoded read oracle failed: {detail}")
+    })
 }

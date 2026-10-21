@@ -137,6 +137,7 @@ impl AppState {
         prospective.swap(self);
         self.persist_config(&config)?;
         prospective.swap(self);
+        self.publish_read_cold_harness_settings();
         if let Some(projection) = projection {
             self.publish_prepared_snapshot_projection(projection);
         }

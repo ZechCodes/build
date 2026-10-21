@@ -147,6 +147,29 @@ impl AppState {
         self.read_context.store(Some(Arc::new(next)));
     }
 
+    /// Before first snapshot warming, a listener reads its committed settings
+    /// from this seed. A successful config save replaces only those fields.
+    pub(in crate::app) fn publish_read_cold_harness_settings(&self) {
+        if self.snapshot_projection_initialized() {
+            return;
+        }
+        let Some(previous) = self.read_context.load_full() else {
+            return;
+        };
+        let settings = &previous.bootstrap.settings;
+        if settings.default_harness == self.default_harness
+            && settings.role_models == self.role_models
+        {
+            return;
+        }
+        let mut next = (*previous).clone();
+        Arc::make_mut(&mut next.bootstrap).settings = HarnessSettings {
+            default_harness: self.default_harness,
+            role_models: self.role_models.clone(),
+        };
+        self.read_context.store(Some(Arc::new(next)));
+    }
+
     /// Presence changes only the session carried by task reads. Keep the
     /// committed roster and path observations without preparing a new board.
     pub(in crate::app) fn publish_read_user_session(&self) {

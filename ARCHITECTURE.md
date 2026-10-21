@@ -179,12 +179,19 @@ verbs; the two stream reads retain their legacy shapes and QA-only gate.
 The task detail and stage snapshots follow committed owner publication,
 including changes to a linked implementation. Task history is rendered from
 the same published conversation history as workspace detail; unwindowed task
-reads retain the resident-history boundary. Capture writes
+reads retain the resident-history boundary. Maintenance captures plan IDs under
+the app lock, probes canonical document directories in its existing unlocked
+phase, and commits versioned availability observations. Successful ingestion
+publishes availability directly, fencing older observations. Capture writes
 publish their saved record, and retirement removes it. QA stream producers
 publish each event and its updated head together; an incremental output digest
 keeps state reads independent of log length. The SPA still calls `task.get`
 and `term.list`, so both surfaces remain available. `task.get` is a registered
 v1 planning read; `term.list` retains its legacy wire contract.
+
+Terminal membership publishes independently of temporarily borrowed plan/run
+owners. Listing reads each terminal's coherent atomic size pair, updated after
+resize, so it does not wait on screen parsing or PTY output.
 
 The 23 observation reads (filesystem/Git, stage documents, review
 reads, attachments, archives, GitHub repositories, Git initialization options
@@ -235,6 +242,12 @@ is distinct from an exempt liveness request, whose drain still checks the
 gate independently. Project-deletion refusal runs inside the routed dispatch
 guard before deferred work can be taken. Session-scoped and standalone drains
 keep their existing admission checks.
+
+Idle update handoff reserves a pending claim under the admission mutex, then
+runs its busy probe without that mutex. The claim blocks new non-read work;
+read lanes can still acquire counted leases. Handoff closes admission only
+after a quiet probe and a brief recheck that no leases remain. Rollback and
+reopen invalidate the claim before notifying waiting work.
 
 **The verb registry** is `bridge/src/api/v1/mod.rs`. Each family file (`board.rs`,
 `changes.rs`, `git.rs`, `harnesses.rs`, `push.rs`, `tasks.rs`, `lifecycle.rs`, `thread.rs`, `updates.rs`,

@@ -1,20 +1,24 @@
-//! Causal classification of the condition, separately from its exclusion lock.
+//! Per-original causal classification under the same live joined obligation.
 use crate::timing::write_wait::{
     current_context, IntervalCategory, WaitGuard, WaitKind, WriteContext,
 };
 
-pub(super) fn condition(cause: &Option<WriteContext>) -> Option<WaitGuard> {
+pub(super) fn condition(cause: &Option<WriteContext>) -> Option<Vec<WaitGuard>> {
     let current = current_context()?;
-    let own = cause.as_ref().is_some_and(|cause| {
-        current.same_registry(cause)
-            && current
-                .origins()
-                .iter()
-                .any(|id| cause.origins().contains(id))
+    let (own, predecessors): (Vec<_>, Vec<_>) = current.origins().iter().copied().partition(|id| {
+        cause
+            .as_ref()
+            .is_some_and(|cause| current.same_registry(cause) && cause.origins().contains(id))
     });
-    Some(current.interval(if own {
-        IntervalCategory::OwnExternal
-    } else {
-        IntervalCategory::KnownWait(WaitKind::Retirement)
-    }))
+    let mut guards = Vec::with_capacity(2);
+    if !own.is_empty() {
+        guards.push(current.interval_for(&own, IntervalCategory::OwnExternal));
+    }
+    if !predecessors.is_empty() {
+        guards.push(current.interval_for(
+            &predecessors,
+            IntervalCategory::KnownWait(WaitKind::Retirement),
+        ));
+    }
+    Some(guards)
 }

@@ -618,17 +618,27 @@ pub(in crate::app) fn spawn_off_lock<J: OffLockJob>(
             ))
         });
         #[cfg(test)]
-        let deciding_context = logical.as_ref().map(|child| child.context());
+        let deciding = logical.as_ref().map(|child| child.child());
         let decided = tokio::task::spawn_blocking(move || {
             #[cfg(test)]
             drop(pool_wait);
             #[cfg(test)]
-            let _binding = deciding_context.map(|context| context.bind_sync());
+            let binding = deciding.as_ref().map(|child| child.context().bind_sync());
+            let result = {
+                #[cfg(test)]
+                let _service = crate::timing::write_wait::current_interval(
+                    crate::timing::write_wait::IntervalCategory::OwnExternal,
+                );
+                job.decide()
+            };
             #[cfg(test)]
-            let _service = crate::timing::write_wait::current_interval(
-                crate::timing::write_wait::IntervalCategory::OwnExternal,
-            );
-            job.decide()
+            {
+                drop(binding);
+                if let Some(child) = deciding {
+                    child.complete();
+                }
+            }
+            result
         })
         .await;
         #[cfg(test)]

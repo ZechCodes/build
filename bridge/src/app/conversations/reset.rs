@@ -179,8 +179,8 @@ impl AppState {
         for owner in &owners {
             self.mark_observation_owner_changed(owner);
         }
+        self.publish_read_owners(&owners);
         for owner in owners {
-            self.publish_read_owner(&owner, true);
             self.note_entity_changed(&owner);
             #[cfg(test)]
             reset_observer::record(&self.read_view.load());

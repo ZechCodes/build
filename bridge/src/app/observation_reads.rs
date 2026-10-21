@@ -50,6 +50,10 @@ pub(in crate::app) struct ObservationContext {
 }
 
 impl ObservationContext {
+    pub(in crate::app) fn mcp_deleting_project(&self) -> bool {
+        self.deleting_project
+    }
+
     pub(in crate::app) fn with_base_version(&self, version: u64) -> Self {
         let mut context = self.clone();
         context.base_version = version;

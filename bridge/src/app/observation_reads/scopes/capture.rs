@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 #[derive(Default)]
 pub(in crate::app::observation_reads) struct ScopePatch {
     runs: BTreeMap<String, Option<Arc<RunInput>>>,
+    plan_projects: BTreeMap<String, Option<String>>,
     projects: BTreeMap<String, Option<Arc<ProjectInput>>>,
     workspaces: BTreeMap<String, Option<Arc<Workspace>>>,
     order: Option<Vec<String>>,
@@ -68,6 +69,16 @@ fn run(app: &AppState, id: &str) -> Option<Arc<RunInput>> {
 impl ScopePatch {
     pub fn owner(&mut self, app: &AppState, owner: &str) {
         self.runs.insert(owner.into(), run(app, owner));
+        self.plan_project(app, owner);
+    }
+    fn plan_project(&mut self, app: &AppState, owner: &str) {
+        self.plan_projects.insert(
+            owner.into(),
+            app.plans
+                .contains_key(owner)
+                .then(|| app.projects.project_id_of(owner).map(str::to_owned))
+                .flatten(),
+        );
     }
     pub fn project(&mut self, app: &AppState, id: &str) {
         self.projects.insert(id.into(), project(app, id));
@@ -109,6 +120,9 @@ impl ScopeReadContext {
         }
         for id in app.runs.keys() {
             patch.owner(app, id);
+        }
+        for owner in app.plans.keys() {
+            patch.plan_project(app, owner);
         }
         patch.topology(app);
         let mut context = Self::default();
@@ -209,6 +223,16 @@ impl ScopeReadContext {
     pub(in crate::app::observation_reads) fn apply(&mut self, patch: &ScopePatch) {
         for (id, row) in &patch.projects {
             replace(&mut self.projects, id, row);
+        }
+        for (owner, project) in &patch.plan_projects {
+            match project {
+                Some(id) => {
+                    self.plan_projects.insert(owner.clone(), id.clone());
+                }
+                None => {
+                    self.plan_projects.remove(owner);
+                }
+            }
         }
         for (id, row) in &patch.workspaces {
             if let Some(root) = self.workspace_canonical.remove(id) {

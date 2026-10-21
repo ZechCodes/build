@@ -39,6 +39,7 @@ pub(in crate::app) const METHODS: &[&str] = &[
 #[derive(Clone, Default)]
 pub(in crate::app) struct ScopeReadContext {
     projects: OrdMap<String, Arc<ProjectInput>>,
+    plan_projects: OrdMap<String, String>,
     workspaces: OrdMap<String, Arc<Workspace>>,
     runs: OrdMap<String, Arc<RunInput>>,
     lineages: OrdMap<String, Arc<Vec<String>>>,
@@ -191,5 +192,20 @@ impl ScopeReadContext {
             gate: None,
         };
         ScopeReadJob::new(fence, move || read.run())
+    }
+}
+
+impl ScopeReadContext {
+    pub(in crate::app) fn mcp_project_binding(&self, owner: &str) -> Option<&str> {
+        self.runs
+            .get(owner)
+            .and_then(|run| run.project_id.as_deref())
+            .or_else(|| self.plan_projects.get(owner).map(String::as_str))
+    }
+    pub(in crate::app) fn mcp_project_path(&self, project: &str) -> Option<&std::path::Path> {
+        self.projects.get(project).map(|p| p.path.as_path())
+    }
+    pub(in crate::app) fn mcp_workspace_project(&self, id: &str) -> Option<&str> {
+        self.workspaces.get(id).map(|w| w.project_id.as_str())
     }
 }

@@ -19,6 +19,21 @@ pub(in crate::app) struct GlobalProjection {
 }
 
 impl GlobalProjection {
+    /// Exactly the owner already captured with the accepted row. A present
+    /// row with no owner is a valid selected-none, not an unknown workspace.
+    pub(in crate::app) fn mcp_workspace_selection(&self, id: &str) -> Option<(&str, Option<&str>)> {
+        self.workspaces
+            .iter()
+            .find(|row| row.id == id)
+            .map(|row| (row.project.as_str(), row.owner.as_deref()))
+    }
+    pub(in crate::app) fn mcp_project_selection(&self, id: &str) -> Option<Option<&str>> {
+        self.projects
+            .iter()
+            .find(|row| row.id == id)
+            .map(|row| row.owner.as_deref())
+    }
+
     pub(in crate::app) fn patch_shared(
         &self,
         patch: &mut impl FnMut(&SharedJson) -> SharedJson,

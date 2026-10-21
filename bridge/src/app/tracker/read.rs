@@ -79,6 +79,16 @@ impl TaskReadContext {
             .retain_live_owners(&previous.identities, app, published);
     }
 
+    pub(in crate::app) fn retain_saved_owners(
+        &mut self,
+        previous: &Self,
+        app: &AppState,
+        owners: &std::collections::HashSet<String>,
+    ) {
+        self.identities
+            .retain_saved_owners(&previous.identities, app, owners);
+    }
+
     pub(in crate::app) fn forget_live_owner(&mut self, owner: &str) {
         self.identities.forget_live_owner(owner);
     }

@@ -87,26 +87,48 @@ impl TaskIdentityContext {
         app: &AppState,
         published: Option<(&str, bool)>,
     ) {
-        self.live.retain(
-            |id, live| match published.filter(|(owner, _)| *owner == live.owner) {
-                Some((_, true)) => true,
-                Some((_, false)) => match previous.live.get(id) {
-                    Some(prior) => {
-                        // A roster rollback preserves committed association,
-                        // but cannot undo actual runtime retirement or start.
-                        let available = live.available;
-                        *live = prior.clone();
-                        live.available = available;
-                        true
-                    }
-                    None => false,
-                },
-                None => previous.live.contains_key(id),
+        self.retain_with(previous, app, |owner| {
+            published
+                .filter(|(saved, _)| *saved == owner)
+                .map(|(_, saved)| saved)
+        });
+    }
+
+    pub(super) fn retain_saved_owners(
+        &mut self,
+        previous: &Self,
+        app: &AppState,
+        owners: &std::collections::HashSet<String>,
+    ) {
+        self.retain_with(previous, app, |owner| {
+            owners.contains(owner).then_some(true)
+        });
+    }
+
+    fn retain_with(
+        &mut self,
+        previous: &Self,
+        app: &AppState,
+        published: impl Fn(&str) -> Option<bool>,
+    ) {
+        self.live.retain(|id, live| match published(&live.owner) {
+            Some(true) => true,
+            Some(false) => match previous.live.get(id) {
+                Some(prior) => {
+                    // A roster rollback preserves committed association,
+                    // but cannot undo actual runtime retirement or start.
+                    let available = live.available;
+                    *live = prior.clone();
+                    live.available = available;
+                    true
+                }
+                None => false,
             },
-        );
+            None => previous.live.contains_key(id),
+        });
         for (id, live) in &previous.live {
             let present = app.plans.contains_key(&live.owner) || app.runs.contains_key(&live.owner);
-            let publishing = published.is_some_and(|(owner, _)| owner == live.owner);
+            let publishing = published(&live.owner).is_some();
             if !present && !publishing {
                 self.live.entry(id.clone()).or_insert_with(|| live.clone());
             }

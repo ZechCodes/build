@@ -6,6 +6,8 @@ use crate::app::snapshot_projection::publication_debt::{
 };
 use crate::timing::write_wait::{current_context, WriteContext, WriteWaitRegistry};
 
+mod provenance;
+
 const OTHER: &str = "run-publication-debt-peer";
 
 fn fixture() -> Fixture {

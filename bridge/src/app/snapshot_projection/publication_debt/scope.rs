@@ -1,11 +1,15 @@
 use super::*;
 use crate::timing::write_wait::{current_context, Obligation, SyncContextGuard};
 
-thread_local! { static INTENT: RefCell<Vec<WriteContext>> = const { RefCell::new(Vec::new()) }; }
+thread_local! { static INTENT: RefCell<Vec<Option<WriteContext>>> = const { RefCell::new(Vec::new()) }; }
 pub(super) fn intent_context() -> Option<WriteContext> {
-    INTENT
-        .with(|intent| intent.borrow().last().cloned())
-        .or_else(current_context)
+    INTENT.with(|intent| {
+        let intent = intent.borrow();
+        match intent.last() {
+            Some(captured) => captured.clone(),
+            None => current_context(),
+        }
+    })
 }
 pub(in crate::app) struct PublicationStage {
     pub(super) ledger: Arc<PublicationDebts>,
@@ -48,11 +52,7 @@ impl PublicationWork {
             }
             let token = WriteContext::coalesced(&contexts);
             let context = token.context();
-            INTENT.with(|stack| {
-                stack
-                    .borrow_mut()
-                    .push(intent.unwrap_or_else(|| context.clone()))
-            });
+            INTENT.with(|stack| stack.borrow_mut().push(intent));
             let binding = context.bind_sync();
             (Some(token), Some(binding), true)
         };

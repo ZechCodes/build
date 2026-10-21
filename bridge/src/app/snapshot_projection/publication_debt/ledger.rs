@@ -1,6 +1,7 @@
 use super::*;
 use crate::timing::write_wait::{IntervalCategory, Obligation, WaitGuard, WaitKind, WriteId};
 use std::sync::atomic::{AtomicU64, Ordering};
+mod queue;
 
 #[derive(Default)]
 pub(in crate::app::snapshot_projection) struct PublicationDebts {
@@ -11,6 +12,7 @@ pub(in crate::app::snapshot_projection) struct PublicationDebts {
 struct State {
     committed: BTreeMap<String, u64>,
     stages: BTreeMap<String, Vec<Staged>>,
+    borrowed: BTreeMap<String, Option<WriteContext>>,
     pending: BTreeMap<PublicationReceipt, Debt>,
     proofs: BTreeMap<String, BTreeMap<WriteId, Vec<Proof>>>,
 }
@@ -21,7 +23,8 @@ struct Staged {
 struct Debt {
     context: WriteContext,
     token: Obligation,
-    queued: Option<WaitGuard>,
+    queued: Vec<WaitGuard>,
+    own_queue_origins: Vec<WriteId>,
     accepted: bool,
     metadata: bool,
     deferred: bool,
@@ -99,7 +102,8 @@ impl PublicationDebts {
                 Debt {
                     context,
                     token,
-                    queued: None,
+                    queued: Vec::new(),
+                    own_queue_origins: Vec::new(),
                     accepted: false,
                     metadata: false,
                     deferred: false,
@@ -185,23 +189,6 @@ impl PublicationDebts {
             })
         })
     }
-    pub(super) fn postpone(&self, coverage: &[PublicationReceipt]) {
-        let mut state = self.state.lock().unwrap();
-        for (receipt, debt) in &mut state.pending {
-            if Self::covered(receipt, coverage) {
-                debt.deferred = true;
-                Self::queue(debt);
-            }
-        }
-    }
-    fn queue(debt: &mut Debt) {
-        if debt.deferred && debt.processing == 0 && debt.queued.is_none() {
-            debt.queued = Some(
-                debt.context
-                    .interval(IntervalCategory::KnownWait(WaitKind::Publication)),
-            );
-        }
-    }
     pub(super) fn work_owners(self: &Arc<Self>, owners: &BTreeSet<String>) -> PublicationWork {
         self.work(|receipt| owners.contains(&receipt.owner))
     }
@@ -228,7 +215,7 @@ impl PublicationDebts {
                     debt.processing += 1;
                     receipts.push(receipt.clone());
                     contexts.push(debt.context.clone());
-                    waits.extend(debt.queued.take());
+                    waits.append(&mut debt.queued);
                 }
             }
             (receipts, contexts, waits)
@@ -241,7 +228,7 @@ impl PublicationDebts {
         for receipt in receipts {
             if let Some(debt) = state.pending.get_mut(receipt) {
                 debt.processing -= 1;
-                Self::queue(debt);
+                debt.queue();
             }
         }
     }

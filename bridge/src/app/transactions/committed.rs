@@ -97,6 +97,19 @@ impl CommittedEntities {
 
     /// A legacy writer temporarily removes owners from the live maps. Whole
     /// board refreshes must retain their previous publication until it settles.
+    #[cfg(test)]
+    pub(in crate::app) fn borrowed_owner_ids(
+        &self,
+        app: &crate::app::AppState,
+    ) -> std::collections::BTreeSet<String> {
+        self.plans
+            .keys()
+            .filter(|id| !app.plans.contains_key(*id))
+            .chain(self.runs.keys().filter(|id| !app.runs.contains_key(*id)))
+            .cloned()
+            .collect()
+    }
+
     pub(in crate::app) fn has_borrowed(&self, app: &crate::app::AppState) -> bool {
         self.plans.keys().any(|id| !app.plans.contains_key(id))
             || self.runs.keys().any(|id| !app.runs.contains_key(id))

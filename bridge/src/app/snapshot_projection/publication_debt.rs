@@ -15,7 +15,27 @@ pub(in crate::app) struct PublicationReceipt {
 }
 
 impl AppState {
+    /// Capture the semantic author before joining resource-only publication debt.
+    pub(in crate::app) fn mutation_intent_context(&self) -> Option<WriteContext> {
+        intent_context()
+    }
+    fn publication_blockers(&self) -> BTreeSet<String> {
+        self.committed_entities.borrowed_owner_ids(self)
+    }
+    pub(in crate::app) fn record_publication_borrow(&self, owner: &str) {
+        self.snapshot_observations.publication_debts.record_borrow(
+            owner,
+            intent_context(),
+            &self.publication_blockers(),
+        );
+    }
+    fn refresh_publication_barrier(&self) {
+        self.snapshot_observations
+            .publication_debts
+            .refresh_blockers(&self.publication_blockers());
+    }
     pub(in crate::app) fn begin_publication_stage(&self, owner: &str) -> PublicationStage {
+        self.refresh_publication_barrier();
         self.snapshot_observations.publication_debts.stage(owner)
     }
     pub(in crate::app) fn commit_publication_debt(
@@ -74,18 +94,19 @@ impl AppState {
         if let Some(receipt) = receipt {
             self.snapshot_observations
                 .publication_debts
-                .postpone(std::slice::from_ref(receipt));
+                .postpone(std::slice::from_ref(receipt), &self.publication_blockers());
         }
     }
     pub(in crate::app) fn postpone_publication_coverage(&self, receipts: &[PublicationReceipt]) {
         self.snapshot_observations
             .publication_debts
-            .postpone(receipts);
+            .postpone(receipts, &self.publication_blockers());
     }
     pub(in crate::app) fn begin_publication_coverage_work(
         &self,
         receipts: &[PublicationReceipt],
     ) -> PublicationWork {
+        self.refresh_publication_barrier();
         self.snapshot_observations
             .publication_debts
             .work_coverage(receipts)
@@ -94,6 +115,7 @@ impl AppState {
         &self,
         owners: &BTreeSet<String>,
     ) -> PublicationWork {
+        self.refresh_publication_barrier();
         self.snapshot_observations
             .publication_debts
             .work_owners(owners)
@@ -102,6 +124,7 @@ impl AppState {
         &self,
         receipt: Option<&PublicationReceipt>,
     ) -> PublicationWork {
+        self.refresh_publication_barrier();
         self.snapshot_observations
             .publication_debts
             .work_receipt(receipt)

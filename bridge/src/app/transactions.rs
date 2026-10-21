@@ -366,6 +366,8 @@ impl AppState {
             .plans
             .remove(plan_id)
             .ok_or_else(|| "unknown plan_id".to_string())?;
+        #[cfg(test)]
+        self.record_publication_borrow(plan_id);
         let checkout = implementation_checkout
             .or_else(|| active.workspace.as_ref().map(|w| w.checkout.clone()));
         if let Some(checkout) = checkout {
@@ -379,6 +381,8 @@ impl AppState {
             .runs
             .remove(run_id)
             .ok_or_else(|| "unknown run_id".to_string())?;
+        #[cfg(test)]
+        self.record_publication_borrow(run_id);
         let checkout = active.worktree.path.clone();
         locate_conversations(&mut active.agents, &checkout);
         Ok(active)

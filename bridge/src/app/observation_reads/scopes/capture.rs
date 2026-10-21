@@ -223,6 +223,36 @@ impl ScopeReadContext {
         self.runs.contains_key(id)
     }
 
+    fn update_workspace_dependents(&mut self, id: &str, next: Option<&String>) {
+        let previous = self.runs.get(id).and_then(|run| run.workspace_id.as_ref());
+        if previous == next {
+            return;
+        }
+        let previous = previous.cloned();
+        if let Some(workspace) = previous {
+            let mut owners = self
+                .workspace_dependents
+                .get(&workspace)
+                .cloned()
+                .unwrap_or_default();
+            #[cfg(test)]
+            super::super::capture_metrics::record("scope_membership_remove", id);
+            owners.remove(id);
+            self.workspace_dependents.insert(workspace, owners);
+        }
+        if let Some(workspace) = next {
+            let mut owners = self
+                .workspace_dependents
+                .get(workspace)
+                .cloned()
+                .unwrap_or_default();
+            #[cfg(test)]
+            super::super::capture_metrics::record("scope_membership_insert", id);
+            owners.insert(id.to_owned());
+            self.workspace_dependents.insert(workspace.clone(), owners);
+        }
+    }
+
     pub(in crate::app::observation_reads) fn apply(&mut self, patch: &ScopePatch) {
         for (id, row) in &patch.projects {
             replace(&mut self.projects, id, row);
@@ -258,33 +288,10 @@ impl ScopeReadContext {
         }
         let mut changed = BTreeSet::new();
         for (id, row) in &patch.runs {
-            if let Some(workspace) = self
-                .runs
-                .get(id)
-                .and_then(|run| run.workspace_id.as_ref())
-                .cloned()
-            {
-                let mut owners = self
-                    .workspace_dependents
-                    .get(&workspace)
-                    .cloned()
-                    .unwrap_or_default();
-                #[cfg(test)]
-                super::super::capture_metrics::record("scope_membership_remove", id);
-                owners.remove(id);
-                self.workspace_dependents.insert(workspace, owners);
-            }
-            if let Some(workspace) = row.as_ref().and_then(|run| run.workspace_id.as_ref()) {
-                let mut owners = self
-                    .workspace_dependents
-                    .get(workspace)
-                    .cloned()
-                    .unwrap_or_default();
-                #[cfg(test)]
-                super::super::capture_metrics::record("scope_membership_insert", id);
-                owners.insert(id.clone());
-                self.workspace_dependents.insert(workspace.clone(), owners);
-            }
+            self.update_workspace_dependents(
+                id,
+                row.as_ref().and_then(|run| run.workspace_id.as_ref()),
+            );
             let before = self
                 .runs
                 .get(id)

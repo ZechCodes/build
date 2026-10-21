@@ -5,6 +5,7 @@ use super::tracker::{filed, tracked};
 use super::*;
 
 mod lifecycle_observations;
+mod maintenance_observations;
 mod merge_contracts;
 mod merge_recovery;
 mod merge_selection;

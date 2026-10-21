@@ -350,7 +350,8 @@ fn structural_edits_preserve_sorted_workspaces_native_run_order_and_direct_ids()
     let shared = app.runs["run-00"].worktree.path.clone();
     app.runs.get_mut("run-01").unwrap().worktree.path = shared.clone();
     replace_workspace(&mut app, "workspace-01", "aaa", shared.clone());
-    app.refresh_snapshot_observations();
+    // This setup changes workspace ordering and physical ownership only.
+    let _ = app.refresh_snapshot_observations();
     app.publish_all_snapshot_projection();
     let first = capture(&app);
     assert_legacy_ownership(&app, &first);
@@ -497,7 +498,8 @@ fn native_path_bytes_and_first_parked_entry_preserve_exact_workspace_answers() {
             root.clone(),
         );
     }
-    app.refresh_snapshot_observations();
+    // Only native path observations change for these ownership assertions.
+    let _ = app.refresh_snapshot_observations();
     let native = capture(&app);
     for (index, root) in roots.iter().enumerate() {
         assert_eq!(
@@ -514,7 +516,8 @@ fn native_path_bytes_and_first_parked_entry_preserve_exact_workspace_answers() {
         app.projects
             .retain_entity_path(owner.into(), tmp.path().display().to_string());
     }
-    app.refresh_snapshot_observations();
+    // Only parked-project ownership inputs change for this witness.
+    let _ = app.refresh_snapshot_observations();
     let parked = capture(&app);
     assert_eq!(
         parked.compaction_workspace("run-00"),

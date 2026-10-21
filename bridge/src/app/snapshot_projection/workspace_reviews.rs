@@ -48,6 +48,7 @@ impl AppState {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn refresh_workspace_review_observation(&mut self, id: &str) {
         match WorkspaceReviewObservation::load(&self.read_view, self.store.as_ref(), id) {
             Ok(observed) => self.install_workspace_review_observation(id, observed),
@@ -63,6 +64,45 @@ impl AppState {
             .and_then(|observed| observed.value.get("active_review"))
         {
             row["active_review"] = summary.clone();
+        }
+    }
+}
+
+/// Maintenance captures workspace membership with its physical observations.
+/// SQL runs in the existing unlocked phase, before the publication guard.
+#[must_use = "load review observations off-lock, then install them before publication"]
+pub(in crate::app) struct WorkspaceReviewRefresh {
+    reader: WorkspaceReviewReader,
+    workspaces: Vec<String>,
+}
+
+pub(in crate::app) struct RenderedWorkspaceReviewRefresh {
+    observations: Vec<(String, WorkspaceReviewObservation)>,
+}
+
+impl WorkspaceReviewRefresh {
+    pub(super) fn new(reader: WorkspaceReviewReader, workspaces: Vec<String>) -> Self {
+        Self { reader, workspaces }
+    }
+
+    pub(in crate::app) fn load(self) -> RenderedWorkspaceReviewRefresh {
+        RenderedWorkspaceReviewRefresh {
+            observations: self
+                .workspaces
+                .into_iter()
+                .filter_map(|id| self.reader.load(&id).map(|observed| (id, observed)))
+                .collect(),
+        }
+    }
+}
+
+impl AppState {
+    pub(in crate::app) fn install_workspace_review_refresh(
+        &mut self,
+        refresh: RenderedWorkspaceReviewRefresh,
+    ) {
+        for (id, observed) in refresh.observations {
+            self.install_workspace_review_observation(&id, observed);
         }
     }
 }

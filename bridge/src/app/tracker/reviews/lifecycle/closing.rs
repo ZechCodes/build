@@ -43,9 +43,13 @@ impl CloseJob {
 
 impl DeferredGitWork for CloseJob {
     fn run(&self, _: &Value) -> Result<Value, String> {
-        let result = self
-            .complete()
-            .and_then(|review| projection::result(&self.store, review));
+        let result = self.complete().map(|review| {
+            projection::result(&self.store, review.clone()).unwrap_or_else(|error| {
+                // Completion is durable; optional observations cannot refuse it.
+                eprintln!("closed review projection {}: {error}", review.task_id);
+                json!({"review": review})
+            })
+        });
         self.observation.prepare();
         result
     }
@@ -56,8 +60,8 @@ impl DeferredGitWork for CloseJob {
     }
 
     fn invalidate(&self, app: &mut AppState) {
-        // Projection can fail after completion commits. apply_git then skips
-        // settle, so this path must also deliver the captured durable write.
+        // Settlement and invalidation share the captured write so completion
+        // notices publish once even when both paths run.
         self.publish_completion(app);
         super::invalidates(app, self.observation.workspace());
     }

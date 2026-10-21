@@ -81,7 +81,8 @@ impl AppState {
             .map(|row| (row.project_id.clone(), row.render()))
             .collect();
         self.install_project_snapshot_observations(observed);
-        self.refresh_snapshot_observations();
+        let reviews = self.refresh_snapshot_observations().load();
+        self.install_workspace_review_refresh(reviews);
         self.refresh_snapshot_task_observations().expect(
             "initial watched-task observations must be authoritative before snapshot admission",
         );

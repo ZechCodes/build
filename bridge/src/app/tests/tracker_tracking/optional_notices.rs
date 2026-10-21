@@ -175,7 +175,7 @@ fn optional_notice_phase_string_does_not_grant_the_semantic_rule() {
                 &fixture.watcher.1,
                 "task_notice",
                 |thread, now| {
-                    thread.post_user_from_build("ordinary required message".into(), now);
+                    thread.post_user_from_build("ordinary required message", now);
                 },
             )
             .unwrap();

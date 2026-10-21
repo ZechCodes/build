@@ -5,7 +5,7 @@ use super::{full_seed::ReadyReadInputs, rpc_full, FullReadOutcome, FullRpcCase};
 use crate::app::tests::runtime::write_wait_qualification::rpc::{ReplyProof, RpcHarness};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) async fn collect_native_rpc_reads(
+pub(in crate::app::tests::runtime::write_wait_qualification) async fn collect_native_rpc_reads(
     rpc: &RpcHarness,
     ready: &ReadyReadInputs,
 ) -> Vec<(FullRpcCase, ReplyProof)> {
@@ -25,7 +25,7 @@ pub(super) async fn collect_native_rpc_reads(
     replies
 }
 
-pub(super) fn verify_native_rpc_reads(
+pub(in crate::app::tests::runtime::write_wait_qualification) fn verify_native_rpc_reads(
     ready: &ReadyReadInputs,
     replies: &[(FullRpcCase, ReplyProof)],
 ) {

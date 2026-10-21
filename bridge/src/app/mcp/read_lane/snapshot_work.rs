@@ -61,7 +61,9 @@ pub(super) fn digest(board: &SharedJson) -> Value {
 }
 
 pub(super) fn work_reply(work: Vec<Value>) -> Value {
-    json!({"work":work})
+    let mut reply = serde_json::Map::new();
+    reply.insert("work".into(), Value::Array(work));
+    Value::Object(reply)
 }
 
 fn row_digest(row: JsonRef<'_>) -> Value {

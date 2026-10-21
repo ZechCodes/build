@@ -89,6 +89,7 @@ jobs:
         run: >-
           nice -n 10 cargo test --release --locked --lib --
           --ignored
+          --nocapture
           --test-threads=1
           busy_writers_keep_app_lock_holds_below_budget
           busy_mcp_lists_finish_within_100ms

@@ -467,7 +467,12 @@ fn parse_action_request(frame: &Value) -> Result<BridgeAction, String> {
 
 pub(in crate::app) fn mcp_action_response(result: Result<Value, String>) -> Value {
     match result {
-        Ok(result) => json!({ "ok": true, "result": result }),
+        Ok(result) => {
+            let mut response = serde_json::Map::new();
+            response.insert("ok".into(), Value::Bool(true));
+            response.insert("result".into(), result);
+            Value::Object(response)
+        }
         Err(error) => match crate::api::v1::reviews::errors::decode(&error) {
             Some(error) => {
                 let mut response = error.into_reply(Value::Null);

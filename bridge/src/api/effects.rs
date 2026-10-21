@@ -92,9 +92,10 @@ const EXTERNAL_READ_METHODS: &[&str] = &[
     "tasks.attachment",
     "thread.attachment",
     "workspace.git_init_options",
+    "term.list",
 ];
 
-const LEGACY_READ_METHODS: &[&str] = &["archived.list", "term.list"];
+const LEGACY_READ_METHODS: &[&str] = &["archived.list"];
 
 const WRITE_METHODS: &[&str] = &[
     "agent.add",

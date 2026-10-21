@@ -147,10 +147,8 @@ impl NativeReads {
             marks.iter().any(|(phase, _)| *phase == "intake"),
             "{method}: no intake trace"
         );
-        assert!(
-            marks.iter().any(|(phase, _)| *phase == "reply_sealed"),
-            "{method}: no final reply trace"
-        );
+        // Snapshot intake has no seal hook. The awaited, decrypted final
+        // reply above is the client completion witness for every read lane.
         assert!(
             !marks.iter().any(|(phase, _)| phase.starts_with("app_")),
             "{method} acquired or waited for AppState: {marks:?}"

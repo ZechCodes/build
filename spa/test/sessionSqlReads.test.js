@@ -70,7 +70,7 @@ describe("SQL reads share eight sender credits per opening", () => {
     ask("board.list");
     ask("thread.post");
     await flush();
-    expect(other.sent.map((entry) => entry.method)).toEqual([...METHODS.slice(4, 8), "ping", "board.list", "thread.post"]);
+    expect(other.sent.map((entry) => entry.method)).toEqual(["tasks.get", "tasks.waiting_on.blocks", "writes.status", "thread.page", "ping", "board.list", "thread.post"]);
     wire.deliver({ id: wire.sent[0].id, ok: true, result: {} });
     await flush();
     expect(other.sent).toHaveLength(8);

@@ -1318,12 +1318,13 @@ Client detach or reconnect keeps the shell and ID. Explicit tab close, EOF,
 a missing root and project deletion use the existing kill/reap and screen
 closure lifecycle. Source move/remove refuses while shells stand in that
 source folder, naming their IDs. Create and move/remove admission run under
-the app lock; shell spawn stays under that guard, and the existing Updating
-reservation blocks shell starts and source removal throughout deferred source
-update work and settlement. The spawn guard also rechecks project deletion:
-a create admitted earlier refuses before opening a PTY if deletion has already
-collected retirements. A create that spawns first is included in that collection,
-even when its original source folder survives deletion.
+the app lock; physical scope probes and PTY spawn run outside it. A pending
+spawn holds its checkout and source location until registration or child
+retirement. The existing Updating reservation blocks shell starts and source
+removal throughout deferred source update work and settlement. Reserve and
+commit guards recheck project deletion; deletion refuses while that project's
+shell spawn is pending and collects its registered shells for retirement,
+even when their original source folders survive deletion.
 Label changes leave live shells alone. These holds
 keep the source's membership/location consistent; they do not restrict shell
 commands or serialize them with Git/base sync. Worker holds also permit
@@ -1332,8 +1333,8 @@ relocation or removal.
 A worker-held source can open and attach a shell while base sync waits on its
 Git lock, and sync can fast-forward with that shell still open. Closing the
 shell leaves the worker's location hold intact. An already-admitted terminal
-create rechecks Updating at spawn: a move's reservation holds it back during
-the SyncLock wait and after work completes, until config settlement. The old
+create rechecks Updating before reservation and registration: a move's
+reservation holds it back during the SyncLock wait and after work completes, until config settlement. The old
 selector then conflicts; a fresh selector opens at the settled location.
 
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in

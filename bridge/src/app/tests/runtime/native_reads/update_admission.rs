@@ -50,24 +50,16 @@ async fn scheduled_update(root: &Path) -> Arc<UpdateService> {
     updates
 }
 
-async fn reads_during_idle_probe(method: &'static str) {
-    let directory = tempfile::tempdir().unwrap();
-    let updates = scheduled_update(directory.path()).await;
-    let (probe, held_probe) = OffLockGate::new();
-    assert!(updates
-        .set_working_agents_probe(Arc::new(move || {
-            probe.arrive();
-            true
-        }))
-        .is_ok());
-    let mut reads = NativeReads::configured_with_updates(true, Some(Arc::clone(&updates)));
-    let params = match method {
+fn read_params(reads: &NativeReads, method: &str) -> Value {
+    match method {
         "capture.get" => json!({"capture_id":reads.capture}),
         "task.get" | "task.stages" => json!({"task_id":reads.task}),
         "tasks.columns" => json!({"project_id":reads.project}),
         _ => json!({"stream_id":"stream-native-read"}),
-    };
-    let baseline = reads.held_read(method, params.clone()).await;
+    }
+}
+
+fn assert_baseline(method: &str, baseline: &Value) {
     assert_eq!(
         baseline["ok"], true,
         "unblocked real-service fixture: {baseline}"
@@ -79,6 +71,22 @@ async fn reads_during_idle_probe(method: &'static str) {
         "tasks.columns" => assert!(!baseline["result"]["columns"].as_array().unwrap().is_empty()),
         _ => assert_eq!(baseline["result"]["complete"], true),
     }
+}
+
+async fn reads_during_idle_probe(method: &'static str) {
+    let directory = tempfile::tempdir().unwrap();
+    let updates = scheduled_update(directory.path()).await;
+    let (probe, held_probe) = OffLockGate::new();
+    assert!(updates
+        .set_working_agents_probe(Arc::new(move || {
+            probe.arrive();
+            true
+        }))
+        .is_ok());
+    let mut reads = NativeReads::configured_with_updates(true, Some(Arc::clone(&updates)));
+    let params = read_params(&reads, method);
+    let baseline = reads.held_read(method, params.clone()).await;
+    assert_baseline(method, &baseline);
     let ticker = std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()

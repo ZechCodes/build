@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+pub(crate) mod archive;
 #[cfg(test)]
 #[path = "write_wait/deep_test_support.rs"]
 pub(crate) mod deep_test_support;

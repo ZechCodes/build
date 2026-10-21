@@ -41,7 +41,10 @@ Wire 3.24.0.
 
 ### Security
 
-This release removes a compromised certificate authority from the bridge's trusted roots; upgrade promptly.
+This release removes a compromised certificate authority from the root
+certificates bundled with the bridge, which secure its relay connection;
+upgrade promptly. The bridge's other HTTPS requests trust your operating
+system's certificate store, so apply your OS certificate updates too.
 
 - Update the bridge's Rust CA bundles to remove a compromised root certificate
   (#753).

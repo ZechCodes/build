@@ -182,17 +182,8 @@ async fn routed_post_worker_retains_admission_after_reply_until_delivery_finishe
     eventually_installs(&updates).await;
     released.unwrap();
     assert_eq!(answer["ok"], true, "{answer}");
-    assert_eq!(arrival.unwrap(), crate::app::NEW_THREAD_MESSAGES_PROMPT);
     assert_eq!(after_reply.unwrap().state, UpdateState::ScheduledWhenIdle);
-    let stored = stored.unwrap();
-    assert_eq!(
-        stored
-            .iter()
-            .filter(|item| matches!(item,
-        crate::thread::ThreadItem::Message(message) if message.body == "lease survives the reply"))
-            .count(),
-        1
-    );
+    assert_native_delivery(arrival.unwrap(), stored.unwrap());
     let app = state.lock().unwrap();
     assert!(
         app.session_registry
@@ -202,4 +193,41 @@ async fn routed_post_worker_retains_admission_after_reply_until_delivery_finishe
             .is_some(),
         "the real worker settled its warm delivery"
     );
+}
+
+/// The warm turn carries its native immutable message envelope, not only the
+/// fixed nudge. Compare its immutable identity/text with the committed message;
+/// delivery receipts legitimately advance after the payload has been frozen.
+fn assert_native_delivery(prompt: String, stored: Vec<crate::thread::ThreadItem>) {
+    assert!(
+        prompt.contains(crate::app::NEW_THREAD_MESSAGES_PROMPT),
+        "{prompt}"
+    );
+    let (_, payload) = prompt
+        .split_once(crate::operation::NATIVE_REVIEWER_MESSAGES_HEADING)
+        .expect("warm delivery includes the real native envelope");
+    let accepted: Vec<Value> = serde_json::from_str(payload.trim()).unwrap();
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(accepted[0]["body"], "lease survives the reply");
+    assert_eq!(accepted[0]["role"], "user");
+    let persisted: Vec<Value> = stored
+        .iter()
+        .filter_map(|item| match item {
+            crate::thread::ThreadItem::Message(message)
+                if message.body == "lease survives the reply" =>
+            {
+                Some(serde_json::to_value(message).unwrap())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(persisted.len(), 1);
+    assert_eq!(persisted[0]["delivery_status"], "submitted");
+    for field in ["id", "sequence", "role", "body", "created_at"] {
+        assert!(
+            !accepted[0][field].is_null(),
+            "native message must include {field}"
+        );
+        assert_eq!(accepted[0][field], persisted[0][field], "{field}");
+    }
 }

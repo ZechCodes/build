@@ -4,6 +4,9 @@ mod guarded;
 mod history;
 mod job;
 mod mixed;
+#[cfg(test)]
+pub(super) mod probe;
+mod quota;
 pub(super) mod service;
 mod snapshots;
 mod sql;
@@ -127,25 +130,39 @@ pub(super) async fn answer(
         Err(error) => return super::mcp_action_response(Err(error)),
     };
     let PreparedRead { pool, query, scope } = read;
-    let mut connection = match pool {
+    let (mut connection, class_permit) = match pool {
         Some(pool) => {
+            #[cfg(test)]
+            let waiting = WaitTimer::start();
+            let class_permit = service.take_class(&pool, &action).await;
+            #[cfg(test)]
+            timer.sample_read_duration("read.class_wait", waiting.elapsed());
             #[cfg(test)]
             let waiting = WaitTimer::start();
             let connection = pool.acquire().await;
             #[cfg(test)]
             timer.sample_read_duration("read.sql_wait", waiting.elapsed());
-            Some(connection)
+            (Some(connection), Some(class_permit))
         }
-        None => None,
+        None => (None, None),
     };
+    #[cfg(test)]
+    let probe = service.sql_probe.clone();
+    #[cfg(test)]
+    let tool = action.tool_name();
     let (outcome, lease) = blocking(Arc::clone(&timer), move || {
         let prepared = {
             #[cfg(test)]
             let _stage = crate::timing::phase_samples::stage("read.query");
+            #[cfg(test)]
+            if let Some(probe) = probe.filter(|_| connection.is_some()) {
+                probe.pin(tool);
+            }
             query(connection.as_mut())
         };
         // Mixed/external reads must never retain SQL capacity during I/O.
         drop(connection);
+        drop(class_permit);
         let outcome = match prepared {
             Ok(work) => {
                 #[cfg(test)]

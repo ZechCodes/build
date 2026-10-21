@@ -74,12 +74,17 @@ fn assert_measurements(measurements: &Value, lists: bool) {
         }
         if !["list_work", "list_workspaces"].contains(&tool) {
             assert_eq!(
+                row["read.class_wait"]["count"],
+                AGENTS * ROUNDS,
+                "{tool} per-type admission"
+            );
+            assert_eq!(
                 row["read.sql_wait"]["count"],
                 AGENTS * ROUNDS,
                 "{tool} SQL acquisition"
             );
         }
-        for phase in ["frame.lock_wait", "frame.permit_wait"] {
+        for phase in ["frame.held", "frame.lock_wait", "frame.permit_wait"] {
             assert_eq!(row[phase]["count"], AGENTS * ROUNDS, "{tool} {phase}");
             assert_eq!(row[phase]["max_ms"], 0.0, "{tool} bypasses {phase}");
         }

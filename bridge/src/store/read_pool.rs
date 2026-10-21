@@ -1,6 +1,8 @@
 //! Bounded independent SQLite readers. Checkout waits asynchronously; SQL runs
 //! on the dedicated read workers, and every request gets one fresh snapshot.
+mod classes;
 use super::StoreError;
+pub(crate) use classes::ReadClass;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -16,6 +18,7 @@ pub struct ReadPool {
 struct Pool {
     available: Mutex<Vec<Connection>>,
     permits: Arc<Semaphore>,
+    classes: classes::ReadQuotas,
     // Fields drop in declaration order: close every idle reader before the
     // final writable connection, so SQLite can checkpoint and remove its WAL.
     // This is ownership only; read paths never acquire the writer mutex.
@@ -95,6 +98,7 @@ impl ReadPool {
             inner: Arc::new(Pool {
                 available: Mutex::new(available),
                 permits: Arc::new(Semaphore::new(READ_CONNECTIONS)),
+                classes: classes::ReadQuotas::new(),
                 _writer_lifetime: writer,
                 #[cfg(test)]
                 initialization: ReadPoolInitialization::default(),
@@ -200,6 +204,9 @@ impl<'a> ReadTransaction<'a> {
         self.connection
     }
 }
+
+#[cfg(test)]
+mod classes_tests;
 
 #[cfg(test)]
 mod metadata_timing;

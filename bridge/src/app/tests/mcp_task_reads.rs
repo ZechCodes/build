@@ -20,6 +20,7 @@ mod races;
 mod reset_retirement;
 mod roster_observations;
 mod snapshot_reads;
+mod sql_isolation;
 
 struct Fixture {
     _root: tempfile::TempDir,

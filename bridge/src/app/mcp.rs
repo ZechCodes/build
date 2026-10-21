@@ -1,5 +1,7 @@
 #[cfg(unix)]
 mod read_lane;
+#[cfg(all(test, unix))]
+pub(in crate::app) use read_lane::probe::{SqlReadProbe, SqlReadProbeEvent};
 
 use crate::app::{
     apply_thread_action, off_the_workers, AppState, DeferredJob, DeferredNext, DeliveryRunner,
@@ -93,6 +95,14 @@ pub(in crate::app) struct ControlPlane {
 }
 
 impl ControlPlane {
+    #[cfg(all(test, unix))]
+    pub(in crate::app) fn with_sql_probe(app: &AppState, probe: SqlReadProbe) -> Arc<Self> {
+        let mut plane = Self::new(app);
+        let service = &mut Arc::get_mut(&mut plane).unwrap().reads;
+        Arc::get_mut(service).unwrap().sql_probe = Some(probe);
+        plane
+    }
+
     pub(in crate::app) fn new(app: &AppState) -> Arc<ControlPlane> {
         Arc::new(ControlPlane {
             clock: Arc::clone(&app.frame_clock),
@@ -312,7 +322,9 @@ pub(in crate::app) async fn handle_done_stream(
         if let Some(response) = plane.answer(Arc::clone(&state), frame).await {
             #[cfg(test)]
             let serialized = match tool {
-                Some(tool) => plane.clock.sample_serialization(tool, || response.to_string()),
+                Some(tool) => plane
+                    .clock
+                    .sample_serialization(tool, || response.to_string()),
                 None => response.to_string(),
             };
             #[cfg(not(test))]

@@ -2,7 +2,7 @@
 //! Phase durations are exclusive: nested work is charged to its deepest span.
 //! Read stage `.total` rows include their descendants and occur once per
 //! stage/request. They overlap the exclusive rows, as do the frame/client totals.
-//! `read.sql_wait` is an async wait outside the synchronous read spans;
+//! `read.class_wait` and `read.sql_wait` are async waits outside the read spans;
 //! `frame.pool_wait` measures blocking-worker scheduling only. Sums across
 //! exclusive spans plus these waits explain the frame, apart from unscoped
 //! async dispatch overhead. `reply.serialization` starts after the frame ends.
@@ -306,11 +306,14 @@ fn phase_capture_duration_uses_frame_collector_and_tool_label() {
     timer.sample_tool("get_task");
     let replacement = clock.capture_phases();
     timer.sample_read_duration("read.sql_wait", Duration::from_millis(7));
+    timer.sample_read_duration("read.class_wait", Duration::from_millis(3));
     drop(timer);
     let captured = original.snapshot();
     let row = &captured["mcp.control:get_task"];
     assert_eq!(row["read.sql_wait"]["count"], 1);
     assert_eq!(row["read.sql_wait"]["sum_ms"], 7.0);
+    assert_eq!(row["read.class_wait"]["count"], 1);
+    assert_eq!(row["read.class_wait"]["sum_ms"], 3.0);
     assert!(row.get("entered.lock").is_none());
     assert_eq!(replacement.snapshot(), json!({}));
 }

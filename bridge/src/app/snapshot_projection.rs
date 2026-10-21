@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+pub(in crate::app) use workspace_reviews::WorkspaceReviewObservation;
+
 #[derive(Default)]
 pub(in crate::app) struct SnapshotObservations {
     ready: bool,
@@ -24,7 +26,7 @@ pub(in crate::app) struct SnapshotObservations {
     branches: BTreeMap<String, String>,
     watched_tasks: Mutex<BTreeMap<String, Vec<Arc<Value>>>>,
     projects: Mutex<BTreeMap<String, ProjectObservation>>,
-    workspace_reviews: BTreeMap<String, Value>,
+    workspace_reviews: BTreeMap<String, WorkspaceReviewObservation>,
 }
 
 pub(in crate::app) struct ProjectObservation {
@@ -425,6 +427,7 @@ mod maintenance;
 mod observations;
 mod ownership;
 mod projects;
+mod workspace_reviews;
 
 #[cfg(test)]
 mod tests;

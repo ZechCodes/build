@@ -378,6 +378,9 @@ pub struct AppState {
     /// Test-only pause after workspace OID preparation, before materialization.
     #[cfg(test)]
     off_lock_workspace_prepared_gate: Option<OffLockGate>,
+    /// Test-only pause after review publication, before its observation query.
+    #[cfg(test)]
+    off_lock_review_open_observation_gate: Option<OffLockGate>,
     /// Test-only synchronous drains own AppState directly, even when the
     /// test holds it through an Arc. Their source preflights cannot relock it.
     #[cfg(test)]
@@ -710,6 +713,8 @@ impl AppState {
             off_lock_gate: None,
             #[cfg(test)]
             off_lock_workspace_prepared_gate: None,
+            #[cfg(test)]
+            off_lock_review_open_observation_gate: None,
             #[cfg(test)]
             inline_deferred: false,
             #[cfg(test)]

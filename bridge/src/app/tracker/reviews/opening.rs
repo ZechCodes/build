@@ -7,6 +7,8 @@ use crate::api::v1::reviews::{
 };
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::mcp::McpConversationGeneration;
+use crate::app::read_view::ReadViewSlot;
+use crate::app::snapshot_projection::WorkspaceReviewObservation;
 use crate::app::{AppState, DeferredGit, DeferredWork};
 use crate::reviews::model::{ReviewOpeningRequest, ReviewOpeningState};
 use crate::reviews::opening::{OpenReviewRequest, OpenedReview};
@@ -26,6 +28,16 @@ struct OpeningJob {
     request: OpenReviewRequest,
     hooks: LiveOpeningHooks,
     watch: bool,
+    read_view: ReadViewSlot,
+    invalidation: RefCell<OpeningInvalidation>,
+    #[cfg(test)]
+    observation_gate: Option<crate::app::OffLockGate>,
+}
+
+#[derive(Default)]
+struct OpeningInvalidation {
+    task_id: Option<String>,
+    review: Option<WorkspaceReviewObservation>,
 }
 
 struct LiveOpeningHooks {
@@ -117,6 +129,10 @@ impl AppState {
             project_id: workspace.project_id.clone(),
             hooks,
             watch,
+            read_view: self.read_view.clone(),
+            invalidation: RefCell::default(),
+            #[cfg(test)]
+            observation_gate: self.off_lock_review_open_observation_gate.clone(),
             request: OpenReviewRequest {
                 project_path,
                 request_id: params.request_id,
@@ -172,9 +188,14 @@ impl AppState {
 
 impl DeferredGitWork for OpeningJob {
     fn run(&self, _: &Value) -> Result<Value, String> {
-        self.publish()
+        let result = self
+            .publish()
             .and_then(opened_value)
-            .map_err(|error| self.error(error))
+            .map_err(|error| self.error(error));
+        let observed = self
+            .observe_invalidation(&result)
+            .map_err(|error| self.error(error));
+        result.and_then(|value| observed.map(|()| value))
     }
     fn settle(&self, app: &mut AppState, result: Value) -> Result<Value, String> {
         let task_id = result["task"]["id"]
@@ -215,12 +236,13 @@ impl DeferredGitWork for OpeningJob {
     }
     fn invalidate(&self, app: &mut AppState) {
         let _ = app.workspaces.reload();
+        let observed = self.invalidation.take();
+        if let Some(review) = observed.review {
+            app.install_workspace_review_observation(&self.request.workspace.id, review);
+        }
         app.note_board_changed();
-        if let Ok(Some(opening)) = self
-            .store
-            .load_review_opening(&self.request.project_path, &self.request.request_id)
-        {
-            app.note_tasks_changed(&self.project_id, &opening.task.id);
+        if let Some(task_id) = observed.task_id {
+            app.note_tasks_changed(&self.project_id, &task_id);
         }
     }
     fn invalidates_on_error(&self) -> bool {
@@ -229,6 +251,34 @@ impl DeferredGitWork for OpeningJob {
 }
 
 impl OpeningJob {
+    fn observe_invalidation(&self, result: &Result<Value, String>) -> Result<(), String> {
+        let mut observed = self.invalidation.borrow_mut();
+        // Failed publication may still have reserved or committed a task. Its
+        // invalidation remains necessary even if the summary query also fails.
+        observed.task_id = result
+            .as_ref()
+            .ok()
+            .and_then(|value| value["task"]["id"].as_str())
+            .map(str::to_owned)
+            .or_else(|| {
+                self.store
+                    .load_review_opening(&self.request.project_path, &self.request.request_id)
+                    .ok()
+                    .flatten()
+                    .map(|opening| opening.task.id)
+            });
+        #[cfg(test)]
+        if let Some(gate) = &self.observation_gate {
+            gate.arrive();
+        }
+        observed.review = Some(WorkspaceReviewObservation::load(
+            &self.read_view,
+            Some(&self.store),
+            &self.request.workspace.id,
+        )?);
+        Ok(())
+    }
+
     fn publish(&self) -> Result<OpenedReview, String> {
         let retry_dispatch = self
             .store

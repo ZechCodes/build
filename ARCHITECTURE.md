@@ -1614,6 +1614,15 @@ Clients name stable IDs and branches, never repository paths or actors. The
 bridge attributes RPC calls to the user and MCP calls to the authenticated
 agent in that project.
 
+Review opening loads its workspace review observation from SQLite during the
+deferred off-lock phase, after durable publication. Invalidation installs the
+owned observation before its workspace/task publication and the successful
+reply. A monotonic observation generation prevents a delayed opening from replacing a
+newer lifecycle observation, even when another review task now owns the
+workspace. A failed observation load preserves the accepted summary and
+returns the opening's existing same-request retry guidance. Other review
+lifecycle producers retain their synchronous observation refreshes.
+
 | RPC verb | MCP tool | Contract |
 | --- | --- | --- |
 | `tasks.review.open` | `open_review` | Workspace, request ID, title/description, optional reviewer, per-directory bases and excluded Git IDs. Returns the published task/review, reviewer delivery state and explicit local push instructions. |

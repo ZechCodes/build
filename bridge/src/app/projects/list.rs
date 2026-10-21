@@ -24,6 +24,8 @@ impl AppState {
     /// right now — `None` for a project nobody has talked to yet, because a
     /// read may never mint one.
     pub(in crate::app) fn project_list_rows(&self) -> Vec<ProjectListRow> {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.project_rows.capture");
         self.projects
             .iter()
             .map(|project| {

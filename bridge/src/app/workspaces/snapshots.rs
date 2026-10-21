@@ -143,7 +143,13 @@ impl AppState {
             #[cfg(test)]
             detail_scans::variant_render();
             let key = format!("{}/{}", workspace.id, agent.id);
-            let thread = SharedJson::value(self.snapshot_thread_digest(thread));
+            let thread = {
+                #[cfg(test)]
+                let _phase = crate::timing::phase_samples::phase(
+                    "publication.workspace_details.variant_thread",
+                );
+                SharedJson::value(self.snapshot_thread_digest(thread))
+            };
             let mut fields = value.fields().expect("workspace detail object").clone();
             let mut run = fields["run"].fields().cloned().unwrap_or_default();
             run.insert("thread".into(), thread.clone());

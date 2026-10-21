@@ -2,6 +2,7 @@
 use super::*;
 use crate::app::read_view::history::SharedHistory;
 use crate::app::workspaces::ProjectionOwnership;
+use crate::app::AppState;
 use crate::thread::{Thread, UnreadSummary};
 use std::sync::Arc;
 

@@ -114,9 +114,30 @@ impl Layout {
     }
 
     pub fn expand_owners(&self, app: &AppState, requested: &BTreeSet<String>) -> BTreeSet<String> {
+        self.with_owner_inputs(app, |indexes, active| indexes.expand(active, requested))
+    }
+
+    pub fn expand_owner_sets(
+        &self,
+        app: &AppState,
+        requested: &BTreeSet<String>,
+    ) -> (BTreeSet<String>, BTreeSet<String>) {
+        self.with_owner_inputs(app, |indexes, active| {
+            (
+                indexes.expand(active, requested),
+                indexes.expand(active, &BTreeSet::new()),
+            )
+        })
+    }
+
+    fn with_owner_inputs<T>(
+        &self,
+        app: &AppState,
+        expand: impl FnOnce(&OwnerIndexes<'_>, &BTreeSet<String>) -> T,
+    ) -> T {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.incremental.owner_closure");
-        let mut owners = requested.clone();
+        let mut owners = BTreeSet::new();
         #[cfg(test)]
         let _discovery = super::super::work_counts::owner_closure::discover();
         owners.extend(app.session_registry.projection_agent_owners());
@@ -134,15 +155,7 @@ impl Layout {
         #[cfg(test)]
         drop(_discovery);
         let indexes = OwnerIndexes::new(&self.owners);
-        let mut pending = owners.iter().cloned().collect::<Vec<_>>();
-        while let Some(id) = pending.pop() {
-            for dependency in indexes.dependencies(&id) {
-                if owners.insert(dependency.to_owned()) {
-                    pending.push(dependency.to_owned());
-                }
-            }
-        }
-        owners
+        expand(&indexes, &owners)
     }
 }
 
@@ -181,6 +194,20 @@ impl<'a> OwnerIndexes<'a> {
             }
         }
         indexes
+    }
+
+    fn expand(&self, active: &BTreeSet<String>, requested: &BTreeSet<String>) -> BTreeSet<String> {
+        let mut owners = requested.clone();
+        owners.extend(active.iter().cloned());
+        let mut pending = owners.iter().cloned().collect::<Vec<_>>();
+        while let Some(id) = pending.pop() {
+            for dependency in self.dependencies(&id) {
+                if owners.insert(dependency.to_owned()) {
+                    pending.push(dependency.to_owned());
+                }
+            }
+        }
+        owners
     }
 
     fn dependencies(&self, id: &str) -> Vec<&'a str> {

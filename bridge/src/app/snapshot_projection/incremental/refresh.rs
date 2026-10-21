@@ -39,8 +39,7 @@ impl GlobalProjection {
                 .filter(|(id, token)| self.stat_versions.get(*id) != Some(*token))
                 .map(|(id, _)| id.clone()),
         );
-        let owners = current.expand_owners(app, &requested);
-        let active_owners = current.expand_owners(app, &BTreeSet::new());
+        let (owners, active_owners) = current.expand_owner_sets(app, &requested);
         #[cfg(test)]
         super::super::work_counts::owner_closure::outputs(&owners, &active_owners);
         #[cfg(test)]

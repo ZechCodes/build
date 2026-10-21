@@ -30,7 +30,12 @@ use assertions::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "mandatory 312-client release-opt3 checkpoint with explicit quiet release; separate from six normal qualification trials"]
 async fn two_second_native_pipeline_preserves_every_offered_original_and_cleans_up() {
+    assert!(
+        !cfg!(debug_assertions),
+        "the physical 312-client checkpoint requires the pinned release-opt3 binary; debug execution is forbidden before fixture setup"
+    );
     crate::git_fixture::environment::isolated_git_test!();
     // Preserve BEFORE any preparation, attempted traffic, infrastructure failure
     // or intended final proof RED. TempDir drop must never erase this evidence.
@@ -49,6 +54,7 @@ async fn two_second_native_pipeline_preserves_every_offered_original_and_cleans_
             "mcp_reads":0,"router_endpoints":0,"coding_endpoints":8,
             "source_revision":UNPROVIDED,"source_tree":UNPROVIDED,"fresh_quiet_release_sha256":UNPROVIDED,
             "outer_bound_seconds":OUTER_BOUND.as_secs(),
+            "profile_contract":"mandatory release-opt3; actual compiler flags and quiet freshness verified by the external pinned runner",
             "selector":"two_second_native_pipeline_preserves_every_offered_original_and_cleans_up"
         }),
     );

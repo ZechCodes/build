@@ -1,6 +1,9 @@
 //! Required final archives and actual finite service evidence.
 use super::*;
 pub(in super::super) fn validate_final_rows(rows: &[Row], observe: &Observation) {
+    // Clone only final evidence; never hold the ledger while recording failures.
+    let other_frames = observe.ledger.lock().unwrap().other_frames.clone();
+    super::frames::validate_frame_holds(rows, &other_frames, observe);
     for row in rows {
         validate_completed_archives(row, observe);
         if let Some(waits) = &row.waits {

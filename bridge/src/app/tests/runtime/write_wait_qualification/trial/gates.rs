@@ -1,5 +1,7 @@
 //! Final evidence gates; supported failures never become retries.
 use super::*;
+#[path = "gates/frames.rs"]
+mod frames;
 #[path = "gates/reads.rs"]
 mod reads;
 #[path = "gates/rows.rs"]

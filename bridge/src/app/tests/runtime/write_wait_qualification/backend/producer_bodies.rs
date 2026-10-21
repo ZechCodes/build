@@ -6,9 +6,9 @@ use super::super::producer_adapter::{ActualBody, ProductionBodies};
 use crate::app::runtime::pumps::status_timing::MeasuredStatusPump;
 use crate::app::tests::runtime::write_wait_qualification::fixture::QualificationFixture;
 use crate::app::{AppState, DeliveryRunner};
-use crate::harness::{AgentSession, SessionStatusSnapshot};
+use crate::harness::{AgentSession, AgentStatus, SessionStatusSnapshot};
 use crate::timing::write_wait::{mutex::acquire_mutex, WaitKind};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub(super) fn from_fixture(fixture: &QualificationFixture) -> Result<ProductionBodies, String> {
     Ok(ProductionBodies {
@@ -39,7 +39,8 @@ fn status(fixture: &QualificationFixture) -> Result<ActualBody, String> {
             .test_tab(key)
             .ok_or("warm status tab missing")?
             .session_instance
-            .clone();
+            .clone()
+            .ok_or("warm status tab has no recorded session instance")?;
         let pump = MeasuredStatusPump::new(&fixture.state, key.clone(), session, instance);
         inputs.push(StatusInput {
             pump,
@@ -52,7 +53,7 @@ fn status(fixture: &QualificationFixture) -> Result<ActualBody, String> {
     }
     Ok(Box::new(move |ordinal| {
         let input = &mut inputs[ordinal as usize % 8];
-        if !input.session.is_alive() {
+        if matches!(input.session.status(), AgentStatus::Ended { .. }) {
             return Err("finite warm session exited before its producer stopped".into());
         }
         // Read the actual fake provider's owned snapshot. Never manufacture a

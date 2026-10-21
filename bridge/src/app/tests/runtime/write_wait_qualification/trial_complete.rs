@@ -80,7 +80,6 @@ pub use report::{
 
 #[path = "trial/metrics.rs"]
 mod metrics;
-pub use metrics::union_us;
 
 #[path = "trial/runner.rs"]
 mod runner;
@@ -94,7 +93,7 @@ mod gates;
 
 #[path = "trial/suite.rs"]
 mod suite;
-pub use suite::{run_all_six, Attempt, SuiteReport, SuiteRun};
+pub use suite::{run_all_six, SuiteReport, SuiteRun};
 
 #[path = "trial/artifacts.rs"]
 mod artifacts;

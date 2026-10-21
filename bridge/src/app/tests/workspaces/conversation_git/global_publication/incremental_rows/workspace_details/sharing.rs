@@ -217,7 +217,7 @@ fn workspace_detail_scan_handles_mixed_rows_without_materializing_payloads() {
         ("old-missing", json!({}), false),
     ];
     for (number, (key, value, _)) in cases.iter().enumerate() {
-        delta = delta.put_shared("workspace.get", key, mixed(value.clone(), 1 + number % 2));
+        delta = delta.put_shared("workspace.get", *key, mixed(value.clone(), 1 + number % 2));
         delta = delta.put(
             "workspace.get",
             format!("{key}/retired"),

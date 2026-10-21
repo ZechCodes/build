@@ -9,7 +9,7 @@ struct MetadataFixture {
 
 impl MetadataFixture {
     fn new() -> Self {
-        let observer = Fixture::new();
+        let observer = Fixture::passive();
         let (project, task) = {
             let mut app = observer.state.lock().unwrap();
             let mut owner = app.take_run(OWNER).unwrap();

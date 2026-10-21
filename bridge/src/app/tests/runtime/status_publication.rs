@@ -23,6 +23,14 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_background_services(true)
+    }
+
+    fn passive() -> Self {
+        Self::with_background_services(false)
+    }
+
+    fn with_background_services(background_services: bool) -> Self {
         let (directory, repo) = init_repo();
         let mut app = qa_state_before_admission(&repo, directory.path());
         let root = insert_run(&mut app, &repo, directory.path(), OWNER, RunState::Building);
@@ -49,7 +57,14 @@ impl Fixture {
         let instance = tab.session_instance.clone().unwrap();
         let clock = crate::timing::FrameClock::reporting_to(Arc::new(|_| {}));
         app.frame_clock = Arc::clone(&clock);
-        let state = app.shared();
+        let state = if background_services {
+            app.shared()
+        } else {
+            // Metadata reads exercise only this observer, without independent
+            // delivery or maintenance producers racing its retained roots.
+            app.initialize_read_context();
+            Arc::new(Mutex::new(app))
+        };
         let pump = StatusPublicationProbe::new(&state, key.clone(), &session, instance);
         Self {
             _directory: directory,

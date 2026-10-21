@@ -95,7 +95,7 @@ impl WriteContext {
         intake: Instant,
     ) -> LogicalWrite {
         self.registry
-            .begin_optional_notice(original_id.into(), method.into(), intake)
+            .begin_optional_notice(self, original_id.into(), method.into(), intake)
     }
     pub(crate) fn same_registry(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.registry, &other.registry)

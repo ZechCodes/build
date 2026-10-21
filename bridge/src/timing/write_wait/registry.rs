@@ -75,12 +75,18 @@ impl WriteWaitRegistry {
     }
     pub(super) fn begin_optional_notice(
         self: &Arc<Self>,
+        source: &WriteContext,
         original_id: String,
         method: String,
         intake: Instant,
     ) -> LogicalWrite {
-        // Test-first scaffold: a notice remains required until policy accounting is verified.
-        self.begin(original_id, method, intake)
+        self.begin_checked(
+            original_id,
+            method,
+            intake,
+            WriteCohort::OptionalNotice,
+            Some(source),
+        )
     }
     pub(crate) fn begin_pending(
         self: &Arc<Self>,
@@ -100,6 +106,16 @@ impl WriteWaitRegistry {
         method: String,
         intake: Instant,
         cohort: WriteCohort,
+    ) -> LogicalWrite {
+        self.begin_checked(original_id, method, intake, cohort, None)
+    }
+    fn begin_checked(
+        self: &Arc<Self>,
+        original_id: String,
+        method: String,
+        intake: Instant,
+        cohort: WriteCohort,
+        source: Option<&WriteContext>,
     ) -> LogicalWrite {
         let id = WriteId(self.next());
         let obligation = ObligationId(self.next());
@@ -132,9 +148,13 @@ impl WriteWaitRegistry {
             outstanding: BTreeSet::from([obligation]),
             active: Default::default(),
             closed: Default::default(),
+            last_terminal_event: None,
             breaches: records::Breaches::new(Arc::clone(&self.ever_breached)),
         };
         self.mutate(|state| {
+            if source.is_some_and(|source| !state.context_live(source)) {
+                return Err("optional notice requires a live originating obligation");
+            }
             state.active.insert(id, Arc::new(record));
             Ok(())
         });
@@ -263,6 +283,7 @@ impl WriteWaitRegistry {
             for id in &context.origins {
                 let mut record = (**state.active.get(id).unwrap()).clone();
                 record.outstanding.remove(&context.obligation);
+                record.observe_terminal_event(now);
                 record.row.root_finished |= root;
                 record.row.cancelled |= matches!(outcome, Finish::Cancel);
                 record.row.abandoned |= matches!(outcome, Finish::Abandon);
@@ -335,6 +356,7 @@ impl WriteWaitRegistry {
                     .get()
                     .expect("guard closes end cell before collector update");
                 record.closed.insert(&interval.row, ended);
+                record.observe_terminal_event(ended);
                 state.update(*origin, record, now);
             }
             Ok(())

@@ -34,17 +34,32 @@ fn fixture() -> Fixture {
     fixture
 }
 
-fn goal(fixture: &Fixture) -> Value {
-    fixture
-        .state
-        .lock()
+fn published_goal(view: &crate::app::read_view::ReadView, owner: &str) -> Value {
+    let state = view
+        .facts
+        .state_for_test(owner)
+        .expect("accepted publication contains the owner's push state")
+        .materialize();
+    assert_eq!(state["run_id"], owner);
+    let board = view
+        .get_owned("board.list", "")
+        .expect("accepted publication contains the board");
+    let run = board["runs"]
+        .as_array()
         .unwrap()
-        .read_view
-        .load()
-        .get_owned("entity.get", OWNER)
-        .unwrap()["goal"]
-        .clone()
+        .iter()
+        .find(|run| run["run_id"] == owner)
+        .expect("accepted board retains the owner run");
+    assert_eq!(
+        state["title"], run["goal"],
+        "accepted push state and board must agree"
+    );
+    state["title"].clone()
 }
+fn goal(fixture: &Fixture) -> Value {
+    published_goal(&fixture.state.lock().unwrap().read_view.load(), OWNER)
+}
+
 fn durable_goal(fixture: &Fixture) -> String {
     fixture
         .state
@@ -324,7 +339,7 @@ fn accepted_installer_and_metadata_tail_bind_only_live_owed_origin_children() {
             current_context()
                 .map(|context| context.original_ids())
                 .unwrap_or_default(),
-            app.read_view.load().get_owned("entity.get", OWNER).unwrap()["goal"].clone(),
+            published_goal(&app.read_view.load(), OWNER),
         ));
     });
     let tail = Arc::clone(&observations);
@@ -335,7 +350,7 @@ fn accepted_installer_and_metadata_tail_bind_only_live_owed_origin_children() {
                 current_context()
                     .map(|context| context.original_ids())
                     .unwrap_or_default(),
-                app.read_view.load().get_owned("entity.get", OWNER).unwrap()["goal"].clone(),
+                published_goal(&app.read_view.load(), OWNER),
             ));
         }
     });
@@ -621,7 +636,7 @@ fn retry_resource_origins_are_not_authors_of_nested_owner_mutations() {
                 "nested retry mutation"
             );
             assert_eq!(
-                app.read_view.load().get_owned("entity.get", OTHER).unwrap()["goal"],
+                published_goal(&app.read_view.load(), OTHER),
                 "nested retry mutation"
             );
         }

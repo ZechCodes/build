@@ -43,6 +43,7 @@ pub(super) struct Record {
     pub outstanding: BTreeSet<ObligationId>,
     pub active: BTreeMap<WaitId, OpenInterval>,
     pub closed: intervals::ClosedIntervals,
+    pub last_terminal_event: Option<Instant>,
     pub breaches: Arc<Breaches>,
 }
 impl Record {
@@ -59,8 +60,11 @@ impl Record {
             .filter(|(_, ended)| ended.map_or(true, |end| end > now))
             .map(|(interval, _)| interval.clone())
             .collect();
+        row.completed_at = self.completed_at(&observed, now);
         let totals = self.closed.measure(&observed, now);
-        self.breaches.observe(&totals);
+        if row.cohort != WriteCohort::OptionalNotice {
+            self.breaches.observe(&totals);
+        }
         row.known_wait_union = totals.known;
         row.sql_service_union = totals.sql;
         row.blocked_or_sql_union = totals.blocked;
@@ -71,6 +75,28 @@ impl Record {
         row.interval_breached = self.breaches.interval.load(Ordering::Acquire);
         row.cumulative_breached = self.breaches.cumulative.load(Ordering::Acquire);
         row
+    }
+    pub(super) fn observe_terminal_event(&mut self, ended: Instant) {
+        self.last_terminal_event =
+            Some(self.last_terminal_event.map_or(ended, |old| old.max(ended)));
+    }
+    fn completed_at(
+        &self,
+        observed: &[(ActiveInterval, Option<Instant>)],
+        now: Instant,
+    ) -> Option<Instant> {
+        if !self.outstanding.is_empty()
+            || observed
+                .iter()
+                .any(|(_, ended)| ended.map_or(true, |end| end > now))
+        {
+            return None;
+        }
+        self.last_terminal_event
+            .into_iter()
+            .chain(observed.iter().filter_map(|(_, ended)| *ended))
+            .max()
+            .filter(|ended| *ended <= now)
     }
     pub(super) fn finished(&self) -> bool {
         self.outstanding.is_empty() && self.active.is_empty()

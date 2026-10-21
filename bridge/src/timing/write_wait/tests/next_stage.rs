@@ -178,3 +178,44 @@ fn policy_utilities_use_the_existing_registry_and_configured_clock() {
     assert_eq!(case.registry.now(), case.base + Duration::from_secs(3));
     write.complete();
 }
+
+#[test]
+fn generic_classification_cannot_convert_existing_required_wait_into_optional_notice() {
+    let case = Case::new();
+    let write = case
+        .registry
+        .begin_pending("unclassified-required", case.base);
+    let id = write.id();
+    let wait = lock(&write.context());
+    let interval = wait.id();
+    case.seconds(6);
+    let before = case.row(id);
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        write.classify(
+            "forged-optional",
+            "optional.notice",
+            WriteCohort::OptionalNotice,
+        );
+    }));
+    let after = case.row(id);
+    drop(wait);
+    write.cancel();
+    let unrelated = case.begin("usable-after-optional-rejection");
+    unrelated.complete();
+    assert!(
+        before.breached(),
+        "required wait had already crossed the budget"
+    );
+    assert!(
+        rejected.is_err(),
+        "only explicit sourced notice admission may select this cohort"
+    );
+    assert_eq!(after.id, id);
+    assert_eq!(after.intake, case.base);
+    assert_eq!(after.cohort, WriteCohort::PendingIntake);
+    assert_eq!(after.original_id, "unclassified-required");
+    assert_eq!(after.active[0].id, interval);
+    assert_eq!(after.conservative_upper, Duration::from_secs(6));
+    assert!(after.breached() && case.registry.has_breaches());
+    assert!(case.registry.active_snapshot().is_empty());
+}

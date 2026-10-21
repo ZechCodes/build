@@ -638,7 +638,6 @@ export function mountTaskPage(host, options) {
   }
 
   function postComment(params, draft = null) {
-    if (!state.writeOperations?.supports("tasks.comment")) return state.callRpc("tasks.comment", params);
     return state.callRpc("tasks.comment", params, {
       owner: { kind: "task-comment", taskId: state.taskId, projectId: state.projectId },
       draft: draft || {

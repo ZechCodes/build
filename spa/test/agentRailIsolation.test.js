@@ -555,7 +555,7 @@ describe("agent rail chat ownership", () => {
       agent_id: "created-agent",
       body: "start the agent",
     });
-    expect(reconnectedCall).toHaveBeenCalledWith("thread.post", expect.any(Object));
+    expect(reconnectedCall).toHaveBeenCalledWith("thread.post", expect.any(Object), expect.any(Object));
     expect(reconnectedCall).toHaveBeenCalledWith("agent.start", { id: "run-1", agent_id: "created-agent" });
   });
 

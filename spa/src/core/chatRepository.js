@@ -484,13 +484,11 @@ class ChatController {
         choice_revision: submission.choiceRevision,
         operation_id: submission.operationId,
       };
-      receipt = submission.durable
-        ? await call("thread.post", params, {
-          operationId: submission.operationId,
-          owner: { kind: "chat", ...submission.address },
-          draft: storedMessageDraft(submission),
-        })
-        : await call("thread.post", params);
+      receipt = await call("thread.post", params, {
+        operationId: submission.operationId,
+        owner: { kind: "chat", ...submission.address },
+        draft: storedMessageDraft(submission),
+      });
     } catch (error) {
       this.recordOperationFailure(submission, error);
       throw error;
@@ -542,9 +540,14 @@ class ChatController {
     this.#operations.set(submission.operationId, { ...operation, kind: "message" });
   }
 
+  isDurableSubmission(submission) {
+    return submission.durable || this.#repository.writeOperationsFor(submission.address || this.#identity)
+      .some((operation) => operation.operationId === submission.operationId);
+  }
+
   async operationStatus(submission) {
     this.#repository.assertSubmissionActive(submission);
-    if (submission.durable) return this.#repository.checkWriteOperation(submission.operationId);
+    if (this.isDurableSubmission(submission)) return this.#repository.checkWriteOperation(submission.operationId);
     if (!submission.threadPostOperations) throw new Error("Operation status is unavailable on this bridge");
     const status = await this.#repository.currentCall()(submission.threadPostOperations.statusMethod, {
       entity_id: submission.address.entityId,
@@ -578,7 +581,7 @@ class ChatController {
    *  order is submission order, which is the order they have to be settled in. */
   #uncertainPosts() {
     return [...this.#operations.values()].filter((operation) =>
-      operation.status === "uncertain" && !operation.submission.durable && operation.submission.threadPostOperations,
+      operation.status === "uncertain" && !this.isDurableSubmission(operation.submission) && operation.submission.threadPostOperations,
     );
   }
 

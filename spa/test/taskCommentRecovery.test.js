@@ -3,6 +3,22 @@ import { describe, expect, it, vi } from "vitest";
 import { mountTaskCommentRecovery } from "../src/core/taskCommentRecovery.js";
 
 describe("cached task comment failures", () => {
+  it("revisits draft restoration after an acknowledgement finishes clearing the sent composer", async () => {
+    document.body.innerHTML = '<main><form data-task-composer></form></main>';
+    const row = { operationId: "fast-failure", state: "failed", effect: "unapplied", draft: { body: "keep this" }, owner: { kind: "task-comment", taskId: "task", projectId: "project" } };
+    const service = { readOperations: () => [row], subscribe: () => () => {} };
+    const restoreDraft = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const recovery = mountTaskCommentRecovery({ host: document.querySelector("main"), service, taskId: "task", projectId: "project", restoreDraft, retry: vi.fn() });
+    recovery.sync();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    recovery.sync();
+    expect(restoreDraft).toHaveBeenCalledTimes(2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    recovery.sync();
+    expect(restoreDraft).toHaveBeenCalledTimes(2);
+    recovery.dispose();
+  });
+
   it("restores an unapplied draft, retries a fresh user action, checks unknown outcomes under the same ID and dismisses", async () => {
     document.body.innerHTML = '<main><form data-task-composer></form></main>';
     const listeners = new Set();

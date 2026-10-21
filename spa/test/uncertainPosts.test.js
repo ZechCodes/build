@@ -24,7 +24,7 @@ const address = (over = {}) => ({
 });
 
 const OPERATIONS = {
-  api_version: "2.0.0",
+  api_version: "3.24.0",
   capabilities: ["threads.postOperations"],
   thread_post_operations: { version: 1, status_method: "thread.operation" },
 };

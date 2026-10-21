@@ -645,10 +645,10 @@ describe("the composer", () => {
     expect(host.querySelector("[data-comment-recovery]").textContent).toContain("the older refused comment");
   });
 
-  it("persists comment recovery metadata and releases its sending state at ack", async () => {
+  it("persists comment recovery metadata before support is known and releases its sending state at ack", async () => {
     const listeners = new Set();
     let rows = [];
-    const service = { supports: () => true, readOperations: () => rows, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, dismiss: vi.fn(async () => {}), checkAgain: vi.fn(async () => {}) };
+    const service = { supports: () => false, readOperations: () => rows, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, dismiss: vi.fn(async () => {}), checkAgain: vi.fn(async () => {}) };
     let holdRead = false;
     call = vi.fn(async (method) => {
       if (method === "tasks.comment") return { phase: "ack", operation_id: "accepted-comment" };

@@ -105,7 +105,7 @@ export const postSubmission = async (controller, submission, settle) => {
   try {
     posted = await replyOrNothing(controller.post(submission, MUTATION_THREAD_PAGE));
   } catch (error) {
-    if (submission.durable || !error.uncertain) throw error;
+    if (controller.isDurableSubmission(submission) || !error.uncertain) throw error;
     posted = null;
   }
   if (posted) settle(posted);

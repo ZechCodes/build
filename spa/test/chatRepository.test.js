@@ -146,7 +146,7 @@ describe("chat controller ownership", () => {
     });
     const controller = repository.controller(address());
     await controller.post(controller.captureSubmission({ body: "look" }));
-    expect(call).toHaveBeenCalledWith("thread.post", expect.not.objectContaining({ viewing_context: expect.anything() }));
+    expect(call).toHaveBeenCalledWith("thread.post", expect.not.objectContaining({ viewing_context: expect.anything() }), expect.any(Object));
   });
 
   it("uses the named capabilities for message context and post operations without legacy metadata", () => {
@@ -255,7 +255,7 @@ describe("chat controller ownership", () => {
       choice_revision: 7,
       body: "ship this",
       attachments: [{ path: "uploads/a.png", name: "a.png" }],
-    }));
+    }), expect.any(Object));
     expect(newCall).not.toHaveBeenCalled();
   });
 
@@ -368,7 +368,7 @@ describe("chat controller ownership", () => {
     await expect(controller.retry(submission)).resolves.toMatchObject({ operation_id: "operation-1" });
     expect(newCall).toHaveBeenLastCalledWith("thread.post", expect.objectContaining({
       operation_id: "operation-1", agent_id: "agent-1", body: "retry me",
-    }));
+    }), expect.any(Object));
   });
 
   it("consumes the shared bridge operation fixture", () => {
@@ -500,9 +500,10 @@ describe("shared durable thread writes", () => {
     expect(controller.recoveries()).toEqual([]);
   });
 
-  it("leaves durable uncertainty to the shared status worker instead of the old thread ledger", async () => {
+  it.each([true, false])("leaves durable uncertainty to the shared status worker when initial support is %s", async (supported) => {
     const { controller, repository, publish, service, call } = durableHarness();
     repository.configureCapabilities(OPERATIONS_GREETING);
+    service.supports = () => supported;
     const submission = controller.captureSubmission({ body: "check this once" });
     controller.recordOperationFailure(submission, Object.assign(new Error("missing ack"), { uncertain: true }));
     publish([{ operationId: submission.operationId, state: "accepted", owner: { kind: "chat", ...address() } }]);

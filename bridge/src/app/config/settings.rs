@@ -86,34 +86,11 @@ impl AppState {
     /// much direction it wants — so an agent choosing a reviewer reads the
     /// answer rather than the rule.
     pub(in crate::app) fn harness_table(&self) -> Value {
-        let by_role = crate::models::AgentRole::ALL
-            .into_iter()
-            .map(|role| {
-                let filled = self.role_model_here(role, None).map(|entry| {
-                    json!({
-                        "provider": entry.provider.unwrap_or(self.default_harness),
-                        "model": entry.model,
-                        "capability": entry.capability,
-                        "direction": entry.capability.describes(),
-                    })
-                });
-                (role.wire_id().to_string(), json!(filled))
-            })
-            .collect::<serde_json::Map<_, _>>();
-        json!({
-            "harnesses": models::provider_catalogs_from(&self.cli_readings),
-            "default_harness": self.default_harness,
-            "roles": crate::models::AgentRole::ALL
-                .map(|role| json!({ "id": role.wire_id(), "describes": role.describes() })),
-            "capabilities": crate::models::AgentCapability::ALL.map(|capability| json!({
-                "id": capability.wire_id(),
-                "direction": capability.describes(),
-            })),
-            // What this device has declared, in the user's own order.
-            "role_models": self.role_models,
-            // And which model answers each role right now.
-            "roles_in_effect": by_role,
-        })
+        crate::app::model_catalog::harness_table_from(
+            self.default_harness,
+            &self.role_models,
+            &self.cli_readings,
+        )
     }
 
     /// What this set leaves the device holding for its project agents, refused

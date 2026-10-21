@@ -55,6 +55,7 @@ impl NativeReads {
                 count: 0,
                 events: Vec::new(),
                 complete: true,
+                ..Default::default()
             },
         );
         let marks = Arc::new(Mutex::new(Vec::new()));
@@ -481,4 +482,79 @@ async fn tasks_columns_snapshot_preserves_project_cleanup_refusal() {
         .held_read("tasks.columns", json!({"project_id":reads.project}))
         .await;
     assert_eq!(answered["ok"], true, "{answered}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn term_list_answers_content_without_app_lock() {
+    let mut reads = NativeReads::new();
+    let answer = reads
+        .held_read("term.list", json!({"project_id":reads.project}))
+        .await;
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["result"]["terminals"], json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_deletion_retires_its_published_captures() {
+    let mut reads = NativeReads::new();
+    let repository = {
+        let mut app = reads.state.lock().unwrap();
+        app.config_path = Some(reads._directory.path().join("config.json"));
+        let routed = app.captures[&reads.capture].routed_to(crate::capture::CaptureRouting {
+            project_id: reads.project.clone(),
+            kind: crate::capture::CaptureTarget::Task,
+            target_id: reads.task.clone(),
+            routed_at: now_rfc3339(),
+            rationale: None,
+        });
+        app.save_capture(routed).unwrap();
+        app.project_at(0).repo_path.clone()
+    };
+    let before = reads
+        .held_read("capture.get", json!({"capture_id":reads.capture}))
+        .await;
+    assert_eq!(before["ok"], true, "{before}");
+    let handler = AppState::handler(Arc::clone(&reads.state));
+    let deleted = call(
+        &handler,
+        "project.delete",
+        json!({"project_id":reads.project,"confirm":true}),
+    );
+    assert_eq!(deleted["ok"], true, "{deleted}");
+    assert!(
+        repository.is_dir(),
+        "deletion preserves the configured source"
+    );
+    let after = reads
+        .held_read("capture.get", json!({"capture_id":reads.capture}))
+        .await;
+    assert_eq!(after["ok"], false, "{after}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn borrowed_task_keeps_document_availability_across_maintenance() {
+    let mut reads = NativeReads::new();
+    {
+        let mut app = reads.state.lock().unwrap();
+        let docs = app.store.as_ref().unwrap().plan_docs_dir(&reads.task);
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("plan.md"), "canonical plan").unwrap();
+        app.refresh_owner_snapshot_observations(&reads.task);
+        app.publish_owner_snapshot_projection(&reads.task);
+    }
+    let before = reads
+        .held_read("task.get", json!({"task_id":reads.task}))
+        .await;
+    assert_eq!(before["result"]["docs_available"], true, "{before}");
+    {
+        let mut app = reads.state.lock().unwrap();
+        let borrowed = app.plans.remove(&reads.task).unwrap();
+        let _maintenance = app.refresh_snapshot_observations();
+        app.plans.insert(reads.task.clone(), borrowed);
+        app.publish_owner_snapshot_projection(&reads.task);
+    }
+    let after = reads
+        .held_read("task.get", json!({"task_id":reads.task}))
+        .await;
+    assert_eq!(after["result"]["docs_available"], true, "{after}");
 }

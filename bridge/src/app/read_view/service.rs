@@ -3,11 +3,15 @@ use crate::api::{self, ApiError};
 use crate::transport::Frame;
 use serde_json::{json, Value};
 
+mod streams;
+
 pub(in crate::app) struct SnapshotService {
     view: ReadViewSlot,
     inventory: std::sync::Arc<crate::harness::inventory::Inventory>,
     readings: std::sync::Arc<crate::harness::installed::Readings>,
     updates: Option<std::sync::Arc<crate::update::UpdateService>>,
+    admission: Option<std::sync::Arc<crate::update::AdmissionGate>>,
+    qa_agent: bool,
 }
 
 impl SnapshotService {
@@ -17,6 +21,8 @@ impl SnapshotService {
             inventory: std::sync::Arc::clone(app.harness_inventory()),
             readings: std::sync::Arc::clone(&app.cli_readings),
             updates: app.update_service(),
+            admission: app.update_admission(),
+            qa_agent: app.qa_agent,
         }
     }
 
@@ -32,6 +38,10 @@ impl SnapshotService {
     }
 
     fn read(&self, method: &str, params: &Value) -> Result<Value, ApiError> {
+        let _lease = self.native_admission(method)?;
+        if matches!(method, "stream.events" | "stream.state") {
+            return streams::read(&self.view.load(), method, params, self.qa_agent);
+        }
         let params = crate::api::v1::normalize_read_params(method, params)?;
         if method == "harnesses.list" {
             return serialized(method, self.inventory.snapshot());
@@ -44,6 +54,16 @@ impl SnapshotService {
             return serialized(method, service.status());
         }
         let view = self.view.load();
+        if method == "tasks.columns"
+            && view
+                .observations
+                .as_ref()
+                .is_some_and(|context| context.deleting_project())
+        {
+            return Err(ApiError::unavailable(
+                crate::app::rpc::PROJECT_DELETION_IN_PROGRESS,
+            ));
+        }
         let (method, owner) = read_key(method, &params)?;
         let mut answer = if method == "workspace.list" && params["project_id"].as_str() == Some("")
         {
@@ -54,8 +74,8 @@ impl SnapshotService {
                 None => missing(method, owner)?,
             }
         };
-        if method == "workspace.get" {
-            answer = workspace_detail(&view, &params, owner, answer)?;
+        if matches!(method, "workspace.get" | "task.get") {
+            answer = owner_detail(&view, &params, method, owner, answer)?;
         }
         if method == "agent.list" {
             filter_project_workers(&params, &mut answer);
@@ -64,6 +84,30 @@ impl SnapshotService {
             overlay_catalog(&self.readings, &mut answer)?;
         }
         crate::api::v1::check_read_result(method, answer)
+    }
+
+    fn native_admission(
+        &self,
+        method: &str,
+    ) -> Result<Option<crate::update::AdmissionLease>, ApiError> {
+        if !matches!(
+            method,
+            "capture.get"
+                | "task.get"
+                | "task.stages"
+                | "tasks.columns"
+                | "stream.events"
+                | "stream.state"
+        ) {
+            return Ok(None);
+        }
+        self.admission
+            .as_ref()
+            .map(|gate| {
+                gate.try_enter()
+                    .ok_or_else(|| ApiError::busy("bridge update handoff in progress"))
+            })
+            .transpose()
     }
 }
 
@@ -102,6 +146,10 @@ fn read_key<'a>(method: &str, params: &'a Value) -> Result<(&'static str, &'a st
             params["workspace_id"].as_str().unwrap_or(""),
         )),
         "agent.list" => Ok(("agent.list", params["entity_id"].as_str().unwrap_or(""))),
+        "capture.get" => Ok(("capture.get", params["capture_id"].as_str().unwrap_or(""))),
+        "task.get" => Ok(("task.get", params["task_id"].as_str().unwrap_or(""))),
+        "task.stages" => Ok(("task.stages", params["task_id"].as_str().unwrap_or(""))),
+        "tasks.columns" => Ok(("tasks.columns", params["project_id"].as_str().unwrap_or(""))),
         _ => Err(ApiError::unknown_method(method)),
     }
 }
@@ -109,6 +157,10 @@ fn read_key<'a>(method: &str, params: &'a Value) -> Result<(&'static str, &'a st
 fn missing(method: &str, owner: &str) -> Result<Value, ApiError> {
     match method {
         "workspace.list" => Ok(json!({"workspaces": []})),
+        "capture.get" => Err(ApiError::classify(format!("unknown capture_id: {owner}"))),
+        "task.get" => Err(ApiError::classify("unknown plan_id".into())),
+        "task.stages" => Err(ApiError::classify("unknown task_id".into())),
+        "tasks.columns" => Err(ApiError::classify(format!("unknown project_id: {owner}"))),
         "workspace.get" => Err(ApiError::classify(format!("unknown workspace_id: {owner}"))),
         "agent.list" => Err(crate::api::v1::thread::refine(ApiError::classify(format!(
             "agent.list: unknown entity {owner}"
@@ -156,10 +208,11 @@ impl super::super::AppState {
     }
 }
 
-fn workspace_detail(
+fn owner_detail(
     view: &ReadView,
     params: &Value,
-    workspace: &str,
+    method: &'static str,
+    owner: &str,
     mut answer: Value,
 ) -> Result<Value, ApiError> {
     if answer["thread"].is_null() {
@@ -170,10 +223,16 @@ fn workspace_detail(
     }
     let named_agent = optional_identity(params, "agent_id")?;
     if let Some(agent) = named_agent {
-        let key = format!("{workspace}/{agent}");
-        answer = view
-            .get_owned("workspace.get", &key)
-            .ok_or_else(|| ApiError::classify(format!("unknown agent_id: {agent}")))?;
+        let key = format!("{owner}/{agent}");
+        answer = view.get_owned(method, &key).ok_or_else(|| {
+            let error = view
+                .get("task.get.error", &key)
+                .as_deref()
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("unknown agent_id: {agent}"));
+            ApiError::classify(error)
+        })?;
     }
     let Some(canonical_agent) = answer["thread"]["agent"]["id"].as_str() else {
         return Ok(answer);
@@ -203,9 +262,21 @@ fn workspace_detail(
             })?
             .render(params)
     };
-    answer["thread"] = thread.clone();
-    answer["run"]["thread"] = thread;
+    if method == "workspace.get" {
+        answer["run"]["thread"] = thread.clone();
+    }
+    answer["thread"] = thread;
     Ok(answer)
+}
+
+#[cfg(test)]
+fn workspace_detail(
+    view: &ReadView,
+    params: &Value,
+    owner: &str,
+    answer: Value,
+) -> Result<Value, ApiError> {
+    owner_detail(view, params, "workspace.get", owner, answer)
 }
 
 fn empty_thread(params: &Value) -> Value {

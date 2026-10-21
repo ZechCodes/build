@@ -1,5 +1,5 @@
 //! Share ownership resolution across every chunk prepared for one publication.
-use super::{AppState, Arc, BTreeSet, Mutex, ProjectionOwnership};
+use super::{AppState, Arc, BTreeSet, Mutex, ProjectionOwnership, Value};
 
 pub(in crate::app) struct ProjectionOwnershipGuard<'a> {
     slot: &'a Mutex<Option<Arc<ProjectionOwnership>>>,
@@ -82,6 +82,20 @@ impl AppState {
                 })
             })
             .collect::<BTreeSet<_>>();
+        if let Some(plan) = self
+            .runs
+            .get(owner)
+            .and_then(|run| run.run.plan_id.as_ref())
+        {
+            affected.insert(plan.0.clone());
+        }
+        if let Some(plan) = previous
+            .get("task.implementation", owner)
+            .as_deref()
+            .and_then(Value::as_str)
+        {
+            affected.insert(plan.to_owned());
+        }
         affected.insert(owner.to_string());
         affected
     }

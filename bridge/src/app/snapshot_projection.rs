@@ -14,6 +14,7 @@ pub(in crate::app) use workspace_reviews::{WorkspaceReviewObservation, Workspace
 #[derive(Default)]
 pub(in crate::app) struct SnapshotObservations {
     ready: bool,
+    plan_docs: BTreeSet<String>,
     pub(in crate::app) observation_owners: crate::observation_changes::ChangeKeys,
     pub(in crate::app) observation_reservations: crate::observation_changes::ChangeKeys,
     pending_owners: Mutex<BTreeSet<String>>,
@@ -86,6 +87,8 @@ impl AppState {
         self.refresh_snapshot_task_observations().expect(
             "initial watched-task observations must be authoritative before snapshot admission",
         );
+        self.initialize_native_snapshots();
+        self.initialize_stream_snapshots();
         let histories = self
             .prepare_snapshot_histories(SnapshotDelta::new(self.read_view.next_version()), None);
         self.read_view.publish_delta(histories);
@@ -350,7 +353,7 @@ impl AppState {
                 Err(_) => delta.remove("agent.list", owner),
             };
         }
-        delta
+        self.prepare_native_owner_snapshots(delta, previous, owners)
     }
 
     pub(in crate::app) fn prepare_global_snapshot(
@@ -414,6 +417,7 @@ mod attention_notices;
 mod history;
 pub(in crate::app) mod incremental;
 mod maintenance;
+mod native_reads;
 mod observations;
 mod ownership;
 mod projects;

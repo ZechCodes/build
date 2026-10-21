@@ -41,7 +41,7 @@ web client you are editing served by them.
   `packageManager` pins); the desktop app needs Node 22.12 or newer.
 - [uv](https://docs.astral.sh/uv/) for `skriftapp/` (Python 3.13 or newer,
   `skriftapp/pyproject.toml`) and mandatory transport interop tests (CI pins
-  uv 0.12.13; `transport/python/uv.lock` records the reference dependencies).
+  uv 0.13.4; `transport/python/uv.lock` records the reference dependencies).
 - Docker or Podman with compose, for the local stack.
 - Chromium or Chrome, for the web client's browser tests (on `PATH`, or
   `CHROMIUM_PATH` set to its executable). The landing check needs

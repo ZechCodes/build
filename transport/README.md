@@ -55,7 +55,7 @@ installed dependencies; Vite’s existing shim uses SPA-local sodium. Both locks
 retain libsodium/libsodium-wrappers 0.7.16.
 
 Python is a reference/test dependency, not a production app or bridge runtime
-dependency. CI pins uv 0.12.13 and uses frozen resolution. From Build’s root:
+dependency. CI pins uv 0.13.4 and uses frozen resolution. From Build’s root:
 
 ```sh
 nice -n 10 uv sync --frozen --project transport/python

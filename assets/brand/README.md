@@ -22,6 +22,7 @@ Create a local Python environment and install the generation dependencies:
 
 ```sh
 python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip==26.2.2
 .venv/bin/python -m pip install CairoSVG Pillow
 ```
 

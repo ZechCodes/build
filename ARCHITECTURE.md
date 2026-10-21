@@ -2327,6 +2327,18 @@ finishes, and responses retain their ordinary shape. Calls on one socket remain
 ordered; independent sockets read while mutation turns or the app mutex are
 occupied.
 
+MCP `list_tasks` returns at most 20 full task rows, defaulting to 20. Its
+optional `limit` accepts 1–20; `cursor` continues the same state/status/label
+filter. The reply is `{project_id, tasks, user_session, next_cursor?}`.
+Only an absent `next_cursor` ends the walk: a filtered page may be empty.
+The existing store/project/filter-scoped cursor seeks below an immutable task
+number, in descending order, so editing a task does not move it between pages.
+Selection and the cursor probe precede timeline, identity and summary hydration.
+`get_task` retains the complete task and timeline. This MCP paging contract
+does not change the SPA's separate `tasks.list` RPC or its 100-row page requests.
+Router `list_work` selects its compact fields directly from the accepted shared
+board fragments, without materializing the full board first.
+
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
 `Project`), which a project's agents take from their persisted purpose (see
 A project's agents below). Each action is a `BridgeAction` variant. The tool lists are
@@ -2870,6 +2882,16 @@ acquisition (`read.sql_wait`). Synchronous `read.admission`, `read.query`,
 includes socket submission through the parsed reply. These diagnostic fields
 compile only in tests.
 
+The focused `busy_mcp_lists_finish_within_100ms` release regression reuses the
+main busy fixture with 700 tasks, 200 conversations and 190 worktrees. Twelve
+readers request both MCP lists alongside the normal writers and status
+observations. It measures through socket transfer and reply parsing, enforcing
+the 100 ms maximum and p99 for each page. Test-only phase tracing separates SQL
+methods (including record decoding), row construction, snapshot projection and
+reply serialization. The release timing workflow runs this regression alongside
+the existing busy lock test. Normal tests cover bounded page work and keyset
+continuation independently of machine timing.
+
 Unit tests sit beside the code (`#[cfg(test)]` modules, and directories such as
 `bridge/src/app/tests/` and `bridge/src/store/tests/`). Integration tests are in
 `bridge/tests/`: the wire contract (`api_contract.rs`), relay (`relay_*.rs`),
@@ -2904,7 +2926,7 @@ Vanilla JavaScript ES modules with no framework, bundled by Vite
 dependency is self-hosted. `@build/secure-transport` is a `file:../transport/js`
 dependency within this checkout (`spa/package.json`). SPA and web commit their
 portable npm locks; install `transport/js` from its own lock before either
-consumer, using Node 22.23.3/npm 12.0.2 and the install sequence in
+consumer, using Node 22.23.4/npm 12.0.2 and the install sequence in
 [AGENTS.md](AGENTS.md#working-rules). App and QA images build the binding from
 this same checkout; the Build commit pins the shipped transport. The Vite libsodium shim uses SPA-local libsodium 0.7.16, matching the
 transport lock; Node resolves the binding's dependencies from `transport/js`.

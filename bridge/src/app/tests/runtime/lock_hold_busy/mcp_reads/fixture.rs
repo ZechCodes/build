@@ -103,6 +103,8 @@ impl Fixture {
             state: None,
             status: None,
             label: None,
+            limit: None,
+            cursor: None,
         }
     }
 

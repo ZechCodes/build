@@ -60,11 +60,21 @@ impl AppState {
                 state,
                 status,
                 label,
-            } => self.tasks_list(&scope.params(asked(&[
-                ("state", state),
-                ("status", status),
-                ("label", label),
-            ]))),
+                limit,
+                cursor,
+            } => {
+                let mut params = scope.params(asked(&[
+                    ("state", state),
+                    ("status", status),
+                    ("label", label),
+                    ("cursor", cursor),
+                ]));
+                if let Some(limit) = limit {
+                    params["limit"] = json!(limit);
+                }
+                self.tracker_store()
+                    .and_then(|store| self.task_read_context().mcp_tasks_list(store, &params))
+            }
             BridgeAction::TrackerGetTask { task_id } => {
                 self.scoped_task_call(&scope, task_id, json!({}), |app, params| {
                     app.tasks_get(params)

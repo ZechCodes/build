@@ -8,7 +8,7 @@ description: Build/launch/drive recipe for verifying spa/ changes end-to-end in 
 ## Setup
 
 `@build/secure-transport` resolves as `file:../transport/js` within this
-checkout. Use Node 22.23.3/npm 12.0.2 and the committed portable locks. From
+checkout. Use Node 22.23.4/npm 12.0.2 and the committed portable locks. From
 the repository root, install the binding before SPA:
 
 ```sh

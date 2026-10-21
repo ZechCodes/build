@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+mod mcp_lists;
 mod mcp_reads;
 
 const WORKTREES: usize = 190;
@@ -59,10 +60,21 @@ struct Busy {
 
 impl Busy {
     fn new() -> Self {
-        Self::with_seed(|_, _, _| ()).0
+        Self::with_task_body("")
+    }
+
+    fn with_task_body(body: &str) -> Self {
+        Self::with_seeded_tasks(body, |_, _, _| ()).0
     }
 
     fn with_seed<T>(
+        seed_reads: impl FnOnce(&mut AppState, &[(String, String)], &[String]) -> T,
+    ) -> (Self, T) {
+        Self::with_seeded_tasks("", seed_reads)
+    }
+
+    fn with_seeded_tasks<T>(
+        body: &str,
         seed_reads: impl FnOnce(&mut AppState, &[(String, String)], &[String]) -> T,
     ) -> (Self, T) {
         let root = tempfile::tempdir().unwrap();
@@ -70,7 +82,14 @@ impl Busy {
         let repo = app.project_at(0).repo_path.clone();
         let tasks: Vec<String> = (0..TASKS)
             .map(|i| {
-                filed(&mut app, &project, &format!("busy task {i}"))["id"]
+                let created = app.handle(req(
+                    "tasks.create",
+                    json!({
+                        "project_id":project,"title":format!("busy task {i}"),"body":body
+                    }),
+                ));
+                assert_eq!(created["ok"], true, "{created}");
+                created["result"]["task"]["id"]
                     .as_str()
                     .unwrap()
                     .to_string()

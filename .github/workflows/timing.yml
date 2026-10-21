@@ -1,11 +1,12 @@
 name: Bridge timing tests
 
-# Opt-in timing tests the default run ignores (#280, #289, #709, #741):
+# Opt-in timing tests the default run ignores (#280, #289, #709, #738, #741):
 # a_git_child_costs_what_the_child_costs (src/git_process.rs),
 # the_daemon_answers_reads_and_writes_while_three_ptys_flood
 # (tests/concurrency_load.rs), and busy_writers_keep_app_lock_holds_below_budget
-# (src/app/tests/runtime/lock_hold_busy.rs), plus the three focused six_mcp_reads
-# comparisons in lock_hold_busy/mcp_reads.rs. They compare wall-clock times against
+# (src/app/tests/runtime/lock_hold_busy.rs), busy_mcp_lists_finish_within_100ms,
+# and the three focused six_mcp_reads comparisons in lock_hold_busy/mcp_reads.rs.
+# They compare wall-clock times against
 # fixed ceilings, which a machine running other suites breaks with nothing wrong in
 # the bridge, so they are out of `cargo test` and run here instead, alone on a
 # fresh runner. The first two retain their debug profile; the busy lock-hold and
@@ -32,6 +33,10 @@ jobs:
         working-directory: bridge
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.4"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -70,6 +75,10 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.4"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
@@ -90,8 +99,10 @@ jobs:
         run: >-
           nice -n 10 cargo test --release --locked --lib --
           --ignored
+          --nocapture
           --test-threads=1
           busy_writers_keep_app_lock_holds_below_budget
+          busy_mcp_lists_finish_within_100ms
           six_mcp_reads_without_writers
           six_mcp_reads_with_busy_writers
           six_mcp_reads_with_busy_writers_and_task_lists

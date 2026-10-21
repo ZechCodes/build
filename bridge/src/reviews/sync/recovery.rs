@@ -334,4 +334,5 @@ pub(super) fn checkpoint(task_id: &str, phase: &str) {
 }
 
 #[cfg(all(test, unix))]
+#[path = "recovery/write_wait_tests.rs"]
 mod write_wait_tests;

@@ -601,9 +601,9 @@ fn queued_finish_drops_staging_when_its_opening_ends_before_source_lock() {
     );
     assert_eq!(begin["ok"], true, "{begin}");
     let id = begin["result"]["upload_id"].as_str().unwrap().to_string();
-    let held = crate::source_sync::SyncLock::acquire_many(
-        std::slice::from_ref(&plain),
-        Duration::from_secs(1),
+    let held = crate::app::fs::path_lock::RootLock::acquire(
+        &plain,
+        Instant::now() + Duration::from_secs(1),
     )
     .unwrap();
     let state = app.shared();

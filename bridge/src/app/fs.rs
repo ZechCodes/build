@@ -14,7 +14,7 @@ use super::{b64encode, fenced_scope_path, media_mime_hint, require_str, AppState
 
 mod deferred;
 mod errors;
-mod path_lock;
+pub(in crate::app) mod path_lock;
 pub(in crate::app) mod uploads;
 use deferred::{FileMutation, FileTarget};
 
@@ -26,6 +26,15 @@ pub(in crate::app) mod service_test;
 /// project source resolves to: the source moved after the caller opened it.
 pub(crate) const MOVED_SOURCE: &str =
     "Build cannot use this project folder: it moved. Reopen Files before reading or saving it.";
+
+pub(in crate::app) fn refuse_active_source(root: &std::path::Path) -> Result<(), String> {
+    if path_lock::source_in_use(root) {
+        return Err(errors::encode(ApiError::busy(
+            "A filesystem operation is still using this source; try again.",
+        )));
+    }
+    Ok(())
+}
 
 /// The directory whose files an `fs.*` call may reach.
 ///

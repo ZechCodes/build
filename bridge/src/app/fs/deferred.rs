@@ -1,10 +1,9 @@
 //! Filesystem preparation, timed record validation, service, and memory publication.
-use super::path_lock::DestinationLock;
+use super::path_lock::{DestinationLock, RootLock, SourceUse};
 use super::{AppState, FileScope, MOVED_SOURCE};
 use crate::api::ApiError;
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{DeferredGit, DeferredWork, TermScope};
-use crate::source_sync::SyncLock;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -96,19 +95,16 @@ impl FileTarget {
         let root = std::fs::canonicalize(&self.recorded_root).map_err(|error| {
             ApiError::invalid_params(format!("cannot resolve scope root: {error}"))
         })?;
-        let repository = SyncLock::acquire_many(
-            std::slice::from_ref(&root),
-            deadline.saturating_duration_since(Instant::now()),
-        )
-        .map_err(|_| ApiError::busy("Another filesystem operation is still running; try again."))?;
+        let root_lock = RootLock::acquire(&root, deadline)?;
         let destination = self
             .destination
             .as_ref()
             .map(|relative| DestinationLock::acquire(&root, relative, deadline))
             .transpose()?;
         let held = FileLocks {
-            _repository: repository,
+            _root: root_lock,
             _destination: destination,
+            _source: SourceUse::acquire(&self.recorded_root),
         };
         let current = std::fs::canonicalize(&self.recorded_root).map_err(|error| {
             ApiError::invalid_params(format!("cannot resolve scope root: {error}"))
@@ -137,13 +133,14 @@ impl FileTarget {
 
 pub(super) struct PreparedFile {
     pub(super) root: PathBuf,
-    // Keep repository serialization through the final memory publication.
+    // Keep filesystem serialization and source identity through final publication.
     pub(super) held: FileLocks,
 }
 
 pub(super) struct FileLocks {
-    _repository: Vec<SyncLock>,
+    _root: RootLock,
     _destination: Option<DestinationLock>,
+    _source: SourceUse,
 }
 
 /// Disk changes can precede an error response: readback or reopen persistence

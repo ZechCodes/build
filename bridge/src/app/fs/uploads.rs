@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 pub(in crate::app) const UPLOAD_MAX_BYTES: u64 = 256 * 1_048_576;
@@ -114,7 +114,14 @@ impl Upload {
 
     pub(in crate::app) fn dispose(self) {
         self.cancel();
-        self.file.lock().unwrap().take();
+        let mut file = match self.file.try_lock() {
+            Ok(file) => file,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            // The running service owns another Arc and will dispose its
+            // cancelled payload when it settles. Cancellation need not wait.
+            Err(TryLockError::WouldBlock) => return,
+        };
+        file.take();
     }
 }
 

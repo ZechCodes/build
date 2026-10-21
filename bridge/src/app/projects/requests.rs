@@ -487,6 +487,7 @@ impl AppState {
             .iter()
             .find(|source| source.id == source_id)
             .expect("source was checked");
+        crate::app::fs::refuse_active_source(&source.path)?;
         self.refuse_source_shells_at(&source.path)?;
 
         self.refuse_moving_sources_under_workers(&project_id)?;

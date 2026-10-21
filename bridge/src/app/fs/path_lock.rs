@@ -1,32 +1,67 @@
-//! Destination serialization shared by overlapping file scopes.
-//!
-//! Repository locks use common Git directories. These keys have a separate
-//! namespace: a target which became a directory cannot alias its repository lock.
+//! Filesystem root and destination serialization, independent of Git work.
+//! Root and destination keys also have separate namespaces, so a directory
+//! destination cannot alias the root lock already held by the same operation.
 use crate::api::ApiError;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Instant;
 
-fn destinations() -> &'static (Mutex<HashSet<PathBuf>>, Condvar) {
-    static HELD: OnceLock<(Mutex<HashSet<PathBuf>>, Condvar)> = OnceLock::new();
+type LockRegistry = (Mutex<HashSet<PathBuf>>, Condvar);
+
+fn roots() -> &'static LockRegistry {
+    static HELD: OnceLock<LockRegistry> = OnceLock::new();
     HELD.get_or_init(Default::default)
 }
 
+fn destinations() -> &'static LockRegistry {
+    static HELD: OnceLock<LockRegistry> = OnceLock::new();
+    HELD.get_or_init(Default::default)
+}
+
+pub(in crate::app) struct RootLock {
+    _held: PathLock,
+}
+
+impl RootLock {
+    /// The caller has canonicalized the root outside the app mutex.
+    pub(in crate::app) fn acquire(root: &Path, deadline: Instant) -> Result<Self, ApiError> {
+        Ok(Self {
+            _held: PathLock::acquire(roots(), root.to_path_buf(), deadline)?,
+        })
+    }
+}
+
 pub(super) struct DestinationLock {
-    path: PathBuf,
+    _held: PathLock,
 }
 
 impl DestinationLock {
-    /// The repository lock is already held. Share its acquisition deadline;
+    /// The root lock is already held. Share its acquisition deadline;
     /// all path resolution and contention waits stay outside the app mutex.
     pub(super) fn acquire(
         root: &Path,
         relative: &str,
         deadline: Instant,
     ) -> Result<Self, ApiError> {
-        let path = destination_key(root, relative)?;
-        let (held, released) = destinations();
+        Ok(Self {
+            _held: PathLock::acquire(destinations(), destination_key(root, relative)?, deadline)?,
+        })
+    }
+}
+
+struct PathLock {
+    registry: &'static LockRegistry,
+    path: PathBuf,
+}
+
+impl PathLock {
+    fn acquire(
+        registry: &'static LockRegistry,
+        path: PathBuf,
+        deadline: Instant,
+    ) -> Result<Self, ApiError> {
+        let (held, released) = registry;
         let mut held = held.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         while held.contains(&path) {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -41,7 +76,7 @@ impl DestinationLock {
                 .0;
         }
         held.insert(path.clone());
-        Ok(Self { path })
+        Ok(Self { registry, path })
     }
 }
 
@@ -63,12 +98,56 @@ fn destination_key(root: &Path, relative: &str) -> Result<PathBuf, ApiError> {
     })
 }
 
-impl Drop for DestinationLock {
+impl Drop for PathLock {
     fn drop(&mut self) {
-        let (held, released) = destinations();
+        let (held, released) = self.registry;
         held.lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&self.path);
         released.notify_all();
+    }
+}
+
+fn source_uses() -> &'static Mutex<HashMap<PathBuf, usize>> {
+    static USES: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
+    USES.get_or_init(Default::default)
+}
+
+/// Tracks recorded roots without canonicalization or I/O in metadata guards.
+pub(super) struct SourceUse {
+    recorded_root: PathBuf,
+}
+
+impl SourceUse {
+    pub(super) fn acquire(recorded_root: &Path) -> Self {
+        let mut uses = source_uses()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *uses.entry(recorded_root.to_path_buf()).or_default() += 1;
+        Self {
+            recorded_root: recorded_root.to_path_buf(),
+        }
+    }
+}
+
+pub(super) fn source_in_use(recorded_root: &Path) -> bool {
+    source_uses()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(recorded_root)
+}
+
+impl Drop for SourceUse {
+    fn drop(&mut self) {
+        let mut uses = source_uses()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let count = uses
+            .get_mut(&self.recorded_root)
+            .expect("registered source");
+        *count -= 1;
+        if *count == 0 {
+            uses.remove(&self.recorded_root);
+        }
     }
 }

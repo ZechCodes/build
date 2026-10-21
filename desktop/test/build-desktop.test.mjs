@@ -37,16 +37,22 @@ function runBuild(version) {
   return { commands, errors, exitCode };
 }
 
-for (const version of ["20.20.0", "22.12.0", "22.22.99", "22.23.0", "22.23.3"]) {
+for (const version of [
+  "20.20.0", "21.99.99", "22.12.0", "22.22.99", "22.23.0", "22.23.3",
+  "23.0.0", "23.99.99", "24.0.0", "24.22.1", "25.99.99",
+  "26.8.1", "26.12.1", "27.0.0", "28.0.0",
+]) {
   test(`desktop build rejects Node ${version} before installing or packaging`, () => {
     const result = runBuild(version);
     assert.equal(result.exitCode, 1);
     assert.deepEqual(result.commands, []);
-    assert.match(result.errors.join("\n"), /Node.js 22\.23\.4 or newer is required/);
+    assert.deepEqual(result.errors, [
+      "Node.js >=22.23.4 <23 is required. See README.md (Build locally).",
+    ]);
   });
 }
 
-for (const version of ["22.23.4", "22.23.5", "22.24.0", "24.0.0"]) {
+for (const version of ["22.23.4", "22.23.5", "22.24.0", "22.99.99"]) {
   test(`desktop build accepts Node ${version}`, () => {
     const result = runBuild(version);
     assert.equal(result.exitCode, 0);

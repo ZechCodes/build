@@ -4,6 +4,7 @@ use crate::app::read_view::ReadView;
 use std::sync::Mutex;
 
 const ORIGINAL: &str = "qual/lifecycle/borrowed-board-cancel";
+const CANCELLATION: &str = "qual/lifecycle/borrowed-board-unassign";
 const PEER: &str = "run-saved-intent-publication-peer";
 
 struct BorrowedPeer {
@@ -50,6 +51,15 @@ fn board_task(view: &ReadView, task: &str) -> Option<Value> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ready_retry_cancellation_waits_for_accepted_board_behind_borrowed_owner() {
+    borrowed_cancellation(ORIGINAL, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_author_waits_for_accepted_board_behind_borrowed_owner() {
+    borrowed_cancellation(CANCELLATION, false).await;
+}
+
+async fn borrowed_cancellation(observed_original: &'static str, cancelled: bool) {
     let fixture = Fixture::new();
     fixture.add_publication_peer(PEER);
     let (registry, offset) = clock();
@@ -62,7 +72,7 @@ async fn ready_retry_cancellation_waits_for_accepted_board_behind_borrowed_owner
     let cancellation = rpc
         .request(
             0,
-            "qual/lifecycle/borrowed-board-unassign",
+            CANCELLATION,
             "tasks.assign",
             json!({"task_id":fixture.intent.task_id,"assignee":null}),
         )
@@ -71,13 +81,13 @@ async fn ready_retry_cancellation_waits_for_accepted_board_behind_borrowed_owner
     let sql = task(&rpc, &fixture, "qual/lifecycle/borrowed-board-task").await;
     let blocked = fixture.state.lock().unwrap().read_view.load();
     let stale = board_task(&blocked, &fixture.intent.task_id);
-    let original_pending = row(&registry, ORIGINAL, false).await;
+    let original_pending = row(&registry, observed_original, false).await;
 
     let (sent, received) = mpsc::channel();
     let watchdog = registry.watchdog(
         Duration::from_millis(5),
         Arc::new(move |row| {
-            if row.original_id == ORIGINAL {
+            if row.original_id == observed_original {
                 let _ = sent.send(row);
             }
         }),
@@ -89,7 +99,7 @@ async fn ready_retry_cancellation_waits_for_accepted_board_behind_borrowed_owner
     let restored = peer.restore();
     let accepted = fixture.state.lock().unwrap().read_view.load();
     let published = board_task(&accepted, &fixture.intent.task_id);
-    let completed = row(&registry, ORIGINAL, true).await;
+    let completed = row(&registry, observed_original, true).await;
     let service = step(&fixture);
     drop(watchdog);
     let effects = finish(fixture, rpc).await;
@@ -99,7 +109,7 @@ async fn ready_retry_cancellation_waits_for_accepted_board_behind_borrowed_owner
     eprintln!(
         "saved_intent_lifecycle_contract_expectations={}",
         json!({
-            "case":"borrowed_board_cancel", "offered_semantic":2,
+            "case":"borrowed_board_cancel", "observed_original":observed_original, "offered_semantic":2,
             "expected_cancelled_semantic":1,"expected_cancellation_commands":1,
             "expected_original_publication_faults":1,"qualification_successes":0,
         })
@@ -162,5 +172,6 @@ async fn ready_retry_cancellation_waits_for_accepted_board_behind_borrowed_owner
     assert_eq!(completed.id, pending.id);
     assert!(completed.root_finished && completed.completed_at.is_some());
     assert!(completed.outstanding.is_empty() && completed.active.is_empty());
-    assert!(completed.cancelled && !completed.abandoned && completed.breached());
+    assert_eq!(completed.cancelled, cancelled);
+    assert!(!completed.abandoned && completed.breached());
 }

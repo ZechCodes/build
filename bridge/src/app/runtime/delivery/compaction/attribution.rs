@@ -117,7 +117,11 @@ impl Drop for Entry {
 struct Slot {
     requested: Option<Arc<Entry>>,
     pending: Vec<Arc<Entry>>,
+    // Overwritten native receipts cannot prove these earlier attempts done.
     sent: Vec<Arc<Entry>>,
+    // Mirrors the one receipt the native ledger can actually stamp. Weak so
+    // the sent principals, not this selector, retain the owning obligations.
+    native_sent: Option<Weak<Entry>>,
 }
 struct Inner {
     writer: Mutex<()>,
@@ -206,9 +210,15 @@ impl CompactionAttribution {
         }
         Some(entry)
     }
-    pub(in crate::app) fn sent(&self, entry: &Arc<Entry>) {
+    pub(in crate::app) fn sent(&self, owner: &str, agent: &str, entry: Option<&Arc<Entry>>) {
         self.mutate(|next| {
-            let Some(slot) = next.get_mut(&entry.identity.owner_key()) else {
+            let Some(slot) = next.get_mut(&(owner.to_owned(), agent.to_owned())) else {
+                return;
+            };
+            // The native ledger overwrites its sole receipt even when this
+            // send has no enrolled origin. Never stamp an older receipt later.
+            slot.native_sent = None;
+            let Some(entry) = entry else {
                 return;
             };
             if entry.outcome.load(Ordering::Acquire) != UNSET
@@ -221,6 +231,7 @@ impl CompactionAttribution {
             }
             slot.pending.retain(|pending| !Arc::ptr_eq(pending, entry));
             slot.sent.push(Arc::clone(entry));
+            slot.native_sent = Some(Arc::downgrade(entry));
         });
     }
     pub(in crate::app) fn cancel(&self, entry: &Arc<Entry>) {
@@ -240,6 +251,14 @@ impl CompactionAttribution {
                     slot.pending
                         .retain(|candidate| !Arc::ptr_eq(candidate, entry));
                     slot.sent.retain(|candidate| !Arc::ptr_eq(candidate, entry));
+                    if slot
+                        .native_sent
+                        .as_ref()
+                        .and_then(Weak::upgrade)
+                        .is_some_and(|candidate| Arc::ptr_eq(&candidate, entry))
+                    {
+                        slot.native_sent = None;
+                    }
                 }
                 entry.finish(outcome);
             }
@@ -276,7 +295,8 @@ impl CompactionAttribution {
             .current
             .load()
             .get(&(owner.to_owned(), agent.to_owned()))
-            .is_some_and(|slot| !slot.sent.is_empty())
+            .and_then(|slot| slot.native_sent.as_ref().and_then(Weak::upgrade))
+            .is_some_and(|entry| entry.outcome.load(Ordering::Acquire) == UNSET)
     }
     pub(in crate::app) fn forget(&self, owner: &str, agent: &str) {
         let entries: Vec<_> = self
@@ -305,10 +325,11 @@ impl CompactionAttribution {
             .current
             .load()
             .get(&identity.owner_key())
+            .and_then(|slot| slot.native_sent.as_ref().and_then(Weak::upgrade))
+            .filter(|entry| {
+                entry.identity.same(identity) && entry.outcome.load(Ordering::Acquire) == UNSET
+            })
             .into_iter()
-            .flat_map(|slot| &slot.sent)
-            .filter(|entry| entry.identity.same(identity))
-            .cloned()
             .collect();
         if entries.is_empty() {
             return None;
@@ -341,15 +362,14 @@ impl CompactionAttribution {
             .current
             .load()
             .get(&(instance.entity_id.clone(), instance.agent_id.clone()))
-            .into_iter()
-            .flat_map(|slot| &slot.sent)
+            .and_then(|slot| slot.native_sent.as_ref().and_then(Weak::upgrade))
             .filter(|entry| {
                 entry.identity.key == *key
                     && entry.identity.instance == *instance
                     && entry.identity.session.ptr_eq(session)
                     && entry.outcome.load(Ordering::Acquire) == UNSET
             })
-            .cloned()
+            .into_iter()
             .collect();
         if entries.is_empty() {
             return None;

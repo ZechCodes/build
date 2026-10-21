@@ -308,8 +308,10 @@ pub(in crate::app) fn send_compaction(
     app.forget_agent_context(&send.owner, &send.agent_id);
     app.compactions.sent(&send.owner, &send.agent_id, sent);
     #[cfg(test)]
-    if let Some(entry) = attribution.as_ref() {
-        app.session_registry.compaction_attribution().sent(entry);
-    }
+    app.session_registry.compaction_attribution().sent(
+        &send.owner,
+        &send.agent_id,
+        attribution.as_ref(),
+    );
     true
 }

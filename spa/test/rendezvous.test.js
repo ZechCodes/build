@@ -450,6 +450,66 @@ describe("the step a failed dial names", () => {
     expect(await pending).toBe("rendezvous-closed");
   });
 
+  it("the pinned-key lookup failing", async () => {
+    const stood = stand({ getPinnedDeviceKey: async () => { throw new TypeError("Failed to fetch"); } });
+    const pending = stepOf(stood.rendezvous.mint({}));
+    await answering(stood);
+    expect(await pending).toBe("session-init");
+    stood.rendezvous.close();
+  });
+
+  it("no pinned key, still refused as a security stop", async () => {
+    const stood = stand({ getPinnedDeviceKey: async () => null });
+    const pending = stood.rendezvous.mint({}).catch((error) => error);
+    await answering(stood);
+    const error = await pending;
+    expect(error.dialStep).toBe("session-init");
+    expect(error.securityCritical).toBe(true);
+    stood.rendezvous.close();
+  });
+
+  it("the session init failing to build", async () => {
+    const stood = stand({
+      transport: { ...fakeTransport, createSessionInit: async () => { throw new Error("sealing failed"); } },
+    });
+    const pending = stepOf(stood.rendezvous.mint({}));
+    await answering(stood);
+    expect(await pending).toBe("session-init");
+    stood.rendezvous.close();
+  });
+
+  it("the relay socket refusing to be constructed", async () => {
+    class ThrowingWebSocket {
+      constructor() {
+        throw new SyntaxError("The URL is invalid");
+      }
+    }
+    const stood = stand({ WebSocketImpl: ThrowingWebSocket });
+    expect(await stepOf(stood.rendezvous.open())).toBe("relay-socket");
+  });
+
+  it("the authenticate send on a socket that was closing as it opened", async () => {
+    const stood = stand();
+    const opening = stood.rendezvous.open().catch((error) => error);
+    await tick();
+    stood.socket().readyState = 2; // CLOSING
+    stood.socket().emit("open");
+    const error = await opening;
+    expect(error.dialStep).toBe("relay-send");
+    expect(error.message).toBe("the relay socket closed");
+  });
+
+  // After a resume, the socket the rendezvous holds can be CLOSING before its
+  // close event lands, and `open()` hands that socket to the next mint.
+  it("the session_init send on a socket that went CLOSING after a resume", async () => {
+    const { rendezvous, ws } = await minted();
+    ws.readyState = 2; // CLOSING: close() was called, its event has not fired yet
+    const error = await rendezvous.mint({}).catch((caught) => caught);
+    expect(error.dialStep).toBe("relay-send");
+    expect(error.message).toBe("the relay socket closed");
+    rendezvous.close();
+  });
+
   it("the device's accept not opening", async () => {
     const stood = stand({
       transport: { ...fakeTransport, openSessionAccept: async () => { throw new Error("bad envelope"); } },

@@ -120,6 +120,60 @@ describe("device recovery supervisor", () => {
     expect(recovery.wake("network-change").woke.sort()).toEqual(["dev-a", "dev-b"]);
   });
 
+  // Window focus fires on every alt-tab. It may bring one dial forward, but it
+  // must not reset the ladder, and a dial it brought forward that fails spends
+  // the allowance until the ladder's own timer has dialled again.
+  describe("nudge (an early dial that leaves the back-off governing)", () => {
+    const waitingAfterOneFailure = async () => {
+      const stood = setup();
+      stood.recovery.syncPresence([{ id: "dev-a", status: "online" }]);
+      stood.recovery.recoverNow("dev-a");
+      await vi.advanceTimersByTimeAsync(0);
+      stood.recovery.failed("dev-a");
+      return stood;
+    };
+
+    it("dials a waiting device now, keeping its failure count", async () => {
+      const { recovery, attempts } = await waitingAfterOneFailure();
+
+      expect(recovery.nudge("focus")).toEqual({ reason: "focus", woke: ["dev-a"] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toEqual(["dev-a", "dev-a"]);
+
+      recovery.failed("dev-a");
+      expect(recovery.snapshot("dev-a").failedAttempts).toBe(2);
+      expect(recovery.snapshot("dev-a").nextAttemptAt - Date.now()).toBe(4000);
+    });
+
+    it("brings forward at most one dial per back-off window, until the ladder dials on its own", async () => {
+      const { recovery, attempts } = await waitingAfterOneFailure();
+      recovery.nudge("focus");
+      await vi.advanceTimersByTimeAsync(0);
+      recovery.failed("dev-a");
+
+      expect(recovery.nudge("focus").woke).toEqual([]);
+      await vi.advanceTimersByTimeAsync(3999);
+      expect(attempts).toHaveLength(2);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(attempts).toHaveLength(3); // the ladder's own dial
+      recovery.failed("dev-a");
+      expect(recovery.snapshot("dev-a").failedAttempts).toBe(3);
+      expect(recovery.nudge("focus").woke).toEqual(["dev-a"]);
+    });
+
+    it("leaves a device that is mid-attempt alone", async () => {
+      const { recovery, attempts } = setup();
+      recovery.syncPresence([{ id: "dev-a", status: "online" }]);
+      recovery.recoverNow("dev-a");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(recovery.nudge("focus").woke).toEqual([]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toEqual(["dev-a"]);
+    });
+  });
+
   it("is a no-op when nothing is waiting", async () => {
     const { recovery, attempts } = setup();
     recovery.syncPresence([{ id: "dev-a", status: "online" }]);

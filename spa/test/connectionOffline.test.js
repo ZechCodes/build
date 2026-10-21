@@ -408,13 +408,14 @@ describe("dial failure diagnostics", () => {
   });
 });
 
-// Focusing a desktop window that was never hidden fires no visibilitychange,
-// so on 2026-10-21 a laptop opened and focused sat out its full ten-second step
-// with the network already back.
+// Focusing a desktop window that was never hidden fires no visibilitychange.
+// Focus says nothing about whether the cause of the last failure has cleared
+// (the 2026-10-21 report shows at least 30 s of fast failures after a wake):
+// it is only a hint to dial early, and the back-off still governs.
 describe("waking recovery when the window is focused", () => {
   afterEach(() => stopWatchingForWake());
 
-  it("retries a waiting device now, from the floor", async () => {
+  const waitingOnUnreachable = async () => {
     devices = [online("dev-a", "Laptop")];
     App.devices = devices;
     syncDeviceRecoveryPresence(devices);
@@ -422,6 +423,11 @@ describe("waking recovery when the window is focused", () => {
     await connectDevice("dev-a").catch(() => {});
     await flush();
     expect(deviceRecoverySnapshot("dev-a").status).toBe("waiting");
+  };
+  const dials = () => connectionDiagnosticHistory().filter((entry) => entry.event === "dial").length;
+
+  it("dials a waiting device early", async () => {
+    await waitingOnUnreachable();
 
     unreachable.delete("dev-a");
     watchForWake();
@@ -432,6 +438,25 @@ describe("waking recovery when the window is focused", () => {
       { at: expect.any(Number), connection: "recovery", event: "woken", reason: "focus", devices: 1 },
     ]);
     expect(contextFor("dev-a").blocked).toBeFalsy();
+  });
+
+  // Review #743: dials failing in 50 ms and a window flipping focus every
+  // 100 ms made ten extra dials in a second, with the failure count stuck at 1.
+  it("brings forward one dial per back-off window however often focus flips, and the ladder still climbs", async () => {
+    await waitingOnUnreachable();
+    const before = dials();
+
+    watchForWake();
+    for (let flip = 0; flip < 10; flip += 1) {
+      await vi.advanceTimersByTimeAsync(50);
+      window.dispatchEvent(new Event("blur"));
+      await vi.advanceTimersByTimeAsync(50);
+      window.dispatchEvent(new Event("focus"));
+    }
+    for (let index = 0; index < 6; index += 1) await flush();
+
+    expect(dials() - before).toBe(1);
+    expect(deviceRecoverySnapshot("dev-a")).toMatchObject({ status: "waiting", failedAttempts: 2 });
   });
 });
 

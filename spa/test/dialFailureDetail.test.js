@@ -27,6 +27,11 @@ describe("dialFailureDetail", () => {
     });
   });
 
+  it("keeps the app's own words for a send on a socket that had gone", () => {
+    const error = Object.assign(new Error("the relay socket closed"), { dialStep: "relay-send" });
+    expect(dialFailureDetail(error, { online: true })).toMatchObject({ step: "relay-send", message: "the relay socket closed" });
+  });
+
   it("drops words it did not write, keeping only what kind of error it was", () => {
     const error = new Error("private response with credentials");
     expect(dialFailureDetail(error, { online: true })).toEqual({

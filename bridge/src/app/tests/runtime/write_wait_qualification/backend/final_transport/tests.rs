@@ -153,7 +153,18 @@ fn final_transport_export_retains_actual_unit_rows_and_reports_even_when_audit_r
         envelope: Envelope::Small,
         number: 1,
     };
-    let result = archive_final(name, &plan, Some(&watch), Some(&report), &mcp, true, &sink);
+    let result = archive_final(
+        name,
+        &plan,
+        ClientAudit {
+            watch: Some(&watch),
+            before_cleanup: None,
+        },
+        Some(&report),
+        &mcp,
+        true,
+        &sink,
+    );
     assert!(result.persisted);
     let path = root
         .path()

@@ -19,10 +19,15 @@ pub(super) struct FinalArchive {
     pub persisted: bool,
 }
 
+pub(super) struct ClientAudit<'a> {
+    pub watch: Option<&'a ClientWatch>,
+    pub before_cleanup: Option<&'a FinalReconciliation>,
+}
+
 pub(super) fn archive_final(
     name: TrialName,
     plan: &[Slot],
-    watch: Option<&ClientWatch>,
+    client: ClientAudit<'_>,
     report: Option<&WatchReport>,
     mcp: &McpShutdownReport,
     native_joined: bool,
@@ -30,7 +35,7 @@ pub(super) fn archive_final(
 ) -> FinalArchive {
     // None explicitly means the guard was not confirmed joined. No lifecycle
     // scan occurs until its actual report exists, and never on progress polls.
-    let reconcile = report.and_then(|_| watch.map(ClientWatch::reconcile_final));
+    let reconcile = report.and_then(|_| client.watch.map(ClientWatch::reconcile_final));
     let violations =
         validate::validate_final_transport(plan, reconcile.as_ref(), report, mcp, native_joined);
     let anchor = reconcile
@@ -43,6 +48,7 @@ pub(super) fn archive_final(
         "scope":"final cleanup attempt only; no independent watchdog or progress snapshot",
         "native_joined":native_joined,"guard_joined":report.is_some(),
         "planned_client_slots":plan,
+        "reconciliation_before_cleanup":client.before_cleanup.map(|value| export::reconciliation(value, anchor)),
         "reconciliation":reconcile.as_ref().map(|value| export::reconciliation(value, anchor)),
         "watch_report":report.map(|value| export::watch_report(value, anchor)),
         "mcp_shutdown":export::mcp_report(mcp, anchor),

@@ -19,45 +19,31 @@ impl PreparedBackend {
                 retained: self,
             });
         }
-        if let Some(lifecycle) = &self.lifecycle {
-            lifecycle.request_finish();
-        }
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while self
-            .lifecycle
-            .as_ref()
-            .is_some_and(|lifecycle| !lifecycle.is_finished())
-        {
-            if tokio::time::Instant::now() >= deadline {
+        let (report, before) = match self.audit_before_native_cleanup().await {
+            Ok(audit) => audit,
+            Err(reason) => {
                 return Err(RetainedSetup {
-                    reason: "actual client watchdog has not joined; setup retained".into(),
+                    reason,
                     retained: self,
                 });
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        if self.lifecycle.as_ref().is_some_and(|lifecycle| {
-            lifecycle
-                .report()
-                .is_none_or(|report| report.failed || report.panicked)
-        }) {
-            return Err(RetainedSetup {
-                reason:
-                    "actual joined client watchdog lacks a clean report; setup evidence retained"
-                        .into(),
-                retained: self,
-            });
-        }
-        // The blocked path NEVER attached ClientWatch to RPC, so native cleanup
-        // IDs are legal here without inventing a future quiet-detach method.
+        };
         self.probe.take();
         self.mcp.take();
-        self.lifecycle.take();
-        self.watch.take();
+        // Retain actual report and final lifecycle rows if cleanup returns an
+        // error. A failed trial must never be reset to permit native cleanup.
         self.producers.take();
         self.services.take();
         self.reads.take();
-        let mut cleanup_error = None;
+        let mut cleanup_error = if report.as_ref().is_some_and(|report| report.failed)
+            || before
+                .as_ref()
+                .is_some_and(|audit| !audit.violations.is_empty())
+        {
+            Some("actual joined client watch remains failed; native cleanup attempted, raw report retained".to_owned())
+        } else {
+            None
+        };
         if let Some(terminal) = self.terminal.take() {
             let cleanup = terminal.shutdown(&self.fixture.as_ref().expect("owned fixture").rpc);
             if std::panic::AssertUnwindSafe(cleanup)
@@ -80,6 +66,14 @@ impl PreparedBackend {
                 );
             }
         }
+        if before.is_some()
+            && self
+                .watch
+                .as_ref()
+                .is_some_and(|watch| !watch.reconcile_final().violations.is_empty())
+        {
+            cleanup_error = Some("actual final client reconciliation remains failed after native cleanup; raw watch retained".into());
+        }
         if let Some(reason) = cleanup_error {
             return Err(RetainedSetup {
                 reason,
@@ -93,6 +87,46 @@ impl PreparedBackend {
             native_cleanup_completed: true,
         })
     }
+    /// Both native close paths share the actual join and quiet-detach boundary.
+    /// Failed terminal rows stay failed; they do not represent active receivers.
+    pub(super) async fn audit_before_native_cleanup(
+        &self,
+    ) -> Result<
+        (
+            Option<Arc<super::super::client_watch::WatchReport>>,
+            Option<Arc<super::super::client_watch::FinalReconciliation>>,
+        ),
+        String,
+    > {
+        let report = if let Some(lifecycle) = &self.lifecycle {
+            lifecycle.request_finish();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while !lifecycle.is_finished() {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err("actual client watchdog has not joined; ownership retained".into());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let report = lifecycle
+                .report()
+                .ok_or("actual joined client watchdog lacks a report; ownership retained")?;
+            if report.panicked {
+                return Err("actual joined client watchdog panicked; ownership retained".into());
+            }
+            Some(report)
+        } else {
+            None
+        };
+        let fixture = self
+            .fixture
+            .as_ref()
+            .ok_or("owned fixture missing before quiet detach")?;
+        let audit = fixture.rpc.detach_client_watch().map_err(|errors| {
+            format!("actual quiet trial detach refused; ownership retained: {errors:?}")
+        })?;
+        Ok((report, audit))
+    }
+
     pub(super) async fn join_setup_workers(&self) -> Result<(), String> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {

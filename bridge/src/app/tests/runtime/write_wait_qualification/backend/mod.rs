@@ -3,6 +3,7 @@
 mod archive;
 mod completed_origins;
 mod control;
+mod counts;
 mod exempt;
 mod final_transport;
 mod git_support;
@@ -102,8 +103,7 @@ pub(super) const READINESS_PREREQUISITES: &[&str] = &[
 
 impl PreparedBackend {
     fn bind_native_fixture_counts(&mut self) -> Result<(), String> {
-        // TESTFIRST: native measurements exist, but normal binding is not wired.
-        Err("native pre-T0 fixture binding is not implemented".into())
+        counts::bind(self)
     }
     pub fn blocked_reason(&self) -> String {
         let mut reasons = READINESS_PREREQUISITES.to_vec();

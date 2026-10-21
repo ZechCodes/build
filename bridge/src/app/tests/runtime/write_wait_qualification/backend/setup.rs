@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 impl PreparedBackend {
     pub(super) async fn assemble(&mut self) -> Result<(), String> {
         self.assemble_support().await?;
+        self.bind_native_fixture_counts()?;
         self.prepare_collectors()?;
         Ok(())
     }

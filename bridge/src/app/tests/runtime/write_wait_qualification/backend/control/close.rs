@@ -64,8 +64,27 @@ impl CloseJob {
         let mcp_quiet = mcp.quiet && mcp.unfinished.is_empty();
         prepared.mcp_shutdown = Some(mcp);
         if !mcp_quiet {
-            self.archive_transport(prepared, None, false);
+            self.archive_transport(prepared, None, None, false);
             return;
+        }
+        let (report, before) = match prepared.audit_before_native_cleanup().await {
+            Ok((Some(report), Some(before))) => (report, before),
+            Ok(_) => {
+                self.error(
+                    "actual engine watch or attached trial audit missing before native cleanup",
+                );
+                self.archive_transport(prepared, None, None, false);
+                return;
+            }
+            Err(error) => {
+                self.error(error);
+                let report = prepared.lifecycle.as_ref().and_then(|owner| owner.report());
+                self.archive_transport(prepared, report.as_deref(), None, false);
+                return;
+            }
+        };
+        if report.failed {
+            self.error(format!("actual client watchdog report: {report:?}"));
         }
         let owner = release_app_owners(prepared);
         // Retain the actual joined report even if archive/reconciliation panics.
@@ -83,17 +102,9 @@ impl CloseJob {
             self.error(error);
         }
 
-        let report = if let Some(owner) = &owner {
-            self.finish_watch(owner).await
-        } else {
-            None
-        };
-        let persisted = self.archive_transport(prepared, report.as_deref(), native_joined);
-        if report.is_none()
-            || !persisted
-            || !accepted.persisted
-            || prepared.native_archive.is_some()
-        {
+        let persisted =
+            self.archive_transport(prepared, Some(&report), Some(&before), native_joined);
+        if !persisted || !accepted.persisted || prepared.native_archive.is_some() {
             prepared.lifecycle = owner;
             return;
         }
@@ -136,6 +147,7 @@ impl CloseJob {
         &self,
         prepared: &mut PreparedBackend,
         report: Option<&super::super::super::client_watch::WatchReport>,
+        before: Option<&super::super::super::client_watch::FinalReconciliation>,
         native_joined: bool,
     ) -> bool {
         let Some(mcp) = prepared.mcp_shutdown.as_ref() else {
@@ -145,7 +157,10 @@ impl CloseJob {
         let result = super::super::final_transport::archive_final(
             prepared.name,
             &prepared.plan,
-            prepared.watch.as_ref(),
+            super::super::final_transport::ClientAudit {
+                watch: prepared.watch.as_ref(),
+                before_cleanup: before,
+            },
             report,
             mcp,
             native_joined,
@@ -189,28 +204,6 @@ impl CloseJob {
             self.error("actual native control cleanup failed; native private-root retention evidence required");
         }
         joined
-    }
-    async fn finish_watch(
-        &self,
-        owner: &Arc<watch_owner::WatchOwner>,
-    ) -> Option<Arc<super::super::super::client_watch::WatchReport>> {
-        owner.request_finish();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while !owner.is_finished() && tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let report = owner.report();
-        if report
-            .as_ref()
-            .is_none_or(|report| report.failed || report.panicked)
-        {
-            self.error(format!("actual client watchdog report: {report:?}"));
-        }
-        if owner.is_finished() {
-            report
-        } else {
-            None
-        }
     }
 }
 fn release_app_owners(prepared: &mut PreparedBackend) -> Option<Arc<watch_owner::WatchOwner>> {

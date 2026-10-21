@@ -298,10 +298,55 @@ fn recipe_for(prepared: &PreparedBackend, slot: &Slot) -> Recipe {
     }
 }
 
-// TESTFIRST seam for exact native recipe classification before normal T0.
 pub(super) fn expected_read_cohort(
-    _prepared: &PreparedBackend,
-    _slot: &Slot,
+    prepared: &PreparedBackend,
+    slot: &Slot,
 ) -> Result<Option<ReadCohort>, String> {
-    Err("normal typed native read cohort is not implemented".into())
+    use super::super::read_recipes::{FullReadForm, mcp_cases, mcp_read_method, mcp_recipe_form};
+    if slot.traffic != Traffic::Read {
+        return Ok(None);
+    }
+    let method = slot.method.as_deref().ok_or("native read method missing")?;
+    let form = match slot.route {
+        Route::SpaRpc if prepared.mode == PipelineMode::TwoSecondControl => {
+            let case = prepared
+                .bounded_rpc_cases
+                .iter()
+                .find(|case| case.method == method)
+                .ok_or("bounded native read recipe missing")?;
+            match case.method {
+                "task.doc" | "task.stage_doc" => FullReadForm::LegacyFull,
+                "tasks.get"
+                | "tasks.waiting_on.blocks"
+                | "tasks.review.get"
+                | "tasks.review.diff"
+                | "tasks.attachment"
+                | "thread.attachment" => FullReadForm::Ready,
+                _ => return Err("bounded native read form not explicitly classified".into()),
+            }
+        }
+        Route::SpaRpc => {
+            prepared
+                .rpc_cases
+                .iter()
+                .find(|case| case.method == method)
+                .ok_or("full native RPC recipe missing")?
+                .form
+        }
+        Route::AgentMcp => {
+            let (inputs, _) = prepared
+                .mcp_inputs
+                .get(slot.owner)
+                .ok_or("native MCP owner missing")?;
+            let (_, action) = mcp_cases(inputs)
+                .into_iter()
+                .find(|(_, action)| mcp_read_method(action) == method)
+                .ok_or("native MCP action missing")?;
+            mcp_recipe_form(&action).ok_or("native MCP action has no reviewed read form")?
+        }
+    };
+    Ok(Some(match form {
+        FullReadForm::Ready => ReadCohort::ReadyBounded,
+        FullReadForm::LegacyFull => ReadCohort::LegacyUnbounded,
+    }))
 }

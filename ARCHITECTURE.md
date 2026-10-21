@@ -260,6 +260,27 @@ mode 0600. It skips active IDs, symlinks and `.git`, with bounded traversal.
 Creation refuses that reserved staging destination namespace, including case
 variants, so a published user file cannot be mistaken for an orphan on boot.
 
+File writes, creation, host `fs.mkdir`, and upload operations use the deferred
+drain in `app/fs/deferred.rs`. They capture source identities under the app
+mutex, resolve paths and acquire source serialization off it, then validate
+the captured records before running filesystem service work. Final publication
+invalidates observations and installs any reopened workspace record; its
+manifest is persisted off the app mutex. The existing deferred-job count keeps
+workspace removal and metadata changes out while these stages run.
+Editor writes and upload finish also hold a destination lock keyed by the
+canonical parent and literal filename, so overlapping source roots serialize
+revision checks and replacement. Their contention waits share a five-second
+budget, and both remain held through final publication.
+
+Upload admission and quota accounting remain in app state. Staging descriptors
+have separate ownership, so chunk writes, publication, cancellation cleanup,
+session-end cleanup and idle cleanup run outside the app mutex. Finish claims
+publication before its sync and rename: cancellation before that claim wins;
+after it, finish owns the result and invalidation even if the session closes.
+Intermediate stages retain the verb's original result-type check. Only the
+final successful stage stamps user activity; that existing `save_user_session`
+call still runs under the app mutex and remains a known #681 violation for step 6b.
+
 `thread.page` is a message-counted page with folded activity digests. Wire
 3.20.0 announces `threads.leanActivity`: with optional `activity: "newest"`,
 each activity run between non-activity items ships exactly its newest item,

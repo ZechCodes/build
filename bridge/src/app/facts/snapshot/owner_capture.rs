@@ -28,19 +28,18 @@ impl AppState {
         // root. Rebuild these cheap rows with the fresh checkout subjects.
         {
             #[cfg(test)]
-            let _phase = crate::timing::phase_samples::phase("publication.push_facts.clone");
+            let _phase = crate::timing::phase_samples::phase("publication.push_facts.prune_states");
             snapshot
                 .states
                 .retain(|owner, _| self.plans.contains_key(owner) || self.runs.contains_key(owner));
         }
+        #[cfg(test)]
+        let owners_phase = crate::timing::phase_samples::phase("publication.push_facts.owners");
         for owner in owners {
             snapshot.states.remove(owner);
             snapshot.threads.remove(owner);
             if self.plans.contains_key(owner) || self.runs.contains_key(owner) {
                 {
-                    #[cfg(test)]
-                    let _phase =
-                        crate::timing::phase_samples::phase("publication.push_facts.owner_states");
                     if let Some(state) = self.entity_state_item(owner) {
                         snapshot
                             .states
@@ -48,9 +47,6 @@ impl AppState {
                     }
                 }
                 {
-                    #[cfg(test)]
-                    let _phase =
-                        crate::timing::phase_samples::phase("publication.push_facts.owner_tails");
                     snapshot.threads.insert(
                         owner.clone(),
                         self.push_thread_tails(owner, &previous.facts),
@@ -58,6 +54,8 @@ impl AppState {
                 }
             }
         }
+        #[cfg(test)]
+        drop(owners_phase);
         self.refresh_push_thread_sessions(&mut snapshot);
         // Checkout facts carry their own identity and observation fences. Their
         // capture retains those generations while filling affected alias states.

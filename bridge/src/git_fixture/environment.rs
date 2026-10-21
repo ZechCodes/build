@@ -116,7 +116,7 @@ fn record_entry(name: &str) {
 fn test_command(home: &Path, name: &str) -> Command {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
-        .args(["--exact", name, "--nocapture"])
+        .args(["--exact", name, "--include-ignored", "--nocapture"])
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", home)

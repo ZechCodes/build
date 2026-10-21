@@ -87,7 +87,7 @@ fn admit(
         .admission
         .as_ref()
         .map(|gate| {
-            gate.try_enter()
+            gate.try_enter_read()
                 .ok_or_else(|| "bridge update handoff in progress".to_string())
         })
         .transpose()?;

@@ -5,6 +5,8 @@ use crate::carrier::{FrameIntake, OutboundEnvelope};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+mod task_history;
+
 const SESSION: &str = "remaining-native-reads";
 
 pub(in crate::app::tests) struct NativeReads {

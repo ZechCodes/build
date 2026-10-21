@@ -30,8 +30,15 @@ pub(super) fn check(method: &str, value: &Value, e: &Witnesses) -> bool {
             nonempty(value, "/diff_key");
         }
         "git.refs" => {
-            row(value, "/refs", "full_ref", &e.branch_ref);
-            row(value, "/refs", "full_ref", &e.upstream_ref);
+            let branch = row(value, "/refs", "full_ref", &e.branch_ref);
+            assert_eq!(value["current"]["full_ref"], e.branch_ref);
+            assert_eq!(branch["current"], true);
+            // Native ref_list omits remote main when local main has that name.
+            // The actual current local branch still exposes its saved upstream.
+            let upstream = e.upstream_ref.strip_prefix("refs/remotes/").unwrap();
+            assert_eq!(branch["upstream"], upstream);
+            assert_eq!(branch["ahead"], 1);
+            assert_eq!(branch["behind"], 0);
         }
         "git.unpushed" => {
             assert!(file(value, &e.committed_file));

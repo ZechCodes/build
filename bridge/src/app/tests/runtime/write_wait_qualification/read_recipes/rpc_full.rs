@@ -139,7 +139,7 @@ pub(in crate::app::tests::runtime::write_wait_qualification) fn cases(i: &Inputs
         ready("git.changeset_diff", scoped(json!({"paths":[i.diff_file],"range":{"offset":0,"bytes":4096}})),
             "actual known file row/hunk from same source changeset, stable diff_key and range witness"),
         ready("git.refs", scoped(json!({})),
-            "refs includes known local branch full_ref and seeded local bare-upstream ref; current exact"),
+            "current local branch full_ref and seeded upstream exact; one ahead and zero behind"),
         ready("git.unpushed", scoped(json!({"patch":false})),
             "native seeded unpublished commit/file/stat/diff_key + base; patch omitted by explicit request; not empty no-upstream fallback"),
         ready("worktree.diff", json!({"project_id":i.project,"worktree_id":i.external_worktree,"patch":false}),

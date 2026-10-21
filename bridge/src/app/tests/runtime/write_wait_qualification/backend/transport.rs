@@ -5,7 +5,7 @@ use super::super::rpc::ReplyProof;
 use super::super::trial_complete::{Observation, OracleWitness, Route, Stage};
 use super::*;
 use crate::app::tests::runtime::write_wait_qualification::read_recipes::{
-    assert_mcp_reply, mcp_cases, FullReadOutcome, McpCaller,
+    assert_mcp_reply, mcp_cases, mcp_read_method, FullReadOutcome, McpCaller,
 };
 
 pub(super) enum NativeReadOutcome {
@@ -153,7 +153,7 @@ impl PreparedBackend {
             .ok_or("actual owner read recipe missing")?;
         let (caller, action) = mcp_cases(inputs)
             .into_iter()
-            .find(|(_, action)| format!("mcp.control:{}", action.tool_name()) == method)
+            .find(|(_, action)| mcp_read_method(action) == method)
             .ok_or("actual Global MCP action missing")?;
         let endpoint = McpHarness::endpoint_for_caller(slot.caller)?;
         if (caller == McpCaller::Router) != (endpoint == 8) {

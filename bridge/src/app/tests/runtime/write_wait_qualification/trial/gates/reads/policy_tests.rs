@@ -4,6 +4,57 @@
 use super::*;
 
 #[test]
+fn native_mcp_list_tasks_recipe_keeps_100ms_p99_without_ready_credit() {
+    use crate::app::tests::runtime::write_wait_qualification::read_recipes::{
+        mcp_cases, mcp_read_method, McpCaller, McpReadInputs,
+    };
+    let inputs = McpReadInputs {
+        owner: "policy-owner".into(),
+        agent: "policy-agent".into(),
+        workspace: "policy-workspace".into(),
+        task: "policy-task".into(),
+        comment: "policy-comment".into(),
+        snapshot: "policy-snapshot".into(),
+        directory: "policy-directory".into(),
+        path: "README.md".into(),
+        search_text: "policy marker".into(),
+    };
+    let recipes = mcp_cases(&inputs);
+    assert_eq!(recipes.len(), 14);
+    let selected: Vec<_> = recipes
+        .iter()
+        .filter(|(_, action)| matches!(action, crate::mcp::BridgeAction::TrackerListTasks { .. }))
+        .collect();
+    assert_eq!(selected.len(), 1);
+    let (caller, action) = selected[0];
+    assert_eq!(*caller, McpCaller::Coding);
+    // Call the same map used by actual backend catalogue AND dispatch lookup.
+    // Rows below inject durations; this is not native latency evidence.
+    let method = mcp_read_method(action);
+    assert_eq!(method, "mcp.control:list_tasks");
+    let rows = policy_rows(&method, Route::AgentMcp, 100_001);
+    assert_eq!(rows.len(), 1_000);
+    assert!(gather_ready_cases(&rows).is_empty());
+    let metrics = method_metrics(&rows);
+    assert_eq!(metrics[0].read_cohort.as_deref(), Some("legacy_unbounded"));
+    assert_eq!(metrics[0].counts.verified_success, 1_000);
+    assert_eq!(counts(rows.iter(), None)[&Traffic::Read].completed, 1_000);
+    let observe = policy_observer();
+    validate_loaded_ready_reads(&rows, &observe);
+    let violations = observe.ledger.lock().unwrap().violations.clone();
+    assert!(
+        violations.iter().any(|violation| {
+            violation
+                .kind
+                .ends_with(&format!("read_p99/{method}/legacy-unpaged"))
+                && violation.measured_us == Some(100_001)
+                && violation.limit_us == Some(100_000)
+        }),
+        "actual native MCP recipe label must retain the 100ms gate: {violations:?}"
+    );
+}
+
+#[test]
 fn legacy_mcp_list_tasks_keeps_100ms_p99_without_ready_credit() {
     let rows = policy_rows("list_tasks", Route::AgentMcp, 100_001);
     assert_eq!(rows.len(), 1_000);

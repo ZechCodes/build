@@ -1,17 +1,18 @@
-//! OFFSOURCE exact shared recipe form audit. Not a generic production read
+//! Exact shared recipe form audit. Not a generic production read
 //! classifier and not proof of successful native replies. The driver still
 //! requires issued auth, semantic oracle, final value and outcome classification.
 use super::{mcp_cases, FullReadForm, McpReadInputs};
 use crate::mcp::BridgeAction;
 
-/// Test-first adapter for the old harness's implicit all-ready assumption.
-/// Not used by production admission or by the normal qualification backend.
+/// Classify the actual shared recipes without inferring bounds from filters.
 pub(in crate::app::tests::runtime::write_wait_qualification) fn mcp_recipe_form(
     action: &BridgeAction,
 ) -> Option<FullReadForm> {
-    match action {
+    use FullReadForm::{LegacyFull, Ready};
+    Some(match action {
+        // The native adapter supplies no page limit for this project-wide list.
+        BridgeAction::TrackerListTasks { .. } => LegacyFull,
         BridgeAction::TrackerGetTask { .. }
-        | BridgeAction::TrackerListTasks { .. }
         | BridgeAction::TrackerTaskDependents { .. }
         | BridgeAction::ListHarnesses
         | BridgeAction::ListWorkspaceAgents { .. }
@@ -20,12 +21,18 @@ pub(in crate::app::tests::runtime::write_wait_qualification) fn mcp_recipe_form(
         | BridgeAction::ListProjects
         | BridgeAction::ListWork
         | BridgeAction::SearchConversation { .. }
-        | BridgeAction::ReadConversation { .. }
         | BridgeAction::TrackerReadComment { .. }
-        | BridgeAction::TrackerGetReview { .. }
-        | BridgeAction::TrackerReadReview { .. } => Some(FullReadForm::Ready),
-        _ => None,
-    }
+        | BridgeAction::TrackerGetReview { .. } => Ready,
+        // The shared recipe requests 300 messages, rather than unpaged history.
+        BridgeAction::ReadConversation { limit, .. } if *limit > 0 => Ready,
+        // Only the reviewed bounded text-blob form is part of this recipe set.
+        BridgeAction::TrackerReadReview {
+            mode: crate::reviews::read::ReviewReadMode::Blob,
+            range: Some(range),
+            ..
+        } if range.raw != Some(true) => Ready,
+        _ => return None,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,8 +43,33 @@ pub(in crate::app::tests::runtime::write_wait_qualification) struct LoadedReadPo
 pub(in crate::app::tests::runtime::write_wait_qualification) fn mcp_recipe_latency_policy(
     action: &BridgeAction,
 ) -> Option<LoadedReadPolicy> {
-    // Preserve the existing form-coupled loaded gate until its intended RED.
-    (mcp_recipe_form(action) == Some(FullReadForm::Ready)).then_some(LoadedReadPolicy {
+    mcp_recipe_form(action)?;
+    mcp_method_latency_policy(action.tool_name())
+}
+
+/// Loaded latency remains mandatory for all fourteen reviewed MCP methods,
+/// independently of whether their actual response earns bounded Ready credit.
+pub(in crate::app::tests::runtime::write_wait_qualification) fn mcp_method_latency_policy(
+    method: &str,
+) -> Option<LoadedReadPolicy> {
+    matches!(
+        method,
+        "get_task"
+            | "list_tasks"
+            | "list_task_dependents"
+            | "list_harnesses"
+            | "list_workspace_agents"
+            | "list_project_agents"
+            | "list_workspaces"
+            | "list_projects"
+            | "list_work"
+            | "search_conversation"
+            | "read_conversation"
+            | "read_comment"
+            | "get_review"
+            | "read_review"
+    )
+    .then_some(LoadedReadPolicy {
         p99_limit_us: 100_000,
         minimum_successes: 1_000,
     })

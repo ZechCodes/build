@@ -4,6 +4,7 @@
 use super::{full_seed::ReadyReadInputs, rpc_full, FullReadOutcome, FullRpcCase};
 use crate::app::tests::runtime::write_wait_qualification::rpc::{ReplyProof, RpcHarness};
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 pub(in crate::app::tests::runtime::write_wait_qualification) async fn collect_native_rpc_reads(
     rpc: &RpcHarness,
@@ -30,30 +31,56 @@ pub(in crate::app::tests::runtime::write_wait_qualification) fn verify_native_rp
     replies: &[(FullRpcCase, ReplyProof)],
 ) {
     let mut completed = BTreeMap::new();
+    let mut failures = Vec::new();
     for (case, proof) in replies {
-        assert_eq!(proof.reply["id"], proof.original_id);
-        assert_eq!(proof.method, case.method);
-        let outcome = ready.assert_rpc_reply(case, &proof.reply);
-        let expected = match case.form {
-            rpc_full::Form::Ready => FullReadOutcome::Ready,
-            rpc_full::Form::LegacyFull => FullReadOutcome::LegacyFull,
-        };
-        assert_eq!(
-            outcome, expected,
-            "{} did not return its native saved value: {}",
-            case.method, proof.reply
-        );
-        assert!(
-            completed.insert(case.method, outcome).is_none(),
-            "duplicate actual method completion"
-        );
+        // This verifier runs only after fixture shutdown. Catch only these
+        // pure assertions so every independent native response is diagnosed.
+        capture_assertion(&mut failures, case.method, || {
+            assert_eq!(proof.reply["id"], proof.original_id);
+            assert_eq!(proof.method, case.method);
+            let outcome = ready.assert_rpc_reply(case, &proof.reply);
+            let expected = match case.form {
+                rpc_full::Form::Ready => FullReadOutcome::Ready,
+                rpc_full::Form::LegacyFull => FullReadOutcome::LegacyFull,
+            };
+            assert_eq!(
+                outcome, expected,
+                "{} did not return its native saved value: {}",
+                case.method, proof.reply
+            );
+            assert!(
+                completed.insert(case.method, outcome).is_none(),
+                "duplicate actual method completion"
+            );
+        });
     }
     // Actual case-specific wire oracles precede executed-method equality.
     let expected = super::rpc::registered_methods();
     let actual = completed.keys().copied().collect::<BTreeSet<_>>();
-    assert_eq!(expected.len(), 45, "audit actual read registry drift");
-    assert_eq!(
-        actual, expected,
-        "every deployed read needs a verified actual wire completion"
+    capture_assertion(&mut failures, "registered method count", || {
+        assert_eq!(expected.len(), 45, "audit actual read registry drift");
+    });
+    capture_assertion(&mut failures, "verified method coverage", || {
+        assert_eq!(
+            actual, expected,
+            "every deployed read needs a verified actual wire completion"
+        );
+    });
+    assert!(
+        failures.is_empty(),
+        "{} native RPC verification failures after cleanup:\n{}",
+        failures.len(),
+        failures.join("\n")
     );
+}
+
+fn capture_assertion(failures: &mut Vec<String>, label: &str, assertion: impl FnOnce()) {
+    if let Err(panic) = catch_unwind(AssertUnwindSafe(assertion)) {
+        let detail = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("non-string assertion panic");
+        failures.push(format!("{label}: {detail}"));
+    }
 }

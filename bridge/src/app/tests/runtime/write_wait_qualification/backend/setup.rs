@@ -3,7 +3,9 @@ use super::super::client_watch::TrafficCohort;
 use super::super::common_requests::build_common_requests;
 use super::super::mcp_adapter::McpIdentity;
 use super::*;
-use crate::app::tests::runtime::write_wait_qualification::read_recipes::{mcp_cases, McpCaller};
+use crate::app::tests::runtime::write_wait_qualification::read_recipes::{
+    mcp_cases, mcp_read_method, McpCaller,
+};
 use crate::test_support::finite_service::{PlannedService, ServiceKind};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -41,12 +43,12 @@ impl PreparedBackend {
                 .collect(),
             mcp: cases
                 .iter()
-                .map(|(_, action)| format!("mcp.control:{}", action.tool_name()))
+                .map(|(_, action)| mcp_read_method(action))
                 .collect(),
             router_only_mcp: cases
                 .iter()
                 .filter(|(caller, _)| *caller == McpCaller::Router)
-                .map(|(_, action)| format!("mcp.control:{}", action.tool_name()))
+                .map(|(_, action)| mcp_read_method(action))
                 .collect(),
         };
         self.full_plan = super::super::trial_complete::make_plan(self.name, &self.catalog)?;

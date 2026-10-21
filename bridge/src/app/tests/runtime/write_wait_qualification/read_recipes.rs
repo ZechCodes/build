@@ -20,6 +20,11 @@ pub(in crate::app::tests::runtime) struct McpReadInputs {
     pub search_text: String,
 }
 
+/// The method identity used by the actual qualification catalogue and dispatch.
+pub(super) fn mcp_read_method(action: &BridgeAction) -> String {
+    format!("mcp.control:{}", action.tool_name())
+}
+
 pub(in crate::app::tests::runtime) fn mcp_cases(
     ids: &McpReadInputs,
 ) -> Vec<(McpCaller, BridgeAction)> {
@@ -236,4 +241,5 @@ pub(super) fn prepare_finite_shell(app: &mut crate::app::AppState, root: &std::p
 }
 
 mod mcp_forms;
+pub(super) use mcp_forms::{mcp_method_latency_policy, LoadedReadPolicy};
 pub(super) use rpc_full::Form as FullReadForm;

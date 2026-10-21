@@ -134,7 +134,10 @@ impl Busy {
         }
         for (owner, _) in &owners {
             let mut active = app.take_run(owner).unwrap();
-            seed_history(&mut active.agents.primary_mut().unwrap().thread, history_items);
+            seed_history(
+                &mut active.agents.primary_mut().unwrap().thread,
+                history_items,
+            );
             app.persist_run_record(owner, &active).unwrap();
             app.runs.insert(owner.clone(), active);
         }
@@ -984,11 +987,124 @@ async fn busy_term_create_keeps_app_lock_hold_below_50ms() {
     let busy = Busy::with_history_items(500);
     let handler = AppState::handler(Arc::clone(&busy.state));
     let workspace = busy.owners[AGENTS + 1].0.clone();
-    let created = call(&handler, "term.create", json!({"workspace_id": workspace}));
+    let (created, work) = crate::app::snapshot_projection::work_counts::measure(|| {
+        call(&handler, "term.create", json!({"workspace_id": workspace}))
+    });
     assert_eq!(created["ok"], true, "{created}");
     let measurements = busy.samples.snapshot();
-    eprintln!("term.create busy phases: {}", serde_json::to_string_pretty(&measurements["term.create"]).unwrap());
-    let held = measurements["term.create"]["frame.held"]["max_ms"].as_f64().unwrap();
-    assert!(held < 50.0, "term.create held the app mutex for {held:.3}ms");
-    call(&handler, "term.close", json!({"term_id": created["result"]["term_id"]}));
+    eprintln!(
+        "term.create busy phases: {}",
+        serde_json::to_string_pretty(&measurements["term.create"]).unwrap()
+    );
+    let held = measurements["term.create"]["frame.held"]["max_ms"]
+        .as_f64()
+        .unwrap();
+    let (_, follow_on) = crate::app::snapshot_projection::work_counts::measure(|| {
+        busy.state
+            .lock()
+            .unwrap()
+            .publish_owner_snapshot_projection(&busy.owners[0].0);
+    });
+    let child = {
+        let app = busy.state.lock().unwrap();
+        let key = app
+            .tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap())
+            .unwrap();
+        Arc::clone(&app.session_registry.test_tab(&key).unwrap().session)
+    };
+    let closed = call(
+        &handler,
+        "term.close",
+        json!({"term_id": created["result"]["term_id"]}),
+    );
+    child.end();
+    assert!(
+        child.exited_within(Duration::from_secs(2)),
+        "the timing fixture shell must be reaped"
+    );
+    assert_eq!(closed["ok"], true, "{closed}");
+    assert!(
+        held < 50.0,
+        "term.create held the app mutex for {held:.3}ms"
+    );
+    assert_eq!(
+        work.workspace_details_full + work.workspace_details_scoped,
+        0,
+        "{work:?}"
+    );
+    assert_eq!(work.history_updates, 0, "{work:?}");
+    assert_eq!(
+        follow_on.workspace_details_full, 0,
+        "a shell must not invalidate the next owner publication: {follow_on:?}"
+    );
+    let (_, after_close) = crate::app::snapshot_projection::work_counts::measure(|| {
+        busy.state
+            .lock()
+            .unwrap()
+            .publish_owner_snapshot_projection(&busy.owners[0].0);
+    });
+    assert_eq!(
+        after_close.workspace_details_full, 0,
+        "closing a shell must not invalidate the next owner publication: {after_close:?}"
+    );
+    assert_busy_terminal_spawn_allows_concurrent_frame(&busy, &handler, &workspace);
+}
+
+fn assert_busy_terminal_spawn_allows_concurrent_frame(
+    busy: &Busy,
+    handler: &FrameHandler,
+    workspace: &str,
+) {
+    let (gate, held) = OffLockGate::new();
+    busy.state.lock().unwrap().terminal_create_spawn_gate = Some(gate);
+    let spawning = {
+        let handler = handler.clone();
+        let workspace = workspace.to_owned();
+        std::thread::spawn(move || call(&handler, "term.create", json!({"workspace_id":workspace})))
+    };
+    held.wait_for_arrival();
+    busy.state.lock().unwrap().terminal_create_spawn_gate = None;
+    let (sent, received) = std::sync::mpsc::channel();
+    let concurrent = {
+        let handler = handler.clone();
+        std::thread::spawn(move || {
+            sent.send(call(&handler, "session.hello", json!({})))
+                .unwrap();
+        })
+    };
+    let reply = received.recv_timeout(Duration::from_millis(100));
+    held.release();
+    let created = spawning.join().unwrap();
+    concurrent.join().unwrap();
+    let child = {
+        let app = busy.state.lock().unwrap();
+        let key = app
+            .tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap())
+            .unwrap();
+        Arc::clone(&app.session_registry.test_tab(&key).unwrap().session)
+    };
+    let closed = call(
+        handler,
+        "term.close",
+        json!({"term_id":created["result"]["term_id"]}),
+    );
+    child.end();
+    assert!(child.exited_within(Duration::from_secs(2)));
+    assert_eq!(created["ok"], true, "{created}");
+    assert_eq!(closed["ok"], true, "{closed}");
+    assert_eq!(
+        reply.expect("a concurrent frame must answer during the large-seed spawn")["ok"],
+        true
+    );
+    let measurements = busy.samples.snapshot();
+    eprintln!(
+        "term.create busy final phases: {}",
+        serde_json::to_string_pretty(&measurements["term.create"]).unwrap()
+    );
+    assert!(
+        measurements["term.create"]["frame.held"]["max_ms"]
+            .as_f64()
+            .unwrap()
+            < 50.0
+    );
 }

@@ -989,21 +989,38 @@ async fn term_create_publishes_only_terminal_facts_with_named_guard_phases() {
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
     let (project, before, samples) = {
         let app = state.lock().unwrap();
-        (app.project_at(0).id.clone(), app.read_view.load(), app.frame_clock.capture_phases())
+        (
+            app.project_at(0).id.clone(),
+            app.read_view.load(),
+            app.frame_clock.capture_phases(),
+        )
     };
     let created = call(&handler, "term.create", json!({"project_id": project}));
     assert_eq!(created["ok"], true, "{created}");
     let phases = samples.snapshot();
     let phases = &phases["term.create"];
-    assert!(phases.get("entered.publication.global").is_none(), "{phases}");
-    for phase in ["term.create.reserve", "term.create.commit", "terminals.publish"] {
+    assert!(
+        phases.get("entered.publication.global").is_none(),
+        "{phases}"
+    );
+    for phase in [
+        "term.create.reserve",
+        "term.create.commit",
+        "terminals.publish",
+    ] {
         assert!(phases.get(phase).is_some(), "missing {phase}: {phases}");
     }
     let app = state.lock().unwrap();
     let after = app.read_view.load();
-    assert!(Arc::ptr_eq(before.global.as_ref().unwrap(), after.global.as_ref().unwrap()));
+    assert!(Arc::ptr_eq(
+        before.global.as_ref().unwrap(),
+        after.global.as_ref().unwrap()
+    ));
     for key in before.keys() {
-        assert_eq!(before.get_owned(key.method, &key.owner), after.get_owned(key.method, &key.owner));
+        assert_eq!(
+            before.get_owned(key.method, &key.owner),
+            after.get_owned(key.method, &key.owner)
+        );
     }
 }
 
@@ -1043,7 +1060,10 @@ async fn pending_shell_spawn_releases_the_app_lock_and_holds_lifecycle_admission
     assert_eq!(reply.unwrap()["ok"], true);
     concurrent.join().unwrap();
     let listed = call(&handler, "term.list", json!({"project_id": project}));
-    assert!(listed_ids(&listed).is_empty(), "a pending spawn is not a tab: {listed}");
+    assert!(
+        listed_ids(&listed).is_empty(),
+        "a pending spawn is not a tab: {listed}"
+    );
     held.release();
     let created = create.join().unwrap();
     assert_eq!(created["ok"], true, "{created}");
@@ -1068,4 +1088,122 @@ async fn failed_shell_spawn_releases_its_capacity_and_filesystem_hold() {
     assert_eq!(app.session_registry.pending_shell_count(), 0);
     assert_eq!(app.shell_tab_count(), 0);
     assert!(app.refuse_source_shells_at(&repo).is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shell_rejected_at_commit_is_reaped_and_releases_its_hold() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let pid_file = dir.path().join("shell.pid");
+    let shell = dir.path().join("shell");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nwhile :; do sleep 1; done\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let project = {
+        let mut app = state.lock().unwrap();
+        app.term_shell = shell.display().to_string();
+        app.project_at(0).id.clone()
+    };
+    let (gate, held) = OffLockGate::new();
+    state.lock().unwrap().terminal_create_spawn_gate = Some(gate);
+    let create =
+        std::thread::spawn(move || call(&handler, "term.create", json!({"project_id":project})));
+    held.wait_for_arrival();
+    assert!(settles(|| pid_file.exists()));
+    let pid = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+    // Simulate invalidation after the child opened, even though ordinary
+    // deletion admission is excluded by the pending filesystem hold.
+    state.lock().unwrap().project_deletion_in_progress = true;
+    held.release();
+    let rejected = create.join().unwrap();
+    assert_eq!(rejected["ok"], false, "{rejected}");
+    assert!(process_reaped(pid), "the unregistered child must be reaped");
+    let app = state.lock().unwrap();
+    assert_eq!(app.active_deferred_filesystem_jobs, 0);
+    assert_eq!(app.session_registry.pending_shell_count(), 0);
+    assert_eq!(app.shell_tab_count(), 0);
+}
+
+#[tokio::test]
+async fn pending_shells_count_towards_the_terminal_limit() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let (project, claims) = {
+        let mut app = state.lock().unwrap();
+        let root = AppState::canonical_root(&repo);
+        let claims = (0..MAX_USER_TERMINALS)
+            .map(|_| {
+                let key = TabKey {
+                    root: root.clone(),
+                    tab_id: app.session_registry.next_terminal_id(),
+                };
+                app.session_registry.take_spawn_claim(key)
+            })
+            .collect::<Vec<_>>();
+        (app.project_at(0).id.clone(), claims)
+    };
+    let refused = call(&handler, "term.create", json!({"project_id":project}));
+    {
+        let mut app = state.lock().unwrap();
+        for claim in claims {
+            app.session_registry.settle_spawn_claim(claim);
+        }
+    }
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(refused["error"]
+        .as_str()
+        .unwrap()
+        .contains("terminal limit reached"));
+}
+
+#[tokio::test]
+async fn failed_shell_spawn_settles_a_handler_built_from_a_bare_arc() {
+    let (dir, repo) = init_repo();
+    let mut app = AppState::new(
+        repo,
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    app.term_shell = dir.path().join("missing-shell").display().to_string();
+    let state = Arc::new(Mutex::new(app));
+    let handler = AppState::handler(Arc::clone(&state));
+    let project = state.lock().unwrap().project_at(0).id.clone();
+    let failed = call(&handler, "term.create", json!({"project_id":project}));
+    assert_eq!(failed["ok"], false, "{failed}");
+    {
+        let mut app = state.lock().unwrap();
+        assert_eq!(app.active_deferred_filesystem_jobs, 0);
+        assert_eq!(app.session_registry.pending_shell_count(), 0);
+        app.term_shell = "/bin/bash".into();
+    }
+    let created = call(&handler, "term.create", json!({"project_id":project}));
+    assert_eq!(created["ok"], true, "{created}");
+    let child = {
+        let app = state.lock().unwrap();
+        let key = app
+            .tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap())
+            .unwrap();
+        Arc::clone(&app.session_registry.test_tab(&key).unwrap().session)
+    };
+    let closed = call(
+        &handler,
+        "term.close",
+        json!({"term_id":created["result"]["term_id"]}),
+    );
+    child.end();
+    assert!(child.exited_within(Duration::from_secs(2)));
+    assert_eq!(closed["ok"], true, "{closed}");
 }

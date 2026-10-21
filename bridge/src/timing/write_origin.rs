@@ -117,6 +117,14 @@ pub(crate) fn original_id(frame: &Value) -> String {
 }
 
 impl FrameClock {
+    pub(crate) fn background_write(&self, method: &str) -> Option<write_wait::LogicalWrite> {
+        let registry = self.write_wait_registry.read().unwrap().clone()?;
+        let original = format!("background/{method}/{}", uuid::Uuid::new_v4());
+        let write = registry.begin_background(original, method, registry.now());
+        write.admitted();
+        Some(write)
+    }
+
     pub(crate) fn set_write_wait_registry(&self, registry: Arc<write_wait::WriteWaitRegistry>) {
         *self.write_wait_registry.write().unwrap() = Some(registry);
     }

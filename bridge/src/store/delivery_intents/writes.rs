@@ -11,7 +11,7 @@ impl Store {
         events: &[TaskEvent],
         mut intent: DeliveryIntent,
     ) -> Result<DeliveryIntent, StoreError> {
-        self.in_waiting_on_transaction(|tx| {
+        self.in_delivery_intent_transaction(|tx| {
             if task.is_finished() || intent.task_id != task.id || intent.project_path != task.project_path {
                 return Err(invalid("delivery requires its open unfinished project task"));
             }
@@ -126,7 +126,7 @@ impl Store {
     }
 
     pub fn retry_delivery_intent(&self, id: &str) -> Result<DeliveryIntent, StoreError> {
-        self.in_waiting_on_transaction(|tx| {
+        self.in_delivery_intent_transaction(|tx| {
             let original = load(tx, id)?.ok_or_else(|| invalid("delivery intent not found"))?;
             let mut intent = require(tx, id, original.generation)?;
             if intent.state != "failed" {

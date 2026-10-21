@@ -45,6 +45,8 @@ macro_rules! stop_after {
 pub(in crate::app) struct TaskDeliveryWork {
     pub intent: DeliveryIntent,
     pub git: Option<DeferredGit>,
+    #[cfg(test)]
+    pub attempt: Option<std::sync::Arc<crate::store::delivery_origins::Attempt>>,
 }
 
 impl AppState {
@@ -60,7 +62,7 @@ impl AppState {
     pub(in crate::app) fn pump_task_deliveries_for_test(&mut self) -> Result<bool, String> {
         let page = self.tracker_store()?.reconcile_waiting_on(100).stored()?;
         let noticed = self.pump_task_delivery_notices()?;
-        let Some(work) = self.prepare_task_delivery()? else {
+        let Some(work) = self.prepare_task_delivery(None)? else {
             return Ok(page.pending || noticed);
         };
         let result = work.git.as_ref().map(DeferredGit::run);
@@ -71,6 +73,7 @@ impl AppState {
     /// Claim a single item, retaining the job outside the RPC deferred slot.
     pub(in crate::app) fn prepare_task_delivery(
         &mut self,
+        #[cfg(test)] background: Option<crate::timing::write_wait::WriteContext>,
     ) -> Result<Option<TaskDeliveryWork>, String> {
         let ready = self
             .tracker_store()?
@@ -81,6 +84,20 @@ impl AppState {
         let Some(ready) = ready else {
             return Ok(None);
         };
+        #[cfg(test)]
+        let attempt = self.tracker_store()?.delivery_origins.attempt(&ready.id);
+        #[cfg(test)]
+        let running = attempt.as_ref().map(|attempt| attempt.start());
+        #[cfg(test)]
+        let selected = crate::store::delivery_origins::Run::joined(
+            running
+                .as_ref()
+                .and_then(|running| running.context())
+                .into_iter()
+                .chain(background),
+        );
+        #[cfg(test)]
+        let _binding = selected.bind();
         let Some(mut intent) = self
             .tracker_store()?
             .claim_delivery_intent(&ready.id, ready.generation)
@@ -90,7 +107,12 @@ impl AppState {
         };
         if self.operation_receipt(&intent.operation_id)?.is_some() {
             self.task_delivery_in_flight.insert(intent.id.clone());
-            return Ok(Some(TaskDeliveryWork { intent, git: None }));
+            return Ok(Some(TaskDeliveryWork {
+                intent,
+                git: None,
+                #[cfg(test)]
+                attempt,
+            }));
         }
         match self.prepare_delivery_resource(&mut intent) {
             Ok(git) => {
@@ -100,10 +122,17 @@ impl AppState {
                     self.active_deferred_filesystem_jobs += 1;
                 }
                 self.task_delivery_in_flight.insert(intent.id.clone());
-                Ok(Some(TaskDeliveryWork { intent, git }))
+                Ok(Some(TaskDeliveryWork {
+                    intent,
+                    git,
+                    #[cfg(test)]
+                    attempt,
+                }))
             }
             Err(error) => {
                 self.fail_task_delivery(&intent, &error)?;
+                #[cfg(test)]
+                self.finish_task_delivery_origin(&intent.id, attempt.as_ref())?;
                 Ok(None)
             }
         }
@@ -149,7 +178,13 @@ impl AppState {
         if work.git.is_some() {
             self.active_deferred_filesystem_jobs -= 1;
         }
-        self.finish_task_delivery(work.intent, work.git.as_ref(), result)
+        self.finish_task_delivery(
+            work.intent,
+            work.git.as_ref(),
+            result,
+            #[cfg(test)]
+            work.attempt,
+        )
     }
 
     pub(super) fn finish_task_delivery(
@@ -157,12 +192,47 @@ impl AppState {
         mut intent: DeliveryIntent,
         git: Option<&DeferredGit>,
         result: Option<Result<Value, String>>,
+        #[cfg(test)] attempt: Option<std::sync::Arc<crate::store::delivery_origins::Attempt>>,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        let running = attempt.as_ref().map(|attempt| attempt.start());
+        #[cfg(test)]
+        let execution = crate::store::delivery_origins::Run::joined(
+            running
+                .as_ref()
+                .and_then(|running| running.context())
+                .into_iter()
+                .chain(crate::timing::write_wait::current_context()),
+        );
+        #[cfg(test)]
+        let _binding = execution.bind();
         let id = intent.id.clone();
         let finished = self.finish_delivery_steps(&mut intent, git, result);
         self.task_delivery_in_flight.remove(&id);
         if let Err(error) = finished {
             self.fail_task_delivery(&intent, &error)?;
+        }
+        #[cfg(test)]
+        self.finish_task_delivery_origin(&id, attempt.as_ref())?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn finish_task_delivery_origin(
+        &self,
+        id: &str,
+        attempt: Option<&std::sync::Arc<crate::store::delivery_origins::Attempt>>,
+    ) -> Result<(), String> {
+        let Some(attempt) = attempt else {
+            return Ok(());
+        };
+        let store = self.tracker_store()?;
+        let saved = store.load_delivery_intent(id).stored()?;
+        match saved.as_ref().map(|intent| intent.state.as_str()) {
+            Some("delivered" | "failed") => store.delivery_origins.finish(attempt, false),
+            Some("cancelled") => store.delivery_origins.finish(attempt, true),
+            Some("queued" | "provisioning") => attempt.waiting(),
+            _ => {}
         }
         Ok(())
     }

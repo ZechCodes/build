@@ -154,6 +154,10 @@ impl AppState {
         }
         let target = super::AssignTarget::parse(Some(&saved.target))?;
         self.validate_task_delivery_target(&project, &target)?;
+        #[cfg(test)]
+        let _author = crate::store::delivery_origins::ActivationAuthor::captured(
+            self.mutation_intent_context(),
+        );
         let intent = self.tracker_store()?.retry_delivery_intent(id).stored()?;
         self.note_tasks_changed(&project, task_id);
         self.task_delivery_answer(&intent)

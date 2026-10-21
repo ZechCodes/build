@@ -122,6 +122,10 @@ impl AppState {
             admitted: None,
             error: None,
         };
+        #[cfg(test)]
+        let _author = crate::store::delivery_origins::ActivationAuthor::captured(
+            self.mutation_intent_context(),
+        );
         let intent = self
             .tracker_store()?
             .accept_delivery_intent(&write.task, &write.events, intent)
@@ -177,6 +181,12 @@ impl AppState {
     }
 
     fn start_immediate_task_delivery(&mut self, intent: DeliveryIntent) -> Result<Value, String> {
+        #[cfg(test)]
+        let attempt = self.tracker_store()?.delivery_origins.attempt(&intent.id);
+        #[cfg(test)]
+        let running = attempt.as_ref().map(|attempt| attempt.start());
+        #[cfg(test)]
+        let _binding = running.as_ref().and_then(|running| running.bind());
         let Some(mut claimed) = self
             .tracker_store()?
             .claim_delivery_intent(&intent.id, intent.generation)
@@ -188,6 +198,8 @@ impl AppState {
             Ok(git) => git,
             Err(error) => {
                 self.fail_task_delivery(&claimed, &error)?;
+                #[cfg(test)]
+                self.finish_task_delivery_origin(&claimed.id, attempt.as_ref())?;
                 return Err(error);
             }
         };
@@ -198,6 +210,8 @@ impl AppState {
                 call: Box::new(ImmediateTaskDelivery {
                     git,
                     intent: claimed,
+                    #[cfg(test)]
+                    attempt,
                 }),
                 params: Value::Null,
                 invalidates: false,
@@ -206,7 +220,13 @@ impl AppState {
             })));
             return Ok(pending);
         }
-        self.finish_task_delivery(claimed.clone(), None, None)?;
+        self.finish_task_delivery(
+            claimed.clone(),
+            None,
+            None,
+            #[cfg(test)]
+            attempt,
+        )?;
         self.completed_task_delivery_answer(&claimed.id)
     }
 
@@ -264,10 +284,16 @@ impl AppState {
 struct ImmediateTaskDelivery {
     git: DeferredGit,
     intent: DeliveryIntent,
+    #[cfg(test)]
+    attempt: Option<std::sync::Arc<crate::store::delivery_origins::Attempt>>,
 }
 
 impl crate::app::git::deferred::DeferredGitWork for ImmediateTaskDelivery {
     fn run(&self, _params: &Value) -> Result<Value, String> {
+        #[cfg(test)]
+        let running = self.attempt.as_ref().map(|attempt| attempt.start());
+        #[cfg(test)]
+        let _binding = running.as_ref().and_then(|running| running.bind());
         Ok(match self.git.run() {
             Ok(value) => json!({"value":value}),
             Err(error) => json!({"error":error}),
@@ -279,7 +305,13 @@ impl crate::app::git::deferred::DeferredGitWork for ImmediateTaskDelivery {
             Some(error) => Err(error.to_string()),
             None => Ok(result["value"].clone()),
         };
-        app.finish_task_delivery(self.intent.clone(), Some(&self.git), Some(result))?;
+        app.finish_task_delivery(
+            self.intent.clone(),
+            Some(&self.git),
+            Some(result),
+            #[cfg(test)]
+            self.attempt.clone(),
+        )?;
         app.completed_task_delivery_answer(&self.intent.id)
     }
     fn invalidates_on_error(&self) -> bool {

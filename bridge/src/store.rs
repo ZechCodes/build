@@ -59,6 +59,8 @@ pub(crate) use reviews::TrackingExpectation;
 mod conversation_reset;
 mod conversations;
 mod delivery_intents;
+#[cfg(test)]
+pub(crate) mod delivery_origins;
 mod documents;
 pub use delivery_intents::{DeliveryIntent, DeliveryNotice};
 mod entities;
@@ -257,6 +259,8 @@ pub struct Store {
     conn: Arc<Mutex<Connection>>,
     read_pool: ReadPool,
     pub(crate) waiting_on_wakeup: Arc<tokio::sync::Notify>,
+    #[cfg(test)]
+    pub(crate) delivery_origins: delivery_origins::DeliveryOrigins,
     /// Test-only: make the next write fail.
     ///
     /// Several contracts are about what happens when the store REFUSES —
@@ -370,6 +374,8 @@ impl Store {
             conn,
             waiting_on_wakeup: Arc::new(tokio::sync::Notify::new()),
             #[cfg(test)]
+            delivery_origins: Default::default(),
+            #[cfg(test)]
             fail_next_write: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             renamed_tasks,
         })
@@ -428,7 +434,30 @@ impl Store {
         &self,
         work: impl FnOnce(&rusqlite::Transaction) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
-        let (out, pending) = self.in_transaction(|tx| {
+        self.in_waiting_on_transaction_observed(
+            work,
+            #[cfg(test)]
+            |_| {},
+        )
+    }
+
+    fn in_delivery_intent_transaction(
+        &self,
+        work: impl FnOnce(&rusqlite::Transaction) -> Result<DeliveryIntent, StoreError>,
+    ) -> Result<DeliveryIntent, StoreError> {
+        self.in_waiting_on_transaction_observed(
+            work,
+            #[cfg(test)]
+            |intent| self.delivery_origins.committed(intent),
+        )
+    }
+
+    fn in_waiting_on_transaction_observed<T>(
+        &self,
+        work: impl FnOnce(&rusqlite::Transaction) -> Result<T, StoreError>,
+        #[cfg(test)] committed: impl FnOnce(&T),
+    ) -> Result<T, StoreError> {
+        let (out, pending) = self.in_transaction_observed(|tx| {
             let before = tx.total_changes();
             let out = work(tx)?;
             let pending = tx.total_changes() != before && tx.query_row(
@@ -440,7 +469,7 @@ impl Store {
                 |row| row.get::<_, bool>(0),
             )?;
             Ok((out, pending))
-        })?;
+        }, #[cfg(test)] |(out, _)| committed(out))?;
         // Notify after commit; failed writes never publish process-local work.
         if pending {
             self.waiting_on_wakeup.notify_one();
@@ -455,6 +484,18 @@ impl Store {
     fn in_transaction<T>(
         &self,
         work: impl FnOnce(&rusqlite::Transaction) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        self.in_transaction_observed(
+            work,
+            #[cfg(test)]
+            |_| {},
+        )
+    }
+
+    fn in_transaction_observed<T>(
+        &self,
+        work: impl FnOnce(&rusqlite::Transaction) -> Result<T, StoreError>,
+        #[cfg(test)] committed: impl FnOnce(&T),
     ) -> Result<T, StoreError> {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("sql.write");
@@ -476,6 +517,10 @@ impl Store {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let out = work(&tx)?;
         tx.commit()?;
+        // Still serialized by the writer guard: a later retry cannot publish
+        // its activation before this transaction's callback. No wake has fired.
+        #[cfg(test)]
+        committed(&out);
         Ok(out)
     }
 }

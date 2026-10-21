@@ -22,6 +22,8 @@ struct HeldService {
 
 impl HeldService {
     fn start(state: Arc<Mutex<AppState>>) -> (Self, mpsc::Receiver<()>, bool) {
+        let (pulse, arrived) = mpsc::channel();
+        let service_step = AppState::task_delivery_step_for_test(&state, pulse);
         let (held, ready) = mpsc::channel();
         let (release, released) = mpsc::channel();
         let held_state = Arc::clone(&state);
@@ -31,9 +33,7 @@ impl HeldService {
             let _ = released.recv_timeout(SAFETY);
         });
         let holding = ready.recv_timeout(SAFETY).is_ok();
-        let (pulse, arrived) = mpsc::channel();
-        let service =
-            std::thread::spawn(move || AppState::task_delivery_step_for_test(&state, pulse));
+        let service = std::thread::spawn(service_step);
         (
             Self {
                 release: Some(release),
@@ -165,7 +165,7 @@ async fn logical_write_saved_retry_retains_original_before_service_admission() {
     let state = Arc::clone(&fixture.state);
     let again = std::thread::spawn(move || {
         let (pulse, _arrived) = mpsc::channel();
-        AppState::task_delivery_step_for_test(&state, pulse)
+        AppState::task_delivery_step_for_test(&state, pulse)()
     })
     .join();
     let settled = fixture

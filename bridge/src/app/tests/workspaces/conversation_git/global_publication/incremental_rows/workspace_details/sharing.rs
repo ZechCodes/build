@@ -87,7 +87,9 @@ fn workspace_detail_variants_index_payload_once_as_rosters_grow() {
         for (key, value) in &mut expected {
             if key == "workspace-00" || key.starts_with("workspace-00/") {
                 value["agents"][0]["topic"] = json!("fresh selected workspace payload");
+                value["agents"][0]["title"] = json!("fresh selected workspace payload");
                 value["run"]["agents"][0]["topic"] = json!("fresh selected workspace payload");
+                value["run"]["agents"][0]["title"] = json!("fresh selected workspace payload");
             }
         }
         assert_eq!(

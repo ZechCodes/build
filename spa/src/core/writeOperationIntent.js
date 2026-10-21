@@ -6,6 +6,7 @@ const SUMMARY_STATES = new Set(["accepted", "executing", "succeeded", "failed", 
 export const knownWriteSummary = summary => SUMMARY_STATES.has(summary?.state);
 export const terminalWrite = row => TERMINAL.has(row?.state);
 export const needsWriteStatus = row => !terminalWrite(row) && !row?.unresolved;
+export const provenExpiredFailure = row => row?.state === "result_expired" && row.outcome === "failed" && row.effect === "unapplied";
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (!value || typeof value !== "object") return value;
@@ -59,5 +60,11 @@ export function operationFailure(frame) {
     error_code: detail?.code || frame.error_code,
     retryable: detail?.retryable ?? frame.retryable ?? false,
     effect: frame.effect, uncertain: ["partial", "unknown"].includes(frame.effect), operation_id: wireOperationId(frame),
+  });
+}
+
+export function expiredOperationFailure(row) {
+  return Object.assign(new Error("Your change wasn’t saved. Its detailed result has expired."), {
+    error_code: "result_expired", retryable: false, effect: "unapplied", uncertain: false, operation_id: row.operationId,
   });
 }

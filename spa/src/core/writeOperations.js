@@ -1,7 +1,7 @@
 import { createWriteOperationCache } from "./writeOperationCache.js";
 import { createWriteOperationWorker } from "./writeOperationWorker.js";
 import {
-  copyIntent, needsWriteStatus, terminalWrite, writeDependencies, writeRefusal,
+  copyIntent, needsWriteStatus, terminalWrite, writeDependencies, writeRefusal, provenExpiredFailure, expiredOperationFailure,
   wireOperationId, wireRevision, writeSummaryFrame, writeSubmissionOrder, knownWriteSummary, operationFailure, WRITE_STATUS_LIMIT,
 } from "./writeOperationIntent.js";
 
@@ -48,6 +48,7 @@ export function createWriteOperationService(options) {
       if (!row.acknowledged) continue;
       pending.delete(row.operationId);
       if (row.state === "failed") waiting.reject(operationFailure(row.confirmation));
+      else if (provenExpiredFailure(row)) waiting.reject(expiredOperationFailure(row));
       else waiting.resolve(row.ack?.result ?? row.confirmation?.result);
     }
   }
@@ -113,6 +114,7 @@ export function createWriteOperationService(options) {
     if (row.unresolved) throw unresolvedError(row);
     if (JSON.stringify(row.request) !== JSON.stringify(request)) throw writeRefusal("This operation ID already belongs to another intent", "operation_conflict");
     if (row.state === "failed") throw operationFailure(row.confirmation);
+    if (provenExpiredFailure(row)) throw expiredOperationFailure(row);
     if (row.acknowledged) return row.ack?.result ?? row.confirmation?.result;
     const result = waitFor(row.operationId);
     void worker.reconcile();
@@ -287,11 +289,20 @@ export function createWriteOperationService(options) {
       return;
     }
     if (summary.state === "result_expired") {
-      await updateEvidence(row, held, { state: "result_expired", acknowledged: true, unresolved: true, revision: summaryRevision(summary, row) });
+      await recordExpired(summary, row, held);
       return;
     }
     await handleFrame(writeSummaryFrame(summary, held.greeting.bridge_epoch), held);
     if (summary.state === "executing") await recordExecuting(summary, held);
+  }
+  async function recordExpired(summary, row, held) {
+    const unapplied = provenExpiredFailure(summary);
+    await updateEvidence(row, held, {
+      state: "result_expired", acknowledged: true, revision: summaryRevision(summary, row),
+      outcome: summary.outcome, effect: summary.effect, expiredSummary: summary,
+      overlayActive: unapplied ? false : row.overlayActive, unresolved: !unapplied,
+      unresolvedReason: unapplied ? null : "result_expired",
+    });
   }
   function obsoleteSummary(summary, row) {
     const revision = wireRevision(summary);

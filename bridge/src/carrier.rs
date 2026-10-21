@@ -200,7 +200,7 @@ impl SessionSender {
         self.still_open.is_open.load(Ordering::SeqCst)
     }
 
-    fn read_is_live(&self) -> bool {
+    pub(crate) fn read_is_live(&self) -> bool {
         self.session_is_open()
             && (self.carrier_id.is_none() || self.carrier_open.load(Ordering::SeqCst))
     }

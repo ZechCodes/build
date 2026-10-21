@@ -29,7 +29,7 @@ checkout invalidation refreshes when that directory is shown.
 
 ## Prereqs
 
-Use Node 22.23.3 (`.nvmrc`) and npm 12.0.2 (`packageManager`).
+Use Node 22.23.4 (`.nvmrc`) and npm 12.0.2 (`packageManager`).
 `@build/secure-transport` resolves as `file:../transport/js` inside this checkout.
 Build maintains that package here; [transport ownership and tests](../transport/README.md)
 and [import provenance](../transport/UPSTREAM.md) describe the boundary.

@@ -74,7 +74,7 @@ this frame.
 ## The suites
 
 ```bash
-# 1. From the repo root, using Node 22.23.3 and npm 12.0.2:
+# 1. From the repo root, using Node 22.23.4 and npm 12.0.2:
 nice -n 10 npm ci --prefix transport/js --ignore-scripts
 cd web && nice -n 10 npm ci
 

@@ -90,7 +90,8 @@ impl HarnessSettings {
                 .cloned()
                 .or_else(|| row.field(name).map(|v| v.materialize()))
         };
-        let parse = |name: &str| field(name).ok_or_else(|| format!("settings.get: missing {name}"));
+        let parse =
+            |name: &'static str| field(name).ok_or_else(|| format!("settings.get: missing {name}"));
         Ok(Some(Self {
             default_harness: serde_json::from_value(parse("default_harness")?)
                 .map_err(|e| e.to_string())?,

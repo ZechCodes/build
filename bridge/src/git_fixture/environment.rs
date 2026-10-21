@@ -136,7 +136,13 @@ fn test_command_with_lookup(
         .env("BRIDGE_IDENTITY_FILE", home.join("identity.json"))
         .env(CHILD_MARKER, home.join("entered-test"))
         .env(CHILD_TEST, name);
-    for variable in ["RUST_BACKTRACE", "TMPDIR", "LLVM_PROFILE_FILE"] {
+    for variable in [
+        "RUST_BACKTRACE",
+        "TMPDIR",
+        "LLVM_PROFILE_FILE",
+        "BUILD_QUALIFICATION_MANIFEST",
+        "BUILD_QUALIFICATION_QUIET_RELEASE",
+    ] {
         if let Some(value) = lookup(variable) {
             command.env(variable, value);
         }

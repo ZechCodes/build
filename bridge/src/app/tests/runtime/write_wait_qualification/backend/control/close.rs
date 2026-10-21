@@ -3,6 +3,9 @@ use super::*;
 use futures_util::FutureExt;
 use std::time::Duration;
 
+#[path = "close/tests.rs"]
+mod tests;
+
 struct CloseJob {
     resources: Arc<RwLock<Option<PreparedBackend>>>,
     closed: Arc<AtomicBool>,

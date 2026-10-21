@@ -2,7 +2,10 @@
 use super::*;
 
 pub(super) fn install(harness: &mut RpcHarness, watch: ClientWatch) {
-    let occupied = harness.watch.lock().unwrap().is_some();
+    let occupied = {
+        let attachment = harness.watch.lock().unwrap();
+        attachment.active.is_some() || attachment.detached.is_some()
+    };
     assert!(!occupied, "one watch per RPC harness");
     let offered = harness.offered.lock().unwrap().clone();
     let errors = bootstrap_errors(harness, &offered, &watch);
@@ -12,7 +15,7 @@ pub(super) fn install(harness: &mut RpcHarness, watch: ClientWatch) {
         errors.is_empty(),
         "bootstrap is not ready for trial watch attachment: {errors:?}"
     );
-    *harness.watch.lock().unwrap() = Some(watch);
+    harness.watch.lock().unwrap().active = Some(watch);
 }
 
 fn bootstrap_errors(

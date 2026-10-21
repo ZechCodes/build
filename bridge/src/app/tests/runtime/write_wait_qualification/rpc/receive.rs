@@ -46,6 +46,7 @@ async fn receive_finals(
     watch: WatchAttachment,
 ) {
     while let Some(envelope) = outbound.recv().await {
+        let _receiving = Receiving::begin(&watch);
         let reply = SessionSender::decrypt_push(&key, &envelope);
         let final_reply_at = Instant::now();
         // Admission receipts and pushes settle neither oneshot nor watch.
@@ -76,7 +77,8 @@ fn deliver_final(
     let sender = pending.lock().unwrap().remove(id);
     match sender {
         Some(sender) => {
-            if let Some(watch) = watch.lock().unwrap().clone() {
+            let attached = watch.lock().unwrap().active.clone();
+            if let Some(watch) = attached {
                 let outcome = if reply["ok"] == true {
                     FinalOutcome::Reply
                 } else {
@@ -104,7 +106,22 @@ fn record_identity_error(
     error: String,
 ) {
     errors.lock().unwrap().push(error);
-    if let Some(watch) = watch.lock().unwrap().clone() {
+    let retained = watch.lock().unwrap().audit_watch();
+    if let Some(watch) = retained {
         watch.record_unmatched_reply(id);
+    }
+}
+
+/// Counts the actual decoded receive segment, including callback/error delivery.
+struct Receiving(WatchAttachment);
+impl Receiving {
+    fn begin(watch: &WatchAttachment) -> Self {
+        watch.lock().unwrap().receiving += 1;
+        Self(Arc::clone(watch))
+    }
+}
+impl Drop for Receiving {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().receiving -= 1;
     }
 }

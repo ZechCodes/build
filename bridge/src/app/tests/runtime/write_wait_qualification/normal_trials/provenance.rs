@@ -145,6 +145,8 @@ fn validate_fields(input: &RunInputs, debug_assertions: bool) -> Result<(), Stri
 fn validate_quiet(input: &RunInputs, quiet: &Value, now: u64) -> Result<(), String> {
     let p = &input.provenance;
     if quiet["schema"] != "build.qualification.quiet-release.v1"
+        || quiet["purpose"] != "six-original-qualification"
+        || quiet["exact_selector"] != "app::tests::runtime::write_wait_qualification::normal_trials::qualify_small_and_large_three_original_ten_minute_trials"
         || quiet["run_id"] != input.run_id
         || quiet["source_revision"] != p.source_revision
         || quiet["source_tree"] != p.source_tree

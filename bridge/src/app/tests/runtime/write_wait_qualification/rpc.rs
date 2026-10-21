@@ -17,7 +17,27 @@ mod receive;
 mod tests;
 
 type Waiting = Arc<Mutex<BTreeMap<String, oneshot::Sender<(Value, Instant)>>>>;
-type WatchAttachment = Arc<Mutex<Option<ClientWatch>>>;
+type WatchAttachment = Arc<Mutex<Attachment>>;
+
+#[derive(Default)]
+struct Attachment {
+    active: Option<ClientWatch>,
+    detached: Option<DetachedWatch>,
+    receiving: usize,
+}
+#[derive(Clone)]
+struct DetachedWatch {
+    watch: ClientWatch,
+    before_cleanup: Arc<FinalReconciliation>,
+    receipt_errors: Vec<String>,
+}
+impl Attachment {
+    fn audit_watch(&self) -> Option<ClientWatch> {
+        self.active
+            .clone()
+            .or_else(|| self.detached.as_ref().map(|saved| saved.watch.clone()))
+    }
+}
 
 pub(super) struct ReplyProof {
     pub original_id: String,
@@ -77,7 +97,7 @@ impl RpcHarness {
             128,
             8,
         );
-        let watch: WatchAttachment = Arc::new(Mutex::new(None));
+        let watch: WatchAttachment = Arc::new(Mutex::new(Attachment::default()));
         let openings = (0..4)
             .map(|index| Opening::new(index, &intake, Arc::clone(&watch)))
             .collect();
@@ -103,31 +123,36 @@ impl RpcHarness {
         params: Value,
     ) -> ReplyProof {
         let opening = &self.openings[caller];
-        let fresh = self.offered.lock().unwrap().insert(original_id.into());
-        assert!(
-            fresh,
-            "an original request is never retried after completion or failure"
-        );
-        let (sender, receive) = oneshot::channel();
-        assert!(
-            opening
-                .waiting
-                .lock()
-                .unwrap()
-                .insert(original_id.into(), sender)
-                .is_none(),
-            "an original request is never sent twice"
-        );
         let envelope = client_request(
             &opening.key,
             &opening.id,
             "data",
             json!({"id":original_id,"method":method,"params":params}),
         );
-        let sent_at = Instant::now();
-        if let Some(watch) = self.attached_watch() {
-            watch.sent(original_id);
-        }
+        let (receive, sent_at) = {
+            // Registration and sent observation cannot cross quiet detach.
+            let attached = self.watch.lock().unwrap();
+            let fresh = self.offered.lock().unwrap().insert(original_id.into());
+            assert!(
+                fresh,
+                "an original request is never retried after completion or failure"
+            );
+            let (sender, receive) = oneshot::channel();
+            assert!(
+                opening
+                    .waiting
+                    .lock()
+                    .unwrap()
+                    .insert(original_id.into(), sender)
+                    .is_none(),
+                "an original request is never sent twice"
+            );
+            let sent_at = Instant::now();
+            if let Some(watch) = &attached.active {
+                watch.sent(original_id);
+            }
+            (receive, sent_at)
+        };
         opening.wire.accept(&self.intake, envelope).await.unwrap();
         let (reply, final_reply_at) = tokio::time::timeout(Duration::from_secs(30), receive)
             .await
@@ -140,9 +165,5 @@ impl RpcHarness {
             sent_at,
             final_reply_at,
         }
-    }
-
-    fn attached_watch(&self) -> Option<ClientWatch> {
-        self.watch.lock().unwrap().clone()
     }
 }

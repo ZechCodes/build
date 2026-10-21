@@ -174,37 +174,57 @@ impl AcceptedArchive {
     /// Called exactly once for each dispatched original, even when reply or
     /// completion failed. Preserve raw before any selection/oracle can fail.
     pub fn take(&self, request: &CommonRequest) -> Result<Vec<AcceptedRecord>, String> {
-        let rows = self.records.take(&request.original_id);
+        self.take_classified(&request.original_id, false, |rows| classify(request, rows))
+    }
+    /// Only the overload path calls this for an actual typed busy candidate.
+    /// Empty evidence is provisional until the final native-quiet audit and
+    /// persisted archive; preserve nonempty vectors before returning any error.
+    pub fn take_rejected(&self, original: &str) -> Result<Vec<AcceptedRecord>, String> {
+        self.take_classified(original, true, |rows| {
+            if rows.is_empty() {
+                Ok(vec![
+                    "refusal-candidate/accepted-records-empty/final-audit-pending".into(),
+                ])
+            } else {
+                Err(format!(
+                    "refusal candidate has {} accepted records",
+                    rows.len()
+                ))
+            }
+        })
+    }
+    fn take_classified(
+        &self,
+        original: &str,
+        rejected: bool,
+        classify: impl FnOnce(&[AcceptedRecord]) -> Result<Vec<String>, String>,
+    ) -> Result<Vec<AcceptedRecord>, String> {
+        let rows = self.records.take(original);
         let mut retained = self.retained.lock().unwrap();
-        let history = retained
-            .histories
-            .entry(request.original_id.clone())
-            .or_default();
+        let history = retained.histories.entry(original.to_owned()).or_default();
         history.attempts.push(rows.clone());
         let result = if history.attempts.len() != 1 {
             Err("accepted evidence taken more than once for original".into())
-        } else if !self.expected.contains(&request.original_id) {
+        } else if !self.expected.contains(original) {
             Err("accepted evidence taken for unplanned original".into())
         } else {
-            classify(request, &rows)
+            classify(&rows)
         };
         match result {
             Ok(classifications) => {
                 history.classifications.push(classifications);
+                if rejected {
+                    history.outcomes.push("overload refusal candidate: actual acceptance vector empty; final audit pending".into());
+                    retained.rejected.insert(original.to_owned());
+                }
                 Ok(rows)
             }
             Err(error) => {
                 history.outcomes.push(error.clone());
-                retained
-                    .errors
-                    .push(format!("{}: {error}", request.original_id));
+                retained.errors.push(format!("{original}: {error}"));
                 Err(error)
             }
         }
-    }
-    /// Only the overload path calls this for an actual typed busy candidate.
-    pub fn take_rejected(&self, _original: &str) -> Result<Vec<AcceptedRecord>, String> {
-        Err("TESTFIRST: overload rejection acceptance capture not implemented".into())
     }
     pub fn outcome(&self, original: &str, result: Result<(), String>) {
         let mut retained = self.retained.lock().unwrap();
@@ -260,7 +280,8 @@ impl AcceptedArchive {
         retained.final_attempted = true;
         let raw = json!({"schema":"build.native-accepted-records-final.v1", "qualification":false,
             "native_quiet":native_quiet, "expected_originals":self.expected,
-            "histories":retained.histories, "late_or_unknown":retained.late, "errors":retained.errors});
+            "histories":retained.histories, "late_or_unknown":retained.late,
+            "refusal_candidates":retained.rejected, "errors":retained.errors});
         let persisted = match write(&raw) {
             Ok(()) => true,
             Err(error) => {
@@ -271,10 +292,14 @@ impl AcceptedArchive {
                 false
             }
         };
+        let refused =
+            (persisted && native_quiet && retained.errors.is_empty()).then(|| AcceptedRefusals {
+                originals: retained.rejected.clone(),
+            });
         AcceptedExport {
             persisted,
             errors: retained.errors.clone(),
-            refused: None,
+            refused,
         }
     }
 }

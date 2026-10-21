@@ -137,15 +137,49 @@ fn validate_compiler_unit(unit: &Value) -> Result<(), String> {
         || unit["actual_opt_level"] != 3
         || unit["debug_assertions"] != false
         || cfg.iter().any(|flag| flag == "debug_assertions")
-        || !flags
-            .windows(2)
-            .any(|pair| pair == ["--crate-name", "build_bridge"])
-        || !flags.windows(2).any(|pair| pair == ["-C", "opt-level=3"])
-        || !flags.iter().any(|flag| flag == "--test")
     {
         return Err("actual successful NI10 opt3 lib-test compiler evidence required".into());
     }
+    validate_compile_flags(&flags)
+}
+
+fn validate_compile_flags(flags: &[String]) -> Result<(), String> {
+    let crate_names = flags
+        .iter()
+        .enumerate()
+        .filter_map(|(index, flag)| match flag.as_str() {
+            "--crate-name" => flags.get(index + 1).map(String::as_str),
+            flag => flag.strip_prefix("--crate-name="),
+        })
+        .collect::<Vec<_>>();
+    if crate_names != ["build_bridge"]
+        || !flags.iter().any(|flag| flag == "src/lib.rs")
+        || !flags.iter().any(|flag| flag == "--test")
+        || codegen_values(flags, "opt-level") != ["3"]
+        || codegen_values(flags, "debug-assertions")
+            .iter()
+            .any(|value| !matches!(*value, "no" | "off" | "false" | "0"))
+    {
+        return Err("actual compiler flags do not uniquely bind release opt3 lib-test".into());
+    }
     Ok(())
+}
+
+fn codegen_values<'a>(flags: &'a [String], name: &str) -> Vec<&'a str> {
+    flags
+        .iter()
+        .enumerate()
+        .filter_map(|(index, flag)| {
+            let option = match flag.as_str() {
+                "-C" | "--codegen" => flags.get(index + 1)?.as_str(),
+                flag => flag
+                    .strip_prefix("-C")
+                    .or_else(|| flag.strip_prefix("--codegen="))?,
+            };
+            let (key, value) = option.split_once('=')?;
+            (key == name).then_some(value)
+        })
+        .collect()
 }
 
 /// Validate only this binary's compiled repository location, never a live

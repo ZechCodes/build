@@ -67,21 +67,25 @@ impl RpcHarness {
         }
         // Archive only boundary timestamps in one final batch, not full replies
         // or a collector snapshot on every read. Teardown already completed.
-        let attached = self
+        let attachment = self
             .watch
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if let Some(watch) = attached {
-            let imported = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                attach_registry_receipts(&self.registry, &self.offered, &watch)
-            }));
-            match imported {
-                Ok(errors) => report.errors.extend(errors),
-                Err(_) => report
-                    .errors
-                    .push("actual registry timestamp attachment panicked".into()),
-            }
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(saved) = &attachment.detached {
+            report.errors.extend(saved.receipt_errors.iter().cloned());
+            report.watch_before_cleanup = Some(Arc::clone(&saved.before_cleanup));
+            // Retained watch receives late duplicate/unknown errors too.
+            let mut final_audit = saved.watch.reconcile_final();
+            final_audit
+                .violations
+                .extend(saved.receipt_errors.iter().cloned());
+            report.watch_after_cleanup = Some(Arc::new(final_audit));
+        } else if let Some(watch) = &attachment.active {
+            report.errors.extend(import_registry_receipts(
+                &self.registry,
+                &self.offered,
+                watch,
+            ));
         }
         report
     }
@@ -100,6 +104,17 @@ impl RpcHarness {
             })
             .collect()
     }
+}
+
+pub(super) fn import_registry_receipts(
+    registry: &WriteWaitRegistry,
+    offered: &Mutex<BTreeSet<String>>,
+    watch: &ClientWatch,
+) -> Vec<String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        attach_registry_receipts(registry, offered, watch)
+    }))
+    .unwrap_or_else(|_| vec!["actual registry timestamp attachment panicked".into()])
 }
 
 fn attach_registry_receipts(

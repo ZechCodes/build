@@ -76,6 +76,8 @@ pub struct TrialReport {
 }
 
 pub trait ArtifactSink: Send + Sync {
+    /// Final cleanup attempt only; retain actual client/watch/MCP rows on failure too.
+    fn transport_archive(&self, name: TrialName, archive: &Value) -> Result<(), String>;
     /// Final-only unfiltered native roots/intervals; includes bootstrap and autonomous service roots.
     fn registry_archive(&self, name: TrialName, archive: &Value) -> Result<(), String>;
     fn progress(

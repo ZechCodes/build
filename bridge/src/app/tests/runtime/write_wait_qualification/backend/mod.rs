@@ -1,8 +1,10 @@
 //! Concrete OFFSOURCE assembly. Prepared resources are real; readiness is
 //! fail-closed until named test-first prerequisites have reviewed receipts.
 mod archive;
+mod completed_origins;
 mod control;
 mod exempt;
+mod final_transport;
 mod git_support;
 mod native_archive;
 mod probe;
@@ -54,6 +56,9 @@ pub(super) struct PreparedBackend {
     provenance: Provenance,
     plan: Vec<Slot>,
     full_plan: Vec<Slot>,
+    // One final failed export only; not a second lifecycle ledger.
+    transport_archive: Option<serde_json::Value>,
+    mcp_shutdown: Option<super::mcp_adapter::McpShutdownReport>,
     catalog: ReadCatalog,
     common: BTreeMap<String, CommonRequest>,
     targets: Option<CommonTargets>,
@@ -112,6 +117,8 @@ impl PreparedBackend {
             provenance,
             plan: Vec::new(),
             full_plan: Vec::new(),
+            transport_archive: None,
+            mcp_shutdown: None,
             catalog: ReadCatalog {
                 rpc: Vec::new(),
                 mcp: Vec::new(),

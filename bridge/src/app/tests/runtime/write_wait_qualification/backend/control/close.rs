@@ -51,17 +51,30 @@ impl CloseJob {
     }
     async fn run_owned(&self, owned: &mut Option<PreparedBackend>) {
         let prepared = owned.as_mut().expect("retained cleanup owner");
-        if !self.join_workers(prepared).await {
+        let Some(mcp) = self.join_workers(prepared).await else {
+            return;
+        };
+        let mcp_quiet = mcp.quiet && mcp.unfinished.is_empty();
+        prepared.mcp_shutdown = Some(mcp);
+        if !mcp_quiet {
+            self.archive_transport(prepared, None, false);
             return;
         }
         self.final_archive(prepared);
         let owner = release_app_owners(prepared);
+        // Retain the actual joined report even if archive/reconciliation panics.
+        // WatchOwner contains no AppState owner and cannot defer native close.
+        prepared.lifecycle = owner.clone();
         let native_joined = self.close_native(prepared).await;
-        if let Some(owner) = owner {
-            if !self.finish_watch(&owner).await {
-                prepared.lifecycle = Some(owner);
-                return;
-            }
+        let report = if let Some(owner) = &owner {
+            self.finish_watch(owner).await
+        } else {
+            None
+        };
+        let persisted = self.archive_transport(prepared, report.as_deref(), native_joined);
+        if report.is_none() || !persisted {
+            prepared.lifecycle = owner;
+            return;
         }
         if native_joined {
             // Physical cleanup status is separate from explicit proof RED.
@@ -69,7 +82,10 @@ impl CloseJob {
             self.closed.store(true, Ordering::Release);
         }
     }
-    async fn join_workers(&self, prepared: &PreparedBackend) -> bool {
+    async fn join_workers(
+        &self,
+        prepared: &PreparedBackend,
+    ) -> Option<super::super::super::mcp_adapter::McpShutdownReport> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while prepared
             .producers
@@ -78,7 +94,7 @@ impl CloseJob {
         {
             if tokio::time::Instant::now() >= deadline {
                 self.error("actual producer join incomplete; ownership retained");
-                return false;
+                return None;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -90,11 +106,37 @@ impl CloseJob {
                     report.unfinished, report.evidence.errors
                 ));
             }
-            if !report.quiet || !report.unfinished.is_empty() {
-                return false;
-            }
+            return Some(report);
         }
-        true
+        self.error("actual MCP owner missing at final transport audit");
+        None
+    }
+    fn archive_transport(
+        &self,
+        prepared: &mut PreparedBackend,
+        report: Option<&super::super::super::client_watch::WatchReport>,
+        native_joined: bool,
+    ) -> bool {
+        let Some(mcp) = prepared.mcp_shutdown.as_ref() else {
+            self.error("actual MCP report missing before final transport export");
+            return false;
+        };
+        let result = super::super::final_transport::archive_final(
+            prepared.name,
+            &prepared.plan,
+            prepared.watch.as_ref(),
+            report,
+            mcp,
+            native_joined,
+            &*self.sink,
+        );
+        for error in result.errors {
+            self.error(error);
+        }
+        if !result.persisted {
+            prepared.transport_archive = Some(result.raw);
+        }
+        result.persisted
     }
     fn final_archive(&self, prepared: &PreparedBackend) {
         let Some(observe) = &self.observation else {
@@ -127,7 +169,10 @@ impl CloseJob {
         }
         joined
     }
-    async fn finish_watch(&self, owner: &Arc<watch_owner::WatchOwner>) -> bool {
+    async fn finish_watch(
+        &self,
+        owner: &Arc<watch_owner::WatchOwner>,
+    ) -> Option<Arc<super::super::super::client_watch::WatchReport>> {
         owner.request_finish();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while !owner.is_finished() && tokio::time::Instant::now() < deadline {
@@ -140,7 +185,11 @@ impl CloseJob {
         {
             self.error(format!("actual client watchdog report: {report:?}"));
         }
-        owner.is_finished() && report.is_some()
+        if owner.is_finished() {
+            report
+        } else {
+            None
+        }
     }
 }
 fn release_app_owners(prepared: &mut PreparedBackend) -> Option<Arc<watch_owner::WatchOwner>> {

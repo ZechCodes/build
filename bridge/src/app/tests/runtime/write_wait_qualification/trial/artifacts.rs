@@ -44,6 +44,9 @@ impl JsonArtifacts {
     }
 }
 impl ArtifactSink for JsonArtifacts {
+    fn transport_archive(&self, name: TrialName, archive: &Value) -> Result<(), String> {
+        self.create_json(self.trial_dir(name)?.join("transport-final.json"), archive)
+    }
     fn registry_archive(&self, name: TrialName, archive: &Value) -> Result<(), String> {
         self.create_json(
             self.trial_dir(name)?.join("native-registry-final.json"),

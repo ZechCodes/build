@@ -1617,9 +1617,11 @@ agent in that project.
 Review opening and the explicit lifecycle jobs load their workspace review
 observations from SQLite off the app mutex, after durable publication.
 Invalidation installs the owned observation before publishing its workspace
-summary and replying. Close retains its durable completion step and defers
-the observation load; immediate workspace reads after RPC or MCP close see
-the closed review. Merge progress and background review sync load observations
+summary and replying. Close commits off the mutex and captures its completed
+task and events in that same transaction. Apply installs the review summary
+before publishing the task and delivering its completion notices once;
+immediate workspace reads after RPC or MCP close see the closed review.
+Merge progress and background review sync load observations
 off the mutex at their existing publication checkpoints, then take the mutex
 to install them. A monotonic observation generation prevents a delayed load
 from replacing a newer lifecycle observation, even when another review task

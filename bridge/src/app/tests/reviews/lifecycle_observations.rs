@@ -306,6 +306,7 @@ fn close_writer_rejects_review_version_changed_after_admission() {
             "opinion":{"snapshot_id":opened["review"]["snapshots"][0]["id"],"verdict":"approve"}
         }),
     );
+    let accepted = published_statuses(&shared.lock().unwrap(), &opened);
     let done = job.run();
     let mut app = shared.lock().unwrap();
     let error = app
@@ -322,9 +323,10 @@ fn close_writer_rejects_review_version_changed_after_admission() {
     assert_eq!(review.version, 2);
     assert!(review.completion.is_none());
     assert_eq!(
-        published_statuses(&app, &opened),
-        (json!("approved"), json!("approved"))
+        review.pull_request.unwrap().status,
+        crate::reviews::model::PullRequestStatus::Approved
     );
+    assert_eq!(published_statuses(&app, &opened), accepted);
 }
 
 fn task_actions(app: &mut AppState, owner: &str, agent: &str) -> Vec<Value> {

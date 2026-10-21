@@ -27,6 +27,16 @@ impl ReviewInvalidation {
         self.reader.load(&self.workspace)
     }
 
+    pub(super) fn workspace(&self) -> &str {
+        &self.workspace
+    }
+
+    pub(super) fn install(&self, app: &mut AppState) {
+        if let Some(observed) = self.observed.take() {
+            app.install_workspace_review_observation(&self.workspace, observed);
+        }
+    }
+
     pub(super) fn invalidate(&self, app: &mut AppState, project: &str, task: &str) {
         app.publish_review_observation(project, task, &self.workspace, self.observed.take());
         super::lifecycle::invalidates(app, &self.workspace);

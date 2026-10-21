@@ -344,7 +344,7 @@ fn task_actions(app: &mut AppState, owner: &str, agent: &str) -> Vec<Value> {
 }
 
 #[test]
-fn close_projection_failure_still_delivers_captured_completion_once() {
+fn close_projection_failure_acknowledges_durable_completion_once() {
     let (_home, _repository, shared, opened) = fixture();
     let request = params("tasks.review.close", &opened);
     let (owner, agent, store, job) = {
@@ -380,10 +380,9 @@ fn close_projection_failure_still_delivers_captured_completion_once() {
         task_actions(&mut app, &owner, &agent).is_empty(),
         "completion side effects wait for apply"
     );
-    let error = app
+    let answer = app
         .apply_deferred("tasks.review.close", &request, done)
-        .unwrap_err();
-    assert!(error.contains("review_sync_observations"), "{error}");
+        .expect("projection failure cannot refuse a durable close");
     let actions = task_actions(&mut app, &owner, &agent);
     assert_eq!(actions.len(), 1, "{actions:?}");
     assert_eq!(actions[0]["action"], "moved");
@@ -392,6 +391,9 @@ fn close_projection_failure_still_delivers_captured_completion_once() {
         .load_review(opened["task"]["id"].as_str().unwrap())
         .unwrap()
         .unwrap();
+    assert_eq!(answer, json!({"review": review}));
+    assert_eq!(answer["review"]["version"], 2);
+    assert_eq!(answer["review"]["pull_request"]["status"], "closed");
     assert_eq!(
         review.completion.unwrap().actor.agent_id(),
         Some(agent.as_str())

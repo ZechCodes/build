@@ -8,6 +8,8 @@
 // what every surface reads to decide whether the machine can be asked anything.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
+import epochGreeting from "../../fixtures/api/v1/writes/epoch-greeting.json";
 
 vi.mock("../src/api.js", () => ({
   fetchGatewayToken: async () => "tok",
@@ -84,11 +86,43 @@ afterEach(() => {
 });
 
 describe("what a greeting settles on the device it greeted", () => {
+  it("establishes the authoritative epoch before installing the adapter", async () => {
+    const greeting = epochGreeting.result;
+    const session = bridgeAnswering("dev-epoch", greeting);
+    const epoch = createBridgeEpoch();
+    session.acceptGreeting = (received, options) => epoch.acceptGreeting(received, options);
+    const install = session.installAdapter;
+    session.installAdapter = vi.fn((...args) => {
+      expect(epoch.current()).toMatchObject({ bridge_epoch: greeting.bridge_epoch, journal_incarnation: greeting.journal_incarnation });
+      return install(...args);
+    });
+    const context = adoptDeviceSession(session);
+    await greetLiveBridge(context);
+    expect(session.installAdapter).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves epoch authority untouched when a newer greeting supersedes its reply", async () => {
+    const epoch = createBridgeEpoch();
+    let finishOld;
+    const session = bridgeAnswering("dev-epoch-race", {});
+    session.acceptGreeting = vi.fn((received, options) => epoch.acceptGreeting(received, options));
+    session.call.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
+    const context = adoptDeviceSession(session);
+    const old = greetLiveBridge(context);
+    const greeting = { api_version: "3.24.0", bridge_epoch: "boot-new", journal_incarnation: "journal-A", capabilities: ["bridge.epoch"] };
+    session.call.mockImplementation(async (method) => method === "session.hello" ? greeting : {});
+    await greetLiveBridge(context);
+    finishOld({ ...greeting, bridge_epoch: "boot-old" });
+    await old;
+    expect(epoch.current().bridge_epoch).toBe("boot-new");
+    expect(session.acceptGreeting).toHaveBeenCalledTimes(1);
+  });
+
   it("writes the adapter and the API version onto that machine's context", async () => {
-    const { context, session } = await greet("dev-a", { api_version: "2.0.0", push_events: true });
+    const { context, session } = await greet("dev-a", { api_version: "3.24.0", push_events: true });
     expect(session.installAdapter).toHaveBeenCalledTimes(1);
     expect(context.adapter).toBe(session.adapter());
-    expect(context.apiVersion).toBe("2.0.0");
+    expect(context.apiVersion).toBe("3.24.0");
     expect(context.unsupported).toBe(null);
     expect(canAnswer(context)).toBe(true);
   });
@@ -101,7 +135,7 @@ describe("what a greeting settles on the device it greeted", () => {
   });
 
   it("does not release a replacement barrier when an old re-greeting captured none", async () => {
-    const { context, session } = await greet("dev-a", { api_version: "2.0.0" });
+    const { context, session } = await greet("dev-a", { api_version: "3.24.0" });
     let finishOld;
     session.call.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
     const oldGreeting = greetLiveBridge(context);
@@ -114,13 +148,13 @@ describe("what a greeting settles on the device it greeted", () => {
     context.greeted.then(() => { barrierReleased = true; });
     const newGreeting = greetLiveBridge(context);
 
-    finishOld({ api_version: "2.0.0" });
+    finishOld({ api_version: "3.24.0" });
     await oldGreeting;
 
     expect(barrierReleased).toBe(false);
     expect(replacement.installAdapter).not.toHaveBeenCalled();
 
-    finishReplacement({ api_version: "2.0.0" });
+    finishReplacement({ api_version: "3.24.0" });
     await newGreeting;
     expect(barrierReleased).toBe(true);
     expect(replacement.installAdapter).toHaveBeenCalledTimes(1);
@@ -132,7 +166,7 @@ describe("what a greeting settles on the device it greeted", () => {
 describe("a reconnect's greeting resolving the posts the last session stranded", () => {
   /** What a bridge that keeps a post-operation ledger says in its greeting. */
   const POST_OPERATIONS_GREETING = {
-    api_version: "2.0.0",
+    api_version: "3.24.0",
     capabilities: ["threads.postOperations"],
     thread_post_operations: { version: 1, status_method: "thread.operation" },
   };
@@ -191,7 +225,7 @@ describe("a reconnect's greeting resolving the posts the last session stranded",
     const { context } = await strandedDevice("dev-e");
     const { threadState } = context.chatRepository.history("conversation-1");
     threadState.deferAttachment("shots/big.png");
-    const reconnected = bridgeAnswering("dev-e", { api_version: "2.0.0" });
+    const reconnected = bridgeAnswering("dev-e", { api_version: "3.24.0" });
     expect(adoptDeviceSession(reconnected)).toBe(context);
     clearConnectionDiagnosticHistory();
 
@@ -207,7 +241,7 @@ describe("a reconnect's greeting resolving the posts the last session stranded",
 
   it("says nothing about a reconnect that had no pictures waiting", async () => {
     const { context } = await strandedDevice("dev-f");
-    const reconnected = bridgeAnswering("dev-f", { api_version: "2.0.0" });
+    const reconnected = bridgeAnswering("dev-f", { api_version: "3.24.0" });
     expect(adoptDeviceSession(reconnected)).toBe(context);
     clearConnectionDiagnosticHistory();
 
@@ -231,7 +265,7 @@ describe("a reconnect's greeting resolving the posts the last session stranded",
     // A ledger that never answers must not keep the machine from being usable.
     await greetLiveBridge(context);
 
-    expect(context.apiVersion).toBe("2.0.0");
+    expect(context.apiVersion).toBe("3.24.0");
     expect(canAnswer(context)).toBe(true);
     releaseLedger?.({});
   });

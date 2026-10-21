@@ -6,6 +6,7 @@
 // outlives the session it was written for is one this socket cannot read —
 // exactly as the real transport has it.
 
+import { transportEpoch } from "./transportEpoch.js";
 import { describe, it, expect, vi } from "vitest";
 import { TerminalSocket } from "../src/terminal/session.js";
 
@@ -24,6 +25,7 @@ const settle = async () => {
 
 const terminalSession = (sessionId, deviceId = "dev-b") => ({
   sessionId,
+  bridgeEpoch: transportEpoch(),
   sessionKeyB64: `key-${sessionId}`,
   deviceId,
 });

@@ -4,6 +4,7 @@
 // channels share a peer connection in production, so a terminal probe failure
 // must never close that carrier from inside the terminal stack.
 
+import { transportEpoch } from "./transportEpoch.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -105,7 +106,7 @@ describe("terminal session handoff after a bridge restart", () => {
         const number = sessions.length + 1;
         const lease = {
           sessionId: `terminal-${number}`,
-          sessionKeyB64: `key-${number}`,
+          bridgeEpoch: transportEpoch(), sessionKeyB64: `key-${number}`,
           deviceId,
           release: vi.fn(() => events.push(`lease-${number}:release`)),
         };
@@ -161,7 +162,7 @@ describe("terminal session handoff after a bridge restart", () => {
       const number = sessions.length + 1;
       const lease = {
         sessionId: `terminal-${number}`,
-        sessionKeyB64: `key-${number}`,
+        bridgeEpoch: transportEpoch(), sessionKeyB64: `key-${number}`,
         deviceId,
         release: vi.fn(),
       };
@@ -294,7 +295,7 @@ describe("terminal session handoff after a bridge restart", () => {
         const number = sessions.length + 1;
         const lease = {
           sessionId: `overlap-${number}`,
-          sessionKeyB64: `overlap-key-${number}`,
+          bridgeEpoch: transportEpoch(), sessionKeyB64: `overlap-key-${number}`,
           deviceId,
           release: vi.fn(() => events.push(`overlap-${number}:release`)),
         };
@@ -344,7 +345,7 @@ describe("terminal session handoff after a bridge restart", () => {
       provideTerminalSessions(async (deviceId) => {
         const lease = {
           sessionId: "unacknowledged",
-          sessionKeyB64: "unacknowledged-key",
+          bridgeEpoch: transportEpoch(), sessionKeyB64: "unacknowledged-key",
           deviceId,
           release: vi.fn(() => events.push("unacknowledged:release")),
         };
@@ -385,7 +386,7 @@ describe("terminal session handoff after a bridge restart", () => {
       const number = sessions.length + 1;
       const lease = {
         sessionId: `${deviceId}-${number}`,
-        sessionKeyB64: `${deviceId}-key-${number}`,
+        bridgeEpoch: transportEpoch(), sessionKeyB64: `${deviceId}-key-${number}`,
         deviceId,
         release: vi.fn(),
       };
@@ -413,7 +414,7 @@ describe("terminal session handoff after a bridge restart", () => {
     const oldMint = new Promise((resolve) => { resolveOld = resolve; });
     const oldLease = {
       sessionId: "old-account",
-      sessionKeyB64: "old-key",
+      bridgeEpoch: transportEpoch(), sessionKeyB64: "old-key",
       deviceId: "dev-a",
       release: vi.fn(),
     };
@@ -435,7 +436,7 @@ describe("terminal session handoff after a bridge restart", () => {
     contexts.set("dev-a", { deviceId: "dev-a", call: async () => ({}), peerLink: { term: replacement } });
     provideTerminalSessions(async () => ({
       sessionId: "new-account",
-      sessionKeyB64: "new-key",
+      bridgeEpoch: transportEpoch(), sessionKeyB64: "new-key",
       deviceId: "dev-a",
       release: vi.fn(),
     }));
@@ -458,7 +459,7 @@ describe("terminal session handoff after a bridge restart", () => {
     let resolveB;
     const waitingB = new Promise((resolve) => { resolveB = resolve; });
     provideTerminalSessions((deviceId) => deviceId === "dev-a"
-      ? Promise.resolve({ sessionId: "reentrant-a", sessionKeyB64: "key-a", deviceId, release: vi.fn() })
+      ? Promise.resolve({ sessionId: "reentrant-a", bridgeEpoch: transportEpoch(), sessionKeyB64: "key-a", deviceId, release: vi.fn() })
       : waitingB);
 
     const statuses = [];
@@ -476,7 +477,7 @@ describe("terminal session handoff after a bridge restart", () => {
     expect(events).not.toContain("reentrant-a:ping");
     expect(statuses).not.toContain("connected");
 
-    resolveB({ sessionId: "reentrant-b", sessionKeyB64: "key-b", deviceId: "dev-b", release: vi.fn() });
+    resolveB({ sessionId: "reentrant-b", bridgeEpoch: transportEpoch(), sessionKeyB64: "key-b", deviceId: "dev-b", release: vi.fn() });
     await settle();
     expect(events).toContain("reentrant-b:ping");
     unsubscribe();
@@ -503,7 +504,7 @@ it("guards project source reattach against a downgraded app greeting on the repl
     { id: "p1", sources: [{ id: "plain", path: "/original/plain" }] },
   ]);
   let number = 0;
-  provideTerminalSessions(async (deviceId) => ({ sessionId: `source-${++number}`, sessionKeyB64: `key-${number}`, deviceId, release: vi.fn() }));
+  provideTerminalSessions(async (deviceId) => ({ sessionId: `source-${++number}`, bridgeEpoch: transportEpoch(), sessionKeyB64: `key-${number}`, deviceId, release: vi.fn() }));
   try {
     const socket = terminalManager();
     await socket.whenConnected();

@@ -509,7 +509,8 @@ export class TerminalSocket {
     }
   }
 
-  _openSession({ sessionId, sessionKeyB64, deviceId }) {
+  _openSession({ sessionId, sessionKeyB64, deviceId, bridgeEpoch }) {
+    this._rpc?.close(new TerminalSocketLost("disconnected"));
     this._detachForeignProjectTerminals(deviceId);
     this._session = { sessionId, sessionKeyB64, deviceId };
     this._rpc = createSessionRpc({
@@ -517,6 +518,7 @@ export class TerminalSocket {
       sessionId,
       sessionKeyB64,
       deviceId,
+      bridgeEpoch,
       noCarrier: () => new TerminalSocketLost(this._closed ? "closed" : "disconnected"),
     });
     // A push is a live terminal frame: everything a reply is not is routed to

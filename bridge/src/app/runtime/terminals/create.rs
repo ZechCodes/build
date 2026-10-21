@@ -95,6 +95,10 @@ fn reserve<'timer>(
 }
 
 fn admitted_scope(app: &mut AppState, params: &Value) -> Result<TerminalScope, String> {
+    #[cfg(test)]
+    if let Some(gate) = app.terminal_create_scope_probe_gate.take() {
+        gate.arrive();
+    }
     if app.project_deletion_in_progress {
         return Err(crate::app::rpc::PROJECT_DELETION_IN_PROGRESS.into());
     }

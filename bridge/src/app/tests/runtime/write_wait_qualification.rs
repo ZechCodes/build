@@ -4,8 +4,12 @@
 //! never erases a missed offer. Long trials must use actual encrypted RPC/MCP
 //! execution and the logical write-wait registry; these pure controls alone
 //! do not qualify the production paths.
+mod client_watch;
 mod coverage;
+mod finite_watch;
+mod rare;
 mod read_and_exempt;
+mod rpc;
 mod scheduler;
 
 const SPA_CALLERS: usize = 4;

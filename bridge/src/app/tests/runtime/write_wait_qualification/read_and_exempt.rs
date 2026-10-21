@@ -29,14 +29,39 @@ fn read_methods() -> Vec<&'static str> {
         .collect()
 }
 
-// The short busy fixture had no sustained read/exempt offer schedule. Keep
-// that missing implementation explicit until the new scheduler controls fail.
 fn read_slots() -> Vec<AuxiliarySlot> {
-    Vec::new()
+    let methods = read_methods();
+    let mut slots: Vec<_> = (0..1000)
+        .flat_map(|round| {
+            methods
+                .iter()
+                .enumerate()
+                .map(move |(index, method)| AuxiliarySlot {
+                    due_micros: round * 600_000,
+                    caller: index % SPA_CALLERS,
+                    method,
+                })
+        })
+        .collect();
+    slots.sort_by_key(|slot| slot.due_micros);
+    slots
 }
 
 fn exempt_slots() -> Vec<AuxiliarySlot> {
-    Vec::new()
+    const METHODS: [&str; 5] = [
+        "term.input",
+        "term.ack",
+        "changes.subscribe",
+        "changes.unsubscribe",
+        "ping",
+    ];
+    (0..TRIAL_SECONDS * EXEMPT_PER_SECOND)
+        .map(|index| AuxiliarySlot {
+            due_micros: index as u64 * 10_000,
+            caller: index % SPA_CALLERS,
+            method: METHODS[index % METHODS.len()],
+        })
+        .collect()
 }
 
 #[test]

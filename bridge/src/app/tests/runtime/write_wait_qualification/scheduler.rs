@@ -1,34 +1,68 @@
 use super::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// Initial fixed-rate scaffold. Mixed classes and owner bursts are the next
-/// implementation slice; tests below specify those missing obligations.
+/// Fixed offered load, independent of available caller credits.
 fn write_slots(seconds: usize) -> Vec<WriteSlot> {
-    (0..seconds * WRITES_PER_SECOND)
-        .map(|id| WriteSlot {
-            id,
-            due_micros: id as u64 * 25_000,
-            caller: id % CALLERS,
-            owner: id % ACTIVE_WORKSPACES,
-            class: WorkClass::State,
-        })
-        .collect()
+    (0..seconds * WRITES_PER_SECOND).map(write_slot).collect()
+}
+
+fn write_slot(id: usize) -> WriteSlot {
+    let second = id / WRITES_PER_SECOND;
+    let position = id % WRITES_PER_SECOND;
+    let caller = match position {
+        0..8 => position / 2,
+        8..32 => SPA_CALLERS + (position - 8) % MCP_CALLERS,
+        32..36 => position - 32,
+        _ => position - 36,
+    };
+    let burst = second % 10 == 0 && position < 8;
+    let owner = if burst {
+        0
+    } else if caller >= SPA_CALLERS {
+        caller - SPA_CALLERS
+    } else {
+        caller * 2 + (second + position) % 2
+    };
+    let class = match position {
+        0..32 => WorkClass::State,
+        32..36 => WorkClass::FilesystemProcess,
+        _ => WorkClass::GitProvider,
+    };
+    WriteSlot {
+        id,
+        caller,
+        owner,
+        class,
+        due_micros: second as u64 * 1_000_000 + if burst { 0 } else { position as u64 * 25_000 },
+    }
 }
 
 #[derive(Default)]
 struct CallerCredits {
-    pending: BTreeSet<usize>,
+    pending: BTreeMap<usize, usize>,
+    counts: [usize; CALLERS],
 }
 
 impl CallerCredits {
     fn admit(&mut self, slot: &WriteSlot) -> bool {
-        // The starting scaffold tracks identities but has not enforced the
-        // per-caller credit limit. Refused offers must remain in the plan.
-        self.pending.insert(slot.id)
+        assert!(
+            !self.pending.contains_key(&slot.id),
+            "original is already dispatched"
+        );
+        if self.counts[slot.caller] == MAX_OUTSTANDING_PER_CALLER {
+            return false;
+        }
+        self.pending.insert(slot.id, slot.caller);
+        self.counts[slot.caller] += 1;
+        true
     }
 
     fn complete(&mut self, id: usize) {
-        assert!(self.pending.remove(&id), "completion names admitted work");
+        let caller = self
+            .pending
+            .remove(&id)
+            .expect("completion names admitted work");
+        self.counts[caller] -= 1;
     }
 }
 
@@ -91,10 +125,14 @@ fn same_owner_burst_is_eight_offered_writes_without_increasing_the_rate() {
 
 #[test]
 fn exhausted_caller_credits_do_not_turn_an_offered_slot_into_a_completion() {
-    let slots: Vec<_> = write_slots(1)
-        .into_iter()
-        .filter(|slot| slot.caller == 0)
-        .collect();
+    // Fixed original identities isolate credit retention from routing policy.
+    let slots = [0, 12, 24].map(|id| WriteSlot {
+        id,
+        caller: 0,
+        owner: 0,
+        due_micros: id as u64 * 25_000,
+        class: WorkClass::State,
+    });
     let mut credits = CallerCredits::default();
     assert!(credits.admit(&slots[0]));
     assert!(credits.admit(&slots[1]));

@@ -155,18 +155,6 @@ const WRITE_FAMILIES: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// A recipe must construct a valid bounded operation in the seeded fixture,
-/// retain the real admission/execution path and verify its final effect.
-/// Merely naming a method in WRITE_FAMILIES does not satisfy this interface.
-trait FiniteServiceRecipe {
-    fn method(&self) -> &'static str;
-    fn external_bound_ms(&self) -> u64;
-}
-
-fn finite_service_recipe(_method: &str) -> Option<Box<dyn FiniteServiceRecipe>> {
-    None
-}
-
 fn registered_methods() -> BTreeSet<&'static str> {
     crate::api::v1::methods()
         .iter()
@@ -199,24 +187,20 @@ fn every_deployed_write_has_an_explicit_semantic_family_or_exemption() {
     );
 }
 
-#[test]
-fn every_semantic_method_has_a_finite_service_recipe_before_qualification() {
-    let missing: Vec<_> = WRITE_FAMILIES
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_semantic_method_has_a_finite_service_recipe_before_qualification() {
+    crate::git_fixture::environment::isolated_git_test!();
+    let verified = super::rare::execute_all().await;
+    let expected: BTreeSet<_> = WRITE_FAMILIES
         .iter()
         .flat_map(|(_, methods)| methods.iter().copied())
-        .filter(|method| match finite_service_recipe(method) {
-            Some(recipe) => {
-                assert_eq!(recipe.method(), *method);
-                assert!(recipe.external_bound_ms() <= 500);
-                false
-            }
-            None => true,
-        })
         .collect();
-    assert!(
-        missing.is_empty(),
-        "missing real finite-service recipes: {missing:?}"
+    let observed: BTreeSet<_> = verified.iter().map(|step| step.method.as_str()).collect();
+    assert_eq!(
+        expected, observed,
+        "every semantic method requires real wire success and effect proof"
     );
+    assert!(!verified.is_empty());
 }
 
 #[test]

@@ -4,3 +4,5 @@ pub mod off_lock;
 pub mod user_involvement;
 #[cfg(test)]
 pub mod finite_service;
+#[cfg(test)]
+pub mod agent_session;

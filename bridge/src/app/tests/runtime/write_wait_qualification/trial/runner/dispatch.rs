@@ -64,8 +64,7 @@ impl RunState<'_> {
                 ledger.rows[before]
                     .milestones_us
                     .contains_key(&Stage::Completed)
-                    && (ledger.rows[before].error.is_none()
-                        || (self.control && self.control_effects.contains(before)))
+                    && ledger.rows[before].error.is_none()
             })
     }
     fn dispatch_one(&mut self, index: usize) -> bool {
@@ -169,30 +168,12 @@ impl RunState<'_> {
             Ok(ControlExecution::Verified(proof)) => {
                 self.observe.completed(&done.original_id, Ok(proof))
             }
-            Ok(ControlExecution::ProofGap(gap)) if self.control => {
-                if gap.original_id != done.original_id {
-                    self.observe.completed(
-                        &done.original_id,
-                        Err("control gap original mismatch".into()),
-                    );
-                    return;
-                }
-                if gap.actual_effect_verified {
-                    self.control_effects.insert(done.original_id.clone());
-                }
-                self.observe.control_gap(&done.original_id, &gap.detail);
-                self.control_gaps.push(gap);
-            }
             Ok(ControlExecution::Refused(refusal)) if refusal.original_id == done.original_id => {
                 self.record_fault_refusal(refusal)
             }
             Ok(ControlExecution::Refused(_)) => self.observe.completed(
                 &done.original_id,
                 Err("actual refusal completion original mismatch".into()),
-            ),
-            Ok(ControlExecution::ProofGap(_)) => self.observe.completed(
-                &done.original_id,
-                Err("control-only proof gap reached normal runner".into()),
             ),
             Err(error) => self.observe.completed(&done.original_id, Err(error)),
         }

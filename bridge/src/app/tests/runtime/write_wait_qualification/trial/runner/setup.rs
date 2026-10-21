@@ -96,7 +96,6 @@ impl<'a> RunState<'a> {
             failures: Vec::new(),
             fault_overload: None,
             control: offer_window == Duration::from_secs(2),
-            control_effects: BTreeSet::new(),
             control_gaps: Vec::new(),
             at_600: None,
             drain_deadline: None,

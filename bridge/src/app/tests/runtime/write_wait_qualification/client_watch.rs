@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -217,25 +217,6 @@ pub(super) struct WatchReport {
     pub inspected_deadlines: u64,
     pub still_indexed: u64,
     pub breaches: Vec<Breach>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(super) struct CohortCounts {
-    pub elapsed: Duration,
-    pub archived: usize,
-    pub intended: usize,
-    pub registered: usize,
-    pub offered: usize,
-    pub sent: usize,
-    pub server_registered: usize,
-    pub admitted: usize,
-    pub final_replies: usize,
-    pub protocol_errors: usize,
-    pub transport_errors: usize,
-    pub cancelled: usize,
-    pub unfinished: usize,
-    pub breached: usize,
-    pub implicit_schedules: usize,
 }
 
 mod lifecycle;

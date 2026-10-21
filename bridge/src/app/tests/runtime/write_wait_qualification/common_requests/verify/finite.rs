@@ -11,7 +11,6 @@ pub(super) fn verify(
                 path,
                 bytes,
                 revision,
-                ..
             },
             SavedEffect::File {
                 actual_path,
@@ -45,7 +44,6 @@ pub(super) fn verify(
                 directory,
                 full_ref,
                 commit,
-                ..
             },
             SavedEffect::GitHead {
                 actual_directory,

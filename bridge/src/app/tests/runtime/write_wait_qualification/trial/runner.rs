@@ -19,8 +19,10 @@ struct Finished {
 pub struct UnfinishedCleanup {
     pub original_ids: Vec<String>,
     pub tasks: Vec<JoinHandle<()>>,
-    pub backend: Arc<dyn TrialBackend>,
-    pub producers: ProducerSet,
+    // Ownership-only guards: retain both resources until this capsule is
+    // dropped or deliberately retained for external process containment.
+    pub _retained_backend: Arc<dyn TrialBackend>,
+    pub _retained_producers: ProducerSet,
 }
 pub struct TrialRun {
     pub report: TrialReport,
@@ -60,7 +62,6 @@ struct RunState<'a> {
     failures: Vec<FailureSnapshot>,
     fault_overload: Option<FaultOverloadState>,
     control: bool,
-    control_effects: BTreeSet<String>,
     control_gaps: Vec<ControlProofGap>,
     at_600: Option<BTreeMap<Traffic, TrafficCounts>>,
     drain_deadline: Option<Instant>,

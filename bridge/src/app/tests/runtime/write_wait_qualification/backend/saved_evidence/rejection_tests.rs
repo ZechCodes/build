@@ -65,23 +65,19 @@ fn native_rejected_acceptance_requires_quiet_persisted_final_audit() {
     let (not_quiet, raw) = finish_empty_candidate("qual/rejected/not-quiet", false, false);
     assert!(not_quiet.persisted);
     assert!(not_quiet.refused.is_none());
-    assert!(
-        not_quiet
-            .errors
-            .iter()
-            .any(|error| error.contains("not quiet"))
-    );
+    assert!(not_quiet
+        .errors
+        .iter()
+        .any(|error| error.contains("not quiet")));
     assert_eq!(raw["native_quiet"], false);
 
     let (failed_sink, raw) = finish_empty_candidate("qual/rejected/failed-sink", true, true);
     assert!(!failed_sink.persisted);
     assert!(failed_sink.refused.is_none());
-    assert!(
-        failed_sink
-            .errors
-            .iter()
-            .any(|error| error.contains("accepted-record artifact"))
-    );
+    assert!(failed_sink
+        .errors
+        .iter()
+        .any(|error| error.contains("accepted-record artifact")));
     assert_eq!(
         raw["histories"]["qual/rejected/failed-sink"]["attempts"],
         json!([[]])
@@ -114,26 +110,20 @@ fn native_rejected_acceptance_preserves_nonempty_duplicate_late_and_unknown_reco
     native_activity(&mut app, &registry, saved, initial);
     native_activity(&mut app, &registry, saved, initial + 1);
     assert_eq!(store.load_user_session().unwrap(), Some(app.user_session()));
-    assert!(
-        archive
-            .take_rejected(saved)
-            .unwrap_err()
-            .contains("2 accepted records")
-    );
+    assert!(archive
+        .take_rejected(saved)
+        .unwrap_err()
+        .contains("2 accepted records"));
     assert!(archive.take_rejected(duplicate).unwrap().is_empty());
-    assert!(
-        archive
-            .take_rejected(duplicate)
-            .unwrap_err()
-            .contains("more than once")
-    );
+    assert!(archive
+        .take_rejected(duplicate)
+        .unwrap_err()
+        .contains("more than once"));
     assert!(archive.take_rejected(late).unwrap().is_empty());
-    assert!(
-        archive
-            .take_rejected("qual/rejected/unplanned-take")
-            .unwrap_err()
-            .contains("unplanned")
-    );
+    assert!(archive
+        .take_rejected("qual/rejected/unplanned-take")
+        .unwrap_err()
+        .contains("unplanned"));
     native_activity(&mut app, &registry, late, initial + 2);
     native_activity(&mut app, &registry, unknown, initial + 3);
     assert_eq!(store.load_user_session().unwrap(), Some(app.user_session()));
@@ -179,11 +169,9 @@ fn native_rejected_acceptance_preserves_nonempty_duplicate_late_and_unknown_reco
     assert_eq!(raw["late_or_unknown"][late].as_array().unwrap().len(), 1);
     assert_eq!(raw["late_or_unknown"][unknown].as_array().unwrap().len(), 1);
     assert_eq!(raw["histories"][saved]["classifications"], json!([]));
-    assert!(
-        !serde_json::to_string(&raw["histories"])
-            .unwrap()
-            .contains("native saved effect and completion verified")
-    );
+    assert!(!serde_json::to_string(&raw["histories"])
+        .unwrap()
+        .contains("native saved effect and completion verified"));
     assert!(records.take_all().is_empty());
 }
 
@@ -261,8 +249,6 @@ fn presence_request(original: &str) -> CommonRequest {
         effect: ExpectedEffect::UserPresent,
         durable_operation_id: None,
         predecessor: None,
-        finite_target_us: None,
-        finite_ceiling_us: None,
     }
 }
 

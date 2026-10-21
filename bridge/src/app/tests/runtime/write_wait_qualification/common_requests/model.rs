@@ -88,13 +88,11 @@ pub enum ExpectedEffect {
         body: String,
     },
     File {
-        owner: usize,
         path: PathBuf,
         bytes: Vec<u8>,
         revision: String,
     },
     GitHead {
-        owner: usize,
         directory: PathBuf,
         full_ref: String,
         commit: String,
@@ -111,8 +109,6 @@ pub struct CommonRequest {
     // Only approved true dependencies: per-file FS and per-root Git chains.
     // State slots, including all eight same-owner burst slots, have NONE.
     pub predecessor: Option<String>,
-    pub finite_target_us: Option<u64>,
-    pub finite_ceiling_us: Option<u64>,
 }
 /// Ephemeral witnesses loaded from REAL native storage/logs. They are consumed
 /// by verify_saved and reduced to bounded typed evidence, never retained whole.
@@ -139,15 +135,7 @@ pub enum SavedEffect {
         invocation_start_ms: i64,
         decoded_final_ms: i64,
     },
-    TaskVersion {
-        saved: crate::tracker::Task,
-        moved_event: Option<crate::tracker::TaskEvent>,
-    },
     Comment(crate::tracker::TaskComment),
-    Agent {
-        owner: String,
-        saved: crate::agent::Agent,
-    },
     File {
         actual_path: PathBuf,
         actual_bytes: Vec<u8>,

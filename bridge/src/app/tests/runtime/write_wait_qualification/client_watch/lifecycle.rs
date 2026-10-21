@@ -184,7 +184,7 @@ impl ClientWatch {
 
     pub fn offer(&self, original_id: &str) {
         // Retain the three old offer-only controls. Such rows are explicitly
-        // flagged and rejected by assert_explicit_schedule() in normal trials.
+        // rejected by final transport validation in normal trials.
         let exists = self
             .inner
             .registry

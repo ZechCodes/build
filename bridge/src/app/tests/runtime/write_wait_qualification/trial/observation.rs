@@ -173,28 +173,3 @@ impl Observation {
         }
     }
 }
-
-impl Observation {
-    pub(super) fn control_gap(&self, id: &str, detail: &str) {
-        let now = self.now_us();
-        let mut ledger = self.ledger.lock().unwrap();
-        let row = ledger.rows.get_mut(id).expect("immutable control original");
-        row.error = Some(format!("explicit missing proof: {detail}"));
-        row.milestones_us.insert(Stage::Completed, now);
-        let elapsed = row
-            .milestones_us
-            .get(&Stage::ParsedFinalReply)
-            .map(|at| at.saturating_sub(row.slot.due_us));
-        drop(ledger);
-        if elapsed.is_none_or(|us| us > WRITE_BOUND_US) {
-            self.violation(Violation {
-                original_id: Some(id.into()),
-                kind: "control_actual_client_endpoint".into(),
-                observed_at_us: now,
-                measured_us: elapsed,
-                limit_us: Some(WRITE_BOUND_US),
-                detail: "proof-gap deferral never waives actual decoded endpoint".into(),
-            });
-        }
-    }
-}

@@ -2,18 +2,10 @@
 use super::super::common_requests::{ActiveTarget, CommonTargets, ProjectTarget, RootGitRefs};
 use crate::app::tests::runtime::write_wait_qualification::fixture::QualificationFixture;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
-
-pub(super) struct GitSupport {
-    pub local_bare_origins: Vec<PathBuf>,
-}
 
 /// Four local bare remotes and sixteen unique branch refs are support objects,
 /// not app WorkspaceRegistry residents, semantic writes or provider endpoints.
-pub(super) fn prepare(
-    fixture: &QualificationFixture,
-) -> Result<(GitSupport, CommonTargets), String> {
-    let mut origins = Vec::with_capacity(4);
+pub(super) fn prepare(fixture: &QualificationFixture) -> Result<CommonTargets, String> {
     for project in &fixture.projects {
         let parent = project
             .repository
@@ -51,7 +43,6 @@ pub(super) fn prepare(
         if main != fetched {
             return Err("private origin did not retain real main commit".into());
         }
-        origins.push(path);
     }
     let active = fixture
         .active_workspaces
@@ -109,16 +100,11 @@ pub(super) fn prepare(
         .iter()
         .flat_map(|p| p.tasks.iter().rev().take(2).cloned())
         .collect::<BTreeSet<_>>();
-    Ok((
-        GitSupport {
-            local_bare_origins: origins,
-        },
-        CommonTargets {
-            active,
-            projects,
-            git: refs.try_into().map_err(|_| "exact eight ref pairs")?,
-            initial_editor_bodies: bodies.try_into().map_err(|_| "exact eight editor bodies")?,
-            reserved_read_tasks,
-        },
-    ))
+    Ok(CommonTargets {
+        active,
+        projects,
+        git: refs.try_into().map_err(|_| "exact eight ref pairs")?,
+        initial_editor_bodies: bodies.try_into().map_err(|_| "exact eight editor bodies")?,
+        reserved_read_tasks,
+    })
 }

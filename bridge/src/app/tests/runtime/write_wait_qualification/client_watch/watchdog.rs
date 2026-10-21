@@ -274,10 +274,6 @@ impl ClientWatchGuard {
             || self.handle.as_ref().is_some_and(JoinHandle::is_finished)
     }
 
-    pub fn polls(&self) -> u64 {
-        self.state.polls.load(Ordering::Acquire)
-    }
-
     /// Retain all per-ID rows separately via ClientWatch::snapshot(). Join all
     /// callers first, finish this guard second, archive snapshot last. An early
     /// failure stops new offers; it does not convert accepted writes to success.

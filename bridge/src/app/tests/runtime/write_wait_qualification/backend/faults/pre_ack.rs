@@ -308,7 +308,7 @@ fn prepare_request(
     slots: &[Slot],
     slot: &Slot,
 ) -> Result<(CommonTargets, CommonRequest), String> {
-    let (_, targets) = super::super::git_support::prepare(&context.fixture)?;
+    let targets = super::super::git_support::prepare(&context.fixture)?;
     let requests = build_common_requests(name, &targets, slots)?;
     let request = requests
         .get(&slot.original_id)

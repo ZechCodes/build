@@ -10,16 +10,6 @@ use crate::app::accepted_records::{
 };
 
 impl CommonRequest {
-    pub fn requires_accepted_record(&self) -> bool {
-        matches!(
-            &self.effect,
-            ExpectedEffect::Topic { .. }
-                | ExpectedEffect::Name { .. }
-                | ExpectedEffect::TaskStatus { .. }
-                | ExpectedEffect::Comment { .. }
-        )
-    }
-
     pub fn verify_accepted_record(
         &self,
         decoded: &Value,

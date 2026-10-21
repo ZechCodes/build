@@ -93,7 +93,6 @@ impl McpHarness {
         McpObservation {
             active: Arc::clone(&self.inner.active),
             failed: Arc::clone(&self.inner.failed),
-            endpoints: self.inner.endpoints.clone(),
         }
     }
 

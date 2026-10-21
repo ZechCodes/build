@@ -160,7 +160,6 @@ impl Inner {
 pub(super) struct McpObservation {
     active: Arc<arc_swap::ArcSwap<imbl::OrdMap<String, ()>>>,
     failed: Arc<AtomicBool>,
-    endpoints: Vec<Arc<Endpoint>>,
 }
 
 impl McpObservation {
@@ -169,12 +168,6 @@ impl McpObservation {
     }
     pub fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire)
-    }
-    pub fn active_sockets(&self) -> usize {
-        self.endpoints
-            .iter()
-            .map(|endpoint| endpoint.active.load(Ordering::Acquire))
-            .sum()
     }
 }
 

@@ -512,22 +512,6 @@ impl ReadyReadInputs {
         );
         self.cleanup.disarm();
     }
-
-    pub(in crate::app::tests::runtime::write_wait_qualification) fn manifest(&self) -> Value {
-        json!({"read_rpc_methods":45,"mcp_read_methods":14,
-            "supplemental_project_metadata_owners":self.projects.len(),
-            "supplemental_nonresident_legacy_plans":2,
-            "supplemental_authenticated_router_endpoints":1,
-            "supplemental_authenticated_project_endpoints":0,
-            "router_actual_factory_opens":self.router.factory_opens,
-            "native_qa_streams":1,"native_finite_shells":1,
-            "persisted_completed_failure_operation_receipts":1,
-            "nonresident_support_git_worktrees":1,"artifact_revisions":1,
-            "tracker_tasks_added":0,"registry_workspaces_added":0,
-            "all_canonical_seed_items_inside_pinned_total":true,
-            "reserved_active_tail_items":8,
-            "provider_network_probes":"isolated fixture factory/CLIs/backends"})
-    }
 }
 
 // Panic cleanup is independent of success-path assertions. Native retire_tab

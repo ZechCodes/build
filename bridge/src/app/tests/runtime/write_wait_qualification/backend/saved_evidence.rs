@@ -7,7 +7,7 @@ use super::completed_origins::NativeCompletion;
 use super::saved_effects::{self, Handles, InvocationWindow};
 use crate::app::accepted_records::{AcceptedRecord, AcceptedRecords, PresencePersistence};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -405,8 +405,6 @@ mod tests {
             effect: ExpectedEffect::UserPresent,
             durable_operation_id: None,
             predecessor: None,
-            finite_target_us: None,
-            finite_ceiling_us: None,
         };
         let archive = AcceptedArchive::new(Arc::clone(&records), [id.to_owned()].into());
         let initial = app.user_session().last_activity_ms.unwrap_or(0) + 1;
@@ -437,12 +435,10 @@ mod tests {
         std::fs::write(&blocked, b"existing artifact must survive").unwrap();
         let result = archive.finish(name, &sink, true);
         assert!(!result.persisted);
-        assert!(
-            result
-                .errors
-                .iter()
-                .any(|error| error.contains("accepted-record artifact"))
-        );
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("accepted-record artifact")));
         let retained = archive.retained.lock().unwrap();
         let raw = retained
             .failed_export
@@ -465,12 +461,10 @@ mod tests {
             1
         );
         assert_eq!(retained.histories[id].attempts.len(), 1);
-        assert!(
-            retained.histories[id]
-                .outcomes
-                .iter()
-                .any(|outcome| outcome == "deliberate earlier proof failure")
-        );
+        assert!(retained.histories[id]
+            .outcomes
+            .iter()
+            .any(|outcome| outcome == "deliberate earlier proof failure"));
         assert_eq!(
             std::fs::read(&blocked).unwrap(),
             b"existing artifact must survive"

@@ -2,7 +2,7 @@
 //! Only 59 derived read IDs are enrolled; their full normal source slots remain
 //! in the artifact. The actual backend proof helper runs unchanged.
 use super::super::client_watch::{ClientWatch, FinalOutcome};
-use super::super::read_recipes::{FullReadForm, mcp_cases, mcp_read_method, mcp_recipe_form};
+use super::super::read_recipes::{mcp_cases, mcp_read_method, mcp_recipe_form, FullReadForm};
 use super::super::trial_complete::{
     ControlExecution, ExecutionProof, JsonArtifacts, Observation, ProducerHandle, ReadCohort,
     Recipe, Route, Stage, Traffic,
@@ -310,11 +310,9 @@ async fn collect(prepared: &mut PreparedBackend, artifacts: &Path) -> Result<Col
             .await
             .and_then(|result| match result {
                 ControlExecution::Verified(proof) => Ok(proof),
-                ControlExecution::ProofGap(gap) => {
-                    Err(format!("native read proof gap: {}", gap.detail))
-                }
                 ControlExecution::Refused(refusal) => Err(format!(
-                    "unexpected refusal on native read {}: {}", refusal.original_id, refusal.method
+                    "unexpected refusal on native read {}: {}",
+                    refusal.original_id, refusal.method
                 )),
             });
         settle_unreturned_failure(&watch, &slot.original_id, &proof);

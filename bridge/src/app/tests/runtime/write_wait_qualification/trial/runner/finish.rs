@@ -71,8 +71,8 @@ impl RunState<'_> {
                 .into_values()
                 .map(|execution| execution.task)
                 .collect(),
-            backend: self.backend,
-            producers: self.producers,
+            _retained_backend: self.backend,
+            _retained_producers: self.producers,
         });
         Ok(TrialRun { report, unfinished })
     }

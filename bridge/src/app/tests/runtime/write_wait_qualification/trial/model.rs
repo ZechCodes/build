@@ -146,11 +146,9 @@ pub struct ExecutionProof {
     pub mandatory_children_complete: bool,
 }
 
-/// Control-only outcome: a real decoded response can finish without inventing
-/// a proof for an unreleased accepted-version/completion observer.
+/// An execution returns verified evidence or an actual persisted refusal.
 pub enum ControlExecution {
     Verified(ExecutionProof),
-    ProofGap(ControlProofGap),
     Refused(ControlRefusal),
 }
 /// Actual persisted refusal candidate, never a successful effect proof.

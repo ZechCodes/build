@@ -110,69 +110,6 @@ impl ClientWatch {
             violations,
         }
     }
-
-    pub fn assert_explicit_schedule(&self) {
-        let registry = self.inner.registry.lock().unwrap();
-        for evidence in registry.rows.values() {
-            let row = evidence.row.lock().unwrap();
-            assert!(
-                !row.implicit_schedule,
-                "qualification requires registration before caller wake: {}",
-                evidence.deadline.original_id
-            );
-            if let Some(intended_at) = evidence.deadline.schedule.intended_at() {
-                assert!(
-                    row.registered_at <= intended_at,
-                    "schedule registered after intended due: {}",
-                    evidence.deadline.original_id
-                );
-            }
-        }
-    }
-
-    /// Every row remains in the immutable archive; rates use actual event times
-    /// in [start, end), never intended counts as a substitute for offered work.
-    pub fn counts_between(
-        &self,
-        start: Instant,
-        end: Instant,
-    ) -> BTreeMap<TrafficCohort, CohortCounts> {
-        assert!(end >= start, "rate interval is ordered");
-        let elapsed = end.duration_since(start);
-        let mut counts = BTreeMap::from([
-            (TrafficCohort::SemanticWrite, CohortCounts::new(elapsed)),
-            (TrafficCohort::Read, CohortCounts::new(elapsed)),
-            (TrafficCohort::Exempt, CohortCounts::new(elapsed)),
-        ]);
-        for row in self.snapshot() {
-            let count = counts.get_mut(&row.cohort).unwrap();
-            count.archived += 1;
-            count.intended += usize::from(in_window(Some(row.intended_at), start, end));
-            count.registered += usize::from(in_window(Some(row.registered_at), start, end));
-            count.offered += usize::from(in_window(row.offered_at, start, end));
-            count.sent += usize::from(in_window(row.sent_at, start, end));
-            count.server_registered += usize::from(in_window(row.server_registered_at, start, end));
-            count.admitted += usize::from(in_window(row.admitted_at, start, end));
-            count.final_replies += usize::from(
-                in_window(row.final_at, start, end)
-                    && row.final_outcome == Some(FinalOutcome::Reply),
-            );
-            count.protocol_errors += usize::from(
-                in_window(row.final_at, start, end)
-                    && row.final_outcome == Some(FinalOutcome::ProtocolError),
-            );
-            count.transport_errors += usize::from(
-                in_window(row.final_at, start, end)
-                    && row.final_outcome == Some(FinalOutcome::TransportError),
-            );
-            count.cancelled += usize::from(in_window(row.cancelled_at, start, end));
-            // These three are archive totals at snapshot, not interval rates.
-            count.unfinished += usize::from(row.finished_at.is_none());
-            count.breached += usize::from(row.breached);
-            count.implicit_schedules += usize::from(row.implicit_schedule);
-        }
-        counts
-    }
 }
 
 impl ClientRow {
@@ -206,22 +143,5 @@ impl ClientRow {
             .map(|finished| finished.min(now))
             .unwrap_or(now)
             .saturating_duration_since(self.intended_at)
-    }
-}
-
-fn in_window(at: Option<Instant>, start: Instant, end: Instant) -> bool {
-    at.is_some_and(|at| at >= start && at < end)
-}
-
-impl CohortCounts {
-    fn new(elapsed: Duration) -> Self {
-        Self {
-            elapsed,
-            ..Self::default()
-        }
-    }
-
-    pub fn actual_rate(&self, event_count: usize) -> Option<f64> {
-        (!self.elapsed.is_zero()).then(|| event_count as f64 / self.elapsed.as_secs_f64())
     }
 }

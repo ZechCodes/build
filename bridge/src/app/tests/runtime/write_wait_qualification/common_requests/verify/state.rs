@@ -6,8 +6,6 @@ pub(super) fn verify(
 ) -> Result<OracleWitness, String> {
     match actual {
         SavedEffect::Comment(_) => comment(request, result, actual),
-        SavedEffect::TaskVersion { .. } => task_version(request, result, actual),
-        SavedEffect::Agent { .. } => agent(request, result, actual),
         SavedEffect::UserSession { .. } => presence(request, result, actual),
         SavedEffect::Seen { .. } => seen(request, result, actual),
         _ => Err("native saved witness type does not match actual request effect".into()),
@@ -37,93 +35,6 @@ fn comment(
                 "saved_comment_body",
                 WitnessScalar::Text(saved.body),
             ));
-        }
-        _ => return Err("native saved witness type does not match actual request effect".into()),
-    }
-    Ok(state_witness(request, fields))
-}
-fn task_version(
-    request: &CommonRequest,
-    result: &Value,
-    actual: SavedEffect,
-) -> Result<OracleWitness, String> {
-    let mut fields = Vec::new();
-    match (&request.effect, actual) {
-        (
-            ExpectedEffect::TaskStatus {
-                task,
-                status,
-                actor,
-            },
-            SavedEffect::TaskVersion { saved, moved_event },
-        ) => {
-            ensure(saved.id == *task && saved.status == *status && result["task"]["id"].as_str() == Some(task) && result["task"]["status"].as_str() == Some(status) && result["task"]["updated_at"].as_str() == Some(saved.updated_at.as_str()), "actual saved task VERSION must match exact returned ID/status/update version; latest overwritten task is insufficient")?;
-            if let Some(event) = moved_event {
-                ensure(
-                    event.task_id == *task
-                        && event.kind == crate::tracker::TaskEventKind::Moved
-                        && actor_matches(&event.actor, actor)
-                        && event.payload["to"].as_str() == Some(status)
-                        && event.at == saved.updated_at,
-                    "immutable saved moved event does not prove returned task version",
-                )?;
-                fields.push(assertion(
-                    "saved_move_event_id",
-                    WitnessScalar::Text(event.id),
-                ));
-            } else {
-                return Err("no immutable matching move event: retain explicit no-op/proof-gap evidence; do not add ordering or a replacement mutation".into());
-            }
-            fields.push(assertion("saved_status", WitnessScalar::Text(saved.status)));
-            fields.push(assertion(
-                "saved_updated_at",
-                WitnessScalar::Text(saved.updated_at),
-            ));
-        }
-        _ => return Err("native saved witness type does not match actual request effect".into()),
-    }
-    Ok(state_witness(request, fields))
-}
-fn agent(
-    request: &CommonRequest,
-    _result: &Value,
-    actual: SavedEffect,
-) -> Result<OracleWitness, String> {
-    let mut fields = Vec::new();
-    match (&request.effect, actual) {
-        (
-            ExpectedEffect::Topic {
-                owner,
-                agent,
-                topic,
-            },
-            SavedEffect::Agent {
-                owner: saved_owner,
-                saved,
-            },
-        ) => {
-            ensure(
-                owner == &saved_owner
-                    && agent == &saved.id
-                    && saved.topic.as_deref() == Some(topic),
-                "actual saved agent topic differs",
-            )?;
-            fields.push(assertion("saved_agent_id", WitnessScalar::Text(saved.id)));
-            fields.push(assertion("saved_topic", WitnessScalar::Text(topic.clone())));
-        }
-        (
-            ExpectedEffect::Name { owner, agent, name },
-            SavedEffect::Agent {
-                owner: saved_owner,
-                saved,
-            },
-        ) => {
-            ensure(
-                owner == &saved_owner && agent == &saved.id && saved.name.as_deref() == Some(name),
-                "actual saved agent name differs",
-            )?;
-            fields.push(assertion("saved_agent_id", WitnessScalar::Text(saved.id)));
-            fields.push(assertion("saved_name", WitnessScalar::Text(name.clone())));
         }
         _ => return Err("native saved witness type does not match actual request effect".into()),
     }

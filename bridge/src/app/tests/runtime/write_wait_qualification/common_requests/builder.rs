@@ -96,8 +96,6 @@ impl<'a> Builder<'a> {
             effect: parts.effect,
             durable_operation_id: parts.durable_operation_id,
             predecessor: parts.predecessor,
-            finite_target_us: slot.finite_target_us,
-            finite_ceiling_us: slot.finite_ceiling_us,
         })
     }
 }

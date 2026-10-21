@@ -18,7 +18,6 @@ pub(super) struct RouterBoot {
 pub(super) struct ReadyRouter {
     pub agent: String,
     pub token: String,
-    pub factory_opens: usize,
     pub session: Arc<dyn AgentSession>,
 }
 
@@ -124,7 +123,6 @@ impl RouterBoot {
                 return ReadyRouter {
                     agent: self.agent.clone(),
                     token,
-                    factory_opens: 1,
                     session,
                 };
             }

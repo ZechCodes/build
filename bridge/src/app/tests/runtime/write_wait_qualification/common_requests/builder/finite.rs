@@ -21,7 +21,6 @@ impl Builder<'_> {
                 params,
             },
             ExpectedEffect::File {
-                owner,
                 path: target.path.join("qualified-editor.txt"),
                 bytes,
                 revision,
@@ -51,7 +50,6 @@ impl Builder<'_> {
                 params,
             },
             ExpectedEffect::GitHead {
-                owner,
                 directory: target.path.clone(),
                 full_ref,
                 commit: targets.git[owner].initial_commit.clone(),

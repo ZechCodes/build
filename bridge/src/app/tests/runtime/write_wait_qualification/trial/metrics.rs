@@ -67,30 +67,6 @@ pub(super) fn counts<'a>(
     result
 }
 
-pub fn union_us(intervals: &[Interval]) -> Result<u64, String> {
-    let mut spans = intervals
-        .iter()
-        .map(|span| (span.begin_us, span.end_us))
-        .collect::<Vec<_>>();
-    if spans.iter().any(|(begin, end)| end < begin) {
-        return Err("negative interval".into());
-    }
-    spans.sort_unstable();
-    let mut total = 0;
-    let mut open: Option<(u64, u64)> = None;
-    for (begin, end) in spans {
-        match open {
-            Some((left, right)) if begin <= right => open = Some((left, right.max(end))),
-            Some((left, right)) => {
-                total += right - left;
-                open = Some((begin, end));
-            }
-            None => open = Some((begin, end)),
-        }
-    }
-    Ok(total + open.map_or(0, |(begin, end)| end - begin))
-}
-
 type MetricSamples = BTreeMap<String, Vec<(String, u64)>>;
 type MethodKey = (Traffic, String, String, String);
 #[path = "metrics/endpoints.rs"]

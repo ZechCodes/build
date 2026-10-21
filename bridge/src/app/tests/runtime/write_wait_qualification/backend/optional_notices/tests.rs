@@ -255,8 +255,6 @@ fn capture(fixture: &Fixture, original: &str, enabled: bool) -> OptionalNoticeEv
         },
         durable_operation_id: None,
         predecessor: None,
-        finite_target_us: None,
-        finite_ceiling_us: None,
     };
     OptionalNoticeEvidence::capture(
         &fixture.state,

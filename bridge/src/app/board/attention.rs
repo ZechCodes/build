@@ -338,6 +338,7 @@ impl AppState {
     /// `report` is what the panel claims to have read — the window it holds and
     /// the message its viewport reached. See
     /// [`conversation_last_sequences`](Self::conversation_last_sequences).
+    #[cfg(test)]
     pub(in crate::app) fn see_attention(
         &mut self,
         id: &str,

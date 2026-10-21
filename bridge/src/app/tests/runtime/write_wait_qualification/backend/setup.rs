@@ -49,8 +49,7 @@ impl PreparedBackend {
                     .iter()
                     .find(|candidate| {
                         candidate.project == workspace.project
-                            && candidate.directory
-                                != fixture.projects[workspace.project].repository
+                            && candidate.directory != fixture.projects[workspace.project].repository
                     })
                     .ok_or("same-project linked active read target missing")?;
                 Ok(reads.mcp_for(workspace, listed))
@@ -76,7 +75,7 @@ impl PreparedBackend {
         self.full_plan = super::super::trial_complete::make_plan(self.name, &self.catalog)?;
         self.plan = self.mode.plan(self.name, &self.catalog)?;
         self.reads = Some(Arc::clone(reads));
-        let (_, targets) = git_support::prepare(fixture)?;
+        let targets = git_support::prepare(fixture)?;
         self.common = build_common_requests(self.name, &targets, &self.full_plan)?;
         self.targets = Some(targets);
         Ok(())
@@ -103,7 +102,7 @@ impl PreparedBackend {
         };
         self.full_plan = super::super::trial_complete::make_semantic_slots(self.name);
         self.plan = self.mode.plan(self.name, &self.catalog)?;
-        let (_, targets) = git_support::prepare(fixture)?;
+        let targets = git_support::prepare(fixture)?;
         self.common = build_common_requests(self.name, &targets, &self.full_plan)?;
         self.targets = Some(targets);
         Ok(())

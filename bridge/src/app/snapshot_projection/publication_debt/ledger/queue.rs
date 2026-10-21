@@ -34,6 +34,8 @@ impl PublicationDebts {
 }
 impl State {
     fn refresh_blockers(&mut self, blockers: &BTreeSet<String>) {
+        // A restored owner cannot lend its earlier cause to a later raw absence.
+        self.borrowed.retain(|owner, _| blockers.contains(owner));
         for debt in self.pending.values_mut() {
             let own: Vec<_> = debt
                 .context

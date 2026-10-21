@@ -24,6 +24,12 @@ impl Cursor {
             next: 0,
         }
     }
+    fn take_batch<T: Clone>(&mut self, rows: &[T], limit: usize) -> Vec<T> {
+        let end = self.next.saturating_add(limit).min(rows.len());
+        let batch = rows[self.next..end].to_vec();
+        self.next = end;
+        batch
+    }
     fn validate(
         &self,
         registry: &WriteWaitRegistry,
@@ -59,8 +65,7 @@ impl WriteWaitRegistry {
     ) -> Result<Vec<WriteSnapshot>, ArchiveCursorError> {
         let state = self.writer.lock().unwrap();
         cursor.0.validate(self, state.archive.len(), limit)?;
-        // Test-first scaffold: completed rows are not consumed yet.
-        Ok(Vec::new())
+        Ok(cursor.0.take_batch(&state.archive, limit))
     }
     pub(crate) fn completed_intervals_since(
         &self,
@@ -69,8 +74,7 @@ impl WriteWaitRegistry {
     ) -> Result<Vec<CompletedInterval>, ArchiveCursorError> {
         let state = self.writer.lock().unwrap();
         cursor.0.validate(self, state.raw_intervals.len(), limit)?;
-        // Test-first scaffold: completed intervals are not consumed yet.
-        Ok(Vec::new())
+        Ok(cursor.0.take_batch(&state.raw_intervals, limit))
     }
 }
 

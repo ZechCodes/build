@@ -406,3 +406,39 @@ describe("the registry", () => {
     expect(provisionalKey("agent")).toBe("pending-agent-1");
   });
 });
+
+describe("durable writes", () => {
+  it.each([{ uncertain: true }, { timedOut: true }, { code: "uncertain_delivery" }, { code: "scope_ended", uncertain: true }])("retains uncertain layers without reverting or notifying (%j)", async (flags) => {
+    const onRevert = vi.fn();
+    const error = Object.assign(new Error("Waiting for status"), flags);
+    expect(await runOptimistic({ scope: "write", records: [patchRecord("a", { name: "new" })], call: async () => { throw error; }, onRevert, failureSummary: "Failed" })).toBe(false);
+    expect(projectOptimistic("write", [agent("a", { name: "old" })], { keyOf })[0].name).toBe("new");
+    expect(isPending("write", "a")).toBe(false);
+    reconcileOptimistic("write", [agent("a", { name: "old" })], { keyOf, nowMs: Date.now() + PENDING_GRACE_MS * 2 });
+    expect(pendingIn("write")).toHaveLength(1);
+    expect(onRevert).not.toHaveBeenCalled();
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("resolves an acknowledgement with no spinner and keeps its layer until canonical data arrives", async () => {
+    expect(await runOptimistic({ scope: "write", records: [patchRecord("a", { name: "accepted" })], call: async () => ({ phase: "ack", operation_id: "op" }) })).toBe(true);
+    expect(isPending("write", "a")).toBe(false);
+    reconcileOptimistic("write", [agent("a", { name: "old" })], { keyOf, nowMs: Date.now() + PENDING_GRACE_MS * 2 });
+    expect(pendingIn("write")).toHaveLength(1);
+    reconcileOptimistic("write", [agent("a", { name: "accepted" })], { keyOf });
+    expect(pendingIn("write")).toEqual([]);
+  });
+});
+
+describe("durable optimistic reconciliation", () => {
+  it("keeps an unresolved patch while the canonical owner has not been loaded", async () => {
+    await runOptimistic({ scope: "write", records: [patchRecord("a", { name: "accepted" })], call: async () => ({ phase: "ack" }) });
+    reconcileOptimistic("write", [], { keyOf });
+    expect(pendingIn("write")).toHaveLength(1);
+  });
+  it("keeps an acknowledged rekeyed record through old canonical refreshes", async () => {
+    await runOptimistic({ scope: "write", records: [insertRecord("pending-a", agent("pending-a"))], call: async (handle) => { handle.rekey("pending-a", "a", agent("a")); return { phase: "ack" }; } });
+    reconcileOptimistic("write", [], { keyOf, nowMs: Date.now() + PENDING_GRACE_MS * 2 });
+    expect(pendingIn("write")).toHaveLength(1);
+  });
+});

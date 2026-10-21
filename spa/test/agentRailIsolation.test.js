@@ -41,6 +41,7 @@ const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { resetOptimistic } = await import("../src/core/optimistic.js");
+const { createChatRepository } = await import("../src/core/chatRepository.js");
 const { wipeCache } = await import("../src/core/localCache.js");
 const { pushRailThreadItems, writeRailWorkItem } = await import("./railCacheFixture.js");
 
@@ -116,9 +117,9 @@ const device = () => contextFor(DEVICE_ID);
 // Landed and greeted: a machine is asked for its catalog only once it has said
 // which API it speaks.
 const bridgeAnswersWith = (answer) =>
-  adoptBridgeSelection(adoptDeviceSession({ deviceId: DEVICE_ID, call: answer }), { version: "2.0.0" }, null);
+  adoptBridgeSelection(adoptDeviceSession({ deviceId: DEVICE_ID, call: answer }), { version: "3.24.0" }, null);
 
-const mountBranch = async () => {
+const mountBranch = async ({ repository = device().chatRepository } = {}) => {
   // The work item is read off this machine's disk, so that is where a case
   // puts it before the rail goes up.
   await writeRailWorkItem(payload, { deviceId: DEVICE_ID });
@@ -129,7 +130,7 @@ const mountBranch = async () => {
     branch: "build/isolation",
     autofocusComposer: true,
     cacheScope: device().cacheScope,
-    chatRepository: device().chatRepository,
+    chatRepository: repository,
   });
   return flush();
 };
@@ -186,6 +187,51 @@ afterEach(() => {
 });
 
 describe("agent rail chat ownership", () => {
+  it("shows cached post-ack errors beside the composer with the draft intact, a new-action Retry and Dismiss", async () => {
+    let rows = [];
+    const listeners = new Set();
+    const service = {
+      supports: () => true,
+      readOperations: () => rows,
+      subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+      checkAgain: vi.fn(async () => {}),
+      dismiss: vi.fn(async (id) => { rows = rows.filter((row) => row.operationId !== id); listeners.forEach((fn) => fn()); }),
+    };
+    const repository = createChatRepository({ scope: device().cacheScope, call, storage: null, writeOperations: service, createOperationId: () => "new-retry-action" });
+    await mountBranch({ repository });
+    const focusedInput = input();
+    focusedInput.focus();
+    const failure = { operationId: "original-accepted-action", state: "failed", effect: "unapplied", error: { message: "Could not save the message" },
+      owner: { kind: "chat", entityId: "run-1", agentId: "agent-a", conversationId: "conversation-agent-a" }, draft: { body: "preserved after acknowledgement", attachments: [] } };
+    rows = [failure];
+    listeners.forEach((fn) => fn());
+    await flush();
+    expect(input()).toBe(focusedInput);
+    expect(document.activeElement).toBe(focusedInput);
+    expect(input().value).toBe("preserved after acknowledgement");
+    expect(host().querySelector(".chat-recovery-entry").textContent).toContain("Your message wasn’t saved");
+    expect(host().querySelector('[data-recovery-action="retry"]').textContent).toBe("Retry");
+    writeDraft("a newer thought");
+    host().querySelector('[data-recovery-action="retry"]').click();
+    await flush();
+    expect(calls.find((entry) => entry.method === "thread.post").params).toMatchObject({ operation_id: "new-retry-action", body: failure.draft.body });
+    expect(input().value).toBe("a newer thought");
+    expect(service.dismiss).toHaveBeenCalledWith(failure.operationId);
+    rows = [{ ...failure, effect: "unknown" }];
+    listeners.forEach((fn) => fn());
+    await flush();
+    expect(host().querySelector('[data-recovery-action="retry"]').textContent).toBe("Check again");
+    host().querySelector('[data-recovery-action="retry"]').click();
+    await flush();
+    expect(service.checkAgain).toHaveBeenCalledWith(failure.operationId);
+    expect(calls.filter((entry) => entry.method === "thread.post")).toHaveLength(1);
+    host().querySelector('[data-recovery-action="dismiss"]').click();
+    await flush();
+    expect(host().querySelector(".chat-recovery-entry")).toBeNull();
+    expect(input().value).toBe("a newer thought");
+    repository.dispose();
+  });
+
   it("keeps a named cached conversation mounted through offline and a closed database, then paints later cache writes", async () => {
     payload.run.thread.items = [
       { type: "message", data: { sequence: 1, role: "agent", body: "Cached first reply" } },
@@ -501,6 +547,7 @@ describe("agent rail chat ownership", () => {
     await flush();
 
     const adds = calls.filter((entry) => entry.method === "agent.add");
+    expect(notifyError.mock.calls).toEqual([]);
     expect(adds).toHaveLength(2);
     expect(adds[1].params.creation_id).toBe(adds[0].params.creation_id);
     expect(calls.find((entry) => entry.method === "thread.post").params).toMatchObject({

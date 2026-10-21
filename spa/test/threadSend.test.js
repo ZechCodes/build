@@ -52,3 +52,11 @@ describe("the first message projected while an agent is created", () => {
     expect(store.pendingIn("thread")).toEqual([]);
   });
 });
+
+describe("durable thread acknowledgement", () => {
+  it("retains a creation stand-in when the ack has no published message sequence", async () => {
+    const { store, projected } = await creation({ receipt: { phase: "ack", operation_id: "creation-op" } });
+    expect(projected).toHaveLength(1);
+    expect(store.pendingIn("thread")).toHaveLength(1);
+  });
+});

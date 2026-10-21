@@ -68,6 +68,8 @@ import { createTaskReplyNavigation } from "./taskCommentReplies.js";
 import { mountTaskWaitingOn } from "./taskWaitingOnPage.js";
 import { readTaskWaitingOnSupport, taskWaitingOnSupportAddress } from "./taskWaitingOnSupport.js";
 import { mountMeasuredHeight } from "./measuredInset.js";
+import { mountTaskCommentRecovery } from "./taskCommentRecovery.js";
+import { uncertainWriteError } from "./optimistic.js";
 
 /** Whether one flush of `tasks` items says anything about this task. */
 const namesTask = (items, taskId) =>
@@ -92,6 +94,7 @@ export function mountTaskPage(host, options) {
   let stopHeadMeasurement = () => {};
   let reviewPage = null;
   let waitingEditor = null;
+  let commentRecovery = null;
   const state = {
     ...options,
     task: null,
@@ -365,6 +368,7 @@ export function mountTaskPage(host, options) {
     if (patchTimeline(parts.timeline, painted.has("timeline"))) painted.add("timeline");
     wire(painted);
     syncCommentBox();
+    commentRecovery?.sync();
     syncWaitingEditor();
     if (painted.has("timeline")) unreadPill.sync();
     restoreField(typing);
@@ -620,16 +624,51 @@ export function mountTaskPage(host, options) {
     state.sending = true;
     paint();
     try {
-      await state.callRpc("tasks.comment", params);
+      const result = await postComment(params);
       await commentDraft.write({ body: "" });
       comments?.clear();
-      await refresh();
+      if (result?.phase === "ack") void refresh();
+      else await refresh();
     } catch (error) {
-      if (!state.disposed) notifyError("Could not add this comment", messageOf(error));
+      if (!state.disposed && !uncertainWriteError(error)) notifyError("Could not add this comment", messageOf(error));
     } finally {
       state.sending = false;
       paint();
     }
+  }
+
+  function postComment(params, draft = null) {
+    if (!state.writeOperations?.supports("tasks.comment")) return state.callRpc("tasks.comment", params);
+    return state.callRpc("tasks.comment", params, {
+      owner: { kind: "task-comment", taskId: state.taskId, projectId: state.projectId },
+      draft: draft || {
+        body: params.body,
+        attachments: params.attachments || [],
+        files: state.files.map(({ name, size, mime, descriptor }) => ({ name, size, mime, descriptor, status: "ready" })),
+      },
+    });
+  }
+
+  async function restoreCommentDraft(saved) {
+    await commentDraft.ready;
+    if (state.sending) return false;
+    if (state.disposed || !saved || state.draft || state.files.length) return true;
+    state.files = saved.files || [];
+    comments?.restoreDraft();
+    await commentDraft.write({ body: saved.body || "" });
+    return true;
+  }
+
+  async function retryComment(row) {
+    await refresh();
+    const draft = row.draft || {};
+    const params = { task_id: state.taskId, body: draft.body || "", ...(draft.attachments?.length ? { attachments: draft.attachments } : {}) };
+    await postComment(params, draft);
+    if (state.draft === draft.body) {
+      await commentDraft.write({ body: "" });
+      comments?.clear();
+    }
+    void refresh();
   }
 
   function openPicker() {
@@ -818,6 +857,10 @@ export function mountTaskPage(host, options) {
     markRead();
   });
 
+  commentRecovery = mountTaskCommentRecovery({
+    host, service: state.writeOperations, taskId: state.taskId, projectId: state.projectId,
+    restoreDraft: restoreCommentDraft, retry: retryComment,
+  });
   paint();
   void paintFromCache().then(() => refresh());
   // No cadence: nothing in this client polls. An item that names this task
@@ -850,6 +893,7 @@ export function mountTaskPage(host, options) {
       waitingOnSupportWatcher();
       reviewPage?.dispose();
       commentDraft.dispose();
+      commentRecovery.dispose();
       host.removeEventListener("scroll", onScroll);
       stopWaitingForReader();
       watcher.dispose();

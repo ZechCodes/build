@@ -149,12 +149,21 @@ impl Fixture {
             assert!(view.get_owned("task.stages", &self.task).is_none());
             return;
         }
+        self.assert_task_detail(&view);
+        self.assert_stage_detail(&view);
+        assert!(view.get_owned("agent.list", &self.run).is_some());
+    }
+
+    fn assert_task_detail(&self, view: &crate::app::read_view::ReadView) {
         let task = view.get_owned("task.get", &self.task).unwrap();
         assert_eq!(task["summary"], format!("plan sample {}", SAMPLES - 1));
         let lineage = task["implementation_lineage"].as_array().unwrap();
         assert_eq!(lineage.len(), RUNS / TASKS);
         assert!(lineage.iter().any(|run| run["run_id"] == self.run));
         assert_eq!(task["docs_available"], true);
+    }
+
+    fn assert_stage_detail(&self, view: &crate::app::read_view::ReadView) {
         let stages = view.get_owned("task.stages", &self.task).unwrap();
         let rows = stages["stages"].as_array().unwrap();
         assert_eq!(rows.len(), STAGES);
@@ -165,7 +174,6 @@ impl Fixture {
         assert_eq!(rows[0]["execution"], "complete");
         assert_eq!(rows[1]["execution"], "building");
         assert_eq!(rows[2]["execution"], "pending");
-        assert!(view.get_owned("agent.list", &self.run).is_some());
     }
 }
 

@@ -2456,7 +2456,13 @@ mod subscriptions {
     ) -> Vec<Value> {
         let mut seen = Vec::new();
         while let Ok(message) = rx.try_recv() {
-            seen.push(SessionSender::decrypt_push(key, &message));
+            let frame = SessionSender::decrypt_push(key, &message);
+            assert_eq!(
+                frame["bridge_epoch"],
+                crate::bridge_epoch::current(),
+                "subscription frames carry their sending bridge process epoch"
+            );
+            seen.push(frame);
         }
         seen
     }
@@ -2517,6 +2523,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-focus",
                 "items": [{ "entity_id": "run-7", "state": {} }],
             })]
@@ -2550,6 +2557,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-bg",
                 "items": [{ "entity_id": "run-7", "git": {} }],
             })],
@@ -2570,6 +2578,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-bg",
                 "items": [{ "entity_id": "run-7", "git": {}, "state": {} }],
             })],
@@ -2603,6 +2612,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-bg",
                 "items": [{ "entity_id": "run-7", "git": {} }],
             })],
@@ -2644,6 +2654,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-bg",
                 // run-7's row rides this interval: its git went out on the
                 // last one, and a row moves with its checkout.
@@ -2682,6 +2693,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-idle",
                 "items": [{ "entity_id": "run-7", "thread": [] }],
             })],
@@ -2811,6 +2823,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-focus",
                 "items": [{ "entity_id": "run-7", "state": {} }],
             })],
@@ -2876,6 +2889,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-board",
                 "items": [{ "entity_id": "board", "state": { "revision": 2 } }],
             })]
@@ -4213,6 +4227,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-source",
                 "items": [{
                     "entity_id": new.entity_id(),
@@ -4266,6 +4281,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-all",
                 "items": [{
                     "entity_id": "run-7",

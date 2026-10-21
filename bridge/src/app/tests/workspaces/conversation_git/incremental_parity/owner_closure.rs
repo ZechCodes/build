@@ -135,101 +135,112 @@ fn incremental_owner_closure_actual_source_probe_covers_full_seed() {
     assert_eq!(retained, image(&old, &requests));
 }
 
+fn measure_owner_and_task(size: usize) -> (work::Counts, work::Counts) {
+    let (_tmp, mut app) = count_fixture(size);
+    let requests = requests(&app);
+    let old = app.read_view.load();
+    let retained = image(&old, &requests);
+    assert_eq!(active(&old), &ids(&["run-01", "run-02"]));
+    app.runs.get_mut("run-00").unwrap().run.goal = "one explicitly changed goal".into();
+    let owner = publish(&app, "run-00");
+    assert_eq!(output(&owner).dirty, ids(&["run-00", "run-01", "run-02"]));
+    assert_eq!(output(&owner).active, ids(&["run-01", "run-02"]));
+    let root = app.read_view.load();
+    assert!(format!("{:?}", image(&root, &requests)).contains("one explicitly changed goal"));
+    assert_global_reference(&app, &root, &requests);
+    assert_eq!(retained, image(&old, &requests));
+
+    let project = app.projects.project_id_of("run-00").unwrap().to_owned();
+    app.install_snapshot_watched_task(
+        &project,
+        "closure-task",
+        Some(json!({
+            "kind":"tracker_task", "task_id":"closure-task", "title":"new closure task",
+            "anchor":CLOCK,
+        })),
+    );
+    let (_, task) = work::measure(|| app.publish_task_snapshot_projection());
+    assert_eq!(output(&task).dirty, ids(&["run-01", "run-02"]));
+    assert_eq!(output(&task).active, ids(&["run-01", "run-02"]));
+    let root = app.read_view.load();
+    assert!(root.get_owned("board.list", "").unwrap()["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["task_id"] == "closure-task" && row["title"] == "new closure task"));
+    assert_global_reference(&app, &root, &requests);
+    (owner, task)
+}
+
+fn assert_complete_source_coverage(size: usize, label: &str, count: &work::Counts) {
+    eprintln!("{size} {label}: {count:?}");
+    assert!(count.index_builds > 0 && count.discoveries > 0);
+    let index_visits = (0..size)
+        .map(|number| (format!("run-{number:02}"), count.index_builds))
+        .collect::<BTreeMap<_, _>>();
+    let discovery_visits = (0..size)
+        .map(|number| (format!("run-{number:02}"), count.discoveries))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(count.indexed_by_owner, index_visits);
+    assert_eq!(count.discovered_by_owner, discovery_visits);
+    assert_eq!(count.index_owners, size * count.index_builds);
+    assert_eq!(count.discovery_owners, size * count.discoveries);
+    assert_eq!(count.registry_tabs, count.discoveries);
+}
+
+fn assert_once_only_work(size: usize, label: &str, count: &work::Counts) {
+    assert!(count.index_owners > 0 && count.discovery_owners > 0 && count.registry_tabs > 0);
+    assert_eq!(
+        count.index_builds, 1,
+        "{size} {label}: repeated actual index construction"
+    );
+    assert_eq!(
+        count.index_owners, size,
+        "{size} {label}: actual index source owner visits"
+    );
+    assert_eq!(
+        count.discoveries, 1,
+        "{size} {label}: repeated active discovery"
+    );
+    assert_eq!(
+        count.discovery_owners, size,
+        "{size} {label}: actual active-source owner visits"
+    );
+    assert_eq!(
+        count.registry_tabs, 1,
+        "{size} {label}: actual retained-tab source visits"
+    );
+    let expected_visits = (0..size)
+        .map(|number| (format!("run-{number:02}"), 1))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        count.indexed_by_owner, expected_visits,
+        "complete actual index-owner traversal"
+    );
+    assert_eq!(
+        count.discovered_by_owner, expected_visits,
+        "complete actual discovery-owner traversal"
+    );
+}
+
 #[test]
 fn incremental_owner_closure_builds_and_discovers_once_for_owner_and_task() {
     let mut measured = Vec::new();
     for size in [32, 200] {
-        let (_tmp, mut app) = count_fixture(size);
-        let requests = requests(&app);
-        let old = app.read_view.load();
-        let retained = image(&old, &requests);
-        assert_eq!(active(&old), &ids(&["run-01", "run-02"]));
-        app.runs.get_mut("run-00").unwrap().run.goal = "one explicitly changed goal".into();
-        let owner = publish(&app, "run-00");
-        assert_eq!(output(&owner).dirty, ids(&["run-00", "run-01", "run-02"]));
-        assert_eq!(output(&owner).active, ids(&["run-01", "run-02"]));
-        let root = app.read_view.load();
-        assert!(format!("{:?}", image(&root, &requests)).contains("one explicitly changed goal"));
-        assert_global_reference(&app, &root, &requests);
-        assert_eq!(retained, image(&old, &requests));
-
-        let project = app.projects.project_id_of("run-00").unwrap().to_owned();
-        app.install_snapshot_watched_task(
-            &project,
-            "closure-task",
-            Some(json!({
-                "kind":"tracker_task", "task_id":"closure-task", "title":"new closure task",
-                "anchor":CLOCK,
-            })),
-        );
-        let (_, task) = work::measure(|| app.publish_task_snapshot_projection());
-        assert_eq!(output(&task).dirty, ids(&["run-01", "run-02"]));
-        assert_eq!(output(&task).active, ids(&["run-01", "run-02"]));
-        let root = app.read_view.load();
-        assert!(root.get_owned("board.list", "").unwrap()["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["task_id"] == "closure-task" && row["title"] == "new closure task"));
-        assert_global_reference(&app, &root, &requests);
+        let (owner, task) = measure_owner_and_task(size);
         measured.push((size, owner, task));
     }
     // Print and prove complete source coverage for ALL cohorts before any
     // optimization bound can fail the RED run at its first cohort.
     for (size, owner, task) in &measured {
         for (label, count) in [("owner", owner), ("task", task)] {
-            eprintln!("{size} {label}: {count:?}");
-            assert!(count.index_builds > 0 && count.discoveries > 0);
-            let index_visits = (0..*size)
-                .map(|number| (format!("run-{number:02}"), count.index_builds))
-                .collect::<BTreeMap<_, _>>();
-            let discovery_visits = (0..*size)
-                .map(|number| (format!("run-{number:02}"), count.discoveries))
-                .collect::<BTreeMap<_, _>>();
-            assert_eq!(count.indexed_by_owner, index_visits);
-            assert_eq!(count.discovered_by_owner, discovery_visits);
-            assert_eq!(count.index_owners, size * count.index_builds);
-            assert_eq!(count.discovery_owners, size * count.discoveries);
-            assert_eq!(count.registry_tabs, count.discoveries);
+            assert_complete_source_coverage(*size, label, count);
         }
     }
     // Both sizes and both real producer semantics are checked before work RED.
     for (size, owner, task) in measured {
         for (label, count) in [("owner", owner), ("task", task)] {
-            assert!(
-                count.index_owners > 0 && count.discovery_owners > 0 && count.registry_tabs > 0
-            );
-            assert_eq!(
-                count.index_builds, 1,
-                "{size} {label}: repeated actual index construction"
-            );
-            assert_eq!(
-                count.index_owners, size,
-                "{size} {label}: actual index source owner visits"
-            );
-            assert_eq!(
-                count.discoveries, 1,
-                "{size} {label}: repeated active discovery"
-            );
-            assert_eq!(
-                count.discovery_owners, size,
-                "{size} {label}: actual active-source owner visits"
-            );
-            assert_eq!(
-                count.registry_tabs, 1,
-                "{size} {label}: actual retained-tab source visits"
-            );
-            let expected_visits = (0..size)
-                .map(|number| (format!("run-{number:02}"), 1))
-                .collect::<BTreeMap<_, _>>();
-            assert_eq!(
-                count.indexed_by_owner, expected_visits,
-                "complete actual index-owner traversal"
-            );
-            assert_eq!(
-                count.discovered_by_owner, expected_visits,
-                "complete actual discovery-owner traversal"
-            );
+            assert_once_only_work(size, label, &count);
         }
     }
 }
@@ -386,21 +397,16 @@ fn incremental_owner_closure_retains_state_stat_and_structural_fallback_rules() 
     assert_global_reference(&app, &app.read_view.load(), &requests);
 }
 
-#[test]
-fn incremental_owner_closure_rejected_or_failed_candidate_cannot_replace_active_set() {
-    let (_tmp, mut app) = fixture();
-    let requests = requests(&app);
-    let old = app.read_view.load();
-    let before = image(&old, &requests);
-    set_working(&mut app, "run-01", true);
-    let (rejected, count) = prepare(&app, &ids(&["run-00"]));
+fn assert_rejected_candidate_keeps_active_set(app: &mut AppState) {
+    set_working(app, "run-01", true);
+    let (rejected, count) = prepare(app, &ids(&["run-00"]));
     assert_eq!(output(&count).active, ids(&["run-01"]));
     assert!(
         active(&app.read_view.load()).is_empty(),
         "preparation must not mutate accepted active state"
     );
-    set_working(&mut app, "run-01", false);
-    publish(&app, "run-02");
+    set_working(app, "run-01", false);
+    publish(app, "run-02");
     let accepted = app.read_view.load();
     assert!(active(&accepted).is_empty());
     app.publish_prepared_snapshot_projection(rejected);
@@ -408,10 +414,12 @@ fn incremental_owner_closure_rejected_or_failed_candidate_cannot_replace_active_
         Arc::ptr_eq(&accepted, &app.read_view.load()),
         "older candidate must reject atomically"
     );
-    let retry = publish(&app, "run-00");
+    let retry = publish(app, "run-00");
     assert_eq!(output(&retry).dirty, ids(&["run-00"]));
     assert!(output(&retry).active.is_empty());
+}
 
+fn assert_failed_finisher_restores_active_set(app: &mut AppState, requests: &[FactsRequest]) {
     let mut failed = app.take_run("run-01").unwrap();
     let committed_goal = failed.run.goal.clone();
     assert!(failed.agents.iter().next().unwrap().working_since.is_none());
@@ -432,19 +440,29 @@ fn incremental_owner_closure_rejected_or_failed_candidate_cannot_replace_active_
     assert!(Arc::ptr_eq(&retained, &app.read_view.load()));
     assert!(active(&app.read_view.load()).is_empty());
     assert_eq!(
-        image(&retained, &requests),
-        image(&app.read_view.load(), &requests)
+        image(&retained, requests),
+        image(&app.read_view.load(), requests)
     );
     // Preparing the failed finisher marked run-01 pending. Its committed
     // restored row must be retried, while the failed candidate's active set
     // must never become accepted. Only that accepted retry clears the receipt.
-    let retry = publish(&app, "run-02");
+    let retry = publish(app, "run-02");
     assert_eq!(output(&retry).dirty, ids(&["run-01", "run-02"]));
     assert!(output(&retry).active.is_empty());
     assert!(active(&app.read_view.load()).is_empty());
-    let unrelated = publish(&app, "run-02");
+    let unrelated = publish(app, "run-02");
     assert_eq!(output(&unrelated).dirty, ids(&["run-02"]));
     assert!(output(&unrelated).active.is_empty());
+}
+
+#[test]
+fn incremental_owner_closure_rejected_or_failed_candidate_cannot_replace_active_set() {
+    let (_tmp, mut app) = fixture();
+    let requests = requests(&app);
+    let old = app.read_view.load();
+    let before = image(&old, &requests);
+    assert_rejected_candidate_keeps_active_set(&mut app);
+    assert_failed_finisher_restores_active_set(&mut app, &requests);
     assert_global_reference(&app, &app.read_view.load(), &requests);
     assert_eq!(before, image(&old, &requests));
 }

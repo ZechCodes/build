@@ -59,12 +59,13 @@ async fn mcp_cold_catalogue_existing_listener_follows_only_committed_settings() 
         json!({"default_harness":selected_default}),
         json!({"role_models":roles}),
     ] {
-        let mut app = state.lock().unwrap();
-        let (result, work) = mcp_metadata_metrics::measure(|| app.settings_set(&patch));
-        result.unwrap();
-        source_work.push(work);
-        assert_cold_unchanged(&app, &initial_view, &addresses);
-        drop(app);
+        {
+            let mut app = state.lock().unwrap();
+            let (result, work) = mcp_metadata_metrics::measure(|| app.settings_set(&patch));
+            result.unwrap();
+            source_work.push(work);
+            assert_cold_unchanged(&app, &initial_view, &addresses);
+        }
         expected.push(cold_table(&state));
         replies.push(socket_reply(state.clone(), plane.clone(), frame.clone()).await);
     }
@@ -74,25 +75,26 @@ async fn mcp_cold_catalogue_existing_listener_follows_only_committed_settings() 
         crate::app::ConfigPersistStep::Write,
         crate::app::ConfigPersistStep::Rename,
     ] {
-        let mut app = state.lock().unwrap();
-        app.config_persist_failure = Some(failure);
-        let (result, work) = mcp_metadata_metrics::measure(|| {
-            app.settings_set(&json!({
+        {
+            let mut app = state.lock().unwrap();
+            app.config_persist_failure = Some(failure);
+            let (result, work) = mcp_metadata_metrics::measure(|| {
+                app.settings_set(&json!({
             "default_harness":original_default,
             "role_models":[{"model":"failed-role","roles":["planner"],"capability":"generalist"}]
         }))
-        });
-        app.config_persist_failure = None;
-        assert!(result.is_err());
-        source_work.push(work);
-        assert_eq!(app.default_harness, selected_default);
-        assert_eq!(serde_json::to_value(&app.role_models).unwrap(), roles);
-        assert_cold_unchanged(&app, &initial_view, &addresses);
-        assert_eq!(
-            std::fs::read(root.path().join("config.json")).unwrap(),
-            disk
-        );
-        drop(app);
+            });
+            app.config_persist_failure = None;
+            assert!(result.is_err());
+            source_work.push(work);
+            assert_eq!(app.default_harness, selected_default);
+            assert_eq!(serde_json::to_value(&app.role_models).unwrap(), roles);
+            assert_cold_unchanged(&app, &initial_view, &addresses);
+            assert_eq!(
+                std::fs::read(root.path().join("config.json")).unwrap(),
+                disk
+            );
+        }
         expected.push(retained.clone());
         replies.push(socket_reply(state.clone(), plane.clone(), frame.clone()).await);
     }

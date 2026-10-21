@@ -18,17 +18,24 @@ pub(crate) enum ReadClass {
 }
 
 const CLASSES: usize = ReadClass::ReviewContents as usize + 1;
-// Two saturated query classes occupy at most half the SQL pool, leaving the
-// other half for unrelated reads. This is not a reservation against all types.
+// Three task pages plus two task details and two history reads leave at least
+// one SQL reader for other classes. This is not a reservation against all types.
 const READS_PER_CLASS: usize = READ_CONNECTIONS / 4;
+const TASK_LIST_READS: usize = 3;
 const _: () = assert!(READS_PER_CLASS > 0);
+const _: () = assert!(TASK_LIST_READS + 2 * READS_PER_CLASS < READ_CONNECTIONS);
 
 pub(super) struct ReadQuotas([Arc<Semaphore>; CLASSES]);
 
 impl ReadQuotas {
     pub(super) fn new() -> Self {
-        Self(std::array::from_fn(|_| {
-            Arc::new(Semaphore::new(READS_PER_CLASS))
+        Self(std::array::from_fn(|index| {
+            let permits = if index == ReadClass::TaskList as usize {
+                TASK_LIST_READS
+            } else {
+                READS_PER_CLASS
+            };
+            Arc::new(Semaphore::new(permits))
         }))
     }
 }

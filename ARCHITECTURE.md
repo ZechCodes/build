@@ -2309,12 +2309,14 @@ request instead of retargeting it. No request initializes producers, probes
 workspace paths or drains deferred writer work.
 
 SQL reads use the shared asynchronous reader pool and one transaction across
-related rows. The pool shares a quota of two in-flight requests per MCP SQL
-read type across listeners and service clones. A caller acquires its type's
-permit before borrowing a connection, so excess callers wait outside the
-eight-reader pool. Two saturated read types occupy at most four connections,
-leaving room for other read types. Both the connection and type permit are
-released before external I/O; their acquisition and work take no app lock.
+related rows. The pool shares quotas across listeners and service clones:
+three in-flight MCP task-list requests and two per other MCP SQL read type.
+A caller acquires its type's permit before borrowing a connection, so excess
+callers wait outside the eight-reader pool. Three task pages, two task details
+and two history reads occupy at most seven connections, leaving one reader
+for other read types; a fourth task page waits before SQL checkout. Both the
+connection and type permit are released before external I/O; their acquisition
+and work take no app lock.
 Snapshot materialization and the exact harness catalogue resolver
 run off-lock. The catalogue combines accepted default/ordered-role settings
 with the existing CLI readings service, preserving TTL/executable refresh and
@@ -2864,7 +2866,8 @@ worktrees, 700 initial tasks and 12 simulated running agents. They measure
 `list_work` and `list_workspaces` with only the read cohort, with the unchanged
 writer/status/RPC cohort, and with that same busy cohort plus concurrent
 `list_tasks`. Each mode captures 24 decoded socket replies per read type,
-rotates the first action across readers, and retains the 100 ms caller maximum.
+rotates the first action across readers, and enforces the 100 ms caller p99
+and maximum for every cohort MCP read and ordinary read RPC.
 Per-type overlap counters require every read type to start while writers are
 outstanding, and while task-list requests are in flight in the final mode.
 `.github/workflows/timing.yml` builds the release test binary before running

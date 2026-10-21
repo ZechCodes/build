@@ -1056,40 +1056,45 @@ async fn pending_shell_spawn_releases_the_app_lock_and_holds_lifecycle_admission
         std::thread::spawn(move || call(&handler, "term.create", json!({"project_id": project})))
     };
     held.wait_for_arrival();
-    let app = state.try_lock().expect("spawn must release the app mutex");
-    assert_eq!(app.active_deferred_filesystem_jobs, 1);
-    assert_eq!(app.session_registry.pending_shell_count(), 1);
-    assert!(app.refuse_source_shells_at(&repo).is_err());
-    drop(app);
+    let held_facts = state.try_lock().ok().map(|app| {
+        (
+            app.active_deferred_filesystem_jobs,
+            app.session_registry.pending_shell_count(),
+            app.refuse_source_shells_at(&repo).is_err(),
+        )
+    });
+    let listed = held_facts
+        .as_ref()
+        .map(|_| call(&handler, "term.list", json!({"project_id":project})));
     let (done, answered) = std::sync::mpsc::channel();
     let concurrent = {
         let handler = handler.clone();
         std::thread::spawn(move || {
-            let reply = call(&handler, "session.hello", json!({}));
-            done.send(reply).unwrap();
+            let _ = done.send(call(&handler, "session.hello", json!({})));
         })
     };
     let reply = answered.recv_timeout(Duration::from_millis(100));
-    // Always release the child before asserting, so a failure cannot strand it.
-    if reply.is_err() {
-        held.release();
-        let created = create.join().unwrap();
-        if created["ok"] == true {
-            close_fixture_shell(&state, &handler, &created);
-        }
-        panic!("session.hello waited behind the external terminal spawn");
+    held.release();
+    let created = create.join().unwrap();
+    if created["ok"] == true {
+        close_fixture_shell(&state, &handler, &created);
     }
-    assert_eq!(reply.unwrap()["ok"], true);
     concurrent.join().unwrap();
-    let listed = call(&handler, "term.list", json!({"project_id": project}));
+    assert_eq!(created["ok"], true, "{created}");
+    assert_eq!(
+        held_facts,
+        Some((1, 1, true)),
+        "spawn must release the app lock and retain its holds"
+    );
+    assert_eq!(
+        reply.expect("session.hello must answer during shell spawn")["ok"],
+        true
+    );
+    let listed = listed.unwrap();
     assert!(
         listed_ids(&listed).is_empty(),
         "a pending spawn is not a tab: {listed}"
     );
-    held.release();
-    let created = create.join().unwrap();
-    assert_eq!(created["ok"], true, "{created}");
-    close_fixture_shell(&state, &handler, &created);
     let app = state.lock().unwrap();
     assert_eq!(app.active_deferred_filesystem_jobs, 0);
     assert_eq!(app.session_registry.pending_shell_count(), 0);
@@ -1129,7 +1134,7 @@ async fn a_shell_rejected_at_commit_is_reaped_and_releases_its_hold() {
     std::fs::write(
         &shell,
         format!(
-            "#!/bin/sh\necho $$ > '{}'\nwhile :; do sleep 1; done\n",
+            "#!/bin/sh\necho $$ > '{}'\nwhile IFS= read -r line; do :; done\n",
             pid_file.display()
         ),
     )
@@ -1142,22 +1147,34 @@ async fn a_shell_rejected_at_commit_is_reaped_and_releases_its_hold() {
     };
     let (gate, held) = OffLockGate::new();
     state.lock().unwrap().terminal_create_spawn_gate = Some(gate);
-    let create =
-        std::thread::spawn(move || call(&handler, "term.create", json!({"project_id":project})));
+    let create = {
+        let handler = handler.clone();
+        std::thread::spawn(move || call(&handler, "term.create", json!({"project_id":project})))
+    };
     held.wait_for_arrival();
-    assert!(settles(|| pid_file.exists()));
+    let marker_ready = settles(|| {
+        std::fs::read_to_string(&pid_file)
+            .ok()
+            .is_some_and(|pid| pid.trim().parse::<u32>().is_ok())
+    });
     let pid = std::fs::read_to_string(&pid_file)
-        .unwrap()
-        .trim()
-        .parse::<u32>()
-        .unwrap();
-    // Simulate invalidation after the child opened, even though ordinary
-    // deletion admission is excluded by the pending filesystem hold.
-    state.lock().unwrap().project_deletion_in_progress = true;
+        .ok()
+        .and_then(|pid| pid.trim().parse::<u32>().ok());
+    // Force invalidation after opening, despite the ordinary deletion hold.
+    let invalidated = state.try_lock().ok().map(|mut app| {
+        app.project_deletion_in_progress = true;
+    });
     held.release();
     let rejected = create.join().unwrap();
+    if rejected["ok"] == true {
+        state.lock().unwrap().project_deletion_in_progress = false;
+        close_fixture_shell(&state, &handler, &rejected);
+    }
+    let reaped = pid.is_some_and(process_reaped);
+    assert!(invalidated.is_some(), "the spawn must release the app lock");
+    assert!(marker_ready, "the owned child must reach its read loop");
     assert_eq!(rejected["ok"], false, "{rejected}");
-    assert!(process_reaped(pid), "the unregistered child must be reaped");
+    assert!(reaped, "the unregistered child must be reaped");
     let app = state.lock().unwrap();
     assert_eq!(app.active_deferred_filesystem_jobs, 0);
     assert_eq!(app.session_registry.pending_shell_count(), 0);

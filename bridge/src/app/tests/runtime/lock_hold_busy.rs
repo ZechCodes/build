@@ -984,7 +984,20 @@ async fn wait_for_fixture_idle(busy: &Busy) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "realistic 200-conversation/190-worktree/700-task terminal hold fixture"]
 async fn busy_term_create_keeps_app_lock_hold_below_50ms() {
+    use std::os::unix::fs::PermissionsExt;
     let busy = Busy::with_history_items(500);
+    let shell = busy._root.path().join("terminal-hold-shell");
+    let marker = busy._root.path().join("terminal-hold-shell.pid");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nwhile IFS= read -r line; do :; done\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+    busy.state.lock().unwrap().term_shell = shell.display().to_string();
     let retained_items = busy
         .state
         .lock()
@@ -1001,6 +1014,11 @@ async fn busy_term_create_keeps_app_lock_hold_below_50ms() {
         call(&handler, "term.create", json!({"workspace_id": workspace}))
     });
     assert_eq!(created["ok"], true, "{created}");
+    let marker_ready = settles(|| {
+        std::fs::read_to_string(&marker)
+            .ok()
+            .is_some_and(|pid| pid.trim().parse::<u32>().is_ok())
+    });
     let measurements = busy.samples.snapshot();
     eprintln!(
         "term.create busy phases: {}",
@@ -1033,6 +1051,10 @@ async fn busy_term_create_keeps_app_lock_hold_below_50ms() {
         "the timing fixture shell must be reaped"
     );
     assert_eq!(closed["ok"], true, "{closed}");
+    assert!(
+        marker_ready,
+        "the owned finite shell must reach its read loop"
+    );
     assert!(
         held < 50.0,
         "term.create held the app mutex for {held:.3}ms"

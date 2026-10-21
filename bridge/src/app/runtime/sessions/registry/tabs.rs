@@ -52,6 +52,7 @@ impl Tabs {
         self.map(key).contains_key(key)
     }
 
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.agents.len() + self.shells.len()
     }

@@ -1,8 +1,8 @@
 use crate::api::clients::DeclaredClient;
 use crate::api::API_VERSION;
 use crate::app::{
-    capture_conversation_names, err, off_the_workers, record_idle_in_thread, require_str,
-    spawn_tab_pumps, AppState, HarnessExit, IdleObservation, Tab, TabKey,
+    capture_conversation_names, err, off_the_workers, record_idle_in_thread, require_str, AppState,
+    HarnessExit, IdleObservation, TabKey,
 };
 use crate::carrier::SessionSender;
 use crate::changes::{Kind, ANNOUNCED_EVENTS, MAX_BATCH_MS, MIN_BATCH_MS};

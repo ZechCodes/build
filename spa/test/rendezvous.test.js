@@ -409,3 +409,54 @@ describe("createRelayRendezvous", () => {
     expect(() => carrier.send({ nonce: "n" })).toThrow(/closed/);
   });
 });
+
+// Every way a dial can fail used to read `unreached` with nothing else, so a
+// report could not tell a laptop whose Wi-Fi had not come back from a relay
+// that never answered. Each step names itself on the error it throws.
+describe("the step a failed dial names", () => {
+  const stepOf = (pending) => pending.then(() => null, (error) => error?.dialStep);
+
+  it("the gateway token", async () => {
+    const stood = stand({ fetchToken: async () => { throw new TypeError("Failed to fetch"); } });
+    expect(await stepOf(stood.rendezvous.open())).toBe("gateway-token");
+  });
+
+  it("the relay socket erroring before it opened", async () => {
+    const stood = stand();
+    const opening = stepOf(stood.rendezvous.open());
+    await tick();
+    stood.socket().emit("error", new Event("error"));
+    expect(await opening).toBe("relay-socket");
+  });
+
+  it("the relay not answering the socket in time", async () => {
+    const stood = stand({ openTimeoutMs: 20 });
+    expect(await stepOf(stood.rendezvous.open())).toBe("relay-open");
+  });
+
+  it("the device not answering the session it was offered", async () => {
+    const stood = stand({ acceptTimeoutMs: 20 });
+    const refused = stepOf(stood.rendezvous.mint({}));
+    await answering(stood, { accept: false });
+    expect(await refused).toBe("device-answer");
+    stood.rendezvous.close();
+  });
+
+  it("the socket going while a mint waited on it", async () => {
+    const stood = stand();
+    const pending = stepOf(stood.rendezvous.mint({}));
+    const ws = await answering(stood, { accept: false });
+    ws.close();
+    expect(await pending).toBe("rendezvous-closed");
+  });
+
+  it("the device's accept not opening", async () => {
+    const stood = stand({
+      transport: { ...fakeTransport, openSessionAccept: async () => { throw new Error("bad envelope"); } },
+    });
+    const pending = stepOf(stood.rendezvous.mint({}));
+    await answering(stood);
+    expect(await pending).toBe("session-accept");
+    stood.rendezvous.close();
+  });
+});

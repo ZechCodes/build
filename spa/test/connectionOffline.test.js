@@ -69,6 +69,8 @@ const {
   chooseCreationDevice,
   connectDevice,
   deviceRecoverySnapshot,
+  stopWatchingForWake,
+  watchForWake,
   deviceWentAway,
   goOffline,
   openDeviceSessions,
@@ -347,20 +349,45 @@ describe("dial failure diagnostics", () => {
     expect(joined).toBe(first);
     await Promise.allSettled([first, joined]);
 
-    expect(failures()).toEqual([{ at: expect.any(Number), connection: "dev-a:dial", event: "dial-failed", reason: "ice-servers", status: 401 }]);
+    expect(failures()).toEqual([{
+      at: expect.any(Number), connection: "dev-a:dial", event: "dial-failed", reason: "ice-servers", status: 401,
+      step: null, error: "Error", message: null, online: true,
+    }]);
     expect(JSON.stringify(failures())).not.toContain("private response");
     expect(contextFor("dev-a").blocked).toBe("ice-servers");
   });
 
   it.each([
-    ["unreached", () => unreachable.add("dev-a")],
-    ["timeout", () => unlinkable.add("dev-a")],
-    ["refused", () => impostors.add("dev-a")],
-    ["no-webrtc", () => { delete globalThis.RTCPeerConnection; }],
-  ])("records the %s failure category without raw error text", async (reason, fail) => {
+    ["unreached", () => unreachable.add("dev-a"), "device did not answer"],
+    ["timeout", () => unlinkable.add("dev-a"), null],
+    ["refused", () => impostors.add("dev-a"), null],
+    ["no-webrtc", () => { delete globalThis.RTCPeerConnection; }, null],
+  ])("records the %s failure category, and its words only when they are the app's own", async (reason, fail, message) => {
     fail();
     await expect(connectDevice("dev-a")).rejects.toThrow();
-    expect(failures()).toEqual([{ at: expect.any(Number), connection: "dev-a:dial", event: "dial-failed", reason, status: null }]);
+    expect(failures()).toEqual([{
+      at: expect.any(Number), connection: "dev-a:dial", event: "dial-failed", reason, status: null,
+      step: null, error: "Error", message, online: true,
+    }]);
+  });
+
+  // The 2026-10-21 wake report: four dials each failed in ~50 ms as
+  // `unreached` with nothing else, so it could not say whether the laptop's
+  // network was back. The step, and what the browser believed, now ride along.
+  it("records the step the rendezvous failed on and whether the browser thought it was online", async () => {
+    wire.openSession.mockImplementationOnce(async () => {
+      throw Object.assign(new TypeError("Failed to fetch"), { dialStep: "gateway-token" });
+    });
+    const onLine = vi.spyOn(globalThis.navigator, "onLine", "get").mockReturnValue(false);
+    try {
+      await expect(connectDevice("dev-a")).rejects.toThrow();
+    } finally {
+      onLine.mockRestore();
+    }
+    expect(failures()).toEqual([{
+      at: expect.any(Number), connection: "dev-a:dial", event: "dial-failed", reason: "unreached", status: null,
+      step: "gateway-token", error: "TypeError", message: "Failed to fetch", online: false,
+    }]);
   });
 
   it("does not report a cancelled dial as a failure after account reset", async () => {
@@ -378,6 +405,33 @@ describe("dial failure diagnostics", () => {
   it("does not report a successful dial as failed", async () => {
     await connectDevice("dev-a");
     expect(failures()).toEqual([]);
+  });
+});
+
+// Focusing a desktop window that was never hidden fires no visibilitychange,
+// so on 2026-10-21 a laptop opened and focused sat out its full ten-second step
+// with the network already back.
+describe("waking recovery when the window is focused", () => {
+  afterEach(() => stopWatchingForWake());
+
+  it("retries a waiting device now, from the floor", async () => {
+    devices = [online("dev-a", "Laptop")];
+    App.devices = devices;
+    syncDeviceRecoveryPresence(devices);
+    unreachable.add("dev-a");
+    await connectDevice("dev-a").catch(() => {});
+    await flush();
+    expect(deviceRecoverySnapshot("dev-a").status).toBe("waiting");
+
+    unreachable.delete("dev-a");
+    watchForWake();
+    window.dispatchEvent(new Event("focus"));
+    for (let index = 0; index < 6; index += 1) await flush();
+
+    expect(connectionDiagnosticHistory().filter((entry) => entry.event === "woken")).toEqual([
+      { at: expect.any(Number), connection: "recovery", event: "woken", reason: "focus", devices: 1 },
+    ]);
+    expect(contextFor("dev-a").blocked).toBeFalsy();
   });
 });
 

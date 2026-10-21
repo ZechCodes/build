@@ -134,3 +134,52 @@ async fn terminal_observation_keeps_workspace_container_roots_and_scope_retireme
         assert_eq!(refused["ok"], false, "{refused}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_observation_lists_live_shell_while_its_screen_mutex_is_held() {
+    use crate::app::tests::runtime::native_reads::NativeReads;
+
+    let mut reads = NativeReads::new();
+    reads.state.lock().unwrap().term_shell = "/bin/bash".into();
+    let handler = AppState::handler(Arc::clone(&reads.state));
+    let project = reads.project.clone();
+    let created = call(
+        &handler,
+        "term.create",
+        json!({"project_id":project,"cols":111,"rows":37}),
+    );
+    assert_eq!(created["ok"], true, "{created}");
+    let term_id = created["result"]["term_id"].as_str().unwrap().to_owned();
+    let screen = {
+        let app = reads.state.lock().unwrap();
+        let key = app.tab_key_of_wire_id(&term_id).unwrap();
+        app.session_registry.terminal_screen(&key).unwrap()
+    };
+    let (ready, arrived) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let _held = screen.hold();
+        ready.send(()).unwrap();
+        let _ = released.recv();
+    });
+    arrived.recv_timeout(Duration::from_secs(5)).unwrap();
+    // Joining a separate task lets us release the actual screen lock before
+    // propagating a timed-out carrier assertion from the shared helper.
+    let result = tokio::spawn(async move {
+        reads
+            .held_read("term.list", json!({"project_id":project}))
+            .await
+    })
+    .await;
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    let closed = call(&handler, "term.close", json!({"term_id":term_id}));
+    assert_eq!(closed["ok"], true, "{closed}");
+    let answer = result.expect("term.list must finish while the terminal screen mutex is held");
+    assert_eq!(answer["ok"], true, "{answer}");
+    let rows = answer["result"]["terminals"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{answer}");
+    assert_eq!(rows[0]["term_id"], term_id);
+    assert_eq!(rows[0]["cols"], 111);
+    assert_eq!(rows[0]["rows"], 37);
+}

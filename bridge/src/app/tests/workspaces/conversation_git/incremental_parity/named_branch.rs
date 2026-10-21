@@ -90,6 +90,7 @@ fn assert_literal(view: &ReadView, owner: &str, topic: &str) {
 
 #[test]
 fn incremental_named_branch_indexes_each_32_and_200_owner_payload_only_once() {
+    let mut measurements = Vec::new();
     for count in [32, 200] {
         let (_tmp, mut app) = fixture_with_count(count);
         let requests = requests(&app);
@@ -119,9 +120,15 @@ fn incremental_named_branch_indexes_each_32_and_200_owner_payload_only_once() {
             visits.winner > 0,
             "actual incremental winner construction escaped attribution: {counts:?}"
         );
-        assert!(visits.winner + visits.state <= visits.reference,
-            "same named payload was recursively indexed more than once ({count} owners): {counts:?}");
+        eprintln!("named branch recursive work ({count} owners): {visits:?}");
+        measurements.push((count, visits));
     }
+    assert!(
+        measurements
+            .iter()
+            .all(|(_, visits)| visits.winner + visits.state <= visits.reference),
+        "same named payload was recursively indexed more than once: {measurements:?}"
+    );
 }
 
 #[test]

@@ -176,8 +176,12 @@ fn named_rows_capture_fresh_runtime_status_and_elapsed_fields_on_each_guard() {
             crate::harness::AgentStatus::Waiting,
         ))
         .unwrap();
-    let next = publish_incremental(&app, "run-00");
-    let fresh = state_node(&next, "run-01");
+    // Before the status observer publishes its named owner, global/facts
+    // already refresh this incidental active owner. Its separate agent.list
+    // intentionally waits for that owner boundary; keep this root as evidence.
+    let incidental = publish_incremental(&app, "run-00");
+    let incidental_before = image(&incidental, &requests);
+    let fresh = state_node(&incidental, "run-01");
     let row = fresh.leaf().unwrap();
     assert_eq!(row["agents"][0]["working"], false);
     assert_eq!(row["agents"][0]["can_interrupt"], false);
@@ -187,8 +191,21 @@ fn named_rows_capture_fresh_runtime_status_and_elapsed_fields_on_each_guard() {
         !prior.ptr_eq(&fresh),
         "accepted named memo leaked across publication guards"
     );
+    // This is the same final owner-publication boundary used by StatusPump.
+    // Drive it before requiring parity of all named reader chunks as well.
+    let observed = publish_incremental(&app, "run-01");
+    let observed_before = image(&observed, &requests);
+    assert_eq!(
+        observed.get_owned("agent.list", "run-01").unwrap()["agents"][0]["can_interrupt"],
+        false
+    );
+    assert_full_reference(&app, &observed, &requests);
+    let next = publish_incremental(&app, "run-00");
+    assert_eq!(observed_before, image(&next, &requests));
     assert_full_reference(&app, &next, &requests);
     assert_eq!(before, image(&old, &requests));
+    assert_eq!(incidental_before, image(&incidental, &requests));
+    assert_eq!(observed_before, image(&observed, &requests));
 }
 
 #[test]
@@ -240,10 +257,10 @@ fn named_rows_preserve_raw_candidates_exact_stats_and_nonrun_fallbacks() {
 }
 
 fn assert_nonrun_fallbacks(app: &mut AppState, root: &Path) {
+    app.projects.at_mut(0).is_git = true;
     let plan = file_legacy_task(app, "legacy named-state fallback");
     app.runs.get_mut("run-03").unwrap().run.state = crate::run::RunState::Archived;
     let project = app.projects.at(0).id.clone();
-    app.projects.at_mut(0).is_git = true;
     let path = root.join("external-named-fallback");
     std::fs::create_dir(&path).unwrap();
     let external = crate::worktree::ExternalWorktree {

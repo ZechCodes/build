@@ -291,6 +291,7 @@ const intentIdentity = (record) => JSON.stringify(sortedJson({ request: record.r
 
 
 function indexOverlay(record) {
+  record.overlayActive = Boolean(record.overlayActive && record.overlay?.length);
   if (record.overlayActive) record.overlayNamespace = record.namespace;
   else delete record.overlayNamespace;
 }

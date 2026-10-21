@@ -350,8 +350,10 @@ Bridge journal execution and paged result references are outside this scope.
 | Draft recovery and named refresh obligations survive prehello queuing and reload; failure removes only its own unapplied layer. Unknown refresh domains stay unresolved. | `prehelloWriteActions.test.js`, `taskCommentRecovery.test.js`, layer rollback and persistent refresh-obligation service tests. | 10/10 |
 | A new bridge process resets terminal cursors and acknowledgements, reattaches desired terminals, and never replays input. | `terminal.test.js` same-carrier boot change and `terminalReconnectIntegration.test.js` real-manager remint/reattach regression. | 10/10 |
 
-**Scoped pending-write score: 100/100.** The final focused cache, service,
+**Scoped pending-write score: 100/100.** The focused cache, service,
 effects, refresh, runtime, RPC and terminal run passed 221 tests (exit 0).
 The prehello, stale task-read and same-carrier terminal regressions failed
-before their fixes. Full merged-main SPA gates remain the task's handoff gate;
+before their fixes. A further empty-overlay refresh regression failed first,
+then 89 cache/service/refresh tests passed after inactive empty layers stopped
+holding a completed refresh open. Full merged-main SPA gates remain the task's handoff gate;
 this scoped score is not a claim that those gates have already passed.

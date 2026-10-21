@@ -470,3 +470,16 @@ it("rolls back canonical stand-in migration when durable intent persistence fail
   expect(await operations.get("op-a")).toBeUndefined();
   expect((await cache.readCanonicalCached(threadAddress)).value.items).toEqual([item]);
 });
+
+it("completes a named publication refresh when no local overlay was normalized", async () => {
+  const frame = { state: "succeeded", revision: 2, published: publication,
+    refresh: [{ kind: "task", id: "task-a" }] };
+  await operations.put(intent("op-a", { owner: { projectId: "project" }, overlay: [], overlayActive: true }));
+  await operations.accept("op-a", { ack: {}, revision: 1, owners: publication, overlay: [] });
+  const record = await operations.confirm("op-a", { revision: 2, confirmation: frame, refreshPending: true });
+  const { refreshWriteOperation } = await import("../src/core/writeOperationRefresh.js");
+  const authority = { active: () => true, call: vi.fn(async () => ({ task: { id: "task-a" }, timeline: [] })) };
+  await expect(refreshWriteOperation({ cache: operations, frame, record, authority })).resolves.toBeUndefined();
+  expect((await operations.get("op-a")).overlayActive).toBe(false);
+  expect(authority.call).toHaveBeenCalledWith("tasks.get", { task_id: "task-a" });
+});

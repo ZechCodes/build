@@ -327,3 +327,24 @@ describe("owner generation fences", () => {
     expect((await operations.get("op-a")).revision).toBe(0);
   });
 });
+
+describe("operation opening authority", () => {
+  it("checks ack authority after the storage transaction was queued", async () => {
+    await operations.put(intent());
+    let current = true;
+    const pending = operations.accept("op-a", { revision: 1, ack: {}, overlay: overlay({ body: "old opening" }), accept: () => current });
+    current = false;
+    await pending;
+    expect((await operations.get("op-a")).revision).toBe(0);
+  });
+
+  it("checks confirmation authority without persisting callback functions", async () => {
+    await operations.put(intent());
+    await operations.accept("op-a", { revision: 1, ack: {}, overlay: overlay({ body: "accepted" }), accept: () => true });
+    await operations.confirm("op-a", { revision: 2, confirmation: { state: "failed", effect: "unapplied" }, accept: () => false });
+    expect((await operations.get("op-a")).state).toBe("accepted");
+    await operations.confirm("op-a", { revision: 2, confirmation: { state: "failed", effect: "unapplied" }, accept: () => true });
+    expect((await operations.get("op-a")).state).toBe("failed");
+    expect((await operations.get("op-a")).accept).toBeUndefined();
+  });
+});

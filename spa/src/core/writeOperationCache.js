@@ -126,7 +126,7 @@ export function createWriteOperationCache(scope) {
     return next;
   }
 
-  async function update(operationId, updater, { canonical = [] } = {}) {
+  async function update(operationId, updater, { canonical = [], accept = () => true } = {}) {
     let result, changed, addresses;
     await strictTransaction("readwrite", (stores) => {
       result = undefined;
@@ -135,15 +135,17 @@ export function createWriteOperationCache(scope) {
       read.onsuccess = () => {
         try {
           const previous = read.result;
-          const candidate = updater(previous);
           result = previous;
+          if (!accept()) return;
+          const candidate = updater(previous);
           if (candidate == null) return;
           const next = normalizeRecord(candidate, previous);
           if (next.operationId !== operationId) throw new TypeError("Operation identity cannot change");
           if (!canAdvance(previous, next)) return;
           addresses = effectsAddresses(previous, next);
-          writeCanonical(stores.records, canonical, () => true, () => {
+          writeCanonical(stores.records, canonical, accept, () => {
             readRecords(stores.records, addresses.map(recordKey), (records) => {
+              if (!accept()) return;
               if (layerPublished(next, records)) next.overlayActive = false;
               changed = putOrAbort(stores.operations, next, operationKey(scope, operationId));
               result = next;
@@ -162,18 +164,23 @@ export function createWriteOperationCache(scope) {
     if (intentIdentity(previous) !== intentIdentity(record)) throw new Error("operation_conflict: the saved intent differs");
     return null;
   });
-  const accept = (operationId, input) => update(operationId, (previous) => {
-    if (!previous) throw new Error("Cannot accept an unpersisted operation");
-    if (previous.acknowledged && previous.revision >= input.revision) return null;
-    return { ...previous, ...input, owners: input.owners || input.ack?.write?.owners || previous.owners,
-      state: "accepted", acknowledged: true, overlayActive: true, unresolved: false };
-  });
-  const confirm = (operationId, input) => update(operationId, (previous) => {
-    if (!previous) throw new Error("Cannot confirm an unpersisted operation");
-    if (previous.confirmation && previous.revision >= input.revision) return null;
-    const { canonical: _canonical, ...evidence } = input;
-    return confirmationState(previous, evidence);
-  }, { canonical: input.canonical || [] });
+  function accept(operationId, input) {
+    const { accept: authority = () => true, ...evidence } = input;
+    return update(operationId, (previous) => {
+      if (!previous) throw new Error("Cannot accept an unpersisted operation");
+      if (previous.acknowledged && previous.revision >= evidence.revision) return null;
+      return { ...previous, ...evidence, owners: evidence.owners || evidence.ack?.write?.owners || previous.owners,
+        state: "accepted", acknowledged: true, overlayActive: true, unresolved: false };
+    }, { accept: authority });
+  }
+  function confirm(operationId, input) {
+    const { canonical = [], accept: authority = () => true, ...evidence } = input;
+    return update(operationId, (previous) => {
+      if (!previous) throw new Error("Cannot confirm an unpersisted operation");
+      if (previous.confirmation && previous.revision >= evidence.revision) return null;
+      return confirmationState(previous, evidence);
+    }, { canonical, accept: authority });
+  }
 
   async function observePublication({ canonical = [], accept = () => true } = {}) {
     const changed = [];

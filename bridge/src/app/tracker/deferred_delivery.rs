@@ -227,6 +227,23 @@ impl AppState {
     }
 
     #[cfg(test)]
+    pub(super) fn task_delivery_publication_candidate(
+        &self,
+        task: &str,
+        cancelled: bool,
+    ) -> Result<Option<crate::store::delivery_origins::PublicationCandidate>, String> {
+        let store = self.tracker_store()?;
+        Ok(store
+            .current_delivery_intent(task)
+            .stored()?
+            .and_then(|intent| {
+                store
+                    .delivery_origins
+                    .publication_candidate(&intent.id, cancelled)
+            }))
+    }
+
+    #[cfg(test)]
     pub(super) fn finish_task_delivery_origin(
         &self,
         id: &str,

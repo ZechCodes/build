@@ -18,6 +18,8 @@ impl AppState {
     ) -> Option<SnapshotDelta> {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.global");
+        #[cfg(test)]
+        let _task_work = self.begin_task_publication_work(None);
         let (cache, owners) = previous.global.as_ref()?.refresh(self, requested)?;
         let mut delta = cache.publish(self, delta, previous);
         // Refresh requested and incidental clock/alias/root dependencies in
@@ -42,6 +44,8 @@ impl AppState {
         delta: SnapshotDelta,
         previous: &ReadView,
     ) -> SnapshotDelta {
+        #[cfg(test)]
+        let _task_work = self.begin_task_publication_work(None);
         let board = self.board_snapshot();
         let projects = self.snapshot_project_list();
         let (workspaces, reusable) = match self.workspace_list_snapshot(&json!({})) {

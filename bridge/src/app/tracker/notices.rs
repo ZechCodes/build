@@ -633,6 +633,7 @@ mod tests {
     fn write_by(actor: Actor) -> TaskWrite {
         TaskWrite {
             expected_review_version: None,
+            delivery_retirement: None,
             content_changed: false,
             task: task(),
             comments: Vec::new(),

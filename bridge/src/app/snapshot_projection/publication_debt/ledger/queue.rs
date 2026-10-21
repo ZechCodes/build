@@ -85,3 +85,30 @@ impl Debt {
         }
     }
 }
+
+impl PublicationDebts {
+    pub(in crate::app::snapshot_projection::publication_debt) fn queue_own_origins(
+        &self,
+        context: &WriteContext,
+        blockers: &BTreeSet<String>,
+    ) -> Vec<WriteId> {
+        let state = self.state.lock().unwrap();
+        context
+            .origins()
+            .iter()
+            .copied()
+            .filter(|id| {
+                !blockers.is_empty()
+                    && blockers.iter().all(|owner| {
+                        state
+                            .borrowed
+                            .get(owner)
+                            .and_then(Option::as_ref)
+                            .is_some_and(|cause| {
+                                context.same_registry(cause) && cause.origins().contains(id)
+                            })
+                    })
+            })
+            .collect()
+    }
+}

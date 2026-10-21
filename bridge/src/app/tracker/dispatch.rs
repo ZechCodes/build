@@ -284,6 +284,11 @@ impl AppState {
         let now = crate::store::now_rfc3339();
         let mut write = TaskWrite::by(actor.clone(), task);
         self.settle_assignment(&mut write, &target, &None, &actor, &now)?;
+        #[cfg(test)]
+        {
+            write.delivery_retirement =
+                self.task_delivery_publication_candidate(&write.task.id, true)?;
+        }
         let answered = self.commit_task_write(project_id, write, &now)?;
         Ok(json!({"task": answered["task"], "dispatch": Value::Null}))
     }

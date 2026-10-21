@@ -175,9 +175,29 @@ impl AppState {
             .iter()
             .map(|project| project.id.clone())
             .collect::<Vec<_>>();
-        crate::timing::resource_lock!(self.snapshot_observations.watched_tasks)
-            .unwrap()
-            .retain(|id, _| projects.contains(id));
+        {
+            let mut watched =
+                crate::timing::resource_lock!(self.snapshot_observations.watched_tasks).unwrap();
+            #[cfg(test)]
+            let removed: Vec<_> = watched
+                .keys()
+                .filter(|id| !projects.contains(id))
+                .cloned()
+                .collect();
+            watched.retain(|id, _| projects.contains(id));
+            #[cfg(test)]
+            if !removed.is_empty() {
+                let revision = self
+                    .snapshot_observations
+                    .task_publications
+                    .changed_inputs();
+                for project in removed {
+                    self.snapshot_observations
+                        .task_publications
+                        .refreshed_project(&project, revision);
+                }
+            }
+        }
         for id in projects {
             self.refresh_project_snapshot_task_observations(&id)?;
         }
@@ -187,10 +207,22 @@ impl AppState {
         &self,
         project: &str,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        let _task_work = self.begin_task_publication_refresh_work(project);
         let rows = self.watched_task_rows_for_project(project)?;
-        crate::timing::resource_lock!(self.snapshot_observations.watched_tasks)
-            .unwrap()
-            .insert(project.to_owned(), rows.into_iter().map(Arc::new).collect());
+        let mut watched =
+            crate::timing::resource_lock!(self.snapshot_observations.watched_tasks).unwrap();
+        watched.insert(project.to_owned(), rows.into_iter().map(Arc::new).collect());
+        #[cfg(test)]
+        {
+            let revision = self
+                .snapshot_observations
+                .task_publications
+                .changed_inputs();
+            self.snapshot_observations
+                .task_publications
+                .refreshed_project(project, revision);
+        }
         Ok(())
     }
     pub(in crate::app) fn install_snapshot_watched_task(
@@ -209,6 +241,10 @@ impl AppState {
             },
             None => rows.retain(|row| row["task_id"] != task),
         }
+        #[cfg(test)]
+        self.snapshot_observations
+            .task_publications
+            .changed_inputs();
     }
     pub(in crate::app) fn snapshot_watched_task_rows(&self) -> Vec<Value> {
         self.snapshot_watched_task_shared_rows()
@@ -217,13 +253,24 @@ impl AppState {
             .collect()
     }
     pub(in crate::app) fn snapshot_watched_task_shared_rows(&self) -> Vec<Arc<Value>> {
-        crate::timing::resource_lock!(self.snapshot_observations.watched_tasks)
-            .unwrap()
-            .iter()
-            .filter(|(id, _)| self.projects.get(id).is_some())
-            .flat_map(|(_, rows)| rows)
-            .cloned()
-            .collect()
+        self.capture_snapshot_watched_tasks().rows
+    }
+    pub(super) fn capture_snapshot_watched_tasks(&self) -> WatchedTaskCapture {
+        let watched =
+            crate::timing::resource_lock!(self.snapshot_observations.watched_tasks).unwrap();
+        WatchedTaskCapture {
+            rows: watched
+                .iter()
+                .filter(|(id, _)| self.projects.get(id).is_some())
+                .flat_map(|(_, rows)| rows)
+                .cloned()
+                .collect(),
+            #[cfg(test)]
+            revision: self
+                .snapshot_observations
+                .task_publications
+                .input_revision(),
+        }
     }
     pub(in crate::app) fn snapshot_run_branch(
         &self,
@@ -316,4 +363,11 @@ impl AppState {
             )
             .collect()
     }
+}
+
+/// Rows and test-only proof refer to the same authoritative watched-task cut.
+pub(super) struct WatchedTaskCapture {
+    pub rows: Vec<Arc<Value>>,
+    #[cfg(test)]
+    pub revision: u64,
 }

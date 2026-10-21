@@ -90,6 +90,8 @@ pub(in crate::app) struct TaskWrite {
     pub(in crate::app) actor: Actor,
     expected_review_version: Option<u64>,
     content_changed: bool,
+    #[cfg(test)]
+    delivery_retirement: Option<crate::store::delivery_origins::PublicationCandidate>,
 }
 
 impl TaskWrite {
@@ -102,6 +104,8 @@ impl TaskWrite {
             actor,
             expected_review_version: None,
             content_changed: false,
+            #[cfg(test)]
+            delivery_retirement: None,
         }
     }
 
@@ -431,7 +435,12 @@ impl AppState {
         write: &TaskWrite,
         publication: &crate::store::TrackerTaskPublication,
     ) {
-        self.note_observed_tasks_changed(project, publication);
+        self.note_observed_tasks_changed_with_retirement(
+            project,
+            publication,
+            #[cfg(test)]
+            write.delivery_retirement.as_ref(),
+        );
         self.deliver_task_write(write);
     }
 
@@ -440,6 +449,24 @@ impl AppState {
         project: &str,
         publication: &crate::store::TrackerTaskPublication,
     ) {
+        self.note_observed_tasks_changed_with_retirement(
+            project,
+            publication,
+            #[cfg(test)]
+            None,
+        );
+    }
+
+    fn note_observed_tasks_changed_with_retirement(
+        &self,
+        project: &str,
+        publication: &crate::store::TrackerTaskPublication,
+        #[cfg(test)] retiring: Option<&crate::store::delivery_origins::PublicationCandidate>,
+    ) {
+        #[cfg(test)]
+        let ticket = self.begin_task_publication(project, retiring);
+        #[cfg(test)]
+        let _work = self.begin_task_publication_work(ticket.as_ref());
         let observations = std::iter::once(&publication.current).chain(publication.related.iter());
         let mut changed = Vec::new();
         for observation in observations {
@@ -449,10 +476,14 @@ impl AppState {
                 self.install_snapshot_watched_task(project, &observation.task.id, row);
             }
         }
+        #[cfg(test)]
+        self.capture_task_publication_inputs(ticket.as_ref());
         if self.snapshot_projection_initialized() {
             self.publish_task_snapshot_projection();
         }
         self.changes.note_tasks(project, &changed);
+        #[cfg(test)]
+        self.finish_task_publication_metadata(ticket.as_ref());
     }
 
     /// Deliver side effects only after the task and its activity are durable.
@@ -656,13 +687,23 @@ impl AppState {
     /// Called after the write lands, never before: a subscriber told to refetch
     /// ahead of the commit would read the state the write is about to replace.
     pub(in crate::app) fn note_tasks_changed(&self, project_id: &str, task_id: &str) {
+        #[cfg(test)]
+        let ticket = self.begin_task_publication(project_id, None);
+        #[cfg(test)]
+        let _work = self.begin_task_publication_work(ticket.as_ref());
         if self.snapshot_projection_initialized() {
-            if let Err(error) = self.refresh_project_snapshot_task_observations(project_id) {
-                eprintln!("watched task observation {project_id}: {error}");
+            match self.refresh_project_snapshot_task_observations(project_id) {
+                Ok(()) => {
+                    #[cfg(test)]
+                    self.capture_task_publication_inputs(ticket.as_ref());
+                }
+                Err(error) => eprintln!("watched task observation {project_id}: {error}"),
             }
             self.publish_snapshot_projection();
         }
         self.changes.note_tasks(project_id, &[task_id.to_string()]);
+        #[cfg(test)]
+        self.finish_task_publication_metadata(ticket.as_ref());
     }
 
     /// The store, or why there is none.

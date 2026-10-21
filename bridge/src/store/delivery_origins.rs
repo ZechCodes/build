@@ -70,6 +70,18 @@ impl DeliveryOrigins {
         self.0.lock().unwrap().get(id).cloned()
     }
 
+    pub(crate) fn publication_candidate(
+        &self,
+        id: &str,
+        cancelled: bool,
+    ) -> Option<PublicationCandidate> {
+        self.attempt(id).map(|attempt| PublicationCandidate {
+            origins: self.clone(),
+            attempt,
+            cancelled,
+        })
+    }
+
     pub(crate) fn scan(&self) -> Run {
         let attempts: Vec<_> = self.0.lock().unwrap().values().cloned().collect();
         let owned: Vec<_> = attempts
@@ -106,6 +118,10 @@ impl DeliveryOrigins {
             }
         }
         drop(owned);
+        self.remove_if_current(attempt);
+    }
+
+    fn remove_if_current(&self, attempt: &Arc<Attempt>) {
         let mut entries = self.0.lock().unwrap();
         if entries
             .get(&attempt.id)
@@ -113,6 +129,41 @@ impl DeliveryOrigins {
         {
             entries.remove(&attempt.id);
         }
+    }
+}
+
+/// A typed caller captures only an existing attempt before SQL. Failed writes
+/// drop this nonowning descriptor without changing the attempt's requirement.
+pub(crate) struct PublicationCandidate {
+    origins: DeliveryOrigins,
+    attempt: Arc<Attempt>,
+    cancelled: bool,
+}
+
+/// Successful SQL transfers the SAME child to accepted task-publication work.
+/// A selected execution Run remains independently owned throughout settlement.
+pub(crate) struct TaskPublicationTransfer {
+    pub(crate) original: Obligation,
+    pub(crate) cancelled: bool,
+    pub(crate) _attempt: Arc<Attempt>,
+}
+
+impl PublicationCandidate {
+    pub(crate) fn transfer(&self) -> Option<TaskPublicationTransfer> {
+        let original = {
+            let mut owned = self.attempt.owned.lock().unwrap();
+            let original = owned.child.take()?;
+            owned.queued.take();
+            original
+        };
+        // This intent is no longer ready service work. A stale attempt cannot
+        // remove a replacement activation that reused the same durable ID.
+        self.origins.remove_if_current(&self.attempt);
+        Some(TaskPublicationTransfer {
+            original,
+            cancelled: self.cancelled,
+            _attempt: Arc::clone(&self.attempt),
+        })
     }
 }
 

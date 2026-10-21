@@ -77,6 +77,8 @@ impl AppState {
             .stored()?;
         let mut prepared = task.clone();
         self.capture_task_identities_and_actor(&mut prepared, &timeline, actor);
+        #[cfg(test)]
+        let retiring = self.task_delivery_publication_candidate(&task.id, false)?;
         let publication = self
             .tracker_store()?
             .edit_waiting_on_observed(
@@ -87,7 +89,18 @@ impl AppState {
                 &crate::store::now_rfc3339(),
             )
             .stored()?;
-        self.note_observed_tasks_changed(project, &publication);
+        self.note_observed_tasks_changed_with_retirement(
+            project,
+            &publication,
+            #[cfg(test)]
+            retiring.as_ref().filter(|_| {
+                publication
+                    .current
+                    .delivery
+                    .as_ref()
+                    .is_some_and(|intent| intent.state == "waiting")
+            }),
+        );
         Ok(json!({"task":self.observed_task_json(project, &publication.current)}))
     }
 

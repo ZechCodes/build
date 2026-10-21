@@ -187,6 +187,8 @@ pub(in crate::app) struct SnapshotDelta {
     attention_notice_receipts: Vec<(String, u64)>,
     #[cfg(test)]
     publication_coverage: Vec<super::snapshot_projection::publication_debt::PublicationReceipt>,
+    #[cfg(test)]
+    task_publication_coverage: Option<u64>,
     global: Option<Option<Arc<super::snapshot_projection::incremental::GlobalProjection>>>,
 }
 
@@ -203,6 +205,8 @@ impl SnapshotDelta {
             attention_notice_receipts: Vec::new(),
             #[cfg(test)]
             publication_coverage: Vec::new(),
+            #[cfg(test)]
+            task_publication_coverage: None,
             global: None,
         }
     }
@@ -309,6 +313,15 @@ impl SnapshotDelta {
     ) -> Vec<super::snapshot_projection::publication_debt::PublicationReceipt> {
         std::mem::take(&mut self.publication_coverage)
     }
+    #[cfg(test)]
+    pub(in crate::app) fn set_task_publication_coverage(mut self, revision: Option<u64>) -> Self {
+        self.task_publication_coverage = revision;
+        self
+    }
+    #[cfg(test)]
+    pub(in crate::app) fn take_task_publication_coverage(&mut self) -> Option<u64> {
+        self.task_publication_coverage.take()
+    }
     pub fn set_facts(mut self, facts: Arc<super::facts::PushFacts>) -> Self {
         self.facts = Some(facts);
         self
@@ -318,6 +331,10 @@ impl SnapshotDelta {
         mut self,
         global: Arc<super::snapshot_projection::incremental::GlobalProjection>,
     ) -> Self {
+        #[cfg(test)]
+        if self.task_publication_coverage != global.task_input_revision {
+            self.task_publication_coverage = None;
+        }
         self.global = Some(Some(global));
         self
     }
@@ -325,6 +342,10 @@ impl SnapshotDelta {
     fn invalidate_global(&mut self, method: &str) {
         if matches!(method, "board.list" | "project.list" | "workspace.list") {
             self.global = Some(None);
+            #[cfg(test)]
+            {
+                self.task_publication_coverage = None;
+            }
         }
     }
 }

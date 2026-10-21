@@ -75,7 +75,13 @@ pub(super) struct TaskRow {
     pub value: SharedJson,
 }
 
-pub(super) fn tasks(app: &AppState, previous: &[TaskRow]) -> Vec<TaskRow> {
+pub(super) struct TaskRows {
+    pub rows: Vec<TaskRow>,
+    #[cfg(test)]
+    pub revision: u64,
+}
+
+pub(super) fn tasks(app: &AppState, previous: &[TaskRow]) -> TaskRows {
     #[cfg(test)]
     let _phase = crate::timing::phase_samples::phase("publication.incremental.task_reuse");
     // SQL replaces one immutable task payload at a time. Keep both the digest
@@ -89,7 +95,9 @@ pub(super) fn tasks(app: &AppState, previous: &[TaskRow]) -> Vec<TaskRow> {
         .collect::<HashMap<_, _>>();
     #[cfg(test)]
     drop(_task_index_phase);
-    app.snapshot_watched_task_shared_rows()
+    let captured = app.capture_snapshot_watched_tasks();
+    let rows = captured
+        .rows
         .into_iter()
         .map(|source| {
             if let Some(old) = indexed.get(&Arc::as_ptr(&source)) {
@@ -100,7 +108,12 @@ pub(super) fn tasks(app: &AppState, previous: &[TaskRow]) -> Vec<TaskRow> {
                 source,
             }
         })
-        .collect()
+        .collect();
+    TaskRows {
+        rows,
+        #[cfg(test)]
+        revision: captured.revision,
+    }
 }
 
 pub(super) fn object(value: Value) -> SharedJson {

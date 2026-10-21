@@ -60,7 +60,12 @@ impl GlobalProjection {
         refresh_winners(app, &owners, &mut next.winners);
         refresh_workspaces(app, &owners, &mut next.workspaces)?;
         refresh_projects(app, &owners, &mut next.projects, projects);
-        next.tasks = rows::tasks(app, &self.tasks);
+        let tasks = rows::tasks(app, &self.tasks);
+        next.tasks = tasks.rows;
+        #[cfg(test)]
+        {
+            next.task_input_revision = Some(tasks.revision);
+        }
         next.captures = captures(app);
         #[cfg(test)]
         let _summaries_phase =

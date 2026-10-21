@@ -4,6 +4,7 @@ use crate::timing::write_wait::WriteContext;
 use std::cell::RefCell;
 mod ledger;
 mod scope;
+pub(super) mod tasks;
 pub(super) use ledger::PublicationDebts;
 use scope::intent_context;
 pub(in crate::app) use scope::{PublicationStage, PublicationWork};
@@ -28,11 +29,21 @@ impl AppState {
             intent_context(),
             &self.publication_blockers(),
         );
+        self.refresh_task_publication_barrier();
     }
     fn refresh_publication_barrier(&self) {
         self.snapshot_observations
             .publication_debts
             .refresh_blockers(&self.publication_blockers());
+        self.refresh_task_publication_barrier();
+    }
+    fn refresh_task_publication_barrier(&self) {
+        self.snapshot_observations
+            .task_publications
+            .refresh_blockers(
+                &self.snapshot_observations.publication_debts,
+                &self.publication_blockers(),
+            );
     }
     pub(in crate::app) fn begin_publication_stage(&self, owner: &str) -> PublicationStage {
         self.refresh_publication_barrier();

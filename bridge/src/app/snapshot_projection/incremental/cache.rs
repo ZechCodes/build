@@ -14,6 +14,8 @@ pub(in crate::app) struct GlobalProjection {
     pub(super) workspaces: Vec<Row>,
     pub(super) summaries: Vec<Row>,
     pub(super) tasks: Vec<TaskRow>,
+    #[cfg(test)]
+    pub(in crate::app) task_input_revision: Option<u64>,
     pub(super) active_owners: BTreeSet<String>,
     pub(super) stat_versions: Arc<BTreeMap<String, Option<std::time::Instant>>>,
     pub(super) agent_states: Arc<BTreeMap<String, Vec<crate::agent::AgentLifecycle>>>,
@@ -80,6 +82,8 @@ impl GlobalProjection {
                     ..row.clone()
                 })
                 .collect(),
+            #[cfg(test)]
+            task_input_revision: self.task_input_revision,
             active_owners: self.active_owners.clone(),
             stat_versions: self.stat_versions.clone(),
             agent_states: self.agent_states.clone(),
@@ -109,6 +113,7 @@ impl GlobalProjection {
             .as_ref()
             .map(|layout| layout.expand_owners(app, &BTreeSet::new()))
             .unwrap_or_default();
+        let tasks = rows::tasks(app, &[]);
         Self {
             structure: reusable
                 .then(|| app.snapshot_projection_structure())
@@ -121,7 +126,9 @@ impl GlobalProjection {
             active_owners,
             stat_versions: Arc::new(stat_versions(app)),
             agent_states: Arc::new(agent_states(app)),
-            tasks: rows::tasks(app, &[]),
+            tasks: tasks.rows,
+            #[cfg(test)]
+            task_input_revision: Some(tasks.revision),
             projects: wrapped_rows(projects, "projects", "project_id", false),
             workspaces: wrapped_rows(workspaces, "workspaces", "workspace_id", true),
             board_fields: board
@@ -239,13 +246,16 @@ impl GlobalProjection {
             "",
             app.settings_get_observed(app.snapshot_account_availability()),
         );
-        put_changed(
+        let delta = put_changed(
             delta,
             previous,
             "models.list",
             "",
             app.models_list_snapshot(),
-        )
+        );
+        #[cfg(test)]
+        let delta = delta.set_task_publication_coverage(self.task_input_revision);
+        delta
     }
 }
 

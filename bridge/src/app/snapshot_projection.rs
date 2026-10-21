@@ -19,6 +19,8 @@ pub(in crate::app) struct SnapshotObservations {
     pending_owners: Mutex<BTreeSet<String>>,
     #[cfg(test)]
     publication_debts: Arc<publication_debt::PublicationDebts>,
+    #[cfg(test)]
+    task_publications: Arc<publication_debt::tasks::TaskPublications>,
     deferred_attention_notices: crate::observation_changes::ChangeKeys,
     ownership: Mutex<Option<Arc<ProjectionOwnership>>>,
     paths: BTreeMap<PathBuf, PathBuf>,
@@ -103,6 +105,8 @@ impl AppState {
             return;
         }
         #[cfg(test)]
+        let _task_work = self.begin_task_publication_work(None);
+        #[cfg(test)]
         let publication_work = self.begin_pending_publication_work();
         let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
@@ -124,6 +128,8 @@ impl AppState {
         if !self.can_publish_snapshot_projection() {
             return;
         }
+        #[cfg(test)]
+        let _task_work = self.begin_task_publication_work(None);
         let owners_pending =
             !crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
                 .unwrap()
@@ -162,6 +168,8 @@ impl AppState {
         if !self.can_publish_snapshot_projection() {
             return None;
         }
+        #[cfg(test)]
+        let _task_work = self.begin_task_publication_work(None);
         #[cfg(test)]
         let publication_work = self.begin_pending_publication_work();
         let _ownership = self.begin_snapshot_ownership();
@@ -248,6 +256,8 @@ impl AppState {
             return None;
         }
         #[cfg(test)]
+        let _task_work = self.begin_task_publication_work(None);
+        #[cfg(test)]
         let publication_work = self.begin_pending_publication_work();
         let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
@@ -283,6 +293,8 @@ impl AppState {
             )
             .collect();
         #[cfg(test)]
+        let _task_work = self.begin_task_publication_work(None);
+        #[cfg(test)]
         let publication_work = self.begin_publication_owner_work(&owners);
         let delta = self
             .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), previous);
@@ -300,6 +312,10 @@ impl AppState {
         #[cfg(test)]
         let publication_coverage = delta.take_publication_coverage();
         #[cfg(test)]
+        let task_coverage = delta.take_task_publication_coverage();
+        #[cfg(test)]
+        let _task_work = self.begin_task_publication_coverage_work(task_coverage);
+        #[cfg(test)]
         let publication_work = self.begin_publication_coverage_work(&publication_coverage);
         let receipts = delta.take_observation_receipts();
         let attention_notices = delta.take_attention_notice_receipts();
@@ -315,6 +331,8 @@ impl AppState {
             self.publish_attention_notice_receipts(&attention_notices);
             #[cfg(test)]
             self.accept_publication_coverage(&publication_coverage);
+            #[cfg(test)]
+            self.accept_task_publication(task_coverage);
         } else {
             #[cfg(test)]
             self.postpone_publication_coverage(&publication_coverage);

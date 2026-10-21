@@ -528,6 +528,9 @@ describe("agent rail chat ownership", () => {
     await flush();
     const recovery = host().querySelector(".chat-recovery-entry");
     expect(recovery.textContent).toContain("Agent creation uncertain");
+    expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "connection lost after agent.add");
+    expect(host().querySelectorAll('[data-bubble="agent"]')).toHaveLength(0);
+    notifyError.mockClear();
     expect(recovery.querySelector("button")).not.toBeNull();
 
     const reconnectedCall = vi.fn(async (method, params = {}) => {
@@ -673,7 +676,9 @@ describe("agent rail chat ownership", () => {
       cacheScope: device().cacheScope,
       chatRepository: device().chatRepository,
     });
-    await flush();
+    await vi.waitFor(() => {
+      expect(host().querySelector(".thread-items")?.textContent).toContain("new implementation reply");
+    }, { timeout: 5000 });
 
     const unreadLine = host().querySelector(".thread-unread-line");
     expect(unreadLine).toBeTruthy();

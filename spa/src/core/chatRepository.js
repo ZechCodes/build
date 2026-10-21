@@ -255,6 +255,7 @@ class ChatController {
   #draftOwner;
   #restoredDurableFailures = new Set();
   #draftReady = false;
+  #hadDurableOperations = false;
 
   constructor(repository, identity) {
     this.#repository = repository;
@@ -540,9 +541,13 @@ class ChatController {
     this.#operations.set(submission.operationId, { ...operation, kind: "message" });
   }
 
+  writeOperation(submission) {
+    return this.#repository.writeOperationsFor(submission.address || this.#identity)
+      .find((operation) => operation.operationId === submission.operationId);
+  }
+
   isDurableSubmission(submission) {
-    return submission.durable || this.#repository.writeOperationsFor(submission.address || this.#identity)
-      .some((operation) => operation.operationId === submission.operationId);
+    return Boolean(this.writeOperation(submission));
   }
 
   async operationStatus(submission) {
@@ -685,14 +690,19 @@ class ChatController {
 
   syncDurableOperations() {
     if (!this.#draftReady) return;
-    for (const recovery of this.#durableRecoveries()) {
-      if (recovery.status !== "rejected" || this.#restoredDurableFailures.has(recovery.operationId)) continue;
-      this.#restoredDurableFailures.add(recovery.operationId);
-      if (!this.#draft.body && !this.#draft.attachments.length) {
-        this.writeDraft({ body: recovery.body, attachments: recovery.operation.draft?.attachments || [] });
-      }
-    }
+    const hasOperations = this.#repository.writeOperationsFor(this.#identity).length > 0;
+    if (!hasOperations && !this.#hadDurableOperations) return;
+    this.#hadDurableOperations = hasOperations;
+    for (const recovery of this.#durableRecoveries()) this.#restoreDurableFailure(recovery);
     this.announce();
+  }
+
+  #restoreDurableFailure(recovery) {
+    if (recovery.status !== "rejected" || this.#restoredDurableFailures.has(recovery.operationId)) return;
+    this.#restoredDurableFailures.add(recovery.operationId);
+    if (!this.#draft.body && !this.#draft.attachments.length) {
+      this.writeDraft({ body: recovery.body, attachments: recovery.operation.draft?.attachments || [] });
+    }
   }
 
   async #retryDurable(recovery) {

@@ -16,7 +16,7 @@ const failureHtml = (row) => {
 
 /** Action-local recovery is a projection of durable operations. Dismissing a
  * notice never removes its intent or clears the person's restored draft. */
-export function mountTaskCommentRecovery({ host, service, taskId, projectId, restoreDraft, retry }) {
+export function mountTaskCommentRecovery({ host, service, taskId, projectId, restoreDraft, retry, onChange = () => {} }) {
   const restored = new Set();
   const restoring = new Set();
   let disposed = false;
@@ -63,6 +63,6 @@ export function mountTaskCommentRecovery({ host, service, taskId, projectId, res
       button.onclick = () => { void act(button, held.find((row) => row.operationId === operationId)).catch(() => {}); };
     });
   };
-  const unsubscribe = service?.subscribe(sync) || (() => {});
+  const unsubscribe = service?.subscribe(() => { sync(); onChange(); }) || (() => {});
   return { sync, dispose() { disposed = true; unsubscribe(); } };
 }

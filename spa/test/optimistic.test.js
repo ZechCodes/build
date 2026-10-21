@@ -407,11 +407,22 @@ describe("the registry", () => {
   });
 });
 
+describe("legacy uncertainty", () => {
+  it("reverts and reports an uncertain legacy mutation", async () => {
+    const onRevert = vi.fn();
+    const error = Object.assign(new Error("legacy timeout"), { uncertain: true });
+    await runOptimistic({ scope: "legacy", records: [patchRecord("a", { name: "temporary" })], call: async () => { throw error; }, onRevert, failureSummary: "Save failed" });
+    expect(pendingIn("legacy")).toEqual([]);
+    expect(onRevert).toHaveBeenCalledWith(error);
+    expect(notifyError).toHaveBeenCalledWith("Save failed", "legacy timeout");
+  });
+});
+
 describe("durable writes", () => {
   it.each([{ uncertain: true }, { timedOut: true }, { code: "uncertain_delivery" }, { code: "scope_ended", uncertain: true }])("retains uncertain layers without reverting or notifying (%j)", async (flags) => {
     const onRevert = vi.fn();
     const error = Object.assign(new Error("Waiting for status"), flags);
-    expect(await runOptimistic({ scope: "write", records: [patchRecord("a", { name: "new" })], call: async () => { throw error; }, onRevert, failureSummary: "Failed" })).toBe(false);
+    expect(await runOptimistic({ scope: "write", records: [patchRecord("a", { name: "new" })], call: async () => { throw error; }, operation: () => ({ state: "queued" }), onRevert, failureSummary: "Failed" })).toBe(false);
     expect(projectOptimistic("write", [agent("a", { name: "old" })], { keyOf })[0].name).toBe("new");
     expect(isPending("write", "a")).toBe(false);
     reconcileOptimistic("write", [agent("a", { name: "old" })], { keyOf, nowMs: Date.now() + PENDING_GRACE_MS * 2 });

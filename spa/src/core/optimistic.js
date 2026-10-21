@@ -60,6 +60,9 @@ export const uncertainWriteError = (error) => error?.uncertain === true
   || (error?.timedOut === true && error?.uncertain !== false)
   || error?.code === "uncertain_delivery";
 
+const cachedActionFailure = (operation) => operation?.state === "failed"
+  && ["chat", "task-comment"].includes(operation.owner?.kind);
+
 const overriddenBy = (older, next) => {
   if (older.key !== next.key) return false;
   if (next.kind === "remove") return true;
@@ -142,7 +145,7 @@ export function createOptimisticStore({ provisionalPrefix = null, resetProvision
     announce(touched);
   };
 
-  const runOptimistic = async ({ scope, records, call, failureSummary, onRevert = null, notify = true }) => {
+  const runOptimistic = async ({ scope, records, call, failureSummary, onRevert = null, notify = true, operation = () => null }) => {
     const held = records.map((record) => ({ scope: record.scope || scope, record: { ...record } }));
     const touched = new Set(held.map((entry) => entry.scope));
     for (const entry of held) {
@@ -205,19 +208,23 @@ export function createOptimisticStore({ provisionalPrefix = null, resetProvision
       }
       announce(touched);
     };
-    let answer;
-    try {
-      answer = await call(handle);
-    } catch (error) {
-      if (uncertainWriteError(error)) {
+    const handleFailure = (error) => {
+      const saved = operation();
+      if (saved && uncertainWriteError(error)) {
         settleHeld(true);
         return false;
       }
       for (const entry of held.filter((standing) => !standing.record.settledAt)) take(entry);
       announce(touched);
       if (onRevert) onRevert(error);
-      if (notify) notifyError(failureSummary, error.message);
+      if (notify && !cachedActionFailure(saved)) notifyError(failureSummary, error.message);
       return false;
+    };
+    let answer;
+    try {
+      answer = await call(handle);
+    } catch (error) {
+      return handleFailure(error);
     }
     settleHeld(answer?.phase === "ack");
     return true;

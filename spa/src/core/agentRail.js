@@ -3843,21 +3843,12 @@ function mountRailOnContext(host, context, swap) {
       if (selectedId === provisionalAgentId) chooseAgent(selectedBeforeCreate);
       return shown;
     };
-    const call = async (handle) => {
-      try {
-        return await performCreation(handle);
-      } catch (error) {
-        if (operationIsUncertain(error)) {
-          controller.recordOperationFailure(submission, error);
-          if (leaveProvisional()) {
-            selectKind("add");
-            paint();
-          }
-        }
-        throw error;
-      }
-    };
     const onRevert = (error) => {
+      if (operationIsUncertain(error)) {
+        controller.recordOperationFailure(submission, error);
+        if (leaveProvisional()) { selectKind("add"); paint(); }
+        return;
+      }
       if (leaveProvisional()) {
         selectKind(kindBeforeCreate);
         openConversation(selectedBeforeCreate);
@@ -3878,7 +3869,8 @@ function mountRailOnContext(host, context, swap) {
           clearedBy: creationMessageHasArrived,
         }),
       ],
-      call,
+      call: performCreation,
+      operation: () => controller.writeOperation(submission),
       failureSummary: "Could not start the agent",
       onRevert,
     }).then(async () => {
@@ -3926,6 +3918,7 @@ function mountRailOnContext(host, context, swap) {
       scope: pendingAgentsScope(),
       records: wakesAgent && agent ? [startingRecord(agent.id)] : [],
       call,
+      operation: () => controller.writeOperation(submission),
       failureSummary: "Message failed",
       onRevert: (error) => {
         if (messageDelivered) return;

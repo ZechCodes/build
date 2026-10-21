@@ -183,7 +183,8 @@ reads retain the resident-history boundary. Capture writes
 publish their saved record, and retirement removes it. QA stream producers
 publish each event and its updated head together; an incremental output digest
 keeps state reads independent of log length. The SPA still calls `task.get`
-and `term.list`, so both legacy surfaces remain available.
+and `term.list`, so both surfaces remain available. `task.get` is a registered
+v1 planning read; `term.list` retains its legacy wire contract.
 
 The 23 observation reads (filesystem/Git, stage documents, review
 reads, attachments, archives, GitHub repositories, Git initialization options
@@ -224,7 +225,7 @@ work and retain their dispatch worker until they finish.
    shared state (`session.hello`, `bridge.stats`, `term.*`, `agent.attach`,
    `agent.start`, `agent.interrupt`).
 4. `routed()` → `AppState::route` → `crate::api::v1::dispatch`, then the legacy
-   arms (`ping`, `term.close`, and legacy fixture dispatch). Native read frames
+   arms (`ping`, `term.list`, `term.close`, and the QA stream fixtures). Native read frames
    have already entered their snapshot, SQL or observation lane at intake.
 
 Routed requests retain their update-admission lease through the reply and

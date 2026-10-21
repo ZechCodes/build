@@ -70,7 +70,7 @@ impl Fixture {
     fn publish_measured(&self, wrapper: Wrapper) -> Value {
         let clock = self.state.lock().unwrap().frame_clock.clone();
         let samples = clock.capture_phases();
-        let timer = clock.frame("ownership.wrapper");
+        let timer = clock.frame("board.list");
         {
             let app = timer.lock(&self.state);
             wrapper.publish(&app, &self.owner);
@@ -138,7 +138,7 @@ async fn assert_single_capture(wrapper: Wrapper) {
     );
     fixture.assert_full_view_parity();
     assert_eq!(
-        samples["ownership.wrapper"]["entered.publication.ownership_capture"]["count"], 1,
+        samples["board.list"]["entered.publication.ownership_capture"]["count"], 1,
         "{wrapper:?} recaptured the same immutable ownership inputs: {samples}"
     );
 }

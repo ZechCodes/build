@@ -1,4 +1,6 @@
 //! RPC attention coalescing must keep independent commits and both human stamps.
+mod notifications;
+
 use super::*;
 use crate::app::read_view::{ReadView, ReadViewSlot, SnapshotDelta};
 use crate::changes::{BoardLists, EntityFacts, FactsRequest};

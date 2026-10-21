@@ -26,10 +26,25 @@ async fn every_registered_rpc_read_has_a_verified_native_case() {
         std::panic::AssertUnwindSafe(super::collect_native_rpc_reads(&fixture.rpc, &ready))
             .catch_unwind()
             .await;
-    fixture.shutdown().await;
-    match collected {
-        Ok(replies) => super::verify_native_rpc_reads(&ready, &replies),
-        Err(original) => std::panic::resume_unwind(original),
+    let cleanup = std::panic::AssertUnwindSafe(fixture.shutdown())
+        .catch_unwind()
+        .await;
+    match (collected, cleanup) {
+        (Err(original), cleanup) => {
+            if let Err(secondary) = cleanup {
+                let detail = secondary
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| secondary.downcast_ref::<&str>().copied())
+                    .unwrap_or("non-string cleanup panic");
+                eprintln!(
+                    "full45 cleanup also failed; preserving original collector failure: {detail}"
+                );
+            }
+            std::panic::resume_unwind(original)
+        }
+        (Ok(_), Err(cleanup)) => std::panic::resume_unwind(cleanup),
+        (Ok(replies), Ok(())) => super::verify_native_rpc_reads(&ready, &replies),
     }
 }
 

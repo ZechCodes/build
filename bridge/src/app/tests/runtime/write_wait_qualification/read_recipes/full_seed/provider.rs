@@ -50,6 +50,7 @@ impl RouterBoot {
                 Ok(OpenedSession {
                     session: Arc::new(
                         DictatedSession::reporting(AgentStatus::Waiting)
+                            .ending_finitely()
                             .reporting_activity(activity)
                             .recording_into(&logged)
                             .natively_accepting(request.choice)
@@ -82,34 +83,38 @@ impl RouterBoot {
     pub(super) async fn await_ready(&self, state: &Arc<Mutex<AppState>>) -> ReadyRouter {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
-            let ready =
-                {
-                    let app = state.lock().unwrap();
-                    let router = app
-                        .router_sessions
-                        .get(&self.capture)
-                        .expect("router stays reserved");
-                    let tab = app
-                        .session_registry
-                        .test_tab(&TabKey::agent(&self.scratch, &self.agent));
-                    if router.started()
-                        && tab.is_some_and(|tab| tab.session_is_live())
-                        && app.delivery_queue.is_idle()
-                        && self.log.turns().iter().any(|turn| {
-                            turn.contains("Qualification immutable router read witness")
-                        })
-                    {
-                        Some((
-                            app.session_registry
-                                .test_token(&self.agent)
-                                .expect("actual spawn issued token")
-                                .to_owned(),
-                            tab.expect("live tab").session.clone(),
-                        ))
-                    } else {
-                        None
+            // Copy the observation under the app guard; report a failed
+            // prerequisite only after dropping it. The fixture still fails
+            // closed when #726 has removed the Router reservation.
+            let observed = {
+                let app = state.lock().unwrap();
+                match app.router_sessions.get(&self.capture) {
+                    None => Err("router stays reserved"),
+                    Some(router) => {
+                        let tab = app
+                            .session_registry
+                            .test_tab(&TabKey::agent(&self.scratch, &self.agent));
+                        if router.started()
+                            && app.delivery_queue.is_idle()
+                            && self.log.turns().iter().any(|turn| {
+                                turn.contains("Qualification immutable router read witness")
+                            })
+                        {
+                            match tab.filter(|tab| tab.session_is_live()) {
+                                None => Ok(None),
+                                Some(tab) => app
+                                    .session_registry
+                                    .test_token(&self.agent)
+                                    .map(|token| Some((token.to_owned(), tab.session.clone())))
+                                    .ok_or("actual spawn issued token"),
+                            }
+                        } else {
+                            Ok(None)
+                        }
                     }
-                };
+                }
+            };
+            let ready = observed.unwrap_or_else(|diagnostic| panic!("{diagnostic}"));
             if let Some((token, session)) = ready {
                 assert_eq!(
                     self.opens.load(Ordering::SeqCst),

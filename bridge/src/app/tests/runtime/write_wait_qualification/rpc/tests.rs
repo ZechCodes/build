@@ -129,3 +129,105 @@ async fn actual_encrypted_driver_settles_the_attached_original_client_watch() {
         reconciliation.violations
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn completed_bootstrap_can_precede_actual_trial_watch_attachment() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, app, project) = tracked(root.path());
+    let registry = WriteWaitRegistry::new();
+    let state = app.shared();
+    let released = Arc::downgrade(&state);
+    let mut rpc = RpcHarness::new(state, Arc::clone(&registry));
+    let bootstrap = rpc
+        .request(
+            0,
+            "qual/bootstrap/watch-control",
+            "tasks.create",
+            json!({"project_id":project,"title":"actual completed bootstrap"}),
+        )
+        .await;
+    let bootstrap_saved = saved_created_task(&rpc, &bootstrap.reply);
+    let bootstrap_until = Instant::now() + Duration::from_secs(1);
+    while registry.snapshot().iter().any(|row| {
+        row.original_id == "qual/bootstrap/watch-control"
+            && (!row.root_finished || !row.outstanding.is_empty() || !row.active.is_empty())
+    }) && Instant::now() < bootstrap_until
+    {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let bootstrap_ready_before_attach = registry.snapshot().iter().any(|row| {
+        row.original_id == "qual/bootstrap/watch-control"
+            && row.root_finished
+            && row.outstanding.is_empty()
+            && row.active.is_empty()
+            && !row.cancelled
+            && !row.abandoned
+    });
+    let watch = ClientWatch::new(Arc::new(Instant::now));
+    let original = "qual/after-bootstrap/write/00000";
+    watch.register_at(original, Instant::now());
+    let guard = watch.watch();
+    let attached = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rpc.attach_client_watch(watch.clone());
+    }));
+    // A refused prerequisite cannot run dependent trial work. The intended
+    // missing behavior is asserted only after every actual receiver is joined.
+    let trial =
+        if attached.is_ok() {
+            watch.offer(original);
+            let proof = rpc.request(1, original, "tasks.create",
+            json!({"project_id":project,"title":"actual measured mutation after bootstrap"})).await;
+            let saved = saved_created_task(&rpc, &proof.reply);
+            Some((proof, saved))
+        } else {
+            None
+        };
+    let cleanup = rpc.finish_report().await;
+    let until = Instant::now() + Duration::from_secs(10);
+    while released.upgrade().is_some() && Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let state_released = released.upgrade().is_none();
+    let watched = guard.finish();
+    let rows = watch.snapshot();
+    assert_eq!(bootstrap.reply["ok"], true, "{}", bootstrap.reply);
+    assert_eq!(bootstrap_saved.unwrap().title, "actual completed bootstrap");
+    assert!(
+        bootstrap_ready_before_attach,
+        "actual bootstrap root was not settled before attachment"
+    );
+    assert!(cleanup.is_clean(), "{cleanup:?}");
+    assert!(
+        state_released,
+        "fixture roots stay owned through shared work"
+    );
+    assert!(!watched.panicked);
+    assert!(
+        attached.is_ok(),
+        "trial watch must attach after actual completed bootstrap requests"
+    );
+    let (trial, saved) = trial.unwrap();
+    assert_eq!(trial.reply["ok"], true, "{}", trial.reply);
+    assert_eq!(
+        saved.unwrap().title,
+        "actual measured mutation after bootstrap"
+    );
+    let row = rows.iter().find(|row| row.original_id == original).unwrap();
+    assert!(row.sent_at.is_some() && row.final_at.is_some(), "{row:?}");
+    assert!(watch.reconcile_final().violations.is_empty());
+    assert_eq!(
+        rows.len(),
+        1,
+        "bootstrap stays outside the trial caller cohort"
+    );
+}
+
+fn saved_created_task(rpc: &RpcHarness, reply: &Value) -> Option<crate::tracker::Task> {
+    let task = reply["result"]["task"]["id"].as_str()?;
+    let app = rpc.state.lock().unwrap();
+    app.tracker_store()
+        .ok()?
+        .load_tracker_task(task)
+        .ok()
+        .flatten()
+}

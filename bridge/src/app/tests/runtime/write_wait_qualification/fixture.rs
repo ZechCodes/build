@@ -8,6 +8,8 @@ use crate::app::tests::*;
 use crate::timing::write_wait::WriteWaitRegistry;
 use std::sync::{Arc, Mutex};
 
+mod cleanup;
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Envelope {
     Small,
@@ -142,7 +144,10 @@ impl QualificationFixture {
                 // Router/shell before this catch boundary. Keep native roots
                 // until actual carrier receivers/shared work also finish;
                 // preserve the original #726/startup failure afterward.
-                fixture.shutdown().await;
+                let cleanup = fixture.cleanup_owned_resources().await;
+                for error in cleanup {
+                    eprintln!("startup failure cleanup: {error}");
+                }
                 std::panic::resume_unwind(original)
             }
         }
@@ -402,114 +407,6 @@ struct NativeCounts {
     canonical_histories: usize,
     total_thread_items: u64,
     live_sessions: usize,
-}
-
-impl QualificationFixture {
-    async fn counts_and_shutdown(mut self) -> NativeCounts {
-        let counts = {
-            let app = self.state.lock().unwrap();
-            let mut canonical = std::collections::BTreeMap::new();
-            for run in app.runs.values() {
-                for agent in run.agents.iter() {
-                    canonical.insert(
-                        agent.conversation_id().to_string(),
-                        agent.thread.total_item_count(),
-                    );
-                }
-            }
-            for plan in app.plans.values() {
-                for agent in plan.agents.iter() {
-                    canonical.insert(
-                        agent.conversation_id().to_string(),
-                        agent.thread.total_item_count(),
-                    );
-                }
-            }
-            NativeCounts {
-                projects: self.projects.len(),
-                task_counts: self
-                    .projects
-                    .iter()
-                    .map(|project| {
-                        app.tracker_store()
-                            .unwrap()
-                            .list_tracker_tasks(
-                                project.repository.to_str().unwrap(),
-                                Default::default(),
-                            )
-                            .unwrap()
-                            .len()
-                    })
-                    .collect(),
-                primary_checkout_counts: self
-                    .projects
-                    .iter()
-                    .map(|project| {
-                        let repository = git2::Repository::open(&project.repository).unwrap();
-                        let expected = std::fs::canonicalize(&project.repository).unwrap();
-                        let is_primary = !repository.is_worktree()
-                            && repository.workdir().is_some_and(|path| {
-                                std::fs::canonicalize(path).unwrap() == expected
-                            })
-                            && app.workspaces.list(Some(&project.project_id)).iter().any(
-                                |workspace| {
-                                    workspace.id == format!("legacy-{}", project.project_id)
-                                        && std::fs::canonicalize(&workspace.root).unwrap()
-                                            == expected
-                                },
-                            );
-                        usize::from(is_primary)
-                    })
-                    .collect(),
-                linked_checkout_counts: self
-                    .projects
-                    .iter()
-                    .map(|project| {
-                        git2::Repository::open(&project.repository)
-                            .unwrap()
-                            .worktrees()
-                            .unwrap()
-                            .len()
-                    })
-                    .collect(),
-                registry_residents: app.workspaces.list(None).len(),
-                active_workspaces: self.active_workspaces.len(),
-                canonical_histories: canonical.len(),
-                total_thread_items: canonical.values().sum(),
-                live_sessions: self
-                    .sessions
-                    .iter()
-                    .filter(|(key, session)| {
-                        app.session_registry.test_tab(key).is_some_and(|tab| {
-                            tab.session_is_live() && Arc::ptr_eq(&tab.session, session)
-                        })
-                    })
-                    .count(),
-            }
-        };
-        eprintln!("qualification_native_fixture_counts={counts:?}");
-        if let Some(reads) = self.read_inputs.take() {
-            reads.shutdown(&self.rpc).await;
-        }
-        let Self {
-            state, rpc, _root, ..
-        } = self;
-        let weak = Arc::downgrade(&state);
-        drop(state);
-        rpc.finish().await;
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while weak.upgrade().is_some() {
-            assert!(
-                std::time::Instant::now() < until,
-                "native background work retained the fixture state"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        // Temporary repositories stay alive through receiver shutdown and the
-        // last active weak service, even when a cardinality assertion will fail.
-        drop(_root);
-        counts
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

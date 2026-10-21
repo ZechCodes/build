@@ -39,8 +39,23 @@ impl PreparedBackend {
         self.mcp_inputs = fixture
             .active_workspaces
             .iter()
-            .map(|workspace| reads.mcp_for(workspace))
-            .collect();
+            .map(|workspace| {
+                // A primary checkout remains a valid authenticated caller but
+                // is deliberately absent from the native workspace list. Use
+                // an existing listed sibling in the same project as the saved
+                // roster/membership witness; never add a fixture resident.
+                let listed = fixture
+                    .active_workspaces
+                    .iter()
+                    .find(|candidate| {
+                        candidate.project == workspace.project
+                            && candidate.directory
+                                != fixture.projects[workspace.project].repository
+                    })
+                    .ok_or("same-project linked active read target missing")?;
+                Ok(reads.mcp_for(workspace, listed))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let cases = mcp_cases(&self.mcp_inputs[0].0);
         self.catalog = ReadCatalog {
             rpc: self

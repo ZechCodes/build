@@ -436,12 +436,14 @@ impl ReadyReadInputs {
     pub(in crate::app::tests::runtime::write_wait_qualification) fn mcp_for(
         &self,
         workspace: &WorkspaceContext,
+        listed_workspace: &WorkspaceContext,
     ) -> (McpReadInputs, McpExpected) {
+        assert_eq!(workspace.project, listed_workspace.project);
         let project = &self.projects[workspace.project];
         let inputs = McpReadInputs {
             owner: workspace.owner.clone(),
             agent: workspace.agent_id.clone(),
-            workspace: workspace.workspace_id.clone(),
+            workspace: listed_workspace.workspace_id.clone(),
             task: project.core.task.clone(),
             comment: project.core.comment.clone(),
             snapshot: project.core.snapshot.clone(),
@@ -451,8 +453,8 @@ impl ReadyReadInputs {
         };
         let expected = McpExpected {
             project: project.core.project.clone(),
-            workspace: workspace.workspace_id.clone(),
-            workspace_agent: workspace.agent_id.clone(),
+            workspace: listed_workspace.workspace_id.clone(),
+            workspace_agent: listed_workspace.agent_id.clone(),
             project_agent: project.project_agent.clone(),
             task: project.core.task.clone(),
             dependent: project.core.dependent.clone(),

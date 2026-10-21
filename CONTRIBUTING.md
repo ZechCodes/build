@@ -38,7 +38,7 @@ web client you are editing served by them.
   [Build locally](#bridge-linux-or-macos): a C/C++ compiler, CMake, pkg-config
   and OpenSSL development headers.
 - Node.js 22.23.4 and npm 12.0.2 for SPA/web (their `.nvmrc` and
-  `packageManager` pins); the desktop app needs Node 22.23.4 or newer.
+  `packageManager` pins); desktop builds require Node.js `>=22.23.4 <23`.
 - [uv](https://docs.astral.sh/uv/) for `skriftapp/` (Python 3.13 or newer,
   `skriftapp/pyproject.toml`) and mandatory transport interop tests (CI pins
   uv 0.13.4; `transport/python/uv.lock` records the reference dependencies).
@@ -167,7 +167,7 @@ authenticated. They are runtime prerequisites, not part of the build script.
 
 ### Electron app (Linux, macOS, or Windows)
 
-Install Node.js 22.23.4 or newer with npm. On macOS, also install Xcode Command
+Install Node.js `>=22.23.4 <23` with npm. On macOS, also install Xcode Command
 Line Tools. Linux DEB packaging also needs `libcrypt.so.1` (`libcrypt1` on
 Debian/Ubuntu, `libxcrypt-compat` on Arch). Build on the OS and architecture you
 want to run the app on:

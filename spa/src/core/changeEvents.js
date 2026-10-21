@@ -799,11 +799,23 @@ function dispatchItems(payload, deviceId) {
  *  here is an event this client does not act on. */
 const EVENT_DISPATCHERS = new Map([["changes", dispatchItems]]);
 
+// Project the UpdateStatus wire shape at the push boundary. Envelope metadata
+// belongs to the session and must never become cached domain state.
+const UPDATE_STATUS_FIELDS = [
+  "running_version", "platform", "development_build", "latest_release",
+  "last_checked_at", "state", "last_error", "update_available", "can_install",
+  "can_replace_development_build", "running_from_cargo_target",
+];
+function updateStatusPayload(payload) {
+  return Object.fromEntries(UPDATE_STATUS_FIELDS.filter((field) => Object.hasOwn(payload, field))
+    .map((field) => [field, payload[field]]));
+}
+
 /** Events about the machine rather than anything on it, acted on whether or
  *  not its change subscriptions are armed. */
 const DEVICE_EVENTS = new Map([
-  ["bridge.update_status", ({ type: _type, ...status }, deviceId) => {
-    void rememberBridgeUpdateStatus(deviceId, status);
+  ["bridge.update_status", (payload, deviceId) => {
+    void rememberBridgeUpdateStatus(deviceId, updateStatusPayload(payload));
   }],
   ["models.changed", (_payload, deviceId) => modelsChangedOn(deviceId)],
   ["harnesses.changed", ({ revision }, deviceId) => harnessesChangedOn(deviceId, revision)],

@@ -71,6 +71,8 @@ export const EVENT_TYPES = Object.freeze([
   "models.changed",
   "harnesses.changed",
   "compaction.changed",
+  "writes.confirmed",
+  "bridge.restarting",
 ]);
 
 /** A refusal, whichever shape it arrived in. */

@@ -413,16 +413,35 @@ fn incremental_owner_closure_rejected_or_failed_candidate_cannot_replace_active_
     assert!(output(&retry).active.is_empty());
 
     let mut failed = app.take_run("run-01").unwrap();
+    let committed_goal = failed.run.goal.clone();
+    assert!(failed.agents.iter().next().unwrap().working_since.is_none());
     failed.agents.iter_mut().next().unwrap().working_since = Some("2999-01-01T00:00:00Z".into());
     failed.run.goal = "UNCOMMITTED ACTIVE CANDIDATE".into();
     let retained = app.read_view.load();
     app.store.as_ref().unwrap().fail_next_write();
     assert!(app.finish_run_mutation("run-01".into(), failed).is_err());
+    let restored = &app.runs["run-01"];
+    assert_eq!(restored.run.goal, committed_goal);
+    assert!(restored
+        .agents
+        .iter()
+        .next()
+        .unwrap()
+        .working_since
+        .is_none());
+    assert!(Arc::ptr_eq(&retained, &app.read_view.load()));
     assert!(active(&app.read_view.load()).is_empty());
     assert_eq!(
         image(&retained, &requests),
         image(&app.read_view.load(), &requests)
     );
+    // Preparing the failed finisher marked run-01 pending. Its committed
+    // restored row must be retried, while the failed candidate's active set
+    // must never become accepted. Only that accepted retry clears the receipt.
+    let retry = publish(&app, "run-02");
+    assert_eq!(output(&retry).dirty, ids(&["run-01", "run-02"]));
+    assert!(output(&retry).active.is_empty());
+    assert!(active(&app.read_view.load()).is_empty());
     let unrelated = publish(&app, "run-02");
     assert_eq!(output(&unrelated).dirty, ids(&["run-02"]));
     assert!(output(&unrelated).active.is_empty());

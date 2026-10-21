@@ -3164,8 +3164,13 @@ gate attachment display.
   records; mutation helpers read the canonical records separately. Replica
   eviction never deletes pending intent. Explicit account reset clears it.
   BroadcastChannel announces committed operation changes, and an IndexedDB
-  per-device tab lease suppresses duplicate transport. A single worker batches
-  status reads and subscriptions with jittered 1/2/5/10/30-second backoff.
+  per-device tab lease suppresses duplicate transport. A single worker polls
+  status in batches of at most 128 with jittered 1/2/5/10/30-second backoff.
+  Each subscription replaces the whole set with the oldest 128 outstanding
+  submissions; overflow stays on status polling, and terminal outcomes refill
+  the set. Subscribe pagination continues through status with the same IDs.
+  Subscriptions belong to the opening and carrier, so even a same-epoch carrier
+  change re-establishes status and subscription coverage.
   Durable ack resolves the action successfully; a receipt does not. Loss,
   timeout and restart retain the same operation identity and accepted layers.
   A confirmation invalidation retains its layer until a fresh, guarded canonical

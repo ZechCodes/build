@@ -17,6 +17,17 @@ describe("the coordinated write protocol adapter", () => {
     expect(selectAdapter({ api_version: "4.0.0" }).unsupported).toBe("app");
   });
 
+  it("keeps the 3.24 foundation greeting free of write metadata", async () => {
+    const submit = vi.fn();
+    const call = vi.fn(async () => ({ saved: true }));
+    const adapter = selectAdapter(fixture("epoch-greeting").result).create(call, { writeOperations: { submit } });
+    await expect(adapter.call("tasks.comment", { task_id: "task", body: "Hello" }))
+      .resolves.toEqual({ saved: true });
+    expect(adapter.capabilities.writes.ackConfirmMethods).toEqual([]);
+    expect(submit).not.toHaveBeenCalled();
+    expect(call.mock.calls[0][2]?.write).toBeUndefined();
+  });
+
   it("submits an allowlisted write with its draft and caller options, returning acceptance", async () => {
     const call = vi.fn();
     const ack = fixture("ack");

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { openSession } from "../src/core/session.js";
 import { transportEpoch } from "./transportEpoch.js";
@@ -48,9 +49,9 @@ afterEach(async () => { for (const { session, service, repository } of resources
 describe("a chat send queued before its first greeting", () => {
   it("keeps the existing nonallowlisted final-reply path when the greeting enables no durable methods", async () => {
     const { session, peer, service, cache, submission, posted } = await queuedChat();
-    const legacyGreeting = { ...greeting, ack_confirm_methods: [] };
-    await service.bind({ session, greeting: legacyGreeting });
-    session.installAdapter(selectAdapter(legacyGreeting), { writeOperations: service });
+    const foundationGreeting = JSON.parse(readFileSync(new URL("../../fixtures/api/v1/writes/epoch-greeting.json", import.meta.url), "utf8")).result;
+    await service.bind({ session, greeting: foundationGreeting });
+    session.installAdapter(selectAdapter(foundationGreeting), { writeOperations: service });
     let request;
     for (let count = 0; count < 100 && !request; count += 1) { await tick(); request = peer.sent.map((entry) => entry.frameFields.payload).find((frame) => frame.method === "thread.post"); }
     expect(request).toBeDefined();

@@ -1,4 +1,5 @@
 //! Review observations can load outside the app lock and settle in any order.
+use super::plan_docs::PlanDocObservation;
 use super::*;
 use crate::app::read_view::ReadViewSlot;
 use crate::store::Store;
@@ -70,19 +71,29 @@ impl AppState {
 
 /// Maintenance captures workspace membership with its physical observations.
 /// SQL runs in the existing unlocked phase, before the publication guard.
-#[must_use = "load review observations off-lock, then install them before publication"]
+#[must_use = "load observations off-lock, then install them before publication"]
 pub(in crate::app) struct WorkspaceReviewRefresh {
     reader: WorkspaceReviewReader,
     workspaces: Vec<String>,
+    plan_docs: Vec<String>,
 }
 
 pub(in crate::app) struct RenderedWorkspaceReviewRefresh {
     observations: Vec<(String, WorkspaceReviewObservation)>,
+    plan_docs: Vec<(String, PlanDocObservation)>,
 }
 
 impl WorkspaceReviewRefresh {
-    pub(super) fn new(reader: WorkspaceReviewReader, workspaces: Vec<String>) -> Self {
-        Self { reader, workspaces }
+    pub(super) fn new(
+        reader: WorkspaceReviewReader,
+        workspaces: Vec<String>,
+        plan_docs: Vec<String>,
+    ) -> Self {
+        Self {
+            reader,
+            workspaces,
+            plan_docs,
+        }
     }
 
     pub(in crate::app) fn load(self) -> RenderedWorkspaceReviewRefresh {
@@ -91,6 +102,18 @@ impl WorkspaceReviewRefresh {
                 .workspaces
                 .into_iter()
                 .filter_map(|id| self.reader.load(&id).map(|observed| (id, observed)))
+                .collect(),
+            plan_docs: self
+                .plan_docs
+                .into_iter()
+                .map(|owner| {
+                    let observed = PlanDocObservation::load(
+                        &self.reader.read_view,
+                        self.reader.store.as_ref(),
+                        &owner,
+                    );
+                    (owner, observed)
+                })
                 .collect(),
         }
     }
@@ -103,6 +126,9 @@ impl AppState {
     ) {
         for (id, observed) in refresh.observations {
             self.install_workspace_review_observation(&id, observed);
+        }
+        for (owner, observed) in refresh.plan_docs {
+            self.install_plan_doc_observation(owner, observed);
         }
     }
 }

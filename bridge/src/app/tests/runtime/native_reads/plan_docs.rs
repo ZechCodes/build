@@ -100,3 +100,38 @@ async fn owner_snapshot_publication_uses_observed_plan_docs_without_probing_dire
         "owner publication must use existing in-memory document observations (completed={completed}, directory_probe_started={probed})"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_negative_document_observation_cannot_undo_successful_ingestion() {
+    let mut reads = NativeReads::new();
+    let refresh = reads.state.lock().unwrap().refresh_snapshot_observations();
+    let delayed = refresh.load();
+    {
+        let mut app = reads.state.lock().unwrap();
+        let mut active = app.take_plan(&reads.task).unwrap();
+        active.plan.apply(crate::plan::PlanEvent::Dispatch).unwrap();
+        let docs_dir = reads._directory.path().join("plan-ingestion");
+        let source = docs_dir.join(&active.plan_path);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(source, "# Successfully ingested plan\n").unwrap();
+        active.workspace = Some(crate::orchestrator::PlanWorkspace {
+            checkout: app.project_at(0).repo_path.clone(),
+            docs_dir,
+        });
+        app.plans.insert(reads.task.clone(), active);
+        app.on_plan_agent_done(
+            &reads.task,
+            None,
+            crate::mcp::DoneReport::new(crate::mcp::DoneStatus::Completed, "plan persisted"),
+        );
+        assert!(app.snapshot_plan_docs_available(&reads.task));
+        app.install_workspace_review_refresh(delayed);
+        app.publish_snapshot_projection();
+        assert!(app.snapshot_plan_docs_available(&reads.task));
+    }
+    let answer = reads
+        .held_read("task.get", json!({"task_id":reads.task}))
+        .await;
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["result"]["docs_available"], true, "{answer}");
+}

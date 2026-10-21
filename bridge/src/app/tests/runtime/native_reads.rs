@@ -562,12 +562,17 @@ async fn project_deletion_retires_its_published_captures() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn borrowed_task_keeps_document_availability_across_maintenance() {
     let mut reads = NativeReads::new();
-    {
+    let refresh = {
         let mut app = reads.state.lock().unwrap();
         let docs = app.store.as_ref().unwrap().plan_docs_dir(&reads.task);
         std::fs::create_dir_all(&docs).unwrap();
         std::fs::write(docs.join("plan.md"), "canonical plan").unwrap();
-        app.refresh_owner_snapshot_observations(&reads.task);
+        app.refresh_snapshot_observations()
+    };
+    let observed = refresh.load();
+    {
+        let mut app = reads.state.lock().unwrap();
+        app.install_workspace_review_refresh(observed);
         app.publish_owner_snapshot_projection(&reads.task);
     }
     let before = reads

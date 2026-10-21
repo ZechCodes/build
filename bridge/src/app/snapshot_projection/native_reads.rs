@@ -170,59 +170,6 @@ impl AppState {
         }
         delta
     }
-
-    pub(in crate::app) fn snapshot_plan_docs_available(&self, owner: &str) -> bool {
-        if self.snapshot_projection_initialized() {
-            self.snapshot_observations.plan_docs.contains(owner)
-        } else {
-            self.store
-                .as_ref()
-                .is_some_and(|store| store.has_plan_docs(owner))
-        }
-    }
-
-    pub(super) fn refresh_plan_doc_observations(&mut self) {
-        // A producer may retain a committed plan outside the live map while
-        // preparing work. Its absence is not retirement of its durable docs.
-        if self.committed_entities.has_borrowed(self) {
-            return;
-        }
-        let observed = self
-            .plans
-            .keys()
-            .filter(|id| {
-                self.store
-                    .as_ref()
-                    .is_some_and(|store| store.has_plan_docs(id))
-            })
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        for owner in self
-            .snapshot_observations
-            .plan_docs
-            .symmetric_difference(&observed)
-        {
-            self.mark_snapshot_owner_pending(owner);
-        }
-        self.snapshot_observations.plan_docs = observed;
-    }
-
-    /// Successful ingestion precedes the plan finisher. Discover its newly
-    /// durable docs before staging that owner's committed projection.
-    pub(super) fn refresh_owner_plan_docs(&mut self, owner: &str) {
-        if !self.plans.contains_key(owner) {
-            self.snapshot_observations.plan_docs.remove(owner);
-        } else if !self.snapshot_observations.plan_docs.contains(owner)
-            && self
-                .store
-                .as_ref()
-                .is_some_and(|store| store.has_plan_docs(owner))
-        {
-            self.snapshot_observations
-                .plan_docs
-                .insert(owner.to_owned());
-        }
-    }
 }
 
 fn previous_task_agents<'a>(previous: &'a ReadView, owner: &str) -> impl Iterator<Item = &'a str> {

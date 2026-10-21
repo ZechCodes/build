@@ -14,7 +14,7 @@ pub(in crate::app) use workspace_reviews::{WorkspaceReviewObservation, Workspace
 #[derive(Default)]
 pub(in crate::app) struct SnapshotObservations {
     ready: bool,
-    plan_docs: BTreeSet<String>,
+    plan_docs: BTreeMap<String, plan_docs::PlanDocObservation>,
     pub(in crate::app) observation_owners: crate::observation_changes::ChangeKeys,
     pub(in crate::app) observation_reservations: crate::observation_changes::ChangeKeys,
     pending_owners: Mutex<BTreeSet<String>>,
@@ -420,6 +420,7 @@ mod maintenance;
 mod native_reads;
 mod observations;
 mod ownership;
+mod plan_docs;
 mod projects;
 mod workspace_reviews;
 

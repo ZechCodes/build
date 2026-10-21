@@ -62,7 +62,7 @@ impl AppState {
     /// Lifecycle/background producer work. This is never called by a snapshot
     /// read. Project repository/volume probes have a separate off-lock phase.
     pub(in crate::app) fn refresh_snapshot_observations(&mut self) -> WorkspaceReviewRefresh {
-        self.refresh_plan_doc_observations();
+        let plan_docs = self.capture_plan_doc_owners();
         let previous_inputs = self.read_view.load();
         let previous_branches = std::mem::take(&mut self.snapshot_observations.branches);
         let mut paths = self.snapshot_paths();
@@ -114,7 +114,7 @@ impl AppState {
                 self.workspaces.observation_changes().mark(id);
             }
         }
-        WorkspaceReviewRefresh::new(self.workspace_review_reader(), workspaces)
+        WorkspaceReviewRefresh::new(self.workspace_review_reader(), workspaces, plan_docs)
     }
     pub(in crate::app) fn refresh_workspace_snapshot_observation(&mut self, id: &str) {
         let Some(workspace) = self.workspaces.get(id).cloned() else {

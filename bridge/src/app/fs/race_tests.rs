@@ -683,3 +683,105 @@ fn finish_claim_won_before_abort_returns_success_and_abort_is_not_found() {
     assert!(repo.join("claimed-abort.bin").exists());
     assert!(!state.lock().unwrap().uploads.contains_key(&id));
 }
+
+#[test]
+fn source_removal_refuses_an_admitted_write_but_allows_an_unrelated_source() {
+    let (dir, mut app, project_id, _repo, plain) = project_files_fixture();
+    let unrelated = dir.path().join("unrelated-source");
+    std::fs::create_dir(&unrelated).unwrap();
+    let mut sources = app.projects.get(&project_id).unwrap().sources.clone();
+    sources.push(crate::app::projects::ProjectSource::added(
+        "source-3".into(),
+        "Unrelated folder".into(),
+        "unrelated".into(),
+        unrelated.clone(),
+        false,
+        "main".into(),
+    ));
+    assert!(app.projects.set_sources(&project_id, sources));
+    let state = app.shared();
+    let handler = AppState::handler(state.clone());
+    let blocked = BlockedService::start(
+        handler.clone(),
+        SessionSender::detached("admitted-source-writer"),
+        "fs.write",
+        project_file_params(&project_id, "source-2", "notes.md"),
+    );
+    let unrelated_removed = handler.call(
+        SessionSender::detached("unrelated-source-editor"),
+        req(
+            "project.remove_source",
+            json!({
+                "project_id": project_id, "source_id": "source-3",
+            }),
+        ),
+    );
+    let active_refused = handler.call(
+        SessionSender::detached("active-source-editor"),
+        req(
+            "project.remove_source",
+            json!({
+                "project_id": project_id, "source_id": "source-2",
+            }),
+        ),
+    );
+    let written = blocked.finish();
+    assert_eq!(unrelated_removed["ok"], true, "{unrelated_removed}");
+    assert_eq!(active_refused["error_code"], "busy", "{active_refused}");
+    assert_eq!(written["ok"], true, "{written}");
+    assert_eq!(std::fs::read(plain.join("notes.md")).unwrap(), b"after\n");
+    assert!(
+        unrelated.is_dir(),
+        "removing a source must preserve its folder"
+    );
+    {
+        let app = state.lock().unwrap();
+        let sources = &app.projects.get(&project_id).unwrap().sources;
+        assert!(sources.iter().any(|source| source.id == "source-2"));
+        assert!(!sources.iter().any(|source| source.id == "source-3"));
+    }
+    let removed_after_write = handler.call(
+        SessionSender::detached("settled-source-editor"),
+        req(
+            "project.remove_source",
+            json!({"project_id": project_id, "source_id": "source-2"}),
+        ),
+    );
+    assert_eq!(removed_after_write["ok"], true, "{removed_after_write}");
+    assert_eq!(std::fs::read(plain.join("notes.md")).unwrap(), b"after\n");
+}
+
+#[test]
+fn abort_returns_while_cancelled_finish_still_holds_the_upload_payload() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let sender = SessionSender::detached("payload-uploader");
+    let id = begin_upload(&mut app, &sender, "payload-aborted.bin", 0, false);
+    let state = app.shared();
+    let handler = AppState::handler(state.clone());
+    let blocked = finish_blocked_before_publish(handler.clone(), sender.clone(), &id);
+    let abort_id = id.clone();
+    let (completed, response) = mpsc::channel();
+    let abort = std::thread::spawn(move || {
+        let result = handler.call(
+            sender,
+            req("fs.uploadAbort", json!({"upload_id": abort_id})),
+        );
+        completed.send(result).unwrap();
+    });
+    let early_response = response.recv_timeout(Duration::from_millis(500)).ok();
+    let replied_while_payload_held = early_response.is_some();
+    let finished = blocked.finish();
+    let aborted =
+        early_response.unwrap_or_else(|| response.recv_timeout(Duration::from_secs(10)).unwrap());
+    abort.join().unwrap();
+    assert!(
+        replied_while_payload_held,
+        "abort waited for the cancelled finish's payload mutex"
+    );
+    assert_eq!(aborted["ok"], true, "{aborted}");
+    assert_eq!(finished["error_code"], "not_found", "{finished}");
+    assert!(!repo.join("payload-aborted.bin").exists());
+    assert!(!repo.join(format!(".build-upload-{id}.part")).exists());
+    assert!(!state.lock().unwrap().uploads.contains_key(&id));
+}

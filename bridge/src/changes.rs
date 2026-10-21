@@ -4280,6 +4280,12 @@ mod subscriptions {
 mod compaction_events {
     use super::*;
 
+    fn expected_payload(scope: &str, owner_id: Option<&str>) -> Value {
+        let mut payload = compaction_changed_payload(scope, owner_id);
+        payload["bridge_epoch"] = json!(crate::bridge_epoch::current());
+        payload
+    }
+
     fn spec(kind: Kind) -> SubscriptionSpec {
         SubscriptionSpec {
             id: "compaction".into(),
@@ -4301,7 +4307,7 @@ mod compaction_events {
         assert_eq!(bus.flush(), 1);
         assert!(old_rx.try_recv().is_err());
         let frame = SessionSender::decrypt_push(&key, &new_rx.try_recv().unwrap());
-        assert_eq!(frame, compaction_changed_payload("project", Some("proj-1")));
+        assert_eq!(frame, expected_payload("project", Some("proj-1")));
         bus.note_compaction("device", None);
         bus.subscribe(&new, spec(Kind::State));
         assert_eq!(
@@ -4388,7 +4394,7 @@ mod compaction_events {
             ("conversation", "conversation-c"),
         ] {
             assert!(
-                events.contains(&compaction_changed_payload(scope, Some(owner))),
+                events.contains(&expected_payload(scope, Some(owner))),
                 "missing {scope}: {events:?}"
             );
         }
@@ -4398,7 +4404,7 @@ mod compaction_events {
     fn compaction_wire_requeue_preserves_a_collapsed_device_invalidation() {
         assert_eq!(
             requeued_events(true),
-            vec![compaction_changed_payload("device", None)]
+            vec![expected_payload("device", None)]
         );
     }
     #[test]
@@ -4492,7 +4498,7 @@ mod compaction_events {
                 assert_eq!(item["state"]["removed"], json!(["run-old"]));
                 board = item["state"].get("revision").is_some();
             }
-            device |= frame == compaction_changed_payload("device", None);
+            device |= frame == expected_payload("device", None);
         }
         assert!(
             board,

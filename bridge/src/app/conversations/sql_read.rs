@@ -13,7 +13,7 @@ use crate::store::ReadTransaction;
 use crate::thread::Thread;
 
 use super::inputs::required_operation_id;
-use super::read::conversation_owner_param;
+use super::read::{conversation_owner_param, revision_value};
 
 mod attachments;
 mod mcp;
@@ -162,12 +162,18 @@ impl ThreadReadContext {
         method: &str,
         params: &Value,
     ) -> Result<(Value, ThreadReadFence), String> {
-        let owner = if method == "thread.operation" {
+        let owner = if matches!(method, "thread.operation" | "thread.revision") {
             require_str(params, "entity_id")?
         } else {
             conversation_owner_param(params)?
         };
+        let revision_id = (method == "thread.revision")
+            .then(|| require_str(params, "revision_id"))
+            .transpose()?;
         let (mut thread, fence) = self.resolve(transaction, &owner, params)?;
+        if let Some(revision_id) = revision_id {
+            return revision_value(&thread, &revision_id).map(|value| (value, fence));
+        }
         if let Some(transaction) = transaction {
             restore_read_counters(transaction, thread.to_mut(), method)?;
         }

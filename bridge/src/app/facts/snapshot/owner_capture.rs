@@ -14,30 +14,48 @@ impl AppState {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.push_facts");
         let previous = self.read_view.load();
-        let mut snapshot = PushFacts {
-            states: previous.facts.states.clone(),
-            threads: previous.facts.threads.clone(),
-            lists,
-            ..PushFacts::default()
+        let mut snapshot = {
+            #[cfg(test)]
+            let _phase = crate::timing::phase_samples::phase("publication.push_facts.clone");
+            PushFacts {
+                states: previous.facts.states.clone(),
+                threads: previous.facts.threads.clone(),
+                lists,
+                ..PushFacts::default()
+            }
         };
         // External checkout state can reflect a changed agent on the same
         // root. Rebuild these cheap rows with the fresh checkout subjects.
-        snapshot
-            .states
-            .retain(|owner, _| self.plans.contains_key(owner) || self.runs.contains_key(owner));
+        {
+            #[cfg(test)]
+            let _phase = crate::timing::phase_samples::phase("publication.push_facts.clone");
+            snapshot
+                .states
+                .retain(|owner, _| self.plans.contains_key(owner) || self.runs.contains_key(owner));
+        }
         for owner in owners {
             snapshot.states.remove(owner);
             snapshot.threads.remove(owner);
             if self.plans.contains_key(owner) || self.runs.contains_key(owner) {
-                if let Some(state) = self.entity_state_item(owner) {
-                    snapshot
-                        .states
-                        .insert(owner.clone(), SharedJson::value(state));
+                {
+                    #[cfg(test)]
+                    let _phase =
+                        crate::timing::phase_samples::phase("publication.push_facts.owner_states");
+                    if let Some(state) = self.entity_state_item(owner) {
+                        snapshot
+                            .states
+                            .insert(owner.clone(), SharedJson::value(state));
+                    }
                 }
-                snapshot.threads.insert(
-                    owner.clone(),
-                    self.push_thread_tails(owner, &previous.facts),
-                );
+                {
+                    #[cfg(test)]
+                    let _phase =
+                        crate::timing::phase_samples::phase("publication.push_facts.owner_tails");
+                    snapshot.threads.insert(
+                        owner.clone(),
+                        self.push_thread_tails(owner, &previous.facts),
+                    );
+                }
             }
         }
         self.refresh_push_thread_sessions(&mut snapshot);
@@ -49,6 +67,8 @@ impl AppState {
     }
 
     fn refresh_push_thread_sessions(&self, snapshot: &mut PushFacts) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.push_facts.sessions");
         // A message can advance the shared project summary for otherwise
         // unchanged conversations. Refresh this small tip metadata while
         // retaining their tail bodies, receipt patches and history floors.

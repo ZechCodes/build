@@ -494,15 +494,25 @@ impl AppState {
             ..PushFacts::default()
         };
         for owner in self.plans.keys().chain(self.runs.keys()) {
-            if let Some(state) = self.entity_state_item(owner) {
-                snapshot
-                    .states
-                    .insert(owner.clone(), SharedJson::value(state));
+            {
+                #[cfg(test)]
+                let _phase =
+                    crate::timing::phase_samples::phase("publication.push_facts.owner_states");
+                if let Some(state) = self.entity_state_item(owner) {
+                    snapshot
+                        .states
+                        .insert(owner.clone(), SharedJson::value(state));
+                }
             }
-            snapshot.threads.insert(
-                owner.clone(),
-                self.push_thread_tails(owner, &previous.facts),
-            );
+            {
+                #[cfg(test)]
+                let _phase =
+                    crate::timing::phase_samples::phase("publication.push_facts.owner_tails");
+                snapshot.threads.insert(
+                    owner.clone(),
+                    self.push_thread_tails(owner, &previous.facts),
+                );
+            }
         }
         self.capture_push_checkouts(&mut snapshot, &previous.facts);
         self.capture_push_entities(&mut snapshot, &previous.facts);
@@ -533,27 +543,52 @@ impl AppState {
     }
 
     fn capture_push_checkouts(&self, snapshot: &mut PushFacts, previous: &PushFacts) {
-        for (entity, subject) in self.checkout_subjects() {
-            if let Entry::Vacant(entry) = snapshot.states.entry(entity.clone()) {
-                if let Some(state) = self.entity_state_item(&entity) {
-                    entry.insert(SharedJson::value(state));
+        let subjects = {
+            #[cfg(test)]
+            let _phase =
+                crate::timing::phase_samples::phase("publication.push_facts.checkout_subjects");
+            self.checkout_subjects()
+        };
+        for (entity, subject) in subjects {
+            {
+                #[cfg(test)]
+                let _phase =
+                    crate::timing::phase_samples::phase("publication.push_facts.checkout_states");
+                if let Entry::Vacant(entry) = snapshot.states.entry(entity.clone()) {
+                    if let Some(state) = self.entity_state_item(&entity) {
+                        entry.insert(SharedJson::value(state));
+                    }
                 }
             }
-            snapshot.terminals.insert(
-                entity.clone(),
-                Arc::new(json!({"tabs": self.shell_tabs_for(&subject.terminal_scope())})),
-            );
-            if let Some(workspace) = self.workspace_snapshot_for_conversation(&entity, None) {
-                let repositories = workspace
-                    .directories
-                    .iter()
-                    .filter(|directory| directory.is_git)
-                    .map(|directory| directory.path.clone())
-                    .collect();
-                snapshot
-                    .summaries
-                    .insert(entity.clone(), (workspace.id.clone(), repositories));
+            {
+                #[cfg(test)]
+                let _phase =
+                    crate::timing::phase_samples::phase("publication.push_facts.terminals");
+                snapshot.terminals.insert(
+                    entity.clone(),
+                    Arc::new(json!({"tabs": self.shell_tabs_for(&subject.terminal_scope())})),
+                );
             }
+            {
+                #[cfg(test)]
+                let _phase = crate::timing::phase_samples::phase(
+                    "publication.push_facts.workspace_summaries",
+                );
+                if let Some(workspace) = self.workspace_snapshot_for_conversation(&entity, None) {
+                    let repositories = workspace
+                        .directories
+                        .iter()
+                        .filter(|directory| directory.is_git)
+                        .map(|directory| directory.path.clone())
+                        .collect();
+                    snapshot
+                        .summaries
+                        .insert(entity.clone(), (workspace.id.clone(), repositories));
+                }
+            }
+            #[cfg(test)]
+            let _phase =
+                crate::timing::phase_samples::phase("publication.push_facts.subject_fences");
             let retained = previous.subjects.get(&entity).filter(|old| {
                 same_checkout(old, &subject)
                     && previous.summaries.get(&entity) == snapshot.summaries.get(&entity)
@@ -572,6 +607,8 @@ impl AppState {
     }
 
     fn capture_push_entities(&self, snapshot: &mut PushFacts, previous: &PushFacts) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.push_facts.entity_maps");
         let entities = self
             .plans
             .keys()

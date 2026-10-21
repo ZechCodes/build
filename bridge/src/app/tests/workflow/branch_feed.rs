@@ -24,7 +24,8 @@ pub(in crate::app::tests) fn observe_work_item_fixture(state: &mut AppState) {
             state.store_diff_entry(entry);
         }
     }
-    state.refresh_snapshot_observations();
+    // This helper observes fixture Git edits; review summaries have lifecycle producers.
+    let _ = state.refresh_snapshot_observations();
     state.publish_snapshot_projection();
 }
 

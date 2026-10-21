@@ -29,8 +29,7 @@ impl IoSample {
         let (requests, read_pool_initialization) = {
             let mut app = sample.state.lock().unwrap();
             let requests = fixture_requests(&mut app, &sample);
-            app.refresh_snapshot_observations();
-            app.publish_all_snapshot_projection();
+            let reviews = app.refresh_snapshot_observations();
             let initialization = app
                 .store
                 .as_ref()
@@ -43,6 +42,11 @@ impl IoSample {
                 "schema_count":initialization.schema_count,
                 "semantics":"natural ReadPool::open total is nested inside helper_fixture_and_unused_intake; schema subtotal is nested inside that total. Neither is additional client latency. No benchmark warmup query."
             });
+            drop(app);
+            let reviews = reviews.load();
+            let mut app = sample.state.lock().unwrap();
+            app.install_workspace_review_refresh(reviews);
+            app.publish_all_snapshot_projection();
             (requests, read_pool_initialization)
         };
         benchmark::setup_mark(&mut setup, "extra_fixture_seed", &mut start);

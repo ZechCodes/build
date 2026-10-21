@@ -168,7 +168,8 @@ fn folded_aliases_keep_the_losing_owners_own_state_and_share_only_the_winner() {
         active.worktree.path = root.clone();
         active.worktree.recorded_branch = "one-folded-branch".into();
     }
-    app.refresh_snapshot_observations();
+    // Only the folded branch paths change; review observations remain accepted.
+    let _ = app.refresh_snapshot_observations();
     app.publish_all_snapshot_projection();
     let expected_winner = app
         .runs

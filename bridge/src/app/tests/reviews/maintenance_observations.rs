@@ -20,7 +20,8 @@ fn fixture() -> (
 
 fn refresh(app: &mut AppState, workspace: &str, all: bool) {
     if all {
-        app.refresh_snapshot_observations();
+        // The writer-held check exercises physical refresh without loading review SQL.
+        let _ = app.refresh_snapshot_observations();
     } else {
         app.refresh_workspace_snapshot_observation(workspace);
     }
@@ -213,7 +214,8 @@ fn delayed_maintenance_batch_does_not_restore_a_deleted_workspace_review() {
     let delayed = refresh.load();
     let mut app = shared.lock().unwrap();
     app.workspaces.forget(&workspace);
-    app.refresh_snapshot_observations();
+    // Only prune the removed workspace before attempting the delayed review installation.
+    let _ = app.refresh_snapshot_observations();
     app.install_workspace_review_refresh(delayed);
     app.publish_snapshot_projection();
     let mut row = json!({});

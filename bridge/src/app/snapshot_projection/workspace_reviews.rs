@@ -70,6 +70,7 @@ impl AppState {
 
 /// Maintenance captures workspace membership with its physical observations.
 /// SQL runs in the existing unlocked phase, before the publication guard.
+#[must_use = "load review observations off-lock, then install them before publication"]
 pub(in crate::app) struct WorkspaceReviewRefresh {
     reader: WorkspaceReviewReader,
     workspaces: Vec<String>,

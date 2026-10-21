@@ -57,43 +57,85 @@ async fn six_mcp_reads_with_busy_writers_and_task_lists() {
     cohort::measure(Load::BusyWithTaskLists).await;
 }
 
+#[test]
+#[ignore = "manual diagnostic: requires BST_MCP_TIMING_REPLAY recorded log"]
+fn replay_recorded_busy_mcp_read_budgets() {
+    let path = std::env::var_os("BST_MCP_TIMING_REPLAY")
+        .expect("set BST_MCP_TIMING_REPLAY to a recorded mixed-cohort log");
+    let log = std::fs::read_to_string(path).expect("recorded timing log is readable");
+    let recorded = log
+        .lines()
+        .find_map(|line| line.split_once("TASK741_MCP_READS ").map(|(_, json)| json))
+        .expect("recorded log contains TASK741_MCP_READS JSON");
+    let report: Value = serde_json::from_str(recorded).expect("recorded timing JSON is valid");
+    assert_eq!(report["load"], "busy_with_list_tasks");
+    assert_measurements(&report["measurements"], true);
+}
+
 fn assert_measurements(measurements: &Value, lists: bool) {
-    for tool in TOOLS.into_iter().chain(lists.then_some("list_tasks")) {
+    let expected = TOOLS
+        .into_iter()
+        .chain(lists.then_some("list_tasks"))
+        .chain(measurements.get("mcp.control:get_task").map(|_| "get_task"));
+    for tool in expected {
         let row = &measurements[format!("mcp.control:{tool}")];
-        for phase in [
-            "client.total",
-            "frame.total",
-            "frame.pool_wait",
-            "read.admission.total",
-            "read.query.total",
-            "read.run.total",
-            "read.finish.total",
-            "reply.serialization",
-        ] {
-            assert_eq!(row[phase]["count"], AGENTS * ROUNDS, "{tool} {phase}");
-        }
-        if !["list_work", "list_workspaces"].contains(&tool) {
-            assert_eq!(
-                row["read.class_wait"]["count"],
-                AGENTS * ROUNDS,
-                "{tool} per-type admission"
-            );
-            assert_eq!(
-                row["read.sql_wait"]["count"],
-                AGENTS * ROUNDS,
-                "{tool} SQL acquisition"
-            );
-        }
-        for phase in ["frame.held", "frame.lock_wait", "frame.permit_wait"] {
-            assert_eq!(row[phase]["count"], AGENTS * ROUNDS, "{tool} {phase}");
-            assert_eq!(row[phase]["max_ms"], 0.0, "{tool} bypasses {phase}");
+        assert_eq!(
+            row["read.admission.total"]["count"],
+            AGENTS * ROUNDS,
+            "{tool} independent read admission"
+        );
+    }
+    for (method, row) in measurements.as_object().expect("measured method rows") {
+        let Some(tool) = method.strip_prefix("mcp.control:") else {
+            continue;
+        };
+        if row.get("read.admission.total").is_some() {
+            assert_read_samples(tool, row);
+            assert_read_budget(tool, row);
         }
     }
-    for tool in TOOLS {
-        let latency = &measurements[format!("mcp.control:{tool}")]["client.total"];
+}
+
+fn assert_read_samples(tool: &str, row: &Value) {
+    for phase in [
+        "client.total",
+        "frame.total",
+        "frame.pool_wait",
+        "read.admission.total",
+        "read.query.total",
+        "read.run.total",
+        "read.finish.total",
+        "reply.serialization",
+    ] {
+        assert_eq!(row[phase]["count"], AGENTS * ROUNDS, "{tool} {phase}");
+    }
+    if !["list_work", "list_workspaces"].contains(&tool) {
+        assert_eq!(
+            row["read.class_wait"]["count"],
+            AGENTS * ROUNDS,
+            "{tool} per-type admission"
+        );
+        assert_eq!(
+            row["read.sql_wait"]["count"],
+            AGENTS * ROUNDS,
+            "{tool} SQL acquisition"
+        );
+    }
+    for phase in ["frame.held", "frame.lock_wait", "frame.permit_wait"] {
+        assert_eq!(row[phase]["count"], AGENTS * ROUNDS, "{tool} {phase}");
+        assert_eq!(row[phase]["max_ms"], 0.0, "{tool} bypasses {phase}");
+    }
+}
+
+fn assert_read_budget(tool: &str, row: &Value) {
+    let latency = &row["client.total"];
+    for percentile in ["p99_ms", "max_ms"] {
+        let elapsed = latency[percentile]
+            .as_f64()
+            .expect("independent read caller latency is measured");
         assert!(
-            latency["max_ms"].as_f64().unwrap() <= MAX_BUSY_MCP_READ_RESPONSE_MS,
-            "{tool} exceeds {MAX_BUSY_MCP_READ_RESPONSE_MS}ms: {latency}"
+            elapsed <= MAX_BUSY_MCP_READ_RESPONSE_MS,
+            "{tool} {percentile} exceeds {MAX_BUSY_MCP_READ_RESPONSE_MS}ms: {latency}"
         );
     }
 }

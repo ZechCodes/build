@@ -59,3 +59,20 @@ fn compact_work_projection_selects_only_digest_fields_for_every_node_shape() {
     assert_eq!(expected["work"][2]["entity_id"], "wt-2");
     assert!(expected["work"][3]["entity_id"].is_null());
 }
+
+#[test]
+fn compact_work_projection_handles_missing_and_nonobject_content() {
+    for board in [
+        json!({}),
+        json!({"items":null}),
+        json!({"items":{}}),
+        json!({"items":[null,7,"scalar",[],{}]}),
+    ] {
+        let expected = router_work_digest(board.clone());
+        assert_eq!(
+            snapshot_value(&SharedJson::value(board.clone()), true),
+            expected
+        );
+        assert_eq!(snapshot_value(&split(&board), true), expected);
+    }
+}

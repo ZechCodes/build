@@ -6,7 +6,8 @@ const LIST_ROUNDS: usize = 3;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "release-only 700-task/200-conversation busy MCP list latency regression"]
 async fn busy_mcp_lists_finish_within_100ms() {
-    let busy = Busy::with_task_body(&"Stored task context and acceptance evidence. ".repeat(48));
+    let body = "Stored task context and acceptance evidence. ".repeat(48);
+    let busy = Busy::with_task_body(&body);
     let router = {
         let mut app = busy.state.lock().unwrap();
         let (_, router) =
@@ -61,7 +62,7 @@ async fn busy_mcp_lists_finish_within_100ms() {
         "TASK738_MCP_LISTS {}",
         json!({
             "tasks":TASKS,"conversations":CONVERSATIONS,"worktrees":WORKTREES,
-            "readers":AGENTS,"rounds":LIST_ROUNDS,"body_bytes_per_task":48*44,
+            "readers":AGENTS,"rounds":LIST_ROUNDS,"body_bytes_per_task":body.trim().len(),
             "measurements":measurements,"failures":failures,
         "completed_writer_calls":completed.load(Ordering::Relaxed),
         "read_progress":*progress.reads.lock().unwrap()
@@ -91,6 +92,7 @@ async fn busy_mcp_lists_finish_within_100ms() {
         assert_eq!(row["count"], AGENTS * LIST_ROUNDS, "{row}");
         assert!(row["max_ms"].as_f64().unwrap() <= 100.0, "{tool}: {row}");
         assert!(row["p99_ms"].as_f64().unwrap() <= 100.0, "{tool}: {row}");
+        assert!(row["p95_ms"].as_f64().unwrap() <= 100.0, "{tool}: {row}");
     }
 }
 
@@ -113,12 +115,16 @@ async fn reader(
     let server = tokio::spawn(handle_done_stream(state, daemon, plane));
     let mut client = tokio::io::BufReader::new(client);
     start.wait().await;
-    for _ in 0..LIST_ROUNDS {
+    let mut cursor = None::<String>;
+    let mut last_number = u64::MAX;
+    for round in 0..LIST_ROUNDS {
+        let mut task_page = json!({"action":"tracker_list_tasks"});
+        if round > 0 {
+            task_page["limit"] = json!(20);
+            task_page["cursor"] = json!(cursor);
+        }
         for (endpoint, action) in [
-            (
-                &agent,
-                serde_json::from_value(json!({"action":"tracker_list_tasks","limit":20})).unwrap(),
-            ),
+            (&agent, serde_json::from_value(task_page).unwrap()),
             (&router, BridgeAction::ListWork),
         ] {
             let frame = json!({"task_id":endpoint,"session_token":format!("busy-token-{endpoint}"),"request":action});
@@ -161,6 +167,15 @@ async fn reader(
             if rows == "tasks" {
                 assert_eq!(count, 20);
                 assert!(reply["result"]["next_cursor"].is_string());
+                cursor = reply["result"]["next_cursor"].as_str().map(str::to_owned);
+                for task in reply["result"]["tasks"].as_array().unwrap() {
+                    let number = task["number"].as_u64().unwrap();
+                    assert!(
+                        number < last_number,
+                        "cursor pages preserve descending key order"
+                    );
+                    last_number = number;
+                }
             } else {
                 assert!(count >= TASKS);
             }

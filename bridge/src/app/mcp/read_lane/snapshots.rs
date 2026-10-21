@@ -1,4 +1,6 @@
 //! Immutable producer snapshots for maintenance-shaped MCP list tools.
+#[path = "snapshot_work.rs"]
+mod work;
 use super::service::{Inputs, McpReadService};
 use super::{PreparedRead, ReadSession, ReadWork};
 use crate::app::read_view::SharedJson;
@@ -43,8 +45,8 @@ fn capture(
         }
         _ => unreachable!("only exact snapshot list actions reach capture"),
     };
-    // Retain just the accepted immutable fragment. Materializing a large list
-    // and formatting the router digest happens in independent work.
+    // Retain the accepted immutable fragment. Independent work materializes
+    // ordinary lists and selects only the router digest's fields for list_work.
     let value = inputs.view.get_shared(method, &owner).cloned();
     let value = match value {
         Some(value) => value,
@@ -64,20 +66,17 @@ fn capture(
 }
 
 fn snapshot_value(value: &SharedJson, work_digest: bool) -> Value {
-    let value = {
-        #[cfg(test)]
-        let _phase = crate::timing::phase_samples::phase("snapshot.materialize");
-        value.materialize()
-    };
     if work_digest {
-        router_work_digest(value)
-    } else {
-        value
+        return work::digest(value);
     }
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("snapshot.materialize");
+    value.materialize()
 }
 
 /// Match the router's existing compact wire shape and capture exclusion. The
 /// complete board is supplied by its normal producer; this performs no refresh.
+#[cfg(test)]
 fn router_work_digest(board: Value) -> Value {
     #[cfg(test)]
     let _phase = crate::timing::phase_samples::phase("snapshot.work_digest");

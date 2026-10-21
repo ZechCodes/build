@@ -324,11 +324,13 @@ pub enum BridgeAction {
     // None of these takes a project or an author. The scope is the calling
     // agent's own project, and the author is the calling agent; a call that
     // carries either anyway is parsed as though it had not.
-    /// The tasks of this agent's project, narrowed.
+    /// One bounded page of this agent's project tasks, narrowed.
     TrackerListTasks {
         state: Option<String>,
         status: Option<String>,
         label: Option<String>,
+        limit: Option<u64>,
+        cursor: Option<String>,
     },
     /// One task and its whole timeline.
     TrackerGetTask {
@@ -1108,13 +1110,15 @@ impl DoneServer {
         let mut tools = vec![
             json!({
                 "name": "list_tasks",
-                "description": "The tasks of your project, newest first: what each one is, who holds it, which column it is in and what it is about. Which project is read comes from who you are — there is nothing to pass, and no other project is reachable from here.",
+                "description": "One page of your project's tasks, newest first, with full task rows. Defaults to 20 and accepts at most 20. When next_cursor is present, pass it as cursor with the same filters to continue, even after a short or empty filtered page. Which project is read comes from who you are; no other project is reachable from here.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "state": { "type": "string", "enum": ["open", "closed"], "description": "Omit for both." },
                         "status": status,
-                        "label": { "type": "string" }
+                        "label": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": MCP_TASK_LIST_MAX, "default": MCP_TASK_LIST_MAX },
+                        "cursor": { "type": "string", "description": "The previous page's next_cursor; retain the same filters." }
                     }
                 }
             }),
@@ -1334,14 +1338,10 @@ impl DoneServer {
         // An id an agent read before the rename (#190) names the same task.
         let task = || required_argument(params, "task_id").map(|id| current_id(&id));
         Some(match name {
-            "list_tasks" => acted(
-                id.clone(),
-                BridgeAction::TrackerListTasks {
-                    state: optional_argument(params, "state"),
-                    status: optional_argument(params, "status"),
-                    label: optional_argument(params, "label"),
-                },
-            ),
+            "list_tasks" => match task_list_action(params) {
+                Ok(action) => acted(id.clone(), action),
+                Err(error) => refused(id.clone(), error),
+            },
             "read_comment" => match required_argument(params, "comment_id") {
                 Ok(comment_id) => {
                     let comment_id = current_id(&comment_id);
@@ -2427,6 +2427,34 @@ fn workspace_tool_action(
         _ => return None,
     };
     Some(parsed)
+}
+
+/// Every advertised MCP page size is covered by the busy latency budget.
+pub(crate) const MCP_TASK_LIST_MAX: u64 = 20;
+
+fn task_list_action(params: Option<&Value>) -> Result<BridgeAction, String> {
+    let limit = argument(params, "limit")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_u64()
+                .filter(|limit| (1..=MCP_TASK_LIST_MAX).contains(limit))
+                .ok_or_else(|| format!("limit must be 1 to {MCP_TASK_LIST_MAX}"))
+        })
+        .transpose()?;
+    let cursor = argument(params, "cursor")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value(value).map_err(|_| "cursor must be a string".to_string())
+        })
+        .transpose()?;
+    Ok(BridgeAction::TrackerListTasks {
+        state: optional_argument(params, "state"),
+        status: optional_argument(params, "status"),
+        label: optional_argument(params, "label"),
+        limit,
+        cursor,
+    })
 }
 
 // ------------------------------------------------------ task tracker ---
@@ -4719,3 +4747,6 @@ mod tests {
         assert_eq!(reply["result"]["isError"], true);
     }
 }
+
+#[cfg(test)]
+mod task_list_tests;

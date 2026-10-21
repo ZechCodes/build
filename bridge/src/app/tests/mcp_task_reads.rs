@@ -141,6 +141,8 @@ async fn mcp_sql_reads_answer_while_both_writer_turns_are_held() {
             state: None,
             status: None,
             label: None,
+            limit: None,
+            cursor: None,
         },
         BridgeAction::TrackerTaskDependents {
             task_id: fixture.task.clone(),

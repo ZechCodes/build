@@ -28,6 +28,25 @@ impl Fixture {
         std::thread::spawn(Self::build).join().unwrap()
     }
 
+    pub fn add_publication_peer(&self, owner: &str) {
+        let mut app = self.state.lock().unwrap();
+        let repo = app.project_at(0).repo_path.clone();
+        let side = self._root.path().join("publication-peer");
+        crate::app::tests::runtime::idle_sessions::insert_run(
+            &mut app,
+            &repo,
+            &side,
+            owner,
+            crate::run::RunState::Building,
+        );
+        app.seed_anchors_for_records_without_one();
+        let active = app.take_run(owner).unwrap();
+        app.finish_run_mutation(owner.into(), active).unwrap();
+        let watched = app.handle(req("tasks.watch", json!({"task_id":self.intent.task_id})));
+        assert_eq!(watched["ok"], true, "{watched}");
+        app.publish_all_snapshot_projection();
+    }
+
     pub fn database_path(&self) -> std::path::PathBuf {
         self._root.path().join("store/build.db")
     }

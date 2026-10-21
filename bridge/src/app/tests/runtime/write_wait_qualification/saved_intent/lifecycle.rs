@@ -14,6 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
+mod publication;
+
 fn clock() -> (Arc<WriteWaitRegistry>, Arc<AtomicU64>) {
     let offset = Arc::new(AtomicU64::new(0));
     let now = Arc::clone(&offset);

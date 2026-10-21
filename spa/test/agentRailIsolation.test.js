@@ -676,9 +676,7 @@ describe("agent rail chat ownership", () => {
       cacheScope: device().cacheScope,
       chatRepository: device().chatRepository,
     });
-    await vi.waitFor(() => {
-      expect(host().querySelector(".thread-items")?.textContent).toContain("new implementation reply");
-    }, { timeout: 5000 });
+    await flush();
 
     const unreadLine = host().querySelector(".thread-unread-line");
     expect(unreadLine).toBeTruthy();

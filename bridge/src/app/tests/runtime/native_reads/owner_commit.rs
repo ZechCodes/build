@@ -17,7 +17,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(agents_per_run: usize) -> Self {
+    fn new(agents_per_run: usize, shared_task_conversation: bool) -> Self {
         let (directory, repository) = init_repo();
         let mut app = qa_state_before_admission(&repository, directory.path());
         let project = app.project_at(0).id.clone();
@@ -47,6 +47,12 @@ impl Fixture {
             record.worktree_path = root.display().to_string();
             record.plan_id = Some(task.clone());
             record.branch = format!("build/native-scale-{index}");
+            if index == 0 {
+                record.created_at = NOW.into();
+            }
+            app.board
+                .attention_mut()
+                .record_created_if_absent(&id, record.created_at.clone());
             record.stages = stage_progress();
             record.agents = (0..agents_per_run)
                 .map(|ordinal| {
@@ -57,7 +63,7 @@ impl Fixture {
                         ordinal as u32 + 1,
                         NOW,
                     );
-                    if ordinal == 0 {
+                    if shared_task_conversation && ordinal == 0 {
                         agent.conversation_id =
                             Some(app.plans[task].agents.sole().conversation_id().to_owned());
                     } else {
@@ -222,9 +228,13 @@ fn stage_progress() -> Vec<crate::run::StageProgress> {
 // The control omits only new native task/projection work and its linked-task
 // edges, including same-mode initialization. It is not a checkout of main:
 // document observation and unrelated changes remain identical in both modes.
-fn measure_scale(agents_per_run: usize, enabled: bool) -> Vec<Value> {
+fn measure_scale(
+    agents_per_run: usize,
+    shared_task_conversation: bool,
+    enabled: bool,
+) -> Vec<Value> {
     AppState::with_native_task_projection_control(enabled, || {
-        let fixture = Fixture::new(agents_per_run);
+        let fixture = Fixture::new(agents_per_run, shared_task_conversation);
         // Keep initialization and first-use allocation outside measured commits.
         fixture.commit(true, usize::MAX);
         fixture.commit(false, usize::MAX);
@@ -269,7 +279,7 @@ fn measure_scale(agents_per_run: usize, enabled: bool) -> Vec<Value> {
         eprintln!(
             "{}",
             json!({"benchmark":"owner_commit_native_snapshot_scale",
-            "native_task_projection":enabled,
+            "native_task_projection":enabled,"shared_task_conversation":shared_task_conversation,
             "control_excludes":["new task detail/stage/implementation chunks", "linked-task edges", "project columns publication"],
             "tasks":TASKS,"runs":RUNS,"agents_per_run":agents_per_run,
             "configured_agents":TASKS+RUNS*agents_per_run,
@@ -286,14 +296,76 @@ fn measure_scale(agents_per_run: usize, enabled: bool) -> Vec<Value> {
 
 #[test]
 fn owner_commit_native_snapshot_scale() {
-    for (index, agents_per_run) in [1, 4, 16, 32].into_iter().enumerate() {
-        // Alternate order to make a systematic warm-host bias visible.
-        let first_enabled = index % 2 == 0;
-        let first = measure_scale(agents_per_run, first_enabled);
-        let second = measure_scale(agents_per_run, !first_enabled);
-        assert_eq!(
-            first, second,
-            "native task projection changed selected workspace work at {agents_per_run} agents/run"
-        );
+    for shared_task_conversation in [true, false] {
+        for (index, agents_per_run) in [1, 4, 16, 32].into_iter().enumerate() {
+            // Alternate order to make a systematic warm-host bias visible.
+            let first_enabled = index % 2 == 0;
+            let first = measure_scale(agents_per_run, shared_task_conversation, first_enabled);
+            let second = measure_scale(agents_per_run, shared_task_conversation, !first_enabled);
+            eprintln!(
+                "{}",
+                json!({"benchmark":"owner_commit_native_snapshot_scope_comparison",
+                "shared_task_conversation":shared_task_conversation,"agents_per_run":agents_per_run,
+                "same_workspace_work":first==second})
+            );
+            if shared_task_conversation {
+                assert_eq!(first, second,
+                    "native task projection changed selected workspace work at {agents_per_run} agents/run");
+            }
+        }
     }
+}
+
+fn complete_independent_stage(
+    enabled: bool,
+) -> crate::app::snapshot_projection::work_counts::detail_scans::Counts {
+    AppState::with_native_task_projection_control(enabled, || {
+        let fixture = Fixture::new(4, false);
+        let clock = Arc::clone(&fixture.state.lock().unwrap().frame_clock);
+        let (_, counts) =
+            crate::app::snapshot_projection::work_counts::detail_scans::measure(|| {
+                let timer = clock.frame("agent.choose");
+                let mut app = timer.lock(&fixture.state);
+                let mut active = app.take_run(&fixture.run).unwrap();
+                active.run.state = RunState::Review;
+                active.stages[1].state = crate::run::StageProgressState::Completed;
+                active.stages[1].built_sha = Some("c".repeat(40));
+                active.stages[1].completion_sha = Some("c".repeat(40));
+                app.finish_run_mutation(fixture.run.clone(), active)
+                    .unwrap();
+            });
+        if enabled {
+            let app = fixture.state.lock().unwrap();
+            let view = app.read_view.load();
+            let stages = view.get_owned("task.stages", &fixture.task).unwrap();
+            assert_eq!(stages["implementation_id"], fixture.run);
+            assert_eq!(stages["stages"][1]["execution"], "complete");
+            assert_eq!(stages["stages"][1]["completion_sha"], "c".repeat(40));
+            let task = view.get_owned("task.get", &fixture.task).unwrap();
+            assert_eq!(task["current_implementation_id"], fixture.run);
+            assert_eq!(task["current_implementation"]["state"], "review");
+            assert!(
+                task["execution_context"].is_null(),
+                "private run agent cannot inherit Task conversation"
+            );
+        }
+        counts
+    })
+}
+
+#[test]
+fn independent_task_dependency_updates_native_reads_without_widening_workspace_work() {
+    let control = complete_independent_stage(false);
+    let enabled = complete_independent_stage(true);
+    eprintln!(
+        "independent linked Task selected workspace work: control={control:?} enabled={enabled:?}"
+    );
+    assert_eq!(
+        enabled.base_renders, control.base_renders,
+        "linked Task metadata widened workspace base rendering"
+    );
+    assert_eq!(
+        enabled.variant_renders, control.variant_renders,
+        "linked Task metadata widened named workspace rendering"
+    );
 }

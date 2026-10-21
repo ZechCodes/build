@@ -3,8 +3,11 @@
 These fixtures define the journaled write envelopes before any semantic RPC is
 admitted through them. The internal `ACK_CONFIRM_METHODS` list is empty. The
 greeting advertises `bridge.epoch` and the real `writes.status` and
-`writes.subscribe` methods; it does not advertise the internal list or a
-`writes.ackConfirm` feature. Requests have no `write.mode` opt-in.
+`writes.subscribe` methods. Hello also exposes `ack_confirm_methods: []`,
+mirroring the internal list; this is a greeting field, not a capability name.
+There is no `writes.ackConfirm` feature or `write.mode` opt-in. Clients use
+ack/confirm envelopes only for methods in the current greeting's
+`ack_confirm_methods` list.
 
 - `request.json` supplies a stable UUID operation ID and explicit dependencies.
   Omitting `after` requests bridge-side inference; an empty array is an explicit

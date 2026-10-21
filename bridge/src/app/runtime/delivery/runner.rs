@@ -34,10 +34,17 @@ impl DeliveryRunner {
         timer.mark_request("delivery_admission_start");
         let admission = timer.lock(state).update_admission();
         let lease = match admission {
-            Some(gate) => match gate.try_enter() {
-                Some(lease) => Some(lease),
-                None => return, // The turns remain in the queue until admission reopens.
-            },
+            Some(gate) => {
+                let entered = {
+                    #[cfg(test)]
+                    let _scope = timer.write_context().map(|context| context.bind_sync());
+                    gate.try_enter()
+                };
+                match entered {
+                    Some(lease) => Some(lease),
+                    None => return, // The turns remain in the queue until admission reopens.
+                }
+            }
             None => None,
         };
         Self::drain_admitted(state, timer, lease);

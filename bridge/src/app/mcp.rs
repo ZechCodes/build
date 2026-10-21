@@ -412,15 +412,22 @@ pub(in crate::app) async fn handle_authenticated_mcp_frame(
     );
     let admission = timer.lock(state).update_admission();
     let _lease = match admission {
-        Some(gate) => match gate.try_enter() {
-            Some(lease) => Some(lease),
-            None => {
-                return Some(json!({
-                    "ok": false,
-                    "error": "bridge update handoff in progress"
-                }))
+        Some(gate) => {
+            let entered = {
+                #[cfg(test)]
+                let _scope = timer.write_context().map(|context| context.bind_sync());
+                gate.try_enter()
+            };
+            match entered {
+                Some(lease) => Some(lease),
+                None => {
+                    return Some(json!({
+                        "ok": false,
+                        "error": "bridge update handoff in progress"
+                    }))
+                }
             }
-        },
+        }
         None => None,
     };
     let addressed = {

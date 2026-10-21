@@ -172,10 +172,7 @@ impl LiveRoster {
     }
 
     fn slot(&self) -> MutexGuard<'_, Slot> {
-        self.shared
-            .slot
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        crate::timing::resource_lock!(self.shared.slot).unwrap_or_else(PoisonError::into_inner)
     }
 
     fn wait<'a>(&self, slot: MutexGuard<'a, Slot>) -> MutexGuard<'a, Slot> {

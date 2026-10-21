@@ -140,10 +140,14 @@ impl RequestAdmission {
         // finding no service is admitted and must not fetch it again at drain.
         let gate = timer.lock(state).update_admission();
         let lease = match gate {
-            Some(gate) => Some(
-                gate.try_enter()
-                    .ok_or_else(|| ApiError::busy("bridge update handoff in progress"))?,
-            ),
+            Some(gate) => {
+                let entered = {
+                    #[cfg(test)]
+                    let _scope = timer.write_context().map(|context| context.bind_sync());
+                    gate.try_enter()
+                };
+                Some(entered.ok_or_else(|| ApiError::busy("bridge update handoff in progress"))?)
+            }
             None => None,
         };
         Ok(Self::Entered(lease))

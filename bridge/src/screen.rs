@@ -465,7 +465,7 @@ impl ScreenHandle {
 
     /// The grid this screen is currently painting at.
     pub fn size(&self) -> (u16, u16) {
-        let screen = self.screen.lock().unwrap();
+        let screen = crate::timing::resource_lock!(self.screen).unwrap();
         (screen.cols, screen.rows)
     }
 

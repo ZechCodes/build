@@ -63,8 +63,7 @@ impl WorktreeWatchers {
     /// name them, so they are not the board's.
     #[cfg(test)]
     pub(in crate::app) fn entity_ids(&self) -> Vec<String> {
-        self.roots
-            .lock()
+        crate::timing::resource_lock!(self.roots)
             .unwrap()
             .keys()
             .filter(|id| !crate::changes::is_project_source_entity(id))
@@ -75,7 +74,7 @@ impl WorktreeWatchers {
     /// Replace the roots snapshot. Under the app mutex this is a map swap and
     /// nothing else — the reconcile it implies runs off the lock.
     pub(in crate::app) fn set_roots(&self, roots: WorktreeRoots) {
-        *self.roots.lock().unwrap() = roots;
+        *crate::timing::resource_lock!(self.roots).unwrap() = roots;
     }
 
     /// The board moved: remember what it lists now and reconcile soon.
@@ -110,7 +109,7 @@ impl WorktreeWatchers {
     /// apply it after a newer one and restart a watcher that one stopped.
     pub(in crate::app) fn reconcile(&self, bus: &Arc<ChangeBus>) {
         let mut running = self.running.lock().unwrap();
-        let roots = self.roots.lock().unwrap().clone();
+        let roots = crate::timing::resource_lock!(self.roots).unwrap().clone();
         let covered = bus.covered_worktrees();
         let wanted: BTreeMap<&str, &PathBuf> = roots
             .iter()

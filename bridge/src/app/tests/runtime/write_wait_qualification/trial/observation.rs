@@ -1,6 +1,10 @@
 //! Off-source split of the frozen coordinator; no execution evidence.
 use super::*;
 
+#[cfg(test)]
+#[path = "observation/pump_test_support.rs"]
+mod pump_test_support;
+
 pub(super) struct Ledger {
     pub(super) rows: BTreeMap<String, Row>,
     pub(super) violations: Vec<Violation>,

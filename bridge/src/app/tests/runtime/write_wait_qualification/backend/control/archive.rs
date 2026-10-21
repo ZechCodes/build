@@ -319,3 +319,7 @@ fn service_trace(
 fn us(duration: std::time::Duration) -> u64 {
     duration.as_micros().min(u64::MAX as u128) as u64
 }
+
+#[cfg(test)]
+#[path = "archive/tests.rs"]
+mod tests;

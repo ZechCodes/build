@@ -8,6 +8,7 @@ use std::time::Duration;
 const SESSION_ID: &str = "timing-session";
 const PATIENCE: Duration = Duration::from_secs(5);
 
+#[path = "timing_tests/write_wait.rs"]
 mod write_wait;
 
 fn blocked_handler(

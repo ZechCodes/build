@@ -13,6 +13,7 @@ mod cancellation;
 mod classification;
 mod history_reviews;
 mod races;
+mod roster_observations;
 mod snapshot_reads;
 
 struct Fixture {

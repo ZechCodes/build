@@ -142,20 +142,72 @@ pub(super) async fn answer(
     let clock = Arc::clone(&timer);
     blocking(Arc::clone(&timer), move || {
         let _lease = lease;
-        let mut outcome = Some(outcome);
-        let result = {
-            let app = clock.lock(&state);
-            session
-                .validate(&app, &frame, &action)
-                .and_then(|()| scope.as_ref().map_or(Ok(()), |scope| scope.validate(&app)))
-                .and_then(|()| outcome.take().unwrap().finish(&app))
-        };
-        // Rejected payloads and response serialization are dropped/run after
-        // the app guard, including when a final auth check rejected the read.
-        drop(outcome);
-        super::mcp_action_response(result)
+        finish(&state, &frame, &action, &clock, session, scope, outcome)
     })
     .await
+}
+
+fn finish(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+    action: &BridgeAction,
+    timer: &FrameTimer,
+    session: ReadSession,
+    scope: Option<ProjectScope>,
+    outcome: job::Outcome,
+) -> Value {
+    let mut outcome = Some(outcome);
+    let result = {
+        let app = timer.lock(state);
+        session
+            .validate(&app, frame, action)
+            .and_then(|()| scope.as_ref().map_or(Ok(()), |scope| scope.validate(&app)))
+            .and_then(|()| outcome.take().unwrap().finish(&app))
+    };
+    // Rejected payloads and response serialization are dropped/run after
+    // the app guard, including when a final auth check rejected the read.
+    drop(outcome);
+    super::mcp_action_response(result)
+}
+
+/// Drive the actual no-SQL adapter boundaries on one measured thread. The
+/// optional producer between them is deliberately outside the read's counter.
+#[cfg(test)]
+pub(super) fn probe_guarded_read(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+    before_final: impl FnOnce(),
+) -> (Value, usize) {
+    use crate::app::workspaces::count_path_canonicalizations;
+    let action = action(frame).expect("the fixture supplies an exact supported read");
+    assert!(
+        guarded::supports(&action),
+        "only no-SQL catalog/roster reads"
+    );
+    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+    let timer = clock.frame(super::MCP_CONTROL_METHOD);
+    let (admitted, admission_probes) =
+        count_path_canonicalizations(|| admit(state, frame, &action, &timer));
+    let Admitted {
+        session,
+        read,
+        lease,
+    } = match admitted {
+        Ok(admitted) => admitted,
+        Err(error) => return (super::mcp_action_response(Err(error)), admission_probes),
+    };
+    let PreparedRead { pool, query, scope } = read;
+    assert!(pool.is_none(), "the probe cannot bypass SQL pool ownership");
+    let (outcome, work_probes) = count_path_canonicalizations(|| match query(None) {
+        Ok(work) => work.run(),
+        Err(error) => job::Outcome::error(error),
+    });
+    before_final();
+    let (answer, final_probes) = count_path_canonicalizations(|| {
+        let _lease = lease;
+        finish(state, frame, &action, &timer, session, scope, outcome)
+    });
+    (answer, admission_probes + work_probes + final_probes)
 }
 
 async fn blocking<T: Send + 'static>(

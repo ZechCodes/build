@@ -57,6 +57,15 @@ pub(in crate::app) const MCP_CONTROL_METHOD: &str = "mcp.control";
 /// their SQL and external work runs without the app guard.
 pub(in crate::app) const CONTROL_FRAMES_AT_THE_LOCK: usize = 2;
 
+#[cfg(all(test, unix))]
+pub(in crate::app) fn probe_guarded_mcp_read(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+    before_final: impl FnOnce(),
+) -> (Value, usize) {
+    read_lane::probe_guarded_read(state, frame, before_final)
+}
+
 /// The arrival clock shared by every control stream and the bounded mutation
 /// turns used by writers and completion reports.
 pub(in crate::app) struct ControlPlane {

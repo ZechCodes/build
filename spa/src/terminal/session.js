@@ -113,6 +113,7 @@ export class TerminalSocket {
     // the demux, over whichever carrier the switch has it riding. A fresh
     // session is a fresh one of these.
     this._rpc = null;
+    this._stopEpoch = noop;
     this._onStatus = noop;
     this._closed = false;
     // termId → { kind, attachParams, termId, cols, rows, lastCursor, ackTimer,
@@ -484,9 +485,10 @@ export class TerminalSocket {
   /** Permanent close — no reconnect. */
   close() {
     this._closed = true;
+    this._stopEpoch();
     this._bindRecovery(null);
     this._switch.close();
-    this._rpc?.rideOn(null); // nothing is asked or answered on this session again
+    this._rpc?.close(new TerminalSocketLost("closed"));
     for (const entry of this._terms.values()) this._cancelPendingAck(entry);
     // Nobody is waiting for a connection that will never be attempted again.
     this._failConnectWaiters("closed");
@@ -510,6 +512,7 @@ export class TerminalSocket {
   }
 
   _openSession({ sessionId, sessionKeyB64, deviceId, bridgeEpoch }) {
+    this._stopEpoch();
     this._rpc?.close(new TerminalSocketLost("disconnected"));
     this._detachForeignProjectTerminals(deviceId);
     this._session = { sessionId, sessionKeyB64, deviceId };
@@ -524,6 +527,30 @@ export class TerminalSocket {
     // A push is a live terminal frame: everything a reply is not is routed to
     // the screen it names.
     this._rpc.onPush((payload) => this._applyPush(payload));
+    const rpc = this._rpc;
+    this._stopEpoch = rpc.bridgeEpoch.onChange((_current, previous) => {
+      if (previous && !this._closed && this._rpc === rpc) this._restartEpoch();
+    });
+  }
+
+  /** A new process has no old attachments or cursor acknowledgements. Retire
+   * the opening before asking its owner to mint another one on this carrier. */
+  _restartEpoch() {
+    const session = this._session;
+    this._stopEpoch();
+    this._rpc?.close(new TerminalSocketLost("disconnected"));
+    this._rpc = null;
+    this._connected = false;
+    this._bindRecovery(null);
+    this._orphanFrames.clear();
+    for (const entry of this._terms.values()) {
+      this._cancelPendingAck(entry);
+      entry.lastCursor = 0;
+      entry.attached = false;
+      entry.preAttach = [];
+    }
+    this._report("connecting");
+    if (!this._closed && this._session === session) this._onTermUnresponsive();
   }
 
   /**

@@ -342,8 +342,8 @@ Bridge journal execution and paged result references are outside this scope.
 | Account, paired device and principal isolate durable intent and its visible layers; missing authenticated shell identity cannot select a namespace. | `writeOperationCache.test.js` namespace/deactivation tests and `writeOperationRuntime.test.js` authenticated metadata tests. | 10/10 |
 | A durable send cannot precede committed intent, and storage failure cannot claim acceptance. | `writeOperations.test.js` persistence-before-transport and refused-storage tests; cache transaction rollback preserves the original provisional row. | 10/10 |
 | Genuine durable ack is success; a receipt, timeout, cancellation or lost carrier cannot invent success or delete intent. | `sessionRpc.test.js` receipt/ack/late-frame tests and `writeOperations.test.js` local-cancellation and same-ID recovery tests. | 10/10 |
-| Current greeting authority fences every application and terminal frame before correlation, credits or cache mutation. Uncorrelated epochs cannot establish authority. | `bridgeEpoch.test.js`, `sessionRpc.test.js` preauthority/mismatched-epoch tests and terminal epoch regressions. | 10/10 |
-| Journal changes and acknowledged-but-missing records remain unresolved without replay; unknown result references cannot resolve an action successfully. | `writeOperations.test.js` journal quarantine, missing-record and result-reference/expired-result tests. | 10/10 |
+| Current greeting authority fences every application and terminal frame before correlation, credits or cache mutation. Uncorrelated epochs cannot establish authority; replaced carriers cannot answer new write requests or publish to their replacement subscription. | `bridgeEpoch.test.js`, `sessionRpc.test.js` preauthority/mismatched-epoch tests, `connectionWriteCarrier.test.js` real-session carrier migration and terminal epoch regressions. | 10/10 |
+| Journal changes and acknowledged-but-missing records remain unresolved without replay; unknown result references cannot resolve an action successfully. Old quarantine and expiry updates cannot overwrite a newer binding or revision. | `writeOperations.test.js` journal quarantine, delayed metadata updates, direct/summary result references and expired-result regressions. | 10/10 |
 | Cross-tab transport uses an expiring lease, renewed through asynchronous handoff and status retries; duplicate callbacks cannot regress durable revision. | Cache lease/transaction tests, `writeOperationWorker.test.js`, delayed-handoff and reordered-frame service regressions. | 10/10 |
 | Ordered layers use owner kind, ID and generation, remain separate from canonical writes, and retire only against matching publication evidence. | `writeOperationCache.test.js` generation, owner ordering, canonical mutation and complete-publication tests. | 10/10 |
 | Publication cannot erase accepted task floors or permit an older detail read to overwrite a confirmed comment. | Atomic publication/read-note tests in `writeOperationCache.test.js` and captured-base/detail-basis tests in `writeOperationRefresh.test.js`. | 10/10 |
@@ -357,3 +357,9 @@ before their fixes. A further empty-overlay refresh regression failed first,
 then 89 cache/service/refresh tests passed after inactive empty layers stopped
 holding a completed refresh open. Full merged-main SPA gates remain the task's handoff gate;
 this scoped score is not a claim that those gates have already passed.
+
+Review follow-ups also pin one oldest-128 replacement subscription, overflow
+status pages, subscriber-only confirmations, same-ID recovery and all six
+status states. Subscription continuations use status with the same IDs;
+both status and subscribe share the eight SQL sender credits. These regressions
+failed before their fixes and passed in the focused service/RPC runs.

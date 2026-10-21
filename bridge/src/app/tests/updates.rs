@@ -142,6 +142,29 @@ fn update_fixture_replaceable(
     )
 }
 
+#[test]
+fn installing_status_sends_a_best_effort_restart_notice_before_the_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = update_fixture(dir.path(), false);
+    let mut status = service.status();
+    let (sender, mut wire, key) = SessionSender::observable("restart-notice");
+    assert!(crate::app::updates::push_status(&sender, &status));
+    let idle = SessionSender::decrypt_push(&key, &wire.try_recv().unwrap());
+    assert_eq!(idle["type"], "bridge.update_status");
+    assert!(wire.try_recv().is_err());
+
+    status.state = UpdateState::Installing;
+    assert!(crate::app::updates::push_status(&sender, &status));
+    let restarting = SessionSender::decrypt_push(&key, &wire.try_recv().unwrap());
+    assert_eq!(restarting["type"], "bridge.restarting");
+    assert_eq!(restarting["bridge_epoch"], sender.bridge_epoch());
+    let installing = SessionSender::decrypt_push(&key, &wire.try_recv().unwrap());
+    assert_eq!(installing["state"], "installing");
+    assert_eq!(installing["bridge_epoch"], restarting["bridge_epoch"]);
+    drop(wire);
+    assert!(!crate::app::updates::push_status(&sender, &status));
+}
+
 fn pending_turn(root: &Path) -> PendingAgentTurn {
     PendingAgentTurn {
         operation_id: None,
@@ -252,6 +275,7 @@ async fn update_status_rpc_push_probe() {
     assert_eq!(reply["ok"], true, "{reply}");
     let mut event_status = legacy_event.clone();
     event_status.as_object_mut().unwrap().remove("type");
+    event_status.as_object_mut().unwrap().remove("bridge_epoch");
     assert_eq!(reply["result"], event_status);
     println!(
         "BRIDGE_UPDATE_WIRE={}",

@@ -317,6 +317,39 @@ async fn the_greeting_and_the_probe_report_the_api_version() {
     assert_eq!(ping["result"]["api_version"], API_VERSION, "{ping:?}");
 }
 
+#[tokio::test]
+async fn the_greeting_reports_the_sending_process_and_persisted_journal_identity() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+    let (sender, _, _) = SessionSender::observable("epoch-greeting");
+    let first = handler.call(sender.clone(), req("session.hello", json!({})));
+    let incarnation = first["result"]["journal_incarnation"]
+        .as_str()
+        .expect("persistent greeting carries journal identity")
+        .to_owned();
+    assert!(uuid::Uuid::parse_str(&incarnation).is_ok());
+    assert_eq!(first["result"]["bridge_epoch"], sender.bridge_epoch());
+    assert_eq!(
+        incarnation,
+        state
+            .lock()
+            .unwrap()
+            .require_store()
+            .unwrap()
+            .journal_incarnation()
+    );
+
+    // Reconstructing an app or replacing a carrier in the same process is not
+    // a daemon restart, and reopening the journal preserves its identity.
+    let (_, reopened) = shared_qa_state_and_handler(&repo, dir.path());
+    let second = call(&reopened, "session.hello", json!({}));
+    assert_eq!(
+        second["result"]["bridge_epoch"],
+        first["result"]["bridge_epoch"]
+    );
+    assert_eq!(second["result"]["journal_incarnation"], incarnation);
+}
+
 /// What a client declares about itself is counted per live session, by the
 /// range it asked for, so dropping a major is a decision made from numbers.
 /// A session that declared nothing — or nonsense — is a live client too, and

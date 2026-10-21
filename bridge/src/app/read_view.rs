@@ -359,6 +359,7 @@ impl ReadViewSlot {
 }
 
 mod service;
+pub(in crate::app) use service::filter_project_workers;
 
 #[cfg(test)]
 mod map_sharing;

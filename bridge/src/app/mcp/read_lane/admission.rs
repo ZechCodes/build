@@ -1,115 +1,107 @@
-use super::{AppState, BridgeAction};
-use crate::app::mcp::{authenticated_mcp_owner, AddressedSession, McpConversationGeneration};
+use super::service::{Inputs, ProjectScope};
+use crate::app::read_context::IssuedCodingAddress;
+use crate::app::runtime::sessions::{McpIssuer, RouterAuthority};
+use crate::mcp::BridgeAction;
 use serde_json::Value;
-use std::path::PathBuf;
 
 pub(super) struct ReadSession {
-    pub(super) endpoint: AddressedSession,
+    endpoint: McpIssuer,
 }
 
 impl ReadSession {
     pub(super) fn authenticate(
-        app: &AppState,
+        inputs: &Inputs,
         frame: &Value,
         action: &BridgeAction,
     ) -> Result<Self, String> {
-        let agent =
-            authenticated_mcp_owner(frame, &app.session_registry).ok_or_else(unauthorized)?;
-        let endpoint = app
-            .addressed_session(agent.into())
-            .ok_or_else(unauthorized)?;
-        if let AddressedSession::Coding(generation) = &endpoint {
-            generation.guard(app)?;
+        let endpoint = authenticate_token(inputs, frame)?;
+        if let McpIssuer::Coding(issued) = &endpoint {
+            // The token's stable installation address must have committed.
+            let current = inputs
+                .addresses
+                .issued_address(&issued.agent)
+                .map_err(|_| unauthorized())?;
+            if current != *issued {
+                return Err(unauthorized());
+            }
+            guard_source(inputs, issued, &current)?;
         }
-        check_surface(app, &endpoint, action)?;
+        check_surface(inputs, &endpoint, action)?;
         Ok(Self { endpoint })
     }
 
-    pub(super) fn coding(&self) -> Result<&McpConversationGeneration, String> {
+    pub(super) fn coding(&self) -> Result<&IssuedCodingAddress, String> {
         match &self.endpoint {
-            AddressedSession::Coding(generation) => Ok(generation),
-            _ => Err(unauthorized()),
+            McpIssuer::Coding(issued) => Ok(issued),
+            McpIssuer::Router(_) => Err(unauthorized()),
         }
     }
 
     pub(super) fn project(
         &self,
-        app: &AppState,
+        inputs: &Inputs,
         on_rebind: String,
     ) -> Result<ProjectScope, String> {
-        let owner = &self.coding()?.entity_id;
-        let id = app
-            .projects
-            .project_id_of(owner)
-            .ok_or_else(|| format!("{owner} belongs to no project"))?;
-        let project = app
-            .projects
-            .get(id)
-            .ok_or_else(|| format!("unknown project_id: {id}"))?;
-        Ok(ProjectScope {
-            owner: owner.clone(),
-            id: id.into(),
-            path: project.repo_path.clone(),
-            on_rebind,
-        })
+        ProjectScope::capture(inputs, &self.coding()?.owner, on_rebind)
     }
 
     pub(super) fn validate(
         &self,
-        app: &AppState,
+        inputs: &Inputs,
         frame: &Value,
         action: &BridgeAction,
     ) -> Result<(), String> {
-        let agent =
-            authenticated_mcp_owner(frame, &app.session_registry).ok_or_else(unauthorized)?;
-        let current = app
-            .addressed_session(agent.into())
-            .ok_or_else(unauthorized)?;
+        // Authentication still runs even when query work returned an error.
+        let current = authenticate_token(inputs, frame)?;
         match (&self.endpoint, &current) {
-            (AddressedSession::Coding(before), AddressedSession::Coding(after))
-                if before.entity_id == after.entity_id && before.agent_id == after.agent_id =>
+            (McpIssuer::Coding(before), McpIssuer::Coding(after))
+                if before.owner == after.owner && before.agent == after.agent =>
             {
-                // Keep the existing reset refusal rather than retargeting
-                // the captured request to the new thread generation.
-                before.guard(app)?;
+                // Preserve reset/binding refusals before generic issuer mismatch.
+                let saved = inputs
+                    .addresses
+                    .issued_address(&after.agent)
+                    .map_err(|_| unauthorized())?;
+                if before.owner != saved.owner || before.agent != saved.agent {
+                    return Err(unauthorized());
+                }
+                guard_source(inputs, before, &saved)?;
+                if saved != *after {
+                    return Err(unauthorized());
+                }
             }
-            _ if self.endpoint != current => return Err(unauthorized()),
-            _ => {}
+            (McpIssuer::Router(before), McpIssuer::Router(after)) if before == after => {
+                validate_router(inputs, before)?;
+            }
+            _ => return Err(unauthorized()),
         }
         if self.endpoint != current {
             return Err(unauthorized());
         }
-        check_surface(app, &current, action)
+        check_surface(inputs, &current, action)
     }
 }
 
-pub(super) struct ProjectScope {
-    owner: String,
-    pub(super) id: String,
-    pub(super) path: PathBuf,
-    on_rebind: String,
+fn authenticate_token(inputs: &Inputs, frame: &Value) -> Result<McpIssuer, String> {
+    let agent = frame
+        .get("task_id")
+        .and_then(Value::as_str)
+        .ok_or_else(unauthorized)?;
+    let supplied = frame
+        .get("session_token")
+        .and_then(Value::as_str)
+        .ok_or_else(unauthorized)?;
+    inputs
+        .authority
+        .authenticate_token(agent, supplied)
+        .ok_or_else(unauthorized)
 }
 
-impl ProjectScope {
-    pub(super) fn validate(&self, app: &AppState) -> Result<(), String> {
-        let current = app
-            .projects
-            .project_id_of(&self.owner)
-            .ok_or_else(|| format!("{} belongs to no project", self.owner))?;
-        if current != self.id {
-            return Err(self.on_rebind.clone());
-        }
-        if app
-            .projects
-            .get(&self.id)
-            .is_none_or(|project| project.repo_path != self.path)
-        {
-            return Err(format!("unknown project_id: {}", self.id));
-        }
-        if app.project_deletion_in_progress {
-            return Err(crate::app::rpc::PROJECT_DELETION_IN_PROGRESS.into());
-        }
+fn validate_router(inputs: &Inputs, router: &RouterAuthority) -> Result<(), String> {
+    if inputs.authority.router_is_current(router) {
         Ok(())
+    } else {
+        Err(unauthorized())
     }
 }
 
@@ -118,20 +110,18 @@ fn unauthorized() -> String {
 }
 
 fn check_surface(
-    app: &AppState,
-    endpoint: &AddressedSession,
+    inputs: &Inputs,
+    endpoint: &McpIssuer,
     action: &BridgeAction,
 ) -> Result<(), String> {
     match endpoint {
-        AddressedSession::Router { .. } if !action.allowed_on(crate::mcp::McpSurface::Router) => {
-            Err(format!(
-                "{} is a {} tool; this session routes captures",
-                action.tool_name(),
-                action.surface_name()
-            ))
-        }
-        AddressedSession::Coding(generation) => {
-            let surface = app.agent_mcp_surface(&generation.entity_id, &generation.agent_id);
+        McpIssuer::Router(_) if !action.allowed_on(crate::mcp::McpSurface::Router) => Err(format!(
+            "{} is a {} tool; this session routes captures",
+            action.tool_name(),
+            action.surface_name()
+        )),
+        McpIssuer::Coding(issued) => {
+            let surface = inputs.addresses.surface(&issued.owner, &issued.agent)?;
             if action.allowed_on(surface) {
                 Ok(())
             } else {
@@ -145,4 +135,21 @@ fn check_surface(
         }
         _ => Ok(()),
     }
+}
+
+/// Legacy coding admission resolves the CURRENT binding, then checks reservation
+/// and the captured thread. It never reports old conversation_id first.
+fn guard_source(
+    inputs: &Inputs,
+    captured: &IssuedCodingAddress,
+    current: &IssuedCodingAddress,
+) -> Result<(), String> {
+    inputs.guard_reservation(&current.conversation)?;
+    if current.thread_id != captured.thread_id || current.generation != captured.generation {
+        return Err(format!(
+            "stale thread_id {}; current thread is {}",
+            captured.thread_id, current.thread_id
+        ));
+    }
+    Ok(())
 }

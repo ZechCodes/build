@@ -138,7 +138,7 @@ fn mcp_cold_rosters_refuse_without_probing_or_warming_inputs() {
     let fixture = Fixture::new();
     {
         let mut app = fixture.state.lock().unwrap();
-        app.snapshot_observations = Default::default();
+        make_rosters_cold(&mut app);
     }
     let before = fixture.state.lock().unwrap().read_view.load();
     for action in [
@@ -167,7 +167,7 @@ fn mcp_roster_final_check_refuses_lost_observations_without_probing() {
         };
         let (answer, probes) =
             probe_guarded_mcp_read(&fixture.state, &fixture.frame(action), || {
-                fixture.state.lock().unwrap().snapshot_observations = Default::default();
+                make_rosters_cold(&mut fixture.state.lock().unwrap());
             });
         assert_eq!(answer, json!({"ok":false,"error":COLD_ROSTER}));
         assert_eq!(probes, 0);
@@ -206,4 +206,20 @@ fn mcp_observed_roster_keeps_the_target_generation_final_fence() {
     });
     assert_eq!(answer, json!({"ok":false,"error":expected.unwrap()}));
     assert_eq!(probes, 0);
+}
+
+fn make_rosters_cold(app: &mut AppState) {
+    app.snapshot_observations = Default::default();
+    let before = app.read_view.load();
+    let board = before.get_shared("board.list", "").unwrap().clone();
+    let delta = crate::app::read_view::SnapshotDelta::new(app.read_view.next_version()).put_shared(
+        "board.list",
+        "",
+        board,
+    );
+    assert!(app.read_view.publish_delta(delta));
+    assert!(
+        app.read_view.load().global.is_none(),
+        "accepted immutable readiness must really be invalidated"
+    );
 }

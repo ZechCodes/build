@@ -120,7 +120,7 @@ fn missing(method: &str, owner: &str) -> Result<Value, ApiError> {
     }
 }
 
-fn filter_project_workers(params: &Value, answer: &mut Value) {
+pub(in crate::app) fn filter_project_workers(params: &Value, answer: &mut Value) {
     if params["include_project_workers"].as_bool() == Some(true) {
         return;
     }

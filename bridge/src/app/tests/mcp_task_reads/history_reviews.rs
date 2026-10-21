@@ -176,8 +176,7 @@ async fn mcp_history_router_read_matches_full_transcript_and_errors_without_writ
     let (capture, router) = {
         let mut app = fixture.state.lock().unwrap();
         let pair = crate::app::tests::routing::router::captured(&mut app, "history-only router");
-        app.session_registry
-            .test_install_token(pair.1.clone(), TOKEN.into());
+        app.test_install_mcp_token(pair.1.clone(), TOKEN.into());
         app.delivery_queue.clear_queued();
         pair
     };
@@ -351,7 +350,7 @@ async fn mcp_history_review_read_refusals_keep_tool_specific_error_envelopes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_review_external_work_releases_sql_and_app_with_both_turns_held() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     let action = review_actions(&fixture).remove(1);
     let expected = legacy_review(&fixture, action.clone()).await;
     assert_eq!(expected["ok"], true, "{expected}");
@@ -370,8 +369,10 @@ async fn mcp_review_external_work_releases_sql_and_app_with_both_turns_held() {
     };
     sentry(&fixture);
     let before = fixture.state.lock().unwrap().read_view.load();
+    super::guardfree::held::recapture_plane(&mut fixture);
     let turns = fixture.held_turns().await;
-    let paused = pause_read(&fixture, fixture.frame(action), external).await;
+    let frame = fixture.frame(action);
+    let paused = pause_read(&fixture, frame, external).await;
     assert!(
         fixture.state.try_lock().is_ok(),
         "review external work retained app mutex"
@@ -464,12 +465,10 @@ async fn mcp_history_reads_resolve_cross_owner_aliases_to_canonical_stored_histo
         app.edit_agent_record("test canonical history alias", &owner, &agent, |record| {
             record.bind_conversation(&fixture.agent);
         });
-        app.session_registry
-            .test_install_token(agent.clone(), TOKEN.into());
+        app.test_install_mcp_token(agent.clone(), TOKEN.into());
         let (capture, router) =
             crate::app::tests::routing::router::captured(&mut app, "alias history router");
-        app.session_registry
-            .test_install_token(router.clone(), TOKEN.into());
+        app.test_install_mcp_token(router.clone(), TOKEN.into());
         (owner, agent, capture, router)
     };
     let search = BridgeAction::SearchConversation {
@@ -522,7 +521,7 @@ async fn mcp_history_reads_resolve_cross_owner_aliases_to_canonical_stored_histo
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_history_router_query_rejects_target_reset_or_rebind_after_admission() {
     for reset in [false, true] {
-        let fixture = Fixture::new();
+        let mut fixture = Fixture::new();
         history(&fixture);
         let (router, replacement) = {
             let mut app = fixture.state.lock().unwrap();
@@ -530,8 +529,7 @@ async fn mcp_history_router_query_rejects_target_reset_or_rebind_after_admission
             let replacement_agent = primary_agent_id(&app, &replacement);
             let (_, router) =
                 crate::app::tests::routing::router::captured(&mut app, "frozen target router");
-            app.session_registry
-                .test_install_token(router.clone(), TOKEN.into());
+            app.test_install_mcp_token(router.clone(), TOKEN.into());
             (router, replacement_agent)
         };
         let action = BridgeAction::ReadConversation {
@@ -544,6 +542,7 @@ async fn mcp_history_router_query_rejects_target_reset_or_rebind_after_admission
         let (gate, paused) = OffLockGate::new();
         fixture.state.lock().unwrap().off_lock_gate = Some(gate);
         sentry(&fixture);
+        super::guardfree::held::recapture_plane(&mut fixture);
         let turns = fixture.held_turns().await;
         let paused = pause_read(&fixture, frame, paused).await;
         let after_mutation = {
@@ -588,7 +587,7 @@ async fn mcp_history_router_query_rejects_target_reset_or_rebind_after_admission
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_history_store_free_search_keeps_existing_no_project_admission() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     {
         let mut app = fixture.state.lock().unwrap();
         let mut active = app.take_run(&fixture.owner).unwrap();
@@ -609,6 +608,7 @@ async fn mcp_history_store_free_search_keeps_existing_no_project_admission() {
         app.read_context.store(None);
         app.initialize_read_context();
     }
+    super::guardfree::held::recapture_plane(&mut fixture);
     let action = BridgeAction::SearchConversation {
         query: crate::thread::ConversationQuery {
             text: Some("in-memory history witness".into()),
@@ -637,8 +637,7 @@ async fn mcp_history_router_preserves_message_failure_tail_but_rejects_invalid_m
                 &mut app,
                 "corruption boundary router",
             );
-            app.session_registry
-                .test_install_token(pair.1.clone(), TOKEN.into());
+            app.test_install_mcp_token(pair.1.clone(), TOKEN.into());
             pair
         };
         let action = BridgeAction::ReadConversation {

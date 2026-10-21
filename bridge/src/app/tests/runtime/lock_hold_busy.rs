@@ -174,8 +174,7 @@ impl Busy {
             );
             logs.push(log);
             app.session_registry.test_insert_tab(key, tab);
-            app.session_registry
-                .test_install_token(agent.clone(), format!("busy-token-{agent}"));
+            app.test_install_mcp_token(agent.clone(), format!("busy-token-{agent}"));
         }
         app.session_locator_factory =
             Arc::new(|_, _| panic!("busy fixture must reuse simulated sessions"));
@@ -516,7 +515,7 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
     assert_eq!(isolated["ok"], true, "{isolated}");
     println!("TASK709_ISOLATED {}", busy.samples.snapshot());
     busy.samples.clear();
-    let plane = ControlPlane::new(Arc::clone(&busy.state.lock().unwrap().frame_clock));
+    let plane = ControlPlane::new(&busy.state.lock().unwrap());
     let intake = FrameIntake::with_pool(
         AppState::handler(Arc::clone(&busy.state)),
         crate::transport::generate_transport_keypair(),

@@ -6,8 +6,7 @@ pub(super) fn router(fixture: &Fixture) -> (String, String) {
     let mut app = fixture.state.lock().unwrap();
     let (capture, agent) =
         super::super::routing::router::captured(&mut app, "published read-lane route");
-    app.session_registry
-        .test_install_token(agent.clone(), TOKEN.into());
+    app.test_install_mcp_token(agent.clone(), TOKEN.into());
     app.publish_all_snapshot_projection();
     (capture, agent)
 }
@@ -168,12 +167,11 @@ async fn mcp_snapshot_lists_refuse_unknown_tokens_and_unbound_scope_without_writ
             json!({"ok":false,"error":"unauthorized MCP session"})
         );
     }
-    fixture
-        .state
-        .lock()
-        .unwrap()
-        .projects
-        .unbind_entity(&fixture.owner);
+    {
+        let mut app = fixture.state.lock().unwrap();
+        app.projects.unbind_entity(&fixture.owner);
+        app.publish_read_metadata();
+    }
     let mut frame = fixture.frame(BridgeAction::ListWorkspaces);
     frame["request"]["project_id"] = json!(fixture.project);
     assert_eq!(

@@ -1,9 +1,10 @@
 //! Immutable producer snapshots for maintenance-shaped MCP list tools.
+use super::service::{Inputs, McpReadService};
 use super::{PreparedRead, ReadSession, ReadWork};
 use crate::app::read_view::SharedJson;
-use crate::app::AppState;
 use crate::mcp::BridgeAction;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 pub(super) fn supports(action: &BridgeAction) -> bool {
     matches!(
@@ -13,20 +14,21 @@ pub(super) fn supports(action: &BridgeAction) -> bool {
 }
 
 pub(super) fn prepare(
-    app: &mut AppState,
+    _service: &McpReadService,
+    inputs: &Arc<Inputs>,
     session: &ReadSession,
     action: &BridgeAction,
 ) -> Option<Result<PreparedRead, String>> {
     match action {
         BridgeAction::ListProjects | BridgeAction::ListWork | BridgeAction::ListWorkspaces => {
-            Some(capture(app, session, action))
+            Some(capture(inputs, session, action))
         }
         _ => None,
     }
 }
 
 fn capture(
-    app: &AppState,
+    inputs: &Inputs,
     session: &ReadSession,
     action: &BridgeAction,
 ) -> Result<PreparedRead, String> {
@@ -34,19 +36,16 @@ fn capture(
         BridgeAction::ListProjects => ("project.list", String::new(), None),
         BridgeAction::ListWork => ("board.list", String::new(), None),
         BridgeAction::ListWorkspaces => {
-            let caller = &session.coding()?.entity_id;
-            let project = app
-                .projects
-                .project_id_of(caller)
-                .ok_or_else(|| format!("{caller} belongs to no project"))?;
-            let scope = session.project(app, format!("unknown project_id: {project}"))?;
+            let caller = &session.coding()?.owner;
+            let (project, _) = inputs.project(caller)?;
+            let scope = session.project(inputs, format!("unknown project_id: {project}"))?;
             ("workspace.list", scope.id.clone(), Some(scope))
         }
         _ => unreachable!("only exact snapshot list actions reach capture"),
     };
     // Retain just the accepted immutable fragment. Materializing a large list
-    // and formatting the router digest happens after the admission guard ends.
-    let value = app.read_view.load().get_shared(method, &owner).cloned();
+    // and formatting the router digest happens in independent work.
+    let value = inputs.view.get_shared(method, &owner).cloned();
     let value = match value {
         Some(value) => value,
         None if method == "workspace.list" => SharedJson::value(json!({"workspaces":[]})),

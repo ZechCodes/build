@@ -40,8 +40,7 @@ async fn mcp_history_router_message_failure_rejects_old_generation_accepted_hist
             &mut app,
             "new generation fallback router",
         );
-        app.session_registry
-            .test_install_token(router.clone(), TOKEN.into());
+        app.test_install_mcp_token(router.clone(), TOKEN.into());
         // Model a previously accepted root whose history replacement lagged
         // or was rejected, while canonical Store/live state already reset.
         let delta = crate::app::read_view::SnapshotDelta::new(app.read_view.next_version())

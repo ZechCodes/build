@@ -1,10 +1,10 @@
-use super::{AppState, ProjectScope};
+use super::service::{Inputs, ProjectScope};
 use crate::store::{ReadConnection, ReadPool};
 use serde_json::Value;
 
 type Query = Box<dyn FnOnce(Option<&mut ReadConnection>) -> Result<ReadWork, String> + Send>;
 type Run = Box<dyn FnOnce() -> Result<Value, String> + Send>;
-type Finalize = Box<dyn FnOnce(&AppState, Value) -> Result<Value, String> + Send>;
+type Finalize = Box<dyn FnOnce(&Inputs, Value) -> Result<Value, String> + Send>;
 
 pub(super) struct PreparedRead {
     pub(super) pool: Option<ReadPool>,
@@ -22,10 +22,6 @@ impl PreparedRead {
             query: Box::new(query),
             scope: None,
         }
-    }
-
-    pub(super) fn ready(result: Result<Value, String>) -> Self {
-        Self::query(None, move |_| Ok(ReadWork::result(result)))
     }
 
     pub(super) fn for_project(mut self, scope: ProjectScope) -> Self {
@@ -51,10 +47,11 @@ impl ReadWork {
         }
     }
 
-    /// Finalizers perform immutable checks/decoration only, never SQL or I/O.
+    /// Finalizers use freshly loaded immutable inputs for checks/decoration;
+    /// no application handle, SQL connection or filesystem work is available.
     pub(super) fn finish_with(
         mut self,
-        finalize: impl FnOnce(&AppState, Value) -> Result<Value, String> + Send + 'static,
+        finalize: impl FnOnce(&Inputs, Value) -> Result<Value, String> + Send + 'static,
     ) -> Self {
         self.finalize = Box::new(finalize);
         self
@@ -81,9 +78,9 @@ impl Outcome {
         }
     }
 
-    pub(super) fn finish(self, app: &AppState) -> Result<Value, String> {
+    pub(super) fn finish(self, inputs: &Inputs) -> Result<Value, String> {
         match self.finalize {
-            Some(finalize) => self.result.and_then(|value| finalize(app, value)),
+            Some(finalize) => self.result.and_then(|value| finalize(inputs, value)),
             None => self.result,
         }
     }

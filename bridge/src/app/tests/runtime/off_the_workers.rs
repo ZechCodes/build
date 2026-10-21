@@ -298,7 +298,7 @@ fn a_tool_call(agent: &mut std::os::unix::net::UnixStream) {
 async fn an_agents_tool_call_waits_for_the_app_mutex_off_the_workers() {
     let dir = tempfile::tempdir().unwrap();
     let state = unrooted_state(dir.path());
-    let plane = crate::app::mcp::ControlPlane::new(Arc::clone(&state.lock().unwrap().frame_clock));
+    let plane = crate::app::mcp::ControlPlane::new(&state.lock().unwrap());
     let mut agent = an_agent_on(&state, &plane);
 
     the_worker_progresses_while_the_lock_is_held(&state, || a_tool_call(&mut agent)).await;
@@ -318,7 +318,7 @@ async fn a_dozen_agents_tool_calls_take_turns_at_the_app_mutex() {
 
     let dir = tempfile::tempdir().unwrap();
     let state = unrooted_state(dir.path());
-    let plane = crate::app::mcp::ControlPlane::new(Arc::clone(&state.lock().unwrap().frame_clock));
+    let plane = crate::app::mcp::ControlPlane::new(&state.lock().unwrap());
     let mut agents: Vec<_> = (0..12).map(|_| an_agent_on(&state, &plane)).collect();
 
     the_worker_progresses_while_the_lock_is_held(&state, || {
@@ -366,7 +366,7 @@ async fn a_slow_workspace_operation_gives_its_turn_back_while_its_git_runs() {
     let dir = tempfile::tempdir().unwrap();
     let state = unrooted_state(dir.path());
     let clock = Arc::clone(&state.lock().unwrap().frame_clock);
-    let plane = ControlPlane::new(Arc::clone(&clock));
+    let plane = ControlPlane::new(&state.lock().unwrap());
     let (started, running) = std::sync::mpsc::channel();
     let mut finishes = Vec::new();
     let mut slow = Vec::new();

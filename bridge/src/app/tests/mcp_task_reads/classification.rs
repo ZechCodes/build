@@ -82,8 +82,7 @@ async fn task_read_router_and_unbound_owner_refusals_keep_their_existing_envelop
         let mut app = fixture.state.lock().unwrap();
         let (_, router) = crate::app::tests::routing::router::captured(&mut app, "read refusal");
         app.delivery_queue.clear_queued();
-        app.session_registry
-            .test_install_token(router.clone(), TOKEN.into());
+        app.test_install_mcp_token(router.clone(), TOKEN.into());
         router
     };
     let held = fixture.held_turns().await;
@@ -93,12 +92,11 @@ async fn task_read_router_and_unbound_owner_refusals_keep_their_existing_envelop
         fixture.reply(frame).await,
         json!({"ok":false,"error":"get_task is a coding tool; this session routes captures"})
     );
-    fixture
-        .state
-        .lock()
-        .unwrap()
-        .projects
-        .unbind_entity(&fixture.owner);
+    {
+        let mut app = fixture.state.lock().unwrap();
+        app.projects.unbind_entity(&fixture.owner);
+        app.publish_read_metadata();
+    }
     assert_eq!(
         fixture.reply(fixture.frame(fixture.get())).await,
         json!({"ok":false,"error":format!("{} belongs to no project",fixture.owner)})

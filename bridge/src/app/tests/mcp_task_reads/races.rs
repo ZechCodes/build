@@ -1,8 +1,9 @@
 use super::*;
 
-async fn paused_read(fixture: &Fixture) -> (OffLockGateHandle, tokio::task::JoinHandle<Value>) {
+async fn paused_read(fixture: &mut Fixture) -> (OffLockGateHandle, tokio::task::JoinHandle<Value>) {
     let (gate, held) = OffLockGate::new();
     fixture.state.lock().unwrap().off_lock_gate = Some(gate);
+    super::guardfree::held::recapture_plane(fixture);
     let reading = tokio::spawn(socket_reply(
         Arc::clone(&fixture.state),
         Arc::clone(&fixture.plane),
@@ -25,14 +26,13 @@ async fn paused_read(fixture: &Fixture) -> (OffLockGateHandle, tokio::task::Join
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_task_read_rechecks_revoked_token_after_query_admission() {
-    let fixture = Fixture::new();
-    let (held, reading) = paused_read(&fixture).await;
+    let mut fixture = Fixture::new();
+    let (held, reading) = paused_read(&mut fixture).await;
     fixture
         .state
         .lock()
         .unwrap()
-        .session_registry
-        .test_install_token(fixture.agent.clone(), "replacement-capability".into());
+        .test_install_mcp_token(fixture.agent.clone(), "replacement-capability".into());
     held.release();
     assert_eq!(
         reading.await.unwrap(),
@@ -42,14 +42,14 @@ async fn mcp_task_read_rechecks_revoked_token_after_query_admission() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_task_read_rechecks_generation_even_when_capability_is_reinstalled() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     let generation = fixture
         .state
         .lock()
         .unwrap()
         .mcp_conversation_generation(&fixture.owner, &fixture.agent)
         .unwrap();
-    let (held, reading) = paused_read(&fixture).await;
+    let (held, reading) = paused_read(&mut fixture).await;
     let expected = {
         let mut app = fixture.state.lock().unwrap();
         let reply = app.handle(req(
@@ -59,8 +59,7 @@ async fn mcp_task_read_rechecks_generation_even_when_capability_is_reinstalled()
             "expected_thread_id":generation.thread_id}),
         ));
         assert_eq!(reply["ok"], true, "{reply}");
-        app.session_registry
-            .test_install_token(fixture.agent.clone(), TOKEN.into());
+        app.test_install_mcp_token(fixture.agent.clone(), TOKEN.into());
         assert_eq!(
             crate::app::mcp::authenticated_mcp_owner(
                 &fixture.frame(fixture.get()),
@@ -78,17 +77,16 @@ async fn mcp_task_read_rechecks_generation_even_when_capability_is_reinstalled()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_task_read_rechecks_project_binding_after_query_admission() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     let (_other_home, other_repo) = init_repo();
     let other =
         super::super::project_agent::added_project(&mut fixture.state.lock().unwrap(), &other_repo);
-    let (held, reading) = paused_read(&fixture).await;
-    fixture
-        .state
-        .lock()
-        .unwrap()
-        .projects
-        .bind_entity(fixture.owner.clone(), other);
+    let (held, reading) = paused_read(&mut fixture).await;
+    {
+        let mut app = fixture.state.lock().unwrap();
+        app.projects.bind_entity(fixture.owner.clone(), other);
+        app.publish_read_metadata();
+    }
     held.release();
     assert_eq!(
         reading.await.unwrap(),

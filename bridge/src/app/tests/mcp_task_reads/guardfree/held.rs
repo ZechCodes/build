@@ -124,8 +124,8 @@ pub(super) async fn group(
 
 /// Test setup can install independent handles before the immutable service is
 /// captured. No request is allowed to discover those handles through AppState.
-pub(super) fn recapture_plane(fixture: &mut Fixture) {
-    fixture.plane = ControlPlane::new(fixture.state.lock().unwrap().frame_clock.clone());
+pub(in crate::app::tests::mcp_task_reads) fn recapture_plane(fixture: &mut Fixture) {
+    fixture.plane = ControlPlane::new(&fixture.state.lock().unwrap());
 }
 
 pub(super) async fn pause(

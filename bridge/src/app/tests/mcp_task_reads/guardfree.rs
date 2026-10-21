@@ -1,7 +1,7 @@
 //! Actual control sockets must make progress without either AppState guard.
 use super::*;
 
-mod held;
+pub(super) mod held;
 
 fn legacy_request(fixture: &Fixture, action: BridgeAction) -> held::Request {
     let expected = fixture.legacy(action.clone());
@@ -247,12 +247,17 @@ async fn mcp_guardfree_old_token_lease_cannot_revoke_replacement() {
     let before = fixture.state.lock().unwrap().read_view.load();
     let current = {
         let mut app = fixture.state.lock().unwrap();
-        let old = app
-            .session_registry
-            .install_mcp_token(fixture.agent.clone(), TOKEN.into());
-        let current = app
-            .session_registry
-            .install_mcp_token(fixture.agent.clone(), "replacement-test-capability".into());
+        let issuer = app.live_mcp_issuer(&fixture.owner, &fixture.agent).unwrap();
+        let old = app.session_registry.install_mcp_token(
+            fixture.agent.clone(),
+            TOKEN.into(),
+            issuer.clone(),
+        );
+        let current = app.session_registry.install_mcp_token(
+            fixture.agent.clone(),
+            "replacement-test-capability".into(),
+            issuer,
+        );
         app.session_registry.revoke_mcp_token_if_current(&old);
         current
     };

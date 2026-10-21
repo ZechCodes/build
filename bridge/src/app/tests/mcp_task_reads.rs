@@ -13,6 +13,8 @@ mod cancellation;
 mod classification;
 mod guardfree;
 mod history_reviews;
+mod immediate_authority;
+mod metadata;
 mod races;
 mod roster_observations;
 mod snapshot_reads;
@@ -37,15 +39,14 @@ impl Fixture {
         let workspace = super::project_agent::workspace(&mut app, &project, "read-lane");
         let task = super::tracker::filed(&mut app, &project, &format!("Read @agent:{agent}"));
         app.delivery_queue.clear_queued();
-        app.session_registry
-            .test_install_token(agent.clone(), TOKEN.into());
+        app.test_install_mcp_token(agent.clone(), TOKEN.into());
         app.initialize_read_context();
         app.initialize_snapshot_projection();
         // Exercise the real initialized producers and control socket without
         // app.shared()'s background delivery services. Those services would
         // independently consume the no-drain sentinel and retire fake routers.
         let state = Arc::new(Mutex::new(app));
-        let plane = ControlPlane::new(Arc::clone(&state.lock().unwrap().frame_clock));
+        let plane = ControlPlane::new(&state.lock().unwrap());
         Self {
             _root: root,
             _repo: repo,
@@ -240,8 +241,7 @@ async fn mcp_task_reads_authenticate_before_borrowing_sql_capacity() {
         .state
         .lock()
         .unwrap()
-        .session_registry
-        .test_install_token(fixture.agent.clone(), "rotated-capability".into());
+        .test_install_mcp_token(fixture.agent.clone(), "rotated-capability".into());
     assert_eq!(
         fixture.reply(fixture.frame(fixture.get())).await,
         json!({"ok":false,"error":"unauthorized MCP session"})
@@ -252,7 +252,7 @@ async fn mcp_task_reads_authenticate_before_borrowing_sql_capacity() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_task_read_scope_and_store_refusals_match_existing_tools() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     let (_other_home, other_repo) = init_repo();
     let foreign = {
         let mut app = fixture.state.lock().unwrap();
@@ -273,6 +273,7 @@ async fn mcp_task_read_scope_and_store_refusals_match_existing_tools() {
         assert_eq!(fixture.reply(frame).await, expected);
     }
     fixture.state.lock().unwrap().store = None;
+    guardfree::held::recapture_plane(&mut fixture);
     let action = fixture.get();
     let expected = fixture.legacy(action.clone());
     assert_eq!(

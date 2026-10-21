@@ -28,8 +28,8 @@ pub(in crate::app) enum AddressedSession {
     },
 }
 
-/// The conversation generation authenticated before a frame waits for its
-/// mutation lock. Never resolve it again after crossing an async boundary.
+/// The conversation generation authenticated before a writer frame waits for
+/// its mutation lock. Never retarget it after crossing an async boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::app) struct McpConversationGeneration {
     pub entity_id: String,
@@ -53,8 +53,8 @@ pub(in crate::app) const MCP_CONTROL_METHOD: &str = "mcp.control";
 ///
 /// The remaining writers wait asynchronously instead of parking a dozen
 /// blocking threads at the app mutex. Explicit read adapters bypass these
-/// permits, using brief timed guards for session admission and final fences;
-/// their SQL and external work runs without the app guard.
+/// permits and use the once-captured immutable read service for admission,
+/// query work and final fences, without acquiring the app mutex.
 pub(in crate::app) const CONTROL_FRAMES_AT_THE_LOCK: usize = 2;
 
 #[cfg(all(test, unix))]
@@ -79,6 +79,8 @@ pub(in crate::app) fn probe_guarded_mcp_executables(
 pub(in crate::app) struct ControlPlane {
     clock: Arc<FrameClock>,
     turns: Arc<tokio::sync::Semaphore>,
+    #[cfg(unix)]
+    reads: Arc<read_lane::service::McpReadService>,
     #[cfg(test)]
     at_the_lock: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
@@ -86,9 +88,11 @@ pub(in crate::app) struct ControlPlane {
 }
 
 impl ControlPlane {
-    pub(in crate::app) fn new(clock: Arc<FrameClock>) -> Arc<ControlPlane> {
+    pub(in crate::app) fn new(app: &AppState) -> Arc<ControlPlane> {
         Arc::new(ControlPlane {
-            clock,
+            clock: Arc::clone(&app.frame_clock),
+            #[cfg(unix)]
+            reads: read_lane::service::McpReadService::capture(app),
             turns: Arc::new(tokio::sync::Semaphore::new(CONTROL_FRAMES_AT_THE_LOCK)),
             #[cfg(test)]
             at_the_lock: Default::default(),
@@ -103,7 +107,7 @@ impl ControlPlane {
     async fn answer(self: &Arc<Self>, state: Arc<Mutex<AppState>>, frame: Value) -> Option<Value> {
         let timer = self.clock.frame(MCP_CONTROL_METHOD);
         if let Some(action) = read_lane::action(&frame) {
-            return Some(read_lane::answer(state, frame, action, timer).await);
+            return Some(read_lane::answer(Arc::clone(&self.reads), frame, action, timer).await);
         }
         let turn = Turn::take(self, &timer).await;
         answer_off_the_workers(state, frame, timer, turn).await
@@ -258,14 +262,11 @@ pub(in crate::app) async fn serve_done_listener(
 ) {
     let plane = {
         let state = Arc::clone(&state);
-        ControlPlane::new(
-            off_the_workers(move || {
-                let app = state.lock().unwrap();
-                app.initialize_read_context();
-                Arc::clone(&app.frame_clock)
-            })
-            .await,
-        )
+        off_the_workers(move || {
+            let app = state.lock().unwrap();
+            ControlPlane::new(&app)
+        })
+        .await
     };
     let mut accept_backoff =
         crate::backoff::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));

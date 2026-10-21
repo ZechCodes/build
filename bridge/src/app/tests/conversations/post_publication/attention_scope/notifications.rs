@@ -1,6 +1,33 @@
 //! A consumed early invalidation cannot replace the accepted attention push.
 use super::*;
 
+const OLD_RESUME: &str = "2000-01-01T00:00:00Z";
+
+fn fixture_with_old_resume() -> Fixture {
+    let fixture = Fixture::new();
+    {
+        let mut app = fixture.state.lock().unwrap();
+        let mut entries: std::collections::HashMap<_, _> = app
+            .board
+            .attention()
+            .persistence()
+            .into_entries()
+            .into_iter()
+            .collect();
+        for owner in [&fixture.owner, &fixture.peer] {
+            let attention = entries.get_mut(owner).unwrap();
+            assert!(attention.last_interaction_at.is_none());
+            // Distinguish the final interaction's flat wire sort key from
+            // creation even when the real mutation runs in the same tick.
+            attention.resume_at = Some(OLD_RESUME.into());
+        }
+        app.board.attention_mut().replace_entries(entries);
+        app.persist_attention();
+        app.publish_all_snapshot_projection();
+    }
+    fixture
+}
+
 struct Subscriber {
     bus: Arc<crate::changes::ChangeBus>,
     receiver: tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
@@ -68,7 +95,7 @@ impl Subscriber {
         let bus = Arc::clone(&self.bus);
         let facts = Arc::clone(&app.facts_handle);
         let owner = owner.to_owned();
-        let old_attention = std::thread::spawn(move || {
+        let old_state = std::thread::spawn(move || {
             bus.flush();
             // An early board invalidation is a refetch hint, not an owner
             // state item. Read its immutable facts on this same off-lock
@@ -82,9 +109,8 @@ impl Subscriber {
                 }],
             )[0]
             .state
-            .as_ref()
-            .unwrap()["attention"]
-                .clone()
+            .clone()
+            .unwrap()
         })
         .join()
         .unwrap();
@@ -105,10 +131,14 @@ impl Subscriber {
             "the early notes were actually consumed"
         );
         assert!(
-            old_attention.is_object(),
-            "immutable owner attention exists"
+            old_state["anchor"].is_string(),
+            "flat owner anchor exists: {old_state}"
         );
-        old_attention
+        assert!(
+            old_state.get("resume_at").is_some(),
+            "flat resume field exists: {old_state}"
+        );
+        old_state
     }
 
     fn drain(&mut self) -> Vec<Value> {
@@ -118,10 +148,6 @@ impl Subscriber {
         }
         events
     }
-}
-
-fn pushed_attention(events: &[Value], subscription: &str, owner: &str) -> Option<Value> {
-    pushed_state(events, subscription, owner).and_then(|state| state.get("attention").cloned())
 }
 
 fn pushed_state(events: &[Value], subscription: &str, owner: &str) -> Option<Value> {
@@ -134,15 +160,19 @@ fn pushed_state(events: &[Value], subscription: &str, owner: &str) -> Option<Val
         .next_back()
 }
 
-fn require_final_attention(reader: &mut Subscriber, expected: &[(String, Value)]) -> Vec<Value> {
+fn require_final_state(reader: &mut Subscriber, expected: &[(String, Value)]) -> Vec<Value> {
     // No manual invalidation here: only the accepted producer may wake this
     // otherwise idle subscriber after the early note has been consumed.
     let events = reader.flush_on_worker();
-    for (owner, attention) in expected {
+    for (owner, state) in expected {
+        assert_eq!(
+            state["working"], false,
+            "fixture rows have no advancing work timer"
+        );
         for subscription in ["board".to_owned(), format!("entity-{owner}")] {
             assert_eq!(
-                pushed_attention(&events, &subscription, owner),
-                Some(attention.clone()),
+                pushed_state(&events, &subscription, owner),
+                Some(state.clone()),
                 "accepted attention must notify {subscription} after an early flush: {events:?}"
             );
         }
@@ -153,7 +183,7 @@ fn require_final_attention(reader: &mut Subscriber, expected: &[(String, Value)]
 
 #[test]
 fn rpc_post_notifies_accepted_attention_after_the_early_note_was_consumed() {
-    let fixture = Fixture::new();
+    let fixture = fixture_with_old_resume();
     let mut reader = Subscriber::new(&fixture, &[&fixture.owner]);
     let params = fixture.params("accepted attention after early flush");
     let mut expected = Vec::new();
@@ -162,14 +192,15 @@ fn rpc_post_notifies_accepted_attention_after_the_early_note_was_consumed() {
             let (answer, job) = app.dispatch_deferring("thread.post", &params);
             assert!(answer.is_ok(), "{answer:?}");
             assert!(job.is_none());
-            let current = app.attention_json(&fixture.owner);
+            let current = app.entity_state_item(&fixture.owner).unwrap();
             let before = reader.consume_before_final_publication(app, &fixture.owner);
             assert_ne!(
                 before, current,
                 "early facts must precede the final interaction stamp"
             );
-            assert_eq!(before["interacted"], false);
-            assert_eq!(current["interacted"], true);
+            assert_eq!(before["anchor"], "2000-01-01T00:00:00Z");
+            assert_ne!(before["anchor"], current["anchor"]);
+            assert_eq!(app.attention_json(&fixture.owner)["interacted"], true);
             assert!(
                 !reader.bus.has_pending(),
                 "the early notes were actually consumed"
@@ -177,13 +208,13 @@ fn rpc_post_notifies_accepted_attention_after_the_early_note_was_consumed() {
             expected.push((fixture.owner.clone(), current));
         });
     });
-    let _ = require_final_attention(&mut reader, &expected);
+    let _ = require_final_state(&mut reader, &expected);
     fixture.assert_full_oracle();
 }
 
 #[test]
 fn rpc_alias_post_notifies_each_accepted_owner_after_the_early_union_was_consumed() {
-    let fixture = Fixture::new();
+    let fixture = fixture_with_old_resume();
     let alias = fixture.bind_alias();
     let (other, _) = fixture.add_other_alias();
     let mut reader = Subscriber::new(&fixture, &[&fixture.owner, &fixture.peer, &other]);
@@ -201,11 +232,19 @@ fn rpc_alias_post_notifies_each_accepted_owner_after_the_early_union_was_consume
             assert!(answer.is_ok(), "{answer:?}");
             assert!(job.is_none());
             let before = reader.consume_before_final_publication(app, &fixture.peer);
-            assert_ne!(before, app.attention_json(&fixture.peer));
+            assert_ne!(before, app.entity_state_item(&fixture.peer).unwrap());
+            // The addressed-owner finisher already published the message
+            // anchors; its later interaction is still deferred to the union.
+            assert_eq!(before["resume_at"], OLD_RESUME);
+            assert_ne!(
+                before["resume_at"],
+                app.attention_json(&fixture.peer)["resume_at"]
+            );
+            assert_eq!(app.attention_json(&fixture.peer)["interacted"], true);
             assert!(!reader.bus.has_pending());
             expected.extend(
                 [&fixture.owner, &fixture.peer]
-                    .map(|owner| (owner.clone(), app.attention_json(owner))),
+                    .map(|owner| (owner.clone(), app.entity_state_item(owner).unwrap())),
             );
         });
     });
@@ -227,7 +266,8 @@ fn rpc_alias_post_notifies_each_accepted_owner_after_the_early_union_was_consume
         before_other, final_other,
         "the independent alias row must actually advance"
     );
-    let events = require_final_attention(&mut reader, &expected);
+    assert_eq!(final_other["working"], false);
+    let events = require_final_state(&mut reader, &expected);
     assert_eq!(
         pushed_state(&events, &format!("entity-{other}"), &other),
         Some(final_other),
@@ -238,7 +278,7 @@ fn rpc_alias_post_notifies_each_accepted_owner_after_the_early_union_was_consume
 
 #[test]
 fn rpc_partial_alias_error_still_notifies_the_committed_attention_after_early_flush() {
-    let fixture = Fixture::new();
+    let fixture = fixture_with_old_resume();
     let alias = fixture.bind_alias();
     fixture.sql(&format!("CREATE TRIGGER reject_notified_alias BEFORE INSERT ON implementations WHEN NEW.id = '{}' BEGIN SELECT RAISE(ABORT, 'injected addressed failure'); END;", fixture.peer.replace('\'', "''")));
     let mut reader = Subscriber::new(&fixture, &[&fixture.owner, &fixture.peer]);
@@ -250,12 +290,13 @@ fn rpc_partial_alias_error_still_notifies_the_committed_attention_after_early_fl
             assert!(answer.is_err(), "{answer:?}");
             assert!(job.is_none());
             let before = reader.consume_before_final_publication(app, &fixture.owner);
-            assert_ne!(before, app.attention_json(&fixture.owner));
+            assert_ne!(before, app.entity_state_item(&fixture.owner).unwrap());
+            assert_ne!(before["anchor"], app.anchor_of(&fixture.owner));
             assert!(!reader.bus.has_pending());
             assert_eq!(app.attention_json(&fixture.peer)["interacted"], false);
             expected.extend(
                 [&fixture.owner, &fixture.peer]
-                    .map(|owner| (owner.clone(), app.attention_json(owner))),
+                    .map(|owner| (owner.clone(), app.entity_state_item(owner).unwrap())),
             );
         });
     });
@@ -263,6 +304,6 @@ fn rpc_partial_alias_error_still_notifies_the_committed_attention_after_early_fl
         fixture.message_count("partial accepted attention after early flush"),
         1
     );
-    let _ = require_final_attention(&mut reader, &expected);
+    let _ = require_final_state(&mut reader, &expected);
     fixture.assert_full_oracle();
 }

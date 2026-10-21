@@ -5,6 +5,7 @@ use crate::carrier::{FrameIntake, OutboundEnvelope};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+mod owner_commit;
 mod task_history;
 
 const SESSION: &str = "remaining-native-reads";

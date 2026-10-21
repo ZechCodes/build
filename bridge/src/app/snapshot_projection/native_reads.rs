@@ -67,6 +67,8 @@ impl AppState {
         previous: &ReadView,
         owners: &BTreeSet<String>,
     ) -> SnapshotDelta {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.native_owners");
         for owner in owners {
             delta = self.prepare_implementation_binding(delta, previous, owner);
             delta = self.prepare_native_task_snapshot(delta, previous, owner);

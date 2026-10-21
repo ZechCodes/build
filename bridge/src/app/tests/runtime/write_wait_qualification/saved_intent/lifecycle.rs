@@ -15,6 +15,7 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 mod publication;
+mod selected;
 
 fn clock() -> (Arc<WriteWaitRegistry>, Arc<AtomicU64>) {
     let offset = Arc::new(AtomicU64::new(0));

@@ -64,9 +64,7 @@ fn fields(witness: &AgentRecordWitness) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_coding_topic_name_witnesses_bind_only_successful_installed_records() {
-    isolated_git_test!(
-        concurrent_coding_topic_name_witnesses_bind_only_successful_installed_records
-    );
+    crate::git_fixture::environment::isolated_git_test!();
     let records = AcceptedRecords::new();
     let fixture = SavedFixture::new(Arc::clone(&records));
     let owner = fixture.owner.clone();

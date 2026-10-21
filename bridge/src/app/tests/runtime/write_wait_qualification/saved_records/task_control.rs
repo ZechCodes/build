@@ -122,7 +122,11 @@ impl TaskControl {
             assert_eq!(task["status"], "in_progress");
             assert_eq!(task["state"], "open");
             assert!(
-                chrono::DateTime::parse_from_rfc3339(task["updated_at"].as_str().unwrap()).is_ok()
+                time::OffsetDateTime::parse(
+                    task["updated_at"].as_str().unwrap(),
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .is_ok()
             );
         }
         let final_task = store.load_tracker_task(&self.baseline.id).unwrap().unwrap();
@@ -191,7 +195,13 @@ impl TaskControl {
         assert_eq!(fields.body, self.baseline.body);
         assert_eq!(fields.priority, self.baseline.priority);
         assert_eq!(fields.labels, self.baseline.labels);
-        assert!(chrono::DateTime::parse_from_rfc3339(&fields.updated_at).is_ok());
+        assert!(
+            time::OffsetDateTime::parse(
+                &fields.updated_at,
+                &time::format_description::well_known::Rfc3339,
+            )
+            .is_ok()
+        );
         assert_eq!(reply["project_id"], self.project);
         assert_eq!(reply["id"], fields.id);
         assert_eq!(reply["number"], fields.number);

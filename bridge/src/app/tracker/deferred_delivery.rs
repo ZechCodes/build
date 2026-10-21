@@ -62,7 +62,7 @@ impl AppState {
     pub(in crate::app) fn pump_task_deliveries_for_test(&mut self) -> Result<bool, String> {
         let page = self.tracker_store()?.reconcile_waiting_on(100).stored()?;
         let noticed = self.pump_task_delivery_notices()?;
-        let Some(work) = self.prepare_task_delivery(None)? else {
+        let Some(work) = self.prepare_task_delivery()? else {
             return Ok(page.pending || noticed);
         };
         let result = work.git.as_ref().map(DeferredGit::run);
@@ -72,6 +72,15 @@ impl AppState {
 
     /// Claim a single item, retaining the job outside the RPC deferred slot.
     pub(in crate::app) fn prepare_task_delivery(
+        &mut self,
+    ) -> Result<Option<TaskDeliveryWork>, String> {
+        self.prepare_task_delivery_with_context(
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    pub(super) fn prepare_task_delivery_with_context(
         &mut self,
         #[cfg(test)] background: Option<crate::timing::write_wait::WriteContext>,
     ) -> Result<Option<TaskDeliveryWork>, String> {

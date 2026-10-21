@@ -88,13 +88,11 @@ impl TaskDeliveryService {
                 let _notice = background.as_ref().map(|context| context.bind_sync());
                 app.pump_task_delivery_notices()?
             };
-            Ok((
-                app.prepare_task_delivery(
-                    #[cfg(test)]
-                    background.clone(),
-                )?,
-                notices,
-            ))
+            #[cfg(test)]
+            let work = app.prepare_task_delivery_with_context(background.clone())?;
+            #[cfg(not(test))]
+            let work = app.prepare_task_delivery()?;
+            Ok((work, notices))
         })();
         #[cfg(test)]
         let running = prepared

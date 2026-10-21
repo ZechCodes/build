@@ -518,6 +518,14 @@ share their unchanged JSON subtrees; dependency scans borrow fields from either
 composed or legacy rows without materializing an aggregate. Active-owner and
 elapsed-time fields are still rendered afresh on each publication.
 
+Within one candidate, an incremental board winner and its push state share the
+same normalized branch wire row, keyed by owner and exact stat input. The raw
+fold candidate remains separate, and losing owners retain their own push state.
+This memo ends with the projection guard; full seeds keep their independent
+construction. Observation scope installation still replaces every supplied run
+input and updates lineage, but edits workspace membership only when the
+workspace ID changes. Physical paths and other changed fields still install.
+
 Within `StatusPump::observe`, attention persistence and dirty marks still
 update immediately, while their wire projection joins the final owner
 publication. Changed attention refreshes read metadata with that final

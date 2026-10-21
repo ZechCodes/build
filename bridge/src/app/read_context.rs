@@ -85,6 +85,7 @@ impl AppState {
     /// Project/workspace links are published independently
     /// of roster admission. A board invalidation cannot expose a failed save.
     pub(in crate::app) fn publish_read_metadata(&self) {
+        let _ownership = self.begin_snapshot_ownership();
         self.publish_snapshot_projection();
         self.publish_read_metadata_only();
     }

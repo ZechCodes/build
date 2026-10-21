@@ -981,8 +981,11 @@ impl AppState {
 
     /// Attention on a live owner changes its row and dependent details.
     pub(in crate::app) fn note_owner_board_changed(&self, owner: &str) {
-        self.publish_owner_snapshot_projection(owner);
-        self.publish_read_metadata_only();
+        {
+            let _ownership = self.begin_snapshot_ownership();
+            self.publish_owner_snapshot_projection(owner);
+            self.publish_read_metadata_only();
+        }
         self.changes
             .note_board_lists(crate::changes::BoardLists::default());
         self.watchers.board_moved(self.worktree_roots());

@@ -51,7 +51,6 @@ pub(in crate::app::tests) struct DictatedSession {
     watched_surface_revision: Option<tokio::sync::watch::Receiver<u64>>,
     watched_status: Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>>,
     watched_receipts: Option<tokio::sync::watch::Receiver<crate::harness::TurnReceiptSnapshot>>,
-    activity: Option<tokio::sync::broadcast::Sender<crate::harness::ActivityReport>>,
     active_model: Option<String>,
     native_choices: Vec<ModelChoice>,
     interruptible: bool,
@@ -73,7 +72,6 @@ impl DictatedSession {
             watched_surface_revision: None,
             watched_status: None,
             watched_receipts: None,
-            activity: None,
             active_model: None,
             native_choices: Vec::new(),
             interruptible: false,
@@ -161,14 +159,6 @@ impl DictatedSession {
         self
     }
 
-    pub(in crate::app::tests) fn reporting_activity(
-        mut self,
-        activity: tokio::sync::broadcast::Sender<crate::harness::ActivityReport>,
-    ) -> Self {
-        self.activity = Some(activity);
-        self
-    }
-
     /// The same session, with nothing heard from it for `quiet` — the
     /// anomaly clock the idle sweep demotes on.
     pub(in crate::app::tests) fn silent_for(mut self, quiet: Duration) -> DictatedSession {
@@ -210,9 +200,6 @@ impl DictatedSession {
 }
 
 impl AgentSession for DictatedSession {
-    fn activity(&self) -> Option<tokio::sync::broadcast::Receiver<crate::harness::ActivityReport>> {
-        self.activity.as_ref().map(|activity| activity.subscribe())
-    }
     fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
         self.log.turns.lock().unwrap().push(turn.text.clone());
         self.log.choices.lock().unwrap().push(

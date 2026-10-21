@@ -206,14 +206,31 @@ impl RareFixture {
     }
 
     pub(super) async fn finish(self) -> Vec<VerifiedStep> {
+        // A native background service may have returned while its real
+        // DeliveryRunner still owns descendants. Wait for their terminal
+        // publication; the watchdog and original wait meters keep running.
+        let deadline = Instant::now() + WAIT_BUDGET;
+        let registry = Arc::clone(&self.rpc.registry);
+        let state = Arc::clone(&self.rpc.state);
+        let cleanup = self.rpc.finish_report().await;
+        let active = loop {
+            let active = registry.active_snapshot();
+            let drained = state
+                .try_lock()
+                .is_ok_and(|app| app.delivery_queue.fixture_is_drained());
+            if (active.is_empty() && drained) || Instant::now() >= deadline {
+                break (active, drained);
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        };
+        let breached = self.breached.load(Ordering::Acquire);
+        assert!(cleanup.is_clean(), "rare RPC cleanup failed: {cleanup:?}");
+        assert!(!breached, "an active rare write exceeded its budget");
         assert!(
-            !self.breached.load(Ordering::Acquire),
-            "an active rare write exceeded its budget"
-        );
-        assert!(
-            self.rpc.registry.active_snapshot().is_empty(),
-            "rare fixture still owns active requests: {:?}",
-            self.rpc.registry.active_snapshot()
+            active.0.is_empty() && active.1,
+            "rare fixture still owns active requests after native drain: {:?}; delivery drained={}",
+            active.0,
+            active.1
         );
         for step in &self.verified {
             eprintln!(
@@ -229,7 +246,6 @@ impl RareFixture {
                 })
             );
         }
-        self.rpc.finish().await;
         self.verified
     }
 }

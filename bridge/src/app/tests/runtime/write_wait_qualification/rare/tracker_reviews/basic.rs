@@ -1,10 +1,36 @@
+use super::super::finite_provider::FiniteProvider;
 use super::super::{RareFixture, VerifiedStep};
 use crate::app::tests::tracker::{filed, tracked};
+use crate::app::AppState;
 use serde_json::{json, Value};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+
+struct EndNoticeSessions(Arc<Mutex<AppState>>);
+
+impl Drop for EndNoticeSessions {
+    fn drop(&mut self) {
+        let sessions: Vec<_> = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session_registry
+            .test_tabs()
+            .map(|(_, tab)| Arc::clone(&tab.session))
+            .collect();
+        for session in sessions {
+            session.end();
+        }
+    }
+}
 
 pub(super) async fn execute() -> Vec<VerifiedStep> {
     let root = tempfile::tempdir().unwrap();
     let (_repo_home, mut app, project) = tracked(root.path());
+    // Removing the unassigned dependent's last edge sends a real coordinator
+    // notice. Enroll its actual cwd before the autonomous service can start.
+    let provider = FiniteProvider::install(&app.projects.get(&project).unwrap().repo_path);
+    provider.require_enrolled();
     let blocker = filed(&mut app, &project, "Qualification prerequisite");
     // Active cards cannot acquire an unresolved blocker. This separate
     // unassigned backlog task supplies the dependency service precondition.
@@ -13,6 +39,7 @@ pub(super) async fn execute() -> Vec<VerifiedStep> {
         .unwrap()
         .to_owned();
     let mut fixture = RareFixture::new("tasks", app);
+    let cleanup = EndNoticeSessions(Arc::clone(fixture.state()));
     let task = create(&mut fixture, &project).await;
     update(&mut fixture, &task).await;
     let comment = comment(&mut fixture, &task).await;
@@ -37,7 +64,35 @@ pub(super) async fn execute() -> Vec<VerifiedStep> {
     .await;
     close(&mut fixture, &task).await;
     reopen(&mut fixture, &task).await;
-    fixture.finish().await
+    let notice = crate::app::tests::wait_for(crate::timing::write_wait::WAIT_BUDGET, || {
+        let app = fixture.state().try_lock().ok()?;
+        (app.delivery_queue.fixture_is_drained()
+            && provider
+                .log
+                .turns()
+                .iter()
+                .any(|turn| turn.contains(&dependent)))
+        .then_some(())
+    })
+    .await;
+    let steps = fixture.finish().await;
+    drop(cleanup);
+    assert!(
+        notice.is_some(),
+        "the real unblocked coordinator notice must finish"
+    );
+    assert_eq!(provider.opens.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        provider
+            .log
+            .turns()
+            .iter()
+            .filter(|turn| turn.contains(&dependent))
+            .count(),
+        1
+    );
+    assert!(provider.log.ended());
+    steps
 }
 
 fn saved(fixture: &RareFixture, id: &str) -> Value {

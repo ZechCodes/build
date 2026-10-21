@@ -241,5 +241,5 @@ pub(super) fn prepare_finite_shell(app: &mut crate::app::AppState, root: &std::p
 }
 
 mod mcp_forms;
-pub(super) use mcp_forms::{mcp_method_latency_policy, LoadedReadPolicy};
+pub(super) use mcp_forms::{mcp_method_latency_policy, mcp_recipe_form, LoadedReadPolicy};
 pub(super) use rpc_full::Form as FullReadForm;

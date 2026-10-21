@@ -479,7 +479,9 @@ and live session status once for all workspace rows. Push workspace rows join
 summaries through a temporary index that preserves JSON id equality and
 first-match duplicate precedence. These candidate-local indexes and render
 memos end before persistence or canonical mutation; a failed candidate cannot
-seed a later publication. Complete local read-view deltas retain their atomic publication
+seed a later publication. Adjacent immutable snapshot and read-metadata
+publications share that capture within their wrapper, ending before change
+notifications or later mutations. Complete local read-view deltas retain their atomic publication
 boundary before replies and change notices. Counting tests include the
 publication producer as well as the pure push reader.
 Bounded push tail bodies are shared between publications while conversation
@@ -498,7 +500,10 @@ use the same scoped publication; other board invalidations retain their full
 refresh path. Layout reuse compares raw committed compaction policies with
 workspace and project topology rather than rendering every inherited policy to
 check for changes. Workspace detail refresh batches affected owners and aliases
-through one registry and dependency scan.
+through one registry and dependency scan. Fresh base rows and agent variants
+share their unchanged JSON subtrees; dependency scans borrow fields from either
+composed or legacy rows without materializing an aggregate. Active-owner and
+elapsed-time fields are still rendered afresh on each publication.
 
 Within `StatusPump::observe`, attention persistence and dirty marks still
 update immediately, while their wire projection joins the final owner

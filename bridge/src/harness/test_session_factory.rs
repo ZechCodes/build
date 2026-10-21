@@ -18,7 +18,11 @@ pub(crate) struct Installed(PathBuf);
 
 pub(crate) fn install(root: PathBuf, factory: Factory) -> Installed {
     assert!(
-        factories().lock().unwrap().insert(root.clone(), factory).is_none(),
+        factories()
+            .lock()
+            .unwrap()
+            .insert(root.clone(), factory)
+            .is_none(),
         "a test factory already owns this root"
     );
     Installed(root)

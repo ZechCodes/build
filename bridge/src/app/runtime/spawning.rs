@@ -502,8 +502,12 @@ pub(in crate::app) fn open_agent_session(
         TabRole::Agent {
             owner, agent_id, ..
         } => {
-            let app = timer.lock(state);
-            agent_recovery_context(&app, owner, agent_id).map(Some)
+            if crate::router::is_router_agent(agent_id) {
+                Ok(None)
+            } else {
+                let app = timer.lock(state);
+                agent_recovery_context(&app, owner, agent_id).map(Some)
+            }
         }
         TabRole::Shell => Ok(None),
     };

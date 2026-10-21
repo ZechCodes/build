@@ -2,8 +2,8 @@ use super::*;
 
 #[tokio::test]
 async fn capture_create_opens_router_and_delivers_its_decision_turn() {
-    use crate::harness::{ActivityReport, OpenedSession, SessionOutput};
     use crate::harness::test_session_factory;
+    use crate::harness::{ActivityReport, OpenedSession, SessionOutput};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let (dir, repo) = init_repo();
@@ -15,7 +15,10 @@ async fn capture_create_opens_router_and_delivers_its_decision_turn() {
         std::fs::canonicalize(dir.path()).unwrap(),
         Arc::new(move |provider, request| {
             assert_eq!(provider, AgentProvider::Claude);
-            assert!(request.recovery_context.is_none(), "a router has no canonical thread");
+            assert!(
+                request.recovery_context.is_none(),
+                "a router has no canonical thread"
+            );
             counted.fetch_add(1, Ordering::SeqCst);
             let (activity, _) = tokio::sync::broadcast::channel::<ActivityReport>(16);
             let output = SessionOutput::reporting(activity.subscribe(), None);
@@ -45,7 +48,10 @@ async fn capture_create_opens_router_and_delivers_its_decision_turn() {
     let delivered = wait_for(Duration::from_secs(3), || {
         let app = state.lock().unwrap();
         let router = app.router_sessions.get(capture_id)?;
-        let key = TabKey::agent(&AppState::canonical_root(router.scratch_dir()), router.agent_id());
+        let key = TabKey::agent(
+            &AppState::canonical_root(router.scratch_dir()),
+            router.agent_id(),
+        );
         let tab = app.session_registry.test_tab(&key)?;
         (router.started()
             && tab.session_is_live()
@@ -57,7 +63,11 @@ async fn capture_create_opens_router_and_delivers_its_decision_turn() {
     wait_for_deliveries(&state).await;
     let status = {
         let app = state.lock().unwrap();
-        (app.captures[capture_id].state, opens.load(Ordering::SeqCst), log.turns())
+        (
+            app.captures[capture_id].state,
+            opens.load(Ordering::SeqCst),
+            log.turns(),
+        )
     };
     state.lock().unwrap().abandon_router_session(capture_id);
     let scratch = dir.path().join(crate::router::ROUTER_SCRATCH_DIR_NAME);
@@ -69,9 +79,81 @@ async fn capture_create_opens_router_and_delivers_its_decision_turn() {
     })
     .await;
     assert!(reaped.is_some(), "router scratch was not reaped");
-    assert!(delivered.is_some(), "router was not opened and sent its turn: {status:?}");
+    assert!(
+        delivered.is_some(),
+        "router was not opened and sent its turn: {status:?}"
+    );
     assert_eq!(status.1, 1, "one capture opens one router");
     assert_eq!(created["result"]["state"], "routing");
+}
+
+#[test]
+fn a_canonical_agent_keeps_its_recovery_scope() {
+    use crate::harness::test_session_factory;
+    use crate::harness::HarnessError;
+    use crate::provider_recovery::RecoveryContext;
+
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let owner = "run-recovery-scope";
+    let root = insert_run(
+        &mut app,
+        &repo,
+        &dir.path().join("side"),
+        owner,
+        RunState::Building,
+    );
+    let agent_id = crate::agent::derived_agent_id(owner);
+    let address = app
+        .resolve_conversation_address(owner, Some(&agent_id))
+        .unwrap();
+    let thread_id = app.conversation_at(&address).unwrap().id.clone();
+    let seen = Arc::new(Mutex::new(None::<RecoveryContext>));
+    let recorded = Arc::clone(&seen);
+    let _provider = test_session_factory::install(
+        std::fs::canonicalize(dir.path()).unwrap(),
+        Arc::new(move |provider, request| {
+            assert_eq!(provider, AgentProvider::Claude);
+            *recorded.lock().unwrap() = request.recovery_context;
+            Err(HarnessError::Session("controlled provider stop".into()))
+        }),
+    );
+    let state = app.shared();
+    let timer = Arc::clone(&state.lock().unwrap().frame_clock).frame("recovery_context_test");
+    let choice = ModelChoice {
+        provider: AgentProvider::Claude,
+        model: None,
+        effort: None,
+    };
+    let opened = crate::app::ensure_agent_tab(
+        &state,
+        &root,
+        AgentSpawnRequest {
+            owner,
+            agent_id: &agent_id,
+            conversation_id: &address.conversation_id,
+            model_choice: &choice,
+            force_fresh: false,
+            phase: "build",
+        },
+        &timer,
+    );
+    assert!(
+        opened.is_err_and(|error| error.to_string().contains("controlled provider stop")),
+        "the request must reach the finite provider"
+    );
+
+    let context = seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("canonical recovery scope");
+
+    assert_eq!(context.root, state.lock().unwrap().state_root);
+    assert_eq!(context.scope.entity_id, owner);
+    assert_eq!(context.scope.agent_id, agent_id);
+    assert_eq!(context.scope.conversation_id, address.conversation_id);
+    assert_eq!(context.scope.thread_id, thread_id);
 }
 
 // ==== the router: what decides where a capture goes ======================

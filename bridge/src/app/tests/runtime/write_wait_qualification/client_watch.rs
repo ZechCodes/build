@@ -29,14 +29,13 @@ impl ClientWatch {
         }
     }
 
-    fn register_at(&mut self, original_id: &str, _intended: Instant) {
+    fn register_at(&mut self, original_id: &str, intended: Instant) {
         assert!(
             !self.rows.contains_key(original_id),
             "original schedule identity is unique"
         );
-        // New due-time API scaffold: next control must fail before using the
-        // supplied intended timestamp instead of the registration clock.
-        let at = (self.clock)();
+        // Intended schedule time survives scheduler, socket and credit delay.
+        let at = intended;
         self.rows.insert(
             original_id.into(),
             ClientRow {
@@ -75,6 +74,12 @@ impl ClientWatch {
     fn cancel(&mut self, original_id: &str) {
         self.complete(original_id);
         self.rows.get_mut(original_id).unwrap().cancelled = true;
+    }
+
+    fn watch(&self) -> ClientWatchGuard {
+        // TEST-FIRST seam: the independently running deadline observer is not
+        // installed yet. A snapshot caller is not an independent watchdog.
+        ClientWatchGuard
     }
 
     fn snapshot(&self) -> Vec<ClientRow> {
@@ -191,5 +196,38 @@ fn intended_due_time_detects_late_scheduler_before_actual_offer_or_server_regist
     assert!(
         row.breached,
         "late offer cannot reset the original deadline"
+    );
+}
+
+struct ClientWatchGuard;
+impl ClientWatchGuard {
+    fn failed(&self) -> bool {
+        false
+    }
+    fn finish(self) -> bool {
+        self.failed()
+    }
+}
+
+#[test]
+fn independent_client_watch_observes_unregistered_pending_without_snapshot_or_runtime_poll() {
+    let (mut watch, clock) = fixture();
+    let original = "qual/small/trial1/write/independent";
+    let due = *clock.lock().unwrap();
+    watch.register_at(original, due);
+    watch.offer(original);
+    let guard = watch.watch();
+    // Only the fake clock changes. Neither a collector/app lock nor a caller
+    // snapshot or Tokio task drives the watchdog's observation.
+    *clock.lock().unwrap() += Duration::from_secs(5) + Duration::from_nanos(1);
+    let deadline = Instant::now() + Duration::from_millis(250);
+    while !guard.failed() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let observed = guard.failed();
+    let joined = guard.finish();
+    assert!(
+        observed && joined,
+        "independent watchdog must retain unfinished client breach before server registration"
     );
 }

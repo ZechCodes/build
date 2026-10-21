@@ -57,6 +57,19 @@ impl WriteWaitRegistry {
             WriteCohort::SemanticWrite,
         )
     }
+    pub(crate) fn begin_background(
+        self: &Arc<Self>,
+        original_id: impl Into<String>,
+        method: impl Into<String>,
+        intake: Instant,
+    ) -> LogicalWrite {
+        self.begin_in_cohort(
+            original_id.into(),
+            method.into(),
+            intake,
+            WriteCohort::BackgroundWork,
+        )
+    }
     pub(crate) fn begin_pending(
         self: &Arc<Self>,
         correlation_id: impl Into<String>,

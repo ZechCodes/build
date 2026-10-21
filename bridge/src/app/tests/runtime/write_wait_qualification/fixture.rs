@@ -98,9 +98,21 @@ impl QualificationFixture {
             let repository = git2::Repository::open(&repo).unwrap();
             for resident in 0..resident_count {
                 let name = format!("qual-{}-{project_index}-{resident:03}", envelope.label());
-                let owner = format!("run-{name}");
-                let path = root.path().join(&name);
-                repository.worktree(&name, &path, None).unwrap();
+                // Project creation already exposes its primary checkout as a
+                // real legacy workspace. It consumes one declared resident;
+                // adding resident_count more linked checkouts would inflate
+                // the small/large envelopes by four.
+                let (owner, path, branch) = if resident == 0 {
+                    (
+                        format!("legacy-{project}"),
+                        repo.clone(),
+                        "main".to_string(),
+                    )
+                } else {
+                    let path = root.path().join(&name);
+                    repository.worktree(&name, &path, None).unwrap();
+                    (format!("run-{name}"), path, name.clone())
+                };
                 app.workspaces.adopt_root(
                     &project,
                     owner.clone(),
@@ -113,7 +125,7 @@ impl QualificationFixture {
                 record.project_path = repo.display().to_string();
                 record.worktree_path = path.display().to_string();
                 record.worktree_name = name.clone();
-                record.branch = name;
+                record.branch = branch;
                 record.adopted = true;
                 let agent = crate::agent::derived_agent_id(&owner);
                 record.agents[0] = crate::agent::Agent::new(
@@ -289,7 +301,8 @@ fn seed_tasks(app: &mut AppState, project: &str, count: usize) -> Vec<String> {
 struct NativeCounts {
     projects: usize,
     task_counts: Vec<usize>,
-    git_workspace_counts: Vec<usize>,
+    primary_checkout_counts: Vec<usize>,
+    linked_checkout_counts: Vec<usize>,
     registry_residents: usize,
     active_workspaces: usize,
     canonical_histories: usize,
@@ -334,7 +347,27 @@ impl QualificationFixture {
                             .len()
                     })
                     .collect(),
-                git_workspace_counts: self
+                primary_checkout_counts: self
+                    .projects
+                    .iter()
+                    .map(|project| {
+                        let repository = git2::Repository::open(&project.repository).unwrap();
+                        let expected = std::fs::canonicalize(&project.repository).unwrap();
+                        let is_primary = !repository.is_worktree()
+                            && repository.workdir().is_some_and(|path| {
+                                std::fs::canonicalize(path).unwrap() == expected
+                            })
+                            && app.workspaces.list(Some(&project.project_id)).iter().any(
+                                |workspace| {
+                                    workspace.id == format!("legacy-{}", project.project_id)
+                                        && std::fs::canonicalize(&workspace.root).unwrap()
+                                            == expected
+                                },
+                            );
+                        usize::from(is_primary)
+                    })
+                    .collect(),
+                linked_checkout_counts: self
                     .projects
                     .iter()
                     .map(|project| {
@@ -389,7 +422,18 @@ async fn small_native_fixture_preserves_declared_totals_and_eight_real_fake_sess
     let counts = fixture.counts_and_shutdown().await;
     assert_eq!(counts.projects, 4);
     assert_eq!(counts.task_counts, vec![25; 4]);
-    assert_eq!(counts.git_workspace_counts, vec![3, 3, 2, 2]);
+    assert_eq!(counts.primary_checkout_counts, vec![1; 4]);
+    assert_eq!(counts.linked_checkout_counts, vec![2, 2, 1, 1]);
+    assert_eq!(
+        counts
+            .primary_checkout_counts
+            .iter()
+            .zip(&counts.linked_checkout_counts)
+            .map(|(primary, linked)| primary + linked)
+            .collect::<Vec<_>>(),
+        vec![3, 3, 2, 2],
+        "the primary checkouts are part of the pinned resident total"
+    );
     assert_eq!(counts.registry_residents, 10);
     assert_eq!(counts.active_workspaces, 8);
     assert!(counts.canonical_histories >= 10);
@@ -407,4 +451,129 @@ fn large_envelope_counts_are_totals_not_silently_multiplied_by_four() {
     assert_eq!(envelope.workspace_distribution(), [50; 4]);
     assert_eq!(envelope.workspaces(), 200);
     assert_eq!(envelope.thread_items(), 100_000);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn autonomous_status_producer_retains_background_origin_while_waiting_for_app_state() {
+    crate::git_fixture::environment::isolated_git_test!();
+    use crate::timing::write_wait::{IntervalCategory, WaitKind, WriteCohort};
+    use std::time::{Duration, Instant};
+    let mut fixture = QualificationFixture::new(Envelope::Small);
+    let base = Instant::now();
+    let elapsed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let sampled = Arc::clone(&elapsed);
+    fixture.registry = WriteWaitRegistry::with_clock(Arc::new(move || {
+        base + Duration::from_secs(sampled.load(std::sync::atomic::Ordering::Acquire))
+    }));
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .frame_clock
+        .set_write_wait_registry(Arc::clone(&fixture.registry));
+    let (breached_tx, breached_rx) = std::sync::mpsc::channel();
+    let watchdog = fixture.registry.watchdog(
+        Duration::from_millis(1),
+        Arc::new(move |row| {
+            let _ = breached_tx.send(row);
+        }),
+    );
+    let (key, session) = &fixture.sessions[0];
+    let instance = fixture
+        .state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(key)
+        .unwrap()
+        .session_instance
+        .clone()
+        .unwrap();
+    let mut pump = crate::app::runtime::pumps::status_timing::MeasuredStatusPump::new(
+        &fixture.state,
+        key.clone(),
+        session,
+        instance,
+    );
+    let original = "qual/small/trial1/background/status/00000";
+    let root = fixture
+        .registry
+        .begin_background(original, "agent.poll_status", base);
+    let context = root.context();
+    let state = Arc::clone(&fixture.state);
+    let (held_tx, held_rx) = std::sync::mpsc::sync_channel(0);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+    let holder = std::thread::spawn(move || {
+        let held = state.lock().unwrap();
+        held_tx.send(()).unwrap();
+        release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        drop(held);
+    });
+    held_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+    let worker = std::thread::spawn(move || {
+        let binding = context.bind_sync();
+        started_tx.send(()).unwrap();
+        pump.observe(&crate::harness::SessionStatusSnapshot::new(
+            AgentStatus::Working,
+        ));
+        drop(binding);
+        root.complete();
+    });
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    // Observe only immutable active registry roots, without attempting AppState.
+    // Cleanup and join both real work and the holder before any assertion.
+    let until = Instant::now() + Duration::from_millis(250);
+    let active = loop {
+        let rows = fixture.registry.active_snapshot();
+        let row = rows
+            .into_iter()
+            .find(|row| row.original_id == original)
+            .unwrap();
+        if row
+            .active
+            .iter()
+            .any(|interval| interval.category == IntervalCategory::KnownWait(WaitKind::AppLock))
+            || Instant::now() >= until
+        {
+            break row;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    elapsed.store(6, std::sync::atomic::Ordering::Release);
+    let reported = breached_rx.recv_timeout(Duration::from_millis(250)).ok();
+    let unfinished = fixture
+        .registry
+        .active_snapshot()
+        .into_iter()
+        .find(|row| row.original_id == original)
+        .unwrap();
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    worker.join().unwrap();
+    let final_row = fixture
+        .registry
+        .snapshot()
+        .into_iter()
+        .find(|row| row.original_id == original)
+        .unwrap();
+    drop(watchdog);
+    fixture.counts_and_shutdown().await;
+    assert_eq!(active.cohort, WriteCohort::BackgroundWork);
+    assert!(!active.root_finished);
+    assert!(
+        active
+            .active
+            .iter()
+            .any(|interval| interval.category == IntervalCategory::KnownWait(WaitKind::AppLock)),
+        "actual background status guard must be visible while unfinished: {active:?}"
+    );
+    assert_eq!(
+        reported.as_ref().map(|row| row.original_id.as_str()),
+        Some(original),
+        "independent core watchdog must observe the unfinished BackgroundWork origin"
+    );
+    assert!(unfinished.breached());
+    assert!(final_row.root_finished && final_row.outstanding.is_empty());
+    assert!(!final_row.abandoned && !final_row.cancelled);
 }

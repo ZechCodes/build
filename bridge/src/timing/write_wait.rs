@@ -26,6 +26,7 @@ mod tests;
 pub(crate) enum WriteCohort {
     PendingIntake,
     SemanticWrite,
+    BackgroundWork,
     ExemptRead,
     ExemptProtocol,
 }

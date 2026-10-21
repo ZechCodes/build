@@ -5,13 +5,14 @@ Scope: #752 moves `capture.get`, `task.get`, `task.stages`, `tasks.columns`,
 read lanes. Authentication, pairing, write authorization, and deployment are
 unchanged and are outside this score.
 
-Focused review checkpoint (2026-10-21): **90/100**. Controls 1–9 passed the
-focused checks below. Control 10 remains pending because full bridge tests,
-both Clippy toolchains, and the vendored gate are explicitly held by the
-assigning agent. This is not a completed 100/100 checklist. Each control is
-worth ten points.
+Status: **reopened after #761/#762 review; final score pending**. The earlier
+90/100 focused checkpoint did not cover screen/admission contention, terminal
+publication during a borrowed owner, or filesystem probes during maintenance.
+Those controls now require populated and contended fixtures. Both Clippy
+toolchains and the vendored gate are released; the assigning agent delegated
+the full bridge suite to the serial merge gate. Each control is worth ten points.
 
-| # | Control | Verified focused evidence (control 10 pending) |
+| # | Control | Evidence (review findings must be reverified) |
 |---|---|---|
 | 1 | Every enrolled native read replies within 100 ms while another thread holds the application mutex; timing records exist and app-lock wait and hold are zero. | `app::tests::runtime::native_reads` and `thread_revision_sql_lane_answers_with_zero_app_lock_time`; real carrier intake, encrypted replies, and `timing.rs` hooks. |
 | 2 | Existing typed input/result validation and legacy refusal behavior remain in place. Unknown and malformed scopes cannot select another owner. | Native malformed/unknown scope tests, API contract suite, and terminal refusal comparisons against the existing route. |
@@ -54,7 +55,8 @@ the decrypted final reply is the completion witness. The held mutex, 100 ms
 bound, and nonempty zero-lock timing assertions remain unchanged. No focused
 failure was attributed to load and no sleeps or relaxed limits were added.
 
-The task handoff records security scan exits and the pushed head. Full tests,
-both Clippy gates, and the stopped vendored build must still pass before
-control 10 can be awarded and this checklist can score 100/100. SPA gates are
-not applicable because no SPA source changed.
+The earlier task handoff records security scan exits and its pushed head. The
+review revisions require fresh focused checks, both Clippy toolchains, the
+vendored gate, format and security scans. The full bridge suite is assigned to
+the serial merge gate. SPA source has not changed in the task delta against
+current main.

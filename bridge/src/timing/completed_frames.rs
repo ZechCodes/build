@@ -70,6 +70,30 @@ impl FrameTimer {
         }
     }
 
+    /// Attribute one physical off-lock RPC computation to every real caller
+    /// retained by its folded work item. This changes no timer or write root.
+    pub(crate) fn capture_completed_rpc_ids(&mut self, ids: impl IntoIterator<Item = Value>) {
+        if let Some(capture) = &mut self.completed_capture {
+            capture.original_ids = ids
+                .into_iter()
+                .map(|id| match id {
+                    Value::String(id) => id,
+                    id => id.to_string(),
+                })
+                .collect();
+            capture.protocol = FrameProtocol::Rpc;
+        }
+    }
+
+    /// Native MCP reads carry adapter identity in the request, never an echoed
+    /// response ID. Binding it here does not create a semantic WriteOrigin.
+    pub(crate) fn capture_completed_mcp_request(&mut self, frame: &Value) {
+        if let Some(capture) = &mut self.completed_capture {
+            capture.original_ids = vec![write_origin::original_id(frame)];
+            capture.protocol = FrameProtocol::Mcp;
+        }
+    }
+
     pub(crate) fn capture_completed_context(&mut self, context: Option<&write_wait::WriteContext>) {
         let (Some(capture), Some(context)) = (&mut self.completed_capture, context) else {
             return;
@@ -100,4 +124,28 @@ pub(super) fn record(timer: &FrameTimer, spent: &Spent) {
         held: spent.held,
         total: spent.total,
     });
+}
+
+#[test]
+fn read_identity_binding_keeps_one_physical_frame_and_creates_no_write_roots() {
+    let clock = FrameClock::new();
+    let registry = clock.capture_write_waits();
+    let rows = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&rows);
+    clock.observe_completed_frames(Arc::new(move |frame| captured.lock().unwrap().push(frame)));
+    {
+        let mut timer = clock.frame("tasks.get");
+        timer.capture_completed_rpc_ids([json!("folded/first"), json!(7)]);
+    }
+    {
+        let mut timer = clock.frame("mcp.control");
+        timer.capture_completed_mcp_request(&json!({"id":"mcp/read/original"}));
+    }
+    let rows = rows.lock().unwrap();
+    assert_eq!(rows.len(), 2, "one row per actual timer, not per folded caller");
+    assert_eq!(rows[0].original_ids, ["folded/first", "7"]);
+    assert_eq!(rows[0].protocol, FrameProtocol::Rpc);
+    assert_eq!(rows[1].original_ids, ["mcp/read/original"]);
+    assert_eq!(rows[1].protocol, FrameProtocol::Mcp);
+    assert!(registry.snapshot().is_empty(), "read binding must not mint write roots");
 }

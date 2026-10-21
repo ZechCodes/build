@@ -408,7 +408,14 @@ impl Work {
         }
         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match lane {
             ReadLane::Sql => {
-                handler.run_sql(self.job.queued, self.job.sender, self.job.frame, connection)
+                handler.run_sql(
+                    self.job.queued,
+                    self.job.sender,
+                    self.job.frame,
+                    connection,
+                    #[cfg(test)]
+                    self.callers.iter().map(|(id, _)| id.clone()).collect(),
+                )
             }
             ReadLane::Observation => handler.run(self.job.queued, self.job.sender, self.job.frame),
         }))
@@ -452,6 +459,12 @@ impl Work {
             .job
             .queued
             .start(self.job.frame.payload["method"].as_str().unwrap_or("other"));
+        #[cfg(test)]
+        let timer = {
+            let mut timer = timer;
+            timer.capture_completed_rpc_ids(self.callers.iter().map(|(id, _)| id.clone()));
+            timer
+        };
         #[cfg(test)]
         let needs_metadata = crate::api::effects::observation_needs_sql(&self.job.frame.payload);
         #[cfg(test)]
@@ -598,6 +611,12 @@ pub(super) fn call_observation(
                 .clock
                 .queued_since(Priority::Foreground, arrived)
                 .start(frame.payload["method"].as_str().unwrap_or("other"));
+            #[cfg(test)]
+            let _timer = {
+                let mut timer = _timer;
+                timer.bind_request(&frame);
+                timer
+            };
             let needs_sql = crate::api::effects::observation_needs_sql(&frame.payload);
             if !needs_sql {
                 return handler.prepare_observation(sender, frame, None)();

@@ -127,6 +127,12 @@ impl ControlPlane {
             .queued_since(crate::timing::Priority::Foreground, arrived)
             .start(MCP_CONTROL_METHOD);
         if let Some(action) = read_lane::action(&frame) {
+            #[cfg(test)]
+            let timer = {
+                let mut timer = timer;
+                timer.capture_completed_mcp_request(&frame);
+                timer
+            };
             return Some(read_lane::answer(Arc::clone(&self.reads), frame, action, timer).await);
         }
         let turn = Turn::take(self, &timer).await;

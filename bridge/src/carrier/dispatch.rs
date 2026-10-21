@@ -126,6 +126,12 @@ impl FrameHandler {
             .clock
             .queued_since(Priority::Foreground, arrived)
             .start(method);
+        #[cfg(test)]
+        let _timer = {
+            let mut timer = _timer;
+            timer.bind_request(frame);
+            timer
+        };
         Ok(dispatch(frame.clone()))
     }
 
@@ -182,11 +188,18 @@ impl FrameHandler {
         sender: SessionSender,
         frame: Frame,
         connection: Option<crate::store::ReadConnection>,
+        #[cfg(test)] original_ids: Vec<Value>,
     ) -> Value {
         match &self.sql {
             Some(sql) => {
                 let method = frame.payload["method"].as_str().unwrap_or("other");
                 let timer = queued.start(method);
+                #[cfg(test)]
+                let timer = {
+                    let mut timer = timer;
+                    timer.capture_completed_rpc_ids(original_ids);
+                    timer
+                };
                 (sql.dispatch)(sender, frame, timer, connection)
             }
             None => self.run(queued, sender, frame),

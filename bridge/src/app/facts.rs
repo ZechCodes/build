@@ -10,6 +10,7 @@ mod snapshot;
 pub(in crate::app) use snapshot::{entity_facts, FactsHandle, FactsSource, PushFacts};
 
 use super::git::{namespace_payload_keys, namespaced_key, project_source_namespace};
+use super::read_view::SharedJson;
 use super::watchers::{WorktreeRoots, WorktreeWatchers};
 use super::{AppState, ReadSubject};
 use crate::changes::WORKING_TREE_DIFF_MAX_BYTES;
@@ -369,6 +370,27 @@ impl AppState {
     pub(in crate::app) fn entity_state_item(&self, entity_id: &str) -> Option<Value> {
         self.board_row(entity_id)
             .or_else(|| self.legacy_task_digest(entity_id))
+    }
+
+    /// Push capture can retain the exact named node built by this guard's
+    /// incremental winner producer. Legacy and external state keep their
+    /// existing Value renderers, including archived-run fallback behavior.
+    pub(in crate::app) fn entity_state_shared_item(&self, entity_id: &str) -> Option<SharedJson> {
+        if self
+            .runs
+            .get(entity_id)
+            .is_some_and(|active| active.run.state != crate::run::RunState::Archived)
+        {
+            let stat = self
+                .board
+                .diff()
+                .run_stat(entity_id)
+                .map(|cached| cached.value.clone())
+                .unwrap_or(Value::Null);
+            Some(self.snapshot_named_branch_row(entity_id, &stat))
+        } else {
+            self.entity_state_item(entity_id).map(SharedJson::value)
+        }
     }
 
     /// The row `board.list` carries for this entity: a run's folded feed row,

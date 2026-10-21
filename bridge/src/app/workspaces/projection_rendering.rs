@@ -1,4 +1,5 @@
 //! Reuse pure rendering work only while one candidate owns its projection guard.
+use crate::app::read_view::SharedJson;
 use crate::branch::WorkItemCandidate;
 use crate::run::RunState;
 use serde_json::Value;
@@ -17,6 +18,7 @@ pub(in crate::app) struct ProjectionRendering {
     histories: history::Histories,
     indexes: Arc<Indexes>,
     branches: Mutex<BTreeMap<String, (Value, WorkItemCandidate)>>,
+    named_branches: Mutex<BTreeMap<String, (Value, SharedJson)>>,
     agents: Mutex<BTreeMap<AgentDigestKey, Value>>,
     external_rows: Mutex<Option<BTreeMap<String, Value>>>,
 }
@@ -58,6 +60,27 @@ impl ProjectionRendering {
         row: &WorkItemCandidate,
     ) {
         self.branches
+            .lock()
+            .unwrap()
+            .insert(owner.to_owned(), (stat.clone(), row.clone()));
+    }
+
+    pub(in crate::app) fn named_branch(&self, owner: &str, stat: &Value) -> Option<SharedJson> {
+        self.named_branches
+            .lock()
+            .unwrap()
+            .get(owner)
+            .filter(|(captured_stat, _)| captured_stat == stat)
+            .map(|(_, row)| row.clone())
+    }
+
+    pub(in crate::app) fn remember_named_branch(
+        &self,
+        owner: &str,
+        stat: &Value,
+        row: &SharedJson,
+    ) {
+        self.named_branches
             .lock()
             .unwrap()
             .insert(owner.to_owned(), (stat.clone(), row.clone()));

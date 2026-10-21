@@ -133,8 +133,8 @@ fn refresh_winners(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row]) 
             &row.id,
             crate::app::snapshot_projection::work_counts::named_branch::Source::Winner,
         );
-        let candidate = app.branch_candidate_from_run(&row.id, &run_stat(app, &row.id));
-        *row = Row::new("run_id", crate::branch::named_project_row(candidate.row));
+        let named = app.snapshot_named_branch_row(&row.id, &run_stat(app, &row.id));
+        *row = Row::from_shared("run_id", named);
     }
 }
 

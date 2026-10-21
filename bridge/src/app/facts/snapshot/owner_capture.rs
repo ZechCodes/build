@@ -47,10 +47,8 @@ impl AppState {
                             crate::app::snapshot_projection::work_counts::named_branch::Source::RunState,
                         )
                     });
-                    if let Some(state) = self.entity_state_item(owner) {
-                        snapshot
-                            .states
-                            .insert(owner.clone(), SharedJson::value(state));
+                    if let Some(state) = self.entity_state_shared_item(owner) {
+                        snapshot.states.insert(owner.clone(), state);
                     }
                 }
                 {

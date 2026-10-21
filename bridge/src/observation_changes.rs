@@ -34,3 +34,6 @@ impl ChangeKeys {
         }
     }
 }
+
+#[cfg(test)]
+mod wait_tests;

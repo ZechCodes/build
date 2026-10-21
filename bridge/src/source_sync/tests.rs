@@ -532,3 +532,6 @@ fn ordered_source_mutation_locks_deduplicate_linked_checkouts() {
     drop(held);
     assert!(SyncLock::acquire(&pair.base, Duration::ZERO).is_some());
 }
+
+#[path = "tests/write_wait.rs"]
+mod write_wait;

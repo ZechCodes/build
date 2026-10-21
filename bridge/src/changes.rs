@@ -4642,3 +4642,6 @@ mod compaction_events {
         assert!(items.iter().any(|item| item["entity_id"] == "run-old"));
     }
 }
+
+#[cfg(test)]
+mod wait_tests;

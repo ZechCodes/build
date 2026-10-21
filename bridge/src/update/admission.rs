@@ -65,6 +65,16 @@ impl AdmissionGate {
         }
     }
 
+    // Test-first companion delegates the actual legacy Notify path unchanged.
+    // The accounting implementation follows an observed missing-wait baseline.
+    #[cfg(test)]
+    pub(crate) async fn enter_when_open_with_context(
+        self: &Arc<Self>,
+        _context: Option<crate::timing::write_wait::WriteContext>,
+    ) -> AdmissionLease {
+        self.enter_when_open().await
+    }
+
     pub(super) fn claim_idle(&self, busy: impl FnOnce() -> bool) -> bool {
         let mut state = self.state.lock().unwrap();
         if state.closed || state.active != 0 {
@@ -105,3 +115,7 @@ impl AdmissionGate {
         self.resume_work.set(resume)
     }
 }
+
+#[cfg(test)]
+#[path = "admission/write_wait_tests.rs"]
+mod write_wait_tests;

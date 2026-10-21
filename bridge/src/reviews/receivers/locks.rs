@@ -450,3 +450,7 @@ pub(crate) fn acquire_git_lock(
 #[cfg(test)]
 #[path = "locks/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "locks/write_wait_tests.rs"]
+mod write_wait_tests;

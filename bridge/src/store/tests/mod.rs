@@ -27,3 +27,6 @@ mod support;
 mod task_rename;
 mod tracker;
 mod waiting_on;
+
+#[path = "write_wait.rs"]
+mod write_wait;

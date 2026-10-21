@@ -1059,6 +1059,7 @@ async fn busy_term_create_keeps_app_lock_hold_below_50ms() {
         held < 50.0,
         "term.create held the app mutex for {held:.3}ms"
     );
+    assert_terminal_create_skips_global_publication(&measurements);
     assert_eq!(
         work.workspace_details_full + work.workspace_details_scoped,
         0,
@@ -1133,10 +1134,21 @@ fn assert_busy_terminal_spawn_allows_concurrent_frame(
         "term.create busy final phases: {}",
         serde_json::to_string_pretty(&measurements["term.create"]).unwrap()
     );
+    assert_terminal_create_skips_global_publication(&measurements);
     assert!(
         measurements["term.create"]["frame.held"]["max_ms"]
             .as_f64()
             .unwrap()
             < 50.0
+    );
+}
+
+fn assert_terminal_create_skips_global_publication(measurements: &Value) {
+    let phases = measurements["term.create"].as_object().unwrap();
+    assert!(
+        phases
+            .keys()
+            .all(|phase| !phase.contains("publication.global")),
+        "terminal creation must never rebuild the global publication: {phases:?}"
     );
 }

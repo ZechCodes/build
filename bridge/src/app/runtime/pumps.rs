@@ -130,12 +130,14 @@ impl StatusPump {
             #[cfg(test)]
             let mut plain_guard = status_timer.is_none().then(|| state.lock().unwrap());
             #[cfg(test)]
-            let mut app: &mut AppState = match measured_guard.as_mut() {
+            let app: &mut AppState = match measured_guard.as_mut() {
                 Some(guard) => guard,
                 None => plain_guard.as_mut().unwrap(),
             };
             #[cfg(not(test))]
-            let mut app = state.lock().unwrap();
+            let mut app_guard = state.lock().unwrap();
+            #[cfg(not(test))]
+            let app: &mut AppState = &mut app_guard;
             #[cfg(test)]
             if let Some(timing) = timing.as_mut() {
                 timing.acquired();
@@ -144,7 +146,7 @@ impl StatusPump {
                 return false;
             };
             let instance = &self.instance;
-            if !still_pumping_instance(&app, &self.key, &session, instance) {
+            if !still_pumping_instance(app, &self.key, &session, instance) {
                 return false;
             }
             let owner = &instance.entity_id;
@@ -155,7 +157,7 @@ impl StatusPump {
                 self.recorded_context = None;
                 self.recorded_context_reset_count = snapshot.context_reset_count;
             }
-            record_new_turn_context(&mut app, instance, snapshot, &mut self.recorded_context);
+            record_new_turn_context(app, instance, snapshot, &mut self.recorded_context);
             // A limit recorded wants its reset waited for, and one cleared
             // may have left agents to start again: either is a drain.
             let usage_limit_moved = app.record_usage_limit(
@@ -170,7 +172,7 @@ impl StatusPump {
             }
             let retry_deferred = usage_limit_moved
                 || !matches!(snapshot.status, AgentStatus::Working)
-                    && something_waits_for_the_turn(&mut app, owner, &instance.agent_id);
+                    && something_waits_for_the_turn(app, owner, &instance.agent_id);
             #[cfg(test)]
             status_publication_probe::before_final_publication();
             if refresh_metadata {

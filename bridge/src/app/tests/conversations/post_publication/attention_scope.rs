@@ -254,6 +254,48 @@ fn count(sample: &Value, phase: &str) -> u64 {
     sample[phase]["count"].as_u64().unwrap_or(0)
 }
 
+fn assert_committed_post_delivery(app: &AppState, owner: &str) {
+    assert!(app.user_session().last_activity_ms.is_some());
+    assert_eq!(
+        app.store.as_ref().unwrap().load_user_session().unwrap(),
+        Some(app.user_session())
+    );
+    assert!(app.delivery_queue.queued().any(|turn| turn.owner == owner));
+}
+
+fn assert_reply_before_interaction(
+    app: &AppState,
+    owner: &str,
+    result: &Value,
+    prior: &crate::attention::Attention,
+) {
+    let current = app.run_view(
+        owner,
+        &app.runs[owner],
+        crate::thread::ThreadDetail::Full,
+        crate::app::DigestScope::Detail,
+    );
+    for field in [
+        "state",
+        "thread",
+        "agents",
+        "unread",
+        "unread_count",
+        "updated_at",
+    ] {
+        assert_eq!(result[field], current[field], "{field}");
+    }
+    // The route constructs its reply before the success-only interaction
+    // stamp. Preserve that prefix while the final immutable root includes it.
+    let created = app.board.attention().clock(owner).created_at.unwrap();
+    let mut reply_attention = current["attention"].clone();
+    reply_attention["interacted"] = json!(prior.last_interaction_at.is_some());
+    reply_attention["resume_at"] = json!(prior.sort_key(&created));
+    assert_eq!(result["attention"], reply_attention);
+    assert_eq!(result["attention"]["interacted"], false);
+    assert_eq!(current["attention"]["interacted"], true);
+}
+
 #[test]
 fn rpc_post_preserves_two_attention_saves_with_one_final_attention_projection() {
     let fixture = Fixture::new();
@@ -270,45 +312,8 @@ fn rpc_post_preserves_two_attention_saves_with_one_final_attention_projection() 
     assert!(attention.last_interaction_at.is_some());
     assert_eq!(fixture.saved_attention(&fixture.owner), attention);
     let app = fixture.state.lock().unwrap();
-    assert!(app.user_session().last_activity_ms.is_some());
-    assert_eq!(
-        app.store.as_ref().unwrap().load_user_session().unwrap(),
-        Some(app.user_session())
-    );
-    assert!(app
-        .delivery_queue
-        .queued()
-        .any(|turn| turn.owner == fixture.owner));
-    let current = app.run_view(
-        &fixture.owner,
-        &app.runs[&fixture.owner],
-        crate::thread::ThreadDetail::Full,
-        crate::app::DigestScope::Detail,
-    );
-    for field in [
-        "state",
-        "thread",
-        "agents",
-        "unread",
-        "unread_count",
-        "updated_at",
-    ] {
-        assert_eq!(result[field], current[field], "{field}");
-    }
-    // The route constructs its reply before the success-only interaction
-    // stamp. Preserve that prefix while the final immutable root includes it.
-    let created = app
-        .board
-        .attention()
-        .clock(&fixture.owner)
-        .created_at
-        .unwrap();
-    let mut reply_attention = current["attention"].clone();
-    reply_attention["interacted"] = json!(prior.last_interaction_at.is_some());
-    reply_attention["resume_at"] = json!(prior.sort_key(&created));
-    assert_eq!(result["attention"], reply_attention);
-    assert_eq!(result["attention"]["interacted"], false);
-    assert_eq!(current["attention"]["interacted"], true);
+    assert_committed_post_delivery(&app, &fixture.owner);
+    assert_reply_before_interaction(&app, &fixture.owner, &result, &prior);
     assert_eq!(image(&old, &app), before);
     drop(app);
     fixture.assert_full_oracle();

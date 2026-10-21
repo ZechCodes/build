@@ -11,7 +11,7 @@ fn incremental_publication_renders_only_the_changed_owner_among_two_hundred() {
             "2026-01-01T00:00:00Z".into(),
             "2026-01-01T00:00:00Z".into(),
             "2026-01-01T00:00:00Z".into(),
-            crate::app::run_state_str(&active.run.state).into(),
+            crate::app::run_state_str(&active.run.state),
         );
     }
     eprintln!("incremental200: warming observed publication inputs");

@@ -9,7 +9,7 @@ fn seed_clocks(state: &mut AppState) {
             "2026-01-01T00:00:00Z".into(),
             "2026-01-01T00:00:00Z".into(),
             "2026-01-01T00:00:00Z".into(),
-            crate::app::run_state_str(&active.run.state).into(),
+            crate::app::run_state_str(&active.run.state),
         );
     }
 }

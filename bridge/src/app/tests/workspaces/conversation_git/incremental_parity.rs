@@ -30,7 +30,7 @@ fn fixture() -> (tempfile::TempDir, AppState) {
             CLOCK.into(),
             CLOCK.into(),
             CLOCK.into(),
-            crate::app::run_state_str(&active.run.state).into(),
+            crate::app::run_state_str(&active.run.state),
         );
     }
     let projects = state

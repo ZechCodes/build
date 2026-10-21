@@ -35,12 +35,42 @@ protocol versions; see
 
 - Account → Sign Out clears saved credentials and the desktop session (#615).
 
-## [0.2.13] - Unreleased
+## [0.2.13] - 2026-10-21
 
-Wire 3.21.0.
+Wire 3.24.0.
+
+### Security
+
+This release removes a compromised certificate authority from the root
+certificates bundled with the bridge, which secure its relay connection;
+upgrade promptly. The bridge's other HTTPS requests trust your operating
+system's certificate store, so apply your OS certificate updates too.
+
+- Update the bridge's Rust CA bundles to remove a compromised root certificate
+  (#753).
 
 ### Fixed
 
+- Publish newly opened workspace reviews before notifying clients, and
+  acknowledge review closes only after durable completion.
+- Restore startup and message delivery for capture agents.
+- Load the user's Claude MCP servers and connectors alongside Build's server.
+- Keep slow MCP replies alive for a bounded five-minute wait without resending
+  actions; Pi budgets each queued tool call from dispatch and timeouts advise
+  checking the outcome before retrying.
+- Retain Codex provider-recovery state across restarts, avoid retrying permanent
+  failures, and deliver sanitized failure notices once to the requester and
+  assigned task.
+- Keep quiet-workspace reminders informational and limit reminders for locked
+  workspaces to once a week.
+- Preserve parked projects when their home folder is unavailable, and restore
+  their coordinator and workers when it returns (#533).
+- Fence source change subscriptions against replaced scopes and stale watcher
+  passes, preserving separate cache keys for each source (#550).
+- Close failed WebRTC peers after a replacement client session is established,
+  while retaining peers that recover (#373).
+- Accept repeated Linux ARP-table configuration records so safe LAN discovery
+  is not disabled (#674).
 - Source Git mutations and settings edits serialize with base sync off the app
   mutex. Queued syncs and mutations recheck source location after waiting;
   `project.sync_source` accepts captured `source_path` (`sources.syncBasePath`).
@@ -56,95 +86,6 @@ Wire 3.21.0.
   current watch began. Watch baselines survive restart; rewatching excludes
   earlier history. Cached SPA badges also suppress unwatched agents on older
   bridges (#474).
-
-### Added
-
-- Waiting-on task orchestration (wire 3.21.0, #558/#562): atomic create and
-  scoped dependency tools, bounded reverse reads, saved assignment/retry
-  answers and quiet delivery notices. Blocked user assignments preserve
-  explicit questions and become actionable when prerequisites resolve.
-
-
-- Secure transport is maintained in this checkout (`transport/js`, Python
-  reference/tests, and the existing Rust implementation). SPA/web locks, CI and
-  app/QA images use the in-tree binding; developers no longer need a sibling
-  clone. Build is the maintenance/audit and private vulnerability-reporting
-  destination. The imported JS/Python BSL notice and original pinned repository
-  history remain intact; no protocol, session, identity or root-license change
-  accompanies this consolidation (#572, #575–#579).
-
-- Project sources in Git and pushes (wire 3.21.0, #529): every Git verb
-  project Changes uses addresses one original source by `project_id`,
-  `source_id` and its captured `source_path` (`git.projectSources`), with
-  per-source cache keys; a moved source is refused with `conflict` and a plain
-  folder says it is not a Git repository. `changes.subscribe` takes a
-  `project_source` scope (`changes.projectSources`) whose git, files and
-  terminal items carry the source's identity, for plain folders too. Clients
-  that do not ask hear nothing new.
-- Harness inventory reports installation, CLI/session versions and saved sign-in
-  status for Claude, Codex and Pi (`harnesses.list`, `harnesses.refresh`, #434).
-- PR task pages show snapshots and opinions, with Merge, Close, Reopen and
-  retryable publication results (#408).
-- PR task pages offer Reclaim after merge and publication settle; locked
-  workspaces must be unlocked first (#408).
-- New file from the Files tree: `fs.createFile` creates one empty file in a
-  workspace or project source, refusing names that already exist (#433).
-- PR-style review tasks with dedicated branches, local push synchronization,
-  explicit base retargeting and RPC/MCP lifecycle controls (#405).
-- PR sync observations count the commits since the user's last reviewed
-  snapshot, or flag a rewritten history, and the Changes header shows
-  "N commits since your last review" (#427).
-- Internal PR lifecycle and durable merge service: current-snapshot opinions,
-  recoverable Closed reopening, guarded merge finalization, interrupted-operation
-  recovery and explicit retry of saved publication results (#404).
-- Bridge-owned PR ref synchronization without a connected client: terminal
-  pushes publish debounced snapshots, with startup/poll recovery, separate
-  target-tip observations, rewrite history and retained receiver pins (#403).
-
-- Internal PR review opening service with recoverable dedicated branches,
-  local receiving repositories, committed snapshots, and reviewer delivery
-  retry (#402).
-- Lock or unlock a workspace from the control beside its name. The persisted
-  lock prevents workspace deletion, Done, reclaim, project deletion, and run
-  cleanup by users or agents until the user unlocks it. Locked workspaces add
-  an automatic reclaim hold that prevents build-output pruning. Agents can
-  inspect the lock but have no MCP action to change it (#398).
-
-### Changed
-
-- Keep every project visible alphabetically on the Projects face, removing the
-  project-level Recent fold and filled block backgrounds while preserving
-  workspace Recent and unread counts (#480).
-- Show every watched task that is neither Done nor closed in the inbox,
-  including quiet rows. Mentions watch the task for
-  the user, and each task row has an eye to unwatch it on desktop and phone
-  (#475).
-- Interleave every inbox row by oldest anchor, with no task, assignment or
-  attention priority. Tasks without an anchor use creation time, and every
-  row kind shares the inactive-for-a-day Recent rule, including inside project
-  blocks (#481).
-- End agent tracking when tasks reach Done or close, delivering the final notice;
-  reopening and stale writes do not restore former trackers (#444).
-- Task board, list and inbox rows show each PR's icon and lifecycle status
-  from the cached review summary (#408).
-- Workspace PR controls show snapshots, pending commits and exact Push
-  destinations, preserving confirmation drafts across refreshes (#407).
-- Project Files calls name the folder a source was opened at, and the bridge
-  refuses a read, save, new folder, new file or upload once that source has moved
-  (`fs.projectSourcePath`). A project source's file root resolves to its
-  canonical path (#360).
-- Open reviews from Changes or the workspace menu; review lifecycle and
-  workspace retention are explicit (#407, #408).
-- Task comment replies quote their parent's author and excerpt, jump to and
-  briefly highlight the full comment on activation, and show reply counts (#411).
-- Files directory actions use recognizable upload and new-folder icons, shown
-  on hover or keyboard focus and revealed one row at a time by long press on
-  touch devices (#396).
-- Keep SPA controls, labels and navigation chrome unselectable, with shared
-  pointer, keyboard and touch feedback while preserving selection in content,
-  form fields and the terminal (#397).
-
-### Fixed
 
 - Read marks publish the conversation owner's updated badge state. Chat read
   reports survive transient failures with bounded backoff and work when a
@@ -201,6 +142,116 @@ Wire 3.21.0.
 - Keep long task comments and loaded images in place when ages, references or
   review metadata refresh, and follow new comments when reading at the bottom
   (#410).
+
+### Added
+
+- Keep one pinned project coordinator and add source-writing project workers,
+  including retry-safe task assignment without creating a workspace (#532, #533).
+- Open terminal tabs against an explicit original project source, including
+  plain folders; live shells hold that source's location until closed (#531).
+- Load newest-only activity pages with exact whole-run digests, while retaining
+  on-demand access to the full activity (#496).
+- Add per-harness compaction thresholds at device, project and workspace scopes,
+  with conversation overrides and inherited/configured settings kept separate
+  from the policy applied when a session opens (wire 3.22.0, #655, #660).
+- Attach agent-created files to chat replies and agent handoffs, preserving
+  stored copies and ranged reads for larger recordings (wire 3.23.0, #696).
+- Introduce the durable write journal, bounded status and confirmation
+  subscriptions, and authenticated process epochs (wire 3.24.0, #739). No write
+  methods are enabled for acknowledgement/confirmation yet.
+- Waiting-on task orchestration (wire 3.21.0, #558/#562): atomic create and
+  scoped dependency tools, bounded reverse reads, saved assignment/retry
+  answers and quiet delivery notices. Blocked user assignments preserve
+  explicit questions and become actionable when prerequisites resolve.
+
+
+- Secure transport is maintained in this checkout (`transport/js`, Python
+  reference/tests, and the existing Rust implementation). SPA/web locks, CI and
+  app/QA images use the in-tree binding; developers no longer need a sibling
+  clone. Build is the maintenance/audit and private vulnerability-reporting
+  destination. The imported JS/Python BSL notice and original pinned repository
+  history remain intact; no protocol, session, identity or root-license change
+  accompanies this consolidation (#572, #575–#579).
+
+- Project sources in Git and pushes (wire 3.21.0, #529): every Git verb
+  project Changes uses addresses one original source by `project_id`,
+  `source_id` and its captured `source_path` (`git.projectSources`), with
+  per-source cache keys; a moved source is refused with `conflict` and a plain
+  folder says it is not a Git repository. `changes.subscribe` takes a
+  `project_source` scope (`changes.projectSources`) whose git, files and
+  terminal items carry the source's identity, for plain folders too. Clients
+  that do not ask hear nothing new.
+- Harness inventory reports installation, CLI/session versions and saved sign-in
+  status for Claude, Codex and Pi (`harnesses.list`, `harnesses.refresh`, #434).
+- PR task pages show snapshots and opinions, with Merge, Close, Reopen and
+  retryable publication results (#408).
+- PR task pages offer Reclaim after merge and publication settle; locked
+  workspaces must be unlocked first (#408).
+- New file from the Files tree: `fs.createFile` creates one empty file in a
+  workspace or project source, refusing names that already exist (#433).
+- PR-style review tasks with dedicated branches, local push synchronization,
+  explicit base retargeting and RPC/MCP lifecycle controls (#405).
+- PR sync observations count the commits since the user's last reviewed
+  snapshot, or flag a rewritten history, and the Changes header shows
+  "N commits since your last review" (#427).
+- Internal PR lifecycle and durable merge service: current-snapshot opinions,
+  recoverable Closed reopening, guarded merge finalization, interrupted-operation
+  recovery and explicit retry of saved publication results (#404).
+- Bridge-owned PR ref synchronization without a connected client: terminal
+  pushes publish debounced snapshots, with startup/poll recovery, separate
+  target-tip observations, rewrite history and retained receiver pins (#403).
+
+- Internal PR review opening service with recoverable dedicated branches,
+  local receiving repositories, committed snapshots, and reviewer delivery
+  retry (#402).
+- Lock or unlock a workspace from the control beside its name. The persisted
+  lock prevents workspace deletion, Done, reclaim, project deletion, and run
+  cleanup by users or agents until the user unlocks it. Locked workspaces add
+  an automatic reclaim hold that prevents build-output pruning. Agents can
+  inspect the lock but have no MCP action to change it (#398).
+
+### Changed
+
+- Use an eight-hour gap to start new task and conversation activity streaks,
+  including silent task edits (#628).
+- Reserve agent task comments for decisions, questions, handoffs and evidenced
+  results; routine progress remains in the board's column and assignee (#620).
+- Serve supported task/history, snapshot and filesystem/Git observation reads
+  independently of the app mutex, using committed snapshots and bounded workers;
+  supported MCP reads also bypass mutation turns (#681).
+- Page MCP task lists in batches of at most 20 with continuation cursors, and
+  assemble compact project work lists without loading the full board (#738).
+- Keep every project visible alphabetically on the Projects face, removing the
+  project-level Recent fold and filled block backgrounds while preserving
+  workspace Recent and unread counts (#480).
+- Show every watched task that is neither Done nor closed in the inbox,
+  including quiet rows. Mentions watch the task for
+  the user, and each task row has an eye to unwatch it on desktop and phone
+  (#475).
+- Interleave every inbox row by oldest anchor, with no task, assignment or
+  attention priority. Tasks without an anchor use creation time, and every
+  row kind shares the inactive-for-a-day Recent rule, including inside project
+  blocks (#481).
+- End agent tracking when tasks reach Done or close, delivering the final notice;
+  reopening and stale writes do not restore former trackers (#444).
+- Task board, list and inbox rows show each PR's icon and lifecycle status
+  from the cached review summary (#408).
+- Workspace PR controls show snapshots, pending commits and exact Push
+  destinations, preserving confirmation drafts across refreshes (#407).
+- Project Files calls name the folder a source was opened at, and the bridge
+  refuses a read, save, new folder, new file or upload once that source has moved
+  (`fs.projectSourcePath`). A project source's file root resolves to its
+  canonical path (#360).
+- Open reviews from Changes or the workspace menu; review lifecycle and
+  workspace retention are explicit (#407, #408).
+- Task comment replies quote their parent's author and excerpt, jump to and
+  briefly highlight the full comment on activation, and show reply counts (#411).
+- Files directory actions use recognizable upload and new-folder icons, shown
+  on hover or keyboard focus and revealed one row at a time by long press on
+  touch devices (#396).
+- Keep SPA controls, labels and navigation chrome unselectable, with shared
+  pointer, keyboard and touch feedback while preserving selection in content,
+  form fields and the terminal (#397).
 
 ## [0.2.12] - 2026-10-07
 

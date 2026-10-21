@@ -78,6 +78,20 @@ separate byte quotas and reserved capacity for small presence/read-mark
 writes. These are proposed engineering bounds, to be tuned by measurement;
 write overload may return retryable `busy`, reads may not.
 
+**Step 6a implementation boundary (#739):** the internal allowlist is empty.
+The journal supplies typed admission/execution/recovery primitives with one
+writer connection, 128 nonterminal commands per principal, 4,096 per store,
+64 KiB admission records and 256 KiB terminal outcomes. Its current byte
+budgets are 8 MiB per principal and 128 MiB per store for active intent. An
+oversized final result is refused inside the canonical SQL transaction, so
+it cannot leave an applied command unable to confirm. Paged `writes.result`
+and reserved admission capacity for presence/read-mark methods belong to
+method enablement; they are not advertised by this foundation. Committed
+records are returned for the enabled verb’s publication recovery, never
+replayed generically. The foundation exposes result compaction; the enabled
+command service will schedule it. No legacy write caller enters this journal
+until its method’s complete producer and recovery closure is implemented.
+
 ### Admission of dependent writes
 
 The request envelope's optional `write.after` contains at most eight direct

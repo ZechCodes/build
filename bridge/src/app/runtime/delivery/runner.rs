@@ -30,6 +30,8 @@ impl DeliveryRunner {
     /// nothing else to drain it when the window ends, so the same acquisition
     /// asks for a wake then.
     pub(in crate::app) fn drain(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
+        #[cfg(test)]
+        timer.mark_request("delivery_admission_start");
         let admission = state.lock().unwrap().update_admission();
         let lease = match admission {
             Some(gate) => match gate.try_enter() {

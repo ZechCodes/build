@@ -4,7 +4,7 @@ use super::*;
 const TASKS: usize = 16;
 const RUNS: usize = 32;
 const ITEMS: usize = 16;
-const SAMPLES: usize = 5;
+const SAMPLES: usize = 15;
 const STAGES: usize = 4;
 const COMMENTS: usize = 2;
 const NOW: &str = "2026-10-21T12:00:00Z";
@@ -103,12 +103,17 @@ impl Fixture {
         &self,
         plan: bool,
         sample: usize,
-    ) -> crate::app::snapshot_projection::work_counts::detail_scans::Counts {
-        let (_, counts) =
-            crate::app::snapshot_projection::work_counts::detail_scans::measure(|| {
-                self.commit_measured(plan, sample);
+    ) -> (
+        crate::app::snapshot_projection::work_counts::detail_scans::Counts,
+        crate::app::snapshot_projection::work_counts::Counts,
+    ) {
+        let ((_, details), producers) =
+            crate::app::snapshot_projection::work_counts::measure(|| {
+                crate::app::snapshot_projection::work_counts::detail_scans::measure(|| {
+                    self.commit_measured(plan, sample);
+                })
             });
-        counts
+        (details, producers)
     }
 
     fn commit_measured(&self, plan: bool, sample: usize) {
@@ -245,12 +250,16 @@ fn measure_scale(
         let mut selected = Vec::new();
         for sample in 0..SAMPLES {
             for plan in [true, false] {
-                let counts = fixture.commit(plan, sample);
+                let (counts, producers) = fixture.commit(plan, sample);
                 scans.push(json!({"sample":sample,"owner":if plan {"plan"} else {"linked_run"},
                     "registry_scans":counts.registry_scans,"registry_rows":counts.registry_rows,
                     "previous_bases":counts.previous_bases,"base_renders":counts.base_renders,
                     "variant_renders":counts.variant_renders,"tombstone_keys":counts.tombstone_keys,
-                    "indexed_values":counts.indexed_values,"materialized_nodes":counts.materialized_nodes}));
+                    "indexed_values":counts.indexed_values,"materialized_nodes":counts.materialized_nodes,
+                    "agents_rendered":producers.agents,"history_updates":producers.history_updates,
+                    "owner_candidates":producers.owner_candidates,"external_candidates":producers.external_candidates,
+                    "branches_rendered":producers.branches,"workspace_details_full":producers.workspace_details_full,
+                    "workspace_details_scoped":producers.workspace_details_scoped}));
                 selected.push(json!([
                     counts.registry_scans,
                     counts.registry_rows,

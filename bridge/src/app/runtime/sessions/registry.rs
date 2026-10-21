@@ -774,6 +774,30 @@ impl SessionRegistry {
         true
     }
 
+    /// Routers have no conversation lineage, so fence their delivery by the
+    /// live process and exact router role instead of a session instance.
+    pub(in crate::app) fn mark_router_delivered_if_current(
+        &mut self,
+        key: &TabKey,
+        session: &Arc<dyn AgentSession>,
+        owner: &str,
+        agent_id: &str,
+        at: Instant,
+    ) -> bool {
+        let Some(tab) = self.tabs.get_mut(key) else {
+            return false;
+        };
+        if !crate::router::is_router_agent(agent_id)
+            || !Arc::ptr_eq(&tab.session, session)
+            || tab.session_instance.is_some()
+            || tab.role.agent() != Some((owner, agent_id))
+        {
+            return false;
+        }
+        tab.last_delivered_at = Some(at);
+        true
+    }
+
     pub(in crate::app) fn parent_call_sequence(&self, key: &TabKey, call_id: &str) -> Option<u64> {
         Some(self.tabs.get(key)?.call_sequences.get(call_id)?.sequence)
     }

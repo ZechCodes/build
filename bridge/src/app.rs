@@ -960,4 +960,7 @@ impl AppState {
 }
 
 #[cfg(test)]
+pub(crate) mod accepted_records;
+
+#[cfg(test)]
 mod tests;

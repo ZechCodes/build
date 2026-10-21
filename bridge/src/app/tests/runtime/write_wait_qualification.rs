@@ -16,6 +16,7 @@ mod read_and_exempt;
 pub(super) mod read_recipes;
 mod rpc;
 mod saved_intent;
+mod saved_records;
 mod scheduler;
 
 const SPA_CALLERS: usize = 4;

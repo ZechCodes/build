@@ -56,6 +56,34 @@ impl Drop for BlockedService {
 }
 
 #[test]
+fn filesystem_write_does_not_wait_for_a_git_sync_lock() {
+    let (_dir, app, project_id, repo, _plain) = project_files_fixture();
+    let held = crate::source_sync::SyncLock::acquire_many(
+        std::slice::from_ref(&repo),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let handler = AppState::handler(app.shared());
+    let mut params = project_file_params(&project_id, "source-1", "notes.md");
+    params["expected_revision"] = json!(sha256_hex(b"git source\n"));
+    let (completed, received) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let answer = handler.call(SessionSender::detached("writer"), req("fs.write", params));
+        completed.send(()).unwrap();
+        answer
+    });
+    let prompt = received.recv_timeout(Duration::from_secs(1));
+    drop(held);
+    let answer = worker.join().unwrap();
+    assert!(
+        prompt.is_ok(),
+        "filesystem write waited for Git's sync lock"
+    );
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(std::fs::read(repo.join("notes.md")).unwrap(), b"after\n");
+}
+
+#[test]
 fn blocked_filesystem_service_leaves_app_state_accessible() {
     let (dir, repo) = init_repo();
     let app = qa_state(&repo, dir.path());

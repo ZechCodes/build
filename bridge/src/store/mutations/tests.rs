@@ -303,3 +303,45 @@ async fn caught_up_outbox_and_cursor_queries_ignore_retained_history() {
         "caught-up queries executed {steps} SQLite VM steps"
     );
 }
+
+#[test]
+fn unicode_intents_exhaust_the_store_byte_quota_before_the_command_count_quota() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    connection.execute_batch(JOURNAL_SCHEMA).unwrap();
+    let transaction = connection.transaction().unwrap();
+    let mut command = command();
+    command.params = json!({"body":"🦀".repeat(15_000)});
+    validate(&command).unwrap();
+    let normalized = intent(&command, &[]);
+    let added_bytes = normalized.len();
+    let quota = 128 * 1024 * 1024;
+    let count = quota / added_bytes;
+    assert!(count < 4096);
+    assert!(count * added_bytes <= quota);
+    assert!((count + 1) * added_bytes > quota);
+    // The quota query reads only intent/state/principal. Keep complete legal
+    // normalized intents, without multiplying unqueried command-result bodies.
+    let mut insert=transaction.prepare("INSERT INTO mutation_commands(principal,operation_id,state,accepted_at,intent,record) VALUES(?1,?2,'accepted',0,?3,'{}')").unwrap();
+    for n in 0..count {
+        insert
+            .execute(params![
+                format!("principal:{}", n / 100),
+                format!("{n:08x}-0000-4000-8000-000000000000"),
+                normalized
+            ])
+            .unwrap();
+    }
+    drop(insert);
+    let bytes: i64 = transaction
+        .query_row(
+            "SELECT sum(length(CAST(intent AS BLOB))) FROM mutation_commands",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bytes as usize, count * added_bytes);
+    assert!(matches!(
+        check_quota(&transaction, "new-principal", added_bytes),
+        Err(StoreError::MutationBusy)
+    ));
+}

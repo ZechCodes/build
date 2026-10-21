@@ -1,12 +1,39 @@
 use super::*;
 use crate::harness::{OpenedSession, SessionOutput};
 use crate::test_support::agent_session::FixtureSessions;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
     let (directory, repository) = init_repo();
     let mut app = qa_state(&repository, directory.path());
+    app.default_harness = AgentProvider::Claude;
+    let fallback = directory.path().join("factory-red-private-fallback");
+    std::fs::write(
+        &fallback,
+        "#!/bin/sh\nprintf '\\033[?2004h'\nexec /bin/cat >/dev/null\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fallback, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let private_home = directory.path().join("private-home");
+    std::fs::create_dir(&private_home).unwrap();
+    let private_agent = Agent::Warm(
+        HarnessSpec::new(fallback.to_string_lossy().into_owned())
+            .env("PATH", "/nonexistent")
+            .env("HOME", private_home.to_string_lossy().into_owned())
+            .env("ENV", "/dev/null")
+            .env("BASH_ENV", "/dev/null"),
+    );
+    app.agent = private_agent.clone();
+    let worktrees = app.worktrees_root.clone();
+    app.project_at_mut(0).orch = Orchestrator::new(
+        repository.clone(),
+        worktrees,
+        private_agent,
+        Templates::default(),
+        test_bridge_exe(),
+    );
     let owner = adopted_run(
         &mut app,
         &repository,
@@ -15,6 +42,7 @@ async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
     );
     let agent_id = primary_agent_id(&app, &owner);
     let agent = app.entity_agents(&owner).unwrap().by_id(&agent_id).unwrap();
+    assert_eq!(agent.choice.provider, AgentProvider::Claude);
     let address = json!({
         "id": owner,
         "agent_id": agent_id,
@@ -37,6 +65,7 @@ async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
         std::fs::canonicalize(directory.path()).unwrap(),
         Arc::new(move |provider, request| {
             assert_eq!(request.root, expected_root);
+            assert_eq!(provider, AgentProvider::Claude);
             assert_eq!(provider, request.choice.provider);
             observed.fetch_add(1, Ordering::SeqCst);
             Ok(OpenedSession {
@@ -53,6 +82,13 @@ async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
     let (claims, lineage, registered) = {
         let app = fixture.state().lock().unwrap();
         let tab = app.session_registry.test_tab(&tab_key).unwrap();
+        assert!(matches!(
+            tab.role,
+            TabRole::Agent {
+                provider: AgentProvider::Claude,
+                ..
+            }
+        ));
         (
             app.session_registry.test_counts().claims,
             tab.session_instance.clone(),
@@ -60,7 +96,7 @@ async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
         )
     };
     assert_eq!(proof.reply["result"]["term_id"], registered);
-    // The RED scaffold still opens the existing QA drain child. Retire it
+    // The RED scaffold still opens the private absolute drain child. Retire it
     // before asserting the missing hook so a failed test owns no live child.
     fixture
         .call(

@@ -7,7 +7,7 @@
 # Install the local package first, then the SPA from the committed locks.
 
 # --- spa: Vite bundle (multi-stage node builder) ---------------------------
-FROM docker.io/library/node:22.23.3-bookworm-slim AS spa
+FROM docker.io/library/node:22.23.4-bookworm-slim AS spa
 WORKDIR /build/repo
 # Match the consumer lock toolchain. No dependency lifecycle scripts run.
 RUN npm install -g npm@12.0.2 --ignore-scripts --no-audit --no-fund
@@ -29,7 +29,7 @@ RUN cd spa \
 # The public homepage is a static Astro document, built the same way the SPA is:
 # in-image, from the repo's own source, no CDN. Stock npm resolves this manifest
 # (the spa stage's npm@12 pin is for the SPA's peer graph, not a house rule).
-FROM docker.io/library/node:22-bookworm-slim AS landing
+FROM docker.io/library/node:22.23.4-bookworm-slim AS landing
 WORKDIR /build/repo/landing
 # Manifests first, so the dependency layer survives a copy edit.
 COPY landing/package.json landing/package-lock.json ./

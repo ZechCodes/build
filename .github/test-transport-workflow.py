@@ -92,7 +92,7 @@ class TransportWorkflow(unittest.TestCase):
         return self.jobs[name]
 
     def assert_node_pins(self, block):
-        self.assertRegex(block, r'node-version: [\'"]22\.23\.3[\'"]')
+        self.assertRegex(block, r'node-version: [\'"]22\.23\.4[\'"]')
         self.assertRegex(block, r"npm install (?:--global|-g) npm@12\.0\.2(?:\s|$)")
 
     def assert_consumer_install(self, job, directory, consumer_command):

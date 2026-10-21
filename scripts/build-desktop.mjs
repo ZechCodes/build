@@ -11,9 +11,9 @@ if (arguments_.some((argument) => argument !== "--dir")) {
   console.error("Usage: node scripts/build-desktop.mjs [--dir]");
   process.exit(1);
 }
-const [major, minor] = process.versions.node.split(".").map(Number);
-if (major < 22 || (major === 22 && minor < 12)) {
-  console.error("Node.js 22.12 or newer is required. See README.md (Build locally).");
+const [major, minor, patch] = process.versions.node.split(".").map(Number);
+if (major < 22 || (major === 22 && (minor < 23 || (minor === 23 && patch < 4)))) {
+  console.error("Node.js 22.23.4 or newer is required. See README.md (Build locally).");
   process.exit(1);
 }
 if (!["linux", "darwin", "win32"].includes(process.platform)) {

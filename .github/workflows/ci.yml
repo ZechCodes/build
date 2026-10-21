@@ -112,6 +112,10 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.4"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
@@ -218,7 +222,7 @@ jobs:
           version: "0.13.4"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22.23.3"
+          node-version: "22.23.4"
       - name: Match locked npm
         run: npm install -g npm@12.0.2 --ignore-scripts --no-audit --no-fund
       - name: Source and harness contracts
@@ -259,7 +263,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22.23.3"
+          node-version: "22.23.4"
       - name: Match locked npm
         run: npm install -g npm@12.0.2 --ignore-scripts --no-audit --no-fund
       - name: Install transport
@@ -328,7 +332,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('bridge/Cargo.lock') }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22.23.3"
+          node-version: "22.23.4"
       - name: Match locked npm
         run: npm install -g npm@12.0.2 --ignore-scripts --no-audit --no-fund
       - name: Install transport
@@ -382,7 +386,7 @@ jobs:
           # Astro and the test runner both need node 22+. Unlike spa/, this
           # project has no file: dependencies, so its lockfile is committed and
           # the npm cache can key on it.
-          node-version: "22"
+          node-version: "22.23.4"
           cache: npm
           cache-dependency-path: landing/package-lock.json
       - name: Install
@@ -481,7 +485,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22"
+          node-version: "22.23.4"
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - name: Build an unsigned local application

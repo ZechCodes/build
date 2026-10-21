@@ -37,7 +37,7 @@ see [the import policy](UPSTREAM.md#maintenance-and-future-imports).
 ## Development and compatibility
 
 SPA and web resolve `file:../transport/js` with committed portable consumer
-locks. Use Node 22.23.3/npm 12.0.2 and install the binding first from Build’s root:
+locks. Use Node 22.23.4/npm 12.0.2 and install the binding first from Build’s root:
 
 ```sh
 nice -n 10 npm ci --prefix transport/js --ignore-scripts

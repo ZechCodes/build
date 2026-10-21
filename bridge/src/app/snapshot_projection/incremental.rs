@@ -25,7 +25,8 @@ impl AppState {
         delta = self.prepare_workspace_snapshot_details_for_owners(delta, previous, &owners);
         let facts = self.push_facts_incremental_snapshot(cache.lists(), &owners);
         let delta = self.prepare_observation_inputs(delta, previous);
-        Some(delta.set_facts(Arc::new(facts)).set_global(Arc::new(cache)))
+        let delta = delta.set_facts(Arc::new(facts)).set_global(Arc::new(cache));
+        Some(self.prepare_attention_notice_receipts(delta, Some(&owners)))
     }
 
     pub(in crate::app) fn prepare_incremental_task_snapshot(
@@ -59,6 +60,7 @@ impl AppState {
         let delta = cache.publish(self, delta, previous);
         let facts = self.push_facts_shared_snapshot(cache.lists());
         let delta = self.prepare_observation_inputs(delta, previous);
-        delta.set_facts(Arc::new(facts)).set_global(Arc::new(cache))
+        let delta = delta.set_facts(Arc::new(facts)).set_global(Arc::new(cache));
+        self.prepare_attention_notice_receipts(delta, None)
     }
 }

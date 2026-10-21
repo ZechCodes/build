@@ -15,6 +15,7 @@ pub(in crate::app) struct SnapshotObservations {
     pub(in crate::app) observation_owners: crate::observation_changes::ChangeKeys,
     pub(in crate::app) observation_reservations: crate::observation_changes::ChangeKeys,
     pending_owners: Mutex<BTreeSet<String>>,
+    deferred_attention_notices: crate::observation_changes::ChangeKeys,
     ownership: Mutex<Option<Arc<ProjectionOwnership>>>,
     paths: BTreeMap<PathBuf, PathBuf>,
     existing_paths: BTreeSet<PathBuf>,
@@ -297,6 +298,7 @@ impl AppState {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.install");
         let receipts = delta.take_observation_receipts();
+        let attention_notices = delta.take_attention_notice_receipts();
         if self.read_view.publish_delta(delta) {
             if let Some(receipts) = receipts {
                 receipts.acknowledge(self);
@@ -306,6 +308,7 @@ impl AppState {
                 .lock()
                 .unwrap()
                 .clear();
+            self.publish_attention_notice_receipts(&attention_notices);
         }
     }
 
@@ -404,6 +407,7 @@ fn put_changed(
     }
 }
 
+mod attention_notices;
 mod history;
 pub(in crate::app) mod incremental;
 mod maintenance;

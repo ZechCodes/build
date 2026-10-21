@@ -184,6 +184,7 @@ pub(in crate::app) struct SnapshotDelta {
     observations: Option<Arc<super::observation_reads::ObservationContext>>,
     observation_patch: Option<super::observation_reads::ObservationPatch>,
     observation_receipts: Option<super::observation_reads::ObservationReceipts>,
+    attention_notice_receipts: Vec<(String, u64)>,
     global: Option<Option<Arc<super::snapshot_projection::incremental::GlobalProjection>>>,
 }
 
@@ -197,6 +198,7 @@ impl SnapshotDelta {
             observations: None,
             observation_patch: None,
             observation_receipts: None,
+            attention_notice_receipts: Vec::new(),
             global: None,
         }
     }
@@ -269,6 +271,18 @@ impl SnapshotDelta {
         &mut self,
     ) -> Option<super::observation_reads::ObservationReceipts> {
         self.observation_receipts.take()
+    }
+
+    pub(in crate::app) fn set_attention_notice_receipts(
+        mut self,
+        receipts: Vec<(String, u64)>,
+    ) -> Self {
+        self.attention_notice_receipts = receipts;
+        self
+    }
+
+    pub(in crate::app) fn take_attention_notice_receipts(&mut self) -> Vec<(String, u64)> {
+        std::mem::take(&mut self.attention_notice_receipts)
     }
 
     pub fn set_facts(mut self, facts: Arc<super::facts::PushFacts>) -> Self {

@@ -688,8 +688,7 @@ impl AppState {
         }
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("finisher.attention");
-        self.mark_snapshot_owner_pending(owner);
-        self.mark_observation_owner_changed(owner);
+        self.mark_deferred_attention_notice(owner);
         self.changes
             .note_board_lists(crate::changes::BoardLists::default());
         self.watchers.board_moved(self.worktree_roots());

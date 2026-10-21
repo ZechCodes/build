@@ -48,7 +48,7 @@ impl AppState {
         let _phase = crate::timing::phase_samples::phase("finisher.attention");
         // Keep dependencies pending even if dispatch unwinds before its final
         // union flush. No dirty receipt is consumed by recording these keys.
-        self.mark_post_attention_snapshot_owner_pending(owner);
+        self.mark_deferred_attention_notice(owner);
         self.publish_read_metadata_only();
         self.changes
             .note_board_lists(crate::changes::BoardLists::default());

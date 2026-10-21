@@ -122,6 +122,7 @@ fn owner_projection_uses_the_observed_branch_until_a_producer_refreshes_it() {
     );
 }
 
+mod terminal_publication;
 mod watched_tasks;
 mod workspace_summaries;
 

@@ -1,5 +1,4 @@
 //! Semantic MCP variants need socket/effect proofs in addition to RPC98.
-use super::*;
 use std::collections::BTreeSet;
 
 const WRITER_ACTIONS: &[&str] = &[

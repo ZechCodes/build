@@ -1028,6 +1028,10 @@ async fn term_create_publishes_only_terminal_facts_with_named_guard_phases() {
         phases.get("entered.term.create.spawn").is_none(),
         "PTY creation must not enter a guarded phase: {phases}"
     );
+    assert!(
+        phases.get("entered.term.create.scope_probe").is_none(),
+        "physical scope resolution must not enter a guarded phase: {phases}"
+    );
     for phase in [
         "term.create.reserve",
         "term.create.commit",

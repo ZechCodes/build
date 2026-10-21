@@ -193,6 +193,7 @@ async fn terminal_creation_discovers_unregistered_external_workspace_offlock() {
     f.state.lock().unwrap().terminal_create_scope_probe_gate = Some(gate);
     let creating = {
         let handler = f.handler.clone();
+        let workspace_id = workspace_id.clone();
         std::thread::spawn(move || {
             call(
                 &handler,
@@ -222,12 +223,24 @@ async fn terminal_creation_discovers_unregistered_external_workspace_offlock() {
     } else {
         None
     };
+    // Resolve no other legacy aliases before checking immediate identity.
+    // Terminal publication and a later term.list must not need global adoption.
+    let adopted = f
+        .state
+        .lock()
+        .unwrap()
+        .workspaces
+        .get(&workspace_id)
+        .cloned();
     f.close(&created);
     concurrent.join().unwrap();
     assert_eq!(
         created["ok"], true,
         "a valid Git worktree must remain addressable before legacy adoption: {created}"
     );
+    let adopted = adopted.expect("the selected legacy alias must be installed before publication");
+    assert_eq!(adopted.root, root);
+    assert!(!adopted.managed);
     assert_eq!(actual_root, Some(root));
     assert_eq!(
         reply.expect("legacy Git discovery held the app mutex")["ok"],

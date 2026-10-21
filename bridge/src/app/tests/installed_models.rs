@@ -6,6 +6,8 @@ use std::sync::Mutex;
 use super::*;
 use crate::harness::installed::{CliProbe, CliReading, ListedModel, Readings};
 
+mod catalogue;
+
 /// Every installed CLI at once: Claude Code at whatever version the test set,
 /// and a codex that lists two models, one hidden.
 struct InstalledClis {

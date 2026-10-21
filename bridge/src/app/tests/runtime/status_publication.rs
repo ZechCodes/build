@@ -5,6 +5,8 @@ use crate::app::runtime::pumps::status_publication_probe::StatusPublicationProbe
 use crate::harness::{SessionStatusSnapshot, TurnContext};
 use std::collections::BTreeMap;
 
+mod metadata;
+
 const OWNER: &str = "run-status-publication";
 const START: &str = "2030-01-01T00:00:00Z";
 const STOP: &str = "2030-01-01T00:01:00Z";

@@ -387,23 +387,28 @@ async fn replay(service: &MutationService, subscription: Subscription) {
         return;
     };
     for entry in entries {
+        // Registration/replacement and delivery share this short gate. An old
+        // replay that waited for SQL cannot emit after its set was replaced.
+        let mut subscriptions = service.inner.subscriptions.lock().unwrap();
+        let key = subscription.sender.read_scope();
+        let Some(current) = subscriptions
+            .get_mut(&key)
+            .filter(|current| Arc::ptr_eq(&current.identity, &subscription.identity))
+        else {
+            return;
+        };
         if subscription.ids.contains(&entry.operation.operation_id)
             && service.authorized(&entry.operation)
         {
             if let Ok(payload) = confirmation(&entry.operation) {
                 if !subscription.sender.push_scoped(payload) {
-                    remove_subscription(service, &subscription);
+                    subscriptions.remove(&key);
                     return;
                 }
             }
         }
-        let mut subscriptions = service.inner.subscriptions.lock().unwrap();
-        if let Some(current) = subscriptions
-            .get_mut(&subscription.sender.read_scope())
-            .filter(|current| Arc::ptr_eq(&current.identity, &subscription.identity))
-        {
-            current.cursor = entry.cursor;
-        }
+        current.cursor = entry.cursor;
+        drop(subscriptions);
         service.inner.wakeup.notify_one();
     }
 }

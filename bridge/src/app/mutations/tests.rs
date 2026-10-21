@@ -295,3 +295,36 @@ async fn older_snapshot_completion_cannot_replace_newer_subscription() {
     assert!(subscribed.ids.contains(&id(2)));
     assert!(!subscribed.ids.contains(&id(1)));
 }
+
+#[tokio::test]
+async fn replaced_subscription_cannot_deliver_an_old_set_after_waiting_for_sql() {
+    let fixture = Fixture::new();
+    fixture.admit(DEVICE_USER, &id(1), "old set");
+    let (sender, mut rx, _) = SessionSender::observable("replacement");
+    fixture
+        .call(
+            sender.clone(),
+            "writes.subscribe",
+            json!({"operation_ids":[id(1)]}),
+        )
+        .await;
+    let old = fixture
+        .service
+        .inner
+        .subscriptions
+        .lock()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    fixture
+        .call(sender, "writes.subscribe", json!({"operation_ids":[id(2)]}))
+        .await;
+    fixture.succeed(&id(1), json!({"saved":true}));
+    replay(&fixture.service, old).await;
+    assert!(
+        rx.try_recv().is_err(),
+        "a replaced set cannot emit its old operation"
+    );
+}

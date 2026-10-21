@@ -95,7 +95,12 @@ impl Layout {
             paths: app.snapshot_observations.paths.clone(),
             existing_paths: app.snapshot_observations.existing_paths.clone(),
             branches: app.snapshot_observations.branches.clone(),
-            reviews: app.snapshot_observations.workspace_reviews.clone(),
+            reviews: app
+                .snapshot_observations
+                .workspace_reviews
+                .iter()
+                .map(|(id, observed)| (id.clone(), observed.value.clone()))
+                .collect(),
             lifecycle: app.workspace_lifecycle.clone(),
             registrations: app.session_registry.projection_layout(),
             settings: app.settings_get_observed(app.snapshot_account_availability()),

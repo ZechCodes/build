@@ -411,8 +411,9 @@ fn same_directory(left: &Path, right: &Path) -> bool {
 /// service, cuts and review merges hold the same canonical Git directory.
 pub struct SyncLock {
     path: PathBuf,
+    // Keep final exclusion cleanup attributable after the request root ends.
     #[cfg(test)]
-    context: Option<crate::timing::write_wait::WriteContext>,
+    cleanup: Option<crate::timing::write_wait::Obligation>,
 }
 
 fn held_checkouts() -> &'static (
@@ -488,7 +489,8 @@ impl SyncLock {
             Self {
                 path,
                 #[cfg(test)]
-                context: crate::timing::write_wait::current_context(),
+                cleanup: crate::timing::write_wait::current_context()
+                    .map(|context| context.child()),
             },
             waited,
         ))
@@ -505,7 +507,9 @@ pub(crate) fn sync_lock_identity(path: &Path) -> PathBuf {
 impl Drop for SyncLock {
     fn drop(&mut self) {
         #[cfg(test)]
-        let _scope = self.context.as_ref().map(|context| context.bind_sync());
+        let context = self.cleanup.as_ref().map(|cleanup| cleanup.context());
+        #[cfg(test)]
+        let scope = context.as_ref().map(|context| context.bind_sync());
         let (held, released) = held_checkouts();
         #[cfg(test)]
         let waiting = crate::timing::write_wait::current_interval(
@@ -519,5 +523,12 @@ impl Drop for SyncLock {
         guard.remove(&self.path);
         drop(guard);
         released.notify_all();
+        #[cfg(test)]
+        {
+            drop(scope);
+            if let Some(cleanup) = self.cleanup.take() {
+                cleanup.complete();
+            }
+        }
     }
 }

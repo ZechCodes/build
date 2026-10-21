@@ -20,8 +20,9 @@ pub struct AdmissionLease(Arc<LeaseInner>);
 
 struct LeaseInner {
     gate: Arc<AdmissionGate>,
+    // The final release can run after ACK, so attribution needs a live owner.
     #[cfg(test)]
-    context: Option<crate::timing::write_wait::WriteContext>,
+    cleanup: Option<crate::timing::write_wait::Obligation>,
 }
 
 impl Clone for AdmissionLease {
@@ -33,8 +34,16 @@ impl Clone for AdmissionLease {
 impl Drop for LeaseInner {
     fn drop(&mut self) {
         #[cfg(test)]
-        let _scope = self.context.as_ref().map(|context| context.bind_sync());
-        self.gate.lock_state().active -= 1;
+        let context = self.cleanup.as_ref().map(|cleanup| cleanup.context());
+        {
+            #[cfg(test)]
+            let _scope = context.as_ref().map(|context| context.bind_sync());
+            self.gate.lock_state().active -= 1;
+        }
+        #[cfg(test)]
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup.complete();
+        }
     }
 }
 
@@ -68,7 +77,7 @@ impl AdmissionGate {
         Some(AdmissionLease(Arc::new(LeaseInner {
             gate: Arc::clone(self),
             #[cfg(test)]
-            context: crate::timing::write_wait::current_context(),
+            cleanup: crate::timing::write_wait::current_context().map(|context| context.child()),
         })))
     }
 

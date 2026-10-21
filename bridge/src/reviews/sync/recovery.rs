@@ -240,6 +240,8 @@ fn lock_capture(directory: &File, _task_id: &str, wait: Duration) -> Result<(), 
     let deadline = Instant::now()
         .checked_add(wait)
         .ok_or("review sync capture wait exceeds its supported duration")?;
+    #[cfg(test)]
+    let mut contention = None;
     loop {
         match directory.try_lock() {
             Ok(()) => return Ok(()),
@@ -251,7 +253,16 @@ fn lock_capture(directory: &File, _task_id: &str, wait: Duration) -> Result<(), 
                     return Err("busy: review sync capture".into());
                 }
                 #[cfg(test)]
-                crate::timing::write_wait::native_retry::observed("review.sync.capture");
+                {
+                    if contention.is_none() {
+                        contention = crate::timing::write_wait::current_interval(
+                            crate::timing::write_wait::IntervalCategory::KnownWait(
+                                crate::timing::write_wait::WaitKind::ResourceLock,
+                            ),
+                        );
+                    }
+                    crate::timing::write_wait::native_retry::observed("review.sync.capture");
+                }
                 std::thread::sleep(remaining.min(Duration::from_millis(25)));
             }
             Err(error) => return Err(format!("review sync capture lock failed: {error}")),

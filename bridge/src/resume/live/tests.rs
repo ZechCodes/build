@@ -566,3 +566,5 @@ fn a_process_that_shuts_down_cleanly_records_before_teardown() {
         vec![working("agent-1")]
     );
 }
+
+mod write_wait_tests;

@@ -375,3 +375,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod write_wait_tests;

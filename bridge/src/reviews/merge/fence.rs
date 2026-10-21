@@ -83,13 +83,24 @@ fn lock_refs(
     refs: &BTreeMap<PathBuf, BTreeMap<String, Option<String>>>,
 ) -> Result<Vec<OwnedGitFileLock>, String> {
     let deadline = Instant::now() + REF_WAIT;
+    #[cfg(test)]
+    let mut contention = None;
     loop {
         let result = acquire(refs);
         match result {
             Ok(guards) => return Ok(guards),
             Err(error) if error.contains("locked") && Instant::now() < deadline => {
                 #[cfg(test)]
-                crate::timing::write_wait::native_retry::observed("review.merge.refs");
+                {
+                    if contention.is_none() {
+                        contention = crate::timing::write_wait::current_interval(
+                            crate::timing::write_wait::IntervalCategory::KnownWait(
+                                crate::timing::write_wait::WaitKind::ResourceLock,
+                            ),
+                        );
+                    }
+                    crate::timing::write_wait::native_retry::observed("review.merge.refs");
+                }
                 std::thread::sleep(Duration::from_millis(25));
             }
             Err(error) => return Err(error),

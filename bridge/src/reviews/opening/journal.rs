@@ -21,12 +21,23 @@ pub(super) fn lock(request: &OpenReviewRequest) -> Result<File, String> {
         .open(root.join("operations").join("opening.lock"))
         .map_err(|error| error.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(60);
+    #[cfg(test)]
+    let mut contention = None;
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(file),
             Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
                 #[cfg(test)]
-                crate::timing::write_wait::native_retry::observed("review.opening.journal");
+                {
+                    if contention.is_none() {
+                        contention = crate::timing::write_wait::current_interval(
+                            crate::timing::write_wait::IntervalCategory::KnownWait(
+                                crate::timing::write_wait::WaitKind::ResourceLock,
+                            ),
+                        );
+                    }
+                    crate::timing::write_wait::native_retry::observed("review.opening.journal");
+                }
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(error) => return Err(format!("busy: review opening lock: {error}")),

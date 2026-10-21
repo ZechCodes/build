@@ -139,7 +139,31 @@ pub struct UpdateService {
     status_tx: watch::Sender<UpdateStatus>,
 }
 
+fn spawn_requested_service(future: impl std::future::Future<Output = ()> + Send + 'static) {
+    #[cfg(test)]
+    let future = crate::timing::write_wait::service::ServiceFuture::queued(future);
+    tokio::spawn(future);
+}
+
+async fn run_backend<F: std::future::Future>(future: F) -> F::Output {
+    #[cfg(test)]
+    let future = crate::timing::write_wait::service::external(future);
+    future.await
+}
+
 impl UpdateService {
+    async fn lock_transition(&self) -> tokio::sync::MutexGuard<'_, AttemptMetadata> {
+        #[cfg(test)]
+        let waiting = crate::timing::write_wait::current_interval(
+            crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::ResourceLock,
+            ),
+        );
+        let held = self.transition.lock().await;
+        #[cfg(test)]
+        drop(waiting);
+        held
+    }
     pub fn new(config: UpdateConfig, backend: Arc<dyn UpdateBackend>) -> Result<Self, UpdateError> {
         let (mut status, mut attempt) = match std::fs::read(&config.status_path) {
             Ok(bytes) => serde_json::from_slice::<PersistedUpdate>(&bytes)
@@ -265,7 +289,7 @@ impl UpdateService {
         }
         drop(guard);
         let service = Arc::clone(self);
-        tokio::spawn(async move {
+        spawn_requested_service(async move {
             let _ = service.check().await;
             service.check_in_flight.store(false, Ordering::Release);
         });
@@ -273,7 +297,7 @@ impl UpdateService {
     }
 
     pub async fn check_at(&self, now: OffsetDateTime) -> Result<UpdateStatus, UpdateError> {
-        let mut guard = self.transition.lock().await;
+        let mut guard = self.lock_transition().await;
         self.check_locked(now, &mut guard).await
     }
 
@@ -298,7 +322,7 @@ impl UpdateService {
             return Err(UpdateError::Busy);
         }
         status.last_checked_at = Some(now.format(&Rfc3339).expect("valid UTC timestamp"));
-        match self.backend.latest().await {
+        match run_backend(self.backend.latest()).await {
             Ok(release) => {
                 if let Err(error) = validate_release(&release) {
                     status.set_check_error(error.to_string());
@@ -362,7 +386,7 @@ impl UpdateService {
         working_agents: bool,
         replace_development_build: bool,
     ) -> Result<UpdateStatus, UpdateError> {
-        let mut guard = self.transition.lock().await;
+        let mut guard = self.lock_transition().await;
         self.admit_build(replace_development_build)?;
         if self.check_in_flight.load(Ordering::Acquire) {
             return Err(UpdateError::Busy);
@@ -435,7 +459,7 @@ impl UpdateService {
             let status = self.publish(status, &guard)?;
             drop(guard);
             let service = Arc::clone(self);
-            tokio::spawn(async move {
+            spawn_requested_service(async move {
                 let _ = service.tick(working_agents).await;
             });
             return Ok(status);
@@ -444,10 +468,10 @@ impl UpdateService {
         self.staging.store(true, Ordering::Release);
         drop(guard);
         let service = Arc::clone(self);
-        tokio::spawn(async move {
-            let outcome = service.backend.install(&release, &attempt_id).await;
+        spawn_requested_service(async move {
+            let outcome = run_backend(service.backend.install(&release, &attempt_id)).await;
             if let Err(error) = outcome {
-                let mut guard = service.transition.lock().await;
+                let mut guard = service.lock_transition().await;
                 if guard.attempt_id.as_deref() == Some(attempt_id.as_str()) {
                     let status = service.status();
                     let _ = service.record_launch_error(status, &mut guard, error);
@@ -479,7 +503,7 @@ impl UpdateService {
         attempt: &mut AttemptMetadata,
     ) -> Result<UpdateStatus, UpdateError> {
         let (status, release, attempt_id) = self.prepare_launch_locked(status, attempt)?;
-        if let Err(error) = self.backend.install(&release, &attempt_id).await {
+        if let Err(error) = run_backend(self.backend.install(&release, &attempt_id)).await {
             self.record_launch_error(status, attempt, error.clone())?;
             return Err(UpdateError::Backend(error));
         }
@@ -591,7 +615,7 @@ impl UpdateService {
         };
         if !attempt.staged {
             self.staging.store(true, Ordering::Release);
-            let result = self.backend.stage(&release, &attempt_id).await;
+            let result = run_backend(self.backend.stage(&release, &attempt_id)).await;
             self.staging.store(false, Ordering::Release);
             if let Err(error) = result {
                 status.state = UpdateState::Failed;
@@ -646,7 +670,7 @@ impl UpdateService {
         );
         status.state = UpdateState::Installing;
         self.publish(status.clone(), attempt)?;
-        if let Err(error) = self.backend.launch(&release, &attempt_id).await {
+        if let Err(error) = run_backend(self.backend.launch(&release, &attempt_id)).await {
             self.record_launch_error(status, attempt, error.clone())?;
             return Err(UpdateError::Backend(error));
         }
@@ -667,7 +691,7 @@ impl UpdateService {
         working_agents: bool,
     ) -> Result<UpdateStatus, UpdateError> {
         self.backend.maintain().map_err(UpdateError::Backend)?;
-        let mut guard = self.transition.lock().await;
+        let mut guard = self.lock_transition().await;
         let prior = self.status();
         let was_pending = guard.rollback_pending;
         self.reconcile_helper_locked(now, &mut guard)?;

@@ -165,6 +165,9 @@ struct State {
     /// Something asked for a sweep before the next interval.
     pending: bool,
     running_seen: u64,
+    #[cfg(test)]
+    refresh_origins:
+        std::collections::BTreeMap<u64, crate::timing::write_wait::service::ServiceOrigins>,
 }
 
 struct HarnessState {
@@ -256,6 +259,8 @@ impl State {
             contexts,
             pending: false,
             running_seen: 0,
+            #[cfg(test)]
+            refresh_origins: Default::default(),
         }
     }
 
@@ -431,7 +436,14 @@ impl Inventory {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap()
+        #[cfg(test)]
+        let held = crate::timing::write_wait::mutex::acquire_mutex(
+            &self.state,
+            crate::timing::write_wait::WaitKind::ResourceLock,
+        );
+        #[cfg(not(test))]
+        let held = self.state.lock();
+        held.unwrap()
     }
 
     /// Everything it has published. Never waits on a probe or writer lock.
@@ -488,6 +500,14 @@ impl Inventory {
     pub fn request_refresh(&self) -> RefreshReceipt {
         let mut state = self.lock();
         state.refresh.requested += 1;
+        #[cfg(test)]
+        {
+            let request = state.refresh.requested;
+            state.refresh_origins.insert(
+                request,
+                crate::timing::write_wait::service::ServiceOrigins::capture(),
+            );
+        }
         for context in &mut state.contexts {
             context.forced = true;
         }
@@ -535,12 +555,34 @@ impl Inventory {
             state.pending = false;
             state.refresh.requested
         };
+        #[cfg(test)]
+        let origins = crate::timing::write_wait::service::ServiceOrigins::combined(
+            self.lock()
+                .refresh_origins
+                .range(..=refresh_target)
+                .map(|(_, origins)| origins.clone()),
+        );
+        #[cfg(test)]
+        let running = origins.start();
+        #[cfg(test)]
+        let binding = running.bind();
+        #[cfg(test)]
+        let external = crate::timing::write_wait::current_interval(
+            crate::timing::write_wait::IntervalCategory::OwnExternal,
+        );
         let mut changed = self.observe_installations(&environment);
         let contexts = self.lock().contexts.len();
         for context in 0..contexts {
             changed |= self.observe_context(context, &environment);
         }
+        #[cfg(test)]
+        drop(external);
         self.finish(refresh_target, changed);
+        #[cfg(test)]
+        {
+            drop(binding);
+            running.complete();
+        }
     }
 
     fn observe_installations(&self, environment: &DeviceEnvironment) -> bool {
@@ -597,6 +639,19 @@ impl Inventory {
             .store(Arc::new(state.snapshot(&self.sources.running)));
         if changed {
             self.changed.send_replace(state.revision);
+        }
+        #[cfg(test)]
+        {
+            let completed = state.refresh.completed;
+            state.refresh_origins.retain(|request, origins| {
+                if *request <= completed {
+                    origins.complete();
+                    false
+                } else {
+                    origins.waiting();
+                    true
+                }
+            });
         }
     }
 

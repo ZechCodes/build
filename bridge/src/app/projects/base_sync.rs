@@ -185,6 +185,8 @@ pub(in crate::app) struct SyncSubject {
     fetch: Fetch,
     origin: SyncOrigin,
     enabled: bool,
+    #[cfg(test)]
+    wait_origins: crate::timing::write_wait::service::ServiceOrigins,
 }
 
 /// Who ran a sync, and whether its inputs belong to today's project or a
@@ -273,11 +275,48 @@ pub(in crate::app) fn now_ms() -> i64 {
 
 /// Sync one source for the service, once no other sync holds it.
 fn sync_for_the_service(subject: SyncSubject, state: &Arc<Mutex<AppState>>) -> Option<Synced> {
+    #[cfg(test)]
+    let origins = subject.wait_origins.clone();
+    #[cfg(test)]
+    let running = origins.start();
+    #[cfg(test)]
+    let binding = running.bind();
+    let synced = sync_service_subject(subject, state);
+    #[cfg(test)]
+    {
+        drop(binding);
+        if synced.is_some() {
+            origins.waiting();
+        } else {
+            origins.cancel();
+        }
+        running.complete();
+    }
+    synced
+}
+
+fn sync_service_subject(subject: SyncSubject, state: &Arc<Mutex<AppState>>) -> Option<Synced> {
     let (_held, _) = SyncLock::acquire(&subject.path, SERVICE_FETCH_DEADLINE)?;
-    if !subject.is_current(&state.lock().unwrap()) {
+    #[cfg(test)]
+    let waiting = crate::timing::write_wait::current_interval(
+        crate::timing::write_wait::IntervalCategory::KnownWait(
+            crate::timing::write_wait::WaitKind::AppLock,
+        ),
+    );
+    let app = state.lock().unwrap();
+    #[cfg(test)]
+    drop(waiting);
+    if !subject.is_current(&app) {
         return None;
     }
+    drop(app);
+    #[cfg(test)]
+    let external = crate::timing::write_wait::current_interval(
+        crate::timing::write_wait::IntervalCategory::OwnExternal,
+    );
     let report = sync_base(&subject.path, &subject.base_branch, subject.fetch);
+    #[cfg(test)]
+    drop(external);
     Some(Synced {
         subject,
         report,
@@ -536,7 +575,31 @@ impl AppState {
             .into_iter()
             .filter_map(|subject| sync_for_the_service(subject, state))
             .collect();
-        state.lock().unwrap().settle_source_syncs(synced, now_ms);
+        #[cfg(test)]
+        let origins = crate::timing::write_wait::service::ServiceOrigins::combined(
+            synced.iter().map(|row| row.subject.wait_origins.clone()),
+        );
+        #[cfg(test)]
+        let running = origins.start();
+        #[cfg(test)]
+        let binding = running.bind();
+        #[cfg(test)]
+        let waiting = crate::timing::write_wait::current_interval(
+            crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::AppLock,
+            ),
+        );
+        let mut app = state.lock().unwrap();
+        #[cfg(test)]
+        drop(waiting);
+        app.settle_source_syncs(synced, now_ms);
+        drop(app);
+        #[cfg(test)]
+        {
+            drop(binding);
+            origins.complete();
+            running.complete();
+        }
     }
 
     fn source_sync_subjects(&mut self, pass: SyncPass, now_ms: i64) -> Vec<SyncSubject> {
@@ -600,6 +663,8 @@ impl AppState {
                     fetch: policy.map_or(Fetch::Skip, fetch_for_cut),
                     origin: SyncOrigin::Retry,
                     enabled: policy.is_some_and(super::ProjectSource::syncs_base),
+                    #[cfg(test)]
+                    wait_origins: Default::default(),
                 }
             })
             .collect()
@@ -687,6 +752,15 @@ impl AppState {
                 SyncOrigin::Service,
             );
             captured.enabled = true; // Manual sync works even when automatic sync is off.
+            #[cfg(test)]
+            {
+                captured.wait_origins = self
+                    .source_sync_requested
+                    .get(&(project_id.clone(), source_id.clone()))
+                    .map(|previous| previous.wait_origins.clone())
+                    .unwrap_or_default();
+                captured.wait_origins.push_current();
+            }
             self.source_sync_requested
                 .insert((project_id, source_id), captured);
             self.source_sync_nudge.notify_one();
@@ -753,6 +827,8 @@ fn subject(
         fetch,
         origin,
         enabled: origin == SyncOrigin::Service || source.syncs_base(),
+        #[cfg(test)]
+        wait_origins: Default::default(),
     }
 }
 

@@ -85,14 +85,37 @@ impl AppState {
             let walk = app.size_walk(&workspace_id);
             (requests, workspace_id, walk)
         };
+        #[cfg(test)]
+        let origins = requests.origins_for(&workspace_id);
+        #[cfg(test)]
+        let running = origins.start();
+        #[cfg(test)]
+        let binding = running.bind();
+        #[cfg(test)]
+        let external = crate::timing::write_wait::current_interval(
+            crate::timing::write_wait::IntervalCategory::OwnExternal,
+        );
         let size = walk.and_then(|(boundary, budget)| size_within(&boundary, &budget()));
+        #[cfg(test)]
+        drop(external);
         if let Some(size) = size {
-            state
-                .lock()
-                .unwrap()
-                .settle_workspace_size(&workspace_id, size, now_ms);
+            #[cfg(test)]
+            let waiting = crate::timing::write_wait::current_interval(
+                crate::timing::write_wait::IntervalCategory::KnownWait(
+                    crate::timing::write_wait::WaitKind::AppLock,
+                ),
+            );
+            let mut app = state.lock().unwrap();
+            #[cfg(test)]
+            drop(waiting);
+            app.settle_workspace_size(&workspace_id, size, now_ms);
         }
         requests.done(&workspace_id);
+        #[cfg(test)]
+        {
+            drop(binding);
+            running.complete();
+        }
         true
     }
 

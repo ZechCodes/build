@@ -33,6 +33,8 @@ struct Pending {
     waiting: VecDeque<String>,
     /// Waiting or being walked: what a request does not queue again.
     held: HashSet<String>,
+    #[cfg(test)]
+    origins: std::collections::HashMap<String, crate::timing::write_wait::service::ServiceOrigins>,
 }
 
 /// The queue the request fills and the service thread drains.
@@ -43,13 +45,43 @@ pub struct SizeRequests {
 }
 
 impl SizeRequests {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Pending> {
+        #[cfg(test)]
+        let held = crate::timing::write_wait::mutex::acquire_mutex(
+            &self.pending,
+            crate::timing::write_wait::WaitKind::ResourceLock,
+        );
+        #[cfg(not(test))]
+        let held = self.pending.lock();
+        held.unwrap()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn origins_for(
+        &self,
+        workspace_id: &str,
+    ) -> crate::timing::write_wait::service::ServiceOrigins {
+        self.lock()
+            .origins
+            .get(workspace_id)
+            .cloned()
+            .unwrap_or_default()
+    }
     /// Queue each workspace not already waiting or being walked, and wake the
     /// walker. Answers the ones this call queued.
     pub fn request(&self, workspace_ids: impl IntoIterator<Item = String>) -> Vec<String> {
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = self.lock();
         let queued: Vec<String> = workspace_ids
             .into_iter()
-            .filter(|id| pending.held.insert(id.clone()))
+            .filter(|id| {
+                #[cfg(test)]
+                pending
+                    .origins
+                    .entry(id.clone())
+                    .or_default()
+                    .push_current();
+                pending.held.insert(id.clone())
+            })
             .collect();
         pending.waiting.extend(queued.iter().cloned());
         if !queued.is_empty() {
@@ -61,18 +93,23 @@ impl SizeRequests {
     /// The next workspace to walk, if one is waiting. It stays held until
     /// [`SizeRequests::done`].
     pub fn next(&self) -> Option<String> {
-        self.pending.lock().unwrap().waiting.pop_front()
+        self.lock().waiting.pop_front()
     }
 
     /// The walk of this workspace is over, however it ended: a later request
     /// may queue it again.
     pub fn done(&self, workspace_id: &str) {
-        self.pending.lock().unwrap().held.remove(workspace_id);
+        let mut pending = self.lock();
+        pending.held.remove(workspace_id);
+        #[cfg(test)]
+        if let Some(origins) = pending.origins.remove(workspace_id) {
+            origins.complete();
+        }
     }
 
     /// Wait up to `timeout` for something to walk.
     pub fn wait(&self, timeout: Duration) {
-        let pending = self.pending.lock().unwrap();
+        let pending = self.lock();
         if pending.waiting.is_empty() {
             let _ = self.arrived.wait_timeout(pending, timeout);
         }

@@ -215,6 +215,14 @@ work and retain their dispatch worker until they finish.
 4. `routed()` → `AppState::route` → `crate::api::v1::dispatch`, then the legacy
    arms (`ping`, `term.list`, `term.close`, `stream.*`).
 
+Routed requests retain their update-admission lease through the reply and
+share it with delivery and compaction workers. Their drain does not acquire
+another gate handle or lease. A request admitted without an update service
+is distinct from an exempt liveness request, whose drain still checks the
+gate independently. Project-deletion refusal runs inside the routed dispatch
+guard before deferred work can be taken. Session-scoped and standalone drains
+keep their existing admission checks.
+
 **The verb registry** is `bridge/src/api/v1/mod.rs`. Each family file (`board.rs`,
 `changes.rs`, `git.rs`, `harnesses.rs`, `push.rs`, `tasks.rs`, `lifecycle.rs`, `thread.rs`, `updates.rs`,
 `workspace.rs`) has a `methods()` table built with the `v1_method!` macro, which
@@ -461,11 +469,14 @@ every root, with repeated filesystem canonicalization under the app lock.
 Counting tests bound the path comparisons for a refresh as runs and workspaces
 grow; ownership tests retain direct IDs, terminal states, project conversations
 and symlink aliases.
-Snapshot preparation captures one ephemeral ownership context shared by board,
-workspace, agent and push projections. It observes ordered workspace inputs and
-distinct roots once, preserving run-map fallback order and workspace name/ID
-precedence. Task live locations use a qualified owner index with the existing
-project/root checks and project-repository exclusion, so each agent resolves its
+Snapshot preparation creates one ownership context shared by board, workspace,
+agent and push projections. Pure ownership indexes can reuse the accepted global
+projection's structural data after validating current native paths, observed
+aliases, state root, project and parked bindings, exact run states, roster order
+and workspace name/ID precedence. Validation still walks the current inputs;
+unchanged structure avoids rebuilding and sorting the indexes. Cold observation
+state cannot reuse them. Task live locations use a qualified owner index with
+the existing project/root checks and project-repository exclusion, so each agent resolves its
 location without repeating registry scans. It indexes agent ownership and preferred
 run outcomes in the existing precedence order, and reuses branch candidates and
 canonical agent digests for matching render inputs. Updated canonical histories
@@ -477,9 +488,11 @@ canonical conversation aliases retain their existing behavior without resolving
 paths per agent. Board workspace summaries observe in-flight delivery roots
 and live session status once for all workspace rows. Push workspace rows join
 summaries through a temporary index that preserves JSON id equality and
-first-match duplicate precedence. These candidate-local indexes and render
-memos end before persistence or canonical mutation; a failed candidate cannot
-seed a later publication. Adjacent immutable snapshot and read-metadata
+first-match duplicate precedence. Render memos remain fresh for each outer
+guard and end before persistence or canonical mutation. Only an accepted global
+delta retains new pure structural data; failed saves and rejected candidates
+cannot replace it. Metadata publication still refreshes runtime availability
+and saved addressing independently. Adjacent immutable snapshot and read-metadata
 publications share that capture within their wrapper, ending before change
 notifications or later mutations. Complete local read-view deltas retain their atomic publication
 boundary before replies and change notices. Counting tests include the
@@ -2226,9 +2239,9 @@ app-lock acquisition (`lock_wait`), including the update-admission check.
 Reacquiring a turn after deferred work is included in the permit wait; the
 deferred work itself is not pool queue time.
 
-The two control turns continue to bound mutation work. An exact allowlist of
-MCP task, roster, list, history and review reads uses a service captured during
-listener setup and takes neither a writer turn nor the app mutex. Malformed
+The two control turns continue to bound mutation work. MCP task, roster, list,
+history and review reads on an exact allowlist use a service captured during
+listener setup and take neither a writer turn nor the app mutex. Malformed
 actions and done reports retain their existing routing. Private immutable
 capability state publishes token installation, rotation, revocation and router
 incarnations immediately. Token bytes authenticate before issuer data is used;

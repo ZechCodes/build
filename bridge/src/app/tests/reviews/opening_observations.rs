@@ -218,12 +218,11 @@ fn failed_opening_observation_preserves_cache_and_same_request_retry_repairs_it(
     };
     paused.release();
     let done = worker.join().unwrap();
-    let error = shared
+    shared
         .lock()
         .unwrap()
         .apply_deferred("tasks.review.open", &open_params(&workspace), done)
-        .unwrap_err();
-    assert!(error.contains("review"), "{error}");
+        .expect("a durable opening survives observation failure");
     let after = call(&handler, "workspace.get", json!({"workspace_id":workspace}));
     assert_eq!(after["active_review"], before["active_review"]);
     store
@@ -239,4 +238,109 @@ fn failed_opening_observation_preserves_cache_and_same_request_retry_repairs_it(
 
     assert_eq!(retried["task"]["id"], task);
     assert_workspace_review(&handler, &workspace, &retried);
+}
+
+#[test]
+fn fresh_opening_observation_failure_still_settles_automatic_watch() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut app, project) = tracked(home.path());
+    let workspace = workspace(&mut app, &project, "failed fresh discovery");
+    let store = app.store.clone().unwrap();
+    let (gate, paused) = OffLockGate::new();
+    app.off_lock_review_open_observation_gate = Some(gate);
+    let (shared, handler) = shared_handler(app);
+    let job = deferred_open(&shared, &workspace);
+    let worker = std::thread::spawn(move || job.run());
+    paused.wait_for_arrival();
+    let (task, record): (String, String) = {
+        let writer = store.writer_for_test();
+        let row = writer
+            .query_row("SELECT task_id, record FROM reviews", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        writer
+            .execute("UPDATE reviews SET record = '{}'", [])
+            .unwrap();
+        row
+    };
+    assert!(!store.load_tracker_task(&task).unwrap().unwrap().watched);
+    paused.release();
+    let done = worker.join().unwrap();
+    // Restore durable review readability after the failed observation, before
+    // settlement. The failed summary must still not turn publication into error.
+    store
+        .writer_for_test()
+        .execute(
+            "UPDATE reviews SET record = ?1 WHERE task_id = ?2",
+            [&record, &task],
+        )
+        .unwrap();
+    let opened = shared
+        .lock()
+        .unwrap()
+        .apply_deferred("tasks.review.open", &open_params(&workspace), done)
+        .expect("durable publication remains successful");
+    assert_eq!(opened["task"]["id"], task);
+    assert_eq!(
+        opened["task"]["watched"], true,
+        "settle must run after a failed observation"
+    );
+    assert!(store.load_tracker_task(&task).unwrap().unwrap().watched);
+    // Periodic observation maintenance repairs the accepted cache.
+    shared
+        .lock()
+        .unwrap()
+        .refresh_workspace_review_observation(&workspace);
+    shared.lock().unwrap().publish_snapshot_projection();
+    assert_workspace_review(&handler, &workspace, &opened);
+}
+
+#[test]
+fn rpc_close_publishes_closed_workspace_before_reply() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut app, project) = tracked(home.path());
+    let workspace = workspace(&mut app, &project, "rpc close discovery");
+    let (_shared, handler) = shared_handler(app);
+    let opened = call(&handler, "tasks.review.open", open_params(&workspace));
+    assert_workspace_review(&handler, &workspace, &opened);
+    call(
+        &handler,
+        "tasks.review.close",
+        json!({"task_id":opened["task"]["id"],"expected_version":opened["review"]["version"],"description":"Closed after review"}),
+    );
+    let detail = call(&handler, "workspace.get", json!({"workspace_id":workspace}));
+    assert_eq!(detail["active_review"]["status"], "closed", "{detail}");
+}
+
+#[tokio::test]
+async fn authenticated_mcp_close_publishes_closed_workspace_before_reply() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut app, project) = tracked(home.path());
+    let workspace = workspace(&mut app, &project, "mcp close discovery");
+    let (_owner, agent) = project_agent(&mut app, &project);
+    app.test_install_mcp_token(agent.clone(), "review-closing-test-token".into());
+    let (shared, handler) = shared_handler(app);
+    let opened = call(&handler, "tasks.review.open", open_params(&workspace));
+    assert_workspace_review(&handler, &workspace, &opened);
+    let action = crate::mcp::DoneServer::for_owner(&agent).handle_message(
+        &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"close_review","arguments":{"task_id":opened["task"]["id"],"expected_version":opened["review"]["version"],"description":"Closed after review"}}}).to_string()
+    ).action.expect("close_review parses");
+    let (clock, plane) = {
+        let app = shared.lock().unwrap();
+        (Arc::clone(&app.frame_clock), ControlPlane::new(&app))
+    };
+    let timer = clock.frame(MCP_CONTROL_METHOD);
+    let mut turn = Turn::take(&plane, &timer).await;
+    let answer = handle_authenticated_mcp_frame(
+        &shared,
+        &json!({"task_id":agent,"session_token":"review-closing-test-token","request":action}),
+        &timer,
+        &mut turn,
+    )
+    .await
+    .expect("close_review replies");
+    assert_eq!(answer["ok"], true, "{answer}");
+    let detail = call(&handler, "workspace.get", json!({"workspace_id":workspace}));
+    assert_eq!(detail["active_review"]["status"], "closed", "{detail}");
 }

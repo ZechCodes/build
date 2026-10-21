@@ -158,7 +158,15 @@ impl AppState {
         task: &str,
         workspace: &str,
     ) {
+        #[cfg(test)]
+        if let Some(gate) = &self.off_lock_review_observation_gate {
+            gate.arrive();
+        }
         self.refresh_workspace_review_observation(workspace);
+        #[cfg(test)]
+        if let Some(gate) = &self.off_lock_review_observation_loaded {
+            gate.arrive();
+        }
         self.note_tasks_changed(project, task);
     }
 

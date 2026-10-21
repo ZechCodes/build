@@ -100,11 +100,12 @@ async fn periodic_maintenance_loads_review_sql_while_app_mutex_is_held_elsewhere
     let (_home, _repository, shared, _workspace) = fixture();
     let (before, waiting) = OffLockGate::new();
     let (after, loaded) = OffLockGate::new();
-    {
+    let workspaces = {
         let mut app = shared.lock().unwrap();
         app.off_lock_review_observation_gate = Some(before);
         app.off_lock_review_observation_loaded = Some(after);
-    }
+        app.workspaces.list(None).len()
+    };
     AppState::spawn_snapshot_maintenance(&shared);
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(10)).await;
@@ -122,6 +123,12 @@ async fn periodic_maintenance_loads_review_sql_while_app_mutex_is_held_elsewhere
     waiting.release();
     loaded.wait_for_arrival();
     loaded.release();
+    for _ in 1..workspaces {
+        waiting.wait_for_arrival();
+        waiting.release();
+        loaded.wait_for_arrival();
+        loaded.release();
+    }
     drop(held);
     assert!(mutex_available, "maintenance held the app mutex during review SQL");
 }

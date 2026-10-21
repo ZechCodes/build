@@ -16,7 +16,7 @@ async fn review_metadata_uses_one_readonly_snapshot_without_the_writer_connectio
         .load_review_merge_intents(&review.task_id)
         .unwrap();
     let mut reader = fixture.store.read_pool().acquire().await;
-    let _writer = fixture.store.connection();
+    let _writer = fixture.store.writer.connectionection();
     reader
         .read(|read| {
             assert_eq!(
@@ -71,7 +71,7 @@ async fn read_only_queries_progress_while_the_writer_holds_an_uncommitted_change
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
     let mut reader = store.read_pool().acquire().await;
-    let mut writer = store.connection();
+    let mut writer = store.writer.connectionection();
     let write = writer
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .unwrap();
@@ -257,7 +257,7 @@ fn assert_close_marker_in_database_file_alone(path: &Path) {
 async fn a_cloned_read_pool_keeps_the_writer_until_its_readers_close() {
     let dir = tempfile::tempdir().unwrap();
     let store = store_with_close_marker(dir.path());
-    let writer = Arc::downgrade(&store.conn);
+    let writer = Arc::downgrade(&store.writer.connection);
     let pool = store.read_pool();
     let retained = pool.clone();
     drop(store);
@@ -294,7 +294,7 @@ async fn a_cloned_read_pool_keeps_the_writer_until_its_readers_close() {
 async fn a_borrowed_reader_keeps_the_writer_until_the_final_pool_owner_closes() {
     let dir = tempfile::tempdir().unwrap();
     let store = store_with_close_marker(dir.path());
-    let writer = Arc::downgrade(&store.conn);
+    let writer = Arc::downgrade(&store.writer.connection);
     let pool = store.read_pool();
     let mut reader = pool.acquire().await;
     drop(store);

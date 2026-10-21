@@ -265,24 +265,7 @@ impl ScopeReadContext {
         }
     }
 
-    pub(in crate::app::observation_reads) fn apply(&mut self, patch: &ScopePatch) {
-        if let Some((generation, terminals)) = &patch.terminals {
-            self.terminal_generation = *generation;
-            self.terminals = terminals.clone();
-        }
-        for (id, row) in &patch.projects {
-            replace(&mut self.projects, id, row);
-        }
-        for (owner, project) in &patch.plan_projects {
-            match project {
-                Some(id) => {
-                    self.plan_projects.insert(owner.clone(), id.clone());
-                }
-                None => {
-                    self.plan_projects.remove(owner);
-                }
-            }
-        }
+    fn apply_workspaces(&mut self, patch: &ScopePatch) {
         for (id, row) in &patch.workspaces {
             if let Some(root) = self.workspace_canonical.remove(id) {
                 if let Some(mut ids) = self.workspace_roots.get(&root).cloned() {
@@ -302,6 +285,27 @@ impl ScopeReadContext {
             }
             replace(&mut self.workspaces, id, row);
         }
+    }
+
+    pub(in crate::app::observation_reads) fn apply(&mut self, patch: &ScopePatch) {
+        if let Some((generation, terminals)) = &patch.terminals {
+            self.terminal_generation = *generation;
+            self.terminals = terminals.clone();
+        }
+        for (id, row) in &patch.projects {
+            replace(&mut self.projects, id, row);
+        }
+        for (owner, project) in &patch.plan_projects {
+            match project {
+                Some(id) => {
+                    self.plan_projects.insert(owner.clone(), id.clone());
+                }
+                None => {
+                    self.plan_projects.remove(owner);
+                }
+            }
+        }
+        self.apply_workspaces(patch);
         let mut changed = BTreeSet::new();
         for (id, row) in &patch.runs {
             self.update_workspace_dependents(

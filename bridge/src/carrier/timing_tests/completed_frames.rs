@@ -29,9 +29,20 @@ async fn completed_frames_pair_raw_rpc_ids_with_all_of_their_actual_holds() {
     });
     let (intake, carrier, mut outbound, key) = opened_intake(handler, 2);
     for id in ["qual/raw/two-holds", "qual/raw/one-hold"] {
-        intake.accept(client_request(&key, SESSION_ID, "data", json!({
-            "id": id, "method":"fs.write", "params":{}
-        })), &carrier).await.unwrap();
+        intake
+            .accept(
+                client_request(
+                    &key,
+                    SESSION_ID,
+                    "data",
+                    json!({
+                        "id": id, "method":"fs.write", "params":{}
+                    }),
+                ),
+                &carrier,
+            )
+            .await
+            .unwrap();
     }
     let mut replies = std::collections::BTreeSet::new();
     while replies.len() < 2 {
@@ -52,8 +63,16 @@ async fn completed_frames_pair_raw_rpc_ids_with_all_of_their_actual_holds() {
     assert!(one.held >= Duration::from_millis(5), "{one:?}");
     // The aggregate FrameClock uses this same timer, not a parallel stopwatch.
     let aggregate = clock.stats()["methods"]["fs.write"]["held"]["sum_ms"]
-        .as_f64().unwrap();
+        .as_f64()
+        .unwrap();
     assert!((aggregate - (two.held + one.held).as_secs_f64() * 1000.0).abs() < 0.01);
+    let maximum_total = clock.stats()["methods"]["fs.write"]["max_ms"]
+        .as_f64()
+        .unwrap();
+    assert!(
+        (maximum_total - two.total.max(one.total).as_secs_f64() * 1000.0).abs() < 0.0011,
+        "completed samples and legacy totals use the same Spent snapshot"
+    );
     for row in [two, one] {
         assert_eq!(row.protocol, FrameProtocol::Rpc);
         assert_eq!(row.method, "fs.write");
@@ -99,11 +118,16 @@ fn completed_frames_distinguish_mcp_from_rpc_for_the_same_raw_id() {
     let save = received.clone();
     clock.observe_completed_frames(Arc::new(move |sample| save.lock().unwrap().push(sample)));
     let report = crate::mcp::DoneReport::new(
-        crate::mcp::DoneStatus::Completed, "completed-frame protocol witness");
+        crate::mcp::DoneStatus::Completed,
+        "completed-frame protocol witness",
+    );
     let frame = json!({"id":"qual/raw/same","report":report});
     let origin = clock.mcp_write(&frame, std::time::Instant::now()).unwrap();
-    let timer = clock.queued_since(crate::timing::Priority::Foreground,
-        crate::timing::WaitTimer::start().with_write_origin(Some(origin.clone())))
+    let timer = clock
+        .queued_since(
+            crate::timing::Priority::Foreground,
+            crate::timing::WaitTimer::start().with_write_origin(Some(origin.clone())),
+        )
         .start("mcp.control");
     origin.complete();
     drop(timer);

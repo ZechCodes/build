@@ -34,6 +34,8 @@ pub(crate) mod completed_frames;
 #[cfg(test)]
 mod lock_observer;
 #[cfg(test)]
+pub(crate) mod optional_notices;
+#[cfg(test)]
 pub(crate) mod phase_samples;
 #[cfg(test)]
 pub(crate) mod write_origin;
@@ -208,6 +210,10 @@ pub struct FrameClock {
     #[cfg(test)]
     completed_observer: RwLock<Option<Arc<completed_frames::CompletedObserver>>>,
     #[cfg(test)]
+    completed_observed: AtomicBool,
+    #[cfg(test)]
+    optional_notices: RwLock<Option<Arc<optional_notices::OptionalNotices>>>,
+    #[cfg(test)]
     request_observed: AtomicBool,
     #[cfg(test)]
     write_wait_registry: RwLock<Option<Arc<write_wait::WriteWaitRegistry>>>,
@@ -254,6 +260,10 @@ impl FrameClock {
             request_observer: RwLock::new(None),
             #[cfg(test)]
             completed_observer: RwLock::new(None),
+            #[cfg(test)]
+            completed_observed: AtomicBool::new(false),
+            #[cfg(test)]
+            optional_notices: RwLock::new(None),
             #[cfg(test)]
             request_observed: AtomicBool::new(false),
             #[cfg(test)]
@@ -397,6 +407,8 @@ impl FrameClock {
             self.slow.fetch_add(1, Ordering::Relaxed);
             self.say_slow(&frame.method.method, &spent);
         }
+        #[cfg(test)]
+        completed_frames::record(frame, &spent);
     }
 
     /// One slow frame's line, unless its method has had one this window.
@@ -477,6 +489,12 @@ impl QueuedFrame {
             .queue(self.priority)
             .depth
             .fetch_sub(1, Ordering::Relaxed);
+        #[cfg(test)]
+        let inherited_context = self
+            .write_origin
+            .is_none()
+            .then(write_wait::current_context)
+            .flatten();
         FrameTimer {
             method: self.clock.record_of(method),
             clock: Arc::clone(&self.clock),
@@ -496,9 +514,15 @@ impl QueuedFrame {
             #[cfg(test)]
             request: None,
             #[cfg(test)]
+            completed_capture: completed_frames::start(
+                &self.clock,
+                self.write_origin.as_deref(),
+                inherited_context.as_ref(),
+            ),
+            #[cfg(test)]
             write_origin: self.write_origin.take(),
             #[cfg(test)]
-            write_context: None,
+            write_context: inherited_context,
         }
     }
 }
@@ -561,6 +585,8 @@ pub struct FrameTimer {
     write_origin: Option<Arc<write_origin::WriteOrigin>>,
     #[cfg(test)]
     write_context: Option<write_wait::WriteContext>,
+    #[cfg(test)]
+    completed_capture: Option<completed_frames::Capture>,
 }
 
 /// A wait whose endpoint may run on a different thread from its frame.

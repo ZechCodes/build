@@ -247,7 +247,11 @@ fn finite_service_records_real_operation_separately_from_target_padding() {
     let file = root.path().join("actual-effect.txt");
     let services = FixtureServices::install(
         vec![root.path().to_path_buf()],
-        vec![service_plan("effect-and-padding", ServiceKind::Filesystem, 100)],
+        vec![service_plan(
+            "effect-and-padding",
+            ServiceKind::Filesystem,
+            100,
+        )],
         None,
     );
     with_origin("effect-and-padding", "fs.write", || {
@@ -255,7 +259,8 @@ fn finite_service_records_real_operation_separately_from_target_padding() {
             std::fs::write(&file, "real effect")?;
             std::thread::sleep(Duration::from_millis(20));
             Ok::<_, std::io::Error>(())
-        }).unwrap();
+        })
+        .unwrap();
     });
     assert_eq!(std::fs::read_to_string(file).unwrap(), "real effect");
     let samples = services.samples();
@@ -263,7 +268,13 @@ fn finite_service_records_real_operation_separately_from_target_padding() {
     let sample = &samples[0];
     assert_eq!(sample.original_id, "effect-and-padding");
     assert!(sample.succeeded && !sample.abandoned);
-    assert!(sample.operation_before_padding >= Duration::from_millis(20), "{sample:?}");
+    let operation = sample
+        .operation_before_padding
+        .expect("the real filesystem operation completed");
+    assert!(operation >= Duration::from_millis(20), "{sample:?}");
     assert!(sample.actual >= Duration::from_millis(100), "{sample:?}");
-    assert!(sample.operation_before_padding < sample.actual, "padding is a separate interval: {sample:?}");
+    assert!(
+        operation < sample.actual,
+        "padding is a separate interval: {sample:?}"
+    );
 }

@@ -40,8 +40,8 @@ pub(crate) struct ServiceSample {
     pub original_id: String,
     pub kind: ServiceKind,
     pub target: Duration,
-    /// Real operation wall time before any target padding.
-    pub operation_before_padding: Duration,
+    /// Real operation wall time before target padding; None if it never returned.
+    pub operation_before_padding: Option<Duration>,
     /// Observed wall time, including target padding; never a configured value.
     pub actual: Duration,
     pub succeeded: bool,
@@ -160,6 +160,7 @@ struct ServiceRun {
     plans: Vec<PlannedService>,
     started: Instant,
     interval: Option<WaitGuard>,
+    operation_before_padding: Option<Duration>,
     completed: bool,
 }
 
@@ -183,6 +184,7 @@ impl ServiceRun {
             plans,
             started,
             interval,
+            operation_before_padding: None,
             completed: false,
         };
         if let Some(observer) = &service.control.observer {
@@ -214,7 +216,7 @@ impl ServiceRun {
                 original_id: plan.original_id.clone(),
                 kind: plan.kind,
                 target: plan.target,
-                operation_before_padding: Duration::ZERO,
+                operation_before_padding: self.operation_before_padding,
                 actual,
                 succeeded,
                 abandoned,
@@ -256,10 +258,14 @@ pub(crate) fn run<T, E>(
     kind: ServiceKind,
     work: impl FnOnce() -> Result<T, E>,
 ) -> Result<T, E> {
-    let service = ServiceRun::begin(root, kind);
+    let Some(mut service) = ServiceRun::begin(root, kind) else {
+        return work();
+    };
+    // Record the real operation separately from registration, observer work,
+    // and target padding. If it unwinds, Drop preserves None + abandoned.
+    let operation_started = Instant::now();
     let result = work();
-    if let Some(service) = service {
-        service.complete(result.is_ok());
-    }
+    service.operation_before_padding = Some(operation_started.elapsed());
+    service.complete(result.is_ok());
     result
 }

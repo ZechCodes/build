@@ -4,3 +4,6 @@ pub(in crate::app) mod queue;
 pub(in crate::app) mod receipts;
 pub(in crate::app) mod runner;
 pub(in crate::app) mod types;
+
+#[cfg(test)]
+mod optional_notices;

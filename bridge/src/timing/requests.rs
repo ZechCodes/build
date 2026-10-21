@@ -45,6 +45,7 @@ impl WaitTimer {
 
 impl FrameTimer {
     pub(crate) fn bind_request(&mut self, frame: &Frame) {
+        self.capture_completed_request(frame);
         if self.clock.request_observed.load(Ordering::Relaxed) {
             self.request = Some(frame.clone());
         }

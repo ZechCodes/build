@@ -85,7 +85,7 @@ impl FrameTimer {
         *self.sample_tool.lock().unwrap() = Some(tool.into());
     }
 
-    fn sample_label(&self) -> String {
+    pub(super) fn sample_label(&self) -> String {
         match self.sample_tool.lock().unwrap().as_deref() {
             Some(tool) => format!("{}:{tool}", self.method.method),
             None => self.method.method.clone(),

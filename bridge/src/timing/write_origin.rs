@@ -1,5 +1,6 @@
 //! Opt-in attribution carried by real frame scheduling, separate from frame totals.
 use super::*;
+use completed_frames::FrameProtocol;
 use write_wait::{IntervalCategory, LogicalWrite, WaitGuard, WaitKind, WriteCohort, WriteContext};
 
 // Section 8's audited protocol writes; suffixes inherit no exemption.
@@ -20,17 +21,23 @@ const PROTOCOL_WRITES: &[&str] = &[
 pub(crate) struct WriteOrigin {
     root: Mutex<Option<LogicalWrite>>,
     context: WriteContext,
+    protocol: FrameProtocol,
     queued: Mutex<Option<WaitGuard>>,
 }
 
 impl WriteOrigin {
-    fn new(root: LogicalWrite) -> Arc<Self> {
+    fn new(root: LogicalWrite, protocol: FrameProtocol) -> Arc<Self> {
         let context = root.context();
         Arc::new(Self {
             root: Mutex::new(Some(root)),
             context,
+            protocol,
             queued: Mutex::new(None),
         })
+    }
+
+    pub(crate) fn frame_protocol(&self) -> FrameProtocol {
+        self.protocol
     }
 
     pub(crate) fn context(&self) -> WriteContext {
@@ -122,6 +129,7 @@ impl FrameClock {
         let registry = self.write_wait_registry.read().unwrap().clone()?;
         Some(WriteOrigin::new(
             registry.begin_pending(correlation, intake),
+            FrameProtocol::Rpc,
         ))
     }
 
@@ -137,7 +145,7 @@ impl FrameClock {
             };
         let root = registry.begin(original_id(frame), format!("mcp.control:{tool}"), intake);
         root.admitted();
-        Some(WriteOrigin::new(root))
+        Some(WriteOrigin::new(root, FrameProtocol::Mcp))
     }
 }
 
@@ -161,6 +169,7 @@ impl FrameTimer {
         self
     }
     pub(crate) fn set_write_context(&mut self, context: Option<WriteContext>) {
+        self.capture_completed_context(context.as_ref());
         self.write_context = context;
     }
 

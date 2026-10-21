@@ -981,6 +981,25 @@ async fn project_source_terminal_cannot_attach_sibling() {
     );
 }
 
+/// Explicitly own the child lifetime even when a following assertion fails.
+fn close_fixture_shell(state: &Arc<Mutex<AppState>>, handler: &FrameHandler, created: &Value) {
+    let child = {
+        let app = state.lock().unwrap();
+        let key = app
+            .tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap())
+            .unwrap();
+        Arc::clone(&app.session_registry.test_tab(&key).unwrap().session)
+    };
+    let closed = call(
+        handler,
+        "term.close",
+        json!({"term_id":created["result"]["term_id"]}),
+    );
+    child.end();
+    assert!(child.exited_within(Duration::from_secs(2)));
+    assert_eq!(closed["ok"], true, "{closed}");
+}
+
 /// A shell only changes terminal facts. It must not refresh the board,
 /// workspace details or retained conversations while holding the app mutex.
 #[tokio::test]
@@ -998,6 +1017,8 @@ async fn term_create_publishes_only_terminal_facts_with_named_guard_phases() {
     let created = call(&handler, "term.create", json!({"project_id": project}));
     assert_eq!(created["ok"], true, "{created}");
     let phases = samples.snapshot();
+    let after = state.lock().unwrap().read_view.load();
+    close_fixture_shell(&state, &handler, &created);
     let phases = &phases["term.create"];
     assert!(
         phases.get("entered.publication.global").is_none(),
@@ -1010,8 +1031,6 @@ async fn term_create_publishes_only_terminal_facts_with_named_guard_phases() {
     ] {
         assert!(phases.get(phase).is_some(), "missing {phase}: {phases}");
     }
-    let app = state.lock().unwrap();
-    let after = app.read_view.load();
     assert!(Arc::ptr_eq(
         before.global.as_ref().unwrap(),
         after.global.as_ref().unwrap()
@@ -1054,7 +1073,10 @@ async fn pending_shell_spawn_releases_the_app_lock_and_holds_lifecycle_admission
     // Always release the child before asserting, so a failure cannot strand it.
     if reply.is_err() {
         held.release();
-        create.join().unwrap();
+        let created = create.join().unwrap();
+        if created["ok"] == true {
+            close_fixture_shell(&state, &handler, &created);
+        }
         panic!("session.hello waited behind the external terminal spawn");
     }
     assert_eq!(reply.unwrap()["ok"], true);
@@ -1067,6 +1089,7 @@ async fn pending_shell_spawn_releases_the_app_lock_and_holds_lifecycle_admission
     held.release();
     let created = create.join().unwrap();
     assert_eq!(created["ok"], true, "{created}");
+    close_fixture_shell(&state, &handler, &created);
     let app = state.lock().unwrap();
     assert_eq!(app.active_deferred_filesystem_jobs, 0);
     assert_eq!(app.session_registry.pending_shell_count(), 0);

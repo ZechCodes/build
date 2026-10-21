@@ -25,6 +25,28 @@ pub(crate) struct WriteOrigin {
     queued: Mutex<Option<WaitGuard>>,
 }
 
+/// One native reply emission attempt, bound to its exact origin. Capturing
+/// does not acknowledge or finish anything; only full send success commits it.
+/// This observes a reply boundary, not receipt/durable acceptance of an effect.
+pub(crate) struct ReplyEmission<'a> {
+    origin: &'a WriteOrigin,
+    started_at: Instant,
+}
+
+impl ReplyEmission<'_> {
+    pub(crate) fn finish(self, sent: bool) {
+        if !sent {
+            self.origin.cancel();
+            return;
+        }
+        self.origin.execution_started();
+        if let Some(root) = self.origin.root.lock().unwrap().take() {
+            root.acknowledged_at(self.started_at);
+            root.complete();
+        }
+    }
+}
+
 impl WriteOrigin {
     fn new(root: LogicalWrite, protocol: FrameProtocol) -> Arc<Self> {
         let context = root.context();
@@ -89,6 +111,15 @@ impl WriteOrigin {
         self.execution_started();
         if let Some(root) = self.root.lock().unwrap().take() {
             root.complete();
+        }
+    }
+
+    /// Sample immediately before the first native send operation. The owning
+    /// emitter must pass its actual complete send outcome to the returned token.
+    pub(crate) fn begin_reply(&self) -> ReplyEmission<'_> {
+        ReplyEmission {
+            origin: self,
+            started_at: self.context.now(),
         }
     }
 

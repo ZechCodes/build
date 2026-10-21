@@ -299,6 +299,26 @@ pub(super) fn assert_all_native_write_proofs(rows: &[Row], report: &PipelineCont
         assert!(proof.registry_root.is_some() && proof.mandatory_children_complete);
         assert!(proof.effect.is_some());
         assert!(row.milestones_us.contains_key(&Stage::EffectVerified));
+        assert_decoded_credit_stamps(row);
         assert!(row.waits.as_ref().is_some_and(|waits| waits.complete));
     }
+}
+
+fn assert_decoded_credit_stamps(row: &Row) {
+    let parsed = row.milestones_us[&Stage::ParsedFinalReply];
+    assert_eq!(
+        row.milestones_us.get(&Stage::DecodedReplyObserved),
+        Some(&parsed),
+        "{} must signal the actual parser timestamp, not its later proof return",
+        row.slot.original_id,
+    );
+    let released = row
+        .milestones_us
+        .get(&Stage::CallerCreditReleased)
+        .expect("every actual semantic write must return its caller credit at decode");
+    assert!(
+        *released >= parsed && *released <= row.milestones_us[&Stage::Completed],
+        "{} must retain ordered parser/credit-return/completion observations",
+        row.slot.original_id,
+    );
 }

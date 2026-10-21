@@ -226,3 +226,7 @@ async fn read_optional_bounded_line(
     }
     Ok(length)
 }
+
+#[cfg(test)]
+#[path = "socket/tests.rs"]
+mod tests;

@@ -157,6 +157,12 @@ impl ControlBackend {
     }
 }
 impl TrialBackend for ControlBackend {
+    fn observe_decoded_replies(
+        &self,
+        observer: Arc<dyn Fn(&str, Instant) + Send + Sync>,
+    ) -> Result<(), String> {
+        self.watch.observe_decoded_replies(observer)
+    }
     fn provenance(&self) -> Provenance {
         self.provenance.clone()
     }

@@ -300,8 +300,10 @@ impl ClientWatch {
         self.notify_decoded(original_id, actual_at);
     }
 
-    fn notify_decoded(&self, _original_id: &str, _actual_at: Instant) {
-        // TESTFIRST: current harness has no actual decoded event for runner credits.
+    fn notify_decoded(&self, original_id: &str, actual_at: Instant) {
+        if let Some(observer) = self.inner.decoded_observer.get() {
+            observer(original_id, actual_at);
+        }
     }
 
     pub fn complete(&self, original_id: &str) {

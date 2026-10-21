@@ -10,16 +10,15 @@ pub(super) async fn emit<W: AsyncWrite + Unpin>(
     response: Value,
     #[cfg(test)] origin: Option<&crate::timing::write_origin::WriteOrigin>,
 ) {
+    let bytes = response.to_string();
+    #[cfg(test)]
+    let emission = origin.map(|origin| origin.begin_reply());
     // Preserve all three existing operations even when an earlier one fails.
-    let _content_written = writer.write_all(response.to_string().as_bytes()).await;
+    let _content_written = writer.write_all(bytes.as_bytes()).await;
     let _newline_written = writer.write_all(b"\n").await;
     let _flushed = writer.flush().await;
     #[cfg(test)]
-    if let Some(origin) = origin {
-        if _content_written.is_ok() && _newline_written.is_ok() && _flushed.is_ok() {
-            origin.complete();
-        } else {
-            origin.cancel();
-        }
+    if let Some(emission) = emission {
+        emission.finish(_content_written.is_ok() && _newline_written.is_ok() && _flushed.is_ok());
     }
 }

@@ -259,7 +259,9 @@ impl WriteWaitRegistry {
         ActiveWriteCapture(self.active.load_full())
     }
     pub(super) fn milestone(&self, context: &WriteContext, acknowledged: bool) {
-        let now = (self.clock)();
+        self.milestone_at(context, acknowledged, (self.clock)());
+    }
+    pub(super) fn milestone_at(&self, context: &WriteContext, acknowledged: bool, now: Instant) {
         self.mutate(|state| {
             if !state.context_live(context) {
                 return Err("milestone requires live root");

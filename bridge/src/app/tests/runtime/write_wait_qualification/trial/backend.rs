@@ -59,6 +59,12 @@ pub struct Provenance {
 /// Arc ownership retains temporary roots, WAL store, four RPC openings, eight
 /// MCP identities, fake sessions and service hooks through all pending work.
 pub trait TrialBackend: Send + Sync + 'static {
+    /// Install once before dispatch. Only validated actual decoded replies
+    /// notify; terminal transport errors remain execution/cleanup outcomes.
+    fn observe_decoded_replies(
+        &self,
+        observer: Arc<dyn Fn(&str, Instant) + Send + Sync>,
+    ) -> Result<(), String>;
     fn provenance(&self) -> Provenance;
     fn catalog(&self) -> ReadCatalog;
     fn recipe(&self, slot: &Slot) -> Result<Recipe, String>;

@@ -69,7 +69,7 @@ impl RunState<'_> {
             tasks: self
                 .running
                 .into_values()
-                .map(|(_, _, task)| task)
+                .map(|execution| execution.task)
                 .collect(),
             backend: self.backend,
             producers: self.producers,

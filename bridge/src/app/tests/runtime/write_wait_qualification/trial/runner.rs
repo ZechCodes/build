@@ -1,6 +1,13 @@
 //! Off-source split of the frozen coordinator; no execution evidence.
 use super::*;
 
+enum ExecutionEvent {
+    DecodedReply {
+        original_id: String,
+        actual_at: Instant,
+    },
+    Finished(Finished),
+}
 struct Finished {
     original_id: String,
     result: Result<ControlExecution, String>,
@@ -20,7 +27,11 @@ pub struct TrialRun {
     pub unfinished: Option<UnfinishedCleanup>,
 }
 
-type Running = BTreeMap<String, (usize, usize, JoinHandle<()>)>;
+struct RunningExecution {
+    credits: credits::CallerCredits,
+    task: JoinHandle<()>,
+}
+type Running = BTreeMap<String, RunningExecution>;
 struct RunState<'a> {
     name: TrialName,
     backend: Arc<dyn TrialBackend>,
@@ -33,8 +44,8 @@ struct RunState<'a> {
     observe: Observation,
     watchdog: Option<WatchThread>,
     watch_rx: mpsc::UnboundedReceiver<Violation>,
-    done_tx: mpsc::UnboundedSender<Finished>,
-    done_rx: mpsc::UnboundedReceiver<Finished>,
+    done_tx: mpsc::UnboundedSender<ExecutionEvent>,
+    done_rx: mpsc::UnboundedReceiver<ExecutionEvent>,
     pending: [VecDeque<Slot>; 3 * CALLERS],
     active: [usize; 3 * CALLERS],
     sockets: [usize; CALLERS],

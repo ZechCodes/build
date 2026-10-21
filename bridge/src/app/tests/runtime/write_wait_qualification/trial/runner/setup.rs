@@ -45,12 +45,29 @@ impl<'a> RunState<'a> {
             wake: watch_tx,
             next_frame_observer: Arc::new(AtomicU64::new(1)),
         };
+        let (done_tx, done_rx) = mpsc::unbounded_channel();
+        let decoded_events = done_tx.clone();
+        let decoded_errors = observe.clone();
+        backend.observe_decoded_replies(Arc::new(move |original_id, actual_at| {
+            if decoded_events
+                .send(ExecutionEvent::DecodedReply {
+                    original_id: original_id.into(),
+                    actual_at,
+                })
+                .is_err()
+            {
+                decoded_errors.fail(
+                    Some(original_id.into()),
+                    "decoded_event_channel",
+                    "decoded reply outlived its owned coordinator receiver".into(),
+                );
+            }
+        }))?;
         let watchdog = WatchThread::start(observe.clone(), Arc::clone(&probe));
         let startup_error = start_producers(&producers, start);
         if let Some(error) = &startup_error {
             observe.fail(None, "producer_startup", error.clone());
         }
-        let (done_tx, done_rx) = mpsc::unbounded_channel();
         Ok(Self {
             name,
             backend,

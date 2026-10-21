@@ -27,6 +27,9 @@ impl LogicalWrite {
     pub(crate) fn acknowledged(&self) {
         self.context.registry.milestone(&self.context, true);
     }
+    pub(crate) fn acknowledged_at(&self, at: Instant) {
+        self.context.registry.milestone_at(&self.context, true, at);
+    }
     pub(crate) fn complete(mut self) {
         self.finished = true;
         self.context
@@ -85,6 +88,9 @@ impl Drop for Obligation {
     }
 }
 impl WriteContext {
+    pub(crate) fn now(&self) -> Instant {
+        self.registry.now()
+    }
     pub(crate) fn belongs_to(&self, registry: &Arc<WriteWaitRegistry>) -> bool {
         Arc::ptr_eq(&self.registry, registry)
     }

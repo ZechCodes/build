@@ -119,6 +119,10 @@ pub enum Stage {
     DurableAck,
     EncodedFinalReply,
     ParsedFinalReply,
+    /// Actual validated parser timestamp, sent before transport/proof tails.
+    DecodedReplyObserved,
+    /// Coordinator observation time when caller/socket credit was returned.
+    CallerCreditReleased,
     EffectVerified,
     Completed,
 }

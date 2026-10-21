@@ -2400,7 +2400,15 @@ request instead of retargeting it. No request initializes producers, probes
 workspace paths or drains deferred writer work.
 
 SQL reads use the shared asynchronous reader pool and one transaction across
-related rows. Snapshot materialization and the exact harness catalogue resolver
+related rows. The pool shares quotas across listeners and service clones:
+three in-flight MCP task-list requests and two per other MCP SQL read type.
+A caller acquires its type's permit before borrowing a connection, so excess
+callers wait outside the eight-reader pool. Three task pages, two task details
+and two history reads occupy at most seven connections, leaving one reader
+for other read types; a fourth task page waits before SQL checkout. Both the
+connection and type permit are released before external I/O; their acquisition
+and work take no app lock.
+Snapshot materialization and the exact harness catalogue resolver
 run off-lock. The catalogue combines accepted default/ordered-role settings
 with the existing CLI readings service, preserving TTL/executable refresh and
 hidden-model startability without a new catalogue cache or publisher-side
@@ -2942,6 +2950,31 @@ queued deliveries must finish before assertions. The five-second maximum
 applies to all frame and caller totals, alongside the hold percentile and
 maximum gates. Status timing covers observation work, not watch-notification
 delivery latency.
+
+Three focused MCP timing tests reuse that fixture's 200 conversations, 190 Git
+worktrees, 700 initial tasks and 12 simulated running agents. They measure
+`list_task_dependents`, `search_conversation`, `read_review`, `read_comment`,
+`list_work` and `list_workspaces` with only the read cohort, with the unchanged
+writer/status/RPC cohort, and with that same busy cohort plus concurrent
+`list_tasks`. Each mode captures 24 decoded socket replies per read type,
+rotates the first action across readers, and enforces the 100 ms caller p99
+and maximum for every cohort MCP read and ordinary read RPC.
+Per-type overlap counters require every read type to start while writers are
+outstanding, and while task-list requests are in flight in the final mode.
+`.github/workflows/timing.yml` builds the release test binary before running
+these three tests serially alongside the existing busy lock-hold regression.
+Ordinary tests verify that the recipes use the independent lane and return
+their saved task, comment, conversation, workspace and review witnesses.
+
+The test-only `timing/phase_samples.rs` collector reports exact p50, p95, p99
+and maximum durations. MCP read samples separate blocking-pool scheduling
+(`frame.pool_wait`), per-type admission (`read.class_wait`) and SQL connection
+acquisition (`read.sql_wait`). Synchronous `read.admission`, `read.query`,
+`read.run` and `read.finish` spans are exclusive of nested phases; their
+`.total` counterparts include nested work and record one sample per stage.
+`reply.serialization` measures the socket reply encoding, while `client.total`
+includes socket submission through the parsed reply. These diagnostic fields
+compile only in tests.
 
 The focused `busy_mcp_lists_finish_within_100ms` release regression reuses the
 main busy fixture with 700 tasks, 200 conversations and 190 worktrees. Twelve

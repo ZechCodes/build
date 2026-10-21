@@ -3,7 +3,7 @@
 use super::*;
 use crate::app::mcp::{handle_done_stream, ControlPlane};
 use crate::app::read_view::ReadViewSlot;
-use crate::app::tests::tracker::tracked;
+use crate::app::tests::tracker::{filed, tracked};
 use crate::carrier::testing::{client_request, session_init, ChannelWire};
 use crate::carrier::{FrameIntake, OutboundEnvelope};
 use crate::mcp::BridgeAction;
@@ -11,6 +11,9 @@ use crate::timing::phase_samples::PhaseSamples;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+mod mcp_lists;
+mod mcp_reads;
 
 const WORKTREES: usize = 190;
 const CONVERSATIONS: usize = 200;
@@ -55,14 +58,25 @@ struct Busy {
     logs: Vec<SessionLog>,
 }
 
-mod mcp_lists;
-
 impl Busy {
     fn new() -> Self {
         Self::with_task_body("")
     }
 
     fn with_task_body(body: &str) -> Self {
+        Self::with_seeded_tasks(body, |_, _, _| ()).0
+    }
+
+    fn with_seed<T>(
+        seed_reads: impl FnOnce(&mut AppState, &[(String, String)], &[String]) -> T,
+    ) -> (Self, T) {
+        Self::with_seeded_tasks("", seed_reads)
+    }
+
+    fn with_seeded_tasks<T>(
+        body: &str,
+        seed_reads: impl FnOnce(&mut AppState, &[(String, String)], &[String]) -> T,
+    ) -> (Self, T) {
         let root = tempfile::tempdir().unwrap();
         let (home, mut app, project) = tracked(root.path());
         let repo = app.project_at(0).repo_path.clone();
@@ -165,6 +179,7 @@ impl Busy {
                 )
                 .unwrap();
         }
+        let seeded = seed_reads(&mut app, &owners, &tasks);
         // These sessions accept turns without spawning provider processes.
         let mut logs = Vec::new();
         for (owner, agent) in owners.iter().take(AGENTS) {
@@ -245,18 +260,21 @@ impl Busy {
         };
         let view = state.lock().unwrap().read_view.clone();
         let samples = clock.capture_phases();
-        Self {
-            _home: home,
-            _root: root,
-            state,
-            owners,
-            tasks,
-            hash,
-            samples,
-            view,
-            sessions,
-            logs,
-        }
+        (
+            Self {
+                _home: home,
+                _root: root,
+                state,
+                owners,
+                tasks,
+                hash,
+                samples,
+                view,
+                sessions,
+                logs,
+            },
+            seeded,
+        )
     }
 }
 

@@ -73,6 +73,7 @@ pub use writer::StoreWriter;
 mod operations;
 mod read_agents;
 mod read_pool;
+pub(crate) use read_pool::ReadClass;
 pub use read_pool::{ReadConnection, ReadPool, ReadTransaction};
 pub mod push_keys;
 mod reviews;

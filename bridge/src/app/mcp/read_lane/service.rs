@@ -17,6 +17,8 @@ pub(in crate::app::mcp) struct McpReadService {
     authority: McpReadAuthority,
     #[cfg(test)]
     pub(super) gate: Option<crate::test_support::off_lock::OffLockGate>,
+    #[cfg(test)]
+    pub(in crate::app::mcp) sql_probe: Option<super::probe::SqlReadProbe>,
 }
 
 pub(super) struct Inputs {
@@ -40,6 +42,8 @@ impl McpReadService {
             authority: app.session_registry.mcp_read_authority(),
             #[cfg(test)]
             gate: app.off_lock_gate.clone(),
+            #[cfg(test)]
+            sql_probe: None,
         })
     }
 

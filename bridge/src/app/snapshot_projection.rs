@@ -204,6 +204,33 @@ impl AppState {
         }
     }
 
+    /// Keep every named alias pending before a deferred human attention stamp
+    /// can unwind or be folded into a later ordinary owner publication.
+    pub(in crate::app) fn mark_post_attention_snapshot_owner_pending(&self, owner: &str) {
+        if !self.snapshot_projection_initialized() {
+            return;
+        }
+        self.mark_observation_owner_changed(owner);
+        for affected in self.snapshot_affected_owner_ids(owner) {
+            self.mark_snapshot_owner_pending(&affected);
+        }
+    }
+
+    /// Flush all RPC post-stamp dependencies in one ordinary owner delta.
+    /// The normal publisher still enforces borrowed-owner and stale barriers.
+    pub(in crate::app) fn publish_post_attention_snapshot_projection(
+        &self,
+        owners: &BTreeSet<String>,
+    ) {
+        let Some(first) = owners.iter().next() else {
+            return;
+        };
+        for owner in owners {
+            self.mark_post_attention_snapshot_owner_pending(owner);
+        }
+        self.publish_owner_snapshot_projection(first);
+    }
+
     pub(in crate::app) fn publish_owner_snapshot_projection(&self, owner: &str) {
         if let Some(delta) = self.prepare_owner_snapshot_projection(owner) {
             self.publish_prepared_snapshot_projection(delta);

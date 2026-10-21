@@ -390,6 +390,8 @@ pub struct AppState {
     /// Pause a terminal create after RPC admission, before its spawn guard.
     #[cfg(test)]
     terminal_create_admission_gate: Option<OffLockGate>,
+    /// Human attention owners coalesced only inside one RPC thread.post guard.
+    rpc_post_attention_owners: Option<std::collections::BTreeSet<String>>,
     /// The git work a verb handed to the drain, to run with this mutex
     /// released. Set by exactly one verb per dispatch and taken by the drain
     /// in the same breath, so the `Ok` the verb returned meanwhile is a
@@ -712,6 +714,7 @@ impl AppState {
             off_lock_project_list_gate: None,
             #[cfg(test)]
             terminal_create_admission_gate: None,
+            rpc_post_attention_owners: None,
             deferred_work: None,
             deferred_result_check: None,
             pending_rows: Vec::new(),

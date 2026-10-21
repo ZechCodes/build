@@ -613,3 +613,81 @@ fn borrowed_peer_failure_keeps_the_existing_atomic_publication_barrier() {
     }
     fixture.assert_full_oracle();
 }
+
+#[test]
+fn rpc_scope_unwind_keeps_dirty_receipts_and_restores_immediate_attention() {
+    let fixture = Fixture::new();
+    let old = fixture.state.lock().unwrap().read_view.load();
+    let before = image(&old, &fixture.state.lock().unwrap());
+    let (_, phases) = fixture.measure(|app| {
+        let mut dirty = Vec::new();
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.with_rpc_post_attention("thread.post", |app| {
+                app.note_user_message(&fixture.owner);
+                dirty = app.snapshot_observations.observation_owners.snapshot();
+                panic!("injected RPC scope unwind");
+            });
+        }));
+        assert!(refused.is_err());
+        assert!(app.rpc_post_attention_owners.is_none());
+        assert!(Arc::ptr_eq(&old, &app.read_view.load()));
+        assert!(dirty.iter().any(|(owner, _)| owner == &fixture.owner));
+        assert_eq!(
+            app.snapshot_observations.observation_owners.snapshot(),
+            dirty
+        );
+        // A normal direct stamp is immediate again after the caught panic.
+        app.touch_attention(&fixture.owner);
+        assert!(!Arc::ptr_eq(&old, &app.read_view.load()));
+    });
+    assert_eq!(count(&phases, "finisher.attention"), 2);
+    assert_eq!(count(&phases, "publication.global"), 1);
+    assert_eq!(count(&phases, "publication.install"), 1);
+    assert_eq!(
+        fixture.saved_attention(&fixture.owner),
+        fixture.attention(&fixture.owner)
+    );
+    assert_eq!(image(&old, &fixture.state.lock().unwrap()), before);
+    fixture.assert_full_oracle();
+}
+
+#[test]
+fn nested_rpc_scope_caught_inner_unwind_preserves_outer_union_until_safe_exit() {
+    let fixture = Fixture::new();
+    let old = fixture.state.lock().unwrap().read_view.load();
+    let (_, phases) = fixture.measure(|app| {
+        app.with_rpc_post_attention("thread.post", |app| {
+            app.note_user_message(&fixture.owner);
+            let mut dirty = Vec::new();
+            let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                app.with_rpc_post_attention("thread.post", |app| {
+                    app.note_user_message(&fixture.peer);
+                    dirty = app.snapshot_observations.observation_owners.snapshot();
+                    panic!("injected nested RPC scope unwind");
+                });
+            }));
+            assert!(refused.is_err());
+            assert!(Arc::ptr_eq(&old, &app.read_view.load()));
+            assert_eq!(
+                app.snapshot_observations.observation_owners.snapshot(),
+                dirty
+            );
+            let pending = app.rpc_post_attention_owners.as_ref().unwrap();
+            assert!(pending.contains(&fixture.owner));
+            assert!(pending.contains(&fixture.peer));
+            // A normal nested exit joins that same still-active outer scope.
+            app.with_rpc_post_attention("thread.post", |app| app.touch_attention(&fixture.peer));
+            assert!(Arc::ptr_eq(&old, &app.read_view.load()));
+            app.touch_attention(&fixture.owner);
+        });
+        assert!(app.rpc_post_attention_owners.is_none());
+    });
+    assert_eq!(count(&phases, "finisher.attention"), 4);
+    assert_eq!(count(&phases, "publication.global"), 1);
+    assert_eq!(count(&phases, "publication.install"), 1);
+    for owner in [&fixture.owner, &fixture.peer] {
+        assert_eq!(fixture.saved_attention(owner), fixture.attention(owner));
+        assert!(fixture.attention(owner).last_interaction_at.is_some());
+    }
+    fixture.assert_full_oracle();
+}

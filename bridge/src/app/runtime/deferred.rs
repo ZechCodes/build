@@ -620,6 +620,14 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
+        self.with_rpc_post_attention(method, |app| app.dispatch_deferring_inner(method, params))
+    }
+
+    fn dispatch_deferring_inner(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
         let queued_before = self.delivery_queue.checkpoint();
         let outcome = self.route(method, params);
         if outcome.is_err() {

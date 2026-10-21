@@ -70,7 +70,10 @@ function upgrade(request, event) {
   for (const name of [WRITE_OPERATION_STORE, WRITE_LEASE_STORE]) {
     if (!db.objectStoreNames.contains(name)) {
       const store = db.createObjectStore(name);
-      if (name === WRITE_OPERATION_STORE) store.createIndex("namespace", "namespace");
+      if (name === WRITE_OPERATION_STORE) {
+        store.createIndex("namespace", "namespace");
+        store.createIndex("overlayNamespace", "overlayNamespace");
+      }
     }
   }
   if (event.oldVersion >= 4) return;
@@ -184,7 +187,7 @@ export async function readCachedMany(addresses) {
     readRecordsInStore(stores.records, addresses.map(recordKey), (records) => { canonical = records; });
     operations = [];
     for (const namespace of activeOperationNamespaces(addresses)) {
-      const read = stores.operations.index("namespace").getAll(namespace);
+      const read = stores.operations.index("overlayNamespace").getAll(namespace);
       read.onsuccess = () => { operations.push(...read.result); };
     }
     return null;

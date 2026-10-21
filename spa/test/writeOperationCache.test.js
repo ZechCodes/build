@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
+import { IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 
 const scope = { accountId: "account-a", deviceId: "device-a", principalId: "principal-a" };
 const address = { deviceId: scope.deviceId, entityId: "project", kind: "task" };
@@ -347,4 +347,51 @@ describe("operation opening authority", () => {
     expect((await operations.get("op-a")).state).toBe("failed");
     expect((await operations.get("op-a")).accept).toBeUndefined();
   });
+});
+
+
+describe("active-layer indexed reads", () => {
+  it("renders only active layers in the addressed authenticated namespace", async () => {
+    await operations.put(intent("active"));
+    await operations.accept("active", { ack: {}, revision: 1, overlay: overlay({ body: "accepted" }) });
+    await operations.put(intent("terminal", { state: "succeeded", rawHistory: "retained".repeat(1000) }));
+    await operations.put(intent("unsent"));
+    const unrelated = factory({ ...scope, accountId: "other-account" });
+    await unrelated.put(intent("foreign"));
+    await unrelated.accept("foreign", { ack: {}, revision: 1, overlay: overlay({ body: "foreign" }) });
+    const loaded = [];
+    let database;
+    await cache.transactWriteOperations("readonly", ({ operations: store }) => { database = store.transaction.db; return null; });
+    const original = IDBIndex.prototype.getAll;
+    const indexed = vi.spyOn(IDBIndex.prototype, "getAll").mockImplementation(function (...args) {
+      const read = original.apply(this, args);
+      const index = this.name;
+      if (this.objectStore.transaction.db === database) {
+        read.addEventListener("success", () => loaded.push({ index, rows: read.result.map((row) => row.operationId) }));
+      }
+      return read;
+    });
+    try {
+      expect((await cache.readCached(address)).value.body).toBe("accepted");
+      expect(loaded).toEqual([{ index: "overlayNamespace", rows: ["active"] }]);
+      loaded.length = 0;
+      expect((await operations.list()).map((row) => row.operationId)).toEqual(["active", "terminal", "unsent"]);
+      expect(loaded).toEqual([{ index: "namespace", rows: ["active", "terminal", "unsent"] }]);
+    } finally { indexed.mockRestore(); }
+  });
+
+  it("removes retired layers from the sparse index", async () => {
+    await operations.put(intent());
+    await operations.accept("op-a", { ack: {}, revision: 1, overlay: overlay({ body: "accepted" }) });
+    expect((await operations.get("op-a")).overlayNamespace).toBeDefined();
+    await operations.confirm("op-a", { revision: 2, confirmation: { state: "succeeded", published: publication } });
+    await operations.observePublication({ canonical: [{ address, value: { body: "committed" }, publication }] });
+    expect((await operations.get("op-a")).overlayNamespace).toBeUndefined();
+    expect((await cache.readCached(address)).value.body).toBe("committed");
+  });
+});
+
+it("distinguishes inferred dependencies from an explicit empty dependency override", async () => {
+  await operations.put(intent());
+  await expect(operations.put(intent("op-a", { after: [] }))).rejects.toThrow("operation_conflict");
 });

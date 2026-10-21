@@ -147,6 +147,7 @@ export function createWriteOperationCache(scope) {
             readRecords(stores.records, addresses.map(recordKey), (records) => {
               if (!accept()) return;
               if (layerPublished(next, records)) next.overlayActive = false;
+              indexOverlay(next);
               changed = putOrAbort(stores.operations, next, operationKey(scope, operationId));
               result = next;
             });
@@ -192,7 +193,7 @@ export function createWriteOperationCache(scope) {
       writeCanonical(stores.records, canonical, accept, (addresses) => {
         written = addresses;
         if (!accept()) return;
-        const read = stores.operations.index("namespace").getAll(namespace);
+        const read = stores.operations.index("overlayNamespace").getAll(namespace);
         read.onsuccess = () => retirePublished(stores, read.result, accept, changed);
       });
       return null;
@@ -209,6 +210,7 @@ export function createWriteOperationCache(scope) {
       for (const row of rows) {
         if (!layerPublished(row, records)) continue;
         const next = { ...row, overlayActive: false };
+        indexOverlay(next);
         if (putOrAbort(stores.operations, next, operationKey(scope, row.operationId))) changed.push(row);
       }
     });
@@ -271,4 +273,10 @@ function sortedJson(value) {
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortedJson(value[key])]));
 }
 
-const intentIdentity = (record) => JSON.stringify(sortedJson({ request: record.request, after: record.after || [] }));
+const intentIdentity = (record) => JSON.stringify(sortedJson({ request: record.request, after: record.after }));
+
+
+function indexOverlay(record) {
+  if (record.overlayActive) record.overlayNamespace = record.namespace;
+  else delete record.overlayNamespace;
+}

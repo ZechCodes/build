@@ -22,6 +22,7 @@ mod status_publication;
 mod status_publication_timing;
 pub(in crate::app::tests) mod terminal_lifecycle;
 mod terminal_reaper;
+mod terminal_activity;
 pub(in crate::app::tests) mod terminals;
 
 mod lock_hold_busy;

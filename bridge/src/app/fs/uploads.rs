@@ -8,7 +8,7 @@ use crate::scoped_upload::{Destination, StagedFile};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,9 @@ pub(in crate::app) const UPLOAD_MAX_BYTES: u64 = 256 * 1_048_576;
 pub(in crate::app) const UPLOAD_CHUNK_BYTES: u64 = 4 * 1_048_576;
 const UPLOAD_SESSION_LIMIT: usize = 8;
 const UPLOAD_TOTAL_LIMIT: usize = 64;
+const ACTIVE: u8 = 0;
+const CANCELLED: u8 = 1;
+const PUBLISHING: u8 = 2;
 const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 type UploadFailure = (ApiError, bool);
@@ -33,17 +36,18 @@ struct UploadFile {
 pub(in crate::app) struct Upload {
     target: FileTarget,
     root: PathBuf,
+    path: String,
     owner: String,
     opening: Opening,
     size: u64,
     last_chunk_at: Instant,
     file: Arc<Mutex<Option<UploadFile>>>,
-    cancelled: Arc<AtomicBool>,
+    lifecycle: Arc<AtomicU8>,
 }
 
 impl Upload {
     fn validate(&self) -> Result<(), ApiError> {
-        if self.cancelled.load(Ordering::Acquire) || !self.opening.is_open() {
+        if !self.active() || !self.opening.is_open() {
             return Err(ApiError::not_found("unknown upload_id"));
         }
         Ok(())
@@ -78,8 +82,34 @@ impl Upload {
         Arc::ptr_eq(&self.file, &other.file)
     }
 
+    fn active(&self) -> bool {
+        self.lifecycle.load(Ordering::Acquire) == ACTIVE
+    }
+
+    fn try_cancel(&self) -> Result<(), ApiError> {
+        self.lifecycle
+            .compare_exchange(ACTIVE, CANCELLED, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| ApiError::not_found("unknown upload_id"))
+    }
+
     fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        let _ = self.try_cancel();
+    }
+
+    /// Claim the attempt before staging fsync/rename. Cancellation wins before
+    /// this point; afterwards finish owns disk and cache settlement even if
+    /// its session closes. A claimed attempt can still return a disk error.
+    fn claim_publication(&self) -> Result<(), ApiError> {
+        self.validate()?;
+        self.lifecycle
+            .compare_exchange(ACTIVE, PUBLISHING, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| ApiError::not_found("unknown upload_id"))?;
+        if !self.opening.is_open() {
+            self.lifecycle.store(CANCELLED, Ordering::Release);
+            return Err(ApiError::not_found("unknown upload_id"));
+        }
+        Ok(())
     }
 
     pub(in crate::app) fn dispose(self) {
@@ -178,7 +208,8 @@ impl AppState {
         self.uploads
             .get(id)
             .filter(|upload| {
-                upload.opening.is_open()
+                upload.active()
+                    && upload.opening.is_open()
                     && upload.owner == caller.session_id()
                     && upload.opening.is(&caller.opening())
             })
@@ -199,12 +230,13 @@ impl AppState {
         params: FsUploadIdParams,
         caller: &SessionSender,
     ) -> Result<Value, ApiError> {
-        self.owned_upload(&params.upload_id, caller)?;
+        // The CAS decides cancellation while the map entry is still present.
+        // A finish may have claimed publication after owned_upload's first read.
+        self.owned_upload(&params.upload_id, caller)?.try_cancel()?;
         let upload = self
             .uploads
             .remove(&params.upload_id)
             .expect("owned upload");
-        upload.cancel();
         Ok(self.defer_file(
             move || {
                 #[cfg(test)]
@@ -276,13 +308,18 @@ impl AppState {
         let id = uuid::Uuid::new_v4().to_string();
         let upload = Upload {
             root: target.recorded_root.clone(),
+            path: if params.parent.is_empty() {
+                params.name.clone()
+            } else {
+                format!("{}/{}", params.parent, params.name)
+            },
             target: target.clone(),
             owner: caller.session_id().into(),
             opening: caller.opening(),
             size: params.size,
             last_chunk_at: Instant::now(),
             file: Arc::new(Mutex::new(None)),
-            cancelled: Arc::new(AtomicBool::new(false)),
+            lifecycle: Arc::new(AtomicU8::new(ACTIVE)),
         };
         self.uploads.insert(id.clone(), upload.clone());
         // Clean expired staging on the same off-lock preparation trip.
@@ -414,16 +451,18 @@ impl AppState {
         caller: &SessionSender,
     ) -> Result<Value, ApiError> {
         let upload = self.owned_upload(&params.upload_id, caller)?.clone();
-        let target = upload.target.clone();
+        let mut target = upload.target.clone();
+        target.destination = Some(upload.path.clone());
         Ok(self.prepare_file(target, move |app, target, prepared| {
-            let prepared = prepared?;
-            app.upload_is_current(&params.upload_id, &upload)?;
-            if let Err(error) = upload.validate_scope(app, &prepared.root) {
-                if error.code() == "busy" {
-                    return Err(error);
-                }
-                return Ok(app.discard_upload(params.upload_id, upload, error));
-            }
+            let prepared = match prepared.and_then(|prepared| {
+                app.upload_is_current(&params.upload_id, &upload)?;
+                upload.validate_scope(app, &prepared.root)?;
+                Ok(prepared)
+            }) {
+                Ok(prepared) => prepared,
+                Err(error) if error.code() == "busy" => return Err(error),
+                Err(error) => return Ok(app.discard_upload(params.upload_id, upload, error)),
+            };
             let reopened = app.file_reopen(&target)?;
             let work = upload.clone();
             let root = prepared.root.clone();
@@ -436,25 +475,39 @@ impl AppState {
                     (result, params.upload_id, work, prepared)
                 },
                 move |app, (result, id, work, prepared)| {
-                    if let Err(error) = app.upload_is_current(&id, &work) {
-                        return Ok(app.discard_upload(id, work, error));
-                    }
-                    match result {
-                        Ok((path, reopened)) => {
-                            app.uploads.remove(&id);
-                            app.publish_file_mutation(&target, &prepared.root, reopened)?;
-                            Ok(json!({"path":path,"size":work.size}))
-                        }
-                        Err((error, fatal)) => {
-                            if fatal {
-                                app.uploads.remove(&id);
-                            }
-                            Err(error)
-                        }
-                    }
+                    app.settle_upload_finish(result, id, work, &target, &prepared.root)
                 },
             ))
         }))
+    }
+
+    fn settle_upload_finish(
+        &mut self,
+        result: Result<FinishedUpload, UploadFailure>,
+        id: String,
+        upload: Upload,
+        target: &FileTarget,
+        root: &Path,
+    ) -> Result<Value, ApiError> {
+        match result {
+            Ok((path, reopened)) => {
+                // The publication claim already ordered finish before cancellation.
+                // Removing an absent entry cannot resurrect an ended opening.
+                self.uploads.remove(&id);
+                self.publish_file_mutation(target, root, reopened)?;
+                Ok(json!({"path":path,"size":upload.size}))
+            }
+            Err((error, true)) => {
+                self.uploads.remove(&id);
+                Err(error)
+            }
+            Err((error, false)) => {
+                if let Err(ended) = self.upload_is_current(&id, &upload) {
+                    return Ok(self.discard_upload(id, upload, ended));
+                }
+                Err(error)
+            }
+        }
     }
 }
 
@@ -536,10 +589,10 @@ fn finish_upload(
         .validate_parent(root)
         .map_err(|error| (error, true))?;
     #[cfg(test)]
-    {
-        super::service_test::before_publish();
-        super::service_test::after_publish_claim();
-    }
+    super::service_test::before_publish();
+    upload.claim_publication().map_err(|error| (error, true))?;
+    #[cfg(test)]
+    super::service_test::after_publish_claim();
     let path = active
         .staged
         .finish(upload.size)

@@ -1,4 +1,5 @@
 //! Filesystem preparation, timed record validation, service, and memory publication.
+use super::path_lock::DestinationLock;
 use super::{AppState, FileScope, MOVED_SOURCE};
 use crate::api::ApiError;
 use crate::app::git::deferred::DeferredGitWork;
@@ -7,7 +8,7 @@ use crate::source_sync::SyncLock;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 type Work<T> = Box<dyn FnOnce() -> T + Send>;
 type Apply<T> = Box<dyn FnOnce(&mut AppState, T) -> Result<Value, ApiError> + Send>;
@@ -69,6 +70,7 @@ impl AppState {
 pub(super) struct FileTarget {
     pub(super) scope: Option<FileScope>,
     pub(super) recorded_root: PathBuf,
+    pub(super) destination: Option<String>,
 }
 
 impl FileTarget {
@@ -77,6 +79,7 @@ impl FileTarget {
         Ok(Self {
             scope: Some(scope),
             recorded_root,
+            destination: None,
         })
     }
 
@@ -84,17 +87,29 @@ impl FileTarget {
         Self {
             scope: None,
             recorded_root: parent,
+            destination: None,
         }
     }
 
     pub(super) fn prepare(&self) -> Result<PreparedFile, ApiError> {
+        let deadline = Instant::now() + Duration::from_secs(5);
         let root = std::fs::canonicalize(&self.recorded_root).map_err(|error| {
             ApiError::invalid_params(format!("cannot resolve scope root: {error}"))
         })?;
-        let held = SyncLock::acquire_many(std::slice::from_ref(&root), Duration::from_secs(5))
-            .map_err(|_| {
-                ApiError::busy("Another filesystem operation is still running; try again.")
-            })?;
+        let repository = SyncLock::acquire_many(
+            std::slice::from_ref(&root),
+            deadline.saturating_duration_since(Instant::now()),
+        )
+        .map_err(|_| ApiError::busy("Another filesystem operation is still running; try again."))?;
+        let destination = self
+            .destination
+            .as_ref()
+            .map(|relative| DestinationLock::acquire(&root, relative, deadline))
+            .transpose()?;
+        let held = FileLocks {
+            _repository: repository,
+            _destination: destination,
+        };
         let current = std::fs::canonicalize(&self.recorded_root).map_err(|error| {
             ApiError::invalid_params(format!("cannot resolve scope root: {error}"))
         })?;
@@ -123,7 +138,18 @@ impl FileTarget {
 pub(super) struct PreparedFile {
     pub(super) root: PathBuf,
     // Keep repository serialization through the final memory publication.
-    pub(super) held: Vec<SyncLock>,
+    pub(super) held: FileLocks,
+}
+
+pub(super) struct FileLocks {
+    _repository: Vec<SyncLock>,
+    _destination: Option<DestinationLock>,
+}
+
+/// The bytes may already have changed even if constructing the readback fails.
+pub(super) struct FileMutation {
+    pub(super) answer: Result<Value, ApiError>,
+    pub(super) changed: bool,
 }
 
 impl AppState {
@@ -244,8 +270,12 @@ fn legacy_root(app: &AppState, scope: &TermScope) -> Result<PathBuf, String> {
             let run = app.runs.get(run_id).ok_or("unknown run_id")?;
             Ok(app
                 .workspaces
-                .iter()
-                .find(|workspace| workspace.id == *run_id || workspace.root == run.worktree.path)
+                .get(run_id)
+                .or_else(|| {
+                    app.workspaces
+                        .iter()
+                        .find(|workspace| workspace.root == run.worktree.path)
+                })
                 .and_then(|workspace| {
                     workspace
                         .directories
@@ -287,6 +317,18 @@ impl AppState {
         target: FileTarget,
         work: impl FnOnce(&Path) -> Result<Value, ApiError> + Send + 'static,
     ) -> Value {
+        self.file_mutation_result(target, move |root| {
+            let answer = work(root);
+            let changed = answer.is_ok();
+            FileMutation { answer, changed }
+        })
+    }
+
+    pub(super) fn file_mutation_result(
+        &mut self,
+        target: FileTarget,
+        work: impl FnOnce(&Path) -> FileMutation + Send + 'static,
+    ) -> Value {
         self.prepare_file(target, move |app, target, prepared| {
             let prepared = prepared?;
             target.validate(app, &prepared.root)?;
@@ -296,18 +338,19 @@ impl AppState {
                 move || {
                     #[cfg(test)]
                     super::service_test::service();
-                    let answer = work(&prepared.root);
-                    let reopened = if answer.is_ok() {
+                    let change = work(&prepared.root);
+                    let reopened = if change.changed {
                         persist_reopen(reopened)
                     } else {
                         Ok(None)
                     };
-                    (answer, reopened, prepared.held)
+                    (change, reopened, prepared.held)
                 },
-                move |app, (answer, reopened, _held)| {
-                    let answer = answer?;
-                    app.publish_file_mutation(&target, &root, reopened)?;
-                    Ok(answer)
+                move |app, (change, reopened, _held)| {
+                    if change.changed {
+                        app.publish_file_mutation(&target, &root, reopened)?;
+                    }
+                    change.answer
                 },
             ))
         })

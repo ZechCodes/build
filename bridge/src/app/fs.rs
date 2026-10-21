@@ -14,8 +14,9 @@ use super::{b64encode, fenced_scope_path, media_mime_hint, require_str, AppState
 
 mod deferred;
 mod errors;
+mod path_lock;
 pub(in crate::app) mod uploads;
-use deferred::FileTarget;
+use deferred::{FileMutation, FileTarget};
 
 #[cfg(test)]
 #[path = "fs/service_test.rs"]
@@ -345,11 +346,10 @@ impl AppState {
     /// parent through the atomic rename, defeating ancestor symlink swaps.
     pub(crate) fn fs_write(&mut self, params: &Value) -> Result<Value, String> {
         let scope = FileScope::parse(params)?;
-        let target = FileTarget::capture(self, scope).map_err(deferred::encode_error)?;
+        let mut target = FileTarget::capture(self, scope).map_err(deferred::encode_error)?;
+        target.destination = Some(require_str(params, "path")?);
         let params = params.clone();
-        Ok(self.file_mutation(target, move |root| {
-            replace_scoped_file(root, &params).map_err(ApiError::classify)
-        }))
+        Ok(self.file_mutation_result(target, move |root| replace_scoped_file(root, &params)))
     }
 
     fn invalidate_file_scope(&mut self, scope: &FileScope) {
@@ -397,7 +397,22 @@ fn make_host_directory(parent: &std::path::Path, params: &Value) -> Result<Value
     Ok(json!({"path": path.display().to_string()}))
 }
 
-fn replace_scoped_file(root: &std::path::Path, params: &Value) -> Result<Value, String> {
+fn replace_scoped_file(root: &std::path::Path, params: &Value) -> FileMutation {
+    if let Err(error) = write_scoped_text(root, params) {
+        return FileMutation {
+            answer: Err(ApiError::classify(error)),
+            changed: false,
+        };
+    }
+    #[cfg(test)]
+    service_test::after_replace();
+    FileMutation {
+        answer: read_scoped_file(root, params).map_err(ApiError::classify),
+        changed: true,
+    }
+}
+
+fn write_scoped_text(root: &std::path::Path, params: &Value) -> Result<(), String> {
     let path = require_str(params, "path")?;
     let expected_revision = require_str(params, "expected_revision")?;
     let encoded = require_str(params, "content_b64")?;
@@ -412,10 +427,7 @@ fn replace_scoped_file(root: &std::path::Path, params: &Value) -> Result<Value, 
     if current.get("editable") != Some(&Value::Bool(true)) {
         return Err("file is not editable UTF-8 text".into());
     }
-    replace_text(root, &path, &expected_revision, &replacement)?;
-    #[cfg(test)]
-    service_test::after_replace();
-    read_scoped_file(root, params)
+    replace_text(root, &path, &expected_revision, &replacement)
 }
 
 /// One page of an open file (`fs.read` with a `range`, #95): whole lines for

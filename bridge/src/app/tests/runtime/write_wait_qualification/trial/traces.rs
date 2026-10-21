@@ -108,6 +108,11 @@ pub struct ProbeSnapshot {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProducerCounts {
+    pub period_us: u64,
+    pub planned: u64,
+    pub counters_coherent: bool,
+    pub joined: bool,
+    pub body_released: bool,
     pub intended: u64,
     pub started: u64,
     pub completed: u64,

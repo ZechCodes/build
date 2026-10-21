@@ -2,7 +2,7 @@
 //! No AppState, service writer, callback or observation-ledger mutex here.
 use super::super::client_watch::ClientWatchObservation;
 use super::super::mcp_adapter::McpObservation;
-use super::super::producer_adapter::ConcreteProducers;
+use super::super::producer_adapter::{ConcreteProducers, ProducerSnapshot};
 use super::super::trial_complete::{
     IndependentProbe, OpenRegistryRow, OpenService, ProbeSnapshot, ProducerCounts, Violation,
 };
@@ -68,22 +68,9 @@ impl IndependentProbe for Probe {
             }
         }
         for producer in self.producers.snapshots() {
-            output.producer_counts.insert(
-                producer.name.into(),
-                ProducerCounts {
-                    intended: producer.intended,
-                    started: producer.started,
-                    completed: producer.completed,
-                    failed: producer.failed,
-                    pending_not_started: producer.pending_not_started,
-                    missed_at_stop: producer.missed_at_stop,
-                    active_ordinal: producer.active_ordinal,
-                    maximum_start_lag_us: producer.maximum_start_lag_us,
-                    maximum_return_lag_us: producer.maximum_return_lag_us,
-                    oldest_owed_ordinal: producer.oldest_owed_ordinal,
-                    oldest_owed_age_us: producer.oldest_owed_age_us,
-                },
-            );
+            output
+                .producer_counts
+                .insert(producer.name.into(), ProducerCounts::from(&producer));
             if let Some(ordinal) = producer.active_ordinal {
                 output
                     .producer_active
@@ -130,5 +117,30 @@ impl IndependentProbe for Probe {
             });
         }
         output
+    }
+}
+
+// The report copies the actual atomic observation, including bounded-read
+// coherence. Only the final joined gate requires a coherent complete snapshot.
+impl From<&ProducerSnapshot> for ProducerCounts {
+    fn from(producer: &ProducerSnapshot) -> Self {
+        Self {
+            period_us: producer.period_us,
+            planned: producer.planned,
+            counters_coherent: producer.counters_coherent,
+            joined: producer.joined,
+            body_released: producer.body_released,
+            intended: producer.intended,
+            started: producer.started,
+            completed: producer.completed,
+            failed: producer.failed,
+            pending_not_started: producer.pending_not_started,
+            missed_at_stop: producer.missed_at_stop,
+            active_ordinal: producer.active_ordinal,
+            maximum_start_lag_us: producer.maximum_start_lag_us,
+            maximum_return_lag_us: producer.maximum_return_lag_us,
+            oldest_owed_ordinal: producer.oldest_owed_ordinal,
+            oldest_owed_age_us: producer.oldest_owed_age_us,
+        }
     }
 }

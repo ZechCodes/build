@@ -12,6 +12,11 @@ impl RunState<'_> {
             .archive_into(&self.observe)
             .unwrap_or_else(|error| self.observe.fail(None, "final_archive", error));
         let last_probe = self.probe.snapshot();
+        super::super::gates::validate_final_producers(
+            &last_probe,
+            Duration::from_secs(SECONDS),
+            &self.observe,
+        );
         let cleanup_drained = self.obligations_quiet(&last_probe);
         let rows = self
             .observe

@@ -7,6 +7,15 @@ mod exempt;
 mod final_transport;
 mod git_support;
 mod native_archive;
+#[cfg(test)]
+#[path = "native_read_tests.rs"]
+mod native_read_tests;
+#[cfg(test)]
+#[path = "normal_tests.rs"]
+mod normal_tests;
+#[cfg(test)]
+#[path = "preparation_tests.rs"]
+mod preparation_tests;
 mod probe;
 mod producer_bodies;
 #[path = "saved_effects/mod.rs"]
@@ -92,6 +101,10 @@ pub(super) const READINESS_PREREQUISITES: &[&str] = &[
 ];
 
 impl PreparedBackend {
+    fn bind_native_fixture_counts(&mut self) -> Result<(), String> {
+        // TESTFIRST: native measurements exist, but normal binding is not wired.
+        Err("native pre-T0 fixture binding is not implemented".into())
+    }
     pub fn blocked_reason(&self) -> String {
         let mut reasons = READINESS_PREREQUISITES.to_vec();
         if self.mode == PipelineMode::Qualification {
@@ -99,11 +112,7 @@ impl PreparedBackend {
         }
         format!("concrete pipeline not Ready: {}", reasons.join("; "))
     }
-    pub async fn prepare(
-        name: TrialName,
-        mode: PipelineMode,
-        provenance: Provenance,
-    ) -> Result<Self, PreparationFailure> {
+    async fn unassembled(name: TrialName, mode: PipelineMode, provenance: Provenance) -> Self {
         let envelope = match name.envelope {
             Envelope::Small => super::fixture::Envelope::Small,
             Envelope::Large => super::fixture::Envelope::Large,
@@ -116,7 +125,7 @@ impl PreparedBackend {
                 (fixture, Some(seed))
             }
         };
-        let mut prepared = Self {
+        Self {
             name,
             mode,
             provenance,
@@ -147,7 +156,14 @@ impl PreparedBackend {
             lifecycle: None,
             mcp: None,
             probe: None,
-        };
+        }
+    }
+    pub async fn prepare(
+        name: TrialName,
+        mode: PipelineMode,
+        provenance: Provenance,
+    ) -> Result<Self, PreparationFailure> {
+        let mut prepared = Self::unassembled(name, mode, provenance).await;
         use futures_util::FutureExt;
         let assembled = std::panic::AssertUnwindSafe(prepared.assemble())
             .catch_unwind()

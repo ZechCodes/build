@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 mod close;
 #[path = "control/effects.rs"]
 mod effects;
+pub(super) use effects::prove_native_read;
 #[path = "control/archive.rs"]
 mod receipt_archive;
 
@@ -295,4 +296,12 @@ fn recipe_for(prepared: &PreparedBackend, slot: &Slot) -> Recipe {
         expected_read_cohort: cohort,
         durable_operation_id: None,
     }
+}
+
+// TESTFIRST seam for exact native recipe classification before normal T0.
+pub(super) fn expected_read_cohort(
+    _prepared: &PreparedBackend,
+    _slot: &Slot,
+) -> Result<Option<ReadCohort>, String> {
+    Err("normal typed native read cohort is not implemented".into())
 }

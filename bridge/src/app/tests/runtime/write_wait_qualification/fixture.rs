@@ -407,7 +407,7 @@ fn seed_tasks(app: &mut AppState, project: &str, count: usize) -> Vec<String> {
     ids
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 struct NativeCounts {
     projects: usize,
     task_counts: Vec<usize>,

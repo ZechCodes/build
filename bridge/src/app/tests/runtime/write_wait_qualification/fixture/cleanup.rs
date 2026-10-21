@@ -3,91 +3,100 @@ use super::*;
 use std::time::Instant;
 
 impl QualificationFixture {
+    /// Native setup-only snapshot, never called by a timed read.
+    pub(in crate::app::tests::runtime::write_wait_qualification) fn qualification_count_receipt(
+        &self,
+    ) -> serde_json::Value {
+        serde_json::to_value(self.native_counts()).expect("native fixture receipt serializes")
+    }
+    fn native_counts(&self) -> NativeCounts {
+        let app = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut canonical = std::collections::BTreeMap::new();
+        for run in app.runs.values() {
+            for agent in run.agents.iter() {
+                canonical.insert(
+                    agent.conversation_id().to_string(),
+                    agent.thread.total_item_count(),
+                );
+            }
+        }
+        for plan in app.plans.values() {
+            for agent in plan.agents.iter() {
+                canonical.insert(
+                    agent.conversation_id().to_string(),
+                    agent.thread.total_item_count(),
+                );
+            }
+        }
+        NativeCounts {
+            projects: self.projects.len(),
+            task_counts: self
+                .projects
+                .iter()
+                .map(|project| {
+                    app.tracker_store()
+                        .unwrap()
+                        .list_tracker_tasks(
+                            project.repository.to_str().unwrap(),
+                            Default::default(),
+                        )
+                        .unwrap()
+                        .len()
+                })
+                .collect(),
+            primary_checkout_counts: self
+                .projects
+                .iter()
+                .map(|project| {
+                    let repository = git2::Repository::open(&project.repository).unwrap();
+                    let expected = std::fs::canonicalize(&project.repository).unwrap();
+                    let is_primary = !repository.is_worktree()
+                        && repository
+                            .workdir()
+                            .is_some_and(|path| std::fs::canonicalize(path).unwrap() == expected)
+                        && app
+                            .workspaces
+                            .list(Some(&project.project_id))
+                            .iter()
+                            .any(|workspace| {
+                                workspace.id == format!("legacy-{}", project.project_id)
+                                    && std::fs::canonicalize(&workspace.root).unwrap() == expected
+                            });
+                    usize::from(is_primary)
+                })
+                .collect(),
+            linked_checkout_counts: self
+                .projects
+                .iter()
+                .map(|project| {
+                    git2::Repository::open(&project.repository)
+                        .unwrap()
+                        .worktrees()
+                        .unwrap()
+                        .len()
+                })
+                .collect(),
+            registry_residents: app.workspaces.list(None).len(),
+            active_workspaces: self.active_workspaces.len(),
+            canonical_histories: canonical.len(),
+            total_thread_items: canonical.values().sum(),
+            live_sessions: self
+                .sessions
+                .iter()
+                .filter(|(key, session)| {
+                    app.session_registry.test_tab(key).is_some_and(|tab| {
+                        tab.session_is_live() && Arc::ptr_eq(&tab.session, session)
+                    })
+                })
+                .count(),
+        }
+    }
     pub(super) async fn counts_and_shutdown(self) -> NativeCounts {
-        let counts = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let app = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut canonical = std::collections::BTreeMap::new();
-            for run in app.runs.values() {
-                for agent in run.agents.iter() {
-                    canonical.insert(
-                        agent.conversation_id().to_string(),
-                        agent.thread.total_item_count(),
-                    );
-                }
-            }
-            for plan in app.plans.values() {
-                for agent in plan.agents.iter() {
-                    canonical.insert(
-                        agent.conversation_id().to_string(),
-                        agent.thread.total_item_count(),
-                    );
-                }
-            }
-            NativeCounts {
-                projects: self.projects.len(),
-                task_counts: self
-                    .projects
-                    .iter()
-                    .map(|project| {
-                        app.tracker_store()
-                            .unwrap()
-                            .list_tracker_tasks(
-                                project.repository.to_str().unwrap(),
-                                Default::default(),
-                            )
-                            .unwrap()
-                            .len()
-                    })
-                    .collect(),
-                primary_checkout_counts: self
-                    .projects
-                    .iter()
-                    .map(|project| {
-                        let repository = git2::Repository::open(&project.repository).unwrap();
-                        let expected = std::fs::canonicalize(&project.repository).unwrap();
-                        let is_primary = !repository.is_worktree()
-                            && repository.workdir().is_some_and(|path| {
-                                std::fs::canonicalize(path).unwrap() == expected
-                            })
-                            && app.workspaces.list(Some(&project.project_id)).iter().any(
-                                |workspace| {
-                                    workspace.id == format!("legacy-{}", project.project_id)
-                                        && std::fs::canonicalize(&workspace.root).unwrap()
-                                            == expected
-                                },
-                            );
-                        usize::from(is_primary)
-                    })
-                    .collect(),
-                linked_checkout_counts: self
-                    .projects
-                    .iter()
-                    .map(|project| {
-                        git2::Repository::open(&project.repository)
-                            .unwrap()
-                            .worktrees()
-                            .unwrap()
-                            .len()
-                    })
-                    .collect(),
-                registry_residents: app.workspaces.list(None).len(),
-                active_workspaces: self.active_workspaces.len(),
-                canonical_histories: canonical.len(),
-                total_thread_items: canonical.values().sum(),
-                live_sessions: self
-                    .sessions
-                    .iter()
-                    .filter(|(key, session)| {
-                        app.session_registry.test_tab(key).is_some_and(|tab| {
-                            tab.session_is_live() && Arc::ptr_eq(&tab.session, session)
-                        })
-                    })
-                    .count(),
-            }
-        }));
+        let counts =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.native_counts()));
         // Cardinality/Store failures are retained, but never skip teardown.
         let cleanup = self.cleanup_owned_resources().await;
         for error in &cleanup {
@@ -105,7 +114,9 @@ impl QualificationFixture {
         counts
     }
 
-    pub(super) async fn cleanup_owned_resources(mut self) -> Vec<String> {
+    pub(in crate::app::tests::runtime::write_wait_qualification) async fn cleanup_owned_resources(
+        mut self,
+    ) -> Vec<String> {
         use futures_util::FutureExt;
         let mut errors = Vec::new();
         if let Some(reads) = self.read_inputs.take() {

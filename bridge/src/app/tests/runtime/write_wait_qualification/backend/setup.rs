@@ -12,21 +12,19 @@ use std::time::{Duration, Instant};
 
 impl PreparedBackend {
     pub(super) async fn assemble(&mut self) -> Result<(), String> {
+        self.assemble_support().await?;
+        self.prepare_collectors()?;
+        Ok(())
+    }
+    // The compatibility control stops at this identical native support boundary,
+    // before enrolling any normal caller/watch record.
+    pub(super) async fn assemble_support(&mut self) -> Result<(), String> {
         match self.mode {
             PipelineMode::Qualification => self.prepare_recipes()?,
             PipelineMode::TwoSecondControl => self.prepare_bounded_recipes()?,
         }
         self.prepare_support().await?;
         self.wait_bootstrap_terminal().await?;
-        self.saved_evidence = Some(saved_evidence::SavedEvidence::capture(
-            self.fixture.as_ref().ok_or("fixture ownership missing")?,
-            self.plan
-                .iter()
-                .filter(|slot| slot.traffic == super::super::trial_complete::Traffic::Write)
-                .map(|slot| slot.original_id.clone())
-                .collect(),
-        )?);
-        self.prepare_collectors()?;
         Ok(())
     }
     fn prepare_recipes(&mut self) -> Result<(), String> {
@@ -140,7 +138,15 @@ impl PreparedBackend {
         // receiver state and all archived cancelled/abandoned rows. No active
         // row is filtered here and no bad history is erased or relabelled.
     }
-    fn prepare_collectors(&mut self) -> Result<(), String> {
+    pub(super) fn prepare_collectors(&mut self) -> Result<(), String> {
+        self.saved_evidence = Some(saved_evidence::SavedEvidence::capture(
+            self.fixture.as_ref().ok_or("fixture ownership missing")?,
+            self.plan
+                .iter()
+                .filter(|slot| slot.traffic == super::super::trial_complete::Traffic::Write)
+                .map(|slot| slot.original_id.clone())
+                .collect(),
+        )?);
         let fixture = self.fixture.as_ref().ok_or("fixture ownership missing")?;
         let plans = self.plan.iter().filter_map(finite_plan).collect();
         self.services = Some(FixtureServices::install(
@@ -234,7 +240,10 @@ fn cohort(slot: &Slot) -> TrafficCohort {
         super::super::trial_complete::Traffic::Exempt => TrafficCohort::Exempt,
     }
 }
-fn actual_identities(fixture: &QualificationFixture, reads: &ReadyReadInputs) -> Vec<McpIdentity> {
+pub(super) fn actual_identities(
+    fixture: &QualificationFixture,
+    reads: &ReadyReadInputs,
+) -> Vec<McpIdentity> {
     let mut identities = coding_identities(fixture);
     let (agent, token) = reads.router_endpoint();
     identities.push(McpIdentity {

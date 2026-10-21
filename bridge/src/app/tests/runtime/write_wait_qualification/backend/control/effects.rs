@@ -115,53 +115,7 @@ impl ControlBackend {
         recipe: &Recipe,
         observe: &Observation,
     ) -> Result<ControlExecution, String> {
-        let case = prepared
-            .bounded_rpc_cases
-            .iter()
-            .find(|case| case.method == recipe.method)
-            .ok_or("actual bounded case missing")?;
-        let reply = prepared
-            .fixture
-            .as_ref()
-            .ok_or("owned fixture missing")?
-            .rpc
-            .request(
-                slot.caller,
-                &slot.original_id,
-                case.method,
-                case.params.clone(),
-            )
-            .await;
-        super::super::transport::record_reply(slot, &reply, observe)?;
-        let mut cohort = None;
-        let response_evidence = verify_and_summarize_response(
-            prepared.name,
-            &slot.original_id,
-            &recipe.method,
-            &reply.reply,
-            |decoded| {
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                crate::app::tests::runtime::write_wait_qualification::read_recipes::assert_rpc_reply(case, decoded, prepared.bounded_reads.as_ref().expect("actual bounded seed"))
-            })).map_err(|_| "actual native core oracle failed".to_owned())?;
-                let actual = match outcome {
-                    FullReadOutcome::Ready => ReadCohort::ReadyBounded,
-                    FullReadOutcome::LegacyFull => ReadCohort::LegacyUnbounded,
-                    _ => return Err("actual core read pending/refused/unavailable".into()),
-                };
-                let witness = native_read_witness(&recipe.method, &actual);
-                cohort = Some(actual);
-                Ok(witness)
-            },
-            &*self.sink,
-        )?;
-        observe.stage(&slot.original_id, Stage::EffectVerified, Instant::now())?;
-        Ok(ControlExecution::Verified(actual_proof(
-            slot,
-            recipe,
-            response_evidence,
-            cohort,
-            observe,
-        )))
+        prove_native_read(prepared, slot, recipe, observe, &*self.sink).await
     }
     pub(super) async fn exempt_actual(
         &self,
@@ -259,4 +213,62 @@ fn wall_ms() -> Result<i64, String> {
             .as_millis(),
     )
     .map_err(|error| error.to_string())
+}
+
+/// The same native read proof boundary used by the actual trial backend.
+/// Extraction only: the initial control still exposes its core-eight gap.
+pub(in crate::app::tests::runtime::write_wait_qualification::backend) async fn prove_native_read(
+    prepared: &PreparedBackend,
+    slot: &Slot,
+    recipe: &Recipe,
+    observe: &Observation,
+    sink: &dyn ArtifactSink,
+) -> Result<ControlExecution, String> {
+    let case = prepared
+        .bounded_rpc_cases
+        .iter()
+        .find(|case| case.method == recipe.method)
+        .ok_or("actual bounded case missing")?;
+    let reply = prepared
+        .fixture
+        .as_ref()
+        .ok_or("owned fixture missing")?
+        .rpc
+        .request(
+            slot.caller,
+            &slot.original_id,
+            case.method,
+            case.params.clone(),
+        )
+        .await;
+    super::super::transport::record_reply(slot, &reply, observe)?;
+    let mut cohort = None;
+    let response_evidence = verify_and_summarize_response(
+        prepared.name,
+        &slot.original_id,
+        &recipe.method,
+        &reply.reply,
+        |decoded| {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::app::tests::runtime::write_wait_qualification::read_recipes::assert_rpc_reply(case, decoded, prepared.bounded_reads.as_ref().expect("actual bounded seed"))
+        })).map_err(|_| "actual native core oracle failed".to_owned())?;
+            let actual = match outcome {
+                FullReadOutcome::Ready => ReadCohort::ReadyBounded,
+                FullReadOutcome::LegacyFull => ReadCohort::LegacyUnbounded,
+                _ => return Err("actual core read pending/refused/unavailable".into()),
+            };
+            let witness = native_read_witness(&recipe.method, &actual);
+            cohort = Some(actual);
+            Ok(witness)
+        },
+        sink,
+    )?;
+    observe.stage(&slot.original_id, Stage::EffectVerified, Instant::now())?;
+    Ok(ControlExecution::Verified(actual_proof(
+        slot,
+        recipe,
+        response_evidence,
+        cohort,
+        observe,
+    )))
 }

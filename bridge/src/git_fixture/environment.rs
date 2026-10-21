@@ -114,11 +114,19 @@ fn record_entry(name: &str) {
 }
 
 fn test_command(home: &Path, name: &str) -> Command {
+    test_command_with_lookup(home, name, |name| std::env::var_os(name))
+}
+
+fn test_command_with_lookup(
+    home: &Path,
+    name: &str,
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Command {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", name, "--include-ignored", "--nocapture"])
         .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("PATH", lookup("PATH").unwrap_or_default())
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home)
         .env("GNUPGHOME", home)
@@ -129,7 +137,7 @@ fn test_command(home: &Path, name: &str) -> Command {
         .env(CHILD_MARKER, home.join("entered-test"))
         .env(CHILD_TEST, name);
     for variable in ["RUST_BACKTRACE", "TMPDIR", "LLVM_PROFILE_FILE"] {
-        if let Some(value) = std::env::var_os(variable) {
+        if let Some(value) = lookup(variable) {
             command.env(variable, value);
         }
     }
@@ -164,5 +172,82 @@ mod tests {
         }
         let home = PathBuf::from(std::env::var_os("HOME").unwrap());
         assert!(home.join(".gitconfig").is_file());
+    }
+    #[test]
+    fn isolated_child_forwards_only_explicit_qualification_paths() {
+        use std::collections::BTreeMap;
+        use std::ffi::OsString;
+
+        let directory = tempfile::tempdir().unwrap();
+        let inherited = BTreeMap::from([
+            ("PATH", "/explicit/bin"),
+            ("RUST_BACKTRACE", "1"),
+            ("TMPDIR", "/tmp/explicit"),
+            ("LLVM_PROFILE_FILE", "/tmp/explicit.profraw"),
+            ("BUILD_QUALIFICATION_MANIFEST", "/tmp/frozen-manifest.json"),
+            (
+                "BUILD_QUALIFICATION_QUIET_RELEASE",
+                "/tmp/quiet-receipt.json",
+            ),
+            ("BUILD_QUALIFICATION_ALLOW_REPLACEMENT", "1"),
+            ("BRIDGE_UNREVIEWED_INPUT", "inherited-must-not-pass"),
+            ("BRIDGE_IDENTITY_FILE", "/live/identity.json"),
+            ("HOME", "/live/home"),
+        ]);
+        let command = test_command_with_lookup(directory.path(), "exact::test", |name| {
+            inherited.get(name).map(|value| OsString::from(*value))
+        });
+        let environment = command
+            .get_envs()
+            .map(|(key, value)| (key.to_str().unwrap().to_owned(), value.unwrap().to_owned()))
+            .collect::<BTreeMap<_, _>>();
+        let mut names = environment.keys().map(String::as_str).collect::<Vec<_>>();
+        names.sort_unstable();
+        let mut expected = vec![
+            "PATH",
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "GNUPGHOME",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "GIT_CONFIG_NOSYSTEM",
+            "BRIDGE_IDENTITY_FILE",
+            CHILD_MARKER,
+            CHILD_TEST,
+            "RUST_BACKTRACE",
+            "TMPDIR",
+            "LLVM_PROFILE_FILE",
+            "BUILD_QUALIFICATION_MANIFEST",
+            "BUILD_QUALIFICATION_QUIET_RELEASE",
+        ];
+        expected.sort_unstable();
+        assert_eq!(names, expected);
+        for name in [
+            "PATH",
+            "RUST_BACKTRACE",
+            "TMPDIR",
+            "LLVM_PROFILE_FILE",
+            "BUILD_QUALIFICATION_MANIFEST",
+            "BUILD_QUALIFICATION_QUIET_RELEASE",
+        ] {
+            assert_eq!(environment[name], OsString::from(inherited[name]), "{name}");
+        }
+        assert_eq!(environment["HOME"], directory.path().as_os_str());
+        assert_eq!(
+            environment["BRIDGE_IDENTITY_FILE"],
+            directory.path().join("identity.json").as_os_str()
+        );
+        assert_eq!(
+            environment[CHILD_MARKER],
+            directory.path().join("entered-test").as_os_str()
+        );
+        assert_eq!(environment[CHILD_TEST], "exact::test");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["--exact", "exact::test", "--include-ignored", "--nocapture"]
+        );
     }
 }

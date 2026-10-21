@@ -1,5 +1,5 @@
 //! Actual encrypted server-side SPA-role RPC adapter for qualification.
-use super::client_watch::{ClientWatch, FinalOutcome};
+use super::client_watch::{ClientWatch, FinalOutcome, FinalReconciliation};
 use crate::app::AppState;
 use crate::carrier::testing::{ChannelWire, client_request, session_init};
 use crate::carrier::{FrameIntake, OutboundEnvelope, SessionSender};
@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 
 mod attach;
 mod cleanup;
+mod detach;
 mod receive;
 mod tests;
 
@@ -50,6 +51,8 @@ pub(super) struct RpcFinishReport {
     pub pending_at_close: Vec<String>,
     pub pending_after_join: Vec<String>,
     pub joined_receivers: usize,
+    pub watch_before_cleanup: Option<Arc<FinalReconciliation>>,
+    pub watch_after_cleanup: Option<Arc<FinalReconciliation>>,
 }
 
 impl RpcFinishReport {

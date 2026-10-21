@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -173,6 +173,7 @@ pub(super) struct ScheduledIdentity {
     pub intended_at: Option<Instant>,
 }
 
+#[derive(Debug)]
 pub(super) struct FinalReconciliation {
     pub sampled_at: Instant,
     pub rows: Vec<ClientRow>,

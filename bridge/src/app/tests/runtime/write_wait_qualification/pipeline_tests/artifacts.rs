@@ -1,7 +1,7 @@
 //! Retained evidence and actual bounded process metadata.
 use super::*;
 
-const MAX_BINARY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+use super::super::qualification_metadata::{actual_affinity, binary_hash};
 
 pub(super) fn actual_provenance() -> Result<Provenance, String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
@@ -22,54 +22,6 @@ pub(super) fn actual_provenance() -> Result<Provenance, String> {
         fixture_seed: "two-second-native-pipeline-control-NoQualification".into(),
         service_hook_contract_sha256: UNPROVIDED.into(),
     })
-}
-
-fn binary_hash(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let metadata = file.metadata().map_err(|error| error.to_string())?;
-    if !metadata.is_file() || metadata.len() > MAX_BINARY_BYTES {
-        return Err(
-            "actual binary is not a regular file within the declared4GiB metadata bound".into(),
-        );
-    }
-    let mut hash = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    let mut bytes = 0u64;
-    loop {
-        let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
-        if count == 0 {
-            break;
-        }
-        bytes += count as u64;
-        if bytes > MAX_BINARY_BYTES {
-            return Err("actual binary changed beyond metadata bound".into());
-        }
-        hash.update(&buffer[..count]);
-    }
-    if bytes != metadata.len() {
-        return Err("actual binary length changed during metadata capture".into());
-    }
-    Ok(format!("{:x}", hash.finalize()))
-}
-
-fn actual_affinity() -> Result<Vec<usize>, String> {
-    let status = std::fs::read_to_string("/proc/self/status").map_err(|error| error.to_string())?;
-    let mask = status
-        .lines()
-        .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
-        .ok_or("actual process CPU affinity missing")?
-        .trim();
-    let mut cpus = Vec::new();
-    for range in mask.split(',') {
-        let (start, end) = range.split_once('-').unwrap_or((range, range));
-        let first = start.parse::<usize>().map_err(|error| error.to_string())?;
-        let last = end.parse::<usize>().map_err(|error| error.to_string())?;
-        if last < first || last > 65_535 {
-            return Err("actual CPU affinity outside declared metadata bound".into());
-        }
-        cpus.extend(first..=last);
-    }
-    Ok(cpus)
 }
 
 pub(super) fn load_rows(path: &Path, retained: &Path) -> Vec<Row> {

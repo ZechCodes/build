@@ -13,6 +13,8 @@ impl RpcHarness {
             pending_at_close: self.pending(),
             pending_after_join: Vec::new(),
             joined_receivers: 0,
+            watch_before_cleanup: None,
+            watch_after_cleanup: None,
         };
         let mut receivers = Vec::new();
         let mut evidence = Vec::new();
@@ -84,7 +86,7 @@ impl RpcHarness {
         report
     }
 
-    fn pending(&self) -> Vec<String> {
+    pub(super) fn pending(&self) -> Vec<String> {
         self.openings
             .iter()
             .flat_map(|opening| {

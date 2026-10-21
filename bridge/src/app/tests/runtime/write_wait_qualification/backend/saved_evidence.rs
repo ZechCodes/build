@@ -7,7 +7,7 @@ use super::completed_origins::NativeCompletion;
 use super::saved_effects::{self, Handles, InvocationWindow};
 use crate::app::accepted_records::{AcceptedRecord, AcceptedRecords, PresencePersistence};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -134,6 +134,7 @@ struct RecordHistory {
 struct Retained {
     histories: BTreeMap<String, RecordHistory>,
     late: BTreeMap<String, Vec<AcceptedRecord>>,
+    rejected: BTreeSet<String>,
     errors: Vec<String>,
     final_attempted: bool,
     failed_export: Option<Value>,
@@ -143,9 +144,24 @@ pub(super) struct AcceptedArchive {
     expected: BTreeSet<String>,
     retained: Mutex<Retained>,
 }
+/// Only this module can certify persisted empty accepted-record evidence.
+/// Native cancellation, exact busy protocol and zero execution remain separate
+/// prerequisites; this token alone is not a verified frontdoor refusal.
+pub(super) struct AcceptedRefusals {
+    originals: BTreeSet<String>,
+}
+impl AcceptedRefusals {
+    pub(super) fn contains(&self, original: &str) -> bool {
+        self.originals.contains(original)
+    }
+    pub(super) fn originals(&self) -> impl Iterator<Item = &str> {
+        self.originals.iter().map(String::as_str)
+    }
+}
 pub(super) struct AcceptedExport {
     pub persisted: bool,
     pub errors: Vec<String>,
+    pub refused: Option<AcceptedRefusals>,
 }
 impl AcceptedArchive {
     fn new(records: Arc<AcceptedRecords>, expected: BTreeSet<String>) -> Self {
@@ -185,6 +201,10 @@ impl AcceptedArchive {
                 Err(error)
             }
         }
+    }
+    /// Only the overload path calls this for an actual typed busy candidate.
+    pub fn take_rejected(&self, _original: &str) -> Result<Vec<AcceptedRecord>, String> {
+        Err("TESTFIRST: overload rejection acceptance capture not implemented".into())
     }
     pub fn outcome(&self, original: &str, result: Result<(), String>) {
         let mut retained = self.retained.lock().unwrap();
@@ -254,6 +274,7 @@ impl AcceptedArchive {
         AcceptedExport {
             persisted,
             errors: retained.errors.clone(),
+            refused: None,
         }
     }
 }
@@ -391,10 +412,12 @@ mod tests {
         std::fs::write(&blocked, b"existing artifact must survive").unwrap();
         let result = archive.finish(name, &sink, true);
         assert!(!result.persisted);
-        assert!(result
-            .errors
-            .iter()
-            .any(|error| error.contains("accepted-record artifact")));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("accepted-record artifact"))
+        );
         let retained = archive.retained.lock().unwrap();
         let raw = retained
             .failed_export
@@ -417,10 +440,12 @@ mod tests {
             1
         );
         assert_eq!(retained.histories[id].attempts.len(), 1);
-        assert!(retained.histories[id]
-            .outcomes
-            .iter()
-            .any(|outcome| outcome == "deliberate earlier proof failure"));
+        assert!(
+            retained.histories[id]
+                .outcomes
+                .iter()
+                .any(|outcome| outcome == "deliberate earlier proof failure")
+        );
         assert_eq!(
             std::fs::read(&blocked).unwrap(),
             b"existing artifact must survive"
@@ -437,3 +462,9 @@ mod tests {
         root.complete();
     }
 }
+
+#[cfg(test)]
+#[path = "saved_evidence/rejection_tests.rs"]
+mod rejection_tests;
+#[cfg(test)]
+pub(super) use rejection_tests::empty_rejections_control;

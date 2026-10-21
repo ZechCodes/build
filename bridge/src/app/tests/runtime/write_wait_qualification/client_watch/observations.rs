@@ -3,6 +3,23 @@ use super::*;
 use std::sync::atomic::Ordering;
 
 impl ClientWatch {
+    /// Final boundary only: inspect terminal receipts without requiring a
+    /// relative schedule to have started or treating cancellation as a reply.
+    pub fn unfinished_final_originals(&self) -> Vec<String> {
+        self.inner
+            .registry
+            .lock()
+            .unwrap()
+            .rows
+            .iter()
+            .filter_map(|(id, evidence)| {
+                let row = evidence.row.lock().unwrap();
+                (row.final_at.is_none() || row.final_outcome.is_none() || row.finished_at.is_none())
+                    .then(|| id.clone())
+            })
+            .collect()
+    }
+
     /// Full archive, including future, unoffered, unsent, completed and cancelled
     /// originals. This deliberately scans all evidence only when requested.
     pub fn snapshot(&self) -> Vec<ClientRow> {

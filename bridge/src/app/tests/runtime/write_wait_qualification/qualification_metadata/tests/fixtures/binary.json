@@ -1,0 +1,15 @@
+{
+  "path": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/lock-hold-709/Build/bridge/target/x86_64-unknown-linux-gnu/release/deps/build_bridge-188c680a69f23c30",
+  "sha256": "5f9ed8968656a10e0ea45f6bafe3002af3609895f9dd3c807ffc302eafef0e81",
+  "bytes": 108391672,
+  "mtime_ns": 1792596877465504800,
+  "source": {
+    "head": "afd65d0829c51dff6889d61715c8e5b017a24867",
+    "tree": "e5376da552002776fcff83c0d652ca8733859855",
+    "status": "",
+    "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_hashes": {},
+    "requested_cargo_profile": "release"
+  },
+  "cargo_profile": "release"
+}

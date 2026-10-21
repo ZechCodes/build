@@ -2,7 +2,13 @@
 use super::*;
 
 impl Observation {
+    pub(crate) fn native_control_rows(&self) -> Vec<Row> {
+        self.ledger.lock().unwrap().rows.values().cloned().collect()
+    }
     pub(crate) fn for_native_pump_control(plan: &[Slot]) -> Self {
+        Self::for_native_control_at(plan, Instant::now())
+    }
+    pub(crate) fn for_native_control_at(plan: &[Slot], start: Instant) -> Self {
         let (wake, _receiver) = mpsc::unbounded_channel();
         let rows = plan
             .iter()
@@ -31,7 +37,7 @@ impl Observation {
             })
             .collect();
         Self {
-            start: Instant::now(),
+            start,
             ledger: Arc::new(Mutex::new(Ledger {
                 rows,
                 violations: Vec::new(),

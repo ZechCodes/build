@@ -9,9 +9,8 @@ use super::trial_complete::{
 use futures_util::FutureExt;
 use serde::Serialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;

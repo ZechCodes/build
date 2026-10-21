@@ -40,6 +40,13 @@ impl AppState {
             snapshot.threads.remove(owner);
             if self.plans.contains_key(owner) || self.runs.contains_key(owner) {
                 {
+                    #[cfg(test)]
+                    let _source = self.runs.contains_key(owner).then(|| {
+                        crate::app::snapshot_projection::work_counts::named_branch::source(
+                            owner,
+                            crate::app::snapshot_projection::work_counts::named_branch::Source::RunState,
+                        )
+                    });
                     if let Some(state) = self.entity_state_item(owner) {
                         snapshot
                             .states

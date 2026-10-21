@@ -25,6 +25,13 @@ pub(in crate::app) struct PushFacts {
     pub(super) summaries: BTreeMap<String, (String, Vec<PathBuf>)>,
 }
 
+#[cfg(test)]
+impl PushFacts {
+    pub(in crate::app) fn state_for_test(&self, owner: &str) -> Option<SharedJson> {
+        self.states.get(owner).cloned()
+    }
+}
+
 #[derive(Clone)]
 struct PushThread {
     tip: ThreadTip,

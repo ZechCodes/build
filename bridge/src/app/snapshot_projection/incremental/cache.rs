@@ -20,6 +20,14 @@ pub(in crate::app) struct GlobalProjection {
 }
 
 impl GlobalProjection {
+    #[cfg(test)]
+    pub(in crate::app) fn named_winner_for_test(&self, owner: &str) -> Option<SharedJson> {
+        self.winners
+            .iter()
+            .find(|row| row.id == owner)
+            .map(|row| row.value.clone())
+    }
+
     pub(in crate::app) fn ownership_structure(
         &self,
     ) -> Option<&Arc<crate::app::workspaces::ProjectionStructure>> {

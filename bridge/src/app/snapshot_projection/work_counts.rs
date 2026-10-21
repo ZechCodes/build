@@ -73,3 +73,6 @@ pub(in crate::app) mod detail_scans;
 
 // Actual compaction wire rendering used to bound stable-layout capture work.
 pub(in crate::app) mod policy_observations;
+
+// Actual digest recursion attributed to the incremental named-row producers.
+pub(in crate::app) mod named_branch;

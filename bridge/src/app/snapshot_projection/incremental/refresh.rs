@@ -128,6 +128,11 @@ fn refresh_winners(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row]) 
     #[cfg(test)]
     let _phase = crate::timing::phase_samples::phase("publication.incremental.winner_rows");
     for row in rows.iter_mut().filter(|row| owners.contains(&row.id)) {
+        #[cfg(test)]
+        let _source = crate::app::snapshot_projection::work_counts::named_branch::source(
+            &row.id,
+            crate::app::snapshot_projection::work_counts::named_branch::Source::Winner,
+        );
         let candidate = app.branch_candidate_from_run(&row.id, &run_stat(app, &row.id));
         *row = Row::new("run_id", crate::branch::named_project_row(candidate.row));
     }

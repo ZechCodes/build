@@ -500,12 +500,24 @@ workspace and project topology rather than rendering every inherited policy to
 check for changes. Workspace detail refresh batches affected owners and aliases
 through one registry and dependency scan.
 
-Within `StatusPump::observe`, attention persistence and dirty metadata still
+Within `StatusPump::observe`, attention persistence and dirty marks still
 update immediately, while their wire projection joins the final owner
-publication. A `working_since` roster save keeps its independent committed
-publication. Direct status APIs and end-of-stream handling keep immediate
-attention publication. Context, reset and usage helpers keep their existing
-save and failure behavior.
+publication. Changed attention refreshes read metadata with that final
+publication, using one fresh ownership capture after all later helpers have
+finished. A `working_since` roster save keeps its independent committed
+publication and admission update. Direct status APIs and end-of-stream handling
+keep immediate attention publication. Context, reset and usage helpers keep
+their existing save and failure behavior.
+
+An RPC `thread.post` keeps its durable message publication and both attention
+saves, but publishes the two human attention stamps together before returning
+from its dispatch guard. The final owner delta includes every addressed and
+canonical alias. A route error still publishes attention from any committed
+prefix; a deferred job receives that publication before leaving the guard.
+Successful interaction stamping retains its existing timing, including after
+deferred completion. Direct and MCP posts keep immediate attention publication.
+The temporary collection restores its state on unwind without publishing a
+partially mutated candidate, and never spans external work or delivery drain.
 
 `read_view/shared_json.rs` composes immutable JSON leaves without caching a
 materialized aggregate. Intake and push readers materialize their owned wire

@@ -136,7 +136,7 @@ fn rebuild_indices(expected: &mut ScopeReadContext, before: &ScopeReadContext) {
     }
     expected.workspace_dependents = memberships
         .into_iter()
-        .map(|(id, owners)| (id, owners.into_iter().collect()))
+        .map(|(id, owners)| (id, owners.into_iter().collect::<imbl::OrdSet<_>>()))
         .collect();
     expected.lineages = lineages
         .into_iter()
@@ -148,7 +148,7 @@ fn rebuild_indices(expected: &mut ScopeReadContext, before: &ScopeReadContext) {
     }
     expected.workspace_roots = roots
         .into_iter()
-        .map(|(root, ids)| (root, ids.into_iter().collect()))
+        .map(|(root, ids)| (root, ids.into_iter().collect::<imbl::OrdSet<_>>()))
         .collect();
 }
 

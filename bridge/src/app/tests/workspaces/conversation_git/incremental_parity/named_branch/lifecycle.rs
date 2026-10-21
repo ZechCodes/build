@@ -278,7 +278,7 @@ fn assert_nonrun_fallbacks(app: &mut AppState, root: &Path) {
         CLOCK.into(),
         CLOCK.into(),
         CLOCK.into(),
-        "review",
+        "review".into(),
     );
     app.publish_all_snapshot_projection();
     let root = app.read_view.load();

@@ -17,7 +17,7 @@ class BuildDelivery(unittest.TestCase):
                 self.assertIn('COPY transport/js/src/', recipe)
                 self.assertIn('npm ci --ignore-scripts', recipe)
                 self.assertIn('npm@12.0.2', recipe)
-                self.assertIn('node:22.23.3-bookworm-slim', recipe)
+                self.assertIn('node:22.23.4-bookworm-slim', recipe)
 
     def test_consumer_locks_and_policy_reach_images(self):
         app = (ROOT / 'skriftapp/Containerfile').read_text()

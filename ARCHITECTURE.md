@@ -2045,6 +2045,12 @@ durable notice use the captured cause; a later failure cannot relabel it.
 An exhausted provider notification logs `terminal_error` with `scope: turn`;
 it does not request process shutdown.
 
+Capture routers own no canonical conversation or session lineage, so their
+startup omits conversation recovery context. Delivery accepts their missing
+session instance only after validating the registered router target and tab
+identity. Ordinary agents retain conversation recovery and exact session
+instance fencing.
+
 ADK reports `Working` while a parent turn is open or its background-task roster
 is nonempty. A delivered turn opens when its final newline is written. The
 child can also start a turn itself: top-level assistant text, thinking or tool

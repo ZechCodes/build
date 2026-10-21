@@ -6,7 +6,7 @@ import { isTransientTransportError } from "../src/core/transientRead.js";
 import { SQL_READ_METHODS } from "../src/core/sqlReadCredits.js";
 import { readFileSync } from "node:fs";
 
-const WRITE_READS = ["writes.status", "writes.result"];
+const WRITE_READS = ["writes.status"];
 const METHODS = ["thread.page", "thread.activity", "thread.operation", "tasks.list", "tasks.get", "tasks.waiting_on.blocks", ...WRITE_READS];
 const flush = async () => { for (let turn = 0; turn < 20; turn += 1) await Promise.resolve(); };
 const transport = {

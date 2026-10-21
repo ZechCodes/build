@@ -119,6 +119,10 @@ describe("resolving uncertain posts after a reconnect", () => {
     expect(reconnected).toHaveBeenLastCalledWith("thread.post", expect.objectContaining({
       operation_id: "operation-1",
       body: "first",
+    }), expect.objectContaining({
+      operationId: "operation-1",
+      owner: expect.objectContaining({ kind: "chat", ...address() }),
+      draft: expect.objectContaining({ body: "first" }),
     }));
     expect(controller.recoveries()).toEqual([]);
   });

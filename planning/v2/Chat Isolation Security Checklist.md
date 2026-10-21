@@ -329,3 +329,29 @@ Logs: `/tmp/build-740-sk-ruff.log` and `/tmp/build-740-sk-pytest.log`.
 Semgrep scanned the changed controller, tests and HTML template with 304 rules,
 zero findings and approximately 100% parsed lines (exit 0;
 `/tmp/build-740-sk-semgrep.log`).
+
+
+## #740 pending-write and epoch boundaries — 2026-10-21
+
+This extension covers the SPA side of wire 3.24.0. The bridge enables each
+semantic method through its greeting allowlist; the foundation enables none.
+Bridge journal execution and paged result references are outside this scope.
+
+| Control | Evidence | Score |
+| --- | --- | ---: |
+| Account, paired device and principal isolate durable intent and its visible layers; missing authenticated shell identity cannot select a namespace. | `writeOperationCache.test.js` namespace/deactivation tests and `writeOperationRuntime.test.js` authenticated metadata tests. | 10/10 |
+| A durable send cannot precede committed intent, and storage failure cannot claim acceptance. | `writeOperations.test.js` persistence-before-transport and refused-storage tests; cache transaction rollback preserves the original provisional row. | 10/10 |
+| Genuine durable ack is success; a receipt, timeout, cancellation or lost carrier cannot invent success or delete intent. | `sessionRpc.test.js` receipt/ack/late-frame tests and `writeOperations.test.js` local-cancellation and same-ID recovery tests. | 10/10 |
+| Current greeting authority fences every application and terminal frame before correlation, credits or cache mutation. Uncorrelated epochs cannot establish authority. | `bridgeEpoch.test.js`, `sessionRpc.test.js` preauthority/mismatched-epoch tests and terminal epoch regressions. | 10/10 |
+| Journal changes and acknowledged-but-missing records remain unresolved without replay; unknown result references cannot resolve an action successfully. | `writeOperations.test.js` journal quarantine, missing-record and result-reference/expired-result tests. | 10/10 |
+| Cross-tab transport uses an expiring lease, renewed through asynchronous handoff and status retries; duplicate callbacks cannot regress durable revision. | Cache lease/transaction tests, `writeOperationWorker.test.js`, delayed-handoff and reordered-frame service regressions. | 10/10 |
+| Ordered layers use owner kind, ID and generation, remain separate from canonical writes, and retire only against matching publication evidence. | `writeOperationCache.test.js` generation, owner ordering, canonical mutation and complete-publication tests. | 10/10 |
+| Publication cannot erase accepted task floors or permit an older detail read to overwrite a confirmed comment. | Atomic publication/read-note tests in `writeOperationCache.test.js` and captured-base/detail-basis tests in `writeOperationRefresh.test.js`. | 10/10 |
+| Draft recovery and named refresh obligations survive prehello queuing and reload; failure removes only its own unapplied layer. Unknown refresh domains stay unresolved. | `prehelloWriteActions.test.js`, `taskCommentRecovery.test.js`, layer rollback and persistent refresh-obligation service tests. | 10/10 |
+| A new bridge process resets terminal cursors and acknowledgements, reattaches desired terminals, and never replays input. | `terminal.test.js` same-carrier boot change and `terminalReconnectIntegration.test.js` real-manager remint/reattach regression. | 10/10 |
+
+**Scoped pending-write score: 100/100.** The final focused cache, service,
+effects, refresh, runtime, RPC and terminal run passed 221 tests (exit 0).
+The prehello, stale task-read and same-carrier terminal regressions failed
+before their fixes. Full merged-main SPA gates remain the task's handoff gate;
+this scoped score is not a claim that those gates have already passed.

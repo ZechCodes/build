@@ -189,9 +189,9 @@ keeps state reads independent of log length. The SPA still calls `task.get`
 and `term.list`, so both surfaces remain available. `task.get` is a registered
 v1 planning read; `term.list` retains its legacy wire contract.
 
-Terminal membership publishes independently of temporarily borrowed plan/run
-owners. Listing reads each terminal's coherent atomic size pair, updated after
-resize, so it does not wait on screen parsing or PTY output.
+Terminal listing's membership snapshot publishes independently of temporarily
+borrowed plan/run owners. Listing reads each terminal's coherent atomic size
+pair, updated after resize, so it does not wait on screen parsing or PTY output.
 
 The 23 observation reads (filesystem/Git, stage documents, review
 reads, attachments, archives, GitHub repositories, Git initialization options

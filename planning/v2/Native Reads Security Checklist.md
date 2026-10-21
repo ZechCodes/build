@@ -5,13 +5,13 @@ Scope: #752 moves `capture.get`, `task.get`, `task.stages`, `tasks.columns`,
 read lanes. Authentication, pairing, write authorization, and deployment are
 unchanged and are outside this score.
 
-Status: **review fixes verified; final gates and score pending**. Populated
+Status: **100/100 for the assigned local review scope**. Populated
 screen contention, real update-service contention, borrowed-owner terminal
 publication, and stalled filesystem probes now have actual red-to-green
 evidence. The assigning agent delegated the full bridge suite to the serial
 merge gate. Each control is worth ten points.
 
-| # | Control | Evidence (review findings must be reverified) |
+| # | Control | Verified evidence |
 |---|---|---|
 | 1 | Every enrolled native read replies within 100 ms while another thread holds the application mutex; timing records exist and app-lock wait and hold are zero. | `app::tests::runtime::native_reads` and `thread_revision_sql_lane_answers_with_zero_app_lock_time`; real carrier intake, encrypted replies, and `timing.rs` hooks. |
 | 2 | Existing typed input/result validation and legacy refusal behavior remain in place. Unknown and malformed scopes cannot select another owner. | Native malformed/unknown scope tests, API contract suite, and terminal refusal comparisons against the existing route. |
@@ -43,7 +43,16 @@ Review validation uses `nice -n 10` throughout and records actual exits:
 - `thread.revision` logged 2.910 ms alongside its 100 ms assertion. All eight
   verbs retain nonempty timing samples with zero app-lock wait and hold.
 - Pi fixture install, compaction tests, and typecheck passed on Node 22.23.4
-  and npm 12.0.2. Cargo-built CLI/Pi integrations are included in the final gates.
+  and npm 12.0.2.
+
+Final gates passed on the completed source: native tests 30/30; both default
+and stable Clippy with `--all-targets -- -D warnings`; format; vendored rtc
+54/54 and webrtc 172 passed with five existing ignored tests; API contract
+46/46; complexity ratchet 2/2; cargo-built CLI version 2/2; Pi extension 25/25;
+Semgrep (51 rules, 55 files, zero findings); Gitleaks; and whitespace checks.
+Every gate exited 0. No CLI or Pi integration target was skipped. Two review
+test helpers initially exceeded Clippy's complexity cap (exit 101); extracting
+focused helpers preserved their assertions and both toolchains then passed.
 
 The observed red runs exited 101 before their corresponding fixes. The resumed
 red-first sequence established `term.list`'s app-lock wait and then three
@@ -64,4 +73,7 @@ conversations. It is a scoped test control, not a separate main checkout.
 Workspace rebuild counts match. The coordinator assigned the existing large
 owner holds to #764 and explicitly kept a publication rewrite out of #752.
 The task report includes the measured control/enabled timings and work counts.
+Across the 15-sample matrices, added work is at most two agent digests and one
+history update per commit, independent of tested run-agent count; native
+preparation peaked at 3.138 ms (2.681 ms in the final helper-refactor rerun).
 SPA source has not changed in the task delta against merged main `c8ededc68`.

@@ -38,7 +38,7 @@ fn deep_store_mutex_is_observed_before_sql_service_starts() {
 fn deep_store_opaque_sql_service_is_separate_from_mutex_wait() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::new(directory.path()).unwrap();
-    let timeout: u64 = store
+    let timeout: i64 = store
         .writer_for_test()
         .pragma_query_value(None, "busy_timeout", |row| row.get(0))
         .unwrap();

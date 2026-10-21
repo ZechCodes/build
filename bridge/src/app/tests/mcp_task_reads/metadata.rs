@@ -200,6 +200,9 @@ fn mcp_reset_first_publication_updates_all_own_heads_in_one_metadata_root() {
 fn mcp_harness_settings_come_from_accepted_config_and_survive_failed_writes() {
     let fixture = Fixture::new();
     let mut app = fixture.state.lock().unwrap();
+    // Fixture startup intentionally has no config path. Enable a real target
+    // so the Write/Rename failures exercise persistence instead of a no-op.
+    app.config_path = Some(fixture._root.path().join("metadata-settings.json"));
     let old = app.read_view.load();
     let before = HarnessSettings::published(&old).unwrap().unwrap();
     assert_eq!(before.default_harness, app.default_harness);

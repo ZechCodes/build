@@ -1,11 +1,13 @@
 //! Lifecycle-owned physical, review and task observations.
+use super::workspace_reviews::WorkspaceReviewRefresh;
 use super::*;
 use std::path::Path;
 
 impl AppState {
     #[cfg(test)]
     pub(in crate::app) fn warm_snapshot_observations_for_test(&mut self) {
-        self.refresh_snapshot_observations();
+        let reviews = self.refresh_snapshot_observations().load();
+        self.install_workspace_review_refresh(reviews);
         self.snapshot_observations.ready = true;
     }
 
@@ -59,7 +61,7 @@ impl AppState {
     }
     /// Lifecycle/background producer work. This is never called by a snapshot
     /// read. Project repository/volume probes have a separate off-lock phase.
-    pub(in crate::app) fn refresh_snapshot_observations(&mut self) {
+    pub(in crate::app) fn refresh_snapshot_observations(&mut self) -> WorkspaceReviewRefresh {
         let previous_inputs = self.read_view.load();
         let previous_branches = std::mem::take(&mut self.snapshot_observations.branches);
         let mut paths = self.snapshot_paths();
@@ -102,16 +104,16 @@ impl AppState {
         self.snapshot_observations
             .workspace_reviews
             .retain(|id, _| workspaces.contains(id));
-        for id in workspaces {
+        for id in &workspaces {
             if previous_inputs
                 .observations
                 .as_ref()
-                .is_some_and(|context| context.scopes.workspace_physical_changed(self, &id))
+                .is_some_and(|context| context.scopes.workspace_physical_changed(self, id))
             {
-                self.workspaces.observation_changes().mark(&id);
+                self.workspaces.observation_changes().mark(id);
             }
-            self.refresh_workspace_review_observation(&id);
         }
+        WorkspaceReviewRefresh::new(self.workspace_review_reader(), workspaces)
     }
     pub(in crate::app) fn refresh_workspace_snapshot_observation(&mut self, id: &str) {
         let Some(workspace) = self.workspaces.get(id).cloned() else {
@@ -130,7 +132,6 @@ impl AppState {
             self.observe_snapshot_path(path);
         }
         self.workspaces.observation_changes().mark(id);
-        self.refresh_workspace_review_observation(id);
     }
     fn observe_snapshot_path(&mut self, path: PathBuf) {
         let canonical = Self::canonical_root(&path);

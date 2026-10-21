@@ -1627,8 +1627,15 @@ to install them. A monotonic observation generation prevents a delayed load
 from replacing a newer lifecycle observation, even when another review task
 now owns the workspace; installation also rejects a removed workspace.
 A failed observation load preserves the accepted summary for maintenance to
-refresh. Once opening has published durably, an observation failure does not
-turn it into an error or skip settlement.
+refresh. Periodic maintenance captures the workspace IDs and an owned review
+reader in its existing capture section, loads review summaries alongside the
+off-lock project refresh, and installs them through the same generation fence
+in its existing apply section. Physical workspace refreshes do not query review
+SQL; startup warms review summaries before shared admission.
+Once opening has published durably, an observation failure does not turn it
+into an error or skip settlement. Close likewise returns its captured completed
+review if the subsequent optional sync/merge-intent projection fails, and still
+settles its captured task and completion notices once.
 
 | RPC verb | MCP tool | Contract |
 | --- | --- | --- |

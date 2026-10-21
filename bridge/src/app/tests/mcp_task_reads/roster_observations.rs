@@ -33,7 +33,8 @@ fn observed_alias(fixture: &Fixture) -> (String, String) {
     app.delivery_queue.clear_queued();
     // The fixture added a real registry alias directly. Observe that producer
     // input before the measured request, just as adoption/initialization does.
-    app.refresh_snapshot_observations();
+    // Only the alias path must refresh for the guarded roster ownership checks.
+    let _ = app.refresh_snapshot_observations();
     app.publish_all_snapshot_projection();
     assert!(app.snapshot_projection_initialized());
     (workspace, owner)

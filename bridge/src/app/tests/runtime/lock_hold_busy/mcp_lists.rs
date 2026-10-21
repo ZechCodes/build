@@ -157,30 +157,39 @@ async fn reader(
                 &format!("mcp.control:{}", action.tool_name()),
                 requested.elapsed(),
             );
-            assert_eq!(reply["ok"], true, "{reply}");
-            let rows = if action.tool_name() == "list_tasks" {
-                "tasks"
-            } else {
-                "work"
-            };
-            let count = reply["result"][rows].as_array().unwrap().len();
-            if rows == "tasks" {
-                assert_eq!(count, 20);
-                assert!(reply["result"]["next_cursor"].is_string());
-                cursor = reply["result"]["next_cursor"].as_str().map(str::to_owned);
-                for task in reply["result"]["tasks"].as_array().unwrap() {
-                    let number = task["number"].as_u64().unwrap();
-                    assert!(
-                        number < last_number,
-                        "cursor pages preserve descending key order"
-                    );
-                    last_number = number;
-                }
-            } else {
-                assert!(count >= TASKS);
-            }
+            assert_list_page(&action, &reply, &mut cursor, &mut last_number);
         }
     }
     drop(client);
     server.await.unwrap();
+}
+
+fn assert_list_page(
+    action: &BridgeAction,
+    reply: &Value,
+    cursor: &mut Option<String>,
+    last_number: &mut u64,
+) {
+    assert_eq!(reply["ok"], true, "{reply}");
+    let rows = if action.tool_name() == "list_tasks" {
+        "tasks"
+    } else {
+        "work"
+    };
+    let count = reply["result"][rows].as_array().unwrap().len();
+    if rows == "tasks" {
+        assert_eq!(count, 20);
+        assert!(reply["result"]["next_cursor"].is_string());
+        *cursor = reply["result"]["next_cursor"].as_str().map(str::to_owned);
+        for task in reply["result"]["tasks"].as_array().unwrap() {
+            let number = task["number"].as_u64().unwrap();
+            assert!(
+                number < *last_number,
+                "cursor pages preserve descending key order"
+            );
+            *last_number = number;
+        }
+    } else {
+        assert!(count >= TASKS);
+    }
 }

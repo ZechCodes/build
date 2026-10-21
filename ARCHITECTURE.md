@@ -524,6 +524,15 @@ deferred completion. Direct and MCP posts keep immediate attention publication.
 The temporary collection restores its state on unwind without publishing a
 partially mutated candidate, and never spans external work or delivery drain.
 
+Deferred status and RPC attention stamps retain revision-tagged notification
+receipts for each affected owner and alias. Their ordinary early notices remain;
+an accepted publication also emits fresh entity and board notices, so a flush
+that consumed the early notices cannot leave subscribers on the old state.
+Incremental candidates acknowledge only owners they refreshed, while a complete
+candidate can acknowledge removed owners. Rejected or borrowed-owner candidates
+retain their receipts, and an older accepted candidate cannot erase a newer
+stamp. Notification receipts are independent of observation-capture receipts.
+
 `read_view/shared_json.rs` composes immutable JSON leaves without caching a
 materialized aggregate. Intake and push readers materialize their owned wire
 answers after releasing the app guard. Historical receipt patches index exact

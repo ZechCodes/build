@@ -122,9 +122,9 @@ async fn busy_mcp_lists_finish_within_100ms() {
     ]
     .into_iter()
     .chain(
-        filtered_task_cases()
+        ["state", "status", "label_short", "label_empty"]
             .into_iter()
-            .map(|case| (format!("list_tasks.{}", case.name), AGENTS)),
+            .map(|case| (format!("list_tasks.{case}"), AGENTS)),
     ) {
         let row = &measurements[format!("mcp.control:{tool}")]["client.total"];
         assert_eq!(row["count"], expected, "{tool}: {row}");

@@ -1,9 +1,10 @@
 name: Bridge timing tests
 
-# The three timing tests the default run ignores (#280, #289, #709):
+# The timing tests the default run ignores (#280, #289, #709, #751):
 # a_git_child_costs_what_the_child_costs (src/git_process.rs),
 # the_daemon_answers_reads_and_writes_while_three_ptys_flood
-# (tests/concurrency_load.rs), and busy_writers_keep_app_lock_holds_below_budget
+# (tests/concurrency_load.rs), busy_writers_keep_app_lock_holds_below_budget and
+# busy_term_create_keeps_app_lock_hold_below_50ms
 # (src/app/tests/runtime/lock_hold_busy.rs). They compare wall-clock times against
 # fixed ceilings, which a machine running other suites breaks with nothing wrong in
 # the bridge, so they are out of `cargo test` and run here instead, alone on a
@@ -91,3 +92,4 @@ jobs:
           --ignored
           --test-threads=1
           busy_writers_keep_app_lock_holds_below_budget
+          busy_term_create_keeps_app_lock_hold_below_50ms

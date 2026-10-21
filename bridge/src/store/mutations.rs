@@ -237,7 +237,9 @@ fn required_creators(
             if principal != admission.principal {
                 return Err(StoreError::MutationNotYetAvailable);
             }
-            if saved != json!(resource).to_string() {
+            let saved: MutationResource = serde_json::from_str(&saved)
+                .map_err(|error| invalid(&format!("corrupt reservation: {error}")))?;
+            if &saved != resource {
                 return Err(invalid("reservation scope mismatch"));
             }
             if state != "succeeded" {

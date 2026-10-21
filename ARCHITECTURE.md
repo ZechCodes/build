@@ -381,8 +381,8 @@ deferred writes. Dedicated I/O workers execute filesystem/Git observations,
 then validate source, owner and conversation fences against the latest
 publication before returning the existing typed reply. GitHub observations
 retain their service deadline and update admission spans the complete job.
-Writer routing and the later MCP concurrency migration retain their existing
-boundaries.
+Writer routing retains its existing mutation boundaries. MCP read scheduling
+is described below under MCP tools.
 
 Ordinary owner/global publication structurally shares unrelated observation
 families and rows. Touched owner rows may be recaptured even when their fields
@@ -397,7 +397,9 @@ producer maintenance remain separate work; this is not a claim that all
 publication is constant time.
 
 **Published snapshots (#681 step 3).** `app/read_view.rs` holds an atomic
-`Arc<ReadView>` root with shared immutable response chunks. Versioned deltas
+`Arc<ReadView>` root with shared immutable response chunks. Chunk and history
+maps use persistent ordered trees, so retaining a root and applying a small
+delta copies bounded tree paths rather than every entry. Versioned deltas
 merge disjoint updates through compare-and-swap; stale overlapping updates
 are rejected as a unit, and deletion versions remain as tombstones. Producers
 warm required observations before admission, then publish committed values
@@ -477,13 +479,67 @@ and live session status once for all workspace rows. Push workspace rows join
 summaries through a temporary index that preserves JSON id equality and
 first-match duplicate precedence. These candidate-local indexes and render
 memos end before persistence or canonical mutation; a failed candidate cannot
-seed a later publication. Complete local read-view deltas retain their atomic publication
+seed a later publication. Adjacent immutable snapshot and read-metadata
+publications share that capture within their wrapper, ending before change
+notifications or later mutations. Complete local read-view deltas retain their atomic publication
 boundary before replies and change notices. Counting tests include the
 publication producer as well as the pure push reader.
 Bounded push tail bodies are shared between publications while conversation
 identity, publication sequence and resident tail geometry match. Each publication
 still captures fresh tip metadata. Historical receipt rows retain their existing
 bounded floor and generation fences.
+
+Global board and list projections retain shared row fragments in the accepted
+`ReadView`, alongside the layout inputs that justify reusing them. Known-owner
+and committed task-observation publications replace affected rows; structural
+changes use the full producer. Alias and shared-root dependencies, active
+session observations, and elapsed-time fields participate in each refresh.
+Registry identities use weak handles so a retained read root cannot keep a
+retired session or terminal screen alive. Attention changes for known owners
+use the same scoped publication; other board invalidations retain their full
+refresh path. Layout reuse compares raw committed compaction policies with
+workspace and project topology rather than rendering every inherited policy to
+check for changes. Workspace detail refresh batches affected owners and aliases
+through one registry and dependency scan. Fresh base rows and agent variants
+share their unchanged JSON subtrees; dependency scans borrow fields from either
+composed or legacy rows without materializing an aggregate. Active-owner and
+elapsed-time fields are still rendered afresh on each publication.
+
+Within `StatusPump::observe`, attention persistence and dirty marks still
+update immediately, while their wire projection joins the final owner
+publication. Changed attention refreshes read metadata with that final
+publication, using one fresh ownership capture after all later helpers have
+finished. A `working_since` roster save keeps its independent committed
+publication and admission update. Direct status APIs and end-of-stream handling
+keep immediate attention publication. Context, reset and usage helpers keep
+their existing save and failure behavior.
+
+An RPC `thread.post` keeps its durable message publication and both attention
+saves, but publishes the two human attention stamps together before returning
+from its dispatch guard. The final owner delta includes every addressed and
+canonical alias. A route error still publishes attention from any committed
+prefix; a deferred job receives that publication before leaving the guard.
+Successful interaction stamping retains its existing timing, including after
+deferred completion. Direct and MCP posts keep immediate attention publication.
+The temporary collection restores its state on unwind without publishing a
+partially mutated candidate, and never spans external work or delivery drain.
+
+Deferred status and RPC attention stamps retain revision-tagged notification
+receipts for each affected owner and alias. Their ordinary early notices remain;
+an accepted publication also emits fresh entity and board notices, so a flush
+that consumed the early notices cannot leave subscribers on the old state.
+Incremental candidates acknowledge only owners they refreshed, while a complete
+candidate can acknowledge removed owners. Rejected or borrowed-owner candidates
+retain their receipts, and an older accepted candidate cannot erase a newer
+stamp. Notification receipts are independent of observation-capture receipts.
+
+`read_view/shared_json.rs` composes immutable JSON leaves without caching a
+materialized aggregate. Intake and push readers materialize their owned wire
+answers after releasing the app guard. Historical receipt patches index exact
+thread identities and replace only advancing leaves, updating cached row
+fragments in the same atomic delta. Preparing or rejecting a candidate cannot
+change the accepted fragments, and direct aggregate replacements invalidate
+their reuse cache. Watched task observations retain unchanged payloads by `Arc`.
 
 ### Liveness and signaling
 
@@ -2162,6 +2218,21 @@ app-lock acquisition (`lock_wait`), including the update-admission check.
 Reacquiring a turn after deferred work is included in the permit wait; the
 deferred work itself is not pool queue time.
 
+The two control turns bound mutation work. An exact allowlist of task, roster,
+list, history and review reads bypasses those turns; malformed actions and done
+reports retain their existing routing. Each read authenticates its token,
+surface, owner and thread generation under a brief blocking-pool app guard,
+then prepares owned work. SQL reads borrow the shared asynchronous reader pool
+and retain one transaction across related rows. Snapshot reads capture accepted
+immutable fragments and materialize them off-lock. Review reads release SQL
+capacity before external observation. A final brief guard rechecks admission,
+project bindings and target generations before returning the ordinary response.
+The update-admission lease survives caller cancellation until blocking work
+finishes. These reads do not drain deferred writer work or run legacy producer
+maintenance. Calls on one socket remain ordered; independent sockets can read
+while mutation turns are occupied. The brief app guards still contend with
+writers.
+
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
 `Project`), which a project's agents take from their persisted purpose (see
 A project's agents below). Each action is a `BridgeAction` variant. The tool lists are
@@ -2671,6 +2742,15 @@ nothing else
   binary, then runs `build-bridge pair` and `build-bridge install-service`.
 
 ### Bridge tests
+
+The busy lock fixture includes MCP permit admission, blocking-pool scheduling
+and all app guards in each frame, and separately times callers through replies
+or completed status observation. Its cohort includes 168 MCP calls, 40 encrypted
+RPC calls and 24 actual private `StatusPump` observations. All callers and
+queued deliveries must finish before assertions. The five-second maximum
+applies to all frame and caller totals, alongside the hold percentile and
+maximum gates. Status timing covers observation work, not watch-notification
+delivery latency.
 
 Unit tests sit beside the code (`#[cfg(test)]` modules, and directories such as
 `bridge/src/app/tests/` and `bridge/src/store/tests/`). Integration tests are in

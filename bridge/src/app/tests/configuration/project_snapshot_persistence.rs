@@ -35,7 +35,7 @@ fn assert_committed_after_later_success(state: &mut AppState, before: &Value) {
                 .load()
                 .get("project.list", "")
                 .unwrap()
-                .clone()
+                .into_owned()
         ),
         expected
     );

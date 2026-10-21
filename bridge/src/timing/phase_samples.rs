@@ -24,6 +24,12 @@ impl PhaseSamples {
             .push(duration.as_secs_f64() * 1000.0);
     }
 
+    /// Caller-side latency, measured outside FrameTimer through parsed reply
+    /// or the joined status observation. This is not an exclusive lock phase.
+    pub(crate) fn record_client_total(&self, method: &str, elapsed: Duration) {
+        self.record(method, "client.total", elapsed);
+    }
+
     pub(crate) fn active_frames(&self) -> usize {
         self.active_frames.load(Ordering::Acquire)
     }
@@ -80,10 +86,18 @@ pub(super) fn record_frame(timer: &FrameTimer) {
     if let Some(samples) = timer.phase_capture.as_ref() {
         let spent = timer.spent();
         let method = timer.sample_label();
+        let permit = spent.permit_wait.unwrap_or_default();
+        let pool = spent.pool_wait.unwrap_or_default();
         for (name, elapsed) in [
             ("frame.held", spent.held),
             ("frame.lock_wait", spent.lock_wait),
             ("frame.queued", spent.queued),
+            ("frame.permit_wait", permit),
+            ("frame.pool_wait", pool),
+            (
+                "frame.queue_permit_and_lock_wait",
+                spent.queued + permit + spent.lock_wait,
+            ),
             ("frame.queue_and_lock_wait", spent.queued + spent.lock_wait),
             ("frame.total", spent.total),
         ] {
@@ -217,5 +231,46 @@ fn phase_capture_attributes_only_work_while_the_timed_lock_is_held() {
     assert!(
         total <= method["frame.held"]["sum_ms"].as_f64().unwrap() + 0.01,
         "exclusive spans cannot double-count work: {captured}"
+    );
+}
+
+#[test]
+fn phase_capture_records_permit_wait_and_combines_the_same_frame_only() {
+    let (clock, _) = recording_clock();
+    let samples = clock.capture_phases();
+    for (queued_ms, permit_ms, lock_ms) in [(10, 1, 3), (1, 7, 1)] {
+        let mut timer = clock.frame("mcp.control");
+        timer.sample_tool("get_task");
+        // Fixed counter inputs test the collector arithmetic, not host timing.
+        timer.queued = Duration::from_millis(queued_ms);
+        timer.record_permit_wait(Duration::from_millis(permit_ms));
+        timer
+            .lock_wait_micros
+            .store(lock_ms * 1000, Ordering::Relaxed);
+        drop(timer);
+    }
+    let captured = samples.snapshot();
+    let row = &captured["mcp.control:get_task"];
+    for name in [
+        "frame.held",
+        "frame.queued",
+        "frame.lock_wait",
+        "frame.permit_wait",
+        "frame.pool_wait",
+        "frame.queue_permit_and_lock_wait",
+        "frame.total",
+    ] {
+        assert_eq!(row[name]["count"], 2);
+    }
+    assert_eq!(row["frame.permit_wait"]["max_ms"], 7.0);
+    assert_eq!(row["frame.queue_permit_and_lock_wait"]["max_ms"], 14.0);
+    let independent_maxima = row["frame.queued"]["max_ms"].as_f64().unwrap()
+        + row["frame.permit_wait"]["max_ms"].as_f64().unwrap()
+        + row["frame.lock_wait"]["max_ms"].as_f64().unwrap();
+    assert!(
+        row["frame.queue_permit_and_lock_wait"]["max_ms"]
+            .as_f64()
+            .unwrap()
+            < independent_maxima
     );
 }

@@ -51,10 +51,10 @@ fn publisher_preserves_unchanged_owner_chunks() {
     let previous = app.read_view.load();
     app.publish_snapshot_projection();
     let next = app.read_view.load();
-    assert!(std::ptr::eq(
-        previous.get("models.list", "").unwrap(),
-        next.get("models.list", "").unwrap()
-    ));
+    assert!(previous
+        .get_shared("models.list", "")
+        .unwrap()
+        .ptr_eq(next.get_shared("models.list", "").unwrap()));
 }
 
 #[test]
@@ -122,4 +122,5 @@ fn owner_projection_uses_the_observed_branch_until_a_producer_refreshes_it() {
     );
 }
 
+mod watched_tasks;
 mod workspace_summaries;

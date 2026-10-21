@@ -1,6 +1,62 @@
 //! Producer publication must not rebuild unrelated I/O observation inputs.
 use super::*;
 use crate::app::observation_reads::capture_metrics;
+use crate::app::read_view::{ReadView, SnapshotDelta};
+use crate::app::snapshot_projection::work_counts;
+use std::collections::BTreeSet;
+
+/// Isolate incremental input publication from the separately tested bootstrap
+/// tail. This installs real captured inputs and acknowledges their dirty keys.
+pub(in crate::app::tests) fn initialize_observation_test_baseline(app: &AppState) {
+    let previous = app.read_view.load();
+    assert!(
+        previous.global.is_some(),
+        "fixture needs an accepted global cache"
+    );
+    let delta =
+        app.prepare_observation_inputs(SnapshotDelta::new(app.read_view.next_version()), &previous);
+    app.publish_prepared_snapshot_projection(delta);
+    assert!(app.read_view.load().observations.is_some());
+}
+
+pub(in crate::app::tests) fn assert_observation_fast_owner(app: &AppState, owner: &str) {
+    let _context = app.begin_snapshot_ownership();
+    let previous = app.read_view.load();
+    assert!(
+        previous.global.is_some(),
+        "fast-path assertion needs an accepted cache"
+    );
+    assert!(
+        app.prepare_incremental_owner_snapshot(
+            SnapshotDelta::new(app.read_view.next_version()),
+            &previous,
+            &BTreeSet::from([owner.to_owned()]),
+        )
+        .is_some(),
+        "stable owner must be eligible for incremental publication"
+    );
+}
+
+fn restart_capture() {
+    capture_metrics::take();
+    capture_metrics::start();
+}
+
+fn assert_owner_capture(
+    visits: &std::collections::BTreeMap<(&'static str, String), usize>,
+    owner: &str,
+) {
+    for family in ["scope_run", "thread_owner"] {
+        assert!(
+            visits
+                .get(&(family, owner.to_owned()))
+                .copied()
+                .unwrap_or(0)
+                > 0,
+            "missing real {family} capture for {owner}: {visits:?}"
+        );
+    }
+}
 
 fn fixture() -> (tempfile::TempDir, Arc<Mutex<AppState>>, String) {
     let (dir, repo) = init_repo();
@@ -27,12 +83,14 @@ fn fixture() -> (tempfile::TempDir, Arc<Mutex<AppState>>, String) {
     app.delivery_queue.clear_queued();
     let state = app.shared();
     let _handler = AppState::handler(state.clone());
+    initialize_observation_test_baseline(&state.lock().unwrap());
     capture_metrics::start();
     (dir, state, owners.remove(0))
 }
 
 fn assert_scoped(owner: &str) {
     let visits = capture_metrics::take();
+    assert_owner_capture(&visits, owner);
     assert!(
         !visits.keys().any(|(family, _)| *family == "full"),
         "owner/status publication recaptured the whole observation graph: {visits:?}"
@@ -47,7 +105,13 @@ fn assert_scoped(owner: &str) {
 fn observation_publication_owner_guard_visits_only_its_declared_input_dependencies() {
     let (_dir, state, owner) = fixture();
     let app = state.lock().unwrap();
-    app.publish_owner_snapshot_projection(&owner);
+    assert_observation_fast_owner(&app, &owner);
+    restart_capture();
+    let (_, counts) = work_counts::measure(|| app.publish_owner_snapshot_projection(&owner));
+    assert_eq!(
+        counts.workspace_details_full, 0,
+        "actual owner publication fell back: {counts:?}"
+    );
     assert_scoped(&owner);
 }
 
@@ -55,6 +119,7 @@ fn observation_publication_owner_guard_visits_only_its_declared_input_dependenci
 fn observation_publication_status_guard_never_captures_the_global_input_graph() {
     let (_dir, state, owner) = fixture();
     let mut app = state.lock().unwrap();
+    assert_observation_fast_owner(&app, &owner);
     let agent = app
         .entity_agents(&owner)
         .unwrap()
@@ -65,9 +130,28 @@ fn observation_publication_status_guard_never_captures_the_global_input_graph() 
     let status = crate::harness::SessionStatusSnapshot::new(crate::harness::AgentStatus::Working);
     // This is the production StatusPump's mutation/publication sequence; no
     // context/reset/usage-limit fields change in this ordinary Working sample.
-    app.record_agent_status_snapshot(&owner, &agent, &status);
-    app.publish_owner_snapshot_projection(&owner);
+    restart_capture();
+    let (_, counts) = work_counts::measure(|| {
+        app.record_agent_status_snapshot(&owner, &agent, &status);
+        app.publish_owner_snapshot_projection(&owner);
+    });
+    assert_eq!(
+        counts.workspace_details_full, 0,
+        "actual status publication fell back: {counts:?}"
+    );
     assert_scoped(&owner);
+}
+
+#[test]
+fn observation_publication_bootstrap_initializes_observation_inputs() {
+    let (dir, repo) = init_repo();
+    let app = qa_state(&repo, dir.path());
+    let initial = app.read_view.load();
+    assert!(initial.global.is_some());
+    assert!(
+        initial.observations.is_some(),
+        "real bootstrap omitted observation inputs"
+    );
 }
 
 #[test]
@@ -178,38 +262,37 @@ fn observation_reset_first_publication_fences_canonical_and_cross_owner_aliases(
 
 #[test]
 fn observation_rejected_owner_delta_keeps_pending_wire_and_input_retry() {
-    use crate::app::observation_reads::ObservationPatch;
-    use crate::app::read_view::SnapshotDelta;
     let (_dir, state, owner) = fixture();
-    capture_metrics::take();
     let mut app = state.lock().unwrap();
-    let older = app.prepare_owner_snapshot_projection(&owner).unwrap();
-    // The wire row is unchanged and may be omitted from `older`. Advance the
-    // actual observation owner key so rejection cannot depend on that wire row.
-    let initial = app.read_view.load().observations.clone().unwrap();
-    let mut newer_owner = ObservationPatch::default();
-    newer_owner.owner(&app, &owner, &initial);
-    // The rejected candidate must retain its pending owner and dirty receipt.
-    assert!(app.read_view.publish_delta(
-        SnapshotDelta::new(app.read_view.next_version())
-            .put("agent.list", &owner, json!({"intervening":true}))
-            .patch_observations(newer_owner)
-    ));
-    let installed = app.read_view.load();
+    assert_observation_fast_owner(&app, &owner);
+    restart_capture();
+    let (older, counts) =
+        work_counts::measure(|| app.prepare_owner_snapshot_projection(&owner).unwrap());
+    let captures = capture_metrics::take();
+    assert_eq!(counts.workspace_details_full, 0);
+    let installed = advance_owner_input_only(&app, &owner);
+    app.publish_prepared_snapshot_projection(older);
+    assert!(
+        Arc::ptr_eq(&installed, &app.read_view.load()),
+        "same-owner observation version must reject wire, facts and cache together"
+    );
+    assert!(
+        owner_input_is_dirty(&app, &owner),
+        "rejection acknowledged dirty owner input"
+    );
+    assert_owner_capture(&captures, &owner);
     app.runs.remove(&owner);
     // A permanent removal also retires the committed checkpoint. Leaving it
     // installed would correctly defer publication as a temporarily borrowed owner.
     app.committed_entities.forget(&owner);
-    app.publish_prepared_snapshot_projection(older);
-    assert!(
-        Arc::ptr_eq(&installed, &app.read_view.load()),
-        "same-owner input version must reject the entire older candidate"
-    );
-    assert_eq!(
-        app.read_view.load().get("agent.list", &owner),
-        Some(&json!({"intervening":true}))
-    );
+    capture_metrics::start();
     app.publish_snapshot_projection();
+    let retries = capture_metrics::take();
+    assert_owner_capture(&retries, &owner);
+    assert!(
+        !owner_input_is_dirty(&app, &owner),
+        "accepted retry retained dirty input"
+    );
     let latest = app.read_view.load();
     assert!(
         latest.get("agent.list", &owner).is_none(),
@@ -225,4 +308,129 @@ fn observation_rejected_owner_delta_keeps_pending_wire_and_input_retry() {
             .is_err(),
         "rejection discarded pending observation tombstone"
     );
+}
+
+fn owner_input_is_dirty(app: &AppState, owner: &str) -> bool {
+    app.snapshot_observations
+        .observation_owners
+        .snapshot()
+        .iter()
+        .any(|(id, _)| id == owner)
+}
+
+fn advance_owner_input_only(app: &AppState, owner: &str) -> Arc<ReadView> {
+    use crate::app::observation_reads::ObservationPatch;
+    let previous = app.read_view.load();
+    let mut patch = ObservationPatch::default();
+    patch.owner(app, owner, previous.observations.as_ref().unwrap());
+    assert!(app
+        .read_view
+        .publish_delta(SnapshotDelta::new(app.read_view.next_version()).patch_observations(patch)));
+    let installed = app.read_view.load();
+    assert!(Arc::ptr_eq(&previous.facts, &installed.facts));
+    assert!(Arc::ptr_eq(
+        previous.global.as_ref().unwrap(),
+        installed.global.as_ref().unwrap()
+    ));
+    assert_eq!(
+        previous.get_owned("agent.list", owner),
+        installed.get_owned("agent.list", owner)
+    );
+    installed
+}
+
+#[test]
+fn incremental_task_publication_carries_and_retries_pending_observation_receipts() {
+    let (_dir, state, owner) = fixture();
+    let app = state.lock().unwrap();
+    let project = app.projects.project_id_of(&owner).unwrap().to_owned();
+    app.install_snapshot_watched_task(
+        &project,
+        "observation-task",
+        Some(json!({
+            "kind":"tracker_task","task_id":"observation-task","title":"accepted on retry",
+            "anchor":"2026-01-01T00:00:00Z"
+        })),
+    );
+    app.mark_observation_owner_changed(&owner);
+    let previous = app.read_view.load();
+    app.flush_pending_snapshot_projection();
+    assert!(
+        Arc::ptr_eq(&previous, &app.read_view.load()),
+        "task case must have no pending wire owners"
+    );
+    restart_capture();
+    let (older, count) = work_counts::measure(|| {
+        app.prepare_incremental_task_snapshot(
+            SnapshotDelta::new(app.read_view.next_version()),
+            &previous,
+        )
+        .expect("stable task write must use the task-fast builder")
+    });
+    let captures = capture_metrics::take();
+    assert_eq!(count.workspace_details_full, 0);
+    let installed = advance_owner_input_only(&app, &owner);
+    app.publish_prepared_snapshot_projection(older);
+    assert!(
+        Arc::ptr_eq(&installed, &app.read_view.load()),
+        "stale task inputs installed cache/wire/facts"
+    );
+    assert!(owner_input_is_dirty(&app, &owner));
+    assert_owner_capture(&captures, &owner);
+    capture_metrics::start();
+    app.publish_task_snapshot_projection();
+    assert_owner_capture(&capture_metrics::take(), &owner);
+    assert!(!owner_input_is_dirty(&app, &owner));
+    let latest = app.read_view.load();
+    let board = latest.get_owned("board.list", "").unwrap();
+    assert_eq!(
+        board["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["task_id"] == "observation-task")
+            .unwrap()["title"],
+        "accepted on retry"
+    );
+    assert!(installed.get_owned("board.list", "").unwrap()["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["task_id"] != "observation-task"));
+}
+
+#[test]
+fn incremental_task_publication_without_input_changes_retains_observation_arc() {
+    let (_dir, state, owner) = fixture();
+    capture_metrics::take();
+    let mut app = state.lock().unwrap();
+    let project = app.projects.project_id_of(&owner).unwrap().to_owned();
+    let initial = app.read_view.load();
+    capture_metrics::start();
+    let (created, count) = work_counts::measure(|| {
+        app.tasks_create(&json!({
+            "project_id":project,"title":"real task with unchanged I/O inputs"
+        }))
+        .unwrap()
+    });
+    assert_eq!(count.workspace_details_full, 0);
+    assert!(
+        capture_metrics::take().is_empty(),
+        "task-only publication recaptured I/O inputs"
+    );
+    let latest = app.read_view.load();
+    assert!(Arc::ptr_eq(
+        initial.observations.as_ref().unwrap(),
+        latest.observations.as_ref().unwrap()
+    ));
+    assert_ne!(
+        initial.get_owned("board.list", ""),
+        latest.get_owned("board.list", "")
+    );
+    let board = latest.get_owned("board.list", "").unwrap();
+    assert!(board["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["task_id"] == created["task"]["id"]));
 }

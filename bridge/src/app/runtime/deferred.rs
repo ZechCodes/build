@@ -620,6 +620,14 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
+        self.with_rpc_post_attention(method, |app| app.dispatch_deferring_inner(method, params))
+    }
+
+    fn dispatch_deferring_inner(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
         let queued_before = self.delivery_queue.checkpoint();
         let outcome = self.route(method, params);
         if outcome.is_err() {
@@ -969,6 +977,18 @@ impl AppState {
     /// liveness. Queues only — the send happens with this mutex released.
     pub(in crate::app) fn note_board_changed(&self) {
         self.note_board_lists_changed(crate::changes::BoardLists::default());
+    }
+
+    /// Attention on a live owner changes its row and dependent details.
+    pub(in crate::app) fn note_owner_board_changed(&self, owner: &str) {
+        {
+            let _ownership = self.begin_snapshot_ownership();
+            self.publish_owner_snapshot_projection(owner);
+            self.publish_read_metadata_only();
+        }
+        self.changes
+            .note_board_lists(crate::changes::BoardLists::default());
+        self.watchers.board_moved(self.worktree_roots());
     }
 
     /// The feed moved, and so did one of the lists a client caches whole: the

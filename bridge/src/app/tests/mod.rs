@@ -222,6 +222,7 @@ mod installed_models;
 mod lifecycle_compat;
 mod mcp_generation;
 mod mcp_invalid_actions;
+mod mcp_task_reads;
 mod merge_regressions;
 mod observation_mixed;
 mod observation_publication;

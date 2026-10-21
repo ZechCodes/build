@@ -11,7 +11,7 @@
 //! monotonic byte cursor, never on a byte replay, so one model serves a shell
 //! and an agent alike.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use portable_pty::PtySize;
@@ -369,6 +369,18 @@ pub struct ScreenHandle {
     screen: Arc<Mutex<TermScreen>>,
 }
 
+/// Allocation identity without keeping the terminal buffer alive.
+#[derive(Clone)]
+pub(crate) struct ScreenIdentity(Weak<Mutex<TermScreen>>);
+
+impl PartialEq for ScreenIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+}
+
+impl Eq for ScreenIdentity {}
+
 /// What a client needs to render a screen it has just attached to.
 pub struct AttachSnapshot {
     pub snapshot: String,
@@ -378,6 +390,10 @@ pub struct AttachSnapshot {
 }
 
 impl ScreenHandle {
+    pub(crate) fn identity(&self) -> ScreenIdentity {
+        ScreenIdentity(Arc::downgrade(&self.screen))
+    }
+
     /// Registration identity without acquiring either screen's lock.
     pub(crate) fn same_screen(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.screen, &other.screen)

@@ -125,6 +125,98 @@ fn metadata_only_global_publication_does_not_serialize_unchanged_tails() {
 }
 
 #[test]
+fn incremental_fact_capture_refreshes_shared_project_session_without_copying_unchanged_tails() {
+    let mut fixture = Fixture::new(3, 8);
+    let initial = crate::session_summary::SessionSummary::default().updated(300);
+    fixture
+        .app
+        .session_summaries
+        .insert(fixture.project.clone(), initial);
+    fixture.app.publish_all_snapshot_projection();
+    let previous = fixture.app.read_view.load();
+    let changed = fixture.agents[0].0.clone();
+    let unchanged = fixture.agents[1].0.clone();
+    let tail = Arc::clone(&previous.facts.threads[&unchanged][0].items);
+    assert_eq!(
+        previous.facts.threads[&unchanged][0].tip.project_session,
+        Some(initial)
+    );
+
+    let later = initial.updated(600);
+    fixture
+        .app
+        .session_summaries
+        .insert(fixture.project.clone(), later);
+    let next = fixture
+        .app
+        .push_facts_incremental_snapshot(previous.facts.lists.clone(), &BTreeSet::from([changed]));
+    assert!(Arc::ptr_eq(&tail, &next.threads[&unchanged][0].items));
+    assert_eq!(
+        previous.facts.threads[&unchanged][0].tip.project_session,
+        Some(initial),
+        "updating shared metadata must preserve the old committed root"
+    );
+    assert_eq!(
+        next.threads[&unchanged][0].tip.project_session,
+        Some(later),
+        "an unchanged conversation still carries the current project session"
+    );
+}
+
+#[test]
+fn incremental_fact_capture_shares_unchanged_owners_and_matches_full_capture() {
+    let mut fixture = Fixture::new(3, 8);
+    for (owner, _) in &fixture.agents {
+        let attention = fixture.app.board.attention_mut();
+        attention.record_created_if_absent(owner, "2026-10-19T00:00:00Z".into());
+        attention.seed_anchor(owner, "2026-10-19T00:00:00Z");
+    }
+    fixture.app.publish_all_snapshot_projection();
+    let previous = fixture.app.read_view.load();
+    let changed = fixture.agents[0].0.clone();
+    let unchanged = fixture.agents[1].0.clone();
+    let old_state = previous.facts.states[&changed].materialize();
+    fixture
+        .thread_mut(0)
+        .post_agent("A new committed message", None, "2026-10-19T00:01:00Z");
+    let next = fixture.app.push_facts_incremental_snapshot(
+        previous.facts.lists.clone(),
+        &BTreeSet::from([changed.clone()]),
+    );
+    let full = fixture
+        .app
+        .push_facts_shared_snapshot(previous.facts.lists.clone());
+    assert!(next.states[&unchanged].ptr_eq(&previous.facts.states[&unchanged]));
+    assert!(Arc::ptr_eq(
+        &next.threads[&unchanged][0].items,
+        &previous.facts.threads[&unchanged][0].items
+    ));
+    assert_eq!(previous.facts.states[&changed].materialize(), old_state);
+    assert_eq!(
+        next.states.keys().collect::<Vec<_>>(),
+        full.states.keys().collect::<Vec<_>>()
+    );
+    for (owner, state) in &next.states {
+        assert_eq!(
+            state.materialize(),
+            full.states[owner].materialize(),
+            "{owner}"
+        );
+    }
+    for (owner, agent) in &fixture.agents {
+        let request = FactsRequest {
+            entity_id: owner.clone(),
+            state: true,
+            thread: true,
+            terminals: true,
+            thread_after: vec![(agent.clone(), 0)],
+            ..Default::default()
+        };
+        assert_eq!(next.fact(&request), full.fact(&request), "{owner}");
+    }
+}
+
+#[test]
 fn changing_one_conversation_serializes_only_its_bounded_tail() {
     let mut fixture = Fixture::new(16, 32);
     let before = fixture.thread(0).last_sequence();

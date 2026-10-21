@@ -448,7 +448,7 @@ impl AppState {
             }
         }
         if self.snapshot_projection_initialized() {
-            self.publish_snapshot_projection();
+            self.publish_task_snapshot_projection();
         }
         self.changes.note_tasks(project, &changed);
     }

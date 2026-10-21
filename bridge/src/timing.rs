@@ -48,6 +48,8 @@ const INTERNAL_METHODS: &[&str] = &[
     "close",
     "mcp.control",
     "agent.deliver",
+    #[cfg(test)]
+    "agent.poll_status",
     "agent.settle_wake",
     "agent.usage_limit_wake",
     "bridge.resume",

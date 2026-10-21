@@ -5,6 +5,8 @@ const TASKS: usize = 16;
 const RUNS: usize = 32;
 const ITEMS: usize = 16;
 const SAMPLES: usize = 5;
+const STAGES: usize = 4;
+const COMMENTS: usize = 2;
 const NOW: &str = "2026-10-21T12:00:00Z";
 
 struct Fixture {
@@ -30,6 +32,7 @@ impl Fixture {
                         NOW,
                     );
                 }
+                seed_stages(&app, directory.path(), &id, &mut plan);
                 app.finish_plan_mutation(id.clone(), plan).unwrap();
                 id
             })
@@ -44,6 +47,7 @@ impl Fixture {
             record.worktree_path = root.display().to_string();
             record.plan_id = Some(task.clone());
             record.branch = format!("build/native-scale-{index}");
+            record.stages = stage_progress();
             record.agents = (0..agents_per_run)
                 .map(|ordinal| {
                     let mut agent = crate::agent::Agent::new(
@@ -117,9 +121,80 @@ impl Fixture {
         let lineage = task["implementation_lineage"].as_array().unwrap();
         assert_eq!(lineage.len(), RUNS / TASKS);
         assert!(lineage.iter().any(|run| run["run_id"] == self.run));
-        assert!(view.get_owned("task.stages", &self.task).is_some());
+        assert_eq!(task["docs_available"], true);
+        let stages = view.get_owned("task.stages", &self.task).unwrap();
+        let rows = stages["stages"].as_array().unwrap();
+        assert_eq!(rows.len(), STAGES);
+        for stage in rows {
+            assert_eq!(stage["open_comments"], COMMENTS);
+            assert_eq!(stage["comments"].as_array().unwrap().len(), COMMENTS);
+        }
+        assert_eq!(rows[0]["execution"], "complete");
+        assert_eq!(rows[1]["execution"], "building");
+        assert_eq!(rows[2]["execution"], "pending");
         assert!(view.get_owned("agent.list", &self.run).is_some());
     }
+}
+
+fn seed_stages(
+    app: &AppState,
+    root: &Path,
+    task: &str,
+    plan: &mut crate::orchestrator::ActivePlan,
+) {
+    let worktree = root.join("native-stage-docs").join(task);
+    std::fs::create_dir_all(worktree.join(".build/plan")).unwrap();
+    for index in 0..STAGES {
+        let id = format!("stage-native-scale-{index}");
+        let path = format!(".build/plan/stage-{index}.md");
+        let body = format!(
+            "# Stage {index}\n\n{}",
+            "Implement the retained task stage and verify its output.\n".repeat(20)
+        );
+        std::fs::write(worktree.join(&path), &body).unwrap();
+        plan.stages.push(crate::plan::StageDoc {
+            id: id.clone(),
+            title: format!("Retained task stage {index}"),
+            path: path.clone(),
+            summary: format!(
+                "Stage {index} preserves committed task behavior and reviewer comments"
+            ),
+            state: crate::plan::StageDocState::Approved,
+        });
+        for comment in 0..COMMENTS {
+            plan.agents.sole_thread_mut().post_doc_comment(
+                task,
+                &id,
+                &path,
+                Some(crate::thread::DocAnchor {
+                    line_start: Some(3),
+                    line_end: Some(3),
+                    snippet: "Implement the retained task stage".into(),
+                    ..Default::default()
+                }),
+                format!(
+                    "Stage {index} reviewer observation {comment}: retain this published boundary"
+                ),
+                NOW,
+            );
+        }
+    }
+    app.store
+        .as_ref()
+        .unwrap()
+        .ingest_plan_docs(task, &worktree, &plan.plan_path)
+        .unwrap();
+}
+
+fn stage_progress() -> Vec<crate::run::StageProgress> {
+    let mut complete = crate::run::StageProgress::dispatched("stage-native-scale-0");
+    complete.state = crate::run::StageProgressState::Completed;
+    complete.start_sha = Some("a".repeat(40));
+    complete.built_sha = Some("b".repeat(40));
+    complete.completion_sha = Some("b".repeat(40));
+    let mut building = crate::run::StageProgress::dispatched("stage-native-scale-1");
+    building.start_sha = Some("b".repeat(40));
+    vec![complete, building]
 }
 
 #[test]
@@ -151,8 +226,10 @@ fn owner_commit_native_snapshot_scale() {
             "{}",
             json!({"benchmark":"owner_commit_native_snapshot_scale",
                 "tasks":TASKS,"runs":RUNS,"agents_per_run":agents_per_run,
-                "configured_agents":TASKS+RUNS*agents_per_run,"resident_items_per_conversation":ITEMS,
-                "live_sessions":0,"plan_commits":SAMPLES,"linked_run_commits":SAMPLES,
+                "configured_agents":TASKS+RUNS*agents_per_run,"ordinary_resident_messages_per_conversation":ITEMS,
+                "task_resident_items":ITEMS+STAGES*COMMENTS,"private_run_resident_items":ITEMS,
+                "live_sessions":0,"stages_per_task":STAGES,"comments_per_stage":COMMENTS,
+                "plan_commits":SAMPLES,"linked_run_commits":SAMPLES,
                 "phases_ms":measured,"load_before":load_before.trim(),
                 "load_after":std::fs::read_to_string("/proc/loadavg").unwrap().trim()})
         );

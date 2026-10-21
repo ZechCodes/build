@@ -141,6 +141,21 @@ impl Store {
     /// both gone) — the UI gates doc reads and Implement on this instead of
     /// spinning on reads that can never succeed.
     pub fn has_plan_docs(&self, plan_id: &str) -> bool {
+        #[cfg(test)]
+        {
+            let gate = self.plan_docs_probe_gate.lock().unwrap().clone();
+            if let Some(gate) = gate {
+                gate.arrive();
+            }
+        }
         dir_contains_a_file(&self.plan_docs_dir(plan_id))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_plan_docs_probe_gate(
+        &self,
+        gate: Option<crate::test_support::off_lock::OffLockGate>,
+    ) {
+        *self.plan_docs_probe_gate.lock().unwrap() = gate;
     }
 }

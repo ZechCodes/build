@@ -6,6 +6,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 mod owner_commit;
+mod plan_docs;
 mod task_history;
 
 const SESSION: &str = "remaining-native-reads";

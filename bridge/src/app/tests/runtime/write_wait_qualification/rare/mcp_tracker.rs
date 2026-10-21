@@ -1,5 +1,6 @@
 //! Tracker variants enter through the authenticated MCP socket, including aliases.
 mod basic;
+mod reviews;
 
 use super::super::rpc::ReplyProof;
 use super::{RareFixture, VerifiedStep};
@@ -12,7 +13,9 @@ use std::sync::{Arc, Mutex};
 const TOKEN: &str = "qualification-tracker-capability";
 
 pub(super) async fn execute() -> Vec<VerifiedStep> {
-    basic::execute().await
+    let mut steps = basic::execute().await;
+    steps.extend(reviews::execute().await);
+    steps
 }
 
 struct TrackerFixture {

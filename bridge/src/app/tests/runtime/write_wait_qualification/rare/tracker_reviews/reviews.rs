@@ -387,3 +387,46 @@ async fn merge(fixture: &mut RareFixture, task: &str, workspace: &str) {
         )
         .await;
 }
+
+#[cfg(test)]
+mod controls {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rpc_recipe_manual_review_control() {
+        crate::git_fixture::environment::isolated_git_test!();
+        let steps = super::manual().await;
+        let observed = steps
+            .iter()
+            .map(|step| step.method.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected: std::collections::BTreeSet<_> = [
+            "tasks.review.snapshot",
+            "tasks.review.act",
+            "tasks.review.complete",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(observed, expected);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rpc_recipe_pull_request_control() {
+        crate::git_fixture::environment::isolated_git_test!();
+        let steps = super::pull_request().await;
+        let observed = steps
+            .iter()
+            .map(|step| step.method.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected: std::collections::BTreeSet<_> = [
+            "tasks.review.open",
+            "tasks.review.push",
+            "tasks.review.update",
+            "tasks.review.refresh",
+            "tasks.review.close",
+            "tasks.review.reopen",
+            "tasks.review.merge",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(observed, expected);
+    }
+}

@@ -11,13 +11,19 @@ pub(super) async fn execute() -> Vec<VerifiedStep> {
         .unwrap()
         .to_owned();
     let workspace = workspace(&mut app, &project, "mcp-links");
+    // Link/dependency success uses an unassigned backlog card, independently
+    // of the card the move/assignment recipes have already activated.
+    let link_task = filed(&mut app, &project, "MCP link dependent")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let mut fixture = TrackerFixture::new("mcp-tracker", app);
     let task = create(&mut fixture, &blocker).await;
     move_and_label(&mut fixture, &task).await;
     let comment = comment(&mut fixture, &task).await;
     reads(&fixture, &task, &comment, &blocker).await;
     assign_and_track(&mut fixture, &task).await;
-    links(&mut fixture, &task, &workspace, &blocker).await;
+    links(&mut fixture, &link_task, &workspace, &blocker).await;
     retry(&mut fixture, &blocker).await;
     let before = saved(&fixture, &task);
     fixture.wrapped_read_refusal(&task).await;
@@ -248,6 +254,10 @@ async fn assign_and_track(fixture: &mut TrackerFixture, task: &str) {
 }
 
 async fn links(fixture: &mut TrackerFixture, task: &str, workspace: &str, blocker: &str) {
+    let before = saved(fixture, task);
+    assert_eq!(before["state"], "open");
+    assert_eq!(before["status"], "backlog");
+    assert!(before["assignee"].is_null());
     let proof = fixture
         .call(
             "link_task",
@@ -368,4 +378,49 @@ async fn close(fixture: &mut TrackerFixture, task: &str) {
     fixture
         .verify(proof, json!({"persisted_close":closed}))
         .await;
+}
+
+#[cfg(test)]
+mod controls {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn mcp_recipe_basic_tracker_control() {
+        crate::git_fixture::environment::isolated_git_test!();
+        let steps = super::execute().await;
+        let actions: Vec<_> = steps
+            .iter()
+            .map(|step| step.mcp_action.as_ref().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let observed: std::collections::BTreeSet<_> = actions
+            .iter()
+            .map(|action| action["action"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = [
+            "tracker_create_task",
+            "tracker_with_waiting_on",
+            "tracker_move_task",
+            "tracker_label_task",
+            "tracker_comment_task",
+            "tracker_assign_task",
+            "tracker_track_task",
+            "tracker_untrack_task",
+            "tracker_link_task",
+            "tracker_unlink_waiting_on",
+            "tracker_retry_task_delivery",
+            "tracker_close_task",
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(observed, expected);
+        let nested = actions
+            .iter()
+            .filter(|action| action["action"] == "tracker_with_waiting_on")
+            .map(|action| action["wrapped"]["action"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            nested,
+            ["tracker_create_task", "tracker_link_task"]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+    }
 }

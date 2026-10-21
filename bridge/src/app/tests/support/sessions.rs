@@ -40,6 +40,7 @@ impl SessionLog {
 /// here at all. Only a caller that asks the session gets one.
 pub(in crate::app::tests) struct DictatedSession {
     status: AgentStatus,
+    activity: Mutex<Option<tokio::sync::broadcast::Sender<crate::harness::ActivityReport>>>,
     quiet: Duration,
     log: SessionLog,
     surfaces: Option<AgentSurfaces>,
@@ -58,6 +59,7 @@ impl DictatedSession {
     pub(in crate::app::tests) fn reporting(status: AgentStatus) -> DictatedSession {
         DictatedSession {
             status,
+            activity: Mutex::new(None),
             quiet: Duration::ZERO,
             log: SessionLog::default(),
             surfaces: None,
@@ -70,6 +72,15 @@ impl DictatedSession {
             start_refused: None,
             recovery_episode: None,
         }
+    }
+
+    /// Own the final activity sender so end closes the normal activity pump.
+    pub(in crate::app::tests) fn reporting_activity(
+        self,
+        activity: tokio::sync::broadcast::Sender<crate::harness::ActivityReport>,
+    ) -> Self {
+        *self.activity.lock().unwrap() = Some(activity);
+        self
     }
 
     pub(in crate::app::tests) fn showing_surfaces(
@@ -193,6 +204,13 @@ impl AgentSession for DictatedSession {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
+    fn activity(&self) -> Option<tokio::sync::broadcast::Receiver<crate::harness::ActivityReport>> {
+        self.activity
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|activity| activity.subscribe())
+    }
     fn status_changed(
         &self,
     ) -> Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>> {
@@ -213,6 +231,7 @@ impl AgentSession for DictatedSession {
         matches!(self.status, AgentStatus::Ended { .. })
     }
     fn end(&self) {
+        self.activity.lock().unwrap().take();
         self.log
             .ended
             .store(true, std::sync::atomic::Ordering::Relaxed);

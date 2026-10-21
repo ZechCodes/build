@@ -1,11 +1,34 @@
+use super::super::finite_provider::FiniteProvider;
 use super::*;
+use std::sync::atomic::Ordering;
+
+struct EndDispatchSessions(Arc<Mutex<AppState>>);
+
+impl Drop for EndDispatchSessions {
+    fn drop(&mut self) {
+        let sessions: Vec<_> = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session_registry
+            .test_tabs()
+            .map(|(_, tab)| Arc::clone(&tab.session))
+            .collect();
+        for session in sessions {
+            session.end();
+        }
+    }
+}
 
 pub(super) async fn execute() -> Vec<VerifiedStep> {
     let (directory, repo) = init_repo();
     let root = std::fs::canonicalize(directory.path()).unwrap();
+    let provider = FiniteProvider::install(&root);
+    provider.require_enrolled();
     let app = configured(&repo, &root);
     let project = app.project_at(0).id.clone();
     let mut fixture = RareFixture::new("lifecycle-dispatch", app);
+    let cleanup = EndDispatchSessions(Arc::clone(fixture.state()));
     let proof = fixture.call("branch.dispatch", json!({
         "project_id": project, "instruction": "Add qualification endpoint", "provider": "claude"
     })).await;
@@ -50,7 +73,19 @@ pub(super) async fn execute() -> Vec<VerifiedStep> {
         .any(|item| item["type"] == "message"
             && item["data"]["body"] == "Add qualification endpoint"));
     wait_for_delivery(&fixture, &checkout, &agent).await;
-    fixture.verify(proof, json!({"durable_run": owner, "agent": agent, "branch": branch, "checkout": checkout, "head": head(&checkout), "instruction_in_thread": true})).await;
+    assert_eq!(provider.opens.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.log.turns().len(), 1);
+    assert_eq!(
+        fixture
+            .state()
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_counts()
+            .claims,
+        0
+    );
+    fixture.verify(proof, json!({"durable_run": owner, "agent": agent, "branch": branch, "checkout": checkout, "head": head(&checkout), "instruction_in_thread": true, "finite_factory_opens": 1, "recorded_send_turns": 1})).await;
     let retirements = fixture
         .state()
         .lock()
@@ -62,6 +97,8 @@ pub(super) async fn execute() -> Vec<VerifiedStep> {
             "QA session must be reaped before temporary checkout removal"
         );
     }
+    assert!(provider.log.ended());
+    drop(cleanup);
     fixture.finish().await
 }
 
@@ -85,4 +122,12 @@ async fn wait_for_delivery(fixture: &RareFixture, checkout: &Path, agent: &str) 
         );
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn finite_branch_dispatch_has_independent_effect_proof() {
+    let steps = execute().await;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].method, "branch.dispatch");
+    assert_eq!(steps[0].effect["finite_factory_opens"], 1);
 }

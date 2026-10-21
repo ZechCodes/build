@@ -59,8 +59,6 @@ async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
     let observed = Arc::clone(&opened);
     let log = SessionLog::default();
     let logged = log.clone();
-    let (activity, _) = broadcast::channel(8);
-    let activity_out = activity.clone();
     let expected_root = root.clone();
     let sessions = FixtureSessions::install(
         std::fs::canonicalize(directory.path()).unwrap(),
@@ -69,11 +67,15 @@ async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
             assert_eq!(provider, AgentProvider::Claude);
             assert_eq!(provider, request.choice.provider);
             observed.fetch_add(1, Ordering::SeqCst);
+            let (activity, _) = broadcast::channel(8);
+            let output = SessionOutput::reporting(activity.subscribe(), None);
             Ok(OpenedSession {
                 session: Arc::new(
-                    DictatedSession::reporting(AgentStatus::Waiting).recording_into(&logged),
+                    DictatedSession::reporting(AgentStatus::Waiting)
+                        .recording_into(&logged)
+                        .reporting_activity(activity),
                 ),
-                output: SessionOutput::reporting(activity_out.subscribe(), None),
+                output,
             })
         }),
     );
@@ -129,7 +131,10 @@ async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
             .unwrap(),
         None => true,
     };
-    assert!(delivery_idle, "private delivery did not drain: {diagnostic}");
+    assert!(
+        delivery_idle,
+        "private delivery did not drain: {diagnostic}"
+    );
     assert!(reaped, "owned private fallback child was not reaped");
     let (claims, lineage, registered, role, _) = facts.unwrap_or_else(|| {
         panic!("real start delivery never published its tab/lineage: {diagnostic}")
@@ -157,5 +162,4 @@ async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
     let steps = fixture.finish().await;
     assert_eq!(steps.len(), 1);
     drop(sessions);
-    drop(activity);
 }

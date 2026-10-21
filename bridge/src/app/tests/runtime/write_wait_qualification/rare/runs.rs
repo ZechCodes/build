@@ -231,3 +231,40 @@ async fn message() -> Vec<VerifiedStep> {
         .await;
     fixture.finish().await
 }
+
+#[cfg(test)]
+mod controls {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rpc_recipe_run_adoption_control() {
+        crate::git_fixture::environment::isolated_git_test!();
+        let steps = super::adoption_and_abandon().await;
+        assert_eq!(
+            steps
+                .iter()
+                .map(|step| step.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run.adopt", "run.abandon"]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rpc_recipe_run_review_control() {
+        crate::git_fixture::environment::isolated_git_test!();
+        let steps = super::review_actions().await;
+        assert_eq!(
+            steps
+                .iter()
+                .map(|step| step.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run.git_action", "run.request_changes"]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rpc_recipe_run_message_control() {
+        crate::git_fixture::environment::isolated_git_test!();
+        let steps = super::message().await;
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].method, "run.message");
+    }
+}

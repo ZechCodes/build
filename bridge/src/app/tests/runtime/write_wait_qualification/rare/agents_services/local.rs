@@ -100,3 +100,12 @@ pub(super) async fn execute() -> Vec<VerifiedStep> {
     fixture.verify(present, json!({"previous_last_activity_ms":old.last_activity_ms,"saved_session_started_ms":stored.session_started_ms,"saved_previous_ended_ms":stored.previous_session_ended_ms})).await;
     fixture.finish().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn actual_local_settings_push_keys_and_presence_have_four_effect_proofs() {
+    let steps = execute().await;
+    assert_eq!(steps.len(), 4);
+    assert!(steps
+        .iter()
+        .all(|step| step.reply["ok"] == true && step.mcp_action.is_none()));
+}

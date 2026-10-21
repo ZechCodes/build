@@ -383,3 +383,28 @@ async fn initialization() -> Vec<VerifiedStep> {
         .await;
     fixture.finish().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plain_project_and_workspace_initialization_have_independent_effect_proofs() {
+    let steps = initialization().await;
+    let methods: BTreeSet<_> = steps.iter().map(|step| step.method.as_str()).collect();
+    assert_eq!(
+        methods,
+        ["project.init_git", "workspace.init_git"]
+            .into_iter()
+            .collect()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn confirmed_project_deletion_has_independent_effect_proof() {
+    let (directory, repo) = init_repo();
+    let root = std::fs::canonicalize(directory.path()).unwrap();
+    let app = configured(&repo, &root);
+    let project = app.project_at(0).id.clone();
+    let mut fixture = RareFixture::new("independent-project-delete", app);
+    delete_project(&mut fixture, &project, &repo, &root).await;
+    let steps = fixture.finish().await;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].method, "project.delete");
+}

@@ -6,6 +6,12 @@ pub(super) async fn execute() -> Vec<VerifiedStep> {
     let root = tempfile::tempdir().unwrap();
     let (_repo_home, mut app, project) = tracked(root.path());
     let blocker = filed(&mut app, &project, "Qualification prerequisite");
+    // Active cards cannot acquire an unresolved blocker. This separate
+    // unassigned backlog task supplies the dependency service precondition.
+    let dependent = filed(&mut app, &project, "Qualification dependent")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let mut fixture = RareFixture::new("tasks", app);
     let task = create(&mut fixture, &project).await;
     update(&mut fixture, &task).await;
@@ -15,8 +21,20 @@ pub(super) async fn execute() -> Vec<VerifiedStep> {
     watching(&mut fixture, &task, true).await;
     assign(&mut fixture, &task).await;
     attach(&mut fixture, &project).await;
-    dependencies(&mut fixture, &task, blocker["id"].as_str().unwrap(), true).await;
-    dependencies(&mut fixture, &task, blocker["id"].as_str().unwrap(), false).await;
+    dependencies(
+        &mut fixture,
+        &dependent,
+        blocker["id"].as_str().unwrap(),
+        true,
+    )
+    .await;
+    dependencies(
+        &mut fixture,
+        &dependent,
+        blocker["id"].as_str().unwrap(),
+        false,
+    )
+    .await;
     close(&mut fixture, &task).await;
     reopen(&mut fixture, &task).await;
     fixture.finish().await
@@ -254,6 +272,12 @@ async fn attach(fixture: &mut RareFixture, project: &str) {
 }
 
 async fn dependencies(fixture: &mut RareFixture, task: &str, blocker: &str, add: bool) {
+    if add {
+        assert_fields(
+            &saved(fixture, task),
+            json!({"state":"open","status":"backlog","assignee":null}),
+        );
+    }
     let method = if add {
         "tasks.waiting_on.add"
     } else {
@@ -314,4 +338,34 @@ async fn reopen(fixture: &mut RareFixture, task: &str) {
     fixture
         .verify(proof, json!({"persisted_task":persisted}))
         .await;
+}
+
+#[cfg(test)]
+mod controls {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rpc_recipe_basic_tracker_control() {
+        crate::git_fixture::environment::isolated_git_test!();
+        let steps = super::execute().await;
+        let observed = steps
+            .iter()
+            .map(|step| step.method.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected: std::collections::BTreeSet<_> = [
+            "tasks.create",
+            "tasks.update",
+            "tasks.comment",
+            "tasks.read_through",
+            "tasks.unwatch",
+            "tasks.watch",
+            "tasks.assign",
+            "tasks.attach",
+            "tasks.waiting_on.add",
+            "tasks.waiting_on.remove",
+            "tasks.close",
+            "tasks.reopen",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(observed, expected);
+    }
 }

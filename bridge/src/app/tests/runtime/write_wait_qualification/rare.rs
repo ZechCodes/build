@@ -12,12 +12,17 @@ use std::time::{Duration, Instant};
 
 mod agents_services;
 mod filesystem_git;
+mod finite_provider;
 mod lifecycle;
 mod mcp;
+mod mcp_common;
 mod mcp_compaction;
 mod mcp_coverage;
 mod mcp_lifecycle;
+mod mcp_reports;
+mod mcp_router;
 mod mcp_tracker;
+mod router_fixture;
 mod runs;
 mod tracker_reviews;
 

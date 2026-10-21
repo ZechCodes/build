@@ -23,6 +23,35 @@ async fn observe(
     .unwrap()
 }
 
+/// A status observation schedules the compaction on the blocking pool. Its
+/// return is not the session's receipt: wait for the real send and for the
+/// sender's following guarded commit before supplying completion callbacks.
+async fn sent_compaction(agent: &CompactingAgent) -> Option<Vec<String>> {
+    let deadline = Instant::now() + WAIT_BUDGET;
+    loop {
+        let turns = agent.log.turns();
+        let context_cleared = agent
+            .state
+            .lock()
+            .unwrap()
+            .entity_agents(RUN)
+            .unwrap()
+            .by_id(&agent.agent_id)
+            .unwrap()
+            .last_context_tokens
+            .is_none();
+        // send_compaction clears context and installs SentCompaction under the
+        // same guard, after the finite session has accepted the command.
+        if turns == ["/compact"] && context_cleared {
+            return Some(turns);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
 async fn retained_compaction(project_caller: bool) -> Vec<VerifiedStep> {
     let agent = CompactingAgent::without_background_services().with_context(200_000);
     let caller = {
@@ -62,11 +91,11 @@ async fn retained_compaction(project_caller: bool) -> Vec<VerifiedStep> {
     let sent_before_release = agent.log.turns();
     let retained_after_root = fixture.origin_active(&proof).await;
     let pump = observe(&agent, pump, AgentStatus::Waiting).await;
-    let turns = agent.log.turns();
+    let sent = sent_compaction(&agent).await;
 
     // Finite external callback input drives the actual activity/context
     // recording boundaries. The registry is never completed by the fixture.
-    {
+    if sent.is_some() {
         let mut app = agent.state.lock().unwrap();
         app.record_agent_activity(
             RUN,
@@ -91,6 +120,7 @@ async fn retained_compaction(project_caller: bool) -> Vec<VerifiedStep> {
     };
     session.end();
     drop(pump);
+    let turns = sent.expect("the real compaction send and ledger commit completed");
     let row = row.expect("the actual completed compaction published a row");
     assert!(sent_before_release.is_empty());
     assert_eq!(turns, ["/compact".to_owned()]);

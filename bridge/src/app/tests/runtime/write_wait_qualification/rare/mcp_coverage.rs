@@ -54,6 +54,8 @@ async fn every_semantic_mcp_action_has_a_real_socket_effect_and_terminal_origin(
     let mut steps = super::mcp_tracker::execute().await;
     steps.extend(super::mcp_lifecycle::execute().await);
     steps.extend(super::mcp_compaction::execute().await);
+    steps.extend(super::mcp_common::execute().await);
+    steps.extend(super::mcp_router::execute().await);
     let observed: BTreeSet<_> = steps
         .iter()
         .map(|step| {

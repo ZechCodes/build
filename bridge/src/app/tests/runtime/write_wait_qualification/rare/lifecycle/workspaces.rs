@@ -1,6 +1,39 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ready_workspace_creation_has_independent_effect_proof() {
+    let (directory, repo) = init_repo();
+    let root = std::fs::canonicalize(directory.path()).unwrap();
+    let app = configured(&repo, &root);
+    let project = app.project_at(0).id.clone();
+    let mut fixture = RareFixture::new("independent-workspace-create", app);
+    let proof = fixture
+        .call(
+            "workspace.create",
+            json!({
+                "project_id":project,"name":"independent-create","isolation":"worktree"
+            }),
+        )
+        .await;
+    let workspace = proof.reply["result"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let row = workspace_row(&fixture, &workspace);
+    assert_eq!(row["status"], "ready");
+    let checkout = PathBuf::from(row["directories"][0]["path"].as_str().unwrap());
+    assert_eq!(head(&checkout), head(&repo));
+    assert_ne!(row["directories"][0]["branch"], "main");
+    let manifest = Path::new(row["root"].as_str().unwrap()).join(crate::workspace::MANIFEST_FILE);
+    assert_eq!(disk_json(&manifest)["id"], workspace);
+    assert_eq!(disk_json(&manifest)["status"], "ready");
+    fixture.verify(proof, json!({"created_workspace":workspace,"checkout":checkout,"head":head(&checkout),"manifest":manifest})).await;
+    let steps = fixture.finish().await;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].method, "workspace.create");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn acknowledged_size_measurement_retains_original_until_real_service_finishes() {
     let (directory, repo) = init_repo();
     let root = std::fs::canonicalize(directory.path()).unwrap();
@@ -331,4 +364,74 @@ async fn finish_branch(fixture: &mut RareFixture, project: &str, repo: &Path) {
             json!({"finished_workspace": id, "deleted_branch": branch}),
         )
         .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn workspace_metadata_and_directory_mutations_have_independent_effect_proofs() {
+    let (directory, repo, _origin) = init_repo_with_origin();
+    let root = std::fs::canonicalize(directory.path()).unwrap();
+    let app = configured(&repo, &root);
+    let project = app.project_at(0).id.clone();
+    let mut fixture = RareFixture::new("independent-workspace-metadata", app);
+    let workspace = workspace_setup(&fixture, &project, "metadata");
+    let id = workspace["workspace_id"].as_str().unwrap();
+    conversation(&mut fixture, id, &workspace).await;
+    labels_and_policy(&mut fixture, id, &workspace, &root).await;
+    directories(&mut fixture, &project, id, &root).await;
+    let steps = fixture.finish().await;
+    let methods: BTreeSet<_> = steps.iter().map(|step| step.method.as_str()).collect();
+    assert_eq!(
+        methods,
+        [
+            "workspace.ensure_conversation",
+            "workspace.rename",
+            "workspace.set_compaction",
+            "workspace.set_locked",
+            "workspace.add_directory",
+            "workspace.remove_directory"
+        ]
+        .into_iter()
+        .collect()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clean_published_workspace_finish_has_independent_effect_proof() {
+    let (directory, repo, _origin) = init_repo_with_origin();
+    let root = std::fs::canonicalize(directory.path()).unwrap();
+    let app = configured(&repo, &root);
+    let project = app.project_at(0).id.clone();
+    let mut fixture = RareFixture::new("independent-workspace-finish", app);
+    let workspace = workspace_setup(&fixture, &project, "finish");
+    let id = workspace["workspace_id"].as_str().unwrap();
+    finish_workspace(&mut fixture, id, &workspace, &repo).await;
+    let steps = fixture.finish().await;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].method, "workspace.finish");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn managed_workspace_delete_has_independent_effect_proof() {
+    let (directory, repo, _origin) = init_repo_with_origin();
+    let root = std::fs::canonicalize(directory.path()).unwrap();
+    let app = configured(&repo, &root);
+    let project = app.project_at(0).id.clone();
+    let mut fixture = RareFixture::new("independent-workspace-delete", app);
+    delete_workspace(&mut fixture, &project, &repo).await;
+    let steps = fixture.finish().await;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].method, "workspace.delete");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn managed_branch_finish_delete_has_independent_effect_proof() {
+    let (directory, repo, _origin) = init_repo_with_origin();
+    let root = std::fs::canonicalize(directory.path()).unwrap();
+    let app = configured(&repo, &root);
+    let project = app.project_at(0).id.clone();
+    let mut fixture = RareFixture::new("independent-branch-finish", app);
+    finish_branch(&mut fixture, &project, &repo).await;
+    let steps = fixture.finish().await;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].method, "branch.finish");
 }

@@ -114,3 +114,17 @@ async fn reclaim() -> Vec<VerifiedStep> {
     fixture.verify(proof, json!({"reclaimed_workspace": workspace, "task_event": entries[0], "registration_removed": registration})).await;
     fixture.finish().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_workspace_retry_has_independent_effect_proof() {
+    let steps = retry().await;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].method, "workspace.retry");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn linked_workspace_reclaim_has_independent_effect_proof() {
+    let steps = reclaim().await;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].method, "workspace.reclaim");
+}

@@ -214,6 +214,10 @@ pub(in crate::app::tests::runtime) fn assert_mcp_reply(
     }
 }
 
+mod rpc;
+pub(in crate::app::tests::runtime) use rpc::{
+    assert_rpc_reply, cases as rpc_cases, ReadOutcome, RpcCase,
+};
 mod seed;
 pub(in crate::app::tests::runtime) use seed::{SeedContext, SeededReadInputs};
 

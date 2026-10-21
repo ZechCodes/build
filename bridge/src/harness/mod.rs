@@ -479,6 +479,12 @@ fn open_session_with_harness(
     request: SessionOpenRequest,
 ) -> Result<OpenedSession, HarnessError> {
     let policy = request.compaction_policy.clone();
+    #[cfg(test)]
+    let mut opened = match crate::test_support::agent_session::factory_for(&request.root)? {
+        Some(factory) => factory(harness.provider(), request)?,
+        None => harness.open_session(request)?,
+    };
+    #[cfg(not(test))]
     let mut opened = harness.open_session(request)?;
     refuse_a_session_nobody_can_watch(opened.session.as_ref())?;
     if let Some(policy) = policy {

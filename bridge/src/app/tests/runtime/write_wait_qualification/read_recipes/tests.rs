@@ -8,6 +8,35 @@ use std::sync::{Arc, Mutex};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_read_seed_returns_saved_wire_values_without_adding_tasks_or_workspaces() {
+    assert_eq!(verified_native_case_methods(false).await.len(), 9);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_registered_rpc_read_has_a_verified_native_case() {
+    let executed = verified_native_case_methods(true).await;
+    let actual = executed
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        actual.len(),
+        executed.len(),
+        "duplicate native read recipes"
+    );
+    let expected = super::rpc::registered_methods();
+    assert_eq!(
+        expected.len(),
+        45,
+        "audit changes to deployed read registry"
+    );
+    let unsupported = expected.difference(&actual).copied().collect::<Vec<_>>();
+    assert_eq!(
+        actual, expected,
+        "unsupported native read methods: {unsupported:?}"
+    );
+}
+
+async fn verified_native_case_methods(all_registered: bool) -> Vec<&'static str> {
     let root = tempfile::tempdir().unwrap();
     let (_repository, mut app, project) = tracked(root.path());
     let task = filed(&mut app, &project, "Reserved qualification read witness")["id"]
@@ -92,36 +121,19 @@ async fn native_read_seed_returns_saved_wire_values_without_adding_tasks_or_work
     // The passive fixture does not run an unrelated routing/delivery worker.
     let state = Arc::new(Mutex::new(app));
     let rpc = super::super::rpc::RpcHarness::new(state, WriteWaitRegistry::new());
-    let params = vec![
-        ("tasks.get", json!({"task_id":task})),
-        (
-            "tasks.waiting_on.blocks",
-            json!({"task_id":task,"limit":20}),
-        ),
-        ("tasks.review.get", json!({"task_id":task})),
-        (
-            "tasks.review.diff",
-            json!({"task_id":task,"snapshot_id":inputs.core.snapshot,"directory_id":inputs.core.directory,"mode":"blob","path":"README.md","range":{"offset":0,"bytes":4096}}),
-        ),
-        (
-            "tasks.attachment",
-            json!({"task_id":task,"path":inputs.core.task_attachment,"offset":0,"length":4096}),
-        ),
-        (
-            "thread.attachment",
-            json!({"entity_id":owner,"agent_id":agent,"path":inputs.core.thread_attachment,"offset":0,"length":4096}),
-        ),
-        ("task.doc", json!({"task_id":inputs.ordinary_plan})),
-        (
-            "task.stage_doc",
-            json!({"task_id":inputs.staged_plan,"stage_id":inputs.stage}),
-        ),
-        ("capture.get", json!({"capture_id":inputs.capture})),
-    ];
+    let mut cases: Vec<super::RpcCase> = super::rpc_cases(&inputs);
+    if !all_registered {
+        // Keep the original nine saved-value controls intact as the full
+        // registry grows; new families append after this established prefix.
+        cases.truncate(9);
+    }
     let mut replies = Vec::new();
-    for (index, (method, params)) in params.into_iter().enumerate() {
+    for (index, case) in cases.iter().enumerate() {
         let id = format!("qual/read-seed/{index}");
-        replies.push(rpc.request(index % 4, &id, method, params).await);
+        replies.push(
+            rpc.request(index % 4, &id, case.method, case.params.clone())
+                .await,
+        );
     }
     rpc.finish().await;
     for proof in &replies {
@@ -133,6 +145,12 @@ async fn native_read_seed_returns_saved_wire_values_without_adding_tasks_or_work
             proof.method
         );
         assert_ne!(proof.reply["result"]["pending"], true);
+    }
+    for (case, proof) in cases.iter().zip(&replies) {
+        assert!(matches!(
+            super::assert_rpc_reply(case, &proof.reply, &inputs),
+            super::ReadOutcome::Ready | super::ReadOutcome::LegacyFull
+        ));
     }
     let task_value = &replies[0].reply["result"];
     assert_eq!(task_value["task"]["id"], task);
@@ -179,4 +197,13 @@ async fn native_read_seed_returns_saved_wire_values_without_adding_tasks_or_work
         replies[8].reply["result"]["text"],
         "Qualification immutable router read witness"
     );
+    replies
+        .iter()
+        .map(|proof| proof.method.as_str())
+        .zip(cases.iter())
+        .map(|(method, case)| {
+            assert_eq!(method, case.method);
+            case.method
+        })
+        .collect()
 }

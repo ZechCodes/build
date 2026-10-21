@@ -221,6 +221,28 @@ impl AppState {
             .set_observation_receipts(receipts)
     }
 
+    /// Actual shell membership commits independently of borrowed plan/run
+    /// candidates. Publish only this family, preserving all other barriers.
+    pub(in crate::app) fn publish_terminal_observations(&self) {
+        if !self.snapshot_projection_initialized() {
+            return;
+        }
+        let view = self.read_view.load();
+        let Some(context) = view.observations.as_ref() else {
+            return;
+        };
+        if !context.scopes.terminals_changed(self) {
+            return;
+        }
+        let mut patch = ObservationPatch::default();
+        patch.keys.insert(InputKey::Terminals);
+        patch.scopes.terminals(self);
+        self.read_view.publish_delta(
+            super::super::read_view::SnapshotDelta::new(self.read_view.next_version())
+                .patch_observations(patch),
+        );
+    }
+
     pub(in crate::app) fn mark_observation_owner_changed(&self, id: &str) {
         self.snapshot_observations.observation_owners.mark(id);
     }

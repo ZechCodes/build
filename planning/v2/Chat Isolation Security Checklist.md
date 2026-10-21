@@ -363,3 +363,20 @@ status pages, subscriber-only confirmations, same-ID recovery and all six
 status states. Subscription continuations use status with the same IDs;
 both status and subscribe share the eight SQL sender credits. These regressions
 failed before their fixes and passed in the focused service/RPC runs.
+
+Merged-main revalidation (main `4657833f8`, source head `e80289d8e`): the
+immutable expiry fixture exposed terminal outcome/effect evidence that must
+survive result compaction. Five real-cache regressions failed first, then
+89 service/cache tests passed; a composer ownership regression also failed
+first, then 88 UI tests passed. Proven failed/unapplied expiry removes only
+its layer, preserves/restores its draft, and requires a new ID for a new user
+action. Other expired outcomes stay unresolved. The scoped score stays
+**100/100**; the full-suite gate remains separate.
+
+Frozen skriftapp Ruff and pytest passed again (957 passed, one existing skip),
+as did SPA lint, captures and build, all with exit 0 under `nice -n 10`.
+The completed full SPA run exited 1: 728 files and 11,239 tests passed;
+one cold-cache directory-rebinding browser case timed out in unchanged
+`workspaceDirectories.test.js`. That entire file then passed all 14 tests
+in each of three isolated runs, each exit 0. It remains unchanged and the
+full-suite failure is not classified as pre-existing from those reruns alone.

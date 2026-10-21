@@ -3255,6 +3255,9 @@ gate attachment display.
   Named refresh obligations survive reload independently of overlays. This
   foundation consumes inline results; an unknown result reference remains
   unresolved and cannot become success or authorize retransmission.
+  Expired-result tombstones retain their outcome and effect. Proven
+  failed/unapplied tombstones remove only their layer and restore the draft;
+  the expired operation ID never resolves successfully or executes again.
   Task comments and thread posts display cached operation errors beside the
   composer, retain the draft, and distinguish a new-action Retry from same-ID
   Check again. The method allowlist is empty until bridge execution slices enable

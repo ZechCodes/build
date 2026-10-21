@@ -162,9 +162,43 @@ fn deleting_the_project_keeps_its_sources(bridge: &Bridge, project: &Project) {
         .to_string();
     bridge.ok(
         "thread.post",
-        json!({ "entity_id": project.owner, "agent_id": worker, "body": "anything?" }),
+        json!({
+            "entity_id": project.owner,
+            "agent_id": worker,
+            "operation_id": "op-last-worker-before-delete",
+            "body": "anything?",
+        }),
     );
     bridge.wait_for_state(&project.owner, &worker, "live");
+    // A live tab is published before send_turn returns. The runner records
+    // delivery and clears its in-flight mark under the same app guard.
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let operation = bridge.ok(
+            "thread.operation",
+            json!({
+                "entity_id": project.owner,
+                "agent_id": worker,
+                "operation_id": "op-last-worker-before-delete",
+            }),
+        );
+        assert!(
+            operation["operation_error"].is_null(),
+            "worker delivery failed: {operation}"
+        );
+        if operation["status"] == "delivered" {
+            break;
+        }
+        assert!(
+            matches!(operation["status"].as_str(), Some("queued" | "claimed")),
+            "unexpected worker delivery status: {operation}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "worker delivery never settled: {operation}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let edit = project.repo.join("uncommitted.txt");
     std::fs::write(&edit, "mine\n").unwrap();
     let scratch = scratch_of(&project.root);

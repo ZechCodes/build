@@ -262,6 +262,43 @@ mode 0600. It skips active IDs, symlinks and `.git`, with bounded traversal.
 Creation refuses that reserved staging destination namespace, including case
 variants, so a published user file cannot be mistaken for an orphan on boot.
 
+File writes, creation, host `fs.mkdir`, and upload operations use the deferred
+drain in `app/fs/deferred.rs`. They capture source identities under the app
+mutex, resolve paths and acquire filesystem-root serialization off it, then
+validate the captured records before running filesystem service work. Final publication
+invalidates observations and installs any reopened workspace record; its
+manifest is persisted off the app mutex. The existing deferred-job count keeps
+workspace removal and metadata changes out while these stages run.
+Filesystem-root locks have their own namespace keyed by the canonical root,
+separate from Git's common-directory `source_sync::SyncLock`, so a fetch or a
+Git mutation does not make an editor save wait for the repository lock.
+Editor writes and upload finish also hold a destination lock keyed by the
+canonical parent and literal filename, so overlapping source roots serialize
+revision checks and replacement. Their contention waits share a five-second
+budget, and both remain held through final publication.
+An in-memory lease also retains the recorded source root through that final
+publication. `project.remove_source` refuses `busy` while that source is in use;
+unrelated sources can still be removed. The check does not resolve paths or
+wait for filesystem work under the app mutex.
+
+Filesystem service and final publication are separate stages. A write can
+already have changed bytes on disk when publication refuses a moved source
+or a new reclaim reservation, or when persisting the reopened workspace fails.
+The error response does not roll back those bytes. Closing this window belongs
+to step 6b's acknowledgement and confirmation work; the current staging does
+not make disk changes and publication one atomic operation.
+
+Upload admission and quota accounting remain in app state. Staging descriptors
+have separate ownership, so chunk writes, publication, cancellation cleanup,
+session-end cleanup and idle cleanup run outside the app mutex. Finish claims
+publication before its sync and rename: cancellation before that claim wins;
+after it, finish owns the result and invalidation even if the session closes.
+Cancellation does not wait for a staging mutex held by an in-flight service.
+That service retains the staging file and performs cleanup after it finishes.
+Intermediate stages retain the verb's original result-type check. Only the
+final successful stage stamps user activity; that existing `save_user_session`
+call still runs under the app mutex and remains a known #681 violation for step 6b.
+
 `thread.page` is a message-counted page with folded activity digests. Wire
 3.20.0 announces `threads.leanActivity`: with optional `activity: "newest"`,
 each activity run between non-activity items ships exactly its newest item,

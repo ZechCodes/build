@@ -153,9 +153,9 @@ every verb live in `fixtures/api/v1/` and are checked by
 - It answers signaling (`rtc.*`) and attachment writes at once, without
   queueing, so a negotiation never waits behind other work.
 
-The six SQL reads (`thread.page`, `thread.activity`, `thread.operation`,
-`tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`) enter a separate lane
-before terminal or write admission. `carrier/sql.rs` owns eight dedicated
+The seven SQL reads (`thread.page`, `thread.activity`, `thread.operation`,
+`thread.revision`, `tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`) enter a
+separate lane before terminal or write admission. `carrier/sql.rs` owns eight dedicated
 threads and a fair queue with at most 16 waiting callers per session opening.
 Callers waiting for a read connection still count against that bound. Excess
 SQL parks ordered intake on its carrier; it never returns capacity `busy`.
@@ -168,16 +168,27 @@ ping/signaling fast paths bypass this lane. The daemon calls
 constructing intake or accepting relay/client work, so all eight SQL workers
 are ready before the first read. Handler clones share that executor.
 
-The nine published reads (`board.list`, `project.list`, `workspace.list`,
-`workspace.get`, `agent.list`, `settings.get`, `models.list`, `harnesses.list`
-and `bridge.update_status`) answer at intake from immutable snapshots. They
-take no SQL permit, dispatch slot or app lock, including when those lanes are
-full. Typed parameter normalization and result validation still apply.
+The fifteen published reads (`board.list`, `project.list`, `workspace.list`,
+`workspace.get`, `agent.list`, `settings.get`, `models.list`, `harnesses.list`,
+`bridge.update_status`, `capture.get`, `task.get`, `task.stages`, `tasks.columns`,
+`stream.events` and `stream.state`) answer at intake from immutable snapshots.
+They take no SQL permit, dispatch slot or app lock, including when those lanes are
+full. Typed parameter normalization and result validation still apply to v1
+verbs; the two stream reads retain their legacy shapes and QA-only gate.
 
-The 22 remaining observation reads (filesystem/Git, stage documents, review
-reads, attachments, archives, GitHub repositories and Git initialization
-options) enter an independent fair I/O lane before write admission. It reuses
-the SQL lane's bounded per-opening queue and queued-only folding, with its own
+The task detail and stage snapshots follow committed owner publication,
+including changes to a linked implementation. Task history is rendered from
+the same published conversation history as workspace detail; unwindowed task
+reads retain the resident-history boundary. Capture writes
+publish their saved record, and retirement removes it. QA stream producers
+publish each event and its updated head together; an incremental output digest
+keeps state reads independent of log length. The SPA still calls `task.get`
+and `term.list`, so both legacy surfaces remain available.
+
+The 23 observation reads (filesystem/Git, stage documents, review
+reads, attachments, archives, GitHub repositories, Git initialization options
+and `term.list`) enter an independent fair I/O lane before write admission.
+It reuses the SQL lane's bounded per-opening queue and queued-only folding, with its own
 16-caller backlog and up to eight dedicated I/O threads. I/O threads start on
 demand and are reused; they are not all started before the first read. Excess
 intake waits without capacity refusals. Review and task-attachment metadata preparation runs on the
@@ -213,7 +224,8 @@ work and retain their dispatch worker until they finish.
    shared state (`session.hello`, `bridge.stats`, `term.*`, `agent.attach`,
    `agent.start`, `agent.interrupt`).
 4. `routed()` → `AppState::route` → `crate::api::v1::dispatch`, then the legacy
-   arms (`ping`, `term.list`, `term.close`, `stream.*`).
+   arms (`ping`, `term.close`, and legacy fixture dispatch). Native read frames
+   have already entered their snapshot, SQL or observation lane at intake.
 
 Routed requests retain their update-admission lease through the reply and
 share it with delivery and compaction workers. Their drain does not acquire
@@ -313,7 +325,7 @@ would stop the runtime's I/O driver; `bridge/src/app/tests/runtime/off_the_worke
 holds that line on a one-worker runtime. Parts that must not wait on the lock have their
 own: WebRTC peers sit behind an `RwLock` (`PeersSlot` in `bridge/src/app/rtc.rs`),
 and `Store` wraps its own connection mutex (`bridge/src/store.rs`). Store
-clones share one writer connection. The six migrated SQL RPCs instead borrow
+clones share one writer connection. The seven migrated SQL RPCs instead borrow
 one of eight read-only, query-only WAL connections from `store/read_pool.rs`.
 A fair asynchronous permit supplies one borrower; a fresh request transaction
 covers all related rows and ends before the connection returns. Those RPCs

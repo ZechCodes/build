@@ -18,8 +18,7 @@ fn fixture() -> (
 
 fn params(method: &str, opened: &Value) -> Value {
     let binding = &opened["review"]["bindings"][0];
-    let mut value =
-        json!({"task_id":opened["review"]["task_id"],"expected_version":opened["review"]["version"]});
+    let mut value = json!({"task_id":opened["review"]["task_id"],"expected_version":opened["review"]["version"]});
     match method {
         "tasks.review.snapshot" => value["workspace_id"] = opened["review"]["workspace_id"].clone(),
         "tasks.review.close" => value["description"] = json!("Closed after review"),
@@ -245,4 +244,158 @@ fn delayed_lifecycle_observations_preserve_newer_close_and_replacement() {
             .clone();
         assert_eq!(after, before, "delayed {method} overwrote replacement");
     }
+}
+
+fn published_statuses(app: &AppState, opened: &Value) -> (Value, Value) {
+    let view = app.read_view.load();
+    let workspace = opened["review"]["workspace_id"].as_str().unwrap();
+    let workspace_status =
+        view.get("workspace.get", workspace).unwrap()["active_review"]["status"].clone();
+    let task_status = view.get("board.list", "").unwrap()["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["task_id"] == opened["task"]["id"])
+        .unwrap()["review_summary"]["status"]
+        .clone();
+    (workspace_status, task_status)
+}
+
+#[test]
+fn pending_close_keeps_workspace_and_watched_task_publication_consistent() {
+    let (_home, _repository, shared, opened) = fixture();
+    let request = params("tasks.review.close", &opened);
+    assert_eq!(
+        published_statuses(&shared.lock().unwrap(), &opened),
+        (json!("open"), json!("open"))
+    );
+    let job = defer(&shared, "tasks.review.close", &request).unwrap();
+    // Admission cannot publish the completed watched task while its workspace
+    // still has the accepted open summary and its SQL observation is pending.
+    assert_eq!(
+        published_statuses(&shared.lock().unwrap(), &opened),
+        (json!("open"), json!("open"))
+    );
+    let done = job.run();
+    assert_eq!(
+        published_statuses(&shared.lock().unwrap(), &opened),
+        (json!("open"), json!("open"))
+    );
+    shared
+        .lock()
+        .unwrap()
+        .apply_deferred("tasks.review.close", &request, done)
+        .unwrap();
+    assert_eq!(
+        published_statuses(&shared.lock().unwrap(), &opened),
+        (json!("closed"), json!("closed"))
+    );
+}
+
+#[test]
+fn close_writer_rejects_review_version_changed_after_admission() {
+    let (_home, _repository, shared, opened) = fixture();
+    let request = params("tasks.review.close", &opened);
+    let job = defer(&shared, "tasks.review.close", &request).unwrap();
+    let task = opened["task"]["id"].as_str().unwrap();
+    review_call(
+        &mut shared.lock().unwrap(),
+        "tasks.comment",
+        json!({
+            "task_id":task,"body":"New opinion before close commits",
+            "opinion":{"snapshot_id":opened["review"]["snapshots"][0]["id"],"verdict":"approve"}
+        }),
+    );
+    let done = job.run();
+    let mut app = shared.lock().unwrap();
+    let error = app
+        .apply_deferred("tasks.review.close", &request, done)
+        .unwrap_err();
+    assert!(error.contains("stale_version"), "{error}");
+    let review = app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_review(task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(review.version, 2);
+    assert!(review.completion.is_none());
+    assert_eq!(
+        published_statuses(&app, &opened),
+        (json!("approved"), json!("approved"))
+    );
+}
+
+fn task_actions(app: &mut AppState, owner: &str, agent: &str) -> Vec<Value> {
+    let page = review_call(
+        app,
+        "thread.page",
+        json!({"entity_id":owner,"agent_id":agent,"limit":50}),
+    );
+    page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["data"].get("task_action").cloned())
+        .collect()
+}
+
+#[test]
+fn close_projection_failure_still_delivers_captured_completion_once() {
+    let (_home, _repository, shared, opened) = fixture();
+    let request = params("tasks.review.close", &opened);
+    let (owner, agent, store, job) = {
+        let mut app = shared.lock().unwrap();
+        let workspace = opened["review"]["workspace_id"].as_str().unwrap();
+        let project = app.workspaces.get(workspace).unwrap().project_id.clone();
+        let (owner, agent) = project_agent(&mut app, &project);
+        app.review_close(
+            serde_json::from_value(request.clone()).unwrap(),
+            crate::tracker::Actor::Agent {
+                agent_id: agent.clone(),
+            },
+        )
+        .unwrap();
+        (
+            owner,
+            agent,
+            app.store.clone().unwrap(),
+            app.take_deferred().unwrap(),
+        )
+    };
+    store
+        .writer_for_test()
+        .execute_batch("ALTER TABLE review_sync_observations RENAME TO hidden_sync_observations")
+        .unwrap();
+    let done = job.run();
+    store
+        .writer_for_test()
+        .execute_batch("ALTER TABLE hidden_sync_observations RENAME TO review_sync_observations")
+        .unwrap();
+    let mut app = shared.lock().unwrap();
+    assert!(
+        task_actions(&mut app, &owner, &agent).is_empty(),
+        "completion side effects wait for apply"
+    );
+    let error = app
+        .apply_deferred("tasks.review.close", &request, done)
+        .unwrap_err();
+    assert!(error.contains("review_sync_observations"), "{error}");
+    let actions = task_actions(&mut app, &owner, &agent);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_eq!(actions[0]["action"], "moved");
+    assert_eq!(actions[0]["to"], "done");
+    let review = store
+        .load_review(opened["task"]["id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        review.completion.unwrap().actor.agent_id(),
+        Some(agent.as_str())
+    );
+    assert_eq!(
+        published_statuses(&app, &opened),
+        (json!("closed"), json!("closed"))
+    );
 }

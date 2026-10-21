@@ -165,6 +165,25 @@ impl Store {
         })
     }
 
+    /// Capture the completed task for publication after off-lock completion.
+    #[cfg(test)]
+    pub(crate) fn complete_review_with_task(
+        &self,
+        task_id: &str,
+        expected_version: u64,
+        actor: &Actor,
+        description: &str,
+    ) -> Result<(Review, Task, Vec<TaskEvent>), StoreError> {
+        let (review, events) =
+            self.complete_review_with_events(task_id, expected_version, actor, description)?;
+        let task =
+            self.load_tracker_task(task_id)?
+                .ok_or_else(|| StoreError::ReviewTaskNotFound {
+                    task_id: task_id.into(),
+                })?;
+        Ok((review, task, events))
+    }
+
     /// A task move to Done completes a review if it is open at the moment of
     /// the write. The check and all task activity share one transaction, so a
     /// snapshot reopening the review cannot slip between them.

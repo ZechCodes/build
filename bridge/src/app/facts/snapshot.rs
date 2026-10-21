@@ -1,6 +1,8 @@
 //! Bounded, immutable inputs for a push flush. No application/store handle is
 //! consulted while rendering these rows and conversation tails.
 
+mod terminals;
+
 use super::observations::{CheckoutObservation, ObservationRequest, ObservationSink};
 use super::{AppState, CheckoutSubject, ReadSubject};
 use crate::app::read_view::shared_json::DigestPatch;
@@ -279,7 +281,16 @@ impl FactsSource {
     }
 
     pub(super) fn entity_ids(&self) -> Vec<String> {
-        self.view.load().facts.subjects.keys().cloned().collect()
+        let snapshot = self.view.load();
+        snapshot
+            .facts
+            .subjects
+            .keys()
+            .chain(snapshot.facts.terminals.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 }
 
@@ -492,47 +503,6 @@ pub(in crate::app) fn entity_facts(
 }
 
 impl AppState {
-    /// A shell does not change board rows, workspace details, histories, or
-    /// observation identities. Reuse the accepted checkout subjects to update
-    /// precisely the tab lists rooted here, without probing unrelated paths.
-    pub(in crate::app) fn publish_terminal_facts_at(&self, root: &std::path::Path) -> Vec<String> {
-        #[cfg(test)]
-        let _phase = crate::timing::phase_samples::phase("terminals.facts");
-        let root = self.snapshot_root(root);
-        let previous = self.read_view.load();
-        let updates = previous
-            .facts
-            .subjects
-            .iter()
-            .filter(|(_, subject)| self.snapshot_root(&subject.root) == root)
-            .map(|(entity, subject)| {
-                let scope = super::super::runtime::terminals::TerminalScope {
-                    root: root.clone(),
-                    source: subject.terminal_source.clone(),
-                };
-                (
-                    entity.clone(),
-                    Arc::clone(subject),
-                    Arc::new(json!({"tabs":self.shell_tabs_for(&scope)})),
-                )
-            })
-            .collect::<Vec<_>>();
-        if !updates.is_empty() && self.can_publish_snapshot_projection() {
-            self.read_view.publish_current(|current, version| {
-                #[cfg(test)]
-                let _phase = crate::timing::phase_samples::phase("terminals.facts.clone");
-                let mut facts = (*current.facts).clone();
-                for (entity, subject, tabs) in &updates {
-                    if current.facts.same_subject(entity, subject) {
-                        facts.terminals.insert(entity.clone(), Arc::clone(tabs));
-                    }
-                }
-                Some(crate::app::read_view::SnapshotDelta::new(version).set_facts(Arc::new(facts)))
-            });
-        }
-        updates.into_iter().map(|(entity, _, _)| entity).collect()
-    }
-
     pub(in crate::app) fn push_facts_shared_snapshot(&self, lists: SharedJson) -> PushFacts {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.push_facts");
@@ -559,6 +529,7 @@ impl AppState {
         #[cfg(test)]
         drop(owners_phase);
         self.capture_push_checkouts(&mut snapshot, &previous.facts);
+        self.capture_terminal_aliases(&mut snapshot, &previous.facts);
         self.capture_push_entities(&mut snapshot, &previous.facts);
         snapshot
     }
@@ -605,9 +576,11 @@ impl AppState {
                 }
             }
             {
+                let mut scope = subject.terminal_scope();
+                scope.root = self.cached_snapshot_root(&scope.root);
                 snapshot.terminals.insert(
                     entity.clone(),
-                    Arc::new(json!({"tabs": self.shell_tabs_for(&subject.terminal_scope())})),
+                    Arc::new(json!({"tabs": self.shell_tabs_for(&scope)})),
                 );
             }
             {

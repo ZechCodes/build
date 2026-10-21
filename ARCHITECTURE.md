@@ -452,16 +452,23 @@ receipt before replying. Merge prune uses the same registration checks after
 successful removal; its existing synchronous filesystem work remains guarded.
 Process kill and reap still run separately through `reaper.rs::Retirement`.
 
-User shell creation reserves a terminal slot and a checkout lifecycle hold,
-opens the PTY outside the app mutex, then revalidates the scope before committing
-the tab. Pending shells count toward the cap and prevent source movement. A
-failed or invalidated spawn releases its reservation and retires any opened
-child. Terminal open, close and cleanup publish only terminal rows for the
-affected accepted checkout subjects, preserving unrelated snapshot chunks and
-using cached path observations for notification aliases. Opening a terminal no
-longer promotes board attention; it still records user activity and pushes the
-terminal row. Its user-session persistence runs outside the app mutex, with a
-conditional save that cannot overwrite newer activity.
+User shell creation captures registered scope identity under a brief app guard,
+resolves its physical path outside the app mutex, then reserves a terminal slot
+and a **per-checkout** lifecycle hold. The PTY opens outside the mutex; another
+off-lock path probe and a guarded identity check precede registration. Pending
+shells count toward the cap and prevent movement, deletion, locking and reclaim
+of their own checkout. Other checkouts remain available. A failed or invalidated
+spawn retires its opened child before releasing the reservation.
+
+Terminal open, close and cleanup publish only terminal rows for the affected
+checkout aliases, including aliases awaiting their first full publication.
+They preserve unrelated snapshot chunks and use stored path observations for
+notification aliases. Full publications refresh any terminal-only aliases that
+remain registered. Opening a terminal no longer promotes board attention; it
+still records user activity and pushes the terminal row. Its user-session
+persistence runs outside the app mutex, with a conditional save that cannot
+overwrite newer activity. The reply still waits for that save; acknowledgment
+before persistence belongs to the separate ack-then-confirm step (6b).
 
 Task creation, updates and dependency edits capture their watched board rows
 and affected neighbors inside the SQL transaction. A failed projection read

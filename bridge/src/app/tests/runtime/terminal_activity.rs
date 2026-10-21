@@ -203,9 +203,18 @@ fn assert_terminal_attention_does_not_wait(run_scope: bool) {
             .is_none(),
         "{phases}"
     );
+    assert_delayed_attention_merge(&store, &entity, &attention, &newer);
+}
+
+fn assert_delayed_attention_merge(
+    store: &crate::store::Store,
+    entity: &str,
+    attention: &crate::attention::Attention,
+    newer: &crate::attention::Attention,
+) {
     assert!(
         settles(|| {
-            store.load_attention().get(&entity).is_some_and(|saved| {
+            store.load_attention().get(entity).is_some_and(|saved| {
                 saved.last_interaction_at == attention.last_interaction_at
                     && saved.muted
                     && saved.seen_state_at == newer.seen_state_at

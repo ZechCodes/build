@@ -78,6 +78,7 @@ mod tracker;
 pub(crate) use task_observation::{TrackerTaskObservation, TrackerTaskPublication};
 mod waiting_on;
 pub use waiting_on::{DependencyDigest, DependencySummary, DependentsPage, WaitingOnPage};
+mod terminal_attention;
 mod user_session;
 mod workspace_lifecycle;
 
@@ -254,6 +255,7 @@ pub struct Store {
     dir: PathBuf,
     conn: Arc<Mutex<Connection>>,
     read_pool: ReadPool,
+    attention_map_epoch: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) waiting_on_wakeup: Arc<tokio::sync::Notify>,
     /// Test-only: make the next write fail.
     ///
@@ -366,6 +368,7 @@ impl Store {
             dir,
             read_pool,
             conn,
+            attention_map_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             waiting_on_wakeup: Arc::new(tokio::sync::Notify::new()),
             #[cfg(test)]
             fail_next_write: Arc::new(std::sync::atomic::AtomicBool::new(false)),

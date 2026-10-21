@@ -464,10 +464,18 @@ Terminal open, close and cleanup publish only terminal rows for the affected
 checkout aliases, including aliases awaiting their first full publication.
 They preserve unrelated snapshot chunks and use stored path observations for
 notification aliases. Full publications refresh any terminal-only aliases that
-remain registered. Opening a terminal no longer promotes board attention; it
-still records user activity and pushes the terminal row. Its user-session
-persistence runs outside the app mutex, with a conditional save that cannot
-overwrite newer activity. The reply still waits for that save; acknowledgment
+remain registered. Opening a scoped terminal retains its workspace/run
+interaction stamp and board revision bump. Its attention fields patch the
+accepted shared rows without rendering workspace details or a global projection.
+An asynchronous store merge preserves newer seen/mute/cursor state and the exact
+captured resume boundary; the reply does not wait for this attention save.
+Durable run/task rows fence insertion against deletion. External checkout stamps
+may insert their first row while the captured full-map save epoch is current; a
+later live-map replacement cancels that delayed write. Managed workspace IDs
+update only existing rows, matching their exclusion from the old live-map save.
+Terminal creation also records user activity and pushes the terminal row. Its
+user-session persistence runs outside the app mutex, with a conditional save that
+cannot overwrite newer activity. The reply still waits for that save; acknowledgment
 before persistence belongs to the separate ack-then-confirm step (6b).
 
 Task creation, updates and dependency edits capture their watched board rows

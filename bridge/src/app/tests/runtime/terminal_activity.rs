@@ -102,12 +102,13 @@ fn assert_terminal_attention_does_not_wait(run_scope: bool) {
         previous_session_ended_ms: None,
     };
     app.initialize_snapshot_projection();
-    let before_revision = app.changes().board_revision();
     let samples = app.frame_clock.capture_phases();
     let store = app.store.clone().unwrap();
     let state = Arc::new(Mutex::new(app));
     state.lock().unwrap().self_handle = Some(Arc::downgrade(&state));
     let handler = AppState::handler(Arc::clone(&state));
+    let mut subscription = BoardSubscriber::new(&state);
+    let before_revision = subscription.bus.board_revision();
     let writer = store.writer_for_test();
     let selector = if run_scope {
         json!({"run_id":entity})
@@ -154,6 +155,7 @@ fn assert_terminal_attention_does_not_wait(run_scope: bool) {
         )
     };
     let phases = samples.snapshot();
+    let pushes = subscription.flush();
     let closed = call(
         &handler,
         "term.close",
@@ -174,6 +176,16 @@ fn assert_terminal_attention_does_not_wait(run_scope: bool) {
         before_revision + 1,
         "terminal open must bump board recency once"
     );
+    assert!(
+        pushes.iter().any(|event| {
+            event["items"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["entity_id"] == crate::changes::BOARD_ITEM_ID)
+            })
+        }),
+        "workspace and run opens must publish their board recency bump: {pushes:?}"
+    );
     if run_scope {
         let row = published["runs"]
             .as_array()
@@ -184,7 +196,7 @@ fn assert_terminal_attention_does_not_wait(run_scope: bool) {
         assert_eq!(row["attention"]["resume_at"], json!(attention.resume_at));
     }
     assert_eq!(counts.workspace_details_full, 0, "{counts:?}");
-    assert!(counts.workspace_details_scoped <= 1, "{counts:?}");
+    assert_eq!(counts.workspace_details_scoped, 0, "{counts:?}");
     assert!(
         phases["term.create"]
             .get("entered.publication.global")
@@ -201,4 +213,127 @@ fn assert_terminal_attention_does_not_wait(run_scope: bool) {
         }),
         "delayed interaction must merge with current durable seen/mute state"
     );
+}
+
+#[tokio::test]
+async fn terminal_attention_first_external_interaction_publishes_and_persists() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_repository, mut app, project) = tracker::tracked(directory.path());
+    app.term_shell = "/bin/sh".into();
+    let root = app.projects.get(&project).unwrap().repo_path.clone();
+    add_external_worktree(
+        &root,
+        directory.path(),
+        "external-attention",
+        "external-attention",
+    );
+    let owner = app
+        .scan_external_worktrees_now(&project)
+        .unwrap()
+        .into_iter()
+        .find(|worktree| worktree.branch.as_deref() == Some("external-attention"))
+        .unwrap()
+        .id;
+    app.initialize_snapshot_projection();
+    assert!(app.board.attention().attention(&owner).is_none());
+    let store = app.store.clone().unwrap();
+    let state = Arc::new(Mutex::new(app));
+    state.lock().unwrap().self_handle = Some(Arc::downgrade(&state));
+    let handler = AppState::handler(Arc::clone(&state));
+    let created = call(
+        &handler,
+        "term.create",
+        json!({"project_id":project, "worktree_id":owner}),
+    );
+    assert_eq!(created["ok"], true, "{created}");
+    let (attention, published, child) = {
+        let app = state.lock().unwrap();
+        let key = app
+            .tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap())
+            .unwrap();
+        (
+            app.attention_json(&owner),
+            app.read_view.load().get_owned("board.list", "").unwrap(),
+            Arc::clone(&app.session_registry.test_tab(&key).unwrap().session),
+        )
+    };
+    let closed = call(
+        &handler,
+        "term.close",
+        json!({"term_id":created["result"]["term_id"]}),
+    );
+    child.end();
+    assert!(child.exited_within(Duration::from_secs(2)));
+    assert_eq!(closed["ok"], true, "{closed}");
+    let row = published["external_worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["worktree_id"] == owner)
+        .unwrap();
+    assert_eq!(row["attention"]["resume_at"], attention["resume_at"]);
+    assert_eq!(row["attention"]["interacted"], attention["interacted"]);
+    assert_eq!(row["attention"]["seen"], attention["seen"]);
+    assert!(row["attention"]["anchor"].is_string());
+    assert_eq!(attention["interacted"], true);
+    assert!(
+        settles(|| store.load_attention().get(&owner).is_some_and(|saved| {
+            json!(saved.resume_at) == attention["resume_at"] && saved.last_interaction_at.is_some()
+        })),
+        "first external interaction must retain its previous durable semantics"
+    );
+}
+
+// Managed workspace summaries expose their selected run's attention, not an
+// attention field for Workspace.id itself. Its existing recency signal is the
+// board revision push; assert that signal without redirecting the owner stamp.
+struct BoardSubscriber {
+    bus: Arc<crate::changes::ChangeBus>,
+    receiver: tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
+    key: String,
+}
+
+impl BoardSubscriber {
+    fn new(state: &Arc<Mutex<AppState>>) -> Self {
+        let bus = {
+            let mut app = state.lock().unwrap();
+            assert!(app
+                .facts_handle
+                .set(crate::app::facts::FactsSource::new(
+                    app.read_view.clone(),
+                    std::sync::Weak::new(),
+                ))
+                .is_ok());
+            app.changes = crate::app::facts::bus_with_sources(
+                Duration::ZERO,
+                &app.watchers,
+                &app.facts_handle,
+            );
+            app.changes()
+        };
+        let (session, receiver, key) = SessionSender::observable("terminal-attention-subscriber");
+        bus.subscribe(
+            &session,
+            crate::changes::SubscriptionSpec {
+                id: "board".into(),
+                scope: crate::changes::Scope::Board,
+                kinds: [crate::changes::Kind::State].into_iter().collect(),
+                mode: Default::default(),
+                priority: Default::default(),
+            },
+        );
+        let mut subscriber = Self { bus, receiver, key };
+        subscriber.bus.note_board();
+        assert!(!subscriber.flush().is_empty());
+        subscriber
+    }
+
+    fn flush(&mut self) -> Vec<Value> {
+        self.bus.flush();
+        let mut events = Vec::new();
+        while let Ok(envelope) = self.receiver.try_recv() {
+            events.push(SessionSender::decrypt_push(&self.key, &envelope));
+        }
+        events
+    }
 }

@@ -1,4 +1,5 @@
 mod post_scope;
+mod terminal;
 
 use crate::app::{named_agent_id, require_str, thread_cursor, thread_detail};
 use crate::run::RunState;

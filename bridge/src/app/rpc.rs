@@ -369,7 +369,21 @@ fn session_scoped(
         "term.create" => {
             #[cfg(test)]
             pause_terminal_create_after_admission(state, timer);
-            term_create(state, params, timer)
+            let created = term_create(state, params, timer);
+            if created.is_ok() {
+                if let Some(owner) = params
+                    .get("workspace_id")
+                    .or_else(|| params.get("run_id"))
+                    .or_else(|| params.get("worktree_id"))
+                    .and_then(Value::as_str)
+                {
+                    let save = { timer.lock(state).touch_terminal_attention(owner) };
+                    if let Some(save) = save {
+                        save.spawn();
+                    }
+                }
+            }
+            created
         }
         "term.attach" => term_attach(state, sender, params, timer),
         // A write to a child's pty blocks while the child is not draining, so

@@ -295,6 +295,21 @@ impl FactsSource {
 }
 
 impl PushFacts {
+    pub(in crate::app) fn patch_terminal_attention(
+        &mut self,
+        patch: &mut crate::app::read_view::shared_json::AttentionPatch<'_>,
+    ) {
+        for row in self
+            .states
+            .values_mut()
+            .chain(std::iter::once(&mut self.lists))
+        {
+            if let Some(next) = patch.apply(row) {
+                *row = next;
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(in crate::app) fn apply_committed_history_delta(
         &mut self,

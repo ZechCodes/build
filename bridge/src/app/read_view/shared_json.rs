@@ -4,6 +4,9 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+mod attention;
+pub(in crate::app) use attention::AttentionPatch;
+
 #[derive(Clone, Debug)]
 pub struct SharedJson(Arc<Node>);
 

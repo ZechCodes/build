@@ -1,5 +1,6 @@
 //! Always attempt owned fixture cleanup before surfacing setup/oracle failures.
 use super::*;
+use std::time::Instant;
 
 impl QualificationFixture {
     pub(super) async fn counts_and_shutdown(self) -> NativeCounts {

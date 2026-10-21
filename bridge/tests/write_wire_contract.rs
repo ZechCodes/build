@@ -87,3 +87,70 @@ fn successful_confirmation_uses_the_complete_tasks_comment_result() {
         confirmation["result"]
     );
 }
+
+#[test]
+fn status_fixtures_cover_all_recovery_states_and_a_two_page_cursor() {
+    let nested = fixture("status");
+    let served: Value =
+        serde_json::from_str(include_str!("../../fixtures/api/v1/writes.status.json")).unwrap();
+    for contract in [&nested, &served] {
+        roundtrip::<StatusParams>(contract["params"].clone());
+        roundtrip::<StatusResult>(contract["result"].clone());
+        let states: std::collections::BTreeSet<_> = contract["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|operation| operation["state"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            states,
+            [
+                "accepted",
+                "executing",
+                "succeeded",
+                "failed",
+                "not_found",
+                "result_expired"
+            ]
+            .into_iter()
+            .collect(),
+            "status fixtures cover every recovery state"
+        );
+        let pages = contract["examples"]
+            .as_array()
+            .expect("two pagination examples");
+        assert_eq!(pages.len(), 2);
+        for page in pages {
+            roundtrip::<StatusParams>(page["params"].clone());
+            roundtrip::<StatusResult>(page["result"].clone());
+            assert_eq!(
+                page["params"]["operation_ids"], contract["params"]["operation_ids"],
+                "pagination keeps the complete ordered operation set"
+            );
+        }
+        assert!(pages[0]["result"]["next_cursor"].is_string());
+        assert_eq!(
+            pages[1]["params"]["cursor"],
+            pages[0]["result"]["next_cursor"]
+        );
+        assert!(pages[1]["result"].get("next_cursor").is_none());
+        let combined: Vec<_> = pages
+            .iter()
+            .flat_map(|page| {
+                page["result"]["operations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .cloned()
+            })
+            .collect();
+        assert_eq!(
+            combined,
+            *contract["result"]["operations"].as_array().unwrap(),
+            "the continuation covers the ordered operation set without gaps"
+        );
+    }
+    assert_eq!(nested["params"], served["params"]);
+    assert_eq!(nested["result"], served["result"]);
+    assert_eq!(nested["examples"], served["examples"]);
+}

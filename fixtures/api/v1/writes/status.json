@@ -3,7 +3,12 @@
   "since": "3.24.0",
   "params": {
     "operation_ids": [
-      "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a"
+      "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a",
+      "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b",
+      "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301c",
+      "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301d",
+      "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301e",
+      "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301f"
     ]
   },
   "result": {
@@ -41,7 +46,383 @@
             }
           ]
         }
+      },
+      {
+        "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b",
+        "revision": 2,
+        "state": "executing",
+        "ack": {
+          "phase": "ack",
+          "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b",
+          "revision": 1,
+          "state": "accepted",
+          "accepted_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6",
+          "owners": [
+            {
+              "kind": "project",
+              "id": "proj-1",
+              "sequence": 43,
+              "generation": 0
+            }
+          ]
+        },
+        "result": {
+          "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+          "comment_id": "tc-executing-reserved",
+          "accepted_at": "2026-10-21T15:00:00Z",
+          "overlay": [
+            {
+              "kind": "task_comment",
+              "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+              "comment_id": "tc-executing-reserved",
+              "body": "Reproduced: the drop handler writes before the column read settles."
+            }
+          ]
+        }
+      },
+      {
+        "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301c",
+        "revision": 4,
+        "state": "succeeded",
+        "result": {
+          "task": {
+            "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "project_id": "proj-1",
+            "number": 12,
+            "title": "Kanban drag does not persist",
+            "body": "Dragging a card to In review puts it back on the next paint.",
+            "state": "open",
+            "status": "in_progress",
+            "labels": [
+              "bug",
+              "ui"
+            ],
+            "priority": "high",
+            "assignee": {
+              "kind": "agent",
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+            },
+            "links": {
+              "workspace_ids": [
+                "ws-3f2a91c4"
+              ],
+              "branches": [
+                "build/tasks-board"
+              ],
+              "commits": [
+                "c8381faa9b1d4e6f2a0c7b5e3d8f1a2c4b6d8e0f"
+              ],
+              "conversation_ids": [
+                "run-5d90b1e7"
+              ],
+              "parent_task_id": null
+            },
+            "trackers": [
+              "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+            ],
+            "identities": {},
+            "attachments": [],
+            "created_by": {
+              "kind": "user"
+            },
+            "created_at": "2026-09-19T09:00:00Z",
+            "updated_at": "2026-09-19T10:12:00Z",
+            "closed_at": null
+          },
+          "comment": {
+            "id": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "author": {
+              "kind": "agent",
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+            },
+            "body": "Reproduced: the drop handler writes before the column read settles.",
+            "mentions_user": true,
+            "refs": [
+              {
+                "kind": "file",
+                "path": "spa/src/views/board.js",
+                "line_start": 88,
+                "line_end": 94
+              }
+            ],
+            "attachments": [],
+            "created_at": "2026-09-19T10:11:00Z",
+            "author_context": {
+              "tokens": 190000,
+              "window": 1000000,
+              "compact_at": 200000,
+              "at": "2026-09-19T10:10:40Z"
+            }
+          }
+        },
+        "published": [
+          {
+            "kind": "project",
+            "id": "proj-1",
+            "sequence": 44,
+            "generation": 0
+          }
+        ],
+        "refresh": [
+          {
+            "kind": "task",
+            "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+          }
+        ]
+      },
+      {
+        "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301d",
+        "revision": 3,
+        "state": "failed",
+        "effect": "unapplied",
+        "error": {
+          "code": "stale_generation",
+          "message": "The task changed before this comment was saved.",
+          "retryable": false
+        },
+        "refresh": [
+          {
+            "kind": "task",
+            "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+          }
+        ]
+      },
+      {
+        "state": "not_found",
+        "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301e"
+      },
+      {
+        "state": "result_expired",
+        "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301f",
+        "revision": 4,
+        "outcome": "failed",
+        "effect": "unapplied"
       }
     ]
-  }
+  },
+  "examples": [
+    {
+      "params": {
+        "operation_ids": [
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a",
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b",
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301c",
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301d",
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301e",
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301f"
+        ]
+      },
+      "result": {
+        "journal_incarnation": "276cf083-7e02-464e-af91-9ffaf0f3f516",
+        "operations": [
+          {
+            "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a",
+            "revision": 1,
+            "state": "accepted",
+            "ack": {
+              "phase": "ack",
+              "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a",
+              "revision": 1,
+              "state": "accepted",
+              "accepted_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6",
+              "owners": [
+                {
+                  "kind": "project",
+                  "id": "proj-1",
+                  "sequence": 42,
+                  "generation": 0
+                }
+              ]
+            },
+            "result": {
+              "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+              "comment_id": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F",
+              "accepted_at": "2026-10-21T15:00:00Z",
+              "overlay": [
+                {
+                  "kind": "task_comment",
+                  "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+                  "comment_id": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F",
+                  "body": "Reproduced: the drop handler writes before the column read settles."
+                }
+              ]
+            }
+          },
+          {
+            "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b",
+            "revision": 2,
+            "state": "executing",
+            "ack": {
+              "phase": "ack",
+              "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b",
+              "revision": 1,
+              "state": "accepted",
+              "accepted_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6",
+              "owners": [
+                {
+                  "kind": "project",
+                  "id": "proj-1",
+                  "sequence": 43,
+                  "generation": 0
+                }
+              ]
+            },
+            "result": {
+              "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+              "comment_id": "tc-executing-reserved",
+              "accepted_at": "2026-10-21T15:00:00Z",
+              "overlay": [
+                {
+                  "kind": "task_comment",
+                  "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+                  "comment_id": "tc-executing-reserved",
+                  "body": "Reproduced: the drop handler writes before the column read settles."
+                }
+              ]
+            }
+          },
+          {
+            "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301c",
+            "revision": 4,
+            "state": "succeeded",
+            "result": {
+              "task": {
+                "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+                "project_id": "proj-1",
+                "number": 12,
+                "title": "Kanban drag does not persist",
+                "body": "Dragging a card to In review puts it back on the next paint.",
+                "state": "open",
+                "status": "in_progress",
+                "labels": [
+                  "bug",
+                  "ui"
+                ],
+                "priority": "high",
+                "assignee": {
+                  "kind": "agent",
+                  "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+                },
+                "links": {
+                  "workspace_ids": [
+                    "ws-3f2a91c4"
+                  ],
+                  "branches": [
+                    "build/tasks-board"
+                  ],
+                  "commits": [
+                    "c8381faa9b1d4e6f2a0c7b5e3d8f1a2c4b6d8e0f"
+                  ],
+                  "conversation_ids": [
+                    "run-5d90b1e7"
+                  ],
+                  "parent_task_id": null
+                },
+                "trackers": [
+                  "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+                ],
+                "identities": {},
+                "attachments": [],
+                "created_by": {
+                  "kind": "user"
+                },
+                "created_at": "2026-09-19T09:00:00Z",
+                "updated_at": "2026-09-19T10:12:00Z",
+                "closed_at": null
+              },
+              "comment": {
+                "id": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F",
+                "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+                "author": {
+                  "kind": "agent",
+                  "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+                },
+                "body": "Reproduced: the drop handler writes before the column read settles.",
+                "mentions_user": true,
+                "refs": [
+                  {
+                    "kind": "file",
+                    "path": "spa/src/views/board.js",
+                    "line_start": 88,
+                    "line_end": 94
+                  }
+                ],
+                "attachments": [],
+                "created_at": "2026-09-19T10:11:00Z",
+                "author_context": {
+                  "tokens": 190000,
+                  "window": 1000000,
+                  "compact_at": 200000,
+                  "at": "2026-09-19T10:10:40Z"
+                }
+              }
+            },
+            "published": [
+              {
+                "kind": "project",
+                "id": "proj-1",
+                "sequence": 44,
+                "generation": 0
+              }
+            ],
+            "refresh": [
+              {
+                "kind": "task",
+                "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+              }
+            ]
+          }
+        ],
+        "next_cursor": "35e5b32b13f1b6cfd15d391521a0972323fe73a92062c70904467b5b78b82c2d:3"
+      }
+    },
+    {
+      "params": {
+        "operation_ids": [
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a",
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b",
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301c",
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301d",
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301e",
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301f"
+        ],
+        "cursor": "35e5b32b13f1b6cfd15d391521a0972323fe73a92062c70904467b5b78b82c2d:3"
+      },
+      "result": {
+        "journal_incarnation": "276cf083-7e02-464e-af91-9ffaf0f3f516",
+        "operations": [
+          {
+            "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301d",
+            "revision": 3,
+            "state": "failed",
+            "effect": "unapplied",
+            "error": {
+              "code": "stale_generation",
+              "message": "The task changed before this comment was saved.",
+              "retryable": false
+            },
+            "refresh": [
+              {
+                "kind": "task",
+                "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+              }
+            ]
+          },
+          {
+            "state": "not_found",
+            "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301e"
+          },
+          {
+            "state": "result_expired",
+            "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301f",
+            "revision": 4,
+            "outcome": "failed",
+            "effect": "unapplied"
+          }
+        ]
+      }
+    }
+  ],
+  "pagination_note": "The two pages illustrate continuation at a response byte boundary; small sample bodies keep this fixture readable. The cursor is opaque and bound to the authenticated principal, journal incarnation, and complete ordered ID list."
 }

@@ -94,7 +94,6 @@ impl SharedJson {
         }
     }
 
-    #[cfg(test)]
     pub fn elements(&self) -> Option<&[Self]> {
         match &self.0.kind {
             Kind::Array(values) => Some(values),

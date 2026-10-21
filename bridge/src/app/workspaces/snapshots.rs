@@ -1,12 +1,15 @@
 //! Bounded workspace detail projections. History is attached by the immutable
 //! read service after it selects the requested conversation and cursor.
 use super::workspace_json;
-use crate::app::read_view::{ReadView, SnapshotDelta};
+use crate::app::read_view::{ReadView, SharedJson, SnapshotDelta};
 use crate::app::{AppState, DigestScope};
 use crate::thread::ThreadDetail;
 use crate::workspace::Workspace;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
+
+mod fields;
+use fields::Cursor;
 
 #[cfg(test)]
 use crate::app::snapshot_projection::work_counts::detail_scans;
@@ -56,8 +59,8 @@ impl AppState {
             #[cfg(test)]
             detail_scans::previous_base();
             if previous
-                .get(key.method, &key.owner)
-                .is_some_and(|row| depends_on_owners(&row, owners, &changed))
+                .get_shared(key.method, &key.owner)
+                .is_some_and(|row| depends_on_owners(Cursor::shared(row), owners, &changed))
             {
                 affected.insert(key.owner.clone());
             }
@@ -88,9 +91,9 @@ impl AppState {
             retained.insert(workspace.id.clone());
             if !previous
                 .get_shared("workspace.get", &workspace.id)
-                .is_some_and(|old| old.equals_value(&value))
+                .is_some_and(|old| old == &value)
             {
-                delta = delta.put("workspace.get", &workspace.id, value.clone());
+                delta = delta.put_shared("workspace.get", &workspace.id, value.clone());
             }
             delta = self.prepare_workspace_agent_variants(
                 delta,
@@ -121,10 +124,13 @@ impl AppState {
         mut delta: SnapshotDelta,
         previous: &ReadView,
         workspace: &Workspace,
-        value: &Value,
+        value: &SharedJson,
         retained: &mut BTreeSet<String>,
     ) -> SnapshotDelta {
-        let Some(owner) = value["entity_id"].as_str() else {
+        let Some(owner) = Cursor::shared(value)
+            .field("entity_id")
+            .and_then(Cursor::as_str)
+        else {
             return delta;
         };
         let Ok(roster) = self.entity_agents(owner) else {
@@ -137,15 +143,19 @@ impl AppState {
             #[cfg(test)]
             detail_scans::variant_render();
             let key = format!("{}/{}", workspace.id, agent.id);
-            let mut variant = value.clone();
-            variant["thread"] = self.snapshot_thread_digest(thread);
-            variant["run"]["thread"] = variant["thread"].clone();
+            let thread = SharedJson::value(self.snapshot_thread_digest(thread));
+            let mut fields = value.fields().expect("workspace detail object").clone();
+            let mut run = fields["run"].fields().cloned().unwrap_or_default();
+            run.insert("thread".into(), thread.clone());
+            fields.insert("run".into(), SharedJson::object(run));
+            fields.insert("thread".into(), thread);
+            let variant = SharedJson::object(fields);
             retained.insert(key.clone());
             if !previous
                 .get_shared("workspace.get", &key)
-                .is_some_and(|old| old.equals_value(&variant))
+                .is_some_and(|old| old == &variant)
             {
-                delta = delta.put("workspace.get", key, variant);
+                delta = delta.put_shared("workspace.get", key, variant);
             }
         }
         delta
@@ -200,7 +210,7 @@ impl AppState {
                 })
     }
 
-    fn workspace_snapshot_base(&self, workspace: &Workspace) -> Value {
+    fn workspace_snapshot_base(&self, workspace: &Workspace) -> SharedJson {
         let owner = self.workspace_snapshot_conversation_owner(workspace);
         let mut value = workspace_json(workspace);
         self.add_scope_compaction(
@@ -226,41 +236,70 @@ impl AppState {
                 })
             })
             .unwrap_or(Value::Null);
-        value["entity_id"] = json!(owner);
-        value["run_id"] = json!(owner);
-        value["agents"] = run.get("agents").cloned().unwrap_or_else(|| json!([]));
-        value["thread"] = run.get("thread").cloned().unwrap_or(Value::Null);
-        value["run"] = run;
-        value
+        let (run, agents, thread) = match run {
+            Value::Object(mut run) => {
+                let agents = SharedJson::value(run.remove("agents").unwrap_or_else(|| json!([])));
+                let thread = SharedJson::value(run.remove("thread").unwrap_or(Value::Null));
+                let mut fields = run
+                    .into_iter()
+                    .map(|(key, value)| (key, SharedJson::value(value)))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                fields.insert("agents".into(), agents.clone());
+                fields.insert("thread".into(), thread.clone());
+                (SharedJson::object(fields), agents, thread)
+            }
+            value => (
+                SharedJson::value(value),
+                SharedJson::value(json!([])),
+                SharedJson::default(),
+            ),
+        };
+        let Value::Object(value) = value else {
+            unreachable!("workspace detail object")
+        };
+        let mut fields = value
+            .into_iter()
+            .map(|(key, value)| (key, SharedJson::value(value)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let owner = SharedJson::value(json!(owner));
+        fields.insert("entity_id".into(), owner.clone());
+        fields.insert("run_id".into(), owner);
+        fields.insert("agents".into(), agents);
+        fields.insert("thread".into(), thread);
+        fields.insert("run".into(), run);
+        SharedJson::object(fields)
     }
 }
 
 fn depends_on_owners(
-    row: &Value,
+    row: Cursor<'_>,
     owners: Option<&BTreeSet<String>>,
     changed: &BTreeSet<String>,
 ) -> bool {
     let Some(owners) = owners else {
         return true;
     };
-    row["entity_id"]
-        .as_str()
+    row.field("entity_id")
+        .and_then(Cursor::as_str)
         .is_some_and(|owner| owners.contains(owner))
-        || row["thread"]["agent"]["id"]
-            .as_str()
+        || row
+            .field("thread")
+            .and_then(|thread| thread.field("agent"))
+            .and_then(|agent| agent.field("id"))
+            .and_then(Cursor::as_str)
             .is_some_and(|id| changed.contains(id))
-        || row["agents"]
-            .as_array()
+        || row
+            .field("agents")
             .into_iter()
-            .flatten()
-            .filter_map(|agent| agent["conversation_id"].as_str())
+            .flat_map(Cursor::array)
+            .filter_map(|agent| agent.field("conversation_id").and_then(Cursor::as_str))
             .any(|id| changed.contains(id))
 }
 
 #[cfg(test)]
 fn depends_on_owner(row: &Value, owner: Option<&str>, changed: &BTreeSet<String>) -> bool {
     let owners = owner.map(|owner| BTreeSet::from([owner.to_owned()]));
-    depends_on_owners(row, owners.as_ref(), changed)
+    depends_on_owners(Cursor::value(row), owners.as_ref(), changed)
 }
 
 #[cfg(test)]

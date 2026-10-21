@@ -42,6 +42,7 @@ import { fieldTraits } from "../core/fieldTraits.js";
 import { signOutHtml } from "../core/signOut.js";
 import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
 import { accountReadCadence, isPairingConnecting, notePairingApproved, onPairingChanged } from "../core/pendingPairing.js";
+import { restoreWriteOperations } from "../core/writeOperationRuntime.js";
 
 /** Whether the cache's two readers are up. They are started once, before any
  *  session answers, and stood down when a gate screen takes the page (which is
@@ -126,6 +127,7 @@ async function paintFromCache() {
   const devices = (await readCached(DEVICES_ADDRESS))?.value || [];
   if (!devices.length) return false;
   App.devices = devices.map(asTheCacheKnowsIt);
+  await restoreWriteOperations(App.devices);
   setGate(false);
   // The rail's rows, read off disk for every machine the list names — awaited,
   // so the shell and what is in it land in the same frame.

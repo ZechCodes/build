@@ -32,6 +32,8 @@ import { resetDeviceFilterCache } from "./core/deviceFilter.js";
 import { resetFileUploads } from "./core/fileUploads.js";
 import { resetPendingPairing } from "./core/pendingPairing.js";
 import { trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
+import { resetWriteOperationRuntime } from "./core/writeOperationRuntime.js";
+import { wipePendingOperations } from "./core/writeOperationCache.js";
 
 // Which machines the rail lists (core/deviceFilter.js). Minted here, beside the
 // pick, because this is where both are read off the browser at boot.
@@ -59,6 +61,7 @@ export const DEVICE_FILTER_KEY = "build.deviceFilter";
  */
 export function resetApplication() {
   App.accountEpoch += 1;
+  void resetWriteOperationRuntime().then(() => wipePendingOperations()).catch(() => {});
   resetUiWriters();
   resetNavigationVisits();
   trackBridgeUpdateDevices([]);

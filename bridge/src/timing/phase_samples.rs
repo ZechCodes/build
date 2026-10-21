@@ -47,7 +47,7 @@ impl PhaseSamples {
                 values.sort_by(f64::total_cmp);
                 let n = values.len();
                 rows.insert(phase, json!({"count":n,"sum_ms":values.iter().sum::<f64>(),
-                    "p50_ms":values[(n*50).div_ceil(100)-1],"p95_ms":values[(n*95).div_ceil(100)-1],"max_ms":values[n-1]}));
+                    "p50_ms":values[(n*50).div_ceil(100)-1],"p95_ms":values[(n*95).div_ceil(100)-1],"p99_ms":values[(n*99).div_ceil(100)-1],"max_ms":values[n-1]}));
             }
             methods.insert(method, Value::Object(rows));
         }
@@ -56,6 +56,19 @@ impl PhaseSamples {
 }
 
 impl FrameClock {
+    pub(crate) fn sample_serialization<T>(&self, tool: &str, work: impl FnOnce() -> T) -> T {
+        let started = Instant::now();
+        let value = work();
+        if let Some(samples) = self.phase_samples.lock().unwrap().as_ref() {
+            samples.record(
+                &format!("mcp.control:{tool}"),
+                "reply.serialization",
+                started.elapsed(),
+            );
+        }
+        value
+    }
+
     pub(crate) fn capture_phases(&self) -> PhaseSamples {
         let samples = PhaseSamples::default();
         *self.phase_samples.lock().unwrap() = Some(samples.clone());
@@ -64,6 +77,23 @@ impl FrameClock {
 }
 
 impl FrameTimer {
+    /// Capture independent read work without implying an app-lock acquisition.
+    pub(crate) fn sample_read_work<T>(&self, work: impl FnOnce() -> T) -> T {
+        let Some(samples) = self.phase_capture.clone() else {
+            return work();
+        };
+        ACTIVE.with(|active| {
+            assert!(active.borrow().is_none(), "read work cannot nest a capture");
+            *active.borrow_mut() = Some(Active {
+                samples,
+                method: self.sample_label(),
+                stack: vec![("read.unclassified", Instant::now(), Duration::ZERO)],
+            });
+        });
+        let _sample = LockSample;
+        work()
+    }
+
     pub(crate) fn sample_tool(&self, tool: &str) {
         *self.sample_tool.lock().unwrap() = Some(tool.into());
     }

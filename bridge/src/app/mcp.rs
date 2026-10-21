@@ -302,8 +302,17 @@ pub(in crate::app) async fn handle_done_stream(
         let Ok(frame) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        #[cfg(test)]
+        let tool = read_lane::action(&frame).map(|action| action.tool_name());
         if let Some(response) = plane.answer(Arc::clone(&state), frame).await {
-            let _ = write_half.write_all(response.to_string().as_bytes()).await;
+            #[cfg(test)]
+            let serialized = match tool {
+                Some(tool) => plane.clock.sample_serialization(tool, || response.to_string()),
+                None => response.to_string(),
+            };
+            #[cfg(not(test))]
+            let serialized = response.to_string();
+            let _ = write_half.write_all(serialized.as_bytes()).await;
             let _ = write_half.write_all(b"\n").await;
             let _ = write_half.flush().await;
         }

@@ -190,6 +190,8 @@ impl TaskReadContext {
         tasks
             .into_iter()
             .map(|task| {
+                #[cfg(test)]
+                let _phase = crate::timing::phase_samples::phase("task.row");
                 let timeline = timelines.remove(&task.id).unwrap_or_default();
                 let task = self.read_task(source, task, &timeline, &rosters);
                 let mut row = views::read_task_json(project_id, &task, &timeline);
@@ -286,6 +288,8 @@ fn extend_task_summary(
     task: &Task,
     row: &mut Value,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("task.summary");
     if let Some(review) = source.load_review_summary(&task.id).stored()? {
         row["review_summary"] = json!(review);
     }

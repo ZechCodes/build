@@ -54,7 +54,11 @@ fn capture(
     let work_digest = matches!(action, BridgeAction::ListWork);
     let prepared = PreparedRead::query(None, move |_| {
         Ok(ReadWork::external(move || {
-            let value = value.materialize();
+            let value = {
+                #[cfg(test)]
+                let _phase = crate::timing::phase_samples::phase("snapshot.materialize");
+                value.materialize()
+            };
             Ok(if work_digest {
                 router_work_digest(value)
             } else {
@@ -71,6 +75,8 @@ fn capture(
 /// Match the router's existing compact wire shape and capture exclusion. The
 /// complete board is supplied by its normal producer; this performs no refresh.
 fn router_work_digest(board: Value) -> Value {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("snapshot.work_digest");
     let work = board["items"]
         .as_array()
         .into_iter()

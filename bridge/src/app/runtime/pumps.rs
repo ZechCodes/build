@@ -148,7 +148,8 @@ impl StatusPump {
                 return false;
             }
             let owner = &instance.entity_id;
-            app.record_agent_status_snapshot_for_pump(owner, &instance.agent_id, snapshot);
+            let refresh_metadata =
+                app.record_agent_status_snapshot_for_pump(owner, &instance.agent_id, snapshot);
             if snapshot.context_reset_count > self.recorded_context_reset_count {
                 app.forget_agent_context(owner, &instance.agent_id);
                 self.recorded_context = None;
@@ -170,7 +171,13 @@ impl StatusPump {
             let retry_deferred = usage_limit_moved
                 || !matches!(snapshot.status, AgentStatus::Working)
                     && something_waits_for_the_turn(&mut app, owner, &instance.agent_id);
-            app.publish_owner_snapshot_projection(owner);
+            if refresh_metadata {
+                let _ownership = app.begin_snapshot_ownership();
+                app.publish_owner_snapshot_projection(owner);
+                app.publish_read_metadata_only();
+            } else {
+                app.publish_owner_snapshot_projection(owner);
+            }
             (ended, retry_deferred, Arc::clone(&app.frame_clock))
         };
         #[cfg(test)]

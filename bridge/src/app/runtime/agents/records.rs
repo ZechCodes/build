@@ -853,11 +853,13 @@ impl AppState {
         owner: &str,
         agent_id: &str,
         snapshot: &crate::harness::SessionStatusSnapshot,
-    ) {
-        if self.update_agent_status_snapshot(owner, agent_id, snapshot) {
-            self.persist_status_attention_before_final_publication(owner);
-            self.changes.note_entity(owner);
+    ) -> bool {
+        if !self.update_agent_status_snapshot(owner, agent_id, snapshot) {
+            return false;
         }
+        let refresh_metadata = self.persist_status_attention_before_final_publication(owner);
+        self.changes.note_entity(owner);
+        refresh_metadata
     }
 
     /// Save the agent interval before deriving aggregate attention. Callers

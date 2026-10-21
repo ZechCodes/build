@@ -5,12 +5,19 @@
 //! execution and the logical write-wait registry; these pure controls alone
 //! do not qualify the production paths.
 mod admission;
+mod backend;
 mod client_watch;
+mod common_requests;
 mod coverage;
+mod entrypoint;
+mod factory;
 mod finite_watch;
 mod fixture;
 mod history_fill;
+mod mcp_adapter;
+mod pipeline_tests;
 mod post_reply;
+mod producer_adapter;
 mod rare;
 mod read_and_exempt;
 pub(super) mod read_recipes;
@@ -18,6 +25,7 @@ mod rpc;
 mod saved_intent;
 mod saved_records;
 mod scheduler;
+mod trial_complete;
 
 const SPA_CALLERS: usize = 4;
 const MCP_CALLERS: usize = 8;

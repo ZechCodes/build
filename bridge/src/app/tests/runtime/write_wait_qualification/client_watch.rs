@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -192,6 +192,12 @@ struct WatchState {
     polls: AtomicU64,
     inspected_deadlines: AtomicU64,
     indexed: AtomicU64,
+}
+
+/// Read-only access to the existing watchdog's atomic status. It owns no
+/// receiver, archive lock, deadline index, callback, or additional watchdog.
+pub(super) struct ClientWatchObservation {
+    state: Arc<WatchState>,
 }
 
 pub(super) struct ClientWatchGuard {

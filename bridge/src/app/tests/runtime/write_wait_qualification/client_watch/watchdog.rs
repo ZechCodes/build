@@ -263,6 +263,12 @@ fn publish_breach(
 }
 
 impl ClientWatchGuard {
+    pub fn observer(&self) -> Arc<ClientWatchObservation> {
+        Arc::new(ClientWatchObservation {
+            state: Arc::clone(&self.state),
+        })
+    }
+
     pub fn failed(&self) -> bool {
         self.state.failed.load(Ordering::Acquire)
             || self.handle.as_ref().is_some_and(JoinHandle::is_finished)
@@ -303,5 +309,20 @@ impl Drop for ClientWatchGuard {
         // Normal qualification must call finish() and assert its report. Drop
         // is only panic/cleanup containment; it makes no qualification claim.
         self.stop_and_join();
+    }
+}
+
+impl ClientWatchObservation {
+    pub fn failed(&self) -> bool {
+        self.state.failed.load(Ordering::Acquire)
+    }
+
+    pub fn polls(&self) -> u64 {
+        self.state.polls.load(Ordering::Acquire)
+    }
+
+    /// Includes future scheduled originals; never use this as receiver drain.
+    pub fn indexed(&self) -> u64 {
+        self.state.indexed.load(Ordering::Acquire)
     }
 }

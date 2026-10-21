@@ -9,6 +9,7 @@ use crate::timing::write_wait::WriteWaitRegistry;
 use std::sync::{Arc, Mutex};
 
 mod cleanup;
+mod control;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Envelope {
@@ -78,6 +79,7 @@ pub(super) struct QualificationFixture {
     pub sessions: Vec<(TabKey, Arc<dyn AgentSession>)>,
     pub logs: Vec<SessionLog>,
     pub read_inputs: Option<Arc<super::read_recipes::ReadyReadInputs>>,
+    pub pipeline_control_setup: Option<Value>,
     _root: tempfile::TempDir,
 }
 
@@ -92,7 +94,7 @@ struct NativeFixture {
 
 impl QualificationFixture {
     pub(super) fn new(envelope: Envelope) -> Self {
-        let mut native = NativeFixture::prepare(envelope);
+        let mut native = NativeFixture::prepare(envelope, false);
         super::history_fill::fill(&mut native.app, envelope.thread_items());
         native.finish()
     }
@@ -101,7 +103,7 @@ impl QualificationFixture {
     /// #726 remains a prerequisite; this constructor never substitutes a fake
     /// successful Router startup or a missing read recipe.
     pub(super) async fn ready(envelope: Envelope) -> Self {
-        let mut native = NativeFixture::prepare(envelope);
+        let mut native = NativeFixture::prepare(envelope, true);
         let project = &native.projects[0];
         let workspace = &native.active_workspaces[0];
         let bounded = super::read_recipes::SeededReadInputs::seed(
@@ -159,7 +161,7 @@ impl QualificationFixture {
 }
 
 impl NativeFixture {
-    fn prepare(envelope: Envelope) -> Self {
+    fn prepare(envelope: Envelope, finite_turns: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
         let mut app = rooted(root.path())
             .with_task_store(root.path().join("store"))
@@ -256,11 +258,19 @@ impl NativeFixture {
         let mut logs = Vec::new();
         for workspace in &active_workspaces {
             let log = SessionLog::default();
+            let session = if finite_turns {
+                DictatedSession::reporting(AgentStatus::Waiting)
+                    .recording_into(&log)
+                    .ending_finitely()
+                    .finishing_turns_after(Duration::from_millis(25))
+            } else {
+                DictatedSession::reporting(AgentStatus::Working).recording_into(&log)
+            };
             let mut tab = dictated_agent_tab(
                 &workspace.directory,
                 &workspace.owner,
                 &workspace.agent_id,
-                DictatedSession::reporting(AgentStatus::Working).recording_into(&log),
+                session,
             );
             let choice = app.runs[&workspace.owner]
                 .agents
@@ -359,6 +369,7 @@ impl NativeFixture {
             sessions,
             logs,
             read_inputs: None,
+            pipeline_control_setup: None,
             _root: root,
         }
     }

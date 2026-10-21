@@ -234,6 +234,9 @@ impl WriteWaitRegistry {
         cohort: WriteCohort,
     ) {
         self.mutate(|state| {
+            if cohort == WriteCohort::OptionalNotice {
+                return Err("optional notice requires explicit sourced admission");
+            }
             if cohort == WriteCohort::PendingIntake || !state.context_live(context) {
                 return Err("classification requires live root and final cohort");
             }

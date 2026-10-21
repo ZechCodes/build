@@ -175,3 +175,5 @@ async fn borrowed_cancellation(observed_original: &'static str, cancelled: bool)
     assert_eq!(completed.cancelled, cancelled);
     assert!(!completed.abandoned && completed.breached());
 }
+
+mod adversarial;

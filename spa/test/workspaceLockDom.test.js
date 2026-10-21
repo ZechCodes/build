@@ -60,7 +60,7 @@ it("toggles through RPC and flips its icon only when the cached feed moves", asy
 });
 it("omits the lock control without cached capability and reacts when it arrives", async () => {
   await initToolbar(); expect(button()).toBeNull();
-  expect(capabilitiesOf({ api_version: "3.13.0", capabilities: [] }).workspaces.setLocked).toBe(false);
+  expect(capabilitiesOf({ api_version: "3.24.0", capabilities: [] }).workspaces.setLocked).toBe(false);
   await support(true); await vi.waitFor(() => expect(button()).not.toBeNull());
   await support(false); await vi.waitFor(() => expect(button()).toBeNull());
 });
@@ -72,7 +72,7 @@ it("waits for the replacement greeting and retires cached support on an older br
   expect(rpc).not.toHaveBeenCalled();
   expect(button().disabled).toBe(true);
   await greetBridge(async (method, params) => method === "session.hello"
-    ? { api_version: "3.13.0", capabilities: [] } : rpc(method, params), {
+    ? { api_version: "3.24.0", capabilities: [] } : rpc(method, params), {
     deviceId: "dev-398", strict: true,
     install: (selection) => {
       const adapter = selection.create(rpc);
@@ -99,7 +99,7 @@ it("refuses a downgraded session before the cached control has been retired", as
   await support(true); await initToolbar(); await vi.waitFor(() => expect(button()).not.toBeNull());
   const context = adoptDeviceSession(session());
   await greetBridge(async (method, params) => method === "session.hello"
-    ? { api_version: "3.13.0", capabilities: [] } : rpc(method, params), {
+    ? { api_version: "3.24.0", capabilities: [] } : rpc(method, params), {
     deviceId: "dev-398", strict: true,
     install: (selection) => {
       const adapter = selection.create(rpc);

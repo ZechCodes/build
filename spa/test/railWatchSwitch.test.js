@@ -36,7 +36,7 @@ const NO_WATCHING = [];
  *  `{ tasks: { watching: true } }` for the old boolean a 2.x adapter must not
  *  read. */
 const greet = (capabilities, { deviceId = "dev-1", ...over } = {}) =>
-  greetBridge(async () => ({ push_events: true, api_version: "2.0.0", capabilities, ...over }), { deviceId });
+  greetBridge(async () => ({ push_events: true, api_version: "3.24.0", capabilities, ...over }), { deviceId });
 
 const head = (given) => {
   document.body.innerHTML = panelHeadHtml("claude", "chat", given);
@@ -53,7 +53,7 @@ afterEach(() => {
 describe("the gate, asked of a bridge that actually greeted", () => {
   it("offers watching to a machine whose greeting names tasks.watching", async () => {
     await greet(WATCHING);
-    expect(bridgeApiVersion("dev-1")).toBe("2.0.0");
+    expect(bridgeApiVersion("dev-1")).toBe("3.24.0");
     expect(carriesWatching("dev-1")).toBe(true);
   });
 

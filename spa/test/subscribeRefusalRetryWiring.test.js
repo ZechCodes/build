@@ -6,13 +6,14 @@
 // (core/sessionRpc.js) into the real subscription manager (core/changeEvents.js).
 // Only the wire under the session is a stand-in, answering like the bridge.
 
+import { transportEpoch } from "./transportEpoch.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { createSessionRpc } from "../src/core/sessionRpc.js";
 
 const fixture = (name) => JSON.parse(readFileSync(resolve(process.cwd(), `../fixtures/api/v1/${name}.json`), "utf8"));
-const greeting = fixture("session.hello").result;
+const greeting = { ...fixture("session.hello").result, api_version: "3.24.0" };
 const { refusal } = fixture("changes.subscribe");
 const [unknownKind] = refusal.reply.details.kinds;
 
@@ -67,7 +68,7 @@ it("re-subscribes once without the kind the bridge named, keeping every other ki
   changeEvents.watchChanges({ refresh: () => {}, id: "s-inbox", scope: "all", kinds, mode: "realtime" });
   changeEvents.watchChanges({ refresh: () => {}, id: "s-active", entity: "run-7", kinds: ["git", "files"] });
 
-  const session = createSessionRpc({ transport, sessionId: "sess-1", sessionKeyB64: "key-1", deviceId: "dev-1" });
+  const session = createSessionRpc({ bridgeEpoch: transportEpoch(), transport, sessionId: "sess-1", sessionKeyB64: "key-1", deviceId: "dev-1" });
   session.rideOn(bridgeWire());
   await changeEvents.greetBridge(session.call, { deviceId: "dev-1" });
   await changeEvents.subscriptionsSettled();

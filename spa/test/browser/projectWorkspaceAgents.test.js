@@ -36,7 +36,7 @@ async function seedProjectWorkers() {
   const catalog = { default_provider: "codex", providers: [{ id: "codex", label: "Codex", models: [], efforts: [] }] };
   window.__workerCall = async (method, params) => {
     window.__workerCalls.push({ method, params });
-    if (method === "session.hello") return { api_version: "3.22.0", push_events: false,
+    if (method === "session.hello") return { api_version: "3.24.0", push_events: false,
       capabilities: window.__legacyWorkers ? [] : ["agents.projectWorkers", "tasks.assignProjectAgent"] };
     if (method === "models.list") return catalog;
     if (method === "agent.list") return window.__workerRoster;

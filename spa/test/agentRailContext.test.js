@@ -114,7 +114,7 @@ describe("the page above the window", () => {
 
   it.each([{ capabilities: [] }, { capabilities: ["threads.leanActivity"] }])("gates older pages by the device's capability: %j", async ({ capabilities }) => {
     const { greetBridge } = await import("../src/core/changeEvents.js");
-    await greetBridge(async () => ({ api_version: "3.20.0", capabilities, push_events: false }), { deviceId: address.deviceId });
+    await greetBridge(async () => ({ api_version: "3.24.0", capabilities, push_events: false }), { deviceId: address.deviceId });
     const call = vi.fn(async () => page);
     const context = createAgentRailContext({ kind: "branch", deviceId: address.deviceId, projectId: "p1", branch: "b" });
     await context.olderPage(call, { entityId: "run-1", agentId: "agent-2", threadId: "generation-1", beforeSequence: 3, address });

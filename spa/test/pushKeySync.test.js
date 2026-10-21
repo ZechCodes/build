@@ -28,7 +28,7 @@ const PUSH_VERBS = ["push.registerKey", "push.revokeKey"];
 function bridge(deviceId, capabilities = PUSH_VERBS, answer = async () => ({})) {
   const session = fakeSession(deviceId);
   session.call = vi.fn(async (method, params) => (method === "session.hello"
-    ? { api_version: "2.1.0", capabilities }
+    ? { api_version: "3.24.0", capabilities }
     : answer(method, params)));
   adoptDeviceSession(session);
   return {

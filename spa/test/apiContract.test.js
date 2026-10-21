@@ -66,14 +66,14 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     expect(v1.capabilitiesOf(greeting).reviews.pullRequests).toBe(true);
     for (const verb of ["open", "push", "update", "merge", "close", "reopen", "refresh"]) {
       expect(v1.capabilitiesOf(greeting).reviews[verb], verb).toBe(true);
-      const isolated = { api_version: "3.15.0", capabilities: [`tasks.review.${verb}`] };
+      const isolated = { api_version: "3.24.0", capabilities: [`tasks.review.${verb}`] };
       expect(v1.capabilitiesOf(isolated).reviews[verb], verb).toBe(true);
       expect(v1.capabilitiesOf(isolated).reviews.pullRequests).toBe(false);
       expect(v1.capabilitiesOf(isolated).reviews.act).toBe(false);
     }
-    const legacy = { api_version: "3.14.0", capabilities: ["tasks.review.get", "tasks.review.act"] };
-    expect(v1.capabilitiesOf(legacy).reviews).toMatchObject({ get: true, act: true, pullRequests: false, open: false });
-    const incorrect = { api_version: "3.15.0", capabilities: ["tasks.pullRequests"] };
+    const independentlyOffered = { api_version: "3.24.0", capabilities: ["tasks.review.get", "tasks.review.act"] };
+    expect(v1.capabilitiesOf(independentlyOffered).reviews).toMatchObject({ get: true, act: true, pullRequests: false, open: false });
+    const incorrect = { api_version: "3.24.0", capabilities: ["tasks.pullRequests"] };
     expect(v1.capabilitiesOf(incorrect).reviews.pullRequests).toBe(false);
   });
 

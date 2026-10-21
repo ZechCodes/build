@@ -6,6 +6,7 @@
 // after it fail with "Connection to Indexed Database server lost". The re-read
 // is the one a reconnect's remount or a cache announcement makes.
 
+import { transportEpoch } from "./transportEpoch.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBDatabase, IDBFactory, IDBKeyRange, forceCloseDatabase } from "fake-indexeddb";
 import { createSessionRpc } from "../src/core/sessionRpc.js";
@@ -69,6 +70,7 @@ function heldSqlSession() {
     close: () => closes.forEach((fn) => fn()),
   };
   const rpc = createSessionRpc({
+    bridgeEpoch: transportEpoch(),
     transport: { encryptFrame: async ({ frameFields }) => frameFields, decryptEnvelope: async ({ envelope }) => envelope },
     sessionId: "cache-opening", sessionKeyB64: "fixture", deviceId: "dev-1", timeoutMs: 0,
   });

@@ -25,6 +25,13 @@ pub(in crate::app) struct PushFacts {
     pub(super) summaries: BTreeMap<String, (String, Vec<PathBuf>)>,
 }
 
+#[cfg(test)]
+impl PushFacts {
+    pub(in crate::app) fn state_for_test(&self, owner: &str) -> Option<SharedJson> {
+        self.states.get(owner).cloned()
+    }
+}
+
 #[derive(Clone)]
 struct PushThread {
     tip: ThreadTip,
@@ -497,10 +504,8 @@ impl AppState {
         let owners_phase = crate::timing::phase_samples::phase("publication.push_facts.owners");
         for owner in self.plans.keys().chain(self.runs.keys()) {
             {
-                if let Some(state) = self.entity_state_item(owner) {
-                    snapshot
-                        .states
-                        .insert(owner.clone(), SharedJson::value(state));
+                if let Some(state) = self.entity_state_shared_item(owner) {
+                    snapshot.states.insert(owner.clone(), state);
                 }
             }
             {
@@ -553,8 +558,8 @@ impl AppState {
         for (entity, subject) in subjects {
             {
                 if let Entry::Vacant(entry) = snapshot.states.entry(entity.clone()) {
-                    if let Some(state) = self.entity_state_item(&entity) {
-                        entry.insert(SharedJson::value(state));
+                    if let Some(state) = self.entity_state_shared_item(&entity) {
+                        entry.insert(state);
                     }
                 }
             }

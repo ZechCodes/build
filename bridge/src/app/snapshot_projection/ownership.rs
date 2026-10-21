@@ -32,6 +32,22 @@ impl AppState {
         self.snapshot_observations.ownership.lock().unwrap().clone()
     }
 
+    /// Pure structure is retained only by the delta's accepted global cache.
+    pub(in crate::app) fn snapshot_projection_structure(
+        &self,
+    ) -> Option<Arc<crate::app::workspaces::ProjectionStructure>> {
+        self.snapshot_projection_initialized()
+            .then(|| self.snapshot_ownership_context())
+            .flatten()
+            .map(|context| context.structure())
+    }
+
+    pub(in crate::app) fn snapshot_ownership_paths(
+        &self,
+    ) -> &std::collections::BTreeMap<std::path::PathBuf, std::path::PathBuf> {
+        &self.snapshot_observations.paths
+    }
+
     /// A canonical conversation can appear on another owner's roster. Include
     /// aliases of both the committed and candidate bindings when that owner
     /// changes, without rebuilding unrelated owners' agent chunks.

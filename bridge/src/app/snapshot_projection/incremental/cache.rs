@@ -5,6 +5,7 @@ use super::*;
 #[derive(Clone, Default)]
 pub(in crate::app) struct GlobalProjection {
     pub(super) layout: Option<Arc<Layout>>,
+    pub(super) structure: Option<Arc<crate::app::workspaces::ProjectionStructure>>,
     pub(super) board_fields: BTreeMap<String, SharedJson>,
     pub(super) runs: Vec<Row>,
     pub(super) winners: Vec<Row>,
@@ -19,12 +20,47 @@ pub(in crate::app) struct GlobalProjection {
 }
 
 impl GlobalProjection {
+    #[cfg(test)]
+    pub(in crate::app) fn active_owners_for_test(&self) -> &BTreeSet<String> {
+        &self.active_owners
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn named_winner_for_test(&self, owner: &str) -> Option<SharedJson> {
+        self.winners
+            .iter()
+            .find(|row| row.id == owner)
+            .map(|row| row.value.clone())
+    }
+
+    pub(in crate::app) fn ownership_structure(
+        &self,
+    ) -> Option<&Arc<crate::app::workspaces::ProjectionStructure>> {
+        self.structure.as_ref()
+    }
+
+    /// Exactly the owner already captured with the accepted row. A present
+    /// row with no owner is a valid selected-none, not an unknown workspace.
+    pub(in crate::app) fn mcp_workspace_selection(&self, id: &str) -> Option<(&str, Option<&str>)> {
+        self.workspaces
+            .iter()
+            .find(|row| row.id == id)
+            .map(|row| (row.project.as_str(), row.owner.as_deref()))
+    }
+    pub(in crate::app) fn mcp_project_selection(&self, id: &str) -> Option<Option<&str>> {
+        self.projects
+            .iter()
+            .find(|row| row.id == id)
+            .map(|row| row.owner.as_deref())
+    }
+
     pub(in crate::app) fn patch_shared(
         &self,
         patch: &mut impl FnMut(&SharedJson) -> SharedJson,
     ) -> Self {
         Self {
             layout: self.layout.clone(),
+            structure: self.structure.clone(),
             board_fields: self
                 .board_fields
                 .iter()
@@ -74,6 +110,9 @@ impl GlobalProjection {
             .map(|layout| layout.expand_owners(app, &BTreeSet::new()))
             .unwrap_or_default();
         Self {
+            structure: reusable
+                .then(|| app.snapshot_projection_structure())
+                .flatten(),
             layout,
             runs,
             winners,

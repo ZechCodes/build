@@ -477,3 +477,6 @@ fn published_workspace_facts(view: &ReadView) -> Value {
 mod workspace_details;
 
 mod compaction_policies;
+
+mod mcp_metadata_work;
+mod mcp_state_root;

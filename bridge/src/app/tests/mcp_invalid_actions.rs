@@ -32,8 +32,7 @@ fn fixture(surface: Surface) -> (tempfile::TempDir, Arc<Mutex<AppState>>, String
         }
     };
     app.delivery_queue.clear_queued();
-    app.session_registry
-        .test_install_token(agent.clone(), TOKEN.into());
+    app.test_install_mcp_token(agent.clone(), TOKEN.into());
     assert!(app.addressed_session(agent.clone()).is_some());
     (dir, app.shared(), agent)
 }
@@ -53,7 +52,7 @@ fn parse_error() -> Value {
 
 async fn answer(state: &Arc<Mutex<AppState>>, frame: &Value) -> Option<Value> {
     let clock = Arc::clone(&state.lock().unwrap().frame_clock);
-    let plane = ControlPlane::new(Arc::clone(&clock));
+    let plane = ControlPlane::new(&state.lock().unwrap());
     let timer = clock.frame(MCP_CONTROL_METHOD);
     let mut turn = Turn::take(&plane, &timer).await;
     handle_authenticated_mcp_frame(state, frame, &timer, &mut turn).await
@@ -114,7 +113,7 @@ async fn valid_done_reports_remain_notifications() {
 #[tokio::test]
 async fn malformed_action_receives_a_socket_reply_without_waiting_for_the_client_deadline() {
     let (_dir, state, agent) = fixture(Surface::Coding);
-    let plane = ControlPlane::new(Arc::clone(&state.lock().unwrap().frame_clock));
+    let plane = ControlPlane::new(&state.lock().unwrap());
     let (client, daemon) = tokio::net::UnixStream::pair().unwrap();
     let server = tokio::spawn(handle_done_stream(state, daemon, plane));
     let frame = frame(&agent, json!({ "request": { "action": PRIVATE_INPUT } }));

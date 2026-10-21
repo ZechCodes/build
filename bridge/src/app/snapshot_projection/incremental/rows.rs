@@ -23,6 +23,19 @@ impl Row {
         Self::build(id, value, false)
     }
 
+    /// Metadata is borrowed from the already indexed named leaf. This does
+    /// not materialize a composed value or index its payload a second time.
+    pub fn from_shared(id: &str, value: SharedJson) -> Self {
+        let fields = value.leaf().expect("named branch is a rendered leaf");
+        Self(Arc::new(RowData {
+            id: fields[id].as_str().unwrap_or_default().to_owned(),
+            project: fields["project_id"].as_str().unwrap_or_default().to_owned(),
+            owner: fields["entity_id"].as_str().map(str::to_owned),
+            anchor: fields["anchor"].as_str().map(str::to_owned),
+            value,
+        }))
+    }
+
     pub fn object(id: &str, value: Value) -> Self {
         Self::build(id, value, true)
     }

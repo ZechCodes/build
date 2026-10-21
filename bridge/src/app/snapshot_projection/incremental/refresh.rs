@@ -39,8 +39,9 @@ impl GlobalProjection {
                 .filter(|(id, token)| self.stat_versions.get(*id) != Some(*token))
                 .map(|(id, _)| id.clone()),
         );
-        let owners = current.expand_owners(app, &requested);
-        let active_owners = current.expand_owners(app, &BTreeSet::new());
+        let (owners, active_owners) = current.expand_owner_sets(app, &requested);
+        #[cfg(test)]
+        super::super::work_counts::owner_closure::outputs(&owners, &active_owners);
         #[cfg(test)]
         drop(_owners_phase);
         #[cfg(test)]
@@ -48,6 +49,7 @@ impl GlobalProjection {
             crate::timing::phase_samples::phase("publication.incremental.cache_clone");
         let mut next = self.clone();
         next.layout = Some(current);
+        next.structure = app.snapshot_projection_structure();
         next.active_owners = active_owners;
         next.stat_versions = Arc::new(stat_versions);
         next.agent_states = Arc::new(agent_states);
@@ -127,8 +129,13 @@ fn refresh_winners(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row]) 
     #[cfg(test)]
     let _phase = crate::timing::phase_samples::phase("publication.incremental.winner_rows");
     for row in rows.iter_mut().filter(|row| owners.contains(&row.id)) {
-        let candidate = app.branch_candidate_from_run(&row.id, &run_stat(app, &row.id));
-        *row = Row::new("run_id", crate::branch::named_project_row(candidate.row));
+        #[cfg(test)]
+        let _source = crate::app::snapshot_projection::work_counts::named_branch::source(
+            &row.id,
+            crate::app::snapshot_projection::work_counts::named_branch::Source::Winner,
+        );
+        let named = app.snapshot_named_branch_row(&row.id, &run_stat(app, &row.id));
+        *row = Row::from_shared("run_id", named);
     }
 }
 

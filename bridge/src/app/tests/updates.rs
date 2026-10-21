@@ -3,6 +3,9 @@ use crate::update::{Release, UpdateBackend, UpdateConfig, UpdateService, UpdateS
 use async_trait::async_trait;
 use tokio::sync::Notify;
 
+mod drain_timing;
+mod routed_admission;
+
 struct PausedLaunchBackend {
     entered: Arc<Notify>,
     release: Arc<Notify>,

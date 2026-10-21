@@ -5,7 +5,7 @@ use crate::update::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Default)]
-struct Backend {
+pub(super) struct Backend {
     launches: AtomicUsize,
 }
 
@@ -25,7 +25,7 @@ impl UpdateBackend for Backend {
     }
 }
 
-fn update_service(root: &Path, backend: Arc<Backend>) -> Arc<UpdateService> {
+pub(super) fn update_service(root: &Path, backend: Arc<Backend>) -> Arc<UpdateService> {
     Arc::new(
         UpdateService::new(
             UpdateConfig {
@@ -46,7 +46,7 @@ fn update_service(root: &Path, backend: Arc<Backend>) -> Arc<UpdateService> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_mcp_read_keeps_update_admission_until_blocking_query_finishes() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     let backend = Arc::new(Backend::default());
     let updates = update_service(fixture._root.path(), Arc::clone(&backend));
     fixture.state.lock().unwrap().updates = Some(Arc::clone(&updates));
@@ -54,6 +54,7 @@ async fn cancelled_mcp_read_keeps_update_admission_until_blocking_query_finishes
     updates.install(InstallWhen::Idle, true).await.unwrap();
     let (gate, held) = OffLockGate::new();
     fixture.state.lock().unwrap().off_lock_gate = Some(gate);
+    super::guardfree::held::recapture_plane(&mut fixture);
     let (mut client, daemon) = tokio::net::UnixStream::pair().unwrap();
     let server = tokio::spawn(handle_done_stream(
         Arc::clone(&fixture.state),

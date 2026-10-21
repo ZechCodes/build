@@ -4,6 +4,9 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+#[cfg(test)]
+pub(crate) mod probe_counts;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Executable {
     path: PathBuf,
@@ -37,6 +40,8 @@ impl Executable {
 }
 
 fn at(path: PathBuf) -> Option<Executable> {
+    #[cfg(test)]
+    probe_counts::metadata_attempt();
     let metadata = std::fs::metadata(&path).ok()?;
     if !metadata.is_file() {
         return None;
@@ -48,6 +53,8 @@ fn at(path: PathBuf) -> Option<Executable> {
             return None;
         }
     }
+    #[cfg(test)]
+    probe_counts::canonicalize_attempt();
     Some(Executable {
         resolved: std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()),
         path,

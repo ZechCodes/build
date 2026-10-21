@@ -39,6 +39,8 @@ const RPC_METHODS: [&str; 5] = [
 const REQUEST_PATIENCE: Duration = Duration::from_secs(600);
 const MAX_BUSY_LOCK_WAIT_MS: f64 = 5000.0;
 const MAX_BUSY_RESPONSE_MS: f64 = 5000.0;
+const BUSY_MCP_READ_METHOD: &str = "mcp.control:get_task";
+const MAX_BUSY_MCP_READ_RESPONSE_MS: f64 = 100.0;
 
 struct Busy {
     _home: tempfile::TempDir,
@@ -172,8 +174,7 @@ impl Busy {
             );
             logs.push(log);
             app.session_registry.test_insert_tab(key, tab);
-            app.session_registry
-                .test_install_token(agent.clone(), format!("busy-token-{agent}"));
+            app.test_install_mcp_token(agent.clone(), format!("busy-token-{agent}"));
         }
         app.session_locator_factory =
             Arc::new(|_, _| panic!("busy fixture must reuse simulated sessions"));
@@ -514,7 +515,7 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
     assert_eq!(isolated["ok"], true, "{isolated}");
     println!("TASK709_ISOLATED {}", busy.samples.snapshot());
     busy.samples.clear();
-    let plane = ControlPlane::new(Arc::clone(&busy.state.lock().unwrap().frame_clock));
+    let plane = ControlPlane::new(&busy.state.lock().unwrap());
     let intake = FrameIntake::with_pool(
         AppState::handler(Arc::clone(&busy.state)),
         crate::transport::generate_transport_keypair(),
@@ -672,7 +673,7 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
         overall_max_client_total(&measurements);
     println!(
         "TASK709_BUSY_BASELINE {}",
-        json!({"conversations":CONVERSATIONS,"watched_worktrees":WORKTREES,"workspace_aliases":busy.state.lock().unwrap().workspaces.list(None).len(),"initial_tasks":TASKS,"seeded_history_items_per_conversation":HISTORY_ITEMS,"delivered_handoffs":AGENTS*ROUNDS,"active_frames_at_capture":0,"simulated_running_agents":AGENTS,"status_observations":AGENTS*STATUS_OBSERVATIONS_PER_AGENT,"status_observer_path":"production StatusPump::observe via MeasuredStatusPump adapter","mcp_calls_per_agent":ROUNDS*7,"phases_exclusive":true,"client_total_is_exclusive_phase":false,"client_total_endpoints":{"mcp":"before socket write through parsed JSON reply","rpc":"before encrypted wire submission through decrypted reply keyed by exact request id","status":"before blocking-pool submission through joined production observe completion"},"response_limit_ms":MAX_BUSY_RESPONSE_MS,"overall_permit_wait_max_ms":overall_permit_wait_max_ms,"worst_permit_wait_method":worst_permit_wait_method,"overall_pool_wait_max_ms":overall_pool_wait_max_ms,"worst_pool_wait_method":worst_pool_wait_method,"overall_queue_permit_and_lock_wait_max_ms":overall_queue_permit_and_lock_wait_max_ms,"worst_queue_permit_and_lock_method":worst_queue_permit_and_lock_method,"overall_frame_total_max_ms":overall_frame_total_max_ms,"worst_frame_total_method":worst_frame_total_method,"overall_client_total_max_ms":overall_client_total_max_ms,"worst_client_total_method":worst_client_total_method,"overall_lock_wait_max_ms":overall_lock_wait_max_ms,"worst_lock_wait_method":worst_wait_method,"lock_wait_limit_ms":MAX_BUSY_LOCK_WAIT_MS,"overall_queued_max_ms":overall_queued_max_ms,"worst_queued_method":worst_queued_method,"overall_queue_and_lock_wait_max_ms":overall_queue_and_lock_wait_max_ms,"worst_queue_and_lock_method":worst_queue_and_lock_method,"measurements":measurements})
+        json!({"conversations":CONVERSATIONS,"watched_worktrees":WORKTREES,"workspace_aliases":busy.state.lock().unwrap().workspaces.list(None).len(),"initial_tasks":TASKS,"seeded_history_items_per_conversation":HISTORY_ITEMS,"delivered_handoffs":AGENTS*ROUNDS,"active_frames_at_capture":0,"simulated_running_agents":AGENTS,"status_observations":AGENTS*STATUS_OBSERVATIONS_PER_AGENT,"status_observer_path":"production StatusPump::observe via MeasuredStatusPump adapter","mcp_calls_per_agent":ROUNDS*7,"phases_exclusive":true,"client_total_is_exclusive_phase":false,"client_total_endpoints":{"mcp":"before socket write through parsed JSON reply","rpc":"before encrypted wire submission through decrypted reply keyed by exact request id","status":"before blocking-pool submission through joined production observe completion"},"response_limit_ms":MAX_BUSY_RESPONSE_MS,"mcp_read_latency_cohort":["get_task"],"mcp_read_client_total_limit_ms":MAX_BUSY_MCP_READ_RESPONSE_MS,"overall_permit_wait_max_ms":overall_permit_wait_max_ms,"worst_permit_wait_method":worst_permit_wait_method,"overall_pool_wait_max_ms":overall_pool_wait_max_ms,"worst_pool_wait_method":worst_pool_wait_method,"overall_queue_permit_and_lock_wait_max_ms":overall_queue_permit_and_lock_wait_max_ms,"worst_queue_permit_and_lock_method":worst_queue_permit_and_lock_method,"overall_frame_total_max_ms":overall_frame_total_max_ms,"worst_frame_total_method":worst_frame_total_method,"overall_client_total_max_ms":overall_client_total_max_ms,"worst_client_total_method":worst_client_total_method,"overall_lock_wait_max_ms":overall_lock_wait_max_ms,"worst_lock_wait_method":worst_wait_method,"lock_wait_limit_ms":MAX_BUSY_LOCK_WAIT_MS,"overall_queued_max_ms":overall_queued_max_ms,"worst_queued_method":worst_queued_method,"overall_queue_and_lock_wait_max_ms":overall_queue_and_lock_wait_max_ms,"worst_queue_and_lock_method":worst_queue_and_lock_method,"measurements":measurements})
     );
     assert!(
         failures.is_empty(),
@@ -826,6 +827,7 @@ fn assert_expected_samples(measurements: &Value) {
     );
     let (method, total) = overall_max_client_total(measurements);
     assert!(total <= MAX_BUSY_RESPONSE_MS, "whole busy fixture client/status response exceeded {MAX_BUSY_RESPONSE_MS}ms: {method} took {total}ms");
+    assert_busy_mcp_read_latency(measurements);
     for method in expected
         .iter()
         .map(|(method, _)| method.as_str())
@@ -838,6 +840,25 @@ fn assert_expected_samples(measurements: &Value) {
             "app-lock hold budget exceeded for {method}: {held}"
         );
     }
+}
+
+// This busy workload exercises get_task, one member of the supported MCP read
+// class. Other read tools retain their focused progress and authorization tests.
+fn assert_busy_mcp_read_latency(measurements: &Value) {
+    let latency = &measurements[BUSY_MCP_READ_METHOD]["client.total"];
+    assert_eq!(
+        latency["count"].as_u64(),
+        Some((AGENTS * ROUNDS) as u64),
+        "every get_task caller must be measured"
+    );
+    let maximum = latency["max_ms"]
+        .as_f64()
+        .expect("get_task has an actual caller latency maximum");
+    assert!(maximum.is_finite() && maximum >= 0.0);
+    assert!(
+        maximum <= MAX_BUSY_MCP_READ_RESPONSE_MS,
+        "busy MCP get_task client.total exceeded {MAX_BUSY_MCP_READ_RESPONSE_MS}ms: {latency}"
+    );
 }
 
 fn overall_max_client_total(measurements: &Value) -> (String, f64) {

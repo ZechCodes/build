@@ -1,3 +1,4 @@
+use crate::app::read_view::SharedJson;
 use crate::app::{run_state_str, DigestScope, ExternalWorktreeRows, WORKSPACE_SUMMARY_TTL};
 use crate::run::RunState;
 use crate::store::now_rfc3339;
@@ -793,6 +794,29 @@ impl AppState {
 
     /// The branch row for a run: the source that knows the most, because it is
     /// the only one that carries a lifecycle, a conversation and agents.
+    /// The normalized wire row is separate from the raw folding candidate.
+    /// Both caches expire with this immutable candidate's ownership guard.
+    pub(in crate::app) fn snapshot_named_branch_row(
+        &self,
+        owner: &str,
+        stat: &Value,
+    ) -> SharedJson {
+        let context = self.snapshot_ownership_context();
+        if let Some(row) = context
+            .as_ref()
+            .and_then(|context| context.rendering.named_branch(owner, stat))
+        {
+            return row;
+        }
+        let row = SharedJson::value(crate::branch::named_project_row(
+            self.branch_candidate_from_run(owner, stat).row,
+        ));
+        if let Some(context) = context {
+            context.rendering.remember_named_branch(owner, stat, &row);
+        }
+        row
+    }
+
     pub(in crate::app) fn branch_candidate_from_run(
         &self,
         run_id: &str,

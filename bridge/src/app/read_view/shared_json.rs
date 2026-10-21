@@ -188,6 +188,8 @@ fn shared_object_digest(object: &BTreeMap<String, SharedJson>) -> Option<(Digest
 
 fn collect_value_digests(value: &Value, digests: &mut BTreeMap<DigestKey, u64>) {
     #[cfg(test)]
+    crate::app::snapshot_projection::work_counts::named_branch::indexed_value();
+    #[cfg(test)]
     crate::app::snapshot_projection::work_counts::detail_scans::indexed_value();
     match value {
         Value::Object(object) => {

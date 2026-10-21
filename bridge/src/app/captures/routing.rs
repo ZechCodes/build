@@ -162,7 +162,10 @@ impl AppState {
             wants_catch_up: false,
             survives_refusal: false,
         });
+        let router_agent = session.agent_id().to_owned();
         self.router_sessions.insert(capture_id.to_string(), session);
+        self.session_registry
+            .register_mcp_router(capture_id.to_owned(), router_agent);
         Ok(())
     }
 
@@ -540,6 +543,8 @@ impl AppState {
         let Some(session) = self.router_sessions.remove(capture_id) else {
             return;
         };
+        self.session_registry
+            .remove_mcp_router(capture_id, session.agent_id());
         let root = Self::canonical_root(session.scratch_dir());
         let writers = self
             .retire_tab(

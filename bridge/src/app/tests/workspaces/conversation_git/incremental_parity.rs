@@ -8,11 +8,18 @@ use std::collections::{BTreeMap, BTreeSet};
 const CLOCK: &str = "2026-01-01T00:00:00Z";
 const LATER_CLOCK: &str = "2026-01-01T00:01:00Z";
 
+mod named_branch;
+mod owner_closure;
+
 fn fixture() -> (tempfile::TempDir, AppState) {
-    let (tmp, mut state, _) = ownership_fixture(4, false);
+    fixture_with_count(4)
+}
+
+fn fixture_with_count(count: usize) -> (tempfile::TempDir, AppState) {
+    let (tmp, mut state, _) = ownership_fixture(count, false);
     add_tip_agents(&mut state, 1);
     state.store = Some(crate::store::Store::new(tmp.path().join("tasks")).unwrap());
-    for number in 0..4 {
+    for number in 0..count {
         let owner = format!("run-{number:02}");
         let mut active = state.take_run(&owner).unwrap();
         active.run.goal = format!("committed goal {number}");

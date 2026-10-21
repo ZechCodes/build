@@ -16,7 +16,8 @@ fn fixture() -> (
     let (clock, lines) = recording_clock();
     let mut app = AppState::new_unrooted(dir.path(), "main", true, "unused");
     app.frame_clock = Arc::clone(&clock);
-    (dir, app.shared(), ControlPlane::new(clock), lines)
+    let plane = ControlPlane::new(&app);
+    (dir, app.shared(), plane, lines)
 }
 
 fn duration(line: &str, field: &str) -> f64 {

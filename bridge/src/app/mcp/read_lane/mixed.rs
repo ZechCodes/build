@@ -1,8 +1,9 @@
 //! Saved review reads own SQL metadata and then independent external work.
+use super::service::{Inputs, McpReadService};
 use super::{PreparedRead, ReadSession, ReadWork};
-use crate::app::AppState;
 use crate::mcp::BridgeAction;
 use serde_json::json;
+use std::sync::Arc;
 
 pub(super) fn supports(action: &BridgeAction) -> bool {
     matches!(
@@ -12,22 +13,24 @@ pub(super) fn supports(action: &BridgeAction) -> bool {
 }
 
 pub(super) fn prepare(
-    app: &mut AppState,
+    service: &McpReadService,
+    inputs: &Arc<Inputs>,
     session: &ReadSession,
     action: &BridgeAction,
 ) -> Option<Result<PreparedRead, String>> {
     if !supports(action) {
         return None;
     }
-    Some(prepare_review(app, session, action))
+    Some(prepare_review(service, inputs, session, action))
 }
 
 fn prepare_review(
-    app: &AppState,
+    service: &McpReadService,
+    inputs: &Arc<Inputs>,
     session: &ReadSession,
     action: &BridgeAction,
 ) -> Result<PreparedRead, String> {
-    if app.project_deletion_in_progress {
+    if inputs.deleting_project() {
         return Err(crate::app::rpc::PROJECT_DELETION_IN_PROGRESS.into());
     }
     let (task, method, params) = match action {
@@ -65,20 +68,17 @@ fn prepare_review(
         _ => unreachable!("review allowlist checked"),
     };
     let unknown = format!("unknown task_id: {task}");
-    let owner = &session.coding()?.entity_id;
+    let owner = &session.coding()?.owner;
     // Review tools' existing no-project refusal differs from plain task tools.
-    app.projects
-        .project_id_of(owner)
-        .ok_or_else(|| unknown.clone())?;
-    let scope = session.project(app, unknown)?;
+    inputs.project_binding(owner).map_err(|_| unknown.clone())?;
+    let scope = session.project(inputs, unknown)?;
     let project = scope.id.clone();
-    let view = app.read_view.clone();
-    let context = view
-        .load()
+    let context = inputs
+        .view
         .observations
         .clone()
-        .expect("observation inputs initialized before MCP admission");
-    let pool = app.store.as_ref().map(|store| store.read_pool());
+        .ok_or("observation inputs were not initialized")?;
+    let pool = service.pool.clone();
     Ok(PreparedRead::query(pool, move |connection| {
         let connection = connection.ok_or("tasks need a durable store; this bridge has none")?;
         let job = connection
@@ -92,9 +92,9 @@ fn prepare_review(
         let fence = job.fence();
         Ok(
             ReadWork::external(move || job.run().map_err(raw_error)).finish_with(
-                move |_, value| {
-                    let latest = view.load();
+                move |latest, value| {
                     let context = latest
+                        .view
                         .observations
                         .as_ref()
                         .expect("initialized inputs remain published");

@@ -1,7 +1,13 @@
 //! Immutable admission and identity overlays for independent SQL reads.
 //! Producers publish while already owning the app; readers never acquire it.
 
+mod mcp_addresses;
+mod mcp_bootstrap;
 mod mcp_history;
+#[cfg(test)]
+pub(in crate::app) use mcp_addresses::metrics as mcp_metadata_metrics;
+pub(in crate::app) use mcp_addresses::{FrozenMcpAddress, IssuedCodingAddress, McpAddresses};
+pub(in crate::app) use mcp_bootstrap::{HarnessSettings, McpBootstrap};
 pub(in crate::app) mod mcp_tasks;
 
 use super::conversations::sql_read::{ThreadReadContext, ThreadReadFence};
@@ -21,6 +27,8 @@ pub(in crate::app) struct ReadContext {
     tasks: TaskReadContext,
     threads: ThreadReadContext,
     deleting_project: bool,
+    addresses: Arc<McpAddresses>,
+    bootstrap: Arc<McpBootstrap>,
 }
 
 /// Captured once when the handler is constructed, rather than consulting
@@ -43,6 +51,8 @@ impl AppState {
         self.read_context.store(Some(Arc::new(ReadContext {
             tasks: self.task_read_context(),
             threads: self.thread_read_context(),
+            addresses: Arc::new(McpAddresses::capture(self)),
+            bootstrap: Arc::new(McpBootstrap::capture(self)),
             deleting_project: self.project_deletion_in_progress,
         })));
     }
@@ -59,12 +69,37 @@ impl AppState {
         let mut next = (*previous).clone();
         if saved {
             next.threads.update_owner(self, owner);
+            Arc::make_mut(&mut next.addresses).update_owner(self, owner);
+            if !self.snapshot_projection_initialized() {
+                Arc::make_mut(&mut next.bootstrap).update_owner(self, owner);
+            }
         } else {
             next.threads.retain_owner_agents(self, owner);
+            Arc::make_mut(&mut next.addresses).retain_owner_agents(self, owner);
         }
         next.tasks = self.task_read_context();
         next.tasks
             .retain_live_owners(&previous.tasks, self, Some((owner, saved)));
+        next.deleting_project = self.project_deletion_in_progress;
+        self.read_context.store(Some(Arc::new(next)));
+    }
+
+    /// Reset installs every alias and canonical head before this one store.
+    pub(in crate::app) fn publish_read_owners(&self, owners: &std::collections::HashSet<String>) {
+        let Some(previous) = self.read_context.load_full() else {
+            return;
+        };
+        let mut next = (*previous).clone();
+        for owner in owners {
+            next.threads.update_owner(self, owner);
+            Arc::make_mut(&mut next.addresses).update_owner(self, owner);
+            if !self.snapshot_projection_initialized() {
+                Arc::make_mut(&mut next.bootstrap).update_owner(self, owner);
+            }
+        }
+        next.tasks = self.task_read_context();
+        next.tasks
+            .retain_saved_owners(&previous.tasks, self, owners);
         next.deleting_project = self.project_deletion_in_progress;
         self.read_context.store(Some(Arc::new(next)));
     }
@@ -76,6 +111,7 @@ impl AppState {
         };
         let mut next = (*previous).clone();
         next.threads.forget_owner(owner);
+        Arc::make_mut(&mut next.addresses).forget_owner(self, owner);
         next.tasks = self.task_read_context();
         next.tasks.retain_live_owners(&previous.tasks, self, None);
         next.tasks.forget_live_owner(owner);
@@ -98,12 +134,39 @@ impl AppState {
         let Some(previous) = self.read_context.load_full() else {
             return;
         };
+        let mut addresses = Arc::clone(&previous.addresses);
+        Arc::make_mut(&mut addresses).refresh_order(self);
         let mut next = ReadContext {
             tasks: self.task_read_context(),
             threads: previous.threads.clone(),
+            addresses,
+            bootstrap: Arc::clone(&previous.bootstrap),
             deleting_project: self.project_deletion_in_progress,
         };
         next.tasks.retain_live_owners(&previous.tasks, self, None);
+        self.read_context.store(Some(Arc::new(next)));
+    }
+
+    /// Before first snapshot warming, a listener reads its committed settings
+    /// from this seed. A successful config save replaces only those fields.
+    pub(in crate::app) fn publish_read_cold_harness_settings(&self) {
+        if self.snapshot_projection_initialized() {
+            return;
+        }
+        let Some(previous) = self.read_context.load_full() else {
+            return;
+        };
+        let settings = &previous.bootstrap.settings;
+        if settings.default_harness == self.default_harness
+            && settings.role_models == self.role_models
+        {
+            return;
+        }
+        let mut next = (*previous).clone();
+        Arc::make_mut(&mut next.bootstrap).settings = HarnessSettings {
+            default_harness: self.default_harness,
+            role_models: self.role_models.clone(),
+        };
         self.read_context.store(Some(Arc::new(next)));
     }
 
@@ -137,6 +200,28 @@ impl AppState {
 }
 
 impl ReadService {
+    pub(in crate::app) fn mcp_input_snapshot(
+        &self,
+    ) -> (Arc<McpAddresses>, Arc<McpBootstrap>, bool) {
+        let current = self.context.load_full().expect("initialized read context");
+        (
+            Arc::clone(&current.addresses),
+            Arc::clone(&current.bootstrap),
+            current.deleting_project,
+        )
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn mcp_addresses(&self) -> Arc<McpAddresses> {
+        Arc::clone(
+            &self
+                .context
+                .load_full()
+                .expect("initialized read context")
+                .addresses,
+        )
+    }
+
     pub(in crate::app) fn call(
         &self,
         frame: Frame,

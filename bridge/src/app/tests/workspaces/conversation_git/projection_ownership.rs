@@ -1,6 +1,8 @@
 use super::*;
 use crate::compaction::{CompactionScope, CompactionSource};
 
+mod structural_reuse;
+
 fn ownership_edge_cases(state: &mut AppState, root: &Path) {
     let project = state.projects.project_id_of("run-00").unwrap().to_owned();
     state.runs.get_mut("run-00").unwrap().run.state = crate::run::RunState::Merged;

@@ -9,6 +9,7 @@ use crate::orchestrator::OrchestratorError;
 use crate::timing::FrameTimer;
 use crate::transport;
 use crate::transport::Frame;
+use crate::update::AdmissionLease;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -119,6 +120,36 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "workspace.retry",
 ];
 
+/// A lookup that found no update service still admits the request. Exempt
+/// liveness verbs instead let their drain consult admission independently.
+enum RequestAdmission {
+    Entered(Option<AdmissionLease>),
+    Bypassed,
+}
+
+impl RequestAdmission {
+    fn enter(
+        state: &Arc<Mutex<AppState>>,
+        method: &str,
+        timer: &FrameTimer,
+    ) -> Result<Self, ApiError> {
+        if matches!(method, "ping" | "bridge.stats" | "bridge.update_status") {
+            return Ok(Self::Bypassed);
+        }
+        // The service is installed before sharing AppState. A completed lookup
+        // finding no service is admitted and must not fetch it again at drain.
+        let gate = timer.lock(state).update_admission();
+        let lease = match gate {
+            Some(gate) => Some(
+                gate.try_enter()
+                    .ok_or_else(|| ApiError::busy("bridge update handoff in progress"))?,
+            ),
+            None => None,
+        };
+        Ok(Self::Entered(lease))
+    }
+}
+
 /// Dispatch one decrypted request frame. [`session_scoped`] answers the verbs
 /// that need the shared `Arc` (background producer/pump) or the caller's own
 /// `SessionSender` (somewhere to push live output to); [`routed`] answers
@@ -175,22 +206,9 @@ pub(in crate::app) fn dispatch_frame(
 
     // Keep a request admitted through its off-lock git work and queue drain.
     // The idle updater can claim the bridge only between complete requests.
-    let admission = if matches!(
-        method.as_str(),
-        "ping" | "bridge.stats" | "bridge.update_status"
-    ) {
-        None
-    } else {
-        timer.lock(state).update_admission()
-    };
-    let _lease = match admission {
-        Some(gate) => match gate.try_enter() {
-            Some(lease) => Some(lease),
-            None => {
-                return api::reply(id, Err(ApiError::busy("bridge update handoff in progress")))
-            }
-        },
-        None => None,
+    let admission = match RequestAdmission::enter(state, &method, &timer) {
+        Ok(admission) => admission,
+        Err(error) => return api::reply(id, Err(error)),
     };
 
     let result = match session_scoped(state, &sender, &method, &params, &timer) {
@@ -208,7 +226,7 @@ pub(in crate::app) fn dispatch_frame(
         // The caller is named for the frame: the `changes.*` verbs push to
         // it, and `routed` carries only the state.
         None => crate::api::v1::changes::with_session(&sender, || {
-            routed(state, &method, &params, &timer)
+            routed(state, &method, &params, &timer, &admission)
         }),
     };
     api::reply(id, result)
@@ -298,6 +316,22 @@ fn session_scoped(
     params: &Value,
     timer: &FrameTimer,
 ) -> Option<Result<Value, String>> {
+    if !matches!(
+        method,
+        "session.hello"
+            | "bridge.stats"
+            | "stream.start"
+            | "term.create"
+            | "term.attach"
+            | "term.input"
+            | "term.resize"
+            | "term.ack"
+            | "agent.attach"
+            | "agent.start"
+            | "agent.interrupt"
+    ) {
+        return None;
+    }
     if !allowed_during_project_deletion(method) && timer.lock(state).project_deletion_in_progress {
         return Some(Err(PROJECT_DELETION_IN_PROGRESS.to_string()));
     }
@@ -360,13 +394,22 @@ fn routed(
     method: &str,
     params: &Value,
     timer: &FrameTimer,
+    admission: &RequestAdmission,
 ) -> Result<Value, ApiError> {
     // A verb whose git work must not run under the lock hands that work back
     // rather than doing it here; the drain below runs it with the mutex
     // released. See `AppState::deferred_work`.
     #[cfg(test)]
     timer.mark_request("dispatch_start");
-    let (dispatched, deferred) = timer.lock(state).dispatch_deferring(method, params);
+    let (dispatched, deferred) = {
+        let mut app = timer.lock(state);
+        // Refuse before dispatch_deferring can take an existing deferred job
+        // or checkpoint queued work, just as the session precheck did.
+        if !allowed_during_project_deletion(method) && app.project_deletion_in_progress {
+            return Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS));
+        }
+        app.dispatch_deferring(method, params)
+    };
     #[cfg(test)]
     timer.mark_request("dispatch_end");
     let dispatched = match deferred {
@@ -399,7 +442,12 @@ fn routed(
     if dispatched.is_ok() {
         #[cfg(test)]
         timer.mark_request("drain_start");
-        DeliveryRunner::drain(state, timer);
+        match admission {
+            RequestAdmission::Entered(lease) => {
+                DeliveryRunner::drain_admitted(state, timer, lease.clone());
+            }
+            RequestAdmission::Bypassed => DeliveryRunner::drain(state, timer),
+        }
         #[cfg(test)]
         timer.mark_request("drain_end");
     }

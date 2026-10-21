@@ -42,6 +42,7 @@ pub(in crate::app) struct SessionRegistry {
     spawn_finished: Arc<Condvar>,
     waiting_screens: HashMap<TabKey, ScreenHandle>,
     mcp_tokens: HashMap<String, String>,
+    mcp_read_authority: super::McpReadAuthority,
     /// A failed roster save cannot undo an agent binding's actual retirement.
     /// Agent IDs are shared by aliases; owner IDs only support deletion cleanup.
     retired_bindings: HashMap<String, String>,
@@ -221,6 +222,7 @@ impl SessionRegistry {
             spawn_finished: Arc::new(Condvar::new()),
             waiting_screens: HashMap::new(),
             mcp_tokens: HashMap::new(),
+            mcp_read_authority: super::McpReadAuthority::new(),
             retired_bindings: HashMap::new(),
             next_terminal: 1,
             push_runtime: None,
@@ -344,8 +346,11 @@ impl SessionRegistry {
         &mut self,
         agent_id: String,
         token: String,
+        issuer: super::McpIssuer,
     ) -> McpTokenLease {
         self.mcp_tokens.insert(agent_id.clone(), token.clone());
+        self.mcp_read_authority
+            .install(agent_id.clone(), &token, issuer);
         McpTokenLease { agent_id, token }
     }
 
@@ -357,6 +362,28 @@ impl SessionRegistry {
 
     pub(in crate::app) fn revoke_mcp_token(&mut self, agent_id: &str) {
         self.mcp_tokens.remove(agent_id);
+        self.mcp_read_authority.revoke(agent_id);
+    }
+
+    pub(in crate::app) fn mcp_read_authority(&self) -> super::McpReadAuthority {
+        self.mcp_read_authority.clone()
+    }
+
+    pub(in crate::app) fn register_mcp_router(
+        &mut self,
+        capture: String,
+        agent: String,
+    ) -> super::RouterAuthority {
+        self.mcp_read_authority.register_router(capture, agent)
+    }
+
+    pub(in crate::app) fn remove_mcp_router(&mut self, capture: &str, agent: &str) {
+        self.mcp_read_authority.remove_router(capture, agent);
+    }
+
+    pub(in crate::app) fn set_mcp_resetting(&mut self, conversation: &str, resetting: bool) {
+        self.mcp_read_authority
+            .set_resetting(conversation, resetting);
     }
 
     pub(in crate::app) fn retire_agent_binding(&mut self, owner: &str, agent: &str) {
@@ -381,7 +408,7 @@ impl SessionRegistry {
             .get(&lease.agent_id)
             .is_some_and(|current| constant_time_token_eq(current, &lease.token))
         {
-            self.mcp_tokens.remove(&lease.agent_id);
+            self.revoke_mcp_token(&lease.agent_id);
         }
     }
 
@@ -409,7 +436,11 @@ impl SessionRegistry {
     pub(in crate::app) fn projection_agent_owners(&self) -> std::collections::BTreeSet<String> {
         self.tabs
             .values()
-            .filter_map(|tab| tab.role.agent().map(|(owner, _)| owner.to_owned()))
+            .filter_map(|tab| {
+                #[cfg(test)]
+                crate::app::snapshot_projection::work_counts::owner_closure::registry_tab();
+                tab.role.agent().map(|(owner, _)| owner.to_owned())
+            })
             .collect()
     }
 
@@ -963,8 +994,13 @@ impl SessionRegistry {
     }
 
     #[cfg(test)]
-    pub(in crate::app) fn test_install_token(&mut self, agent_id: String, token: String) {
-        self.mcp_tokens.insert(agent_id, token);
+    pub(in crate::app) fn test_install_token(
+        &mut self,
+        agent_id: String,
+        token: String,
+        issuer: super::McpIssuer,
+    ) {
+        self.install_mcp_token(agent_id, token, issuer);
     }
 
     #[cfg(test)]

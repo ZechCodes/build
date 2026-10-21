@@ -2,9 +2,13 @@
 use super::*;
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+mod workspace_dependents_tests;
+
 #[derive(Default)]
 pub(in crate::app::observation_reads) struct ScopePatch {
     runs: BTreeMap<String, Option<Arc<RunInput>>>,
+    plan_projects: BTreeMap<String, Option<String>>,
     projects: BTreeMap<String, Option<Arc<ProjectInput>>>,
     workspaces: BTreeMap<String, Option<Arc<Workspace>>>,
     order: Option<Vec<String>>,
@@ -68,6 +72,16 @@ fn run(app: &AppState, id: &str) -> Option<Arc<RunInput>> {
 impl ScopePatch {
     pub fn owner(&mut self, app: &AppState, owner: &str) {
         self.runs.insert(owner.into(), run(app, owner));
+        self.plan_project(app, owner);
+    }
+    fn plan_project(&mut self, app: &AppState, owner: &str) {
+        self.plan_projects.insert(
+            owner.into(),
+            app.plans
+                .contains_key(owner)
+                .then(|| app.projects.project_id_of(owner).map(str::to_owned))
+                .flatten(),
+        );
     }
     pub fn project(&mut self, app: &AppState, id: &str) {
         self.projects.insert(id.into(), project(app, id));
@@ -109,6 +123,9 @@ impl ScopeReadContext {
         }
         for id in app.runs.keys() {
             patch.owner(app, id);
+        }
+        for owner in app.plans.keys() {
+            patch.plan_project(app, owner);
         }
         patch.topology(app);
         let mut context = Self::default();
@@ -206,9 +223,49 @@ impl ScopeReadContext {
         self.runs.contains_key(id)
     }
 
+    fn update_workspace_dependents(&mut self, id: &str, next: Option<&String>) {
+        let previous = self.runs.get(id).and_then(|run| run.workspace_id.as_ref());
+        if previous == next {
+            return;
+        }
+        let previous = previous.cloned();
+        if let Some(workspace) = previous {
+            let mut owners = self
+                .workspace_dependents
+                .get(&workspace)
+                .cloned()
+                .unwrap_or_default();
+            #[cfg(test)]
+            super::super::capture_metrics::record("scope_membership_remove", id);
+            owners.remove(id);
+            self.workspace_dependents.insert(workspace, owners);
+        }
+        if let Some(workspace) = next {
+            let mut owners = self
+                .workspace_dependents
+                .get(workspace)
+                .cloned()
+                .unwrap_or_default();
+            #[cfg(test)]
+            super::super::capture_metrics::record("scope_membership_insert", id);
+            owners.insert(id.to_owned());
+            self.workspace_dependents.insert(workspace.clone(), owners);
+        }
+    }
+
     pub(in crate::app::observation_reads) fn apply(&mut self, patch: &ScopePatch) {
         for (id, row) in &patch.projects {
             replace(&mut self.projects, id, row);
+        }
+        for (owner, project) in &patch.plan_projects {
+            match project {
+                Some(id) => {
+                    self.plan_projects.insert(owner.clone(), id.clone());
+                }
+                None => {
+                    self.plan_projects.remove(owner);
+                }
+            }
         }
         for (id, row) in &patch.workspaces {
             if let Some(root) = self.workspace_canonical.remove(id) {
@@ -231,29 +288,10 @@ impl ScopeReadContext {
         }
         let mut changed = BTreeSet::new();
         for (id, row) in &patch.runs {
-            if let Some(workspace) = self
-                .runs
-                .get(id)
-                .and_then(|run| run.workspace_id.as_ref())
-                .cloned()
-            {
-                let mut owners = self
-                    .workspace_dependents
-                    .get(&workspace)
-                    .cloned()
-                    .unwrap_or_default();
-                owners.remove(id);
-                self.workspace_dependents.insert(workspace, owners);
-            }
-            if let Some(workspace) = row.as_ref().and_then(|run| run.workspace_id.as_ref()) {
-                let mut owners = self
-                    .workspace_dependents
-                    .get(workspace)
-                    .cloned()
-                    .unwrap_or_default();
-                owners.insert(id.clone());
-                self.workspace_dependents.insert(workspace.clone(), owners);
-            }
+            self.update_workspace_dependents(
+                id,
+                row.as_ref().and_then(|run| run.workspace_id.as_ref()),
+            );
             let before = self
                 .runs
                 .get(id)

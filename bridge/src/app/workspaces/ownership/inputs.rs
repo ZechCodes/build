@@ -39,6 +39,8 @@ impl Roots {
 impl<'a> Inputs<'a> {
     pub(super) fn capture(app: &'a AppState) -> Self {
         #[cfg(test)]
+        super::work_counts::input_build();
+        #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.ownership_inputs");
         let mut roots = Roots::default();
         let runs = capture_runs(app, &mut roots);
@@ -49,7 +51,11 @@ impl<'a> Inputs<'a> {
             project_roots: app
                 .projects
                 .iter()
-                .map(|project| (project.id.clone(), roots.get(app, &project.repo_path)))
+                .map(|project| {
+                    #[cfg(test)]
+                    super::work_counts::source_row();
+                    (project.id.clone(), roots.get(app, &project.repo_path))
+                })
                 .collect(),
             runs_by_owner: HashMap::new(),
             first_live: HashMap::new(),
@@ -68,6 +74,8 @@ impl<'a> Inputs<'a> {
             }
         }
         for (index, workspace) in captured.workspaces.iter().enumerate() {
+            #[cfg(test)]
+            super::work_counts::source_row();
             #[cfg(test)]
             crate::workspace::read_work_counts::scope_candidate();
             let root = roots.get(app, &workspace.root);
@@ -128,6 +136,8 @@ impl<'a> Inputs<'a> {
 fn capture_runs<'a>(app: &'a AppState, roots: &mut Roots) -> Vec<RunInput<'a>> {
     let mut parked = HashMap::new();
     for entry in app.projects.parked() {
+        #[cfg(test)]
+        super::work_counts::source_row();
         if let Some(path) = crate::app::projects::configured_primary_path(entry) {
             parked
                 .entry(path)
@@ -137,13 +147,19 @@ fn capture_runs<'a>(app: &'a AppState, roots: &mut Roots) -> Vec<RunInput<'a>> {
     let projects: HashMap<_, _> = app
         .projects
         .iter()
-        .map(|project| (project.id.as_str(), project.repo_path.as_path()))
+        .map(|project| {
+            #[cfg(test)]
+            super::work_counts::source_row();
+            (project.id.as_str(), project.repo_path.as_path())
+        })
         .collect();
     // HashMap iteration is intentional: the first live fallback owner in
     // that exact traversal has always won shared-root workspaces.
     app.runs
         .iter()
         .map(|(owner, active)| {
+            #[cfg(test)]
+            super::work_counts::source_row();
             #[cfg(test)]
             crate::workspace::read_work_counts::owner_candidate();
             let root = roots.get(app, &active.worktree.path);

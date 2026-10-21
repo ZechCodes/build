@@ -15,8 +15,7 @@ fn admitted_frame(
     token: &str,
     payload: Value,
 ) -> (Value, AddressedSession) {
-    app.session_registry
-        .test_install_token(agent.into(), token.into());
+    app.test_install_mcp_token(agent.into(), token.into());
     let mut frame = json!({ "task_id": agent, "session_token": token });
     frame
         .as_object_mut()
@@ -51,7 +50,7 @@ async fn finish_admitted_frame(
 ) -> (Arc<Mutex<AppState>>, Option<Value>) {
     let state = Arc::new(Mutex::new(app));
     let clock = Arc::clone(&state.lock().unwrap().frame_clock);
-    let plane = ControlPlane::new(Arc::clone(&clock));
+    let plane = ControlPlane::new(&state.lock().unwrap());
     let timer = clock.frame(MCP_CONTROL_METHOD);
     let mut turn = Turn::take(&plane, &timer).await;
     let AddressedSession::Coding(generation) = endpoint else {

@@ -215,6 +215,14 @@ work and retain their dispatch worker until they finish.
 4. `routed()` → `AppState::route` → `crate::api::v1::dispatch`, then the legacy
    arms (`ping`, `term.list`, `term.close`, `stream.*`).
 
+Routed requests retain their update-admission lease through the reply and
+share it with delivery and compaction workers. Their drain does not acquire
+another gate handle or lease. A request admitted without an update service
+is distinct from an exempt liveness request, whose drain still checks the
+gate independently. Project-deletion refusal runs inside the routed dispatch
+guard before deferred work can be taken. Session-scoped and standalone drains
+keep their existing admission checks.
+
 **The verb registry** is `bridge/src/api/v1/mod.rs`. Each family file (`board.rs`,
 `changes.rs`, `git.rs`, `harnesses.rs`, `push.rs`, `tasks.rs`, `lifecycle.rs`, `thread.rs`, `updates.rs`,
 `workspace.rs`) has a `methods()` table built with the `v1_method!` macro, which
@@ -461,11 +469,14 @@ every root, with repeated filesystem canonicalization under the app lock.
 Counting tests bound the path comparisons for a refresh as runs and workspaces
 grow; ownership tests retain direct IDs, terminal states, project conversations
 and symlink aliases.
-Snapshot preparation captures one ephemeral ownership context shared by board,
-workspace, agent and push projections. It observes ordered workspace inputs and
-distinct roots once, preserving run-map fallback order and workspace name/ID
-precedence. Task live locations use a qualified owner index with the existing
-project/root checks and project-repository exclusion, so each agent resolves its
+Snapshot preparation creates one ownership context shared by board, workspace,
+agent and push projections. Pure ownership indexes can reuse the accepted global
+projection's structural data after validating current native paths, observed
+aliases, state root, project and parked bindings, exact run states, roster order
+and workspace name/ID precedence. Validation still walks the current inputs;
+unchanged structure avoids rebuilding and sorting the indexes. Cold observation
+state cannot reuse them. Task live locations use a qualified owner index with
+the existing project/root checks and project-repository exclusion, so each agent resolves its
 location without repeating registry scans. It indexes agent ownership and preferred
 run outcomes in the existing precedence order, and reuses branch candidates and
 canonical agent digests for matching render inputs. Updated canonical histories
@@ -477,9 +488,11 @@ canonical conversation aliases retain their existing behavior without resolving
 paths per agent. Board workspace summaries observe in-flight delivery roots
 and live session status once for all workspace rows. Push workspace rows join
 summaries through a temporary index that preserves JSON id equality and
-first-match duplicate precedence. These candidate-local indexes and render
-memos end before persistence or canonical mutation; a failed candidate cannot
-seed a later publication. Adjacent immutable snapshot and read-metadata
+first-match duplicate precedence. Render memos remain fresh for each outer
+guard and end before persistence or canonical mutation. Only an accepted global
+delta retains new pure structural data; failed saves and rejected candidates
+cannot replace it. Metadata publication still refreshes runtime availability
+and saved addressing independently. Adjacent immutable snapshot and read-metadata
 publications share that capture within their wrapper, ending before change
 notifications or later mutations. Complete local read-view deltas retain their atomic publication
 boundary before replies and change notices. Counting tests include the
@@ -504,6 +517,20 @@ through one registry and dependency scan. Fresh base rows and agent variants
 share their unchanged JSON subtrees; dependency scans borrow fields from either
 composed or legacy rows without materializing an aggregate. Active-owner and
 elapsed-time fields are still rendered afresh on each publication.
+
+Each incremental refresh discovers current active owners once and builds one
+owner dependency index. Two independent closure walks compute dirty owners and
+the next active set. Previous active owners and explicit state/stat changes join
+the dirty set only; an idle owner receives its cleanup refresh without staying
+active. Failed saves retain pending-owner retries until an accepted publication.
+
+Within one candidate, an incremental board winner and its push state share the
+same normalized branch wire row, keyed by owner and exact stat input. The raw
+fold candidate remains separate, and losing owners retain their own push state.
+This memo ends with the projection guard; full seeds keep their independent
+construction. Observation scope installation still replaces every supplied run
+input and updates lineage, but edits workspace membership only when the
+workspace ID changes. Physical paths and other changed fields still install.
 
 Within `StatusPump::observe`, attention persistence and dirty marks still
 update immediately, while their wire projection joins the final owner
@@ -2169,10 +2196,18 @@ work and MCP capabilities. An established running turn is stopped and reaped;
 already admitted sends settle outside the app lock before history is replaced.
 An unadopted spawn or delivery handoff is refused retryably. Reads remain
 available during retirement, while conversation mutations are refused.
-MCP authentication captures the source thread generation, and done reports
-and agent actions validate it under the same lock as their writes. Deferred
-task handoffs retain that source generation until settlement. A late callback
-or a request carrying the old generation cannot restore the cleared content.
+MCP admission captures the source thread generation. Done reports and agent
+writes validate it under the mutation lock. Independent read capabilities also
+retain the issued source generation and validate it against saved addressing
+and private runtime authority. The runtime reset
+reservation remains active through complete commit or failure restoration.
+Saved addressing, thread admission and task overlays publish every affected
+alias in one metadata batch. Source/roster guards consult the reservation;
+router history targets may read the complete old committed history during
+retirement, with their frozen binding/thread fence rejecting a replacement at
+completion. Deferred task handoffs retain the source generation until
+settlement. A late callback or a request carrying the old generation cannot
+restore the cleared content.
 A new project-agent session uses the ordinary fresh-start scaffolding and
 standing instruction templates.
 After the first reset, conversation mutations require the current `thread_id`;
@@ -2218,20 +2253,38 @@ app-lock acquisition (`lock_wait`), including the update-admission check.
 Reacquiring a turn after deferred work is included in the permit wait; the
 deferred work itself is not pool queue time.
 
-The two control turns bound mutation work. An exact allowlist of task, roster,
-list, history and review reads bypasses those turns; malformed actions and done
-reports retain their existing routing. Each read authenticates its token,
-surface, owner and thread generation under a brief blocking-pool app guard,
-then prepares owned work. SQL reads borrow the shared asynchronous reader pool
-and retain one transaction across related rows. Snapshot reads capture accepted
-immutable fragments and materialize them off-lock. Review reads release SQL
-capacity before external observation. A final brief guard rechecks admission,
-project bindings and target generations before returning the ordinary response.
+The two control turns continue to bound mutation work. MCP task, roster, list,
+history and review reads on an exact allowlist use a service captured during
+listener setup and take neither a writer turn nor the app mutex. Malformed
+actions and done reports retain their existing routing. Private immutable
+capability state publishes token installation, rotation, revocation and router
+incarnations immediately. Token bytes authenticate before issuer data is used;
+coding capabilities bind to the validated issued owner, agent, canonical
+conversation and thread generation. Project scope and tool surface follow
+current committed policy rather than becoming lifetime token entitlements.
+
+Saved immutable addressing retains roster order, canonical bindings, thread
+identity and persisted pin/name policy. Failed saves cannot admit candidate
+identities; temporarily borrowed owners retain their saved records. Roster and
+list reads use accepted producer fragments and scope/selection metadata, with
+roster target stamps taken from the captured payload itself. Read preparation and final
+validation compare those targets with saved addresses and current authority;
+changed bindings, generations, selections or project paths refuse the captured
+request instead of retargeting it. No request initializes producers, probes
+workspace paths or drains deferred writer work.
+
+SQL reads use the shared asynchronous reader pool and one transaction across
+related rows. Snapshot materialization and the exact harness catalogue resolver
+run off-lock. The catalogue combines accepted default/ordered-role settings
+with the existing CLI readings service, preserving TTL/executable refresh and
+hidden-model startability without a new catalogue cache or publisher-side
+executable probes. Review work releases SQL capacity before external I/O and
+retains its observation fences. Final checks reload immutable capability,
+address and accepted scope metadata; comment-name decoration uses saved policy.
 The update-admission lease survives caller cancellation until blocking work
-finishes. These reads do not drain deferred writer work or run legacy producer
-maintenance. Calls on one socket remain ordered; independent sockets can read
-while mutation turns are occupied. The brief app guards still contend with
-writers.
+finishes, and responses retain their ordinary shape. Calls on one socket remain
+ordered; independent sockets read while mutation turns or the app mutex are
+occupied.
 
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
 `Project`), which a project's agents take from their persisted purpose (see

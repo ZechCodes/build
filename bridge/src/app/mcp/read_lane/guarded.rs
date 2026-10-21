@@ -1,7 +1,8 @@
-//! Small immutable catalog/roster reads; never call mutation dispatch or drain.
-use super::{AppState, BridgeAction, PreparedRead, ReadSession, ReadWork};
-use crate::app::mcp::McpConversationGeneration;
+//! Catalogue work and accepted roster payloads, without application access.
+use super::service::{Inputs, McpReadService};
+use super::{BridgeAction, PreparedRead, ReadSession, ReadWork};
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 pub(super) fn supports(action: &BridgeAction) -> bool {
     matches!(
@@ -13,118 +14,181 @@ pub(super) fn supports(action: &BridgeAction) -> bool {
 }
 
 pub(super) fn prepare(
-    app: &mut AppState,
+    service: &McpReadService,
+    inputs: &Arc<Inputs>,
     session: &ReadSession,
     action: &BridgeAction,
 ) -> Option<Result<PreparedRead, String>> {
     match action {
-        BridgeAction::ListHarnesses => Some(Ok(PreparedRead::ready(Ok(app.harness_table())))),
-        BridgeAction::ListWorkspaceAgents { workspace_id } => {
-            Some(workspace_agents(app, session, workspace_id))
+        BridgeAction::ListHarnesses => {
+            let inputs = inputs.clone();
+            let readings = service.readings.clone();
+            Some(Ok(PreparedRead::query(None, move |_| {
+                Ok(ReadWork::external(move || {
+                    // Settings decoding and existing TTL/executable resolution are work,
+                    // never admission/final validation or writer publication.
+                    let settings = inputs.harness_settings()?;
+                    Ok(crate::app::model_catalog::harness_table_from(
+                        settings.default_harness,
+                        &settings.role_models,
+                        &readings,
+                    ))
+                }))
+            })))
         }
-        BridgeAction::ListProjectAgents => Some(project_agents(app, session)),
+        BridgeAction::ListWorkspaceAgents { workspace_id } => {
+            Some(workspace_agents(inputs, session, workspace_id))
+        }
+        BridgeAction::ListProjectAgents => Some(project_agents(inputs, session)),
         _ => None,
     }
 }
 
 fn workspace_agents(
-    app: &mut AppState,
+    inputs: &Arc<Inputs>,
     session: &ReadSession,
-    workspace_id: &str,
+    workspace: &str,
 ) -> Result<PreparedRead, String> {
-    let scope = session.project(app, format!("unknown workspace_id: {workspace_id}"))?;
-    let workspace = app
-        .workspaces
-        .get(workspace_id)
-        .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
-    if workspace.project_id != scope.id {
+    let scope = session.project(inputs, format!("unknown workspace_id: {workspace}"))?;
+    let project = inputs.workspace(workspace)?;
+    if project != scope.id {
         return Err(format!(
-            "workspace {workspace_id} is not in project {}",
+            "workspace {workspace} is not in project {}",
             scope.id
         ));
     }
-    require_snapshot_inputs(app)?;
-    let selected = app.workspace_snapshot_conversation_owner(workspace);
-    let mut answer = match selected.as_deref() {
-        Some(entity) => app.agent_list(&json!({"entity_id":entity}))?,
-        None => json!({"entity_id":Value::Null,"agents":[]}),
-    };
-    answer["workspace_id"] = json!(workspace_id);
+    let selected = inputs.workspace_selection(workspace)?;
+    let payload = capture_payload(inputs, selected.as_deref())?;
+    let inputs = inputs.clone();
     let project = scope.id.clone();
-    let workspace_id = workspace_id.to_string();
-    let targets = targets(app, &answer)?;
-    let work = ReadWork::result(Ok(answer)).finish_with(move |app, value| {
-        let workspace = app
-            .workspaces
-            .get(&workspace_id)
-            .filter(|workspace| workspace.project_id == project)
-            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
-        require_snapshot_inputs(app)?;
-        if app.workspace_snapshot_conversation_owner(workspace) != selected {
-            return Err(format!("unknown workspace_id: {workspace_id}"));
-        }
-        validate_targets(app, &targets)?;
-        Ok(value)
-    });
-    Ok(PreparedRead::query(None, move |_| Ok(work)).for_project(scope))
+    let workspace = workspace.to_owned();
+    Ok(PreparedRead::query(None, move |_| {
+        let (mut value, targets) = roster(&inputs, selected.as_deref(), payload, false)?;
+        value["workspace_id"] = json!(workspace);
+        Ok(
+            ReadWork::result(Ok(value)).finish_with(move |latest, value| {
+                if latest.workspace(&workspace)? != project {
+                    return Err(format!("unknown workspace_id: {workspace}"));
+                }
+                if latest.workspace_selection(&workspace)? != selected {
+                    return Err(format!("unknown workspace_id: {workspace}"));
+                }
+                validate_targets(latest, &targets)?;
+                Ok(value)
+            }),
+        )
+    })
+    .for_project(scope))
 }
 
-fn project_agents(app: &mut AppState, session: &ReadSession) -> Result<PreparedRead, String> {
-    let owner = &session.coding()?.entity_id;
-    let project = app
-        .projects
-        .project_id_of(owner)
-        .ok_or_else(|| format!("{owner} belongs to no project"))?;
-    let scope = session.project(app, format!("unknown project_id: {project}"))?;
+fn project_agents(inputs: &Arc<Inputs>, session: &ReadSession) -> Result<PreparedRead, String> {
+    let owner = &session.coding()?.owner;
+    let (project, _) = inputs.project(owner)?;
+    let scope = session.project(inputs, format!("unknown project_id: {project}"))?;
     let project = scope.id.clone();
-    require_snapshot_inputs(app)?;
-    let selected = app.project_snapshot_conversation_run(&project);
-    let mut answer = match selected.as_deref() {
-        Some(entity) => app.agent_list(&json!({
-            "entity_id":entity,
-            "include_project_workers":true,
-        }))?,
-        None => json!({"entity_id":Value::Null,"agents":[]}),
-    };
-    answer["project_id"] = json!(project);
-    let targets = targets(app, &answer)?;
-    let work = ReadWork::result(Ok(answer)).finish_with(move |app, value| {
-        require_snapshot_inputs(app)?;
-        if app.project_snapshot_conversation_run(&project) != selected {
-            return Err(format!("unknown project_id: {project}"));
-        }
-        validate_targets(app, &targets)?;
-        Ok(value)
-    });
-    Ok(PreparedRead::query(None, move |_| Ok(work)).for_project(scope))
+    let selected = inputs.project_selection(&project)?;
+    let payload = capture_payload(inputs, selected.as_deref())?;
+    let inputs = inputs.clone();
+    Ok(PreparedRead::query(None, move |_| {
+        let (mut value, targets) = roster(&inputs, selected.as_deref(), payload, true)?;
+        value["project_id"] = json!(project);
+        Ok(
+            ReadWork::result(Ok(value)).finish_with(move |latest, value| {
+                if latest.project_selection(&project)? != selected {
+                    return Err(format!("unknown project_id: {project}"));
+                }
+                validate_targets(latest, &targets)?;
+                Ok(value)
+            }),
+        )
+    })
+    .for_project(scope))
 }
 
-// Observed helpers intentionally fall back to probing before initialization.
-// A read adapter must refuse that cold path rather than initialize under guard.
-fn require_snapshot_inputs(app: &AppState) -> Result<(), String> {
-    if app.snapshot_projection_initialized() {
-        Ok(())
-    } else {
-        Err("agent.list: snapshot was not initialized".into())
-    }
+fn capture_payload(
+    inputs: &Inputs,
+    selected: Option<&str>,
+) -> Result<Option<crate::app::read_view::SharedJson>, String> {
+    selected
+        .map(|owner| {
+            inputs
+                .view
+                .get_shared("agent.list", owner)
+                .cloned()
+                .ok_or_else(|| format!("agent.list: unknown entity {owner}"))
+        })
+        .transpose()
 }
 
-fn targets(app: &AppState, answer: &Value) -> Result<Vec<McpConversationGeneration>, String> {
-    let Some(owner) = answer["entity_id"].as_str() else {
-        return Ok(Vec::new());
+struct RosterTarget {
+    owner: String,
+    agent: String,
+    conversation: String,
+    thread_id: String,
+    generation: u64,
+}
+
+fn roster(
+    inputs: &Inputs,
+    owner: Option<&str>,
+    payload: Option<crate::app::read_view::SharedJson>,
+    workers: bool,
+) -> Result<(Value, Vec<RosterTarget>), String> {
+    let Some(owner) = owner else {
+        return Ok((json!({"entity_id":Value::Null,"agents":[]}), Vec::new()));
     };
-    answer["agents"]
+    let mut answer = payload
+        .expect("selected owner captured its accepted payload")
+        .materialize();
+    crate::app::read_view::filter_project_workers(
+        &json!({"include_project_workers":workers}),
+        &mut answer,
+    );
+    let targets = answer["agents"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|row| row["id"].as_str())
-        .map(|agent| app.mcp_conversation_generation(owner, agent))
-        .collect()
+        .map(|row| {
+            let field = |name| {
+                row[name]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("agent.list: missing {name}"))
+            };
+            Ok(RosterTarget {
+                owner: owner.into(),
+                agent: field("id")?,
+                conversation: field("conversation_id")?,
+                thread_id: field("thread_id")?,
+                generation: row["thread_generation_revision"]
+                    .as_u64()
+                    .ok_or("agent.list: missing thread_generation_revision")?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    // Every fence comes FROM this payload. Never attach a newer head to it.
+    validate_targets(inputs, &targets)?;
+    Ok((answer, targets))
 }
 
-fn validate_targets(app: &AppState, targets: &[McpConversationGeneration]) -> Result<(), String> {
+fn validate_targets(inputs: &Inputs, targets: &[RosterTarget]) -> Result<(), String> {
     for target in targets {
-        target.guard(app)?;
+        let actual = inputs
+            .addresses
+            .resolve(&target.owner, Some(&target.agent))?
+            .issued;
+        inputs.guard_reservation(&actual.conversation)?;
+        if actual.thread_id != target.thread_id || actual.generation != target.generation {
+            return Err(format!(
+                "stale thread_id {}; current thread is {}",
+                target.thread_id, actual.thread_id
+            ));
+        }
+        let mut expected = actual;
+        expected.conversation = target.conversation.clone();
+        expected.thread_id = target.thread_id.clone();
+        expected.generation = target.generation;
+        inputs.addresses.validate(&expected)?;
     }
     Ok(())
 }

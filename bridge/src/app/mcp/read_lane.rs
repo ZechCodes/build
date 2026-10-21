@@ -4,16 +4,22 @@ mod guarded;
 mod history;
 mod job;
 mod mixed;
+pub(super) mod service;
 mod snapshots;
 mod sql;
 
-use crate::app::{off_the_workers, AppState};
+use crate::app::off_the_workers;
+#[cfg(test)]
+use crate::app::AppState;
 use crate::mcp::{BridgeAction, DoneReport};
 use crate::timing::{FrameTimer, WaitTimer};
-use admission::{ProjectScope, ReadSession};
+use admission::ReadSession;
 use job::{PreparedRead, ReadWork};
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use service::{Inputs, McpReadService};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 
 pub(super) fn action(frame: &Value) -> Option<BridgeAction> {
     // Avoid cloning/parsing potentially large writer payloads for scheduling.
@@ -53,15 +59,16 @@ pub(super) fn action(frame: &Value) -> Option<BridgeAction> {
 }
 
 fn prepare(
-    app: &mut AppState,
+    service: &McpReadService,
+    inputs: &Arc<Inputs>,
     session: &ReadSession,
     action: &BridgeAction,
 ) -> Result<PreparedRead, String> {
-    sql::prepare(app, session, action)
-        .or_else(|| guarded::prepare(app, session, action))
-        .or_else(|| snapshots::prepare(app, session, action))
-        .or_else(|| history::prepare(app, session, action))
-        .or_else(|| mixed::prepare(app, session, action))
+    sql::prepare(service, inputs, session, action)
+        .or_else(|| guarded::prepare(service, inputs, session, action))
+        .or_else(|| snapshots::prepare(service, inputs, session, action))
+        .or_else(|| history::prepare(service, inputs, session, action))
+        .or_else(|| mixed::prepare(service, inputs, session, action))
         .unwrap_or_else(|| Err("invalid MCP action request".into()))
 }
 
@@ -72,21 +79,21 @@ struct Admitted {
 }
 
 fn admit(
-    state: &Arc<Mutex<AppState>>,
+    service: &McpReadService,
     frame: &Value,
     action: &BridgeAction,
-    timer: &FrameTimer,
 ) -> Result<Admitted, String> {
-    let mut app = timer.lock(state);
-    let lease = app
-        .update_admission()
+    let lease = service
+        .admission
+        .as_ref()
         .map(|gate| {
             gate.try_enter()
                 .ok_or_else(|| "bridge update handoff in progress".to_string())
         })
         .transpose()?;
-    let session = ReadSession::authenticate(&app, frame, action)?;
-    let read = prepare(&mut app, &session, action)?;
+    let inputs = Arc::new(service.inputs());
+    let session = ReadSession::authenticate(&inputs, frame, action)?;
+    let read = prepare(service, &inputs, &session, action)?;
     Ok(Admitted {
         session,
         read,
@@ -95,7 +102,7 @@ fn admit(
 }
 
 pub(super) async fn answer(
-    state: Arc<Mutex<AppState>>,
+    service: Arc<McpReadService>,
     frame: Value,
     action: BridgeAction,
     timer: FrameTimer,
@@ -104,14 +111,10 @@ pub(super) async fn answer(
     timer.sample_tool(action.tool_name());
     let timer = Arc::new(timer);
     let admission = {
-        let state = Arc::clone(&state);
+        let service = Arc::clone(&service);
         let frame = frame.clone();
         let action = action.clone();
-        let clock = Arc::clone(&timer);
-        blocking(Arc::clone(&timer), move || {
-            admit(&state, &frame, &action, &clock)
-        })
-        .await
+        blocking(Arc::clone(&timer), move || admit(&service, &frame, &action)).await
     };
     let Admitted {
         session,
@@ -139,33 +142,33 @@ pub(super) async fn answer(
         (outcome, lease)
     })
     .await;
-    let clock = Arc::clone(&timer);
     blocking(Arc::clone(&timer), move || {
         let _lease = lease;
-        finish(&state, &frame, &action, &clock, session, scope, outcome)
+        finish(&service, &frame, &action, session, scope, outcome)
     })
     .await
 }
 
 fn finish(
-    state: &Arc<Mutex<AppState>>,
+    service: &McpReadService,
     frame: &Value,
     action: &BridgeAction,
-    timer: &FrameTimer,
     session: ReadSession,
-    scope: Option<ProjectScope>,
+    scope: Option<service::ProjectScope>,
     outcome: job::Outcome,
 ) -> Value {
     let mut outcome = Some(outcome);
-    let result = {
-        let app = timer.lock(state);
-        session
-            .validate(&app, frame, action)
-            .and_then(|()| scope.as_ref().map_or(Ok(()), |scope| scope.validate(&app)))
-            .and_then(|()| outcome.take().unwrap().finish(&app))
-    };
-    // Rejected payloads and response serialization are dropped/run after
-    // the app guard, including when a final auth check rejected the read.
+    let inputs = service.inputs();
+    let result = session
+        .validate(&inputs, frame, action)
+        .and_then(|()| {
+            scope
+                .as_ref()
+                .map_or(Ok(()), |scope| scope.validate(&inputs))
+        })
+        .and_then(|()| outcome.take().unwrap().finish(&inputs));
+    // Rejected payloads and serialization never run under an application lock,
+    // including when current capability or target fences reject the read.
     drop(outcome);
     super::mcp_action_response(result)
 }
@@ -178,16 +181,52 @@ pub(super) fn probe_guarded_read(
     frame: &Value,
     before_final: impl FnOnce(),
 ) -> (Value, usize) {
-    use crate::app::workspaces::count_path_canonicalizations;
+    probe_guarded_stages(state, frame, before_final, ProbeKind::CanonicalPaths)
+}
+
+#[cfg(test)]
+pub(super) fn probe_guarded_executables(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+) -> (Value, usize) {
+    probe_guarded_stages(state, frame, || {}, ProbeKind::GuardedExecutables)
+}
+
+#[cfg(test)]
+enum ProbeKind {
+    CanonicalPaths,
+    GuardedExecutables,
+}
+
+#[cfg(test)]
+impl ProbeKind {
+    fn measure<T>(&self, guarded: bool, work: impl FnOnce() -> T) -> (T, usize) {
+        match self {
+            Self::CanonicalPaths => crate::app::workspaces::count_path_canonicalizations(work),
+            Self::GuardedExecutables if guarded => {
+                let (value, probes) =
+                    crate::harness::installed::executable::probe_counts::measure(work);
+                (value, probes.total())
+            }
+            Self::GuardedExecutables => (work(), 0),
+        }
+    }
+}
+
+#[cfg(test)]
+fn probe_guarded_stages(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+    before_final: impl FnOnce(),
+    probe: ProbeKind,
+) -> (Value, usize) {
     let action = action(frame).expect("the fixture supplies an exact supported read");
     assert!(
         guarded::supports(&action),
         "only no-SQL catalog/roster reads"
     );
-    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
-    let timer = clock.frame(super::MCP_CONTROL_METHOD);
-    let (admitted, admission_probes) =
-        count_path_canonicalizations(|| admit(state, frame, &action, &timer));
+    let service = McpReadService::capture(&state.lock().unwrap());
+    let (admitted, admission_probes) = probe.measure(true, || admit(&service, frame, &action));
     let Admitted {
         session,
         read,
@@ -198,14 +237,14 @@ pub(super) fn probe_guarded_read(
     };
     let PreparedRead { pool, query, scope } = read;
     assert!(pool.is_none(), "the probe cannot bypass SQL pool ownership");
-    let (outcome, work_probes) = count_path_canonicalizations(|| match query(None) {
+    let (outcome, work_probes) = probe.measure(false, || match query(None) {
         Ok(work) => work.run(),
         Err(error) => job::Outcome::error(error),
     });
     before_final();
-    let (answer, final_probes) = count_path_canonicalizations(|| {
+    let (answer, final_probes) = probe.measure(true, || {
         let _lease = lease;
-        finish(state, frame, &action, &timer, session, scope, outcome)
+        finish(&service, frame, &action, session, scope, outcome)
     });
     (answer, admission_probes + work_probes + final_probes)
 }

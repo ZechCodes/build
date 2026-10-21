@@ -794,7 +794,18 @@ async fn the_terminal_cap_counts_shell_tabs_and_never_the_agent() {
 #[test]
 fn mcp_control_frames_require_the_current_session_token() {
     let mut sessions = SessionRegistry::new();
-    sessions.test_install_token("run-1".to_string(), "secret-current".to_string());
+    // This byte-matcher control grants no actual committed read identity.
+    let issuer = crate::app::runtime::sessions::McpIssuer::Coding(
+        crate::app::read_context::IssuedCodingAddress {
+            owner: "matcher-owner".into(),
+            agent: "run-1".into(),
+            canonical_owner: "matcher-owner".into(),
+            conversation: "run-1".into(),
+            thread_id: "matcher-thread".into(),
+            generation: 0,
+        },
+    );
+    sessions.test_install_token("run-1".to_string(), "secret-current".to_string(), issuer);
     let valid = json!({
         "task_id": "run-1",
         "session_token": "secret-current",

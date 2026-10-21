@@ -2169,10 +2169,18 @@ work and MCP capabilities. An established running turn is stopped and reaped;
 already admitted sends settle outside the app lock before history is replaced.
 An unadopted spawn or delivery handoff is refused retryably. Reads remain
 available during retirement, while conversation mutations are refused.
-MCP authentication captures the source thread generation, and done reports
-and agent actions validate it under the same lock as their writes. Deferred
-task handoffs retain that source generation until settlement. A late callback
-or a request carrying the old generation cannot restore the cleared content.
+MCP admission captures the source thread generation. Done reports and agent
+writes validate it under the mutation lock. Independent read capabilities also
+retain the issued source generation and validate it against saved addressing
+and private runtime authority. The runtime reset
+reservation remains active through complete commit or failure restoration.
+Saved addressing, thread admission and task overlays publish every affected
+alias in one metadata batch. Source/roster guards consult the reservation;
+router history targets may read the complete old committed history during
+retirement, with their frozen binding/thread fence rejecting a replacement at
+completion. Deferred task handoffs retain the source generation until
+settlement. A late callback or a request carrying the old generation cannot
+restore the cleared content.
 A new project-agent session uses the ordinary fresh-start scaffolding and
 standing instruction templates.
 After the first reset, conversation mutations require the current `thread_id`;
@@ -2218,20 +2226,38 @@ app-lock acquisition (`lock_wait`), including the update-admission check.
 Reacquiring a turn after deferred work is included in the permit wait; the
 deferred work itself is not pool queue time.
 
-The two control turns bound mutation work. An exact allowlist of task, roster,
-list, history and review reads bypasses those turns; malformed actions and done
-reports retain their existing routing. Each read authenticates its token,
-surface, owner and thread generation under a brief blocking-pool app guard,
-then prepares owned work. SQL reads borrow the shared asynchronous reader pool
-and retain one transaction across related rows. Snapshot reads capture accepted
-immutable fragments and materialize them off-lock. Review reads release SQL
-capacity before external observation. A final brief guard rechecks admission,
-project bindings and target generations before returning the ordinary response.
+The two control turns continue to bound mutation work. An exact allowlist of
+MCP task, roster, list, history and review reads uses a service captured during
+listener setup and takes neither a writer turn nor the app mutex. Malformed
+actions and done reports retain their existing routing. Private immutable
+capability state publishes token installation, rotation, revocation and router
+incarnations immediately. Token bytes authenticate before issuer data is used;
+coding capabilities bind to the validated issued owner, agent, canonical
+conversation and thread generation. Project scope and tool surface follow
+current committed policy rather than becoming lifetime token entitlements.
+
+Saved immutable addressing retains roster order, canonical bindings, thread
+identity and persisted pin/name policy. Failed saves cannot admit candidate
+identities; temporarily borrowed owners retain their saved records. Roster and
+list reads use accepted producer fragments and scope/selection metadata, with
+roster target stamps taken from the captured payload itself. Admission and final
+validation compare those targets with saved addresses and current authority;
+changed bindings, generations, selections or project paths refuse the captured
+request instead of retargeting it. No request initializes producers, probes
+workspace paths or drains deferred writer work.
+
+SQL reads use the shared asynchronous reader pool and one transaction across
+related rows. Snapshot materialization and the exact harness catalogue resolver
+run off-lock. The catalogue combines accepted default/ordered-role settings
+with the existing CLI readings service, preserving TTL/executable refresh and
+hidden-model startability without a new catalogue cache or publisher-side
+executable probes. Review work releases SQL capacity before external I/O and
+retains its observation fences. Final checks reload immutable capability,
+address and accepted scope metadata; comment-name decoration uses saved policy.
 The update-admission lease survives caller cancellation until blocking work
-finishes. These reads do not drain deferred writer work or run legacy producer
-maintenance. Calls on one socket remain ordered; independent sockets can read
-while mutation turns are occupied. The brief app guards still contend with
-writers.
+finishes, and responses retain their ordinary shape. Calls on one socket remain
+ordered; independent sockets read while mutation turns or the app mutex are
+occupied.
 
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
 `Project`), which a project's agents take from their persisted purpose (see

@@ -9,16 +9,23 @@ pub(in crate::app) struct Counts {
     pub base_renders: usize,
     pub variant_renders: usize,
     pub tombstone_keys: usize,
+    pub indexed_values: usize,
+    pub materialized_nodes: usize,
 }
 
 thread_local! { static COUNTS: Cell<Counts> = const { Cell::new(Counts {
     registry_scans: 0, registry_rows: 0, previous_bases: 0,
     base_renders: 0, variant_renders: 0, tombstone_keys: 0,
+    indexed_values: 0, materialized_nodes: 0,
 }) }; }
+
+thread_local! { static OBSERVE_JSON: Cell<bool> = const { Cell::new(false) }; }
 
 pub(in crate::app) fn measure<T>(work: impl FnOnce() -> T) -> (T, Counts) {
     let previous = COUNTS.replace(Counts::default());
+    let observe = OBSERVE_JSON.replace(true);
     let value = work();
+    OBSERVE_JSON.set(observe);
     (value, COUNTS.replace(previous))
 }
 
@@ -47,4 +54,20 @@ pub(in crate::app) fn variant_render() {
 }
 pub(in crate::app) fn tombstone_key() {
     count(|value| value.tombstone_keys += 1);
+}
+
+// Count actual SharedJson work only inside an explicit measured test region.
+// Normal publication timing samples pay one disabled thread-local check.
+#[inline]
+pub(in crate::app) fn indexed_value() {
+    if OBSERVE_JSON.get() {
+        count(|value| value.indexed_values += 1);
+    }
+}
+
+#[inline]
+pub(in crate::app) fn materialized_node() {
+    if OBSERVE_JSON.get() {
+        count(|value| value.materialized_nodes += 1);
+    }
 }

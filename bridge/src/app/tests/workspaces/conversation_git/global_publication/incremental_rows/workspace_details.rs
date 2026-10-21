@@ -288,3 +288,5 @@ fn workspace_detail_scopes_keep_previous_aliases_removed_agents_and_tombstones()
         .ptr_eq(actual.get_shared("workspace.get", "workspace-07").unwrap()));
     assert_detail_full_oracle(&state, &actual);
 }
+
+mod sharing;

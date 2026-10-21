@@ -104,6 +104,8 @@ impl SharedJson {
 
     /// Consumer boundary only. Published nodes never retain this full copy.
     pub fn materialize(&self) -> Value {
+        #[cfg(test)]
+        crate::app::snapshot_projection::work_counts::detail_scans::materialized_node();
         match &self.0.kind {
             Kind::Leaf(value) => value.as_ref().clone(),
             Kind::Object(fields) => Value::Object(
@@ -186,6 +188,8 @@ fn shared_object_digest(object: &BTreeMap<String, SharedJson>) -> Option<(Digest
 }
 
 fn collect_value_digests(value: &Value, digests: &mut BTreeMap<DigestKey, u64>) {
+    #[cfg(test)]
+    crate::app::snapshot_projection::work_counts::detail_scans::indexed_value();
     match value {
         Value::Object(object) => {
             record_digest(digests, value_object_digest(object));

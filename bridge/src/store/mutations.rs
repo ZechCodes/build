@@ -313,15 +313,44 @@ impl StoreWriter {
         admission: &MutationAdmission,
     ) -> Result<MutationRecord, StoreError> {
         self.transaction(|transaction| {
-            if let Some(record)=load(transaction,&admission.principal,&admission.operation_id)? {return retry(transaction,admission,record);}
-            validate(admission)?;check_quota(transaction,&admission.principal,json!(admission).to_string().len())?;
-            let dependencies=dependencies(transaction,admission)?;
-            let normalized=intent(admission,&dependencies);
-            transaction.execute("INSERT INTO mutation_commands(principal,operation_id,state,accepted_at,intent,record) VALUES(?1,?2,'accepted',unixepoch(),?3,'{}')",params![admission.principal,admission.operation_id,normalized])?;
-            let command_id=transaction.last_insert_rowid();
-            let owners=reserve_owners(transaction,command_id,&admission.owners)?;
-            let record=MutationRecord {command_id,principal:admission.principal.clone(),operation_id:admission.operation_id.clone(),method:admission.method.clone(),params:admission.params.clone(),scope:admission.scope.clone(),owners,resources:admission.resources.clone(),reservations:admission.reservations.clone(),dependencies,recovery_policy:admission.recovery_policy.clone(),accepted_epoch:admission.accepted_epoch.clone(),accepted_at:super::now_rfc3339(),revision:1,state:"accepted".into(),acceptance:admission.acceptance.clone(),outcome:None,intent_hash:format!("{:x}",Sha256::digest(normalized.as_bytes())),expired:false};
-            persist_links(transaction,&record)?;save(transaction,&record)?;Ok(record)
+            if let Some(record) = load(transaction, &admission.principal, &admission.operation_id)? {
+                return retry(transaction, admission, record);
+            }
+            validate(admission)?;
+            let dependencies = dependencies(transaction, admission)?;
+            let normalized = intent(admission, &dependencies);
+            check_quota(transaction, &admission.principal, normalized.len())?;
+            transaction.execute(
+                "INSERT INTO mutation_commands(principal,operation_id,state,accepted_at,intent,record)
+                 VALUES(?1,?2,'accepted',unixepoch(),?3,'{}')",
+                params![admission.principal, admission.operation_id, normalized],
+            )?;
+            let command_id = transaction.last_insert_rowid();
+            let owners = reserve_owners(transaction, command_id, &admission.owners)?;
+            let record = MutationRecord {
+                command_id,
+                principal: admission.principal.clone(),
+                operation_id: admission.operation_id.clone(),
+                method: admission.method.clone(),
+                params: admission.params.clone(),
+                scope: admission.scope.clone(),
+                owners,
+                resources: admission.resources.clone(),
+                reservations: admission.reservations.clone(),
+                dependencies,
+                recovery_policy: admission.recovery_policy.clone(),
+                accepted_epoch: admission.accepted_epoch.clone(),
+                accepted_at: super::now_rfc3339(),
+                revision: 1,
+                state: "accepted".into(),
+                acceptance: admission.acceptance.clone(),
+                outcome: None,
+                intent_hash: format!("{:x}", Sha256::digest(normalized.as_bytes())),
+                expired: false,
+            };
+            persist_links(transaction, &record)?;
+            save(transaction, &record)?;
+            Ok(record)
         })
     }
 }

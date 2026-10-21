@@ -35,7 +35,7 @@ async fn terminal_activity_waits_for_store_without_holding_app_state() {
             observed = true;
             break;
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        std::thread::sleep(Duration::from_millis(5));
     }
     // Release before joining/asserting so a red run cannot strand a child or
     // the creation thread behind the deliberately held writer.

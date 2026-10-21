@@ -6,7 +6,7 @@ import { isTransientTransportError } from "../src/core/transientRead.js";
 import { SQL_READ_METHODS } from "../src/core/sqlReadCredits.js";
 import { readFileSync } from "node:fs";
 
-const WRITE_READS = ["writes.status"];
+const WRITE_READS = ["writes.status", "writes.subscribe"];
 const METHODS = ["thread.page", "thread.activity", "thread.operation", "tasks.list", "tasks.get", "tasks.waiting_on.blocks", ...WRITE_READS];
 const flush = async () => { for (let turn = 0; turn < 20; turn += 1) await Promise.resolve(); };
 const transport = {
@@ -48,6 +48,21 @@ afterEach(() => {
 });
 
 describe("SQL reads share eight sender credits per opening", () => {
+  it("queues writes.subscribe behind eight task reads until a SQL credit is released", async () => {
+    const { wire, ask } = setup();
+    for (let n = 0; n < 8; n += 1) ask("tasks.get");
+    const subscription = ask("writes.subscribe");
+    await flush();
+    expect(wire.sent).toHaveLength(8);
+    expect(wire.sent.every(({ method }) => method === "tasks.get")).toBe(true);
+    wire.deliver({ id: wire.sent[0].id, ok: true, result: {} });
+    await flush();
+    expect(wire.sent).toHaveLength(9);
+    expect(wire.sent[8].method).toBe("writes.subscribe");
+    wire.deliver({ id: wire.sent[8].id, ok: true, result: { operations: [] } });
+    await expect(subscription).resolves.toEqual({ operations: [] });
+  });
+
   it("paces bridge SQL routing and the 3.24 durable reconciliation reads", () => {
     const source = readFileSync(new URL("../../bridge/src/api/effects.rs", import.meta.url), "utf8");
     const constant = source.match(/pub const SQL_READ_METHODS:[\s\S]*?=\s*&\[([\s\S]*?)\];/)[1];
@@ -70,7 +85,7 @@ describe("SQL reads share eight sender credits per opening", () => {
     ask("board.list");
     ask("thread.post");
     await flush();
-    expect(other.sent.map((entry) => entry.method)).toEqual(["tasks.get", "tasks.waiting_on.blocks", "writes.status", "thread.page", "ping", "board.list", "thread.post"]);
+    expect(other.sent.map((entry) => entry.method)).toEqual(["tasks.get", "tasks.waiting_on.blocks", "writes.status", "writes.subscribe", "ping", "board.list", "thread.post"]);
     wire.deliver({ id: wire.sent[0].id, ok: true, result: {} });
     await flush();
     expect(other.sent).toHaveLength(8);

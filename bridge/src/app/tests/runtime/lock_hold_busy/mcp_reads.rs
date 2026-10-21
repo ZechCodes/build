@@ -94,6 +94,13 @@ fn assert_measurements(measurements: &Value, lists: bool) {
             assert_read_budget(tool, row);
         }
     }
+    if lists || measurements.get("mcp.control:get_task").is_some() {
+        for method in ["git.show", "tasks.review.get"] {
+            let row = &measurements[method];
+            assert_eq!(row["client.total"]["count"], RPC_SAMPLES, "{method}");
+            assert_read_budget(method, row);
+        }
+    }
 }
 
 fn assert_read_samples(tool: &str, row: &Value) {

@@ -8,8 +8,8 @@ import { createWriteOperationService } from "../src/core/writeOperations.js";
 vi.mock("../src/api.js", () => ({ fetchGatewayToken: async () => "token", fetchIceServers: async () => [], fetchDevices: async () => [] }));
 vi.mock("../src/core/peerLink.js", () => ({ openPeerLink: async () => { throw new Error("no peer negotiation in this suite"); } }));
 vi.mock("../src/terminal/manager.js", () => ({
-  followTerminalDevice() {}, resetTerminalManager() {}, terminalDeviceId: () => null,
-  terminalManager: () => null, subscribeTerminalStatus: () => () => {}, provideTerminalSessions() {},
+  followTerminalDevice: () => {}, resetTerminalManager: () => {}, terminalDeviceId: () => null,
+  terminalManager: () => null, subscribeTerminalStatus: () => () => {}, provideTerminalSessions: () => {},
 }));
 vi.mock("../src/core/composeView.js", () => ({ flushCaptures: async () => {} }));
 

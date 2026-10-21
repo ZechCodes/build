@@ -1,7 +1,7 @@
 //! Small immutable catalog/roster reads; never call mutation dispatch or drain.
 use super::{AppState, BridgeAction, PreparedRead, ReadSession, ReadWork};
 use crate::app::mcp::McpConversationGeneration;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 pub(super) fn supports(action: &BridgeAction) -> bool {
     matches!(
@@ -32,16 +32,24 @@ fn workspace_agents(
     session: &ReadSession,
     workspace_id: &str,
 ) -> Result<PreparedRead, String> {
-    let owner = &session.coding()?.entity_id;
     let scope = session.project(app, format!("unknown workspace_id: {workspace_id}"))?;
-    let answer = app.project_agent_workspace_agents(owner, workspace_id)?;
-    let selected = app
+    let workspace = app
         .workspaces
         .get(workspace_id)
-        .and_then(|workspace| app.workspace_snapshot_conversation_owner(workspace));
-    if answer["entity_id"].as_str() != selected.as_deref() {
-        return Err(format!("unknown workspace_id: {workspace_id}"));
+        .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+    if workspace.project_id != scope.id {
+        return Err(format!(
+            "workspace {workspace_id} is not in project {}",
+            scope.id
+        ));
     }
+    require_snapshot_inputs(app)?;
+    let selected = app.workspace_snapshot_conversation_owner(workspace);
+    let mut answer = match selected.as_deref() {
+        Some(entity) => app.agent_list(&json!({"entity_id":entity}))?,
+        None => json!({"entity_id":Value::Null,"agents":[]}),
+    };
+    answer["workspace_id"] = json!(workspace_id);
     let project = scope.id.clone();
     let workspace_id = workspace_id.to_string();
     let targets = targets(app, &answer)?;
@@ -51,6 +59,7 @@ fn workspace_agents(
             .get(&workspace_id)
             .filter(|workspace| workspace.project_id == project)
             .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        require_snapshot_inputs(app)?;
         if app.workspace_snapshot_conversation_owner(workspace) != selected {
             return Err(format!("unknown workspace_id: {workspace_id}"));
         }
@@ -68,13 +77,19 @@ fn project_agents(app: &mut AppState, session: &ReadSession) -> Result<PreparedR
         .ok_or_else(|| format!("{owner} belongs to no project"))?;
     let scope = session.project(app, format!("unknown project_id: {project}"))?;
     let project = scope.id.clone();
-    let answer = app.project_agent_project_agents(owner)?;
+    require_snapshot_inputs(app)?;
     let selected = app.project_snapshot_conversation_run(&project);
-    if answer["entity_id"].as_str() != selected.as_deref() {
-        return Err(format!("unknown project_id: {project}"));
-    }
+    let mut answer = match selected.as_deref() {
+        Some(entity) => app.agent_list(&json!({
+            "entity_id":entity,
+            "include_project_workers":true,
+        }))?,
+        None => json!({"entity_id":Value::Null,"agents":[]}),
+    };
+    answer["project_id"] = json!(project);
     let targets = targets(app, &answer)?;
     let work = ReadWork::result(Ok(answer)).finish_with(move |app, value| {
+        require_snapshot_inputs(app)?;
         if app.project_snapshot_conversation_run(&project) != selected {
             return Err(format!("unknown project_id: {project}"));
         }
@@ -82,6 +97,16 @@ fn project_agents(app: &mut AppState, session: &ReadSession) -> Result<PreparedR
         Ok(value)
     });
     Ok(PreparedRead::query(None, move |_| Ok(work)).for_project(scope))
+}
+
+// Observed helpers intentionally fall back to probing before initialization.
+// A read adapter must refuse that cold path rather than initialize under guard.
+fn require_snapshot_inputs(app: &AppState) -> Result<(), String> {
+    if app.snapshot_projection_initialized() {
+        Ok(())
+    } else {
+        Err("agent.list: snapshot was not initialized".into())
+    }
 }
 
 fn targets(app: &AppState, answer: &Value) -> Result<Vec<McpConversationGeneration>, String> {

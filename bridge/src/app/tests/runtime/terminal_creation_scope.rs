@@ -232,12 +232,24 @@ async fn terminal_creation_discovers_unregistered_external_workspace_offlock() {
         .workspaces
         .get(&workspace_id)
         .cloned();
+    let observations = f.state.lock().unwrap().observation_service();
+    let listed =
+        observations.prepare(req("term.list", json!({"workspace_id":workspace_id})), None)();
     f.close(&created);
     concurrent.join().unwrap();
     assert_eq!(
         created["ok"], true,
         "a valid Git worktree must remain addressable before legacy adoption: {created}"
     );
+    assert_eq!(
+        listed["ok"], true,
+        "the adopted alias must be readable immediately: {listed}"
+    );
+    assert!(listed["result"]["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["term_id"] == created["result"]["term_id"]));
     let adopted = adopted.expect("the selected legacy alias must be installed before publication");
     assert_eq!(adopted.root, root);
     assert!(!adopted.managed);

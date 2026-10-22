@@ -224,6 +224,16 @@ impl AppState {
     /// Actual shell membership commits independently of borrowed plan/run
     /// candidates. Publish only this family, preserving all other barriers.
     pub(in crate::app) fn publish_terminal_observations(&self) {
+        self.publish_terminal_scope_observations(None);
+    }
+
+    /// A terminal may have just adopted one legacy workspace. Publish that
+    /// committed scope alongside membership without consuming owner receipts.
+    pub(in crate::app) fn publish_terminal_workspace_observations(&self, id: &str) {
+        self.publish_terminal_scope_observations(Some(id));
+    }
+
+    fn publish_terminal_scope_observations(&self, workspace: Option<&str>) {
         if !self.snapshot_projection_initialized() {
             return;
         }
@@ -231,12 +241,20 @@ impl AppState {
         let Some(context) = view.observations.as_ref() else {
             return;
         };
-        if !context.scopes.terminals_changed(self) {
+        let mut patch = ObservationPatch::default();
+        if context.scopes.terminals_changed(self) {
+            patch.keys.insert(InputKey::Terminals);
+            patch.scopes.terminals(self);
+        }
+        if let Some(id) = workspace {
+            patch.keys.insert(InputKey::Workspace(id.into()));
+            // Initialization and the create commit's recorded physical root
+            // keep this thin scope capture entirely in cached memory.
+            patch.scopes.workspace(self, id);
+        }
+        if patch.is_empty() {
             return;
         }
-        let mut patch = ObservationPatch::default();
-        patch.keys.insert(InputKey::Terminals);
-        patch.scopes.terminals(self);
         self.read_view.publish_delta(
             super::super::read_view::SnapshotDelta::new(self.read_view.next_version())
                 .patch_observations(patch),

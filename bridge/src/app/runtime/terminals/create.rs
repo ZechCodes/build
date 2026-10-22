@@ -78,10 +78,13 @@ pub(super) fn create(
             .session_registry
             .insert_shell(reserved.key.clone(), tab, output);
         reserved.hold.settle(&mut app);
-        if let Some(workspace) = resolved.adoption {
-            app.workspaces.install_prepared_root_adoption(workspace);
-        }
+        let adopted_workspace = resolved
+            .adoption
+            .map(|workspace| app.workspaces.install_prepared_root_adoption(workspace).id);
         app.record_snapshot_root_observation(&resolved.raw_root, &resolved.terminal.root);
+        if let Some(id) = adopted_workspace {
+            app.publish_terminal_workspace_observations(&id);
+        }
         app.note_terminals_at(&reserved.key.root);
         // Capture attention with registration, before a later close/removal
         // can prune the owner and advance its durable-map epoch.

@@ -1,9 +1,31 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
-import { captureLayout, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
+import { captureLayout, loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
 import { mountSelectSurface, openSelectDisclosures, SELECT_SOURCES, SELECT_SURFACES } from "./selectSurfaces.mjs";
 import { settled } from "./chatMenuSeed.mjs";
+
+it("waits for queued menu motion before measuring or choosing a row", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountLayout(page, '<div id="queued-menu" hidden>Menu row</div>', { basePath });
+    await loadBrowserModules(page, { motion: "src/core/motion.js" }, basePath);
+    await page.evaluate(() => {
+      const { motion } = window.__layoutModules;
+      const menu = document.querySelector("#queued-menu");
+      // Cancelled moves still occupy queue beats. No Animation is running
+      // yet when the final reveal is queued behind them.
+      for (let index = 0; index < 5; index += 1) {
+        void motion.reveal(menu, { axis: "height" });
+        void motion.hide(menu, { axis: "height" });
+        motion.settleHidden(menu);
+      }
+      void motion.reveal(menu, { axis: "height" });
+    });
+    await settled(page);
+    expect(await page.locator("#queued-menu").evaluate((menu) => menu.hidden)).toBe(false);
+    expect(await page.locator("#queued-menu").evaluate((menu) => menu.style.height)).toBe("");
+  });
+});
 
 it("covers every production module that renders a native select", () => {
   const root = fileURLToPath(new URL("../../src/", import.meta.url));

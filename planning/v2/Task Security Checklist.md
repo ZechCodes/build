@@ -768,3 +768,18 @@ changing task file limits, task reads or local storage trust. The new chat
 entry points and readers are scoped separately in
 [Agent Message Attachments Security Checklist](Agent%20Message%20Attachments%20Security%20Checklist.md).
 The task controls and their historical evidence remain unchanged.
+
+## #704 task read consistency — 2026-10-22
+
+Task read ownership remains scoped by device, project and task. Inbox and the
+project Tasks badge reconcile accepted detail reads with cached list state;
+neither manufactures a read cursor or draws from connection state. Existing
+timeline-key validation remains in force. The task-page New divider uses the
+watch baseline already used by Inbox.
+
+`task704UnreadCache.test.js` covers new watched comments, accepted reads,
+passive reads from another client, cache-reader restart and stale detail replies.
+The fixtures verify that an accepted read clears both badge and Inbox, while
+reload and stale detail cannot resurrect unread. Task-line markup is unchanged;
+`taskLineFixture.test.js` remains the fixture consistency gate. Final gate exit
+codes and the scoped security score are recorded in the #704 handoff.

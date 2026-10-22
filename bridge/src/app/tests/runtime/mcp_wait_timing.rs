@@ -207,7 +207,7 @@ fn rpc_admission_lock_wait_is_reported() {
                 frame_type: "data".into(),
                 sender: "client".into(),
                 created_at: "test".into(),
-                payload: json!({ "id": 1, "method": "term.list", "params": {} }),
+                payload: json!({ "id": 1, "method": "archived.list", "params": {} }),
             },
         )
     });
@@ -217,7 +217,10 @@ fn rpc_admission_lock_wait_is_reported() {
     answering.join().unwrap();
     let lines = lines.lock().unwrap();
     assert_eq!(lines.len(), 1, "one completed RPC: {lines:?}");
-    assert!(lines[0].starts_with("slow frame term.list "), "{lines:?}");
+    assert!(
+        lines[0].starts_with("slow frame archived.list "),
+        "{lines:?}"
+    );
     assert!(
         duration(&lines[0], "lock_wait=") >= SLOW_FRAME.as_secs_f64() * 1000.0,
         "RPC admission is charged to lock_wait: {lines:?}"

@@ -2309,7 +2309,7 @@ mod intake_tests {
 
         // One held by the worker, one in the pool queue, one in the admitter's
         // hands waiting on that queue, two parked in the wire's own queue:
-        // five, each given a moment to settle where it belongs. `term.list`
+        // five, each given a moment to settle where it belongs. `archived.list`
         // because the dispatcher folds identical `board.list` reads into one
         // queue entry, and a fold is not a full queue.
         for id in 1..=5 {
@@ -2319,7 +2319,7 @@ mod intake_tests {
                         &key,
                         "s-1",
                         "data",
-                        json!({ "id": id, "method": "term.list" }),
+                        json!({ "id": id, "method": "archived.list" }),
                     ),
                     &carrier,
                 )
@@ -2333,7 +2333,7 @@ mod intake_tests {
                     &key,
                     "s-1",
                     "data",
-                    json!({ "id": 6, "method": "term.list" }),
+                    json!({ "id": 6, "method": "archived.list" }),
                 ),
                 &carrier,
             )
@@ -2407,7 +2407,7 @@ mod intake_tests {
                         &key,
                         "s-1",
                         "data",
-                        json!({ "id": id, "method": "term.list" }),
+                        json!({ "id": id, "method": "archived.list" }),
                     ),
                     &first,
                 )
@@ -2469,7 +2469,11 @@ mod intake_tests {
 
         // One held by the worker, one filling the queue, and the read the
         // first wire's admitter is holding at the queue's door.
-        for (id, method) in [(1, "term.list"), (2, "term.list"), (3, "board.list")] {
+        for (id, method) in [
+            (1, "archived.list"),
+            (2, "archived.list"),
+            (3, "board.list"),
+        ] {
             intake
                 .accept(
                     client_request(&key, "s-1", "data", json!({ "id": id, "method": method })),
@@ -2579,7 +2583,7 @@ mod intake_tests {
                         &key,
                         "s-term",
                         "data",
-                        json!({ "id": id, "method": "term.list" }),
+                        json!({ "id": id, "method": "archived.list" }),
                     ),
                     &term,
                 )

@@ -149,7 +149,7 @@ async fn probe_snapshots(
     replies: &mut mpsc::UnboundedReceiver<OutboundEnvelope>,
     held: &AtomicBool,
 ) {
-    assert_eq!(crate::api::effects::INTAKE_SNAPSHOT_METHODS.len(), 9);
+    assert_eq!(crate::api::effects::INTAKE_SNAPSHOT_METHODS.len(), 15);
     for (offset, method) in crate::api::effects::INTAKE_SNAPSHOT_METHODS
         .iter()
         .enumerate()
@@ -163,7 +163,8 @@ async fn probe_snapshots(
         );
         assert_ne!(reply["error_code"], "busy", "{method}: {reply}");
         match *method {
-            "workspace.get" | "agent.list" => {
+            "workspace.get" | "agent.list" | "capture.get" | "task.get" | "task.stages"
+            | "tasks.columns" | "stream.events" | "stream.state" => {
                 assert_eq!(reply["error_code"], "not_found", "{reply}")
             }
             "bridge.update_status" => assert_eq!(reply["error_code"], "unavailable", "{reply}"),
@@ -229,6 +230,10 @@ async fn send(intake: &FrameIntake, carrier: &CarrierHandle, key: &str, id: usiz
     let params = match method {
         "workspace.get" => json!({"workspace_id":"missing"}),
         "agent.list" => json!({"entity_id":"missing"}),
+        "capture.get" => json!({"capture_id":"missing"}),
+        "task.get" | "task.stages" => json!({"task_id":"missing"}),
+        "tasks.columns" => json!({"project_id":"missing"}),
+        "stream.events" | "stream.state" => json!({"stream_id":"missing"}),
         _ => json!({}),
     };
     intake

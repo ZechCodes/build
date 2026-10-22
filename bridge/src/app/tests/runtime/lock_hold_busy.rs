@@ -60,21 +60,26 @@ struct Busy {
 
 impl Busy {
     fn new() -> Self {
-        Self::with_task_body("")
+        Self::with_history_items(HISTORY_ITEMS)
+    }
+
+    fn with_history_items(history_items: usize) -> Self {
+        Self::with_seeded_tasks("", history_items, |_, _, _| ()).0
     }
 
     fn with_task_body(body: &str) -> Self {
-        Self::with_seeded_tasks(body, |_, _, _| ()).0
+        Self::with_seeded_tasks(body, HISTORY_ITEMS, |_, _, _| ()).0
     }
 
     fn with_seed<T>(
         seed_reads: impl FnOnce(&mut AppState, &[(String, String)], &[String]) -> T,
     ) -> (Self, T) {
-        Self::with_seeded_tasks("", seed_reads)
+        Self::with_seeded_tasks("", HISTORY_ITEMS, seed_reads)
     }
 
     fn with_seeded_tasks<T>(
         body: &str,
+        history_items: usize,
         seed_reads: impl FnOnce(&mut AppState, &[(String, String)], &[String]) -> T,
     ) -> (Self, T) {
         let root = tempfile::tempdir().unwrap();
@@ -157,7 +162,10 @@ impl Busy {
         }
         for (owner, _) in &owners {
             let mut active = app.take_run(owner).unwrap();
-            seed_history(&mut active.agents.primary_mut().unwrap().thread);
+            seed_history(
+                &mut active.agents.primary_mut().unwrap().thread,
+                history_items,
+            );
             app.persist_run_record(owner, &active).unwrap();
             app.runs.insert(owner.clone(), active);
         }
@@ -278,8 +286,8 @@ impl Busy {
     }
 }
 
-fn seed_history(thread: &mut crate::thread::Thread) {
-    for i in 0..HISTORY_ITEMS / 2 {
+fn seed_history(thread: &mut crate::thread::Thread, items: usize) {
+    for i in 0..items / 2 {
         thread.post_user(format!("Busy request {i}: inspect the project files and preserve the established task and conversation identity while preparing the next review."),None,"2026-10-20T12:00:00Z");
         thread.post_agent(format!("Busy answer {i}: the implementation records the committed result, and the next request should observe that result through the saved task timeline and conversation history."),None,"2026-10-20T12:00:01Z");
     }
@@ -1002,4 +1010,177 @@ async fn wait_for_fixture_idle(busy: &Busy) -> Value {
     })
     .await
     .expect("queued/settling/in-flight deliveries and sampled frames all finished")
+}
+
+/// Keep terminal admission independent of retained workspace and history size.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "realistic 200-conversation/190-worktree/700-task terminal hold fixture"]
+async fn busy_term_create_keeps_app_lock_hold_below_50ms() {
+    use std::os::unix::fs::PermissionsExt;
+    let busy = Busy::with_history_items(500);
+    let shell = busy._root.path().join("terminal-hold-shell");
+    let marker = busy._root.path().join("terminal-hold-shell.pid");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nwhile IFS= read -r line; do :; done\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+    busy.state.lock().unwrap().term_shell = shell.display().to_string();
+    let retained_items = busy
+        .state
+        .lock()
+        .unwrap()
+        .runs
+        .values()
+        .map(|run| run.agents.primary().unwrap().thread.total_item_count())
+        .sum::<u64>();
+    assert!(retained_items >= 100_000);
+    eprintln!("terminal fixture: {CONVERSATIONS} conversations, {WORKTREES} Git worktrees, {TASKS} tasks, {retained_items} retained items");
+    let handler = AppState::handler(Arc::clone(&busy.state));
+    let workspace = busy.owners[AGENTS + 1].0.clone();
+    let (created, work) = crate::app::snapshot_projection::work_counts::measure(|| {
+        call(&handler, "term.create", json!({"workspace_id": workspace}))
+    });
+    assert_eq!(created["ok"], true, "{created}");
+    let marker_ready = settles(|| {
+        std::fs::read_to_string(&marker)
+            .ok()
+            .is_some_and(|pid| pid.trim().parse::<u32>().is_ok())
+    });
+    let measurements = busy.samples.snapshot();
+    eprintln!(
+        "term.create busy phases: {}",
+        serde_json::to_string_pretty(&measurements["term.create"]).unwrap()
+    );
+    let held = measurements["term.create"]["frame.held"]["max_ms"]
+        .as_f64()
+        .unwrap();
+    let (_, follow_on) = crate::app::snapshot_projection::work_counts::measure(|| {
+        busy.state
+            .lock()
+            .unwrap()
+            .publish_owner_snapshot_projection(&busy.owners[0].0);
+    });
+    let child = {
+        let app = busy.state.lock().unwrap();
+        let key = app
+            .tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap())
+            .unwrap();
+        Arc::clone(&app.session_registry.test_tab(&key).unwrap().session)
+    };
+    let closed = call(
+        &handler,
+        "term.close",
+        json!({"term_id": created["result"]["term_id"]}),
+    );
+    child.end();
+    assert!(
+        child.exited_within(Duration::from_secs(2)),
+        "the timing fixture shell must be reaped"
+    );
+    assert_eq!(closed["ok"], true, "{closed}");
+    assert!(
+        marker_ready,
+        "the owned finite shell must reach its read loop"
+    );
+    assert!(
+        held < 50.0,
+        "term.create held the app mutex for {held:.3}ms"
+    );
+    assert_terminal_create_skips_global_publication(&measurements);
+    assert_eq!(
+        work.workspace_details_full + work.workspace_details_scoped,
+        0,
+        "{work:?}"
+    );
+    assert_eq!(work.history_updates, 0, "{work:?}");
+    assert_eq!(
+        follow_on.workspace_details_full, 0,
+        "a shell must not invalidate the next owner publication: {follow_on:?}"
+    );
+    let (_, after_close) = crate::app::snapshot_projection::work_counts::measure(|| {
+        busy.state
+            .lock()
+            .unwrap()
+            .publish_owner_snapshot_projection(&busy.owners[0].0);
+    });
+    assert_eq!(
+        after_close.workspace_details_full, 0,
+        "closing a shell must not invalidate the next owner publication: {after_close:?}"
+    );
+    assert_busy_terminal_spawn_allows_concurrent_frame(&busy, &handler, &workspace);
+}
+
+fn assert_busy_terminal_spawn_allows_concurrent_frame(
+    busy: &Busy,
+    handler: &FrameHandler,
+    workspace: &str,
+) {
+    let (gate, held) = OffLockGate::new();
+    busy.state.lock().unwrap().terminal_create_spawn_gate = Some(gate);
+    let spawning = {
+        let handler = handler.clone();
+        let workspace = workspace.to_owned();
+        std::thread::spawn(move || call(&handler, "term.create", json!({"workspace_id":workspace})))
+    };
+    held.wait_for_arrival();
+    busy.state.lock().unwrap().terminal_create_spawn_gate = None;
+    let (sent, received) = std::sync::mpsc::channel();
+    let concurrent = {
+        let handler = handler.clone();
+        std::thread::spawn(move || {
+            sent.send(call(&handler, "session.hello", json!({})))
+                .unwrap();
+        })
+    };
+    let reply = received.recv_timeout(Duration::from_millis(100));
+    held.release();
+    let created = spawning.join().unwrap();
+    concurrent.join().unwrap();
+    let child = {
+        let app = busy.state.lock().unwrap();
+        let key = app
+            .tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap())
+            .unwrap();
+        Arc::clone(&app.session_registry.test_tab(&key).unwrap().session)
+    };
+    let closed = call(
+        handler,
+        "term.close",
+        json!({"term_id":created["result"]["term_id"]}),
+    );
+    child.end();
+    assert!(child.exited_within(Duration::from_secs(2)));
+    assert_eq!(created["ok"], true, "{created}");
+    assert_eq!(closed["ok"], true, "{closed}");
+    assert_eq!(
+        reply.expect("a concurrent frame must answer during the large-seed spawn")["ok"],
+        true
+    );
+    let measurements = busy.samples.snapshot();
+    eprintln!(
+        "term.create busy final phases: {}",
+        serde_json::to_string_pretty(&measurements["term.create"]).unwrap()
+    );
+    assert_terminal_create_skips_global_publication(&measurements);
+    assert!(
+        measurements["term.create"]["frame.held"]["max_ms"]
+            .as_f64()
+            .unwrap()
+            < 50.0
+    );
+}
+
+fn assert_terminal_create_skips_global_publication(measurements: &Value) {
+    let phases = measurements["term.create"].as_object().unwrap();
+    assert!(
+        phases
+            .keys()
+            .all(|phase| !phase.contains("publication.global")),
+        "terminal creation must never rebuild the global publication: {phases:?}"
+    );
 }

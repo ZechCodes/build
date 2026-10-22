@@ -582,6 +582,7 @@ impl AppState {
         let busy = self.project_deletion_in_progress
             || self.deferred_work.is_some()
             || self.active_deferred_filesystem_jobs > 0
+            || self.workspace_contains_pending_shell(workspace_id)
             || self.upload_open_within(&Self::canonical_root(&workspace.root))
             || (!reserved && self.workspace_reserved(workspace_id));
         if busy || self.refuse_removing_what_is_not_builds(workspace).is_err() {
@@ -744,10 +745,12 @@ impl AppState {
     /// One of the user's terminals open anywhere in the workspace. A shell's
     /// tab lasts exactly as long as its process.
     fn terminal_open_within(&self, root: &Path) -> bool {
-        self.session_registry
-            .tab_keys()
-            .into_iter()
-            .any(|key| !key.is_agent() && key.root.starts_with(root))
+        self.session_registry.pending_shell_within(root)
+            || self
+                .session_registry
+                .tab_keys()
+                .into_iter()
+                .any(|key| !key.is_agent() && key.root.starts_with(root))
     }
 
     /// Every task of every project, filed under each workspace it links. One

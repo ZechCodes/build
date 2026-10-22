@@ -1,8 +1,8 @@
 use crate::api::clients::DeclaredClient;
 use crate::api::API_VERSION;
 use crate::app::{
-    capture_conversation_names, err, off_the_workers, record_idle_in_thread, require_str,
-    spawn_tab_pumps, AppState, HarnessExit, IdleObservation, Tab, TabKey,
+    capture_conversation_names, err, off_the_workers, record_idle_in_thread, require_str, AppState,
+    HarnessExit, IdleObservation, TabKey,
 };
 use crate::carrier::SessionSender;
 use crate::changes::{Kind, ANNOUNCED_EVENTS, MAX_BATCH_MS, MIN_BATCH_MS};
@@ -17,6 +17,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod cleanup;
+mod create;
+mod create_scope;
+mod holds;
 mod scope;
 
 use scope::resolve_terminal_scope;
@@ -229,53 +232,7 @@ pub(in crate::app) fn term_create(
     params: &Value,
     timer: &FrameTimer,
 ) -> Result<Value, String> {
-    let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
-    let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
-    require_shell_kind(params)?;
-
-    let (key, pumps) = {
-        let mut s = timer.lock(state);
-        // RPC admission can precede deletion's retirement collection. Recheck
-        // under the spawn guard so a shell cannot appear after that collection.
-        if s.project_deletion_in_progress {
-            return Err(crate::app::rpc::PROJECT_DELETION_IN_PROGRESS.into());
-        }
-        let scope = resolve_terminal_scope(&mut s, params)?;
-        let root = scope.root;
-        s.refuse_source_shell_start_at(&root)?;
-        s.refuse_writers_while_reserved(&root)?;
-        // The cap counts the human's shells and never an agent: sixteen open
-        // terminals must not be able to crowd a worktree's agent out of a
-        // registry they now share.
-        if s.shell_tab_count() >= MAX_USER_TERMINALS {
-            return Err(format!(
-                "terminal limit reached ({MAX_USER_TERMINALS} open terminals) — close one first"
-            ));
-        }
-        let tab_id = s.session_registry.next_terminal_id();
-        let shell = s.term_shell.clone();
-        let key = TabKey {
-            root: root.clone(),
-            tab_id: tab_id.clone(),
-        };
-        let (mut tab, rx) = Tab::spawn_shell(
-            &shell_harness_spec(&shell),
-            tab_id,
-            root,
-            terminal_size(cols, rows),
-        )?;
-        tab.project_source = scope.source;
-        let pumps = s.session_registry.insert_shell(key.clone(), tab, rx);
-        s.note_terminals_at(&key.root);
-        (key, pumps)
-    };
-    spawn_tab_pumps(state, key.clone(), pumps);
-    Ok(json!({
-        "term_id": key.tab_id,
-        "kind": SHELL_TAB_KIND,
-        "cols": cols,
-        "rows": rows,
-    }))
+    create::create(state, params, timer)
 }
 
 /// Attach this client to a tab by its wire id — `term-<n>` or

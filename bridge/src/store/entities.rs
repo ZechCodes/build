@@ -429,6 +429,10 @@ impl Store {
         live: &HashSet<String>,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            // Invalidate delayed external terminal inserts before replacing
+            // the live map; the same writer lock orders both operations.
+            self.attention_map_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tx.execute("DELETE FROM attention", [])?;
             let mut insert =
                 tx.prepare("INSERT INTO attention (entity_id, record) VALUES (?1, ?2)")?;

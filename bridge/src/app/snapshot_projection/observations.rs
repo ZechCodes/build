@@ -281,6 +281,28 @@ impl AppState {
             .cloned()
             .unwrap_or_else(|| path.to_owned())
     }
+    /// A notification consumes the last path observation, even before the
+    /// initial projection is ready. It must never fall back to a disk probe.
+    pub(in crate::app) fn cached_snapshot_root(&self, path: &Path) -> PathBuf {
+        self.snapshot_observations
+            .paths
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| path.to_owned())
+    }
+
+    /// Install the physical scope resolved off-lock after its in-memory
+    /// identity has been revalidated by the terminal commit guard.
+    pub(in crate::app) fn record_snapshot_root_observation(
+        &mut self,
+        path: &Path,
+        canonical: &Path,
+    ) {
+        self.snapshot_observations
+            .paths
+            .insert(path.to_owned(), canonical.to_owned());
+    }
+
     pub(in crate::app) fn observed_same_path(&self, left: &Path, right: &Path) -> bool {
         if !self.snapshot_observations.ready {
             return crate::app::workspaces::same_path(left, right);

@@ -16,6 +16,9 @@ use crate::thread::SessionInstance;
 use super::{LifecycleDiagnostic, MintedCallRow, Tab, TabKey, TabPumps, TabRole};
 use crate::app::runtime::terminals::{TabAttachment, TabFacts};
 
+mod tabs;
+use tabs::Tabs;
+
 /// Compare an MCP token without making the compared byte position depend on
 /// either input's length. This is the exact body currently used by AppState.
 pub(in crate::app) fn constant_time_token_eq(actual: &str, expected: &str) -> bool {
@@ -37,9 +40,10 @@ pub(in crate::app) fn constant_time_token_eq(actual: &str, expected: &str) -> bo
 /// In particular, `spawn_finished` is paired with that original mutex guard;
 /// SessionRegistry must never acquire an independent mutex.
 pub(in crate::app) struct SessionRegistry {
-    tabs: HashMap<TabKey, Tab>,
+    tabs: Tabs,
     shell_generation: u64,
     spawn_claims: HashSet<TabKey>,
+    shell_checkout_holds: HashMap<TabKey, ShellCheckoutHold>,
     spawn_finished: Arc<Condvar>,
     waiting_screens: HashMap<TabKey, ScreenHandle>,
     mcp_tokens: HashMap<String, String>,
@@ -51,6 +55,12 @@ pub(in crate::app) struct SessionRegistry {
     /// Where the tabs' byte pumps paint: the daemon's push runtime, or — with
     /// none set, as in the tests — whatever runtime starts them.
     push_runtime: Option<tokio::runtime::Handle>,
+}
+
+struct ShellCheckoutHold {
+    project_id: String,
+    workspace_id: Option<String>,
+    raw_root: std::path::PathBuf,
 }
 
 /// A claimed spawn key. Runtime owns the RAII wrapper that settles this token
@@ -219,9 +229,10 @@ pub(in crate::app) struct RetainedTab {
 impl SessionRegistry {
     pub(in crate::app) fn new() -> Self {
         Self {
-            tabs: HashMap::new(),
+            tabs: Tabs::new(),
             shell_generation: 0,
             spawn_claims: HashSet::new(),
+            shell_checkout_holds: HashMap::new(),
             spawn_finished: Arc::new(Condvar::new()),
             waiting_screens: HashMap::new(),
             mcp_tokens: HashMap::new(),
@@ -269,6 +280,77 @@ impl SessionRegistry {
         let id = format!("term-{}", self.next_terminal);
         self.next_terminal += 1;
         id
+    }
+
+    pub(in crate::app) fn take_shell_spawn_claim(
+        &mut self,
+        key: TabKey,
+        project_id: String,
+        workspace_id: Option<String>,
+        raw_root: std::path::PathBuf,
+    ) -> SpawnClaimToken {
+        self.shell_checkout_holds.insert(
+            key.clone(),
+            ShellCheckoutHold {
+                project_id,
+                workspace_id,
+                raw_root,
+            },
+        );
+        self.take_spawn_claim(key)
+    }
+
+    pub(in crate::app) fn pending_shell_for_project(&self, project_id: &str) -> bool {
+        self.shell_checkout_holds
+            .values()
+            .any(|hold| hold.project_id == project_id)
+    }
+
+    pub(in crate::app) fn pending_shell_for_workspace(&self, workspace_id: &str) -> bool {
+        self.shell_checkout_holds
+            .values()
+            .any(|hold| hold.workspace_id.as_deref() == Some(workspace_id))
+    }
+
+    pub(in crate::app) fn pending_shell_within(&self, root: &Path) -> bool {
+        self.spawn_claims
+            .iter()
+            .any(|key| !key.is_agent() && key.root.starts_with(root))
+            || self
+                .shell_checkout_holds
+                .values()
+                .any(|hold| hold.raw_root.starts_with(root))
+    }
+
+    pub(in crate::app) fn pending_shell_at(&self, root: &Path) -> bool {
+        self.spawn_claims
+            .iter()
+            .any(|key| !key.is_agent() && key.root == root)
+            || self
+                .shell_checkout_holds
+                .values()
+                .any(|hold| hold.raw_root == root)
+    }
+
+    pub(in crate::app) fn pending_shell_count(&self) -> usize {
+        self.spawn_claims
+            .iter()
+            .filter(|key| !key.is_agent())
+            .count()
+    }
+
+    pub(in crate::app) fn shell_holds_at(&self, root: &Path) -> Vec<String> {
+        self.tabs
+            .iter()
+            .filter(|(key, tab)| key.root.starts_with(root) && tab.role == TabRole::Shell)
+            .map(|(key, _)| key)
+            .chain(
+                self.spawn_claims
+                    .iter()
+                    .filter(|key| !key.is_agent() && key.root.starts_with(root)),
+            )
+            .map(|key| key.tab_id.clone())
+            .collect()
     }
 
     pub(in crate::app) fn shell_count(&self) -> usize {
@@ -362,6 +444,7 @@ impl SessionRegistry {
 
     /// The adapter must call this before an under-lock RAII wrapper is dropped.
     pub(in crate::app) fn settle_spawn_claim(&mut self, claim: SpawnClaimToken) {
+        self.shell_checkout_holds.remove(&claim.key);
         self.spawn_claims.remove(&claim.key);
         self.spawn_finished.notify_all();
     }
@@ -440,6 +523,9 @@ impl SessionRegistry {
     pub(in crate::app) fn projection_layout(&self) -> Vec<ProjectionRegistration> {
         self.tabs
             .iter()
+            // Shells publish only terminal facts. Their membership never
+            // changes board/workspace/history projection structure.
+            .filter(|(_, tab)| tab.role.agent().is_some())
             .map(|(key, tab)| ProjectionRegistration::Tab {
                 key: key.clone(),
                 role: tab.role.clone(),

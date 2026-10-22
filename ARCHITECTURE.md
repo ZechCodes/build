@@ -517,6 +517,32 @@ receipt before replying. Merge prune uses the same registration checks after
 successful removal; its existing synchronous filesystem work remains guarded.
 Process kill and reap still run separately through `reaper.rs::Retirement`.
 
+User shell creation captures registered scope identity under a brief app guard,
+resolves its physical path outside the app mutex, then reserves a terminal slot
+and a **per-checkout** lifecycle hold. The PTY opens outside the mutex; another
+off-lock path probe and a guarded identity check precede registration. Pending
+shells count toward the cap and prevent movement, deletion, locking and reclaim
+of their own checkout. Other checkouts remain available. A failed or invalidated
+spawn retires its opened child before releasing the reservation.
+
+Terminal open, close and cleanup update terminal rows only for the affected
+checkout aliases, including aliases awaiting their first full publication.
+They preserve unrelated snapshot chunks and use stored path observations for
+notification aliases. Full publications refresh any terminal-only aliases that
+remain registered. Opening a scoped terminal retains its workspace/run
+interaction stamp and board revision bump. Its attention fields patch the
+accepted shared rows without rendering workspace details or a global projection.
+An asynchronous store merge preserves newer seen/mute/cursor state and the exact
+captured resume boundary; the reply does not wait for this attention save.
+Durable run/task rows fence insertion against deletion. External checkout stamps
+may insert their first row while the captured full-map save epoch is current; a
+later live-map replacement cancels that delayed write. Managed workspace IDs
+update only existing rows, matching their exclusion from the old live-map save.
+Terminal creation also records user activity and pushes the terminal row. Its
+user-session persistence runs outside the app mutex, with a conditional save that
+cannot overwrite newer activity. The reply still waits for that save; acknowledgment
+before persistence belongs to the separate ack-then-confirm step (6b).
+
 Task creation, updates and dependency edits capture their watched board rows
 and affected neighbors inside the SQL transaction. A failed projection read
 rolls back the write. Background observation failures retain the previous
@@ -1417,12 +1443,13 @@ Client detach or reconnect keeps the shell and ID. Explicit tab close, EOF,
 a missing root and project deletion use the existing kill/reap and screen
 closure lifecycle. Source move/remove refuses while shells stand in that
 source folder, naming their IDs. Create and move/remove admission run under
-the app lock; shell spawn stays under that guard, and the existing Updating
-reservation blocks shell starts and source removal throughout deferred source
-update work and settlement. The spawn guard also rechecks project deletion:
-a create admitted earlier refuses before opening a PTY if deletion has already
-collected retirements. A create that spawns first is included in that collection,
-even when its original source folder survives deletion.
+the app lock; physical scope probes and PTY spawn run outside it. A pending
+spawn holds its checkout and source location until registration or child
+retirement. The existing Updating reservation blocks shell starts and source
+removal throughout deferred source update work and settlement. Reserve and
+commit guards recheck project deletion; deletion refuses while that project's
+shell spawn is pending and collects its registered shells for retirement,
+even when their original source folders survive deletion.
 Label changes leave live shells alone. These holds
 keep the source's membership/location consistent; they do not restrict shell
 commands or serialize them with Git/base sync. Worker holds also permit
@@ -1431,8 +1458,8 @@ relocation or removal.
 A worker-held source can open and attach a shell while base sync waits on its
 Git lock, and sync can fast-forward with that shell still open. Closing the
 shell leaves the worker's location hold intact. An already-admitted terminal
-create rechecks Updating at spawn: a move's reservation holds it back during
-the SyncLock wait and after work completes, until config settlement. The old
+create rechecks Updating before reservation and registration: a move's
+reservation holds it back during the SyncLock wait and after work completes, until config settlement. The old
 selector then conflicts; a fresh selector opens at the settled location.
 
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in

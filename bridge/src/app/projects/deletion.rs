@@ -70,7 +70,10 @@ impl AppState {
         if params.get("confirm").and_then(Value::as_bool) != Some(true) {
             return Err("project.delete requires confirm: true".into());
         }
-        if self.deferred_work.is_some() || self.active_deferred_filesystem_jobs > 0 {
+        if self.deferred_work.is_some()
+            || self.active_deferred_filesystem_jobs > 0
+            || self.session_registry.pending_shell_for_project(&project_id)
+        {
             return Err("another filesystem operation is still running".into());
         }
         let project = self
@@ -111,6 +114,12 @@ impl AppState {
                 .iter()
                 .map(|id| Self::canonical_root(&self.runs[id].worktree.path)),
         );
+        if session_roots
+            .iter()
+            .any(|root| self.session_registry.pending_shell_within(root))
+        {
+            return Err(crate::reclaim::BUSY.into());
+        }
         if session_roots
             .iter()
             .any(|root| self.delivery_queue.has_in_flight_at_root(root))

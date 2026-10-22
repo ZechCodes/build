@@ -21,7 +21,10 @@ mod sql_reads;
 pub(in crate::app::tests) mod start_refused;
 mod status_publication;
 mod status_publication_timing;
+mod terminal_activity;
+mod terminal_creation_scope;
 pub(in crate::app::tests) mod terminal_lifecycle;
+mod terminal_primary_scope;
 mod terminal_reaper;
 pub(in crate::app::tests) mod terminals;
 

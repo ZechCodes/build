@@ -122,5 +122,21 @@ fn owner_projection_uses_the_observed_branch_until_a_producer_refreshes_it() {
     );
 }
 
+mod terminal_publication;
 mod watched_tasks;
 mod workspace_summaries;
+
+#[test]
+fn terminal_publication_preserves_unrelated_pending_owner_work() {
+    let root = tempfile::tempdir().unwrap();
+    let mut app = fixture(root.path());
+    app.initialize_snapshot_projection();
+    app.mark_snapshot_owner_pending("pending-owner");
+    app.note_terminals_at(root.path());
+    assert!(app
+        .snapshot_observations
+        .pending_owners
+        .lock()
+        .unwrap()
+        .contains("pending-owner"));
+}

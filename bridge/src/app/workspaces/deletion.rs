@@ -302,6 +302,7 @@ impl AppState {
         if self.deferred_work.is_some()
             || self.active_deferred_filesystem_jobs > 0
             || self.workspace_reserved(&workspace_id)
+            || self.workspace_contains_pending_shell(&workspace_id)
         {
             return Err(crate::reclaim::BUSY.to_string());
         }

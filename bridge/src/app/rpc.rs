@@ -268,9 +268,29 @@ fn noted_as_user_activity(
 ) -> Result<Value, String> {
     if outcome.is_ok() && USER_ACTIVITY_VERBS.contains(&method) {
         let now = i64::try_from(crate::agent::now_ms()).unwrap_or(i64::MAX);
-        timer.lock(state).note_user_activity(now);
+        if method == "term.create" {
+            note_terminal_activity(state, now, timer);
+        } else {
+            timer.lock(state).note_user_activity(now);
+        }
     }
     outcome
+}
+
+/// Terminal creation's store wait must not extend any application guard.
+fn note_terminal_activity(state: &Arc<Mutex<AppState>>, now: i64, timer: &FrameTimer) {
+    let pending = {
+        let mut app = timer.lock(state);
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("term.create.activity");
+        let updated = app.observe_user_activity(now);
+        updated.zip(app.store.clone())
+    };
+    if let Some((updated, store)) = pending {
+        if let Err(error) = store.save_user_session_if_newer(&updated) {
+            eprintln!("user session persist failed: {error}");
+        }
+    }
 }
 
 /// The three signaling verbs, answered from the peers slot alone. `None` is
@@ -350,24 +370,10 @@ fn session_scoped(
         "bridge.stats" => Ok(timer.clock().stats()),
         // QA-only (`BRIDGE_QA_AGENT=1`); unknown to everyone else.
         "stream.start" if timer.lock(state).qa_agent => stream_start(state, params, timer),
-        // Opening a terminal or an agent in a worktree IS interacting with it in
-        // Build — it is the reason a hand-made worktree graduates out of the
-        // Worktrees row. This arm bypasses `dispatch`, so it stamps for itself.
         "term.create" => {
             #[cfg(test)]
             pause_terminal_create_after_admission(state, timer);
-            let created = term_create(state, params, timer);
-            if created.is_ok() {
-                if let Some(scope_id) = params
-                    .get("workspace_id")
-                    .or_else(|| params.get("run_id"))
-                    .or_else(|| params.get("worktree_id"))
-                    .and_then(Value::as_str)
-                {
-                    timer.lock(state).touch_attention(scope_id);
-                }
-            }
-            created
+            term_create(state, params, timer)
         }
         "term.attach" => term_attach(state, sender, params, timer),
         // A write to a child's pty blocks while the child is not draining, so

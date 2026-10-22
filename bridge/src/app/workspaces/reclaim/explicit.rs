@@ -123,7 +123,10 @@ impl AppState {
             .get(&measured_workspace.id)
             .cloned()
             .ok_or_else(|| format!("unknown workspace_id: {}", measured_workspace.id))?;
-        if self.deferred_work.is_some() || self.active_deferred_filesystem_jobs > 0 {
+        if self.deferred_work.is_some()
+            || self.active_deferred_filesystem_jobs > 0
+            || self.workspace_contains_pending_shell(&workspace.id)
+        {
             return Err(crate::reclaim::BUSY.to_string());
         }
         self.refuse_removing_what_is_not_builds(&workspace)?;

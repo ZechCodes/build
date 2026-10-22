@@ -1,9 +1,10 @@
 name: Bridge timing tests
 
-# Opt-in timing tests the default run ignores (#280, #289, #709, #738, #741):
+# Opt-in timing tests the default run ignores (#280, #289, #709, #738, #741, #751):
 # a_git_child_costs_what_the_child_costs (src/git_process.rs),
 # the_daemon_answers_reads_and_writes_while_three_ptys_flood
-# (tests/concurrency_load.rs), and busy_writers_keep_app_lock_holds_below_budget
+# (tests/concurrency_load.rs), busy_writers_keep_app_lock_holds_below_budget,
+# busy_term_create_keeps_app_lock_hold_below_50ms
 # (src/app/tests/runtime/lock_hold_busy.rs), busy_mcp_lists_finish_within_100ms,
 # and the three focused six_mcp_reads comparisons in lock_hold_busy/mcp_reads.rs.
 # They compare wall-clock times against
@@ -102,6 +103,7 @@ jobs:
           --nocapture
           --test-threads=1
           busy_writers_keep_app_lock_holds_below_budget
+          busy_term_create_keeps_app_lock_hold_below_50ms
           busy_mcp_lists_finish_within_100ms
           six_mcp_reads_without_writers
           six_mcp_reads_with_busy_writers

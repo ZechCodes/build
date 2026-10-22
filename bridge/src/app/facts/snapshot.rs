@@ -1,6 +1,8 @@
 //! Bounded, immutable inputs for a push flush. No application/store handle is
 //! consulted while rendering these rows and conversation tails.
 
+mod terminals;
+
 use super::observations::{CheckoutObservation, ObservationRequest, ObservationSink};
 use super::{AppState, CheckoutSubject, ReadSubject};
 use crate::app::read_view::shared_json::DigestPatch;
@@ -279,11 +281,29 @@ impl FactsSource {
     }
 
     pub(super) fn entity_ids(&self) -> Vec<String> {
+        // This callback defines board membership, including departure notices.
+        // A surviving terminal-only workspace alias must not keep its removed
+        // conversation on the board. Terminal notes reach subscribers directly.
         self.view.load().facts.subjects.keys().cloned().collect()
     }
 }
 
 impl PushFacts {
+    pub(in crate::app) fn patch_terminal_attention(
+        &mut self,
+        patch: &mut crate::app::read_view::shared_json::AttentionPatch<'_>,
+    ) {
+        for row in self
+            .states
+            .values_mut()
+            .chain(std::iter::once(&mut self.lists))
+        {
+            if let Some(next) = patch.apply(row) {
+                *row = next;
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(in crate::app) fn apply_committed_history_delta(
         &mut self,
@@ -518,6 +538,7 @@ impl AppState {
         #[cfg(test)]
         drop(owners_phase);
         self.capture_push_checkouts(&mut snapshot, &previous.facts);
+        self.capture_terminal_aliases(&mut snapshot, &previous.facts);
         self.capture_push_entities(&mut snapshot, &previous.facts);
         snapshot
     }
@@ -564,9 +585,11 @@ impl AppState {
                 }
             }
             {
+                let mut scope = subject.terminal_scope();
+                scope.root = self.cached_snapshot_root(&scope.root);
                 snapshot.terminals.insert(
                     entity.clone(),
-                    Arc::new(json!({"tabs": self.shell_tabs_for(&subject.terminal_scope())})),
+                    Arc::new(json!({"tabs": self.shell_tabs_for(&scope)})),
                 );
             }
             {

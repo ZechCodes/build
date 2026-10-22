@@ -398,6 +398,10 @@ pub struct AppState {
     /// Pause a terminal create after RPC admission, before its spawn guard.
     #[cfg(test)]
     terminal_create_admission_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    terminal_create_spawn_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    terminal_create_scope_probe_gate: Option<OffLockGate>,
     /// Human attention owners coalesced only inside one RPC thread.post guard.
     rpc_post_attention_owners: Option<std::collections::BTreeSet<String>>,
     /// The git work a verb handed to the drain, to run with this mutex
@@ -728,6 +732,10 @@ impl AppState {
             off_lock_project_list_gate: None,
             #[cfg(test)]
             terminal_create_admission_gate: None,
+            #[cfg(test)]
+            terminal_create_spawn_gate: None,
+            #[cfg(test)]
+            terminal_create_scope_probe_gate: None,
             rpc_post_attention_owners: None,
             deferred_work: None,
             deferred_result_check: None,

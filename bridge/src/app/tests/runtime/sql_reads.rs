@@ -3,6 +3,8 @@ use crate::app::tests::tracker::{filed, tracked};
 use crate::carrier::testing::{client_request, session_init, ChannelWire};
 use crate::carrier::{FrameIntake, OutboundEnvelope};
 
+mod thread_revision;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn task_sql_lane_answers_while_app_is_held_and_observes_next_commit() {
     let dir = tempfile::tempdir().unwrap();

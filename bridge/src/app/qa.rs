@@ -24,7 +24,7 @@ impl AppState {
     /// reads the manifest and ingests the docs exactly as it would for a real
     /// harness.
     pub(in crate::app) fn qa_simulate_plan(
-        &self,
+        &mut self,
         project_id: &str,
         active: &mut ActivePlan,
     ) -> Result<(), String> {
@@ -71,6 +71,7 @@ impl AppState {
                 DoneReport::new(DoneStatus::Completed, format!("Planned: {goal}")),
             )
             .map_err(err)?;
+        self.record_ingested_plan_docs(&active.plan.id.0);
         let new_stages: Vec<(usize, StageDoc)> = active
             .stages
             .iter()

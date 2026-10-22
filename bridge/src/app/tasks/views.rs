@@ -175,7 +175,7 @@ impl AppState {
         self.plan_run_stage_diff(&run_params, Some(task_id))
     }
 
-    pub(crate) fn task_stages(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn task_stages(&self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
         let task = self.plans.get(&task_id).ok_or("unknown task_id")?;
         // A task with no stages yet answers with the empty list that is the
@@ -417,10 +417,7 @@ impl AppState {
             // False when the store holds no docs (a migrated plan whose docs
             // were unrecoverable): the client disables doc reads + Implement
             // instead of retrying reads that can never succeed.
-            "docs_available": self
-                .store
-                .as_ref()
-                .is_some_and(|store| store.has_plan_docs(plan_id)),
+            "docs_available": self.snapshot_plan_docs_available(plan_id),
             "created_at": self.board.attention().clock(plan_id).created_at,
             "updated_at": self.board.attention().clock(plan_id).updated_at,
             "state_changed_at": self.board.attention().clock(plan_id).state_changed_at,

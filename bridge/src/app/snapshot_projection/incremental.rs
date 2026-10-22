@@ -20,6 +20,7 @@ impl AppState {
         let _phase = crate::timing::phase_samples::phase("publication.global");
         let (cache, owners) = previous.global.as_ref()?.refresh(self, requested)?;
         let mut delta = cache.publish(self, delta, previous);
+        delta = self.prepare_native_project_snapshots(delta, previous);
         // Refresh requested and incidental clock/alias/root dependencies in
         // one pass. The owner publisher only adds named agent rows and history.
         delta = self.prepare_workspace_snapshot_details_for_owners(delta, previous, &owners);
@@ -58,6 +59,7 @@ impl AppState {
         };
         let cache = GlobalProjection::seed(self, board, projects, workspaces, reusable);
         let delta = cache.publish(self, delta, previous);
+        let delta = self.prepare_native_project_snapshots(delta, previous);
         let facts = self.push_facts_shared_snapshot(cache.lists());
         let delta = self.prepare_observation_inputs(delta, previous);
         let delta = delta.set_facts(Arc::new(facts)).set_global(Arc::new(cache));

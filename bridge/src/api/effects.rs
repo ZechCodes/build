@@ -20,6 +20,7 @@ pub const SQL_READ_METHODS: &[&str] = &[
     "thread.page",
     "thread.activity",
     "thread.operation",
+    "thread.revision",
     "tasks.list",
     "tasks.get",
     "tasks.waiting_on.blocks",
@@ -36,6 +37,12 @@ pub const INTAKE_SNAPSHOT_METHODS: &[&str] = &[
     "models.list",
     "harnesses.list",
     "bridge.update_status",
+    "capture.get",
+    "task.get",
+    "task.stages",
+    "tasks.columns",
+    "stream.events",
+    "stream.state",
 ];
 
 pub(crate) fn is_snapshot_read(payload: &Value) -> bool {
@@ -58,9 +65,9 @@ const SNAPSHOT_METHODS: &[&str] = &[
     "models.list",
     "harnesses.list",
     "bridge.update_status",
+    "task.get",
     "task.stages",
     "tasks.columns",
-    "thread.revision",
     "stream.events",
     "stream.state",
 ];
@@ -87,9 +94,10 @@ const EXTERNAL_READ_METHODS: &[&str] = &[
     "tasks.attachment",
     "thread.attachment",
     "workspace.git_init_options",
+    "term.list",
 ];
 
-const LEGACY_READ_METHODS: &[&str] = &["archived.list", "task.get", "term.list"];
+const LEGACY_READ_METHODS: &[&str] = &["archived.list"];
 
 const WRITE_METHODS: &[&str] = &[
     "agent.add",

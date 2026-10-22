@@ -2,7 +2,7 @@
 // Caller settlement is separate: a timed-out or cancelled sent read still
 // occupies the bridge until its final reply, carrier close, or restore reset.
 export const SQL_READ_METHODS = Object.freeze([
-  "thread.page", "thread.activity", "thread.operation",
+  "thread.page", "thread.activity", "thread.operation", "thread.revision",
   "tasks.list", "tasks.get", "tasks.waiting_on.blocks",
   "writes.status", "writes.subscribe",
 ]);

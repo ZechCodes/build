@@ -11,6 +11,7 @@
 //! monotonic byte cursor, never on a byte replay, so one model serves a shell
 //! and an agent alike.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -59,6 +60,7 @@ struct TermScreen {
     superseded_by: Option<ScreenHandle>,
     cols: u16,
     rows: u16,
+    size_snapshot: Arc<AtomicU32>,
 }
 
 /// One client attached to a screen, and how far behind it is running.
@@ -122,6 +124,10 @@ const TERM_SNAPSHOT_THRESHOLD: usize = 128 * 1024;
 /// through the relay and starve every other frame behind them.
 const TERM_SNAPSHOT_MIN_INTERVAL_MS: u64 = 100;
 
+fn packed_size(cols: u16, rows: u16) -> u32 {
+    (u32::from(cols) << 16) | u32::from(rows)
+}
+
 impl TermScreen {
     fn new(cols: u16, rows: u16) -> TermScreen {
         TermScreen {
@@ -136,6 +142,7 @@ impl TermScreen {
             superseded_by: None,
             cols,
             rows,
+            size_snapshot: Arc::new(AtomicU32::new(packed_size(cols, rows))),
         }
     }
 
@@ -161,6 +168,8 @@ impl TermScreen {
         self.parser.set_size(rows, cols);
         self.cols = cols;
         self.rows = rows;
+        self.size_snapshot
+            .store(packed_size(cols, rows), Ordering::Release);
     }
 
     /// Feed PTY bytes: advance the screen model, the cursor, and the pending
@@ -367,6 +376,7 @@ const MAX_SUPERSESSIONS_FOLLOWED: usize = 8;
 pub struct ScreenHandle {
     term_id: Arc<str>,
     screen: Arc<Mutex<TermScreen>>,
+    size_snapshot: Arc<AtomicU32>,
 }
 
 /// Allocation identity without keeping the terminal buffer alive.
@@ -400,9 +410,11 @@ impl ScreenHandle {
     }
 
     pub fn new(term_id: &str, cols: u16, rows: u16) -> ScreenHandle {
+        let screen = TermScreen::new(cols, rows);
         ScreenHandle {
             term_id: Arc::from(term_id),
-            screen: Arc::new(Mutex::new(TermScreen::new(cols, rows))),
+            size_snapshot: Arc::clone(&screen.size_snapshot),
+            screen: Arc::new(Mutex::new(screen)),
         }
     }
 
@@ -463,10 +475,11 @@ impl ScreenHandle {
         }
     }
 
-    /// The grid this screen is currently painting at.
+    /// The last completed grid resize, without waiting for screen painting.
+    /// Packing both dimensions into one atomic keeps the pair coherent.
     pub fn size(&self) -> (u16, u16) {
-        let screen = self.screen.lock().unwrap();
-        (screen.cols, screen.rows)
+        let packed = self.size_snapshot.load(Ordering::Acquire);
+        ((packed >> 16) as u16, packed as u16)
     }
 
     /// Record how far a client has applied, resyncing it if it has drained.

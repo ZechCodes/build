@@ -229,6 +229,7 @@ impl AppState {
             outcome.as_ref().err().map(String::as_str),
         );
         if outcome.is_ok() && report_for_thread.status == DoneStatus::Completed {
+            self.record_ingested_plan_docs(plan_id);
             if let Some(contents) = self.plan_revision_contents(plan_id, &active) {
                 active.agents.sole_thread_mut().add_revision(
                     crate::thread::ArtifactKind::Plan,

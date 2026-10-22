@@ -1,3 +1,4 @@
+use crate::app::read_view::SnapshotDelta;
 use crate::app::{off_the_workers, require_str, AppState};
 use crate::timing::FrameTimer;
 use serde_json::{json, Value};
@@ -14,13 +15,65 @@ pub(in crate::app) struct LogEvent {
     pub(in crate::app) data: Value,
 }
 
+impl LogEvent {
+    fn wire_value(&self) -> Value {
+        json!({"seq": self.seq, "kind": self.kind, "data": self.data})
+    }
+}
+
+/// Incremental digest of string-valued output chunks. Empty chunks still count
+/// toward the newline separator, matching `concat_output` exactly.
+#[derive(Default)]
+pub(in crate::app) struct OutputDigest {
+    hasher: Sha256,
+    bytes: usize,
+    chunks: u64,
+}
+
+impl OutputDigest {
+    fn append(&mut self, event: &LogEvent) {
+        if event.kind != "output" {
+            return;
+        }
+        let Some(text) = event.data.get("text").and_then(Value::as_str) else {
+            return;
+        };
+        if self.chunks > 0 {
+            self.hasher.update(b"\n");
+            self.bytes += 1;
+        }
+        self.hasher.update(text.as_bytes());
+        self.bytes += text.len();
+        self.chunks += 1;
+    }
+
+    fn checksum(&self) -> String {
+        digest_hex(&self.hasher.clone().finalize())
+    }
+}
+
 /// The authoritative state of one agent output stream. Keyed by stream id (not by
 /// transport session), so it survives client *and* bridge reconnects — the client
 /// resumes by asking for events since the last seq it applied.
+#[derive(Default)]
 pub(in crate::app) struct StreamState {
     pub(in crate::app) count: u64,
     pub(in crate::app) events: Vec<LogEvent>,
     pub(in crate::app) complete: bool,
+    pub(in crate::app) output: OutputDigest,
+}
+
+impl StreamState {
+    fn summary(&self, stream_id: &str) -> Value {
+        json!({
+            "stream_id": stream_id,
+            "count": self.count,
+            "head": self.events.last().map(|event| event.seq).unwrap_or(0),
+            "complete": self.complete,
+            "output_len": self.output.bytes,
+            "checksum": self.output.checksum(),
+        })
+    }
 }
 
 /// Start a deterministic agent output stream: register it, then spawn a background
@@ -46,10 +99,16 @@ pub(in crate::app) fn stream_start(
             id.clone(),
             StreamState {
                 count,
-                events: Vec::new(),
-                complete: false,
+                ..Default::default()
             },
         );
+        let summary = s.streams[&id].summary(&id);
+        s.read_view
+            .publish_delta(SnapshotDelta::new(s.read_view.next_version()).put(
+                "stream.state",
+                &id,
+                summary,
+            ));
         id
     };
 
@@ -85,12 +144,23 @@ fn append_event(state: &Arc<Mutex<AppState>>, stream_id: &str, kind: &str, data:
         return false;
     };
     let seq = stream.events.len() as u64 + 1;
-    stream.events.push(LogEvent {
+    let event = LogEvent {
         seq,
         kind: kind.into(),
         data,
-    });
+    };
+    stream.output.append(&event);
+    let event_value = event.wire_value();
+    stream.events.push(event);
     stream.complete = kind == "done";
+    let summary = stream.summary(stream_id);
+    // The head and its event must become visible in the same immutable root.
+    // Only the new event and fixed-size summary are captured under the mutex.
+    s.read_view.publish_delta(
+        SnapshotDelta::new(s.read_view.next_version())
+            .put("stream.events", format!("{stream_id}/{seq}"), event_value)
+            .put("stream.state", stream_id, summary),
+    );
     true
 }
 
@@ -102,6 +172,7 @@ pub(in crate::app) fn chunk_text(i: u64) -> String {
 
 /// The authoritative output: every `output` event's text, in seq order, joined by
 /// newlines. The client reconstructs the same string and compares checksums.
+#[cfg(test)]
 pub(in crate::app) fn concat_output(events: &[LogEvent]) -> String {
     events
         .iter()
@@ -112,7 +183,10 @@ pub(in crate::app) fn concat_output(events: &[LogEvent]) -> String {
 }
 
 pub(in crate::app) fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
+    digest_hex(&Sha256::digest(bytes))
+}
+
+fn digest_hex(digest: &[u8]) -> String {
     let mut s = String::with_capacity(digest.len() * 2);
     for b in digest {
         s.push_str(&format!("{b:02x}"));
@@ -121,6 +195,28 @@ pub(in crate::app) fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 impl AppState {
+    /// Startup fixtures can seed authoritative logs before ordinary producers
+    /// run. Rebuild their digests once, then publish before admitting readers.
+    pub(in crate::app) fn initialize_stream_snapshots(&mut self) {
+        if self.streams.is_empty() {
+            return;
+        }
+        let mut delta = SnapshotDelta::new(self.read_view.next_version());
+        for (stream_id, stream) in &mut self.streams {
+            stream.output = OutputDigest::default();
+            for event in &stream.events {
+                stream.output.append(event);
+                delta = delta.put(
+                    "stream.events",
+                    format!("{stream_id}/{}", event.seq),
+                    event.wire_value(),
+                );
+            }
+            delta = delta.put("stream.state", stream_id, stream.summary(stream_id));
+        }
+        self.read_view.publish_delta(delta);
+    }
+
     /// Return a bounded batch of events with `seq > since` for resume. The batch
     /// is capped (`limit`, default 64) so a client far behind catches up in
     /// bounded chunks rather than one giant replay — proper reconnect load.
@@ -143,10 +239,7 @@ impl AppState {
             .take(limit)
             .collect();
         let next = batch.last().map(|e| e.seq).unwrap_or(since);
-        let events: Vec<Value> = batch
-            .iter()
-            .map(|e| json!({ "seq": e.seq, "kind": e.kind, "data": e.data }))
-            .collect();
+        let events: Vec<Value> = batch.iter().map(|e| e.wire_value()).collect();
 
         Ok(json!({
             "events": events,
@@ -161,14 +254,9 @@ impl AppState {
     pub(in crate::app) fn stream_state(&mut self, params: &Value) -> Result<Value, String> {
         let stream_id = require_str(params, "stream_id")?;
         let stream = self.streams.get(&stream_id).ok_or("unknown stream_id")?;
-        let output = concat_output(&stream.events);
-        Ok(json!({
-            "stream_id": stream_id,
-            "count": stream.count,
-            "head": stream.events.last().map(|e| e.seq).unwrap_or(0),
-            "complete": stream.complete,
-            "output_len": output.len(),
-            "checksum": sha256_hex(output.as_bytes()),
-        }))
+        Ok(stream.summary(&stream_id))
     }
 }
+
+#[cfg(test)]
+mod tests;

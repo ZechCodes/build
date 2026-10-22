@@ -980,3 +980,5 @@ async fn project_source_terminal_cannot_attach_sibling() {
         "a refused selector opened a shell"
     );
 }
+
+mod observations;

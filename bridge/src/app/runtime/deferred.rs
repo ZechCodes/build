@@ -1027,6 +1027,7 @@ impl AppState {
     /// run's worktree and the external checkout it was adopted from, and a
     /// client watching either is looking at the same tab row.
     pub(in crate::app) fn note_terminals_at(&self, root: &std::path::Path) {
+        self.publish_terminal_observations();
         self.publish_snapshot_projection();
         for entity_id in self.entities_rooted_at(root) {
             self.changes.note_terminals(&entity_id);

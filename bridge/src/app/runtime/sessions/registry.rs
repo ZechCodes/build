@@ -38,6 +38,7 @@ pub(in crate::app) fn constant_time_token_eq(actual: &str, expected: &str) -> bo
 /// SessionRegistry must never acquire an independent mutex.
 pub(in crate::app) struct SessionRegistry {
     tabs: HashMap<TabKey, Tab>,
+    shell_generation: u64,
     spawn_claims: HashSet<TabKey>,
     spawn_finished: Arc<Condvar>,
     waiting_screens: HashMap<TabKey, ScreenHandle>,
@@ -163,12 +164,13 @@ impl TerminalCleanupCandidate {
     }
 }
 
+#[derive(Clone)]
 pub(in crate::app) struct ShellTabFact {
     pub project_source: Option<crate::changes::ProjectSourceScope>,
     pub key: TabKey,
     pub tab_id: String,
     pub created_at: String,
-    pub size: Option<(u16, u16)>,
+    pub screen: Option<ScreenHandle>,
 }
 
 /// Owned facts for preflight, capture, digest, and callback adapters. Session
@@ -218,6 +220,7 @@ impl SessionRegistry {
     pub(in crate::app) fn new() -> Self {
         Self {
             tabs: HashMap::new(),
+            shell_generation: 0,
             spawn_claims: HashSet::new(),
             spawn_finished: Arc::new(Condvar::new()),
             waiting_screens: HashMap::new(),
@@ -227,6 +230,27 @@ impl SessionRegistry {
             next_terminal: 1,
             push_runtime: None,
         }
+    }
+
+    fn insert_tab(&mut self, key: TabKey, tab: Tab) -> Option<Tab> {
+        let shell = tab.role == TabRole::Shell;
+        let previous = self.tabs.insert(key, tab);
+        if shell
+            || previous
+                .as_ref()
+                .is_some_and(|tab| tab.role == TabRole::Shell)
+        {
+            self.shell_generation += 1;
+        }
+        previous
+    }
+
+    fn remove_tab(&mut self, key: &TabKey) -> Option<Tab> {
+        let tab = self.tabs.remove(key)?;
+        if tab.role == TabRole::Shell {
+            self.shell_generation += 1;
+        }
+        Some(tab)
     }
 
     pub(in crate::app) fn set_push_runtime(&mut self, runtime: tokio::runtime::Handle) {
@@ -292,7 +316,7 @@ impl SessionRegistry {
         output: SessionOutput,
     ) -> TabPumps {
         let pumps = self.pumps_of(&tab, output);
-        self.tabs.insert(key, tab);
+        self.insert_tab(key, tab);
         pumps
     }
 
@@ -485,16 +509,20 @@ impl SessionRegistry {
         self.tabs.get(key)?.project_source.as_ref()
     }
 
-    pub(in crate::app) fn shell_tabs_at(&self, root: &Path) -> Vec<ShellTabFact> {
+    pub(in crate::app) fn shell_generation(&self) -> u64 {
+        self.shell_generation
+    }
+
+    pub(in crate::app) fn shell_tabs(&self) -> Vec<ShellTabFact> {
         self.tabs
             .iter()
-            .filter(|(key, tab)| key.root == root && tab.role == TabRole::Shell)
+            .filter(|(_, tab)| tab.role == TabRole::Shell)
             .map(|(key, tab)| ShellTabFact {
                 project_source: tab.project_source.clone(),
                 key: key.clone(),
                 tab_id: tab.tab_id.clone(),
                 created_at: tab.created_at.clone(),
-                size: tab.screen.as_ref().map(ScreenHandle::size),
+                screen: tab.screen.clone(),
             })
             .collect()
     }
@@ -916,7 +944,7 @@ impl SessionRegistry {
         if let Some((_, agent)) = tab.role.agent() {
             self.forget_retired_agent(agent);
         }
-        self.tabs.insert(key, tab);
+        self.insert_tab(key, tab);
     }
 
     /// Publication step 7, after the app adapter records lineage.
@@ -940,7 +968,7 @@ impl SessionRegistry {
         key: &TabKey,
         diagnostic: LifecycleDiagnostic<'_>,
     ) -> Option<RetainedTab> {
-        let tab = self.tabs.remove(key)?;
+        let tab = self.remove_tab(key)?;
         tab.log_lifecycle(diagnostic);
         Some(RetainedTab {
             retirement: Retirement::begin(tab.session),
@@ -955,7 +983,7 @@ impl SessionRegistry {
         reason: &str,
         diagnostic: LifecycleDiagnostic<'_>,
     ) -> Option<RetiredAgent> {
-        let tab = self.tabs.remove(key)?;
+        let tab = self.remove_tab(key)?;
         tab.log_lifecycle(diagnostic);
         let wire_id = tab.wire_id();
         if let Some(screen) = &tab.screen {
@@ -982,7 +1010,7 @@ impl SessionRegistry {
 
     #[cfg(test)]
     pub(in crate::app) fn test_insert_tab(&mut self, key: TabKey, tab: Tab) -> Option<Tab> {
-        self.tabs.insert(key, tab)
+        self.insert_tab(key, tab)
     }
 
     #[cfg(test)]
@@ -997,7 +1025,7 @@ impl SessionRegistry {
 
     #[cfg(test)]
     pub(in crate::app) fn test_remove_tab(&mut self, key: &TabKey) -> Option<Tab> {
-        self.tabs.remove(key)
+        self.remove_tab(key)
     }
 
     #[cfg(test)]

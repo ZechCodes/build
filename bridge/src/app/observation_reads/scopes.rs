@@ -18,6 +18,7 @@ mod files;
 mod git;
 mod resolution;
 mod stages;
+mod terminals;
 
 pub(in crate::app) const METHODS: &[&str] = &[
     "git.log",
@@ -34,10 +35,13 @@ pub(in crate::app) const METHODS: &[&str] = &[
     "fs.tree",
     "fs.read",
     "workspace.git_init_options",
+    "term.list",
 ];
 
 #[derive(Clone, Default)]
 pub(in crate::app) struct ScopeReadContext {
+    terminal_generation: u64,
+    terminals: Arc<Vec<crate::app::runtime::sessions::ShellTabFact>>,
     projects: OrdMap<String, Arc<ProjectInput>>,
     plan_projects: OrdMap<String, String>,
     workspaces: OrdMap<String, Arc<Workspace>>,
@@ -114,6 +118,14 @@ enum Binding {
         checkout: PathBuf,
         git_root: PathBuf,
     },
+    TerminalRun {
+        id: String,
+        checkout: PathBuf,
+    },
+    WorkspaceRoot {
+        id: String,
+        root: PathBuf,
+    },
     Stage {
         run: String,
         stage: StageProgress,
@@ -121,7 +133,7 @@ enum Binding {
 }
 
 pub(in crate::app) struct ScopeReadJob {
-    work: Box<dyn FnOnce() -> Result<Value, String> + Send>,
+    work: Box<dyn FnOnce() -> Result<Value, ApiError> + Send>,
     fence: ScopeReadFence,
 }
 
@@ -131,7 +143,22 @@ impl ScopeReadJob {
         work: impl FnOnce() -> Result<Value, String> + Send + 'static,
     ) -> Self {
         Self {
-            work: Box::new(work),
+            work: Box::new(move || work().map_err(ApiError::classify)),
+            fence,
+        }
+    }
+
+    fn terminal(
+        fence: ScopeReadFence,
+        params: Value,
+        work: impl FnOnce() -> Result<Value, String> + Send + 'static,
+    ) -> Self {
+        Self {
+            work: Box::new(move || {
+                work().map_err(|error| {
+                    crate::app::rpc::terminal_session_refusal("term.list", &params, error)
+                })
+            }),
             fence,
         }
     }
@@ -141,7 +168,7 @@ impl ScopeReadJob {
     }
 
     pub fn run(self) -> Result<Value, ApiError> {
-        (self.work)().map_err(ApiError::classify)
+        (self.work)()
     }
 }
 
@@ -156,14 +183,20 @@ impl ScopeReadFence {
 
 impl ScopeReadContext {
     pub fn prepare(&self, method: &str, params: &Value) -> Result<ScopeReadJob, ApiError> {
-        self.prepare_scoped(method, params)
-            .map_err(ApiError::classify)
+        self.prepare_scoped(method, params).map_err(|error| {
+            if method == "term.list" {
+                crate::app::rpc::terminal_session_refusal(method, params, error)
+            } else {
+                ApiError::classify(error)
+            }
+        })
     }
 
     fn prepare_scoped(&self, method: &str, params: &Value) -> Result<ScopeReadJob, String> {
         match method {
             "fs.list" | "fs.tree" | "fs.read" => self.prepare_file(method, params),
             "workspace.git_init_options" => self.prepare_git_init(params),
+            "term.list" => self.prepare_terminal_list(params),
             "worktree.diff" => self.prepare_worktree_diff(params),
             "run.diff" => self.prepare_run_diff(params),
             "task.stage_diff" => self.prepare_stage_diff(params),

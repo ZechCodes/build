@@ -21,6 +21,7 @@ pub(in crate::app) struct SharedHistory {
     thread_id: String,
     last_sequence: u64,
     publication_sequence: u64,
+    resident_floor: Option<u64>,
 }
 
 impl SharedHistory {
@@ -70,6 +71,7 @@ impl SharedHistory {
             thread_id: thread.id.clone(),
             last_sequence: 0,
             publication_sequence: 0,
+            resident_floor: None,
         }
     }
 
@@ -108,6 +110,10 @@ impl SharedHistory {
         self.last_sequence = thread.last_sequence().max(Node::last_sequence(&self.root));
         self.metadata["thread_last_sequence"] = json!(self.last_sequence);
         self.publication_sequence = thread.publication_sequence().max(self.last_sequence);
+        self.resident_floor = thread
+            .items
+            .first()
+            .map(|_| thread.resident_from_sequence());
     }
 
     pub fn render(&self, params: &Value) -> Value {
@@ -120,6 +126,20 @@ impl SharedHistory {
             ThreadDetail::Page(limit) => self.page(limit),
             _ => self.wire(self.items(), false),
         }
+    }
+
+    /// Legacy task details send their resident tail when no window is asked
+    /// for. Explicit pages and cursors still address the complete history.
+    pub fn render_task(&self, params: &Value) -> Value {
+        if thread_cursor(params).is_some() || matches!(thread_detail(params), ThreadDetail::Page(_))
+        {
+            return self.render(params);
+        }
+        let mut items = Vec::new();
+        if let Some(floor) = self.resident_floor {
+            Node::collect_from(&self.root, floor, &mut items);
+        }
+        self.wire(items, false)
     }
 
     fn wire(&self, items: Vec<&ThreadItem>, delta: bool) -> Value {

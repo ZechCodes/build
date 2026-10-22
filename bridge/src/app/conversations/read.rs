@@ -1,7 +1,7 @@
 use super::AppState;
 use crate::app::require_str;
 use crate::store::Store;
-use crate::thread::ThreadDetail;
+use crate::thread::{Thread, ThreadDetail};
 use serde_json::{json, Value};
 
 /// What a panel claims to have read of one conversation.
@@ -261,21 +261,7 @@ impl AppState {
         let revision_id = require_str(params, "revision_id")?;
         let address = self.resolve_conversation_params(&entity_id, params)?;
         let thread = self.conversation_at(&address)?;
-        let revision = thread
-            .revisions
-            .iter()
-            .find(|revision| revision.id == revision_id)
-            .ok_or("unknown revision_id")?;
-        let contents = revision
-            .snapshot
-            .as_ref()
-            .ok_or("revision snapshot is no longer retained")?;
-        Ok(json!({
-            "revision_id": revision.id,
-            "artifact": revision.artifact,
-            "created_at": revision.created_at,
-            "contents": contents,
-        }))
+        revision_value(thread, &revision_id)
     }
 
     /// One page up a conversation: the items immediately older than
@@ -527,4 +513,22 @@ impl AppState {
             .map_err(|error| format!("conversation store: {error}"))?;
         Ok(thread.wire_value_after_including_history(after_sequence, &history))
     }
+}
+
+pub(super) fn revision_value(thread: &Thread, revision_id: &str) -> Result<Value, String> {
+    let revision = thread
+        .revisions
+        .iter()
+        .find(|revision| revision.id == revision_id)
+        .ok_or("unknown revision_id")?;
+    let contents = revision
+        .snapshot
+        .as_ref()
+        .ok_or("revision snapshot is no longer retained")?;
+    Ok(json!({
+        "revision_id": revision.id,
+        "artifact": revision.artifact,
+        "created_at": revision.created_at,
+        "contents": contents,
+    }))
 }

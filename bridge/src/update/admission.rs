@@ -1,12 +1,17 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;
 
+#[cfg(test)]
+mod tests;
+
 pub type ResumeWork = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Default)]
 struct AdmissionState {
     active: usize,
     closed: bool,
+    claiming: Option<u64>,
+    next_claim: u64,
 }
 
 #[derive(Default)]
@@ -37,14 +42,27 @@ impl Drop for LeaseInner {
 impl AdmissionGate {
     pub(super) fn new(closed: bool) -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new(AdmissionState { active: 0, closed }),
+            state: Mutex::new(AdmissionState {
+                closed,
+                ..AdmissionState::default()
+            }),
             ..Self::default()
         })
     }
 
     pub fn try_enter(self: &Arc<Self>) -> Option<AdmissionLease> {
+        self.enter(false)
+    }
+
+    /// Reads may finish while an idle probe runs, and their leases prevent
+    /// the final handoff from closing admission until they have finished.
+    pub fn try_enter_read(self: &Arc<Self>) -> Option<AdmissionLease> {
+        self.enter(true)
+    }
+
+    fn enter(self: &Arc<Self>, read_only: bool) -> Option<AdmissionLease> {
         let mut state = self.state.lock().unwrap();
-        if state.closed {
+        if state.closed || (!read_only && state.claiming.is_some()) {
             return None;
         }
         state.active += 1;
@@ -66,38 +84,59 @@ impl AdmissionGate {
     }
 
     pub(super) fn claim_idle(&self, busy: impl FnOnce() -> bool) -> bool {
-        let mut state = self.state.lock().unwrap();
-        if state.closed || state.active != 0 {
-            return false;
-        }
-        state.closed = true;
-        if busy() {
-            state.closed = false;
-            drop(state);
-            self.opened.notify_waiters();
-            if let Some(resume) = self.resume_work.get() {
-                resume();
+        let claim = {
+            let mut state = self.state.lock().unwrap();
+            if state.closed || state.claiming.is_some() || state.active != 0 {
+                return false;
             }
-            return false;
+            state.next_claim = state.next_claim.wrapping_add(1);
+            let claim = state.next_claim;
+            state.claiming = Some(claim);
+            claim
+        };
+        // A probe can inspect session state or panic. Neither may keep the
+        // admission mutex from readers, lease drops, or cancellation.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(busy));
+        let closed = self.finish_claim(claim, matches!(&result, Ok(false)));
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
         }
-        true
+        closed
+    }
+
+    fn finish_claim(&self, claim: u64, quiet: bool) -> bool {
+        let closed = {
+            let mut state = self.state.lock().unwrap();
+            if state.claiming != Some(claim) {
+                return false;
+            }
+            state.claiming = None;
+            state.closed = quiet && state.active == 0;
+            state.closed
+        };
+        if !closed {
+            self.resume();
+        }
+        closed
     }
 
     pub(super) fn reopen(&self) {
         let resumed = {
             let mut state = self.state.lock().unwrap();
-            if !state.closed {
-                false
-            } else {
-                state.closed = false;
-                true
-            }
+            let resumed = state.closed || state.claiming.is_some();
+            state.closed = false;
+            state.claiming = None;
+            resumed
         };
         if resumed {
-            self.opened.notify_waiters();
-            if let Some(resume) = self.resume_work.get() {
-                resume();
-            }
+            self.resume();
+        }
+    }
+
+    fn resume(&self) {
+        self.opened.notify_waiters();
+        if let Some(resume) = self.resume_work.get() {
+            resume();
         }
     }
 

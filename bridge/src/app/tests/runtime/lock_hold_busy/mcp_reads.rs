@@ -207,7 +207,10 @@ async fn focused_read_recipes_return_saved_witnesses() {
     let agent = added["result"]["agent"]["id"].as_str().unwrap().to_owned();
     assert_eq!(primary_agent_id(&app, &owner), agent);
     let mut active = app.take_run(&owner).unwrap();
-    seed_history(&mut active.agents.by_id_mut(&agent).unwrap().thread);
+    seed_history(
+        &mut active.agents.by_id_mut(&agent).unwrap().thread,
+        HISTORY_ITEMS,
+    );
     app.finish_run_mutation(owner, active).unwrap();
     let fixture = Fixture::seed(&mut app, &workspace, &task, &dependent);
     app.test_install_mcp_token(agent.clone(), format!("busy-token-{agent}"));

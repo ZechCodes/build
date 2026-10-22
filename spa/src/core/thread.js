@@ -878,7 +878,7 @@ function messageCardHtml(message, agentLabel, context) {
       ${anchorLabel(message.anchor)}
       ${messageContextHtml(message)}
       ${handedTaskHtml(message, context)}
-      ${body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(body, { place: context.place })}</div>` : ""}
+      ${body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(body, { place: context.place, taskLabelScope: `message:${messageKey(message)}` })}</div>` : ""}
       ${attachmentsHtml(message.attachments, threadState)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, live, offer, threadState)}
@@ -978,7 +978,7 @@ function sentMessageHtml(message, { place, threadState, agentModels }) {
       ${timeHtml(message.created_at)}
     </div>
     ${sentPressHtml(key, bodyId, open, firstLine(body).trim())}
-    <div class="thread-body markdown" id="${bodyId}"${open ? "" : " hidden"}>${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(body, { place })}
+    <div class="thread-body markdown" id="${bodyId}"${open ? "" : " hidden"}>${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(body, { place, taskLabelScope: `message:${messageKey(message)}` })}
       ${attachmentsHtml(message.attachments, threadState)}
     </div>
   </article>`;
@@ -1023,7 +1023,7 @@ function noticeMessageHtml(message, context) {
   }
   return row(`<details class="thread-notice-more">
       <summary class="thread-task-notice"><span class="thread-task-said">${esc(summary)}</span></summary>
-      <div class="thread-notice-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(message.body || "", { place: context.place })}</div>
+      <div class="thread-notice-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(message.body || "", { place: context.place, taskLabelScope: `message:${messageKey(message)}` })}</div>
     </details>`);
 }
 
@@ -1306,7 +1306,7 @@ function activityHtml(event, meta, agentLabel, foldedChildrenHtml, place) {
     ${toolOutcomeHtml(event.outcome)}
     ${timeHtml(event.created_at)}`;
   // markdownHtml escapes all input before adding its fixed safe tag set.
-  const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(summary, { place })}</div>` : ""}${linksHtml(event.links)}${foldedChildrenHtml}`;
+  const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(summary, { place, taskLabelScope: `event:${messageKey(event)}` })}</div>` : ""}${linksHtml(event.links)}${foldedChildrenHtml}`;
   if (!body) return `<div class="thread-event thread-activity thread-quiet-row"${sequence}>${head}</div>`;
   return `<details class="thread-event thread-activity thread-quiet-row"${sequence}>
     <summary class="thread-activity-head">${head}</summary>
@@ -1572,7 +1572,7 @@ function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "", place =
     : eventLabel(meta, agentLabel);
   const detail = event.revision_id
     ? `<button class="thread-revision-link" data-revision="${esc(event.revision_id)}">${esc(event.revision_id)}</button>`
-    : event.event !== "done" && event.event !== "compaction" && event.summary ? markdownHtml(event.summary, { place }) : "";
+    : event.event !== "done" && event.event !== "compaction" && event.summary ? markdownHtml(event.summary, { place, taskLabelScope: `event:${messageKey(event)}` }) : "";
   return `<div class="thread-event ${meta.tone || ""}">
     <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
     <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${linksHtml(event.links)}</div>

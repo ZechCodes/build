@@ -1,11 +1,12 @@
 """Tests pinning the production config (app.yaml) against the deployment contract:
-passkey-only auth, rate limiting on, env-driven Postgres URL, same-origin CSP with
+passkey-only auth, rate limiting on, env-driven Postgres URL, HTTPS image CSP with
 only the relay websocket as an external connect target — and that dev conveniences
 (dummy auth, localhost internal fallback, esm.sh/Google-fonts CSP) stay in
 app.dev.yaml only."""
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from uuid import UUID
 
@@ -250,7 +251,7 @@ def test_production_disallows_internal_localhost_fallback():
     assert config.get("internal_api", {}).get("allow_localhost", False) is False
 
 
-def test_production_csp_has_no_third_party_origins():
+def test_production_csp_has_no_third_party_dependency_origins():
     directives = _csp_directives(load_config("app.yaml"))
     allowed_external = {"wss://relay.getbuild.ing"}
     for directive, sources in directives.items():
@@ -269,10 +270,29 @@ def test_production_csp_connect_src_is_self_plus_relay():
 
 
 @pytest.mark.parametrize("config_name", ("app.yaml", "app.dev.yaml", "app.mail.yaml"))
-def test_app_csp_allows_blob_images_and_media(config_name: str):
+def test_app_csp_allows_https_images_and_existing_blob_media(config_name: str):
     directives = _csp_directives(load_config(config_name))
-    assert directives["img-src"] == ["'self'", "data:", "blob:"]
+    assert directives["img-src"] == ["'self'", "data:", "blob:", "https:"]
     assert directives["media-src"] == ["'self'", "blob:"]
+
+
+def test_preview_csp_preserves_local_images_and_blob_workers():
+    source = (SKRIFTAPP_DIR.parent / "scripts" / "preview-landing.py").read_text()
+    assignment = next(node for node in ast.parse(source).body
+                      if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "CONTENT_SECURITY_POLICY"
+                              for target in node.targets))
+    policy = ast.literal_eval(assignment.value)
+    directives = _csp_directives({"security_headers": {"content_security_policy": policy}})
+    assert directives["img-src"] == ["'self'", "data:"]
+    assert directives["worker-src"] == ["'self'", "blob:"]
+    assert not any({"http:", "https:"} & set(sources) for sources in directives.values())
+
+
+def test_https_scheme_is_allowed_only_for_images_in_production():
+    directives = _csp_directives(load_config("app.yaml"))
+    assert {name for name, sources in directives.items() if "https:" in sources} == {"img-src"}
+    assert not any("http:" in sources for sources in directives.values())
 
 
 def test_production_csp_core_directives_are_self():

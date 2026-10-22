@@ -21,6 +21,24 @@ it.each(["modules", "error"])("waits for this import when a previous %s result i
   }, { plugins: [plugin] });
 }, 30_000);
 
+it("draws native frames and accepts a normal click with the inherited session environment", async () => {
+  const inheritedWayland = process.env.WAYLAND_DISPLAY;
+  await withLayoutPage(async ({ page }) => {
+    await page.evaluate(() => {
+      const button = document.createElement("button");
+      button.textContent = "Frame pending";
+      button.onclick = () => { button.dataset.clicked = "true"; };
+      document.body.appendChild(button);
+      requestAnimationFrame(() => { button.textContent = "Frame ready"; });
+    });
+    const button = page.getByRole("button");
+    await expect.poll(() => button.textContent(), { timeout: 2000 }).toBe("Frame ready");
+    await button.click({ timeout: 2000 });
+    expect(await button.getAttribute("data-clicked")).toBe("true");
+  });
+  expect(process.env.WAYLAND_DISPLAY).toBe(inheritedWayland);
+});
+
 it("isolates concurrent layout servers' dependency caches", async () => {
   const cacheDirs = [];
   let ready = 0;

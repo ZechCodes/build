@@ -11,24 +11,12 @@
 // the renderer was until #229 and why it carried a complexity exemption.
 //
 // Nothing here emits a character of the input without escaping it, and nothing
-// emits a URL: the only tags are this file's own.
+// emits author-controlled markup: the only tags are the renderer's own.
 
-import { esc } from "./text.js";
 import { slugifyHeading } from "./anchors.js";
-
-/**
- * The class every fenced block this renderer emits wears.
- *
- * Stamped here rather than styled through whichever wrapper a view happens to
- * use, because the views do not agree: some wrap the output in `.markdown` and
- * some do not, and a rule hung on that class would fix the chat and miss the
- * task page's docs. A bare `pre` rule would reach further than markdown — the
- * terminal, the diff view, the revision pane all use one.
- *
- * So the renderer marks its own output (#50). Wherever it is rendered, the
- * block scrolls; nothing else does.
- */
-const CODE_BLOCK_CLASS = "md-code";
+import { fenceOpening, readFence } from "./markdownFences.js";
+import { detailsPairs, detailsStarts, readDetails } from "./markdownDetails.js";
+import { collectFootnotes } from "./markdownFootnotes.js";
 
 // ─── Tables ──────────────────────────────────────────────────────────────────
 
@@ -79,7 +67,19 @@ function delimiterAlignments(line) {
 }
 
 /** Whether a table starts at this line: a row with a delimiter row under it. */
-const tableStarts = (lines, at) => Boolean(tableCells(lines[at]) && delimiterAlignments(lines[at + 1]));
+const tableStarts = (lines, at) => {
+  const cells = tableCells(lines[at]);
+  const alignments = delimiterAlignments(lines[at + 1]);
+  return Boolean(cells && alignments && cells.length === alignments.length);
+};
+
+// Prose wraps regardless of character count. Numbers and measurements stay
+// together, as does a column the author explicitly marks as right-aligned.
+const CELL_NUMBER = String.raw`(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?`;
+const CELL_UNIT = String.raw`(?:%|ns|[µμu]s|ms|s|sec|min|h|hr|d|[KMGT]?i?B|px|em|rem|pt|[kMG]?Hz|°[CF]|K|m|cm|mm|km|kg|g|mg|m?V|m?A|k?W|k?J|k?Pa|bar|mol|rad|rpm|fps|req/s|ops/s|M?B/s)`;
+const MEASUREMENT = new RegExp(`^[+-]?${CELL_NUMBER}(?:\\s*(?:[-–—−]|to)\\s*[+-]?${CELL_NUMBER})?(?:\\s*${CELL_UNIT})?$`, "i");
+const cellAttributes = (text, tag, alignment) => tag === "th" ? ' scope="col"'
+  : alignment === "right" || MEASUREMENT.test(text) ? ' class="md-cell-short"' : "";
 
 /** A whole table, header row through its last body row.
  *
@@ -93,7 +93,7 @@ function readTable(lines, at, context) {
   const columns = tableCells(lines[at]).slice(0, alignments.length);
   const align = (index) => (alignments[index] ? ` style="text-align:${alignments[index]}"` : "");
   const cellsHtml = (cells, tag) =>
-    alignments.map((_, index) => `<${tag}${align(index)}>${context.inline(cells[index] ?? "")}</${tag}>`).join("");
+    alignments.map((_, index) => `<${tag}${cellAttributes(cells[index] ?? "", tag, alignments[index])}${align(index)}>${context.inline(cells[index] ?? "")}</${tag}>`).join("");
   let body = "";
   let next = at + 2; // the header and its delimiter row
   for (let cells = tableCells(lines[next] ?? ""); next < lines.length && cells; cells = tableCells(lines[next] ?? "")) {
@@ -101,21 +101,10 @@ function readTable(lines, at, context) {
     next += 1;
   }
   const head = `<thead><tr>${cellsHtml(columns, "th")}</tr></thead>`;
-  return { html: `<div class="mdtable"><table>${head}${body ? `<tbody>${body}</tbody>` : ""}</table></div>`, next };
+  return { html: `<div class="mdtable" role="region" aria-label="Table"><table>${head}${body ? `<tbody>${body}</tbody>` : ""}</table></div>`, next };
 }
 
 // ─── Fences, headings, lists ─────────────────────────────────────────────────
-
-const FENCE = /^```/;
-
-/** A fenced block: every line to the closing fence — or to the end, when the
- *  document stops inside one — escaped and nothing else. */
-function readFence(lines, at) {
-  let html = `<pre class="${CODE_BLOCK_CLASS}"><code>`;
-  let next = at + 1;
-  for (; next < lines.length && !FENCE.test(lines[next]); next += 1) html += `${esc(lines[next])}\n`;
-  return { html: `${html}</code></pre>`, next: next + 1 };
-}
 
 const HEADING = /^(#{1,6}) (.*)$/;
 
@@ -145,6 +134,13 @@ function readQuote(lines, at, context) {
     const removed = QUOTE_MARK.exec(lines[next])[0].length;
     inner.push(lines[next].slice(removed));
     offsets.push(context.offsets[next] + removed);
+  }
+  const alert = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*$/.exec(inner[0]);
+  if (alert) {
+    const kind = alert[1].toLowerCase();
+    const title = kind[0].toUpperCase() + kind.slice(1);
+    const body = blocksOf(inner.slice(1), { ...deeper(context), offsets: offsets.slice(1) });
+    return { html: `<blockquote class="md-alert md-alert-${kind}"><p class="md-alert-title">${title}</p>${body}</blockquote>`, next };
   }
   return { html: `<blockquote class="${QUOTE_CLASS}">${blocksOf(inner, { ...deeper(context), offsets })}</blockquote>`, next };
 }
@@ -253,7 +249,7 @@ function taskItem(content, start, context) {
   const labelId = context.taskLabelPrefix ? `${context.taskLabelPrefix}:${index}` : null;
   // Inline output is already escaped; removing its fixed tags retains the
   // escaped attribute text, including a reference's visible resolved label.
-  const renderedText = context.inline(raw).replace(/<[^>]*>/g, "").trim();
+  const renderedText = context.inlineLabel(raw).replace(/<[^>]*>/g, "").trim();
   const label = renderedText || fallback;
   const name = labelId ? `aria-labelledby="${labelId}"` : `aria-label="${label}"`;
   const checked = match[1] === " " ? "" : " checked";
@@ -359,7 +355,8 @@ const readBlank = (lines, at) => ({ html: "", next: at + 1 });
  */
 const BLOCKS = [
   { starts: (lines, at) => !lines[at].trim(), read: readBlank },
-  { starts: (lines, at) => FENCE.test(lines[at]), read: readFence },
+  { starts: (lines, at) => Boolean(fenceOpening(lines[at])), read: readFence },
+  { starts: detailsStarts, read: (lines, at, context) => readDetails(lines, at, context, blocksOf) },
   { starts: (lines, at, context) => nests(context) && QUOTE.test(lines[at]), read: readQuote },
   { starts: (lines, at) => THEMATIC_BREAK.test(lines[at]), read: readRule },
   { starts: (lines, at, context) => nests(context) && LIST_ITEM.test(lines[at]), read: readList },
@@ -389,6 +386,7 @@ function headingIds() {
 /** The blocks of a run of lines, each read by the first reader that starts
  *  at its line. */
 function blocksOf(lines, context) {
+  context = { ...context, detailsPairs: detailsPairs(lines) };
   let html = "";
   for (let at = 0; at < lines.length; ) {
     const block = BLOCKS.find((candidate) => candidate.starts(lines, at, context)) || PARAGRAPH;
@@ -413,5 +411,8 @@ export function blocksHtml(markdown, inline, { taskItems = false, taskMarkers, t
     offset += source[offset] === "\r" ? 2 : 1;
     return start;
   });
-  return blocksOf(lines, { inline, idAttr: headingIds(), depth: 0, offsets, taskItems, taskMarkers: taskMarkers || [], taskLabelPrefix: taskLabelPrefix(taskLabelScope) });
+  const footnotes = collectFootnotes(lines, offsets, source, taskLabelScope);
+  const context = { inlineLabel: inline, inline: (line) => inline(line, { footnote: footnotes.reference }), idAttr: headingIds(), depth: 0, offsets, taskItems, taskMarkers: taskMarkers || [], taskLabelPrefix: taskLabelPrefix(taskLabelScope) };
+  const html = blocksOf(lines, context);
+  return html + footnotes.html((content, starts) => blocksOf(content, { ...context, inline, offsets: starts }));
 }

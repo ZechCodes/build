@@ -216,3 +216,74 @@ describe("addresses that are refused", () => {
     expect(link.hasAttribute("onmouseover")).toBe(false);
   });
 });
+
+describe("linked Markdown images", () => {
+  it("wraps the inert external placeholder in the policy-checked outer link", () => {
+    const source = '[![badge](https://img.shields.io/x.svg "Badge title")](https://example.com "Target title")';
+    const host = rendered(source);
+    const link = host.querySelector("a.md-link");
+    expect(link?.getAttribute("href")).toBe("https://example.com");
+    expect(link?.getAttribute("title")).toBe("Target title");
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noopener noreferrer nofollow");
+    expect(link?.querySelector("button.md-image-load")?.dataset.mdImageSrc).toBe("https://img.shields.io/x.svg");
+    expect(host.querySelectorAll("img, [src], a a")).toHaveLength(0);
+    expect(host.textContent).toBe("Load image from img.shields.io — badge");
+  });
+
+  it("keeps a same-origin placeholder inside its working link", () => {
+    const host = rendered("[![badge](https://local.test/x.svg)](https://example.com)");
+    expect(host.querySelector("a.md-link > button")?.dataset.mdImageSrc).toBe("https://local.test/x.svg");
+    expect(host.querySelectorAll("img, [src]")).toHaveLength(0);
+  });
+
+  it("consumes the whole outer destination without overlapping adjacent links", () => {
+    const host = rendered("[before](https://before.test) [![badge](https://img.test/a_(b).svg)](https://target.test/a_(b) 'Target') [after](https://after.test)");
+    expect(webLinksIn(host).map((link) => link.getAttribute("href"))).toEqual(["https://before.test", "https://target.test/a_(b)", "https://after.test"]);
+    expect(host.textContent).toBe("before Load image from img.test — badge after");
+  });
+
+  it("keeps the nested generated attributes and labels escaped and atomic", () => {
+    const host = rendered('[![<svg onload=x> **badge** #42](https://img.test/a.svg \'x" onerror="bad\')](https://target.test/?a=1&b=2 \'x" onclick="bad\')');
+    expect(host.querySelectorAll("svg, strong, .md-ref, a a, [onclick], [onerror]")).toHaveLength(0);
+    expect(host.querySelector("a")?.getAttribute("href")).toBe("https://target.test/?a=1&b=2");
+    expect(host.querySelector("a")?.getAttribute("title")).toBe('x" onclick="bad');
+    expect(host.querySelector("button")?.dataset.mdImageAlt).toBe("<svg onload=x> **badge** #42");
+    expect(host.querySelector("button")?.dataset.mdImageTitle).toBe('x" onerror="bad');
+  });
+
+  it.each(["javascript:alert(1)", "data:text/html,x", "//evil.test", "/relative"])("refuses an unsafe outer destination: %s", (href) => {
+    const host = rendered(`[![badge](https://img.test/x.svg)](${href})`);
+    expect(host.querySelectorAll("a, img, [src]")).toHaveLength(0);
+    expect(host.querySelectorAll("button.md-image-load")).toHaveLength(1);
+  });
+
+  it.each(["javascript:alert(1)", "data:image/svg+xml,x", "mailto:a@b.test", "https://user:secret@img.test/x.svg"])("refuses an unsafe inner image while preserving the safe outer link: %s", (src) => {
+    const host = rendered(`[![badge](${src})](https://example.com)`);
+    expect(host.querySelectorAll("img, button.md-image-load, [src]")).toHaveLength(0);
+    expect(host.querySelector("a.md-link")?.getAttribute("href")).toBe("https://example.com");
+  });
+});
+
+describe("universal Markdown image consent", () => {
+  it.each(["http://images.test/badge.png", "https://images.test/badge.png", new URL("/app/downloads/SHA256SUMS", location.href).href])("keeps every HTTP(S) image inert: %s", (src) => {
+    const host = rendered(`![Legacy badge](${src} "Legacy title")`);
+    expect(host.querySelectorAll("img, a, [src]")).toHaveLength(0);
+    expect(host.querySelector("button")?.dataset.mdImageSrc).toBe(src);
+    expect(host.querySelector("button")?.dataset.mdImageTitle).toBe("Legacy title");
+  });
+
+  it("keeps an HTTP image placeholder inside its sole outer link", () => {
+    const host = rendered("[![Legacy badge](http://images.test/badge.png)](https://target.test)");
+    expect(host.querySelectorAll("img, [src], a a")).toHaveLength(0);
+    expect(host.querySelectorAll("a.md-link")).toHaveLength(1);
+    expect(host.querySelector("a")?.getAttribute("href")).toBe("https://target.test");
+    expect(host.querySelector("a > button")?.dataset.mdImageSrc).toBe("http://images.test/badge.png");
+  });
+
+  it.each(["http://user:secret@images.test/badge.png", "http://user@images.test/badge.png", "http://@images.test/badge.png"])("refuses HTTP image credentials before placeholder creation: %s", (src) => {
+    const host = rendered(`![Legacy](${src})`);
+    expect(host.querySelectorAll("img, button.md-image-load, a")).toHaveLength(0);
+    expect(host.textContent).toBe(`![Legacy](${src})`);
+  });
+});

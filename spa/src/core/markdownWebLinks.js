@@ -49,6 +49,26 @@ export function safeWebHref(raw) {
   return Object.hasOwn(SCHEMES, scheme ?? "") && SCHEMES[scheme].test(cleaned) ? cleaned : null;
 }
 
+/** Images share the web scheme policy, narrowed to real http(s) URLs
+ * with a host and no URL credentials. */
+export function safeImageSrc(raw) {
+  const href = safeWebHref(raw);
+  if (!href || !/^https?:/i.test(href)) return null;
+  try {
+    const parsed = new URL(href);
+    return parsed.hostname && !parsed.username && !parsed.password && !/^https?:\/\/[^/\\]*@/i.test(href) ? href : null;
+  } catch {
+    return null;
+  }
+}
+
+function image(src, label, title) {
+  const alt = unesc(label.replace(/<\/?(?:code|kbd)>/g, ""));
+  const titleData = title ? ` data-md-image-title="${esc(title)}"` : "";
+  const words = `Load image from ${new URL(src).hostname}${alt ? ` — ${alt}` : ""}`;
+  return { markup: `<button type="button" class="md-image-load" data-md-image-src="${esc(src)}" data-md-image-alt="${esc(alt)}"${titleData}>${esc(words)}</button>` };
+}
+
 /** One web link, from its already-escaped label. */
 function anchor(href, label, title) {
   const titleAttr = title ? ` title="${esc(title)}"` : "";
@@ -59,6 +79,7 @@ function anchor(href, label, title) {
 
 const CODE_OPEN = "<code>";
 const CODE_CLOSE = "</code>";
+const FOOTNOTE_LABEL = /\[\^[A-Za-z0-9_-]+\]/y;
 
 /// The quotes a title may be written in, as they read once escaped.
 const TITLE_QUOTES = ["&quot;", "&#39;"];
@@ -116,32 +137,60 @@ function pastCode(html, at) {
   return close < 0 ? html.length : close + CODE_CLOSE.length;
 }
 
+/** The explicit `[![alt](image)](link)` production reuses both destination
+ * readers. Consuming its outer end prevents already copied text or targets
+ * from being scanned again. Other nested bracket syntax stays unchanged. */
+function enclosingImageLink(html, span, copied) {
+  const start = span.start - 1;
+  if (start < copied || html[start] !== "[" || !html.startsWith("](", span.end)) return span;
+  const destination = readDestination(html, span.end + 2);
+  const href = destination && safeWebHref(unesc(destination.url));
+  return href ? { start, end: destination.end, markup: anchor(href, span.markup, unesc(destination.title)) } : span;
+}
+
 /** The link whose label closes at `close`, written to `state` — or nothing,
  *  leaving it as written, when its address is refused. */
 function writeLink(html, close, destination, state) {
-  const href = safeWebHref(unesc(destination.url));
-  if (!href) return;
+  const isImage = html[state.opener - 1] === "!";
+  const href = isImage ? safeImageSrc(unesc(destination.url)) : safeWebHref(unesc(destination.url));
+  const start = state.opener - Number(isImage);
   const label = html.slice(state.opener + 1, close);
-  state.out += html.slice(state.copied, state.opener) + anchor(href, label, unesc(destination.title));
-  state.copied = destination.end;
+  const title = unesc(destination.title);
+  const content = href ? (isImage ? image(href, label, title)
+    : { markup: anchor(href, state.formatLabel(label), title) }) : { markup: html.slice(start, destination.end) };
+  const imageSpan = { start, end: destination.end, ...content };
+  const span = isImage ? enclosingImageLink(html, imageSpan, state.copied) : imageSpan;
+  state.out += html.slice(state.copied, span.start) + span.markup;
+  state.copied = span.end;
+  return span.end;
+}
+
+/** Literal inline spans and footnote notation inside a label are atomic. */
+function pastLiteral(html, index, opener) {
+  if (html.startsWith(CODE_OPEN, index)) return pastCode(html, index);
+  if (html.startsWith("<kbd>", index)) return html.indexOf("</kbd>", index) + 6;
+  FOOTNOTE_LABEL.lastIndex = index;
+  const footnoteLabel = opener >= 0 ? FOOTNOTE_LABEL.exec(html) : null;
+  return footnoteLabel ? index + footnoteLabel[0].length : null;
 }
 
 /** One step of the reader at `index`, answering where the next one starts.
- *  The innermost `[` before a `](` opens the label. */
+ * The innermost `[` before a `](` opens the label. */
 function readAt(html, index, state) {
-  if (html.startsWith(CODE_OPEN, index)) return pastCode(html, index);
+  const literalEnd = pastLiteral(html, index, state.opener);
+  if (literalEnd !== null) return literalEnd;
   if (html[index] === "[") state.opener = index;
   if (html[index] !== "]") return index + 1;
   const destination = state.opener >= 0 && html[index + 1] === "(" ? readDestination(html, index + 2) : null;
-  if (destination) writeLink(html, index, destination, state);
+  const next = destination ? writeLink(html, index, destination, state) : index + 1;
   state.opener = -1;
-  return destination ? destination.end : index + 1;
+  return next;
 }
 
 /** Every `[label](address)` in one line of escaped HTML made a link, and
  *  every refused one left as written. */
-function inlineLinks(html) {
-  const state = { out: "", copied: 0, opener: -1 };
+function inlineLinks(html, formatLabel) {
+  const state = { out: "", copied: 0, opener: -1, formatLabel };
   for (let index = 0; index < html.length; ) index = readAt(html, index, state);
   return state.out + html.slice(state.copied);
 }
@@ -169,7 +218,7 @@ function withoutTrailing(url) {
 }
 
 /// Stretches a bare address is never read in: a code span, and a link.
-const LITERAL = /<code>[\s\S]*?<\/code>|<a\b[^>]*>[\s\S]*?<\/a>/g;
+const LITERAL = /<code>[\s\S]*?<\/code>|<kbd>[^<]*<\/kbd>|<a\b[^>]*>[\s\S]*?<\/a>|<img\b[^>]*>|<button\b[^>]*>[\s\S]*?<\/button>|!?\[[^[\]]*\]\([^()[\]]*(?:\([^()[\]]*\)[^()[\]]*)*\)/g;
 
 /** Every bare address in one stretch of prose made a link. */
 const bareLinksIn = (text) =>
@@ -180,21 +229,32 @@ const bareLinksIn = (text) =>
   });
 
 /** Every bare address outside code and links made a link. */
-function bareLinks(html) {
+function outsideLiterals(html, transform) {
   let out = "";
   let at = 0;
   LITERAL.lastIndex = 0;
   for (let match = LITERAL.exec(html); match; match = LITERAL.exec(html)) {
-    out += bareLinksIn(html.slice(at, match.index)) + match[0];
+    out += transform(html.slice(at, match.index)) + match[0];
     at = match.index + match[0].length;
   }
-  return out + bareLinksIn(html.slice(at));
+  return out + transform(html.slice(at));
+}
+
+const bareLinks = (html) => outsideLiterals(html, bareLinksIn);
+
+/** Angle autolinks are another explicit grammar, never raw tags. */
+function angleLinks(html) {
+  return html.replace(/&lt;((?:https?:\/\/|mailto:)(?:[^\s<&]|&(?!lt;|gt;))*|(?:[^\s<>&@]|&(?!lt;|gt;))+@(?:[^\s<>&@]|&(?!lt;|gt;))+)&gt;/gi, (raw, address) => {
+    const words = unesc(address);
+    const href = safeWebHref(words.includes(":") ? words : `mailto:${words}`);
+    return href ? anchor(href, address) : raw;
+  });
 }
 
 /**
  * Web links in one line of escaped HTML: inline links first, so a bare address
  * that is an inline link's label or address is not linked again.
  */
-export function webLinks(html) {
-  return html ? bareLinks(inlineLinks(html)) : html;
+export function webLinks(html, formatLabel = (label) => label) {
+  return html ? bareLinks(outsideLiterals(inlineLinks(html, formatLabel), angleLinks)) : html;
 }

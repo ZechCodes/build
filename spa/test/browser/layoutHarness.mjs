@@ -90,9 +90,13 @@ export async function openLayoutSession({ plugins = [] } = {}) {
       server: { host: "127.0.0.1", port: 0 },
     });
     await server.listen();
+    const browserEnvironment = { ...process.env, FONTCONFIG_FILE: pinnedFonts };
+    // An inherited Wayland display can stall headless frame callbacks and
+    // native actions. Keep this change local to the browser child process.
+    delete browserEnvironment.WAYLAND_DISPLAY;
     browser = await chromium.launch({
       executablePath: chromiumPath, headless: true, args: ["--no-sandbox"],
-      env: { ...process.env, FONTCONFIG_FILE: pinnedFonts },
+      env: browserEnvironment,
     });
   } catch (error) {
     await close();

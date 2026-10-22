@@ -79,7 +79,7 @@ describe("renderMarkdown pipe tables", () => {
   it("renders a header row, a body row per line, and nothing left as text", () => {
     const html = markdownHtml(TABLE);
     expect(html).toContain("<table>");
-    expect(html).toContain("<thead><tr><th>Run</th><th>Precision</th><th>Violations</th></tr></thead>");
+    expect(html).toContain("<thead><tr><th scope=\"col\">Run</th><th scope=\"col\">Precision</th><th scope=\"col\">Violations</th></tr></thead>");
     expect(html).toContain("<td>mention-qa</td>");
     expect(html).toContain("<td>reply-chain-join</td>");
     expect(html).not.toContain("|---|");
@@ -89,25 +89,25 @@ describe("renderMarkdown pipe tables", () => {
   it("scrolls a wide table inside its own box rather than widening the message", () => {
     // The thread panel is a narrow column; a table wider than it has to scroll
     // in place, or it takes the conversation's width with it.
-    expect(markdownHtml(TABLE)).toContain('<div class="mdtable">');
+    expect(markdownHtml(TABLE)).toContain('<div class="mdtable" role="region" aria-label="Table">');
   });
 
   it("takes each column's alignment from the delimiter row", () => {
     const html = markdownHtml("| a | b | c | d |\n|:---|---:|:---:|---|\n| 1 | 2 | 3 | 4 |");
-    expect(html).toContain('<th style="text-align:left">a</th>');
-    expect(html).toContain('<th style="text-align:right">b</th>');
-    expect(html).toContain('<th style="text-align:center">c</th>');
-    expect(html).toContain("<th>d</th>");
-    expect(html).toContain('<td style="text-align:left">1</td>');
-    expect(html).toContain('<td style="text-align:right">2</td>');
-    expect(html).toContain('<td style="text-align:center">3</td>');
-    expect(html).toContain("<td>4</td>");
+    expect(html).toContain('<th scope=\"col\" style="text-align:left">a</th>');
+    expect(html).toContain('<th scope=\"col\" style="text-align:right">b</th>');
+    expect(html).toContain('<th scope=\"col\" style="text-align:center">c</th>');
+    expect(html).toContain("<th scope=\"col\">d</th>");
+    expect(html).toContain('<td class=\"md-cell-short\" style="text-align:left">1</td>');
+    expect(html).toContain('<td class=\"md-cell-short\" style="text-align:right">2</td>');
+    expect(html).toContain('<td class=\"md-cell-short\" style="text-align:center">3</td>');
+    expect(html).toContain("<td class=\"md-cell-short\">4</td>");
   });
 
   it("reads rows with or without the outer pipes", () => {
     const html = markdownHtml("a | b\n--- | ---\n1 | 2");
-    expect(html).toContain("<th>a</th>");
-    expect(html).toContain("<td>2</td>");
+    expect(html).toContain("<th scope=\"col\">a</th>");
+    expect(html).toContain("<td class=\"md-cell-short\">2</td>");
   });
 
   it("renders inline markdown inside cells, and escapes their html", () => {
@@ -126,9 +126,9 @@ describe("renderMarkdown pipe tables", () => {
 
   it("pads a short row and drops what overflows the header", () => {
     const html = markdownHtml("| a | b | c |\n|---|---|---|\n| 1 |\n| 1 | 2 | 3 | 4 |");
-    expect(html).toContain("<tr><td>1</td><td></td><td></td></tr>");
-    expect(html).toContain("<tr><td>1</td><td>2</td><td>3</td></tr>");
-    expect(html).not.toContain("<td>4</td>");
+    expect(html).toContain("<tr><td class=\"md-cell-short\">1</td><td></td><td></td></tr>");
+    expect(html).toContain("<tr><td class=\"md-cell-short\">1</td><td class=\"md-cell-short\">2</td><td class=\"md-cell-short\">3</td></tr>");
+    expect(html).not.toContain("<td class=\"md-cell-short\">4</td>");
   });
 
   it("ends the table at the first line that is not a row", () => {
@@ -157,7 +157,7 @@ describe("renderMarkdown pipe tables", () => {
 
   it("renders a header-only table", () => {
     const html = markdownHtml("| a | b |\n|---|---|");
-    expect(html).toContain("<th>a</th>");
+    expect(html).toContain("<th scope=\"col\">a</th>");
     expect(html).not.toContain("<tbody>");
   });
 
@@ -282,7 +282,7 @@ describe("renderMarkdown paragraphs", () => {
 
   it("closes the paragraph before a table", () => {
     expect(markdownHtml("text\n| a |\n| - |\n| 1 |")).toBe(
-      '<p>text</p><div class="mdtable"><table><thead><tr><th>a</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table></div>',
+      '<p>text</p><div class="mdtable" role="region" aria-label="Table"><table><thead><tr><th scope=\"col\">a</th></tr></thead><tbody><tr><td class=\"md-cell-short\">1</td></tr></tbody></table></div>',
     );
   });
 

@@ -21,8 +21,14 @@ import { watchPairLinks } from "./core/pairLink.js";
 import { mountConnectionStatus } from "./connectionStatus.js";
 import { startUserPresence } from "./core/userPresence.js";
 import { installWindowControlsOverlay } from "./core/windowControlsOverlay.js";
+import { installMarkdownNavigation } from "./core/markdownNavigation.js";
+import { installMarkdownTableFocus } from "./core/markdownTableFocus.js";
+import { installMarkdownImages } from "./core/markdownImages.js";
 
 installWindowControlsOverlay();
+installMarkdownNavigation();
+installMarkdownTableFocus();
+installMarkdownImages();
 
 // Before anything renders: index.html's inline stamp beat the first paint, this
 // takes ownership of the same attribute and keeps following the OS while the

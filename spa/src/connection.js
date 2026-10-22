@@ -24,6 +24,7 @@ import { createDeviceRecoverySupervisor } from "./core/deviceRecovery.js";
 import { openSession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { connectionDiagnosticReport, recordConnectionDiagnostic } from "./core/connectionDiagnostics.js";
+import { dialFailureDetail } from "./core/dialFailureDetail.js";
 import { cacheHealth } from "./core/localCache.js";
 import { probeConnections } from "./core/connectionProbe.js";
 import { isSignaling } from "./core/sessionSwitch.js";
@@ -105,9 +106,9 @@ const deviceRecovery = createDeviceRecoverySupervisor({
 /**
  * What the app listens to for "the reason the last dial failed has probably gone".
  *
- * Three signals, none of which is evidence about the machine on the other end,
+ * Four signals, none of which is evidence about the machine on the other end,
  * all of which mean the wait is now pointless: the screen came back, the network
- * came back, the radio changed. A phone asleep for twenty minutes climbs the
+ * came back, the radio changed, the window was brought forward. A phone asleep for twenty minutes climbs the
  * back-off ladder out of its OWN absence, and the maintainer's was still
  * sitting on the top step when they picked it up — half a minute of nothing on
  * a device that was ready to connect (task #60).
@@ -121,13 +122,23 @@ const WAKE_SIGNALS = Object.freeze([
   ["visible", () => document.visibilityState !== "hidden"],
   ["online", () => true],
   ["network-change", () => true],
+  // The desktop app's window coming to the front. A window that was covered or
+  // on another workspace, rather than minimised, was never hidden, so focusing
+  // it fires no visibilitychange. Focus says nothing about whether the cause of
+  // the last failure has gone — the 2026-10-21 report shows at least 30 s of
+  // fast failures after a wake, and whether the network was back is what the
+  // dial-failed `online` field now records — so it is only a hint to dial
+  // early: it brings one dial forward and the back-off still governs.
+  ["focus", () => true],
 ]);
 
 let stopWakeWatch = null;
 
-/** Retry every waiting device now, from the floor, because something changed. */
-function wakeRecovery(reason) {
-  const woken = deviceRecovery.wake(reason);
+/** Retry every waiting device now, from the floor, because something changed —
+ *  or, for a hint too weak to reset the ladder, bring the next dial forward
+ *  within it (`deviceRecovery.nudge`). */
+function wakeRecovery(reason, { hint = false } = {}) {
+  const woken = hint ? deviceRecovery.nudge(reason) : deviceRecovery.wake(reason);
   // Only worth a line when it did something: a visibility flip on a healthy app
   // happens all day and says nothing.
   if (woken.woke.length) {
@@ -137,7 +148,7 @@ function wakeRecovery(reason) {
 }
 
 /**
- * Listen for the three wake signals while the app is up. Re-entrant: asking
+ * Listen for the four wake signals while the app is up. Re-entrant: asking
  * again re-arms the one set rather than adding a second.
  */
 export function watchForWake() {
@@ -148,15 +159,18 @@ export function watchForWake() {
   };
   const onOnline = () => wakeRecovery("online");
   const onNetworkChange = () => wakeRecovery("network-change");
+  const onFocus = () => wakeRecovery("focus", { hint: true });
   // `navigator.connection` is absent on Safari and on desktop Firefox; a missing
-  // signal costs nothing here because the other two still fire.
+  // signal costs nothing here because the other three still fire.
   const radio = globalThis.navigator?.connection;
   document.addEventListener("visibilitychange", onVisible);
   globalThis.addEventListener?.("online", onOnline);
+  globalThis.addEventListener?.("focus", onFocus);
   radio?.addEventListener?.("change", onNetworkChange);
   stopWakeWatch = () => {
     document.removeEventListener("visibilitychange", onVisible);
     globalThis.removeEventListener?.("online", onOnline);
+    globalThis.removeEventListener?.("focus", onFocus);
     radio?.removeEventListener?.("change", onNetworkChange);
   };
 }
@@ -432,6 +446,7 @@ function connectionFailed(deviceId, error) {
   recordConnectionDiagnostic(`${deviceId}:dial`, "dial-failed", {
     reason: reasonOf(error),
     status: error?.status ?? null,
+    ...dialFailureDetail(error),
   });
   closeRendezvous(deviceId);
   if (error?.securityCritical) refuseDeviceConnection(deviceId, error.message);

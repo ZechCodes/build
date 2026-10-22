@@ -35,6 +35,31 @@ const DEFAULT_ACCEPT_TIMEOUT_MS = 10000;
 
 const newSessionId = () => "sess-" + Math.random().toString(36).slice(2, 10);
 
+/** Name the dial step a failure came from, on the failure (dialFailureDetail.js
+ *  reads it). The first name wins: a socket error that later surfaces through
+ *  the deadline it beat is still the socket's. A non-object rejection is
+ *  wrapped so there is something to name. */
+const namedAt = (step, error) => {
+  const named = error !== null && typeof error === "object" ? error : new Error(String(error));
+  if (!named.dialStep) named.dialStep = step;
+  return named;
+};
+const atStep = (step, pending) =>
+  pending.catch((error) => {
+    throw namedAt(step, error);
+  });
+/** The same, for a step that throws in place. */
+const stepping = (step, run) => {
+  try {
+    return run();
+  } catch (error) {
+    throw namedAt(step, error);
+  }
+};
+/** A write to the relay. A socket that went CLOSING under it — after a resume,
+ *  before its close event — refuses here, and the report should say so. */
+const sendAsStep = (ws, text) => stepping("relay-send", () => sendOverSocket(ws, text));
+
 /**
  * @param deviceId the one machine this rendezvous is with. A relay socket is
  *   per device context, so nothing here asks who answered.
@@ -79,7 +104,7 @@ export function createRelayRendezvous({
     era += 1;
     for (const carrier of [...carriers]) carrier.close();
     carriers.clear();
-    for (const settle of [...awaiting.values()]) settle.fail(new Error("the rendezvous closed"));
+    for (const settle of [...awaiting.values()]) settle.fail(closedRendezvous());
     awaiting.clear();
     if (!deliberate) for (const listener of [...closedListeners]) listener();
   };
@@ -93,14 +118,14 @@ export function createRelayRendezvous({
   };
 
   async function dial(dialledIn) {
-    await transport.ready?.();
+    await atStep("transport", Promise.resolve().then(() => transport.ready?.()));
     // The api mints a short-lived gateway token for our logged-in session; the
     // relay validates it and routes us only to devices we own.
-    const token = await fetchToken();
+    const token = await atStep("gateway-token", Promise.resolve().then(fetchToken));
     // Called off while that token was in flight: the socket this would have
     // opened has no owner, so it is not opened at all.
-    if (dialledIn !== era) throw new Error("the rendezvous closed");
-    const ws = new WebSocketImpl(`${relayUrl}/ws/client`);
+    if (dialledIn !== era) throw closedRendezvous();
+    const ws = stepping("relay-socket", () => new WebSocketImpl(`${relayUrl}/ws/client`));
     socket = ws;
     ws.addEventListener("message", (event) => {
       try {
@@ -112,8 +137,8 @@ export function createRelayRendezvous({
     ws.addEventListener("close", () => dropped(ws));
     try {
       await openedWithin(ws, openTimeoutMs);
-      if (dialledIn !== era) throw new Error("the rendezvous closed"); // shut below, with nothing sent on it
-      sendOverSocket(ws, JSON.stringify({ type: "authenticate", token }));
+      if (dialledIn !== era) throw closedRendezvous(); // shut below, with nothing sent on it
+      sendAsStep(ws, JSON.stringify({ type: "authenticate", token }));
     } catch (error) {
       try {
         ws.close();
@@ -155,7 +180,7 @@ export function createRelayRendezvous({
     return new Promise((resolve, reject) => {
       const deadline = setTimeout(() => {
         awaiting.delete(sessionId);
-        reject(new Error("device did not answer"));
+        reject(Object.assign(new Error("device did not answer"), { dialStep: "device-answer" }));
       }, acceptTimeoutMs);
       const settle = (finish) => (value) => {
         clearTimeout(deadline);
@@ -177,27 +202,28 @@ export function createRelayRendezvous({
    */
   async function mint({ sessionId, sessionKeyB64 } = {}) {
     const ws = await open();
+    const id = sessionId || newSessionId();
+    const init = await atStep("session-init", sealedInit({ sessionId: id, sessionKeyB64 }));
+    const answer = accepted(id);
+    answer.catch(() => {}); // awaited below; a send that throws first must not leave it unhandled
+    sendAsStep(
+      ws,
+      JSON.stringify({ type: "session_init", session_id: id, route_to: `device:${deviceId}`, session_init: init.sessionInit }),
+    );
+    const { envelope } = await answer;
+    await atStep("session-accept", Promise.resolve().then(() => transport.openSessionAccept({ sessionKeyB64: init.sessionKeyB64, envelope })));
+    return { sessionId: id, sessionKeyB64: init.sessionKeyB64, deviceId };
+  }
+
+  /** The session init, sealed to the key the api pinned for this device. */
+  async function sealedInit({ sessionId, sessionKeyB64 }) {
     const pinnedKeyB64 = await getPinnedDeviceKey(deviceId);
     if (!pinnedKeyB64) {
       throw Object.assign(new Error(`no pinned transport key for device ${deviceId} — refusing to open a session`), {
         securityCritical: true,
       });
     }
-    const id = sessionId || newSessionId();
-    const init = await transport.createSessionInit({
-      sessionId: id,
-      deviceId,
-      deviceTransportPublicKeyB64: pinnedKeyB64,
-      sessionKeyB64,
-    });
-    const answer = accepted(id);
-    answer.catch(() => {}); // awaited below; a send that throws first must not leave it unhandled
-    sendOverSocket(
-      ws,
-      JSON.stringify({ type: "session_init", session_id: id, route_to: `device:${deviceId}`, session_init: init.sessionInit }),
-    );
-    await transport.openSessionAccept({ sessionKeyB64: init.sessionKeyB64, envelope: (await answer).envelope });
-    return { sessionId: id, sessionKeyB64: init.sessionKeyB64, deviceId };
+    return transport.createSessionInit({ sessionId, deviceId, deviceTransportPublicKeyB64: pinnedKeyB64, sessionKeyB64 });
   }
 
   return {
@@ -245,12 +271,15 @@ export function createRelayRendezvous({
  *  up fires into a suite that has moved on. */
 function openedWithin(ws, timeoutMs) {
   let deadline;
-  const up = new Promise((resolve, reject) => {
+  const up = atStep("relay-socket", new Promise((resolve, reject) => {
     ws.addEventListener("open", resolve);
     ws.addEventListener("error", reject);
-  });
+  }));
   const expiry = new Promise((_, reject) => {
-    deadline = setTimeout(() => reject(new Error("the relay did not answer")), timeoutMs);
+    deadline = setTimeout(() => reject(Object.assign(new Error("the relay did not answer"), { dialStep: "relay-open" })), timeoutMs);
   });
   return Promise.race([up, expiry]).finally(() => clearTimeout(deadline));
 }
+
+/** The rendezvous went, or was called off, under a dial or a mint. */
+const closedRendezvous = () => Object.assign(new Error("the rendezvous closed"), { dialStep: "rendezvous-closed" });

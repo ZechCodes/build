@@ -25,6 +25,8 @@ async fn mcp_guardfree_sql_reads_complete_with_app_and_both_writer_turns_held() 
             state: None,
             status: None,
             label: None,
+            limit: None,
+            cursor: None,
         },
         BridgeAction::TrackerTaskDependents {
             task_id: fixture.task.clone(),

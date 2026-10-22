@@ -141,7 +141,7 @@ export async function mountReclaimStatusDot(page, basePath) {
     app.App.route = { name: "project", deviceId, projectId: "reclaim-project", tab: "workspaces" };
     const call = async (method) => method === "workspace.reclaim" ? new Promise(() => {}) : {};
     const context = contexts.adoptDeviceSession({ deviceId, call, close() {}, peer() {}, onCarrier() {}, onPush() {} });
-    contexts.adoptBridgeSelection(context, { version: "3.9.0" }, adapter.create(call, { api_version: "3.9.0", capabilities: [] }));
+    contexts.adoptBridgeSelection(context, { version: "3.24.0" }, adapter.create(call, { api_version: "3.24.0", capabilities: [] }));
     await cache.writeCached({ deviceId, entityId: "", kind: "projects" }, [record]);
     await cache.writeCached({ deviceId, entityId: "", kind: "workspaces" }, [workspace]);
     await cache.writeCached({ deviceId, entityId: "", kind: "feed" }, { items: [run], runs: [run] });

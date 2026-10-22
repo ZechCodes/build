@@ -29,6 +29,8 @@ use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionIn
 use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 
 mod dispatch;
+#[cfg(test)]
+mod epoch_tests;
 mod io;
 #[cfg(test)]
 mod observation_tests;
@@ -170,12 +172,14 @@ impl Opening {
 #[derive(Clone)]
 pub struct SessionSender {
     session_id: String,
+    bridge_epoch: Arc<str>,
     session_key: String,
     out: mpsc::UnboundedSender<OutboundEnvelope>,
     /// Whether the opening this sender was built for is still open — see
     /// [`OpenSession::still_open`].
     still_open: Arc<OpeningState>,
     carrier_id: Option<CarrierId>,
+    request_order: u64,
     carrier_open: Arc<AtomicBool>,
     reply_gate: Arc<Mutex<()>>,
 }
@@ -185,6 +189,21 @@ impl SessionSender {
         &self.session_id
     }
 
+    /// The sending daemon's identity, shared across every session and carrier.
+    pub(crate) fn bridge_epoch(&self) -> &str {
+        &self.bridge_epoch
+    }
+
+    /// Assigned by authenticated intake before SQL checkout or scheduling.
+    pub(crate) fn request_order(&self) -> u64 {
+        self.request_order
+    }
+
+    /// Internal identity for opening/carrier-bound declarative subscriptions.
+    pub(crate) fn read_scope(&self) -> (u64, Option<u64>) {
+        (self.still_open.ordinal, self.carrier_id.map(|id| id.0))
+    }
+
     /// Whether the opening this sender was built for is still open. The
     /// fence every handler runs behind (`dispatch::run_handler`), and the
     /// fence the frames answered off the queue run behind too.
@@ -192,19 +211,23 @@ impl SessionSender {
         self.still_open.is_open.load(Ordering::SeqCst)
     }
 
-    fn read_is_live(&self) -> bool {
+    pub(crate) fn read_is_live(&self) -> bool {
         self.session_is_open()
             && (self.carrier_id.is_none() || self.carrier_open.load(Ordering::SeqCst))
     }
 
     fn push_read_reply(&self, payload: Value) {
+        self.push_scoped(payload);
+    }
+
+    /// Reply or confirmation tied to this exact opening and carrier. A caller
+    /// that retained an old sender cannot publish into a replacement carrier.
+    pub(crate) fn push_scoped(&self, payload: Value) -> bool {
         let Some(sealed) = self.seal(payload) else {
-            return;
+            return false;
         };
         let _reply = self.reply_gate.lock().unwrap();
-        if self.read_is_live() {
-            self.send_sealed(sealed);
-        }
+        self.read_is_live() && self.send_sealed(sealed)
     }
 
     /// Diagnostic equivalent of push/push_read_reply with an exact seal boundary.
@@ -251,6 +274,15 @@ impl SessionSender {
         Opening(Arc::clone(&self.still_open))
     }
 
+    /// Bind an observable fixture to a carrier with a controllable release fence.
+    #[cfg(test)]
+    pub(crate) fn scoped_for_test(self) -> (Self, impl FnOnce() + Send) {
+        let (carrier, _outbound) = CarrierHandle::open_channel();
+        let binding = CarrierBinding::new(CarrierKind::Channel);
+        let sender = self.on_carrier(&carrier, &binding);
+        (sender, move || binding.release())
+    }
+
     /// Test-only: what the registry does to every sender of an opening that
     /// ended.
     #[cfg(test)]
@@ -266,10 +298,12 @@ impl SessionSender {
     ) -> Self {
         SessionSender {
             session_id: session_id.to_string(),
+            bridge_epoch: crate::bridge_epoch::current().into(),
             session_key,
             out,
             still_open,
             carrier_id: None,
+            request_order: 0,
             carrier_open: Arc::new(AtomicBool::new(true)),
             reply_gate: Arc::new(Mutex::new(())),
         }
@@ -324,7 +358,12 @@ impl SessionSender {
     /// Encrypt `payload` as an inner frame without sending it, so a caller
     /// can decide under its own lock whether the frame still goes out.
     /// `None` when it cannot be encrypted.
-    pub(crate) fn seal(&self, payload: Value) -> Option<OutboundEnvelope> {
+    pub(crate) fn seal(&self, mut payload: Value) -> Option<OutboundEnvelope> {
+        // Application and authenticated signaling output share this boundary.
+        // Never trust producers to remember the epoch, or preserve a stale one.
+        payload
+            .as_object_mut()?
+            .insert("bridge_epoch".into(), json!(self.bridge_epoch()));
         transport::encrypt_frame(
             &self.session_key,
             &OuterFields {
@@ -733,13 +772,15 @@ impl SessionRegistry {
             .carriers
             .entry(carrier.id)
             .or_insert_with(|| CarrierBinding::new(carrier.kind));
-        let sender = SessionSender::keyed(
+        let mut sender = SessionSender::keyed(
             &envelope.session_id,
             open.key.clone(),
             carrier.out.clone(),
             open.still_open.clone(),
         )
         .on_carrier(carrier, binding);
+        static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+        sender.request_order = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
         Ok((frame, sender))
     }
 
@@ -981,6 +1022,10 @@ impl FrameIntake {
             let clock = &self.dispatcher.handler().clock;
             clock.mark_request(&frame, "intake", arrived.started_at());
             clock.mark_request(&frame, "decrypted", std::time::Instant::now());
+        }
+        if let Err(error) = crate::api::v1::validate_write_metadata(&frame.payload) {
+            sender.push(error.into_reply(frame.payload.get("id").cloned().unwrap_or(Value::Null)));
+            return Ok(());
         }
         if frame.frame_type == transport::CLOSE_FRAME_TYPE {
             crate::rtc::diagnostic(&envelope.session_id, "client_close_frame");
@@ -1286,7 +1331,7 @@ mod sender_tests {
         assert_eq!(outbound.envelope().route_to, "session:s-1");
         assert_eq!(
             SessionSender::decrypt_push(&key, &outbound),
-            json!({ "id": 7, "ok": true })
+            json!({ "id": 7, "ok": true, "bridge_epoch": sender.bridge_epoch() })
         );
     }
 
@@ -1747,7 +1792,7 @@ mod registry_tests {
         let outbound = out.try_recv().expect("the push rode the carrier");
         assert_eq!(
             SessionSender::decrypt_push(&key, &outbound),
-            json!({ "id": 1, "ok": true })
+            json!({ "id": 1, "ok": true, "bridge_epoch": sender.bridge_epoch() })
         );
     }
 
@@ -2798,6 +2843,7 @@ mod intake_tests {
                 "error_code": "unavailable",
                 "retryable": false,
                 "details": { "reason": "relay_is_not_a_data_plane" },
+                "bridge_epoch": crate::bridge_epoch::current(),
             })
         );
         tokio::time::sleep(Duration::from_millis(100)).await;

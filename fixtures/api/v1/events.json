@@ -2,7 +2,8 @@
   "since": "1.0.0",
   "receipt": {
     "id": 41,
-    "accepted": true
+    "accepted": true,
+    "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
   },
   "events": [
     {
@@ -234,7 +235,8 @@
             ]
           }
         }
-      ]
+      ],
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "changes",
@@ -258,7 +260,8 @@
             "truncated": true
           }
         }
-      ]
+      ],
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "changes",
@@ -282,7 +285,8 @@
             ]
           }
         }
-      ]
+      ],
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "changes",
@@ -302,7 +306,8 @@
             ]
           }
         }
-      ]
+      ],
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "changes",
@@ -408,7 +413,8 @@
             ]
           }
         }
-      ]
+      ],
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "changes",
@@ -423,7 +429,8 @@
             "truncated": false
           }
         }
-      ]
+      ],
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "changes",
@@ -482,7 +489,8 @@
             "tabs": []
           }
         }
-      ]
+      ],
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "bridge.update_status",
@@ -500,31 +508,37 @@
       "update_available": true,
       "can_install": true,
       "can_replace_development_build": false,
-      "running_from_cargo_target": false
+      "running_from_cargo_target": false,
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
-      "type": "models.changed"
+      "type": "models.changed",
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "harnesses.changed",
-      "revision": 42
+      "revision": 42,
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "term.output",
       "term_id": "term-1",
       "data": "aGVsbG8gd29ybGQK",
-      "cursor": 4211
+      "cursor": 4211,
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "term.reset",
       "term_id": "term-1",
       "data": "G1s3MjsxSGJ1aWxk",
-      "cursor": 4260
+      "cursor": 4260,
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "term.closed",
       "term_id": "term-1",
-      "reason": "closed"
+      "reason": "closed",
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "rtc.ice",
@@ -532,7 +546,8 @@
         "candidate": "candidate:2 1 udp 2122260223 192.168.1.9 54321 typ host",
         "sdpMid": "0",
         "sdpMLineIndex": 0
-      }
+      },
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "rtc.diagnostics",
@@ -547,7 +562,8 @@
         "mdns_resolved": 0,
         "mdns_unresolved": 1
       },
-      "detail": "mdns-unresolved"
+      "detail": "mdns-unresolved",
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "rtc.diagnostics",
@@ -569,7 +585,8 @@
           "responses_received": 0,
           "succeeded": false
         }
-      ]
+      ],
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "changes",
@@ -608,27 +625,148 @@
             }
           }
         }
-      ]
+      ],
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "compaction.changed",
       "scope": "device",
-      "owner_id": null
+      "owner_id": null,
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "compaction.changed",
       "scope": "project",
-      "owner_id": "proj-1"
+      "owner_id": "proj-1",
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "compaction.changed",
       "scope": "workspace",
-      "owner_id": "ws-3f2a91c4"
+      "owner_id": "ws-3f2a91c4",
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     },
     {
       "type": "compaction.changed",
       "scope": "conversation",
-      "owner_id": "agent-2"
+      "owner_id": "agent-2",
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
+    },
+    {
+      "type": "bridge.restarting",
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
+    },
+    {
+      "type": "writes.confirmed",
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6",
+      "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a",
+      "revision": 2,
+      "state": "succeeded",
+      "result": {
+        "task": {
+          "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+          "project_id": "proj-1",
+          "number": 12,
+          "title": "Kanban drag does not persist",
+          "body": "Dragging a card to In review puts it back on the next paint.",
+          "state": "open",
+          "status": "in_progress",
+          "labels": [
+            "bug",
+            "ui"
+          ],
+          "priority": "high",
+          "assignee": {
+            "kind": "agent",
+            "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          },
+          "links": {
+            "workspace_ids": [
+              "ws-3f2a91c4"
+            ],
+            "branches": [
+              "build/tasks-board"
+            ],
+            "commits": [
+              "c8381faa9b1d4e6f2a0c7b5e3d8f1a2c4b6d8e0f"
+            ],
+            "conversation_ids": [
+              "run-5d90b1e7"
+            ],
+            "parent_task_id": null
+          },
+          "trackers": [
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          ],
+          "identities": {},
+          "attachments": [],
+          "created_by": {
+            "kind": "user"
+          },
+          "created_at": "2026-09-19T09:00:00Z",
+          "updated_at": "2026-09-19T10:12:00Z",
+          "closed_at": null
+        },
+        "comment": {
+          "id": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F",
+          "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+          "author": {
+            "kind": "agent",
+            "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          },
+          "body": "Reproduced: the drop handler writes before the column read settles.",
+          "mentions_user": true,
+          "refs": [
+            {
+              "kind": "file",
+              "path": "spa/src/views/board.js",
+              "line_start": 88,
+              "line_end": 94
+            }
+          ],
+          "attachments": [],
+          "created_at": "2026-09-19T10:11:00Z",
+          "author_context": {
+            "tokens": 190000,
+            "window": 1000000,
+            "compact_at": 200000,
+            "at": "2026-09-19T10:10:40Z"
+          }
+        }
+      },
+      "published": [
+        {
+          "kind": "project",
+          "id": "proj-1",
+          "sequence": 42,
+          "generation": 0
+        }
+      ],
+      "refresh": [
+        {
+          "kind": "task",
+          "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+        }
+      ]
+    },
+    {
+      "type": "writes.confirmed",
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6",
+      "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a",
+      "revision": 2,
+      "state": "failed",
+      "effect": "unapplied",
+      "error": {
+        "code": "stale_generation",
+        "message": "The task changed before this comment was saved.",
+        "retryable": false
+      },
+      "refresh": [
+        {
+          "kind": "task",
+          "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+        }
+      ]
     }
   ],
   "harness_thresholds": {

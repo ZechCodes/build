@@ -83,7 +83,7 @@ fn assert_v17_delivery_tables(conn: &Connection) {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 17);
+    assert_eq!(version, SCHEMA_VERSION);
     for table in ["tracker_delivery_intents", "tracker_delivery_notices"] {
         let count: i64 = conn
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
@@ -158,7 +158,7 @@ fn assert_v17_delivery_migration(store: &Store, records: &[(String, String)]) {
 }
 
 #[test]
-fn a_v16_database_migrates_to_v17_without_arming_existing_assignments() {
+fn a_v16_database_migrates_without_arming_existing_assignments() {
     let dir = tempfile::tempdir().unwrap();
     let records = create_v16_fixture(dir.path());
     let store = Store::new(dir.path()).unwrap();

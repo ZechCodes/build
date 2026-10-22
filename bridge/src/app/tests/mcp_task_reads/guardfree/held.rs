@@ -38,14 +38,14 @@ impl Drop for HeldApp {
     }
 }
 
-pub(super) struct Request {
+pub(in crate::app::tests::mcp_task_reads) struct Request {
     pub(super) frame: Value,
     pub(super) expected: Value,
     label: String,
 }
 
 impl Request {
-    pub(super) fn new(frame: Value, expected: Value) -> Self {
+    pub(in crate::app::tests::mcp_task_reads) fn new(frame: Value, expected: Value) -> Self {
         Self {
             label: frame["request"]["action"].as_str().unwrap().into(),
             frame,
@@ -100,15 +100,15 @@ pub(super) async fn group(
                 .map_err(|error| error.to_string())
                 .and_then(|answer| answer.map_err(|error| error.to_string())),
         };
-        answers.push((row.request, answer, timely));
+        answers.push((row.request, answer, timely, row.elapsed));
     }
     let late = answers
         .iter()
-        .filter(|(_, _, timely)| !timely)
-        .map(|(request, _, _)| request.label.as_str())
+        .filter(|(_, _, timely, _)| !timely)
+        .map(|(request, _, _, elapsed)| (request.label.as_str(), *elapsed))
         .collect::<Vec<_>>();
     assert_eq!(turn_count, 2);
-    for (request, answer, _) in &answers {
+    for (request, answer, _, _) in &answers {
         assert_eq!(
             without_now(answer.as_ref().expect("socket worker failed").clone()),
             without_now(request.expected.clone()),
@@ -120,6 +120,63 @@ pub(super) async fn group(
         late.is_empty(),
         "MCP reads did not reply within100ms while AppState and both writer turns were held: {late:?}"
     );
+}
+
+/// Start the complete fast-read wave before joining any response. Each task
+/// owns its own deadline; slow replies cannot borrow a later task's budget.
+pub(in crate::app::tests::mcp_task_reads) async fn concurrent_group(
+    fixture: &Fixture,
+    requests: Vec<Request>,
+    release_capacity: impl FnOnce(),
+) {
+    let turns = fixture.held_turns().await;
+    let holder = HeldApp::new(fixture.state.clone());
+    let start = Arc::new(tokio::sync::Barrier::new(requests.len() + 1));
+    let mut readings = Vec::new();
+    for request in requests {
+        let state = fixture.state.clone();
+        let plane = fixture.plane.clone();
+        let start = start.clone();
+        readings.push(tokio::spawn(async move {
+            start.wait().await;
+            let started = std::time::Instant::now();
+            let answer = tokio::time::timeout(
+                READ_BUDGET,
+                socket_reply(state, plane, request.frame.clone()),
+            )
+            .await;
+            (request, answer, started.elapsed())
+        }));
+    }
+    start.wait().await;
+    let mut outcomes = Vec::new();
+    for reading in readings {
+        outcomes.push(reading.await);
+    }
+    // Release all test blockers before asserting, even if a deadline failed.
+    drop(holder);
+    drop(turns);
+    release_capacity();
+    for outcome in outcomes {
+        let (request, answer, elapsed) = outcome.expect("fast-read task panicked");
+        println!(
+            "TASK741_SQL_ISOLATION {} {:.3}ms",
+            request.label,
+            elapsed.as_secs_f64() * 1000.0
+        );
+        assert!(
+            elapsed <= READ_BUDGET,
+            "{} took {elapsed:?} while slow SQL types were pinned",
+            request.label
+        );
+        let answer = answer.expect("fast read did not return within 100ms");
+        assert_eq!(
+            without_now(answer),
+            without_now(request.expected),
+            "{}",
+            request.label
+        );
+    }
 }
 
 /// Test setup can install independent handles before the immutable service is

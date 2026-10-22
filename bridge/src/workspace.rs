@@ -22,6 +22,8 @@ pub(crate) fn take_workspace_listing_visits() -> usize {
     LISTING_VISITS.with(|count| count.replace(0))
 }
 mod changes;
+mod file_reopen;
+pub(crate) use file_reopen::FileReopen;
 #[cfg(test)]
 mod changes_tests;
 mod reservation;

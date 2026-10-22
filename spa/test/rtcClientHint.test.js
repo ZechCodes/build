@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { forgetRtcClientHints, rememberRtcClientSupport, rtcClientId } from "../src/core/rtcClientHint.js";
 
-const greeting = (capabilities = ["rtc.clientLanCache"]) => ({ api_version: "3.12.0", capabilities });
+const greeting = (capabilities = ["rtc.clientLanCache"]) => ({ api_version: "3.24.0", capabilities });
 const ids = ["773d4f16-a915-43cb-a067-c31bf8dfe1aa", "4c14a372-9db5-4faa-bbf1-d93583114e89", "22833293-45ee-4c96-89a3-ff8722be388f"];
 let randomUUID;
 

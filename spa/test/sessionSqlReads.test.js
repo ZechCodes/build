@@ -1,3 +1,4 @@
+import { transportEpoch } from "./transportEpoch.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSessionRpc } from "../src/core/sessionRpc.js";
 import { normalizeError } from "../src/core/bridgeApi/index.js";
@@ -6,6 +7,8 @@ import { SQL_READ_METHODS } from "../src/core/sqlReadCredits.js";
 import { readFileSync } from "node:fs";
 
 const METHODS = ["thread.page", "thread.activity", "thread.operation", "tasks.list", "tasks.get", "tasks.waiting_on.blocks"];
+const WRITE_READS = ["writes.status", "writes.subscribe"];
+const PACED_METHODS = [...METHODS, ...WRITE_READS];
 const flush = async () => { for (let turn = 0; turn < 20; turn += 1) await Promise.resolve(); };
 const transport = {
   encryptFrame: async ({ frameFields }) => frameFields,
@@ -29,7 +32,7 @@ function carrier() {
 const sessions = [];
 function setup(overrides = {}) {
   const wire = carrier();
-  const rpc = createSessionRpc({ transport, deviceId: "device", sessionId: "opening", sessionKeyB64: "key", timeoutMs: 0, ...overrides });
+  const rpc = createSessionRpc({ bridgeEpoch: transportEpoch(), transport, deviceId: "device", sessionId: "opening", sessionKeyB64: "key", timeoutMs: 0, ...overrides });
   rpc.rideOn(wire);
   sessions.push(rpc);
   const ask = (method = "thread.page", options = {}) => {
@@ -46,11 +49,26 @@ afterEach(() => {
 });
 
 describe("SQL reads share eight sender credits per opening", () => {
-  it("paces exactly the bridge SQL routing allowlist", () => {
+  it("queues writes.subscribe behind eight task reads until a SQL credit is released", async () => {
+    const { wire, ask } = setup();
+    for (let n = 0; n < 8; n += 1) ask("tasks.get");
+    const subscription = ask("writes.subscribe");
+    await flush();
+    expect(wire.sent).toHaveLength(8);
+    expect(wire.sent.every(({ method }) => method === "tasks.get")).toBe(true);
+    wire.deliver({ id: wire.sent[0].id, ok: true, result: {} });
+    await flush();
+    expect(wire.sent).toHaveLength(9);
+    expect(wire.sent[8].method).toBe("writes.subscribe");
+    wire.deliver({ id: wire.sent[8].id, ok: true, result: { operations: [] } });
+    await expect(subscription).resolves.toEqual({ operations: [] });
+  });
+
+  it("paces bridge SQL routing and the 3.24 durable reconciliation reads", () => {
     const source = readFileSync(new URL("../../bridge/src/api/effects.rs", import.meta.url), "utf8");
     const constant = source.match(/pub const SQL_READ_METHODS:[\s\S]*?=\s*&\[([\s\S]*?)\];/)[1];
     const server = [...constant.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
-    expect([...SQL_READ_METHODS].sort()).toEqual(server.sort());
+    expect([...SQL_READ_METHODS].sort()).toEqual([...new Set([...server, ...WRITE_READS])].sort());
   });
 
   it("paces every SQL method across priorities and carriers while control and other reads pass", async () => {
@@ -59,16 +77,17 @@ describe("SQL reads share eight sender credits per opening", () => {
     for (let n = 0; n < 4; n += 1) ask(METHODS[n], { priority: "background" });
     await flush();
     rpc.rideOn(other);
-    for (let n = 4; n < 12; n += 1) ask(METHODS[n % METHODS.length]);
+    for (let n = 4; n < 12; n += 1) ask(PACED_METHODS[n % PACED_METHODS.length]);
     await flush();
     expect(wire.sent).toHaveLength(4);
     expect(other.sent).toHaveLength(4);
+    expect([...wire.sent, ...other.sent].map((entry) => entry.method)).toEqual(PACED_METHODS);
 
     ask("ping");
     ask("board.list");
     ask("thread.post");
     await flush();
-    expect(other.sent.map((entry) => entry.method)).toEqual([...METHODS.slice(4), ...METHODS.slice(0, 2), "ping", "board.list", "thread.post"]);
+    expect(other.sent.map((entry) => entry.method)).toEqual([...METHODS.slice(4), ...WRITE_READS, "ping", "board.list", "thread.post"]);
     wire.deliver({ id: wire.sent[0].id, ok: true, result: {} });
     await flush();
     expect(other.sent).toHaveLength(8);

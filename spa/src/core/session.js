@@ -22,8 +22,7 @@ import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
 import { createPathProbe, PATH_PROBE_EVENT, PING_TIMEOUT_MS } from "./pathProbe.js";
 import { peerHeardAt } from "./pathLiveness.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
-import { legacyThreadParams } from "./bridgeApi/v1/threadParams.js";
-import { readConversationResetSupport } from "./conversationResetSupport.js";
+import { createBridgeEpoch, endedOpeningError } from "./bridgeEpoch.js";
 
 export { DEFAULT_RPC_TIMEOUT_MS };
 
@@ -79,6 +78,54 @@ function callOptions(options) {
   return options && typeof options === "object" ? options : {};
 }
 
+function holdForGreeting(waiting, start, signal, method) {
+  let entry;
+  const held = new Promise((resolve, reject) => { entry = { start, resolve, reject, signal, method }; });
+  const cancel = () => {
+    waiting.delete(entry);
+    entry.reject(signal.reason || new DOMException("The request was cancelled", "AbortError"));
+  };
+  waiting.add(entry);
+  signal?.addEventListener("abort", cancel, { once: true });
+  return held.finally(() => signal?.removeEventListener("abort", cancel));
+}
+
+function createGreetingGate() {
+  const waiting = new Set();
+  let ready = false;
+  let refusal = null;
+  const invoke = (start, signal, method) => Promise.resolve().then(() => {
+    if (refusal) throw refusal(method);
+    if (signal?.aborted) throw signal.reason;
+    return start();
+  });
+  const fail = (reasonFor) => {
+    refusal = reasonFor;
+    ready = false;
+    for (const entry of waiting) entry.reject(reasonFor(entry.method));
+    waiting.clear();
+  };
+  return {
+    call(start, signal, method) {
+      if (refusal) return Promise.reject(refusal(method));
+      if (signal?.aborted) return Promise.reject(signal.reason);
+      if (ready) return invoke(start, signal, method);
+      return holdForGreeting(waiting, start, signal, method);
+    },
+    install(adapter) {
+      if (!adapter) return fail(() => new ApiError("unsupported_version", "This bridge version is unsupported"));
+      refusal = null;
+      ready = true;
+      const held = [...waiting];
+      waiting.clear();
+      for (const entry of held) invoke(entry.start, entry.signal, entry.method).then(entry.resolve, entry.reject);
+    },
+    end: () => fail((method) => endedOpeningError(method, false)),
+  };
+}
+
+const beforeGreeting = (method) => method === "session.hello" || method === "ping" || isSignaling(method);
+
 /**
  * One E2EE session with one device, over the rendezvous that found it.
  *
@@ -98,6 +145,7 @@ export async function openSession({
   isPaused = () => false,
   onLost = () => {},
   onPush = () => {},
+  bridgeEpoch = createBridgeEpoch(),
 }) {
   let rpc = null;
   let severed = false;
@@ -105,7 +153,7 @@ export async function openSession({
   /** The API adapter the last greeting selected (wire spec step 2.5), or
    *  null before one has, and for a bridge no adapter here speaks to. */
   let adapter = null;
-  let greeted = false;
+  const greetingGate = createGreetingGate();
   /** This session's lease on the rendezvous, while one is open. */
   let signaling = null;
   /** Asks the wire whether it is there (core/pathProbe.js). Stood up below,
@@ -121,6 +169,7 @@ export async function openSession({
   const severSession = () => {
     if (severed) return;
     severed = true;
+    greetingGate.end();
     pathProbe?.stop();
     const gone = new Error("your device went offline");
     rpc?.fail(gone);
@@ -152,6 +201,7 @@ export async function openSession({
   rpc = createSessionRpc({
     transport,
     ...minted,
+    bridgeEpoch,
     noCarrier: () => new Error("your device went offline"),
   });
   rpc.onPush(onPush);
@@ -217,26 +267,22 @@ export async function openSession({
     });
   };
 
-  // A cached composer can act as soon as the carrier opens. Until this session
-  // greets, retain the generation fields its device already advertised. A
-  // greeting that settles during the cache read takes precedence at dispatch.
-  const callBeforeGreeting = async (method, params, options, legacy) => {
-    const supported = await readConversationResetSupport(deviceId);
-    if (adapter) return adapter.call(method, params, options);
-    return rawCall(method, !greeted && supported ? params : legacy, options);
-  };
   const call = (method, params = {}, options = {}) => {
-    const refusal = compactionWriteError(method, params, adapter?.capabilities.compaction?.harnessThresholds);
-    if (refusal) return Promise.reject(new ApiError(refusal.code, refusal.message));
-    if (adapter) return adapter.call(method, params, options);
-    const legacy = legacyThreadParams(method, params);
-    if (greeted || legacy === params) return rawCall(method, legacy, options);
-    return callBeforeGreeting(method, params, options, legacy);
+    if (beforeGreeting(method)) return rawCall(method, params, options);
+    return greetingGate.call(() => {
+      const refusal = compactionWriteError(method, params, adapter?.capabilities.compaction?.harnessThresholds);
+      if (refusal) throw new ApiError(refusal.code, refusal.message);
+      return adapter.call(method, params, options);
+    }, callOptions(options).signal, method);
   };
 
   return {
     deviceId,
     sessionId: minted.sessionId,
+    bridgeEpoch,
+    acceptGreeting: (greeting, options) => bridgeEpoch.acceptGreeting(greeting, options),
+    onWriteFrame: (fn) => rpc.onWriteFrame(fn),
+    rawCall,
     /** The raw rpc through the installed adapter, when there is one: every
      *  refusal a caller sees is then an `ApiError` with a code, whichever
      *  bridge answered. Before a greeting, use its device's cached capability. */
@@ -249,9 +295,9 @@ export async function openSession({
      * wraps the wire exactly once. A selection naming a side as `unsupported`
      * installs nothing. Returns the adapter now installed, or null.
      */
-    installAdapter: (selection) => {
-      greeted = true;
-      adapter = selection && !selection.unsupported ? selection.create(rawCall) : null;
+    installAdapter: (selection, options) => {
+      adapter = selection && !selection.unsupported ? selection.create(rawCall, options) : null;
+      greetingGate.install(adapter);
       return adapter;
     },
     /** The adapter installed on this session, or null. */
@@ -347,6 +393,7 @@ export async function openSession({
      */
     fail: (error) => {
       severed = true;
+      greetingGate.end();
       pathProbe?.stop();
       carrierSwitch.fail(error);
       rpc.fail(error);
@@ -361,6 +408,7 @@ export async function openSession({
     close: () => {
       carrierSwitch.close();
       severed = true;
+      greetingGate.end();
       pathProbe?.stop();
       rpc.close(new Error("session closed"));
       signaling?.close(); // the rendezvous is the caller's; this lease on it is ours

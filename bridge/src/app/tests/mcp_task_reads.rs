@@ -16,10 +16,12 @@ mod guardfree;
 mod history_reviews;
 mod immediate_authority;
 mod metadata;
+mod paging;
 mod races;
 mod reset_retirement;
 mod roster_observations;
 mod snapshot_reads;
+mod sql_isolation;
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -140,6 +142,8 @@ async fn mcp_sql_reads_answer_while_both_writer_turns_are_held() {
             state: None,
             status: None,
             label: None,
+            limit: None,
+            cursor: None,
         },
         BridgeAction::TrackerTaskDependents {
             task_id: fixture.task.clone(),

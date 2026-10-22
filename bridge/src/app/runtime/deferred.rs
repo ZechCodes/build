@@ -680,7 +680,9 @@ impl AppState {
         };
         match &applied {
             Ok(result) => {
-                self.stamp_interaction_for(method, params);
+                if self.deferred_work.is_none() {
+                    self.stamp_interaction_for(method, params);
+                }
                 // HERE, not before the drain: the decide half only claimed the
                 // checkout, and a browser told to refetch then would have read
                 // the state this write-back is about to replace.
@@ -698,6 +700,10 @@ impl AppState {
         // only the reply is refused. A mismatch is this bridge's own bug —
         // an implementation that drifted from the type `api/v1` declares for
         // its verb — and reads as `internal` to the client.
+        if applied.is_ok() && self.deferred_work.is_some() {
+            self.deferred_result_check = check;
+            return applied;
+        }
         Self::checked_reply(method, check, applied)
     }
 

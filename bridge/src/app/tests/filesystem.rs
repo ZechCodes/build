@@ -1760,6 +1760,26 @@ fn project_files_fixture() -> (tempfile::TempDir, AppState, String, PathBuf, Pat
     (directory, state, project_id, repo, plain)
 }
 
+/// Send only the verb's declared fields, then inspect its completed reply.
+/// This keeps scope failures distinct from strict unknown-parameter refusals.
+fn project_file_rpc(state: &mut AppState, method: &str, params: &Value) -> Value {
+    let mut params = params.clone();
+    if method != "fs.write" {
+        params.as_object_mut().unwrap().remove("expected_revision");
+        params.as_object_mut().unwrap().remove("content_b64");
+    }
+    state.handle(req(method, params))
+}
+
+fn assert_file_refusal(response: &Value, code: &str) {
+    assert_eq!(response["ok"], false, "{response:?}");
+    assert_eq!(response["error_code"], code, "{response:?}");
+    assert!(
+        !response["error"].as_str().unwrap().is_empty(),
+        "{response:?}"
+    );
+}
+
 fn project_file_params(project_id: &str, source_id: &str, path: &str) -> Value {
     json!({
         "project_id": project_id, "source_id": source_id, "path": path,
@@ -1826,11 +1846,11 @@ fn project_source_files_tree_read_and_write_use_the_selected_configured_root() {
 
 #[test]
 fn project_source_files_refuse_unknown_cross_project_and_mixed_scope_ids() {
-    let (directory, mut state, project_id, _repo, _plain) = project_files_fixture();
+    let (directory, mut state, project_id, repo, plain) = project_files_fixture();
     let other = directory.path().join("other-project");
     std::fs::create_dir(&other).unwrap();
     std::fs::write(other.join("notes.md"), "other project's source\n").unwrap();
-    let other_id = state.add_project(other, "main".into());
+    let other_id = state.add_project(other.clone(), "main".into());
     // Source ids are project-local: both source-1 rows must select their own root.
     let other_read = state.handle(req(
         "fs.read",
@@ -1854,23 +1874,43 @@ fn project_source_files_refuse_unknown_cross_project_and_mixed_scope_ids() {
             params["path"] = json!("notes.md");
             params["expected_revision"] = json!("stale");
             params["content_b64"] = json!("YQ==");
-            let error = match method {
-                "fs.tree" => state.fs_tree(&params),
-                "fs.read" => state.fs_read(&params),
-                _ => state.fs_write(&params),
-            }
-            .unwrap_err();
-            assert!(error.starts_with("unknown "), "{method}: {error}");
+            let response = project_file_rpc(&mut state, method, &params);
+            assert_file_refusal(&response, "not_found");
+            let field = if params["project_id"] == "missing" {
+                "project_id"
+            } else {
+                "source_id"
+            };
+            assert!(
+                response["error"].as_str().unwrap().contains(field),
+                "{response:?}"
+            );
         }
     }
     for field in ["workspace_id", "run_id", "worktree_id"] {
         let mut params = project_file_params(&project_id, "source-2", "notes.md");
         params[field] = json!("other-scope");
-        for call in [AppState::fs_tree, AppState::fs_read, AppState::fs_write] {
-            let error = call(&mut state, &params).unwrap_err();
-            assert!(error.contains("scope"), "{error}");
+        for method in ["fs.tree", "fs.read", "fs.write"] {
+            let response = project_file_rpc(&mut state, method, &params);
+            assert_file_refusal(&response, "invalid_params");
+            assert!(
+                response["error"].as_str().unwrap().contains("scope"),
+                "{response:?}"
+            );
         }
     }
+    assert_eq!(
+        std::fs::read_to_string(repo.join("notes.md")).unwrap(),
+        "git source\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(plain.join("notes.md")).unwrap(),
+        "plain source\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(other.join("notes.md")).unwrap(),
+        "other project's source\n"
+    );
 }
 
 #[test]
@@ -1884,11 +1924,14 @@ fn project_source_files_refuse_host_paths_and_traversal_without_writing() {
         "plain/../../outside.md",
     ] {
         let params = project_file_params(&project_id, "source-2", path);
-        for call in [AppState::fs_tree, AppState::fs_read, AppState::fs_write] {
-            assert_eq!(
-                call(&mut state, &params).unwrap_err(),
-                "path escapes the worktree"
+        for method in ["fs.tree", "fs.read", "fs.write"] {
+            let response = project_file_rpc(&mut state, method, &params);
+            assert_file_refusal(&response, "internal");
+            assert!(
+                response["error"].as_str().unwrap().contains("path"),
+                "{response:?}"
             );
+            assert_eq!(response["error"], "path escapes the worktree", "{response}");
         }
     }
     let forged = state.handle(req(
@@ -1914,17 +1957,26 @@ fn project_source_files_refuse_symlink_escape_without_writing() {
     symlink(repo.join("notes.md"), plain.join("leaf.md")).unwrap();
     for path in ["escape/notes.md", "leaf.md"] {
         let params = project_file_params(&project_id, "source-2", path);
-        for call in [AppState::fs_tree, AppState::fs_read, AppState::fs_write] {
-            assert_eq!(
-                call(&mut state, &params).unwrap_err(),
-                "path escapes the worktree"
+        for method in ["fs.tree", "fs.read", "fs.write"] {
+            let response = project_file_rpc(&mut state, method, &params);
+            assert_file_refusal(&response, "internal");
+            assert!(
+                response["error"].as_str().unwrap().contains("path"),
+                "{response:?}"
             );
+            assert_eq!(response["error"], "path escapes the worktree", "{response}");
         }
     }
-    let tree = state.fs_tree(&json!({
-        "project_id": project_id, "source_id": "source-2", "path": "escape",
-    }));
-    assert_eq!(tree.unwrap_err(), "path escapes the worktree");
+    let tree = project_file_rpc(
+        &mut state,
+        "fs.tree",
+        &json!({
+            "project_id": project_id, "source_id": "source-2", "path": "escape",
+        }),
+    );
+    assert_file_refusal(&tree, "internal");
+    assert!(tree["error"].as_str().unwrap().contains("path"), "{tree:?}");
+    assert_eq!(tree["error"], "path escapes the worktree", "{tree}");
     assert_eq!(
         std::fs::read_to_string(repo.join("notes.md")).unwrap(),
         "git source\n"
@@ -2070,8 +2122,9 @@ fn project_source_files_refuse_nul_backslash_and_case_variant_paths_without_writ
     }
     for path in paths {
         let params = project_file_params(&project_id, "source-2", path);
-        for call in [AppState::fs_tree, AppState::fs_read, AppState::fs_write] {
-            assert!(call(&mut state, &params).is_err(), "{path:?}");
+        for method in ["fs.tree", "fs.read", "fs.write"] {
+            let response = project_file_rpc(&mut state, method, &params);
+            assert_file_refusal(&response, "internal");
         }
     }
     let after: Vec<_> = std::fs::read_dir(&plain)
@@ -2089,3 +2142,9 @@ fn project_source_files_refuse_nul_backslash_and_case_variant_paths_without_writ
         "git source\n"
     );
 }
+
+#[path = "../fs/lock_tests.rs"]
+mod lock_tests;
+
+#[path = "../fs/race_tests.rs"]
+mod race_tests;

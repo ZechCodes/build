@@ -11,6 +11,7 @@
 // when the gate takes the app back.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
 
 const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn(), terminalDeviceId: vi.fn(() => null) }));
 const wire = vi.hoisted(() => ({ openSession: vi.fn(), openPeerLink: vi.fn() }));
@@ -224,11 +225,14 @@ function fakePeerLink(deviceId) {
  *  exactly as the real session does: nothing else ever carried it. */
 function fakeSession(deviceId, onLost = () => {}) {
   let carrierChanged = () => {};
+  const bridgeEpoch = createBridgeEpoch();
   const session = {
     deviceId,
+    bridgeEpoch,
+    acceptGreeting: (greeting, options) => bridgeEpoch.acceptGreeting(greeting, options),
     sessionId: `session-${deviceId}`,
     call: vi.fn(async (method) => {
-      if (method === "session.hello" && greetings.has(deviceId)) return greetings.get(deviceId)();
+      if (method === "session.hello") return { api_version: "3.24.0", ...(greetings.has(deviceId) ? await greetings.get(deviceId)() : {}) };
       if (method === "board.list") return { items: [boardRows.get(deviceId) || {
         id: `${deviceId}-row`, project_id: "proj-1", title: "Work",
       }] };
@@ -457,7 +461,7 @@ describe("per-device connections", () => {
   it("makes a paired client hint available after hello without sending it to an unknown bridge", async () => {
     const pinnedKey = "pinned-dev-a-key";
     App.devices.find((device) => device.id === "dev-a").transport_public_key_b64 = pinnedKey;
-    greetings.set("dev-a", async () => ({ api_version: "3.12.0", capabilities: ["rtc.clientLanCache"] }));
+    greetings.set("dev-a", async () => ({ api_version: "3.24.0", capabilities: ["rtc.clientLanCache"] }));
     let firstHint;
     wire.openPeerLink.mockImplementationOnce(async (options) => {
       firstHint = options.clientId();
@@ -473,17 +477,17 @@ describe("per-device connections", () => {
   it("drops the paired client hint when the device is unpaired", async () => {
     const pinnedKey = "pinned-dev-a-key";
     App.devices.find((device) => device.id === "dev-a").transport_public_key_b64 = pinnedKey;
-    rememberRtcClientSupport("dev-a", pinnedKey, { api_version: "3.12.0", capabilities: ["rtc.clientLanCache"] });
+    rememberRtcClientSupport("dev-a", pinnedKey, { api_version: "3.24.0", capabilities: ["rtc.clientLanCache"] });
     const beforeUnpair = rtcClientId("dev-a", pinnedKey);
     expect(beforeUnpair).toMatch(/^[0-9a-f-]{36}$/i);
     retireDevice("dev-a");
     expect(rtcClientId("dev-a", pinnedKey)).toBeNull();
-    rememberRtcClientSupport("dev-a", pinnedKey, { api_version: "3.12.0", capabilities: ["rtc.clientLanCache"] });
+    rememberRtcClientSupport("dev-a", pinnedKey, { api_version: "3.24.0", capabilities: ["rtc.clientLanCache"] });
     expect(rtcClientId("dev-a", pinnedKey)).not.toBe(beforeUnpair);
   });
 
   it("forgets every paired client hint when the account is replaced", () => {
-    rememberRtcClientSupport("dev-a", "key-a", { api_version: "3.12.0", capabilities: ["rtc.clientLanCache"] });
+    rememberRtcClientSupport("dev-a", "key-a", { api_version: "3.24.0", capabilities: ["rtc.clientLanCache"] });
     expect(rtcClientId("dev-a", "key-a")).toMatch(/^[0-9a-f-]{36}$/i);
     resetApplication();
     expect(rtcClientId("dev-a", "key-a")).toBeNull();
@@ -521,7 +525,7 @@ describe("per-device connections", () => {
   // surface: core/changeEvents.js greetBridge, tested there.)
   it("greets the machine again when its failed path is restored", async () => {
     greetings.set("dev-a", async () => ({
-      api_version: "2.0.0",
+      api_version: "3.24.0",
       push_events: true,
       capabilities: ["changes.subscriptions", "tasks.attachments"],
       changes: { kinds: ["state", "thread"] },

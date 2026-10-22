@@ -611,7 +611,7 @@ impl AppState {
     /// this mutex with no handler behind it, and both must record against one
     /// set of since-boot counters.
     pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
-        let (clock, peers, pool, reads, snapshots, observations) = {
+        let (clock, peers, pool, reads, snapshots, observations, mutations) = {
             let mut app = state.lock().unwrap();
             app.initialize_snapshot_projection();
             app.initialize_read_context();
@@ -622,6 +622,7 @@ impl AppState {
                 app.read_service(),
                 app.snapshot_service(),
                 app.observation_service(),
+                super::mutations::MutationService::new(&app),
             )
         };
         let ending = Arc::clone(&state);
@@ -631,15 +632,25 @@ impl AppState {
         .with_observation_reads(pool.clone(), move |frame, connection| {
             observations.prepare(frame, connection)
         })
-        .with_sql_reads(pool, move |_sender, frame, _timer, connection| {
-            reads.call(frame, connection)
+        .with_sql_reads(pool, move |sender, frame, _timer, connection| {
+            if matches!(
+                frame.payload["method"].as_str(),
+                Some("writes.status" | "writes.subscribe")
+            ) {
+                mutations.call(sender, frame, connection)
+            } else {
+                reads.call(frame, connection)
+            }
         })
         .with_snapshot_reads(move |frame| snapshots.call(frame))
         .on_session_end(move |session_id| {
-            ending
+            let removed = ending
                 .lock()
                 .unwrap()
                 .drop_ended_session_uploads(session_id);
+            for upload in removed {
+                upload.dispose();
+            }
         })
     }
 

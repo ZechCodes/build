@@ -10,7 +10,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { normalizeViewingContext } from "../src/core/viewingContext.js";
 import { greetBridge, resetChangeEvents } from "../src/core/changeEvents.js";
 import { carriesTaskContext, taskContextItem } from "../src/core/trackerViewingContext.js";
-import versions from "../../fixtures/api/versions.json";
 
 beforeEach(() => resetChangeEvents());
 
@@ -74,33 +73,33 @@ describe("the item on the wire", () => {
 const TASK_CONTEXT = { capabilities: ["tasks.context"] };
 
 describe("the gate", () => {
-  it("opens on a 2.x bridge whose greeting names tasks.context, this minor and later ones", async () => {
-    await greet("2.0.0", TASK_CONTEXT);
+  it("opens on supported bridge versions that name tasks.context", async () => {
+    await greet("3.24.0", TASK_CONTEXT);
     expect(carriesTaskContext("dev-1")).toBe(true);
-    await greet("2.7.0", TASK_CONTEXT);
+    await greet("3.99.0", TASK_CONTEXT);
     expect(carriesTaskContext("dev-1")).toBe(true);
   });
 
   it("stays shut on a greeting that names no capabilities", async () => {
-    await greet("2.0.0");
+    await greet("3.24.0");
     expect(carriesTaskContext("dev-1")).toBe(false);
     expect(taskContextItem(task(), "dev-1")).toBeNull();
   });
 
   it("follows the named capability on a current bridge, either way", async () => {
-    await greet(versions.current, TASK_CONTEXT);
+    await greet("3.24.0", TASK_CONTEXT);
     expect(carriesTaskContext("dev-1")).toBe(true);
     expect(taskContextItem(task(), "dev-1")?.kind).toBe("task");
 
-    await greet(versions.current, { capabilities: [] });
+    await greet("3.24.0", { capabilities: [] });
     expect(carriesTaskContext("dev-1")).toBe(false);
     expect(taskContextItem(task(), "dev-1")).toBeNull();
   });
 
-  it("refuses an ungreeted device, no device, and an unsupported major", async () => {
+  it("refuses an ungreeted device, no device, and unsupported versions", async () => {
     expect(carriesTaskContext(null)).toBe(false);
     expect(carriesTaskContext("dev-1")).toBe(false);
-    await greet("1.22.0", TASK_CONTEXT);
+    await greet("3.23.99", TASK_CONTEXT);
     expect(carriesTaskContext("dev-1")).toBe(false);
     await greet("4.0.0", TASK_CONTEXT);
     expect(carriesTaskContext("dev-1")).toBe(false);
@@ -109,7 +108,7 @@ describe("the gate", () => {
 
 describe("the item the page would send", () => {
   it("names the task once the bridge can take it", async () => {
-    await greet("2.0.0", TASK_CONTEXT);
+    await greet("3.24.0", TASK_CONTEXT);
     expect(taskContextItem(task(), "dev-1")).toEqual({
       kind: "task",
       task_id: "task-01M2ZS29",
@@ -121,7 +120,7 @@ describe("the item the page would send", () => {
   // A page that stamps a half-read task tells the agent a number with no
   // title behind it.
   it("says nothing about a task that has not been read", async () => {
-    await greet("2.0.0", TASK_CONTEXT);
+    await greet("3.24.0", TASK_CONTEXT);
     expect(taskContextItem(null, "dev-1")).toBeNull();
     expect(taskContextItem({ id: "task-1" }, "dev-1")).toBeNull();
   });

@@ -458,7 +458,7 @@ fn upgrading_real_v14_shape_preserves_legacy_header_and_snapshot_bytes() {
     }
     drop(store);
     let store = Store::new(dir.path()).unwrap();
-    assert_eq!(SCHEMA_VERSION, 17);
+    assert_eq!(SCHEMA_VERSION, 18);
     let review = store.load_review(&task.id).unwrap().unwrap();
     assert_eq!(review.mode, ReviewMode::Snapshot);
     assert!(review.pull_request.is_none());
@@ -1074,7 +1074,7 @@ fn schema_fifteen_reopen_restores_additive_sync_candidate_table_without_rewritin
         store.load_review_sync_candidate(&review.task_id).unwrap(),
         None
     );
-    assert_eq!(SCHEMA_VERSION, 17);
+    assert_eq!(SCHEMA_VERSION, 18);
 }
 
 #[test]

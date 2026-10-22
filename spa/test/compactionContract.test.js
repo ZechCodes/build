@@ -18,7 +18,8 @@ describe("compaction wire fixtures", () => {
     const events = fixture("events").events.filter(({ type }) => type === "compaction.changed");
     expect(events.map(({ scope }) => scope)).toEqual(["device", "project", "workspace", "conversation"]);
     for (const event of events) {
-      expect(Object.keys(event).sort()).toEqual(["owner_id", "scope", "type"]);
+      expect(Object.keys(event).sort()).toEqual(["bridge_epoch", "owner_id", "scope", "type"]);
+      expect(event.bridge_epoch).toBe(hello.bridge_epoch);
       expect(v1.parseEvent(event)).not.toBeNull();
     }
   });
@@ -76,8 +77,8 @@ describe("compaction wire fixtures", () => {
 });
 
 
-it("explains an older bridge with the agreed compaction editor copy", async () => {
-  const adapter = v1.create(() => { throw new Error("must not send"); }, { api_version: "3.21.0", capabilities: [] });
+it("explains missing compaction support with the agreed editor copy", async () => {
+  const adapter = v1.create(() => { throw new Error("must not send"); }, { api_version: "3.24.0", capabilities: [] });
   await expect(adapter.call("settings.set", { compaction_thresholds: { codex: 150000 } }))
     .rejects.toMatchObject({ code: "unknown_method", message: "Update the bridge to set compaction defaults by harness." });
 });

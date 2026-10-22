@@ -37,7 +37,7 @@ see [the import policy](UPSTREAM.md#maintenance-and-future-imports).
 ## Development and compatibility
 
 SPA and web resolve `file:../transport/js` with committed portable consumer
-locks. Use Node 22.23.3/npm 12.0.2 and install the binding first from Build’s root:
+locks. Use Node 22.23.4/npm 12.0.2 and install the binding first from Build’s root:
 
 ```sh
 nice -n 10 npm ci --prefix transport/js --ignore-scripts
@@ -55,7 +55,7 @@ installed dependencies; Vite’s existing shim uses SPA-local sodium. Both locks
 retain libsodium/libsodium-wrappers 0.7.16.
 
 Python is a reference/test dependency, not a production app or bridge runtime
-dependency. CI pins uv 0.12.13 and uses frozen resolution. From Build’s root:
+dependency. CI pins uv 0.13.4 and uses frozen resolution. From Build’s root:
 
 ```sh
 nice -n 10 uv sync --frozen --project transport/python

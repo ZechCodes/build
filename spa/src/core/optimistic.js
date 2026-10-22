@@ -48,13 +48,20 @@ export function retirePending(records, entries, { keyOf, nowMs }) {
   const held = new Map(entries.map((entry) => [String(keyOf(entry)), entry]));
   return records.filter((record) => {
     if (!record.settledAt) return true;
-    if (nowMs - record.settledAt > PENDING_GRACE_MS) return false;
+    if (!record.durable && nowMs - record.settledAt > PENDING_GRACE_MS) return false;
     if (record.kind === "remove") return held.has(record.key);
     if (record.kind === "insert") return !insertAlreadyHeld(record, entries, keyOf);
     const entry = held.get(record.key);
-    return Boolean(entry) && !record.clearedBy(entry, record.fields);
+    return entry ? !record.clearedBy(entry, record.fields) : Boolean(record.durable);
   });
 }
+
+export const uncertainWriteError = (error) => error?.uncertain === true
+  || (error?.timedOut === true && error?.uncertain !== false)
+  || error?.code === "uncertain_delivery";
+
+const cachedActionFailure = (operation) => operation?.state === "failed"
+  && ["chat", "task-comment"].includes(operation.owner?.kind);
 
 const overriddenBy = (older, next) => {
   if (older.key !== next.key) return false;
@@ -138,7 +145,7 @@ export function createOptimisticStore({ provisionalPrefix = null, resetProvision
     announce(touched);
   };
 
-  const runOptimistic = async ({ scope, records, call, failureSummary, onRevert = null, notify = true }) => {
+  const runOptimistic = async ({ scope, records, call, failureSummary, onRevert = null, notify = true, operation = () => null }) => {
     const held = records.map((record) => ({ scope: record.scope || scope, record: { ...record } }));
     const touched = new Set(held.map((entry) => entry.scope));
     for (const entry of held) {
@@ -194,20 +201,32 @@ export function createOptimisticStore({ provisionalPrefix = null, resetProvision
       },
     };
 
-    try {
-      await call(handle);
-    } catch (error) {
+    const settleHeld = (durable = false) => {
+      const settledAt = Date.now();
+      for (const entry of held.filter((standing) => durable || !standing.record.settledAt)) {
+        replace(entry, { ...entry.record, settledAt, ...(durable ? { durable: true } : {}) });
+      }
+      announce(touched);
+    };
+    const handleFailure = (error) => {
+      const saved = operation();
+      if (saved && uncertainWriteError(error)) {
+        settleHeld(true);
+        return false;
+      }
       for (const entry of held.filter((standing) => !standing.record.settledAt)) take(entry);
       announce(touched);
       if (onRevert) onRevert(error);
-      if (notify) notifyError(failureSummary, error.message);
+      if (notify && !cachedActionFailure(saved)) notifyError(failureSummary, error.message);
       return false;
+    };
+    let answer;
+    try {
+      answer = await call(handle);
+    } catch (error) {
+      return handleFailure(error);
     }
-    const settledAt = Date.now();
-    for (const entry of held.filter((standing) => !standing.record.settledAt)) {
-      replace(entry, { ...entry.record, settledAt });
-    }
-    announce(touched);
+    settleHeld(answer?.phase === "ack");
     return true;
   };
 

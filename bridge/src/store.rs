@@ -51,7 +51,6 @@ use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 pub(crate) use operations::CommittedThreadItems;
 pub(crate) use reviews::TrackingExpectation;
@@ -64,9 +63,17 @@ pub use delivery_intents::{DeliveryIntent, DeliveryNotice};
 mod entities;
 mod legacy;
 mod migrations;
+pub mod mutations;
+mod writer;
+pub use mutations::{
+    MutationAdmission, MutationOutboxEntry, MutationOwner, MutationOwnerSequence, MutationRecord,
+    MutationRecovery, MutationResource,
+};
+pub use writer::StoreWriter;
 mod operations;
 mod read_agents;
 mod read_pool;
+pub(crate) use read_pool::ReadClass;
 pub use read_pool::{ReadConnection, ReadPool, ReadTransaction};
 pub mod push_keys;
 mod reviews;
@@ -108,6 +115,14 @@ pub use tracker::{TaskFilter, TaskSeek, TaskStretch};
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("mutation journal: {0}")]
+    MutationInvalid(String),
+    /// Retryable refusal: another principal's unmaterialized reservation
+    /// grants neither identity access nor a dependency edge.
+    #[error("not_yet_available: resource reserved until its creator publishes")]
+    MutationNotYetAvailable,
+    #[error("busy: mutation command quota exceeded")]
+    MutationBusy,
     #[error("invalid waiting-on dependency: {0}")]
     WaitingOnInvalid(String),
     #[error("conflict: unresolved waiting-on dependencies")]
@@ -235,7 +250,8 @@ pub enum StoreError {
 /// 15 adds PR bindings, operation journals, workspace claims and sync observations.
 /// 16 adds task dependencies, readiness reconciliation and transition receipts.
 /// 17 adds explicit assignment delivery intents and coordinator notice receipts.
-pub const SCHEMA_VERSION: i64 = 17;
+/// 18 adds the durable mutation journal, reservations and confirmation outbox.
+pub const SCHEMA_VERSION: i64 = 18;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -253,7 +269,8 @@ const DB_FILE: &str = "build.db";
 #[derive(Clone)]
 pub struct Store {
     dir: PathBuf,
-    conn: Arc<Mutex<Connection>>,
+    writer: StoreWriter,
+    journal_incarnation: Arc<str>,
     read_pool: ReadPool,
     attention_map_epoch: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) waiting_on_wakeup: Arc<tokio::sync::Notify>,
@@ -339,6 +356,7 @@ impl Store {
         waiting_on::ensure_reconciliation_columns(&conn)?;
         conn.execute_batch(SCHEMA)?;
         ensure_operation_receipt_columns(&conn)?;
+        let journal_incarnation = mutations::initialize(&conn)?;
         // Against the newest HOISTED column's version rather than against the
         // schema's: a bump that adds a table has nothing for the classifier to
         // do, and running it anyway would rewrite every conversation row on
@@ -362,19 +380,36 @@ impl Store {
             )?;
         }
         tracker::initialize_list_key(&conn)?;
-        let conn = Arc::new(Mutex::new(conn));
-        let read_pool = ReadPool::open(&dir.join(DB_FILE), conn.clone())?;
+        let writer = StoreWriter::new(conn);
+        // Recover ambiguous claims without executing any command at startup.
+        writer.recover_mutations()?;
+        let read_pool = ReadPool::open(&dir.join(DB_FILE), writer.connection.clone())?;
         Ok(Store {
             dir,
             read_pool,
-            conn,
             attention_map_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            waiting_on_wakeup: Arc::new(tokio::sync::Notify::new()),
             #[cfg(test)]
-            fail_next_write: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            fail_next_write: writer.fail_next_write.clone(),
+            writer,
+            journal_incarnation: journal_incarnation.into(),
+            waiting_on_wakeup: Arc::new(tokio::sync::Notify::new()),
             renamed_tasks,
         })
     }
+    /// Cached immutable database identity; safe during bounded app capture.
+    pub fn journal_incarnation(&self) -> &str {
+        &self.journal_incarnation
+    }
+
+    /// New journal work must use this handle outside application/domain guards.
+    pub fn writer(&self) -> StoreWriter {
+        self.writer.clone()
+    }
+
+    pub fn mutation_wakeup(&self) -> Arc<tokio::sync::Notify> {
+        self.writer.wakeup.clone()
+    }
+
     /// Independent read-only connections opened after startup migrations.
     pub fn read_pool(&self) -> ReadPool {
         self.read_pool.clone()
@@ -404,9 +439,7 @@ impl Store {
     /// store call would panic too, and the daemon would sit there up and
     /// connected while it could neither read nor write state.
     fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.writer.connection()
     }
     /// Fixture access to the actual writer mutex; production readers cannot
     /// obtain this guard.
@@ -450,27 +483,7 @@ impl Store {
         &self,
         work: impl FnOnce(&rusqlite::Transaction) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
-        #[cfg(test)]
-        let _phase = crate::timing::phase_samples::phase("sql.write");
-        #[cfg(test)]
-        if self
-            .fail_next_write
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(StoreError::Io(std::io::Error::other(
-                "injected store failure",
-            )));
-        }
-        let mut conn = self.connection();
-        // IMMEDIATE, not the default DEFERRED: every caller here writes, and
-        // several read first. A deferred transaction takes its write lock on
-        // the first write, and a failed upgrade raises SQLITE_BUSY_SNAPSHOT,
-        // which SQLite does NOT route through the busy handler — so the
-        // timeout above would not cover it.
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let out = work(&tx)?;
-        tx.commit()?;
-        Ok(out)
+        self.writer.transaction(work)
     }
 }
 

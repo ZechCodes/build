@@ -9,8 +9,8 @@ const select = (context, waitingOn, authority) => adoptBridgeSelection(context,
   { version: "3.21.0", unsupported: null }, { capabilities: { tasks: { waitingOn } } }, authority);
 
 it("recognizes waiting-on by announcement rather than version", () => {
-  expect(capabilitiesOf({ api_version: "3.21.0", capabilities: [] }).tasks.waitingOn).toBe(false);
-  expect(capabilitiesOf({ api_version: "3.21.0", capabilities: ["tasks.waitingOn"] }).tasks.waitingOn).toBe(true);
+  expect(capabilitiesOf({ api_version: "3.24.0", capabilities: [] }).tasks.waitingOn).toBe(false);
+  expect(capabilitiesOf({ api_version: "3.24.0", capabilities: ["tasks.waitingOn"] }).tasks.waitingOn).toBe(true);
 });
 
 it("never sends new dependency verbs or parameters before the current greeting", async () => {

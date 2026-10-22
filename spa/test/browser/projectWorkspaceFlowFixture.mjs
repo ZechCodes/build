@@ -119,7 +119,7 @@ async function seedFlow({ supported, greeting, theme }) {
       if (params.workspace_id !== "child") throw new Error("Unknown fixture workspace");
       return childReply(held, method);
     }
-    if (method === "session.hello") return { api_version: held.supported ? "3.22.0" : "3.20.0", capabilities: supportFor(held.supported), push_events: false };
+    if (method === "session.hello") return { api_version: "3.24.0", capabilities: supportFor(held.supported), push_events: false };
     if (method === "models.list") return { default_provider: "codex", providers: [{ id: "codex", label: "Codex", models: [], efforts: [] }] };
     if (method === "agent.list") {
       if (params.entity_id === "child-owner") return { entity_id: "child-owner", agents: [agent("child-agent", "Isolated editor", null)] };

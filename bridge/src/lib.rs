@@ -50,6 +50,7 @@ pub mod attention;
 pub mod backoff;
 pub mod body_page;
 pub mod branch;
+pub(crate) mod bridge_epoch;
 pub mod capture;
 pub mod carrier;
 pub mod changes;

@@ -9,7 +9,7 @@
 // escapes `>`, `"`, and `'`. The token markup is foreground-only (styles.css),
 // so the add/del diff-row background tints are left untouched.
 
-import Prism from "prismjs/components/prism-core";
+import Prism from "./prismCore.js";
 import "prismjs/components/prism-markup";
 import "prismjs/components/prism-clike";
 import "prismjs/components/prism-css";

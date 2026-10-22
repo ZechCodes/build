@@ -1,7 +1,7 @@
 # Markdown rendering security checklist
 
-**Status:** 90/100 — verification paused by the coordinator on 2026-10-20; final scanner gate pending.
-**Verified:** 2026-10-20 (#695 rich markdown rendering; #701 boundary revisions; #700 production-CSP redirect consent policy); earlier desktop link, credential, persistence and API authentication evidence remains recorded below (#262, #615, #616).
+**Status:** 100/100 — post-merge combined scanners passed on 2026-10-22.
+**Verified:** 2026-10-22 (post-merge scanner refresh); 2026-10-20 (#695 rich markdown rendering; #701 boundary revisions; #700 production-CSP redirect consent policy); earlier desktop link, credential, persistence and API authentication evidence remains recorded below (#262, #615, #616).
 
 Checklist rendering re-verified 2026-10-03 (#347): checklist list items have the
 fixed `task-item` class and a native input with only fixed checkbox type/class,
@@ -112,7 +112,7 @@ Since #256 the renderer writes web links as well as Build routes (`spa/src/core/
 | 7 | Code and keyboard contents remain literal; references, links, footnotes and emphasis are not expanded there. Highlighted fences may add only constrained Prism token spans inside known code classes; malformed/unknown labels do not create attributes | 10/10 | `markdownSafety.test.js` fenced-language adversarial matrix, including nested markdown fences, plus protected contents test; `markdownInline.test.js` exact backtick runs and keyboard grammar; `markdownRichBlocks.test.js` highlighted and unknown fence labels |
 | 8 | Quotes, lists and details share an eight-level bound. Long mixed documents, blank lines, link punctuation, unmatched rich delimiters and large fenced source finish within fixed regression budgets | 10/10 | `markdownSafety.test.js` "nesting that tries to exhaust the reader": 40,000 blank lines, 100,000-character link punctuation, 200 nested details, 10,000 unmatched details openers, malformed keyboard/footnote/emphasis/image delimiters, and a large known-language fence. #238 and #256 earlier regressions remain covered #700: `markdownInline.test.js` has 15 closer-before-unmatched-opener cases, each in a Node 22 child bounded to 2 seconds with SIGKILL. The original two keyboard cases timed out (red suite exit 1, 2 failed/22 passed); after validating closer position and enforcing forward progress, the five-suite focused check passed 108/108, exit 0. Raw logs/exits: `/tmp/build-markdown-695-review/inline-700-{red,green}.{log,exit}`. |
 | 9 | Plain mode answers text with no markup, and its callers escape it | 10/10 | `markdownSafety.test.js` "answers plain text with no markup in plain mode"; `agentOverview.js` writes the snippet through `esc` |
-| 10 | Repository scanners are clean on the change | 0/10 pending | Round-four Semgrep at `ff67429e15f2e3762435ddac0a609043d1d437b1` checked 44 changed JS/MJS/CSS/Python/YAML files with 476 rules, zero findings, exit 0. The later rail and browser-harness changes each passed scoped Semgrep. The coordinator paused all new runs before the final combined scan and Gitleaks refresh; this checkpoint is not ready for review. Resume those gates before restoring 100/100. |
+| 10 | Repository scanners are clean on the change | 10/10 | Post-merge source head `f57b9258eac2f04f5f83a3b42a4b552c267770a4`, base `origin/main` at `5b13c50d284ac29e02117b00af88cad889ec7b42`: `nice -n 10 semgrep --config auto --error` over all 44 changed JS/MJS/CSS/Python files ran 442 rules, zero findings, exit 0; no ENOMEM fallback was needed. `nice -n 10 gitleaks git --no-banner --redact --log-opts='origin/main..HEAD' .` scanned 38 commits with no leaks, exit 0. `git diff --check origin/main..HEAD` exited 0. Raw logs/exits and the exact scan file list: `/tmp/build695-gates/`. |
 
 Round-two actual mutation controls (#701) ran against a temporary copy of the production
 source, with each mutation applied separately and restored before the next run.
@@ -201,7 +201,7 @@ isolated fixture setup failure is retained separately and is not counted as a
 negative control; the corrected harness permits read-only access to linked
 local dependency assets without changing production code.
 
-**Total: 90/100; final scanner verification pending.**
+**Total: 100/100.**
 
 The coordinator paused #695 after code/test commit `ae14ab0f8` on 2026-10-20.
 The consent fix, exact-CSP redirect regressions, attachment coverage, heading
@@ -211,6 +211,33 @@ frame and click failures were isolated by matched probes to inherited
 The parent environment, timeouts, RAF polling and existing assertions remain
 unchanged. The native-frame regression failed before the fix (exit 1), then
 57 tests across ten affected suites passed (exit 0); the default system-browser
-probe also passed. The fresh full `npm test` was stopped at the coordinator’s
-request, so the full consent-fix gate remains incomplete. No new validation
-runs are authorized until the coordinator resumes the task.
+probe also passed. The 2026-10-20 full `npm test` was stopped at the coordinator’s
+request. The coordinator resumed the task on 2026-10-22, explicitly accepting
+the `img-src https:` widening. The post-merge scans above supersede the paused
+scanner checkpoint.
+
+Post-merge integration verification (2026-10-22), source head
+`f57b9258eac2f04f5f83a3b42a4b552c267770a4`, with Node 22.23.4 and npm 12.0.2
+(the pins on merged main). All executable gates below ran under `nice -n 10`;
+results are actual process exits. Logs, exit files and the exact scanner target
+list are retained in `/tmp/build695-gates/` and attached to the task handoff.
+
+| Gate | Exit / evidence |
+| --- | --- |
+| `npm ci --prefix transport/js --ignore-scripts` | 0 |
+| SPA `npm ci --legacy-peer-deps` | 0; install scripts disabled by `.npmrc` |
+| SPA `npm run lint` | 0 |
+| SPA `npm test` | 0; 742 files and 11,411 tests passed, including exact-CSP redirect consent regressions; 1,610.98 seconds |
+| SPA `npm run test:captures` | 0; all three capture scripts exited 0 |
+| SPA `npm run build` | 0 |
+| skriftapp `uv run --frozen ruff check buildapp` | 0 |
+| skriftapp `uv run --frozen pytest buildapp -q` | 0; 959 passed, 1 skipped, including production CSP tests |
+| Semgrep / Gitleaks / `git diff --check origin/main..HEAD` | 0 / 0 / 0; scanner details in control 10 |
+| ShellCheck | Not applicable: no changed `.sh` files against `origin/main` |
+| Fresh markdown captures (`captureMarkdownPolish.mjs`) | 0; desktop 960px, phone 390px and narrow 320px in light/dark, with consent buttons visible |
+
+Main was integrated in merge commit `f57b9258e`. The only textual conflict was
+in `thread.js`: outgoing messages retain both scoped markdown document IDs and
+main’s attachment rendering. The README’s runtime pin and both rail tests’
+painted-state waits were retained. No new implementation changes, dependency
+changes or complexity exemptions were needed during integration.

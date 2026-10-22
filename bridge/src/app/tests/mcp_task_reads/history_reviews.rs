@@ -386,6 +386,16 @@ async fn mcp_review_external_work_releases_sql_and_app_with_both_turns_held() {
     })
     .await
     .expect("review retained SQL connection during external work");
+    let _class_permits = tokio::time::timeout(WATCHDOG, async {
+        (
+            pool.acquire_class(crate::store::ReadClass::ReviewContents)
+                .await,
+            pool.acquire_class(crate::store::ReadClass::ReviewContents)
+                .await,
+        )
+    })
+    .await
+    .expect("review retained its query-class permit during external work");
     assert_eq!(paused.finish().await, expected);
     assert_no_drain(&fixture, &before);
     assert_eq!(turns.len(), 2);

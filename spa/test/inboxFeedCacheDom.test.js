@@ -58,7 +58,7 @@ it.each([true, false])("paints cached rows before hello and keeps them when watc
     .toBe("#325 Cleared task");
 
   const call = vi.fn(async (method) => method === "session.hello"
-    ? { api_version: "2.0.0", push_events: true, capabilities: watching ? ["tasks.watching"] : [] } : {});
+    ? { api_version: "3.24.0", push_events: true, capabilities: watching ? ["tasks.watching"] : [] } : {});
   const context = contexts.adoptDeviceSession({ deviceId: DEVICE, call,
     close() {}, peer() {}, onCarrier() {}, installAdapter: (selection) => selection.create(call) });
   await connection.greetLiveBridge(context);

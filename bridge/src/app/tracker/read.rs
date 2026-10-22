@@ -129,6 +129,34 @@ impl TaskReadContext {
         source: &impl TaskReadSource,
         params: &Value,
     ) -> Result<Value, String> {
+        self.tasks_list_scanned(source, params, None)
+    }
+
+    /// MCP bounds candidate decoding as well as returned rows. Sparse filters
+    /// can produce an empty page with a cursor; RPC keeps its existing scan policy.
+    pub(in crate::app) fn mcp_tasks_list(
+        &self,
+        source: &impl TaskReadSource,
+        params: &Value,
+    ) -> Result<Value, String> {
+        let limit = match params.get("limit") {
+            None | Some(Value::Null) => crate::mcp::MCP_TASK_LIST_MAX,
+            Some(value) => value
+                .as_u64()
+                .filter(|limit| (1..=crate::mcp::MCP_TASK_LIST_MAX).contains(limit))
+                .ok_or_else(|| format!("limit must be 1 to {}", crate::mcp::MCP_TASK_LIST_MAX))?,
+        };
+        let mut params = params.clone();
+        params["limit"] = json!(limit);
+        self.tasks_list_scanned(source, &params, Some(limit as usize))
+    }
+
+    fn tasks_list_scanned(
+        &self,
+        source: &impl TaskReadSource,
+        params: &Value,
+        scan: Option<usize>,
+    ) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let project_path = self
             .project_paths
@@ -162,7 +190,7 @@ impl TaskReadContext {
                 TaskSeek {
                     below: page.below,
                     take: page.rows_to_keep(),
-                    scan: page.rows_to_scan(),
+                    scan: scan.or_else(|| page.rows_to_scan()),
                 },
                 |task, target| assignee.matches(task, target) && edits::carries_label(task, label),
             )
@@ -190,6 +218,8 @@ impl TaskReadContext {
         tasks
             .into_iter()
             .map(|task| {
+                #[cfg(test)]
+                let _phase = crate::timing::phase_samples::phase("task.row");
                 let timeline = timelines.remove(&task.id).unwrap_or_default();
                 let task = self.read_task(source, task, &timeline, &rosters);
                 let mut row = views::read_task_json(project_id, &task, &timeline);
@@ -286,6 +316,8 @@ fn extend_task_summary(
     task: &Task,
     row: &mut Value,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("task.summary");
     if let Some(review) = source.load_review_summary(&task.id).stored()? {
         row["review_summary"] = json!(review);
     }

@@ -136,7 +136,8 @@ same manifest retry path and canonical SyncLock as workspace retry; changed
 project settings cannot redirect the saved cut or leave Git materialization
 without a pinned commit. Worker source-location holds remain independent.
 
-**Frames.** A request is `{id, method, params}`; a reply is
+**Frames.** A request is `{id, method, params}`, with optional typed `write`
+metadata (`operation_id`, optional `after`) for journaled commands; a reply is
 `{id, ok: true, result}` or `{id, ok: false, error, error_code, retryable, details}`.
 A push is a frame with a `type` that answers no pending request. The SPA's
 `spa/src/core/sessionRpc.js` first matches `id` against its pending calls
@@ -153,9 +154,10 @@ every verb live in `fixtures/api/v1/` and are checked by
 - It answers signaling (`rtc.*`) and attachment writes at once, without
   queueing, so a negotiation never waits behind other work.
 
-The seven SQL reads (`thread.page`, `thread.activity`, `thread.operation`,
-`thread.revision`, `tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`) enter a
-separate lane before terminal or write admission. `carrier/sql.rs` owns eight dedicated
+The nine SQL-lane methods (`thread.page`, `thread.activity`, `thread.operation`,
+`thread.revision`, `tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`,
+`writes.status` and `writes.subscribe`) enter a separate lane
+before terminal or write admission. `carrier/sql.rs` owns eight dedicated
 threads and a fair queue with at most 16 waiting callers per session opening.
 Callers waiting for a read connection still count against that bound. Excess
 SQL parks ordered intake on its carrier; it never returns capacity `busy`.
@@ -286,6 +288,43 @@ mode 0600. It skips active IDs, symlinks and `.git`, with bounded traversal.
 Creation refuses that reserved staging destination namespace, including case
 variants, so a published user file cannot be mistaken for an orphan on boot.
 
+File writes, creation, host `fs.mkdir`, and upload operations use the deferred
+drain in `app/fs/deferred.rs`. They capture source identities under the app
+mutex, resolve paths and acquire filesystem-root serialization off it, then
+validate the captured records before running filesystem service work. Final publication
+invalidates observations and installs any reopened workspace record; its
+manifest is persisted off the app mutex. The existing deferred-job count keeps
+workspace removal and metadata changes out while these stages run.
+Filesystem-root locks have their own namespace keyed by the canonical root,
+separate from Git's common-directory `source_sync::SyncLock`, so a fetch or a
+Git mutation does not make an editor save wait for the repository lock.
+Editor writes and upload finish also hold a destination lock keyed by the
+canonical parent and literal filename, so overlapping source roots serialize
+revision checks and replacement. Their contention waits share a five-second
+budget, and both remain held through final publication.
+An in-memory lease also retains the recorded source root through that final
+publication. `project.remove_source` refuses `busy` while that source is in use;
+unrelated sources can still be removed. The check does not resolve paths or
+wait for filesystem work under the app mutex.
+
+Filesystem service and final publication are separate stages. A write can
+already have changed bytes on disk when publication refuses a moved source
+or a new reclaim reservation, or when persisting the reopened workspace fails.
+The error response does not roll back those bytes. Closing this window belongs
+to step 6b's acknowledgement and confirmation work; the current staging does
+not make disk changes and publication one atomic operation.
+
+Upload admission and quota accounting remain in app state. Staging descriptors
+have separate ownership, so chunk writes, publication, cancellation cleanup,
+session-end cleanup and idle cleanup run outside the app mutex. Finish claims
+publication before its sync and rename: cancellation before that claim wins;
+after it, finish owns the result and invalidation even if the session closes.
+Cancellation does not wait for a staging mutex held by an in-flight service.
+That service retains the staging file and performs cleanup after it finishes.
+Intermediate stages retain the verb's original result-type check. Only the
+final successful stage stamps user activity; that existing `save_user_session`
+call still runs under the app mutex and remains a known #681 violation for step 6b.
+
 `thread.page` is a message-counted page with folded activity digests. Wire
 3.20.0 announces `threads.leanActivity`: with optional `activity: "newest"`,
 each activity run between non-activity items ships exactly its newest item,
@@ -338,8 +377,8 @@ section on the blocking pool. A worker parked on the lock behind a slow frame
 would stop the runtime's I/O driver; `bridge/src/app/tests/runtime/off_the_workers.rs`
 holds that line on a one-worker runtime. Parts that must not wait on the lock have their
 own: WebRTC peers sit behind an `RwLock` (`PeersSlot` in `bridge/src/app/rtc.rs`),
-and `Store` wraps its own connection mutex (`bridge/src/store.rs`). Store
-clones share one writer connection. The seven migrated SQL RPCs instead borrow
+and `store/writer.rs::StoreWriter` wraps the sole writable connection. Store
+clones and journal admission share that connection. The nine SQL-lane RPCs instead borrow
 one of eight read-only, query-only WAL connections from `store/read_pool.rs`.
 A fair asynchronous permit supplies one borrower; a fresh request transaction
 covers all related rows and ends before the connection returns. Those RPCs
@@ -630,7 +669,22 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.23.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.24.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.24.0 adds the durable write foundation: `bridge.epoch`, bounded
+  `writes.status`/`writes.subscribe`, and typed ack/confirmation envelopes.
+  Every authenticated outgoing application frame is stamped with the same
+  per-process UUID at `SessionSender::seal`, including replies, receipts,
+  terminal/service pushes and authenticated signaling. `session.hello` returns
+  that `bridge_epoch` and the persistent `journal_incarnation`. Planned update
+  handoff emits a best-effort `bridge.restarting`; reconnect greeting remains
+  authoritative when that event is lost.
+  Hello advertises `ack_confirm_methods`, mirroring
+  `api::writes::ACK_CONFIRM_METHODS`; it is empty in #739. Clients use
+  ack/confirm only for methods in that list. There is no `write.mode` or
+  separate ack-confirm capability negotiation.
+  Bridge and SPA ship together; #740 raises the SPA requirement to this version
+  under Zech’s 2026-10-21 decision. Shared envelopes are in
+  `fixtures/api/v1/writes/`; their Rust contracts live in `api/writes.rs`.
   3.23.0 populates the existing `attachments` descriptors on agent replies,
   outgoing agent messages and the corresponding incoming messages (#696).
   The thread page fixture shows all three. No new capability is needed:
@@ -914,6 +968,43 @@ and its controls are
   (`bridge/src/identity.rs`), workspace manifests `.build-workspace.json`
   (`MANIFEST_FILE` in `bridge/src/workspace.rs`), and update status and job files
   (`bridge/src/update/`).
+
+#### Durable write foundation (#739)
+
+Schema 18 adds `mutation_commands`, per-owner ordering, dependency edges,
+resource reservations and a terminal outbox. `StoreWriter` owns the same
+connection used by existing Store methods; no second writer is opened.
+New journal admission is a short SQL-only transaction entered outside the app
+and domain guards. Existing Store callers are converted incrementally; this
+foundation does not claim to have removed their existing lock-held SQL.
+
+A command is keyed by the server-derived principal and a canonical operation
+UUID. The normalized semantic intent and saved dependencies fence conflicting
+retries. Admission reserves identities and durable owner order before returning.
+Canonical SQL and the committed marker share one transaction; publication and
+terminal confirmation follow. Reopening the intact store retains its journal
+incarnation and outbox. SQL-only claimed work can return to accepted, while
+ambiguous external claims retain an unknown outcome and block conflicting
+execution until reconciliation. Committed work is returned for the enabled
+verb’s publication recovery and is never applied twice. No verb executor is
+enabled by this slice. The journal exposes 30-day terminal-result compaction for the future enabled
+command service; identity/outcome tombstones remain, and unresolved partial/unknown
+evidence is retained until reconciliation. Active owner fences and the
+principal/cursor outbox index keep settled lifetime history out of claim and
+caught-up subscription queries. Admission limits are 128 nonterminal commands
+per principal, 4,096 per store and 64 KiB per admission payload; terminal outcomes
+are limited to 256 KiB, checked before committing canonical SQL.
+
+`app/mutations.rs` reads journal status using the existing independent SQL lane
+and read-only pool. Status accepts at most 128 operation IDs and returns at most
+512 KiB per page with a cursor bound to the operation set and journal incarnation.
+Subscribe captures the current outbox cursor and states in one SQL snapshot,
+then replays later durable outcomes outside ordinary change coalescing. Readers
+never take the app guard or writer connection. Current RPC authorization is the
+paired device account, represented by a server-owned database-local principal;
+client hints and session IDs do not grant identity. Reads additionally validate
+the original owner scope against current published authority. MCP agent
+principals and semantic method enablement belong to Step 6b.
 
 #### Compaction policy configuration
 
@@ -2335,7 +2426,15 @@ request instead of retargeting it. No request initializes producers, probes
 workspace paths or drains deferred writer work.
 
 SQL reads use the shared asynchronous reader pool and one transaction across
-related rows. Snapshot materialization and the exact harness catalogue resolver
+related rows. The pool shares quotas across listeners and service clones:
+three in-flight MCP task-list requests and two per other MCP SQL read type.
+A caller acquires its type's permit before borrowing a connection, so excess
+callers wait outside the eight-reader pool. Three task pages, two task details
+and two history reads occupy at most seven connections, leaving one reader
+for other read types; a fourth task page waits before SQL checkout. Both the
+connection and type permit are released before external I/O; their acquisition
+and work take no app lock.
+Snapshot materialization and the exact harness catalogue resolver
 run off-lock. The catalogue combines accepted default/ordered-role settings
 with the existing CLI readings service, preserving TTL/executable refresh and
 hidden-model startability without a new catalogue cache or publisher-side
@@ -2346,6 +2445,18 @@ The update-admission lease survives caller cancellation until blocking work
 finishes, and responses retain their ordinary shape. Calls on one socket remain
 ordered; independent sockets read while mutation turns or the app mutex are
 occupied.
+
+MCP `list_tasks` returns at most 20 full task rows, defaulting to 20. Its
+optional `limit` accepts 1–20; `cursor` continues the same state/status/label
+filter. The reply is `{project_id, tasks, user_session, next_cursor?}`.
+Only an absent `next_cursor` ends the walk: a filtered page may be empty.
+The existing store/project/filter-scoped cursor seeks below an immutable task
+number, in descending order, so editing a task does not move it between pages.
+Selection and the cursor probe precede timeline, identity and summary hydration.
+`get_task` retains the complete task and timeline. This MCP paging contract
+does not change the SPA's separate `tasks.list` RPC or its 100-row page requests.
+Router `list_work` selects its compact fields directly from the accepted shared
+board fragments, without materializing the full board first.
 
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
 `Project`), which a project's agents take from their persisted purpose (see
@@ -2866,6 +2977,41 @@ applies to all frame and caller totals, alongside the hold percentile and
 maximum gates. Status timing covers observation work, not watch-notification
 delivery latency.
 
+Three focused MCP timing tests reuse that fixture's 200 conversations, 190 Git
+worktrees, 700 initial tasks and 12 simulated running agents. They measure
+`list_task_dependents`, `search_conversation`, `read_review`, `read_comment`,
+`list_work` and `list_workspaces` with only the read cohort, with the unchanged
+writer/status/RPC cohort, and with that same busy cohort plus concurrent
+`list_tasks`. Each mode captures 24 decoded socket replies per read type,
+rotates the first action across readers, and enforces the 100 ms caller p99
+and maximum for every cohort MCP read and ordinary read RPC.
+Per-type overlap counters require every read type to start while writers are
+outstanding, and while task-list requests are in flight in the final mode.
+`.github/workflows/timing.yml` builds the release test binary before running
+these three tests serially alongside the existing busy lock-hold regression.
+Ordinary tests verify that the recipes use the independent lane and return
+their saved task, comment, conversation, workspace and review witnesses.
+
+The test-only `timing/phase_samples.rs` collector reports exact p50, p95, p99
+and maximum durations. MCP read samples separate blocking-pool scheduling
+(`frame.pool_wait`), per-type admission (`read.class_wait`) and SQL connection
+acquisition (`read.sql_wait`). Synchronous `read.admission`, `read.query`,
+`read.run` and `read.finish` spans are exclusive of nested phases; their
+`.total` counterparts include nested work and record one sample per stage.
+`reply.serialization` measures the socket reply encoding, while `client.total`
+includes socket submission through the parsed reply. These diagnostic fields
+compile only in tests.
+
+The focused `busy_mcp_lists_finish_within_100ms` release regression reuses the
+main busy fixture with 700 tasks, 200 conversations and 190 worktrees. Twelve
+readers request both MCP lists alongside the normal writers and status
+observations. It measures through socket transfer and reply parsing, enforcing
+the 100 ms maximum and p99 for each page. Test-only phase tracing separates SQL
+methods (including record decoding), row construction, snapshot projection and
+reply serialization. The release timing workflow runs this regression alongside
+the existing busy lock test. Normal tests cover bounded page work and keyset
+continuation independently of machine timing.
+
 Unit tests sit beside the code (`#[cfg(test)]` modules, and directories such as
 `bridge/src/app/tests/` and `bridge/src/store/tests/`). Integration tests are in
 `bridge/tests/`: the wire contract (`api_contract.rs`), relay (`relay_*.rs`),
@@ -3180,6 +3326,38 @@ gate attachment display.
   `subscribeCache(prefix, listener)` announces every write to listeners on a
   matching prefix, and a `BroadcastChannel` carries the announcements to other
   tabs.
+- **Pending writes** (#740, wire 3.24.0). `writeOperations.js` persists each
+  normalized intent before transport in separate versioned operation/lease
+  stores inside `build-cache`. The authenticated app shell supplies only the
+  account UUID; operations are keyed by account, paired device, user principal
+  and operation UUID. Without that identity the pending service is unavailable.
+  Boot activates the account's projections before mounting cache readers.
+  `readCached`/`readCachedMany` compose ordered local layers over canonical
+  records; mutation helpers read the canonical records separately. Replica
+  eviction never deletes pending intent. Explicit account reset clears it.
+  BroadcastChannel announces committed operation changes, and an IndexedDB
+  per-device tab lease suppresses duplicate transport. A single worker polls
+  status in batches of at most 128 with jittered 1/2/5/10/30-second backoff.
+  Each subscription replaces the whole set with the oldest 128 outstanding
+  submissions; overflow stays on status polling, and terminal outcomes refill
+  the set. Subscribe pagination continues through status with the same IDs.
+  Subscriptions belong to the opening and carrier, so even a same-epoch carrier
+  change re-establishes status and subscription coverage.
+  Durable ack resolves the action successfully; a receipt does not. Loss,
+  timeout and restart retain the same operation identity and accepted layers.
+  A confirmation invalidation retains its layer until a fresh, guarded canonical
+  read covers the publication's owner kind, ID, generation and sequence.
+  Failed/unapplied removes only its layer; partial/unknown retains evidence.
+  Named refresh obligations survive reload independently of overlays. This
+  foundation consumes inline results; an unknown result reference remains
+  unresolved and cannot become success or authorize retransmission.
+  Expired-result tombstones retain their outcome and effect. Proven
+  failed/unapplied tombstones remove only their layer and restore the draft;
+  the expired operation ID never resolves successfully or executes again.
+  Task comments and thread posts display cached operation errors beside the
+  composer, retain the draft, and distinguish a new-action Retry from same-ID
+  Check again. The method allowlist is empty until bridge execution slices enable
+  methods; typed domain effects are extended together with those slices.
 - **Compaction observations** (`compactionCache.js`, wire 3.22.0) refresh from
   authoritative scope reads and `agent.list` after `compaction.changed` or
   subscription acceptance. The invalidation names no replicated values.
@@ -3661,6 +3839,15 @@ the current lifetime. Affected promises receive retryable uncertain-delivery
 errors; late replies cannot release replacement credits. Cache rendering and
 read coordination remain independent of these admission waits.
 
+`bridgeEpoch.js` accepts epoch/incarnation authority only from a current
+greeting. Application calls await that greeting, and every later app/terminal
+frame is fenced before correlation or push delivery. An unexpected UUID asks
+for a fresh greeting; it does not establish a newer epoch. Replacing an epoch
+settles unsent calls as `scope_ended` and handed-off calls as
+`uncertain_delivery`, releases reservations once, and never replays terminal
+input. `sessionRpc.js` routes durable acks and late confirmations separately
+from transport receipts, including after the original caller timed out.
+
 A surface calls the bridge through its device context: `context.rpc(method,
 params)` from `contextFor(deviceId)` or `routeContext(route)`. `context.rpc`
 refuses when that device cannot answer.
@@ -3671,12 +3858,15 @@ refuses when that device cannot answer.
   client's `api_range`. `greetBridge()` then selects an adapter and arms the
   change subscriptions.
 - `selectAdapter()` in `spa/src/core/bridgeApi/index.js` checks the bridge's
-  `api_version` against `SPA_API_RANGE` (`>=2.0.0 <4.0.0`). A greeting with
+  `api_version` against `SPA_API_RANGE` (`>=3.24.0 <4.0.0`). A greeting with
   no version, or no greeting at all, reads as `PRE_ALPHA_API_VERSION`
-  (`0.0.0`). For compatibility, that is matched at the lowest adapter's floor
-  rather than rejected. Any other version outside the range returns
+  (`0.0.0`), which is rejected. A version outside the range returns
   `{unsupported: "bridge" | "app"}`, and `spa/src/views/versionGate.js` says
   which side needs updating.
+- `bridge.epoch` and the greeting's exact `ack_confirm_methods` select the
+  durable write service. Every listed semantic method uses it; there is no
+  `write.mode` or separate ack-confirm negotiation. Session controls are
+  excluded. The SPA and bridge ship together; #739 rolls before the #740 SPA.
 - `capabilitiesOf()` in `spa/src/core/bridgeApi/v1/index.js` turns the greeting's
   `capabilities` array into feature flags. Every bridge the adapter admits sends
   one; the minor-version table that stood in for it went with 1.x. New features
@@ -3693,15 +3883,10 @@ refuses when that device cannot answer.
   requirement. No new source selectors go to an older bridge. Sync base uses
   `sources.syncBase`; its captured-path precondition additionally requires
   `sources.syncBasePath`.
-- `conversation.reset` also gates the generation fields added to existing
-  conversation requests in wire 3.11. The adapter restores their old shapes
-  with `spa/src/core/bridgeApi/v1/threadParams.js` when the greeting lacks the
-  capability, retaining established selectors and paging parameters. Sessions
-  read their device's cached reset capability from `conversationResetSupport.js`
-  before hello: a cleared conversation keeps its required generation fields on
-  reconnect, and a device without cached support uses legacy shapes. A greeting
-  that settles during that read takes precedence at dispatch. Revision reads
-  retain `agent_id` and `conversation_id`, which older bridges already accept.
+- Conversation requests preserve their captured generation and exact agent,
+  conversation and thread selectors. App dispatch waits for the current
+  greeting and adapter; there is no pre-greeting legacy-shape conversion.
+  `conversation.reset` still controls whether the reset action is offered.
 - The task and conversation watch switches, task attachment buttons, and
   conversation compaction settings are available before a greeting (#182).
   Their values come from cached task and agent records. A late greeting does

@@ -16,7 +16,7 @@ async function seedFilteredConversation({ lean, hiddenCount }) {
   App.devices = [{ id: deviceId, name: "Fixture computer" }];
   App.selectedDeviceId = deviceId;
   await greetBridge(async () => ({
-    api_version: "3.20.0", capabilities: lean ? ["threads.leanActivity"] : [], push_events: false,
+    api_version: "3.24.0", capabilities: lean ? ["threads.leanActivity"] : [], push_events: false,
   }), { deviceId });
   await writeCached({ deviceId, entityId, kind: "row", sub: "" }, {
     kind: "project", entity_id: entityId, run_id: entityId, project_id: projectId,

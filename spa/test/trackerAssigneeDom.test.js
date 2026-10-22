@@ -56,7 +56,7 @@ beforeEach(async () => {
   // Give the control fixtures that same identity and current greeting.
   const context = adoptDeviceSession(fakeSession(DEVICE_ID));
   const authority = greetingInFlight(context);
-  await greetBridge(async () => ({ api_version: "3.21.0", push_events: false, capabilities: ["tasks.waitingOn"] }), {
+  await greetBridge(async () => ({ api_version: "3.24.0", push_events: false, capabilities: ["tasks.waitingOn"] }), {
     deviceId: DEVICE_ID, isCurrent: authority.current,
     install(selection) {
       const adapter = selection.create(context.call);

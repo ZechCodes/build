@@ -76,7 +76,7 @@ async function seed({ device, hash, chatBody, commentBody }) {
   };
   const call = async (method, params = {}) => (answers[method] ? answers[method](params) : {});
   await events.greetBridge(async () => ({
-    api_version: "2.0.0", push_events: true,
+    api_version: "3.24.0", push_events: true,
     capabilities: ["changes.subscriptions", "tasks.watching", "tasks.attachments", "tasks.context", "tasks.commentUserNotifies"],
     changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"], items: "bodies" },
   }), { deviceId: device });

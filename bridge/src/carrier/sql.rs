@@ -375,7 +375,8 @@ impl Work {
     }
 
     fn matches(&self, job: &Job) -> bool {
-        self.job.frame.payload["method"] == job.frame.payload["method"]
+        self.job.frame.payload["method"] != "writes.subscribe"
+            && self.job.frame.payload["method"] == job.frame.payload["method"]
             && self.job.frame.payload.get("params") == job.frame.payload.get("params")
     }
 
@@ -637,6 +638,27 @@ mod queue_wakeup_tests {
     use super::*;
     use std::future::Future;
     use std::task::Poll;
+
+    #[test]
+    fn subscription_requests_retain_distinct_queued_work() {
+        let queue = Queue::default();
+        let sender = SessionSender::detached("subscriptions");
+        for id in [1, 2] {
+            let frame: Frame = serde_json::from_value(json!({"session_id":"subscriptions","message_id":"m","frame_type":"data","sender":"client","created_at":"","payload":{"id":id,"method":"writes.subscribe","params":{"operation_ids":["5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a"]}}})).unwrap();
+            let mut job = Some(Job {
+                sender: sender.clone(),
+                frame,
+                queued: crate::timing::FrameClock::new().queued(),
+            });
+            assert!(queue.admit(&mut job, &mut None));
+        }
+        assert_eq!(queue.take().unwrap().callers.len(), 1);
+        assert_eq!(
+            queue.take().unwrap().callers.len(),
+            1,
+            "each subscription must register its caller"
+        );
+    }
 
     #[tokio::test]
     async fn one_queued_read_wakes_one_idle_execution_coordinator() {

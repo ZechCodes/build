@@ -20,23 +20,31 @@ macro_rules! task_queries {
         }
         impl TaskReadSource for Store {
             $(fn $name(&self, $($arg: $ty),*) -> Result<$out, StoreError> {
+                #[cfg(test)]
+                let _phase = crate::timing::phase_samples::phase(concat!("sql.", stringify!($name)));
                 self.$name($($arg),*)
             })*
             fn list_filtered_tasks(
                 &self, project: &str, filter: TaskFilter<'_>, seek: TaskSeek,
                 keep: impl FnMut(&Task, Option<&Value>) -> bool,
             ) -> Result<TaskStretch, StoreError> {
+                #[cfg(test)]
+                let _phase = crate::timing::phase_samples::phase("sql.list_filtered_tasks");
                 self.list_tracker_tasks_with_assignment_below(project, filter, seek, keep)
             }
         }
         impl TaskReadSource for ReadTransaction<'_> {
             $(fn $name(&self, $($arg: $ty),*) -> Result<$out, StoreError> {
+                #[cfg(test)]
+                let _phase = crate::timing::phase_samples::phase(concat!("sql.", stringify!($name)));
                 self.$name($($arg),*)
             })*
             fn list_filtered_tasks(
                 &self, project: &str, filter: TaskFilter<'_>, seek: TaskSeek,
                 keep: impl FnMut(&Task, Option<&Value>) -> bool,
             ) -> Result<TaskStretch, StoreError> {
+                #[cfg(test)]
+                let _phase = crate::timing::phase_samples::phase("sql.list_filtered_tasks");
                 self.list_tracker_tasks_with_assignment_below(project, filter, seek, keep)
             }
         }

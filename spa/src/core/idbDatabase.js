@@ -139,7 +139,7 @@ const UNAVAILABLE = Object.freeze({ committed: false, unavailable: true });
  * Answers `transact` (one transaction, see below), its `read`/`write`
  * shorthands, `health`, `available` and `setRecoveryTiming`.
  */
-export function createIdbDatabase({ name, version, store: storeName, upgrade, diagnostic, label, dropNewer = false }) {
+export function createIdbDatabase({ name, version, store: storeName, transactionStores = storeName, upgrade, diagnostic, label, dropNewer = false }) {
   /** Set when the database met an error no reopen can fix; it answers nothing
    *  for the rest of the session. */
   let disabled = false;
@@ -480,7 +480,7 @@ export function createIdbDatabase({ name, version, store: storeName, upgrade, di
     return new Promise((resolve) => {
       let request;
       try {
-        const transaction = db.transaction(storeName, mode);
+        const transaction = db.transaction(transactionStores, mode);
         request = run(transaction.objectStore(storeName));
         transaction.onabort = () => {
           const marked = intentionalAborts.get(transaction);

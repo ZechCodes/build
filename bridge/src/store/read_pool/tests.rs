@@ -257,7 +257,7 @@ fn assert_close_marker_in_database_file_alone(path: &Path) {
 async fn a_cloned_read_pool_keeps_the_writer_until_its_readers_close() {
     let dir = tempfile::tempdir().unwrap();
     let store = store_with_close_marker(dir.path());
-    let writer = Arc::downgrade(&store.conn);
+    let writer = Arc::downgrade(&store.writer.connection);
     let pool = store.read_pool();
     let retained = pool.clone();
     drop(store);
@@ -294,7 +294,7 @@ async fn a_cloned_read_pool_keeps_the_writer_until_its_readers_close() {
 async fn a_borrowed_reader_keeps_the_writer_until_the_final_pool_owner_closes() {
     let dir = tempfile::tempdir().unwrap();
     let store = store_with_close_marker(dir.path());
-    let writer = Arc::downgrade(&store.conn);
+    let writer = Arc::downgrade(&store.writer.connection);
     let pool = store.read_pool();
     let mut reader = pool.acquire().await;
     drop(store);

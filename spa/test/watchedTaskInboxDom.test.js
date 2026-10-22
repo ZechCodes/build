@@ -24,7 +24,7 @@ const DEVICE = "watch-device";
 const PROJECT = "proj-1";
 const WAIT = { timeout: 5000, interval: 20 };
 const GREETING = {
-  api_version: "2.0.0",
+  api_version: "3.24.0",
   push_events: true,
   capabilities: ["tasks.watching", "tasks.attachments"],
   tasks: { watching: true, attachments: true },
@@ -432,7 +432,7 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
   beforeEach(() => boot({
     tasks: [asked],
     timelines: { [asked.id]: [question] },
-    hello: { api_version: "2.0.0", push_events: true, capabilities: ["tasks.watching", "tasks.commentUserNotifies"] },
+    hello: { api_version: "3.24.0", push_events: true, capabilities: ["tasks.watching", "tasks.commentUserNotifies"] },
   }));
   afterEach(() => pane?.dispose());
 
@@ -453,6 +453,7 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
     rowFor(asked.id).querySelector(".inbox-watch[data-unwatch]").click();
   };
   const heldList = async () => (await modules.cache.readCached(modules.tracker.tasksAddress(DEVICE, PROJECT))).value;
+  const watchList = (heard) => modules.cache.subscribeCache(modules.tracker.tasksAddress(DEVICE, PROJECT), heard);
 
   it("leaves the Dashboard when it leaves the inbox, whatever the board's row still says", async () => {
     await vi.waitFor(async () => expect(await modules.needsYouRule.readNeedsYouRule(DEVICE)).toBe(true), WAIT);
@@ -463,6 +464,7 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
     answers["tasks.unwatch"] = async () => ({ task: { ...asked, watched: false } });
     await pressStopWatching();
     await vi.waitFor(() => expect(rowFor(asked.id)).toBe(null), WAIT);
+    await announced(watchList, async () => (await heldList()).tasks[0].watched === false);
     expect((await modules.tracker.readTasksRecord(DEVICE, PROJECT)).tasks[0].watched).toBe(false);
     await vi.waitFor(() => expect(needsYou()).toEqual([]), WAIT);
   });
@@ -488,6 +490,7 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
       answers["tasks.unwatch"] = async () => ({ task: { ...asked, watched: false } });
       await pressStopWatching();
       await vi.waitFor(() => expect(rowFor(asked.id)).toBe(null), WAIT);
+      await announced(watchList, async () => (await heldList()).tasks[0].watched === false);
       expect((await heldList()).tasks[0].watched).toBe(false);
       await vi.waitFor(() => expect(needsYou()).toEqual([]), WAIT);
     });
@@ -500,7 +503,6 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
       answers["tasks.unwatch"] = () => new Promise((_, reject) => { refuse = reject; });
       await pressStopWatching();
       await vi.waitFor(() => expect(needsYou()).toEqual([]), WAIT);
-      const watchList = (heard) => modules.cache.subscribeCache(modules.tracker.tasksAddress(DEVICE, PROJECT), heard);
       // A pane can paint its optimistic query before the whole-list write lands.
       await announced(watchList, async () => (await heldList()).tasks[0].watched === false);
       const unwatchedAs = (await heldList()).read_order;

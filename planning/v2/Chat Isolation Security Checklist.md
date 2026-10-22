@@ -301,3 +301,82 @@ intake, persistence, reset-reference and bounded-read verification is scoped in
 [Agent Message Attachments Security Checklist](Agent%20Message%20Attachments%20Security%20Checklist.md).
 This extension does not change the authentication or reset deletion controls
 scored above.
+
+## #740 authenticated shell account identity — 2026-10-21
+
+This section covers only the server-supplied account identity used to scope
+the SPA's local records. Pending write reconciliation and client-side identity
+admission are verified separately; this metadata does not authorize an API call.
+
+| Control | Evidence in `skriftapp/buildapp/test_app_shell_cache.py` | Score |
+| --- | --- | ---: |
+| The browser shell names the authenticated session's parsed UUID; request query, header and competing request-state values cannot select another account. | `test_the_shell_names_only_the_authenticated_account` | 20/20 |
+| Missing or malformed browser authentication redirects before rendering an account-bearing shell. | `test_a_signed_out_request_carries_no_account_id`, both cases | 20/20 |
+| Only the exact `{{ACCOUNT_ID}}` placeholder is replaced, with HTML attribute escaping. | `test_the_shell_names_only_the_authenticated_account`, `test_the_account_placeholder_is_encoded_as_an_html_attribute` | 20/20 |
+| The SPA source declares the `build-account-id` meta field, and the existing application mount survives rendering. | `test_the_spa_source_declares_the_account_placeholder`, `test_the_shell_still_carries_the_app` | 20/20 |
+| Account-bearing shell responses are never cached. | `test_the_app_shell_is_never_cached` | 20/20 |
+
+**Scoped shell score: 100/100.** The seven focused tests passed after the
+three new rendering/template assertions failed first. The literal placeholder
+in an unrendered development template is unavailable account identity, not an
+account id. Production rendering also retains the guarded desktop route's
+existing authenticated-user resolution.
+
+The full skriftapp gates passed under `nice -n 10`: frozen Ruff (exit 0) and
+frozen pytest (957 passed, one existing skip, exit 0). Both used the real uv
+0.12.15 executable and the dedicated `/tmp/build-740-sk-venv` environment.
+Logs: `/tmp/build-740-sk-ruff.log` and `/tmp/build-740-sk-pytest.log`.
+Semgrep scanned the changed controller, tests and HTML template with 304 rules,
+zero findings and approximately 100% parsed lines (exit 0;
+`/tmp/build-740-sk-semgrep.log`).
+
+
+## #740 pending-write and epoch boundaries — 2026-10-21
+
+This extension covers the SPA side of wire 3.24.0. The bridge enables each
+semantic method through its greeting allowlist; the foundation enables none.
+Bridge journal execution and paged result references are outside this scope.
+
+| Control | Evidence | Score |
+| --- | --- | ---: |
+| Account, paired device and principal isolate durable intent and its visible layers; missing authenticated shell identity cannot select a namespace. | `writeOperationCache.test.js` namespace/deactivation tests and `writeOperationRuntime.test.js` authenticated metadata tests. | 10/10 |
+| A durable send cannot precede committed intent, and storage failure cannot claim acceptance. | `writeOperations.test.js` persistence-before-transport and refused-storage tests; cache transaction rollback preserves the original provisional row. | 10/10 |
+| Genuine durable ack is success; a receipt, timeout, cancellation or lost carrier cannot invent success or delete intent. | `sessionRpc.test.js` receipt/ack/late-frame tests and `writeOperations.test.js` local-cancellation and same-ID recovery tests. | 10/10 |
+| Current greeting authority fences every application and terminal frame before correlation, credits or cache mutation. Uncorrelated epochs cannot establish authority; replaced carriers cannot answer new write requests or publish to their replacement subscription. | `bridgeEpoch.test.js`, `sessionRpc.test.js` preauthority/mismatched-epoch tests, `connectionWriteCarrier.test.js` real-session carrier migration and terminal epoch regressions. | 10/10 |
+| Journal changes and acknowledged-but-missing records remain unresolved without replay; unknown result references cannot resolve an action successfully. Old quarantine and expiry updates cannot overwrite a newer binding or revision. | `writeOperations.test.js` journal quarantine, delayed metadata updates, direct/summary result references and expired-result regressions. | 10/10 |
+| Cross-tab transport uses an expiring lease, renewed through asynchronous handoff and status retries; duplicate callbacks cannot regress durable revision. | Cache lease/transaction tests, `writeOperationWorker.test.js`, delayed-handoff and reordered-frame service regressions. | 10/10 |
+| Ordered layers use owner kind, ID and generation, remain separate from canonical writes, and retire only against matching publication evidence. | `writeOperationCache.test.js` generation, owner ordering, canonical mutation and complete-publication tests. | 10/10 |
+| Publication cannot erase accepted task floors or permit an older detail read to overwrite a confirmed comment. | Atomic publication/read-note tests in `writeOperationCache.test.js` and captured-base/detail-basis tests in `writeOperationRefresh.test.js`. | 10/10 |
+| Draft recovery and named refresh obligations survive prehello queuing and reload; failure removes only its own unapplied layer. Unknown refresh domains stay unresolved. | `prehelloWriteActions.test.js`, `taskCommentRecovery.test.js`, layer rollback and persistent refresh-obligation service tests. | 10/10 |
+| A new bridge process resets terminal cursors and acknowledgements, reattaches desired terminals, and never replays input. | `terminal.test.js` same-carrier boot change and `terminalReconnectIntegration.test.js` real-manager remint/reattach regression. | 10/10 |
+
+**Scoped pending-write score: 100/100.** The focused cache, service,
+effects, refresh, runtime, RPC and terminal run passed 221 tests (exit 0).
+The prehello, stale task-read and same-carrier terminal regressions failed
+before their fixes. A further empty-overlay refresh regression failed first,
+then 89 cache/service/refresh tests passed after inactive empty layers stopped
+holding a completed refresh open. Full merged-main SPA gates remain the task's handoff gate;
+this scoped score is not a claim that those gates have already passed.
+
+Review follow-ups also pin one oldest-128 replacement subscription, overflow
+status pages, subscriber-only confirmations, same-ID recovery and all six
+status states. Subscription continuations use status with the same IDs;
+both status and subscribe share the eight SQL sender credits. These regressions
+failed before their fixes and passed in the focused service/RPC runs.
+
+Merged-main revalidation (main `4657833f8`, source head `e80289d8e`): the
+immutable expiry fixture exposed terminal outcome/effect evidence that must
+survive result compaction. Five real-cache regressions failed first, then
+89 service/cache tests passed; a composer ownership regression also failed
+first, then 88 UI tests passed. Proven failed/unapplied expiry removes only
+its layer, preserves/restores its draft, and requires a new ID for a new user
+action. Other expired outcomes stay unresolved. The scoped score stays
+**100/100**; the full-suite gate remains separate.
+
+Frozen skriftapp Ruff and pytest passed again (957 passed, one existing skip),
+as did SPA lint, captures and build, all with exit 0 under `nice -n 10`.
+The completed full SPA run exited 1: 728 files and 11,239 tests passed;
+one cold-cache directory-rebinding browser case timed out in unchanged
+`workspaceDirectories.test.js`. That entire file then passed all 14 tests
+in each of three isolated runs, each exit 0. It remains unchanged and the
+full-suite failure is not classified as pre-existing from those reruns alone.

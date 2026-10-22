@@ -15,6 +15,8 @@ pub(crate) enum Effect {
 }
 
 pub const SQL_READ_METHODS: &[&str] = &[
+    "writes.status",
+    "writes.subscribe",
     "thread.page",
     "thread.activity",
     "thread.operation",

@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { called, passesSettled } from "./waits.js";
+import { task as trackerTask } from "./trackerWireFixture.js";
 
 const App = { route: {}, devices: [{ id: "dev-1" }] };
 const watchers = [];
@@ -138,6 +139,59 @@ const mountRoutedPanes = async () => {
 };
 
 describe("foreground-first passes", () => {
+  it("keeps complete RPC task rows across 100-row pages independently of MCP's task limit", async () => {
+    const userSession = {
+      session_started_ms: 1_800_000_000_000, last_activity_ms: 1_800_000_060_000,
+      previous_session_ended_ms: 1_799_900_000_000, gap_ms: 21_600_000, now_ms: 1_800_000_120_000,
+    };
+    const rows = Array.from({ length: 205 }, (_, index) => {
+      const number = 205 - index;
+      const id = `rich-task-${number}`;
+      const agent = `rich-agent-${number}`;
+      return trackerTask({
+        id, number, project_id: "p2", title: `Full task ${number}`, body: `Full body ${number}`,
+        labels: ["bug"], priority: "high", assignee: { kind: "agent", agent_id: agent },
+        links: { workspace_ids: ["ws-10"], branches: [`build/${number}`], commits: [`commit-${number}`],
+          conversation_ids: [agent], parent_task_id: null },
+        identities: { [agent]: { agent_id: agent, name: `Agent ${number}`, project_role: null,
+          ordinal: number, workspace_id: "ws-10", workspace_name: "Workspace 10", provider: "codex", available: true } },
+        dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", number: 206,
+          title: "Prerequisite", state: "open", status: "ready", resolved: false, resolved_by: null }],
+          blocks_count: 0, blocks: [] },
+        review_summary: { task_id: id, workspace_id: "ws-10", version: 2, status: "open",
+          latest_published_snapshot_id: `snapshot-${number}` },
+        deferred_assignment: { id: `delivery-${number}`, target: { kind: "agent", agent_id: agent },
+          state: "waiting", error: null },
+        attachments: [], watched: true, read_through: null, unread_count: number,
+        session_started_ms: userSession.session_started_ms, last_activity_ms: userSession.last_activity_ms,
+      });
+    });
+    const cursors = [undefined, "opaque-after-106", "opaque-after-6"];
+    script["tasks.list"] = ({ project_id, cursor, limit }) => {
+      if (project_id !== "p2") return { project_id, tasks: [], user_session: userSession };
+      const page = cursors.indexOf(cursor);
+      expect(page).toBeGreaterThanOrEqual(0);
+      return { project_id, tasks: rows.slice(page * 100, page * 100 + limit), user_session: userSession,
+        ...(page < 2 ? { next_cursor: cursors[page + 1] } : {}) };
+    };
+
+    start();
+    await finish();
+
+    expect(calls("tasks.list").filter(([, params]) => params.project_id === "p2").map(([, params]) => params)).toEqual([
+      { project_id: "p2", limit: 100 },
+      { project_id: "p2", limit: 100, cursor: "opaque-after-106" },
+      { project_id: "p2", limit: 100, cursor: "opaque-after-6" },
+    ]);
+    const { readTasksRecord } = await import("../src/core/trackerCache.js");
+    const held = await readTasksRecord("dev-1", "p2");
+    expect(held.tasks).toHaveLength(205);
+    expect(held.tasks).toMatchObject(rows);
+    const { readUserSession } = await import("../src/core/userSessionCache.js");
+    expect(await readUserSession("dev-1")).toEqual(userSession);
+    expect(calls("tasks.get")).toHaveLength(0);
+  });
+
   it.each([
     { bridge: "lean", advertised: true, limit: 23 },
     { bridge: "legacy", advertised: false, limit: 100 },

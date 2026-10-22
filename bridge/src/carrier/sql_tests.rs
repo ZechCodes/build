@@ -485,3 +485,60 @@ async fn old_opening_completions_are_fenced_after_reopening_with_reused_request_
         assert_eq!(new.reply().await["generation"], "new");
     }
 }
+
+#[tokio::test]
+async fn write_metadata_is_refused_before_every_intake_fast_path() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&calls);
+    let handler = FrameHandler::new(FrameClock::new(), move |_, _, _| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        json!({"ok":true})
+    });
+    let mut client = Client::new(handler);
+    for method in [
+        "ping",
+        "bridge.stats",
+        "session.hello",
+        "rtc.offer",
+        "writes.status",
+        "changes.subscribe",
+        "fs.write",
+    ] {
+        for metadata in [
+            json!(null),
+            json!({"operation_id":"5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a"}),
+        ] {
+            client
+                .intake
+                .accept(
+                    client_request(
+                        &client.key,
+                        "sql",
+                        "data",
+                        json!({
+                            "id":1,"method":method,"params":{},"write":metadata
+                        }),
+                    ),
+                    &client.carrier,
+                )
+                .await
+                .unwrap();
+            let reply = client.reply().await;
+            assert_eq!(reply["ok"], false, "{method}: {reply}");
+            assert_eq!(
+                reply["error_code"],
+                if metadata.is_null() {
+                    "invalid_params"
+                } else {
+                    "unavailable"
+                },
+                "{reply}"
+            );
+        }
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "unsupported metadata never executes a handler"
+    );
+}

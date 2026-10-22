@@ -1,6 +1,7 @@
 // One E2EE session with one device: minted over a rendezvous, carried by the
 // peer connection and by nothing else (spec rules 1 and 2).
 
+import { transportEpoch } from "./transportEpoch.js";
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { CARRY_CONFIRM_MS, DEFAULT_RPC_TIMEOUT_MS, openSession, replyOrNothing } from "../src/core/session.js";
@@ -9,7 +10,6 @@ import { PING_TIMEOUT_MS } from "../src/core/pathLiveness.js";
 import { PATH_PROBE_EVENT } from "../src/core/pathProbe.js";
 import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } from "../src/core/connectionDiagnostics.js";
 import { ApiError, selectAdapter } from "../src/core/bridgeApi/index.js";
-import { rememberConversationResetSupport } from "../src/core/conversationReset.js";
 import { wipeCache } from "../src/core/localCache.js";
 
 globalThis.indexedDB = new IDBFactory();
@@ -105,12 +105,14 @@ async function opened(overrides = {}) {
   const rendezvous = overrides.rendezvous || fakeRendezvous();
   const session = await openSession({
     rendezvous,
+    bridgeEpoch: transportEpoch(),
     transport: fakeTransport,
     deviceId: "dev-a",
     onLost: () => events.lost++,
     onPush: (payload) => events.pushes.push(payload),
     ...overrides,
   });
+  if (overrides.greet !== false) session.installAdapter(selectAdapter({ api_version: "3.24.0" }));
   return { session, rendezvous, events, signaling: () => rendezvous.wires.at(-1) };
 }
 
@@ -125,6 +127,70 @@ async function carrying(overrides = {}) {
 // ---- minting -----------------------------------------------------------------
 
 describe("openSession", () => {
+  it("holds application calls for the authoritative adapter while hello and signaling can run", async () => {
+    const { session, peer, signaling } = await carrying({ greet: false });
+    const mutation = session.call("tasks.comment", { task_id: "task", body: "preserved" });
+    await tick();
+    expect(peer.sent).toHaveLength(0);
+    const hello = session.call("session.hello", {});
+    const rtc = session.call("rtc.offer", {});
+    await tick();
+    expect(replyTo(peer).method).toBe("session.hello");
+    expect(replyTo(signaling()).method).toBe("rtc.offer");
+    answer(peer, { api_version: "3.24.0" });
+    answer(signaling(), {});
+    await hello;
+    await rtc;
+    const submit = vi.fn(async () => ({ accepted: true }));
+    session.installAdapter(selectAdapter({ api_version: "3.24.0", capabilities: ["bridge.epoch"], ack_confirm_methods: ["tasks.comment"] }), { writeOperations: { submit } });
+    await expect(mutation).resolves.toMatchObject({ accepted: true, phase: "ack" });
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(peer.sent.map((entry) => entry.frameFields.payload.method)).toEqual(["session.hello"]);
+    session.close();
+  });
+
+  it.each(["close", "fail"])("settles unsent calls waiting for a greeting when the session must %s", async (action) => {
+    const { session, peer } = await carrying({ greet: false });
+    const queued = session.call("tasks.comment", {});
+    session[action](new Error("opening ended"));
+    await expect(queued).rejects.toMatchObject({ code: "scope_ended", uncertain: false });
+    expect(peer.sent).toHaveLength(0);
+  });
+
+  it("marks declarative controls waiting for greeting eligible for fresh reconciliation", async () => {
+    const { session } = await carrying({ greet: false });
+    const queued = session.call("term.attach", {});
+    session.close();
+    await expect(queued).rejects.toMatchObject({ code: "scope_ended", uncertain: false, retryable: true });
+  });
+
+  it("refuses greeting-waiting application calls when the selected bridge is unsupported", async () => {
+    const { session, peer } = await carrying({ greet: false });
+    const queued = session.call("tasks.comment", {});
+    session.installAdapter({ unsupported: "bridge" });
+    await expect(queued).rejects.toMatchObject({ code: "unsupported_version" });
+    expect(peer.sent).toHaveLength(0);
+    session.close();
+  });
+
+  it("cancels a call waiting for greeting without dispatching it when the adapter arrives", async () => {
+    const { session, peer } = await carrying({ greet: false });
+    const abort = new AbortController();
+    const rejected = vi.fn();
+    const queued = session.call("tasks.comment", {}, { signal: abort.signal });
+    queued.catch(rejected);
+    abort.abort();
+    try {
+      await tick();
+      expect(rejected).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: "AbortError" }));
+      session.installAdapter(selectAdapter({ api_version: "3.24.0" }));
+      await tick();
+      expect(peer.sent).toHaveLength(0);
+    } finally {
+      session.close();
+    }
+  });
+
   it("mints one session over the rendezvous and takes its signaling wire", async () => {
     const { session, rendezvous } = await opened();
 
@@ -152,7 +218,7 @@ describe("a session that is being upgraded", () => {
       return call;
     };
     try {
-      session.installAdapter(selectAdapter({ api_version: "2.0.0" }));
+      session.installAdapter(selectAdapter({ api_version: "3.24.0" }));
       const old = Array.from({ length: 8 }, () => ask("tasks.list", { timeoutMs: 0 }));
       const queued = ask("tasks.get", { timeoutMs: 10 });
       await vi.advanceTimersByTimeAsync(100);
@@ -180,7 +246,7 @@ describe("a session that is being upgraded", () => {
     await tick();
     abort.abort();
     try {
-      await expect(cancelled).rejects.toMatchObject({ name: "AbortError" });
+      await expect(cancelled).rejects.toMatchObject({ cause: { name: "AbortError" } });
       const held = Array.from({ length: 8 }, () => session.call("tasks.list", {}, { timeoutMs: 0 }));
       held.forEach((call) => call.catch(() => {}));
       await tick();
@@ -244,7 +310,7 @@ describe("a session that is being upgraded", () => {
   it("refuses what was waiting for a wire when the caller says the device is blocked", async () => {
     const { session } = await opened();
     const pending = session.call("board.list", {});
-
+    await tick();
     session.fail(new Error("this device is blocked: timeout"));
 
     await expect(pending).rejects.toThrow("this device is blocked: timeout");
@@ -301,7 +367,7 @@ describe("the end of a session", () => {
 
     await expect(pending).rejects.toThrow(/offline/);
     expect(events.lost).toBe(1);
-    await expect(session.call("board.list", {})).rejects.toThrow(/offline/);
+    await expect(session.call("board.list", {})).rejects.toMatchObject({ code: "scope_ended", uncertain: false });
   });
 
   it("is reported once, whatever else drops after it", async () => {
@@ -360,7 +426,7 @@ describe("what a session's calls carry", () => {
       error_code: "not_found",
       details: { run_id: "x" },
     });
-    await expect(reply).rejects.toMatchObject({ error_code: "not_found", details: { run_id: "x" } });
+    await expect(reply).rejects.toMatchObject({ code: "not_found", details: { run_id: "x" } });
   });
 
   it("takes an options object as the third argument and stamps a background priority", async () => {
@@ -376,10 +442,10 @@ describe("what a session's calls carry", () => {
   });
 
   it("routes calls and their refusals through the installed adapter", async () => {
-    const { session, peer } = await carrying();
+    const { session, peer } = await carrying({ greet: false });
     expect(session.adapter()).toBe(null);
 
-    const installed = session.installAdapter(selectAdapter({ api_version: "2.0.0", capabilities: ["errors.codes"] }));
+    const installed = session.installAdapter(selectAdapter({ api_version: "3.24.0", capabilities: ["errors.codes"] }));
     expect(session.adapter()).toBe(installed);
     expect(installed.capabilities.errors.codes).toBe(true);
 
@@ -392,87 +458,31 @@ describe("what a session's calls carry", () => {
     expect(error.code).toBe("not_found");
 
     // A bridge nobody speaks to leaves the session with no adapter at all.
-    expect(session.installAdapter({ unsupported: "app", version: "2.0.0" })).toBe(null);
+    expect(session.installAdapter({ unsupported: "app", version: "3.24.0" })).toBe(null);
     expect(session.adapter()).toBe(null);
   });
 
-  it("uses the cached 3.11 capability before hello, then the current greeting after a downgrade", async () => {
-    await rememberConversationResetSupport("dev-a", { conversations: { reset: true } });
+  it.each(["thread.attach", "thread.post", "agent.start", "agent.interrupt"])("preserves captured generation fields on %s before and after greeting", async (method) => {
     const { session, peer } = await carrying();
-    const legacy = { entity_id: "entity", filename: "paste.png", content_b64: "aW1hZ2U=" };
-    const params = { ...legacy, agent_id: "agent", thread_id: "cached-generation" };
-    for (const [greeting, expected] of [
-      [null, params],
-      [{ api_version: "3.10.0", capabilities: ["params.strict"] }, legacy],
-      [{ api_version: "3.11.0", capabilities: ["conversation.reset"] }, params],
-      [{ api_version: "3.11.0", capabilities: [] }, legacy],
-      [{ api_version: "3.10.0", capabilities: [] }, legacy],
-    ]) {
+    const params = { entity_id: "entity", agent_id: "agent", thread_id: "captured-generation" };
+    for (const greeting of [null, { api_version: "3.24.0", capabilities: ["conversation.reset"] }]) {
       if (greeting) session.installAdapter(selectAdapter(greeting));
-      const sentCount = peer.sent.length;
-      const reply = session.call("thread.attach", params);
-      await vi.waitFor(() => expect(peer.sent).toHaveLength(sentCount + 1), { timeout: 5000 });
-      expect(replyTo(peer).params).toEqual(expected);
-      answer(peer, { path: "paste.png" });
-      await expect(reply).resolves.toEqual({ path: "paste.png" });
+      const count = peer.sent.length;
+      const request = session.call(method, params);
+      await vi.waitFor(() => expect(peer.sent).toHaveLength(count + 1));
+      expect(replyTo(peer).params).toEqual(params);
+      answer(peer, {});
+      await request;
     }
     session.close();
   });
 
-  it.each([
-    ["thread.attach", { entity_id: "entity", agent_id: "agent", filename: "paste.png", content_b64: "aW1hZ2U=" }],
-    ["thread.post", { entity_id: "entity", agent_id: "agent", conversation_id: "conversation", body: "Hello", choice_revision: 2, operation_id: "operation" }],
-    ["agent.start", { id: "entity", agent_id: "agent" }],
-    ["agent.interrupt", { entity_id: "entity", agent_id: "agent", conversation_id: "conversation" }],
-  ])("a cached 3.11 greeting keeps thread_id on %s while hello is pending", async (method, legacy) => {
-    await rememberConversationResetSupport("dev-a", { conversations: { reset: true } });
-    const { session, peer } = await carrying();
-    const hello = session.call("session.hello", { api_range: ">=2.0.0 <4.0.0" });
-    hello.catch(() => {});
-    const params = { ...legacy, thread_id: "cleared-generation" };
-    const request = session.call(method, params);
-    request.catch(() => {});
-    try {
-      await vi.waitFor(() => expect(peer.sent.some((frame) => frame.frameFields.payload.method === method)).toBe(true));
-      const sent = peer.sent.map((frame) => frame.frameFields.payload).find((payload) => payload.method === method);
-      expect(session.adapter()).toBe(null);
-      expect(sent.params).toEqual(params);
-      peer.reply({ id: sent.id, ok: true, result: {} });
-      await expect(request).resolves.toEqual({});
-    } finally {
-      session.close();
-      await Promise.allSettled([hello, request]);
-    }
-  });
-
-  it.each([false, undefined])("keeps legacy pre-hello params with cached reset support %s, without borrowing another device's capability", async (supported) => {
-    await rememberConversationResetSupport("other-device", { conversations: { reset: true } });
-    if (supported !== undefined) await rememberConversationResetSupport("dev-a", { conversations: { reset: supported } });
-    const { session, peer } = await carrying();
-    const legacy = { entity_id: "entity", filename: "paste.png", content_b64: "aW1hZ2U=" };
-    const request = session.call("thread.attach", { ...legacy, agent_id: "agent", thread_id: "cached-generation" });
-    await vi.waitFor(() => expect(peer.sent.some((frame) => frame.frameFields.payload.method === "thread.attach")).toBe(true));
-    expect(replyTo(peer).params).toEqual(legacy);
-    answer(peer, {});
-    await request;
-    session.close();
-  });
-
-  it.each([
-    [true, { api_version: "3.10.0", capabilities: [] }, false],
-    [false, { api_version: "3.11.0", capabilities: ["conversation.reset"] }, true],
-    [true, { api_version: "4.0.0", capabilities: ["conversation.reset"] }, false],
-  ])("prefers a new greeting over cached support %s while dispatch reads it (%j)", async (cached, greeting, supported) => {
-    await rememberConversationResetSupport("dev-a", { conversations: { reset: cached } });
-    const { session, peer } = await carrying();
-    const legacy = { entity_id: "entity", filename: "paste.png", content_b64: "aW1hZ2U=" };
-    const params = { ...legacy, agent_id: "agent", thread_id: "cached-generation" };
-    const request = session.call("thread.attach", params);
-    session.installAdapter(selectAdapter(greeting));
-    await vi.waitFor(() => expect(peer.sent.some((frame) => frame.frameFields.payload.method === "thread.attach")).toBe(true));
-    expect(replyTo(peer).params).toEqual(supported ? params : legacy);
-    answer(peer, {});
-    await request;
+  it("provides the raw call and persistent write service to adapter installation", async () => {
+    const { session } = await carrying();
+    const writeOperations = { submit: vi.fn() };
+    const create = vi.fn(() => ({ call: vi.fn() }));
+    session.installAdapter({ create }, { writeOperations });
+    expect(create).toHaveBeenCalledExactlyOnceWith(session.rawCall, { writeOperations });
     session.close();
   });
 

@@ -5,9 +5,11 @@
 // re-attaches on it. Nothing here opens, reconnects or authenticates anything —
 // that is core/rendezvous.js.
 
+import { transportEpoch } from "./transportEpoch.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { TerminalSocket } from "../src/terminal/session.js";
 import { createStatusHub } from "../src/terminal/statusHub.js";
+import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
 
 const fakeTransport = {
   encryptFrame: async ({ outerFields, frameFields }) => ({ outerFields, frameFields }),
@@ -21,6 +23,7 @@ const dec = (bytes) => new TextDecoder().decode(bytes);
 /** The session a rendezvous mints for the terminals of one device. */
 const terminalSession = (deviceId = "dev-b", sessionId = "sess-term") => ({
   sessionId,
+  bridgeEpoch: transportEpoch(),
   sessionKeyB64: `key-${sessionId}`,
   deviceId,
 });
@@ -74,8 +77,8 @@ const callsOn = (ws, method) =>
 
 /** A socket with a session and a wire: what the manager hands over once the
  *  followed device's channels are open. */
-async function connected({ session = terminalSession(), settle = tick, transport = fakeTransport } = {}) {
-  const socket = new TerminalSocket({ transport });
+async function connected({ session = terminalSession(), settle = tick, transport = fakeTransport, onTermUnresponsive } = {}) {
+  const socket = new TerminalSocket({ transport, onTermUnresponsive });
   const statuses = [];
   socket.onStatus((status) => statuses.push(status));
   socket.adoptTerminalSession(session);
@@ -114,6 +117,86 @@ function rewire(socket) {
 }
 
 describe("TerminalSocket", () => {
+  it("retires epoch observers when a terminal opening is replaced or closed", async () => {
+    const old = createBridgeEpoch();
+    const current = createBridgeEpoch();
+    const greet = (epoch, bridge_epoch) => epoch.acceptGreeting({ bridge_epoch, journal_incarnation: "journal", capabilities: ["bridge.epoch"] });
+    greet(old, "boot-A");
+    greet(current, "boot-B");
+    const renew = vi.fn();
+    const { socket, ws } = await connected({ session: { ...terminalSession(), bridgeEpoch: old }, onTermUnresponsive: renew });
+    await socket.adoptTerminalSession({ ...terminalSession("dev-b", "replacement"), bridgeEpoch: current }, ws);
+    greet(old, "retired");
+    expect(renew).not.toHaveBeenCalled();
+    socket.close();
+    greet(current, "closed");
+    expect(renew).not.toHaveBeenCalled();
+  });
+
+  it("discards previous-opening terminal pushes after adopting a replacement session", async () => {
+    const { socket, ws, init } = await connected();
+    const outputs = [];
+    const attach = socket.attachTerminal("same-terminal", { onOutput: (data) => outputs.push(dec(data)), onSnapshot: () => {} });
+    await tick();
+    respond(ws, init, lastPayload(ws).id, { snapshot: b64("initial"), cursor: 0 });
+    await attach;
+    const replacement = fakeWire();
+    const adopted = socket.adoptTerminalSession(terminalSession("dev-b", "replacement"), replacement);
+    await tick();
+    respond(replacement, init, lastPayload(replacement).id, { snapshot: b64("replacement"), cursor: 0 });
+    await adopted;
+    push(ws, init, { type: "term.output", term_id: "same-terminal", cursor: 1, data: b64("previous opening") });
+    await tick();
+    expect(outputs).toEqual([]);
+    socket.close();
+  });
+
+  it("remints on a same-carrier epoch change, resets cursors and pending acks, and never replays input", async () => {
+    vi.useFakeTimers();
+    const epoch = createBridgeEpoch();
+    const greeting = (bridge_epoch) => ({ bridge_epoch, journal_incarnation: "journal-A", capabilities: ["bridge.epoch"] });
+    epoch.acceptGreeting(greeting("boot-A"));
+    const renew = vi.fn();
+    const step = () => vi.advanceTimersByTimeAsync(0);
+    const { socket, ws, init } = await connected({ session: { ...terminalSession(), bridgeEpoch: epoch }, settle: step, onTermUnresponsive: renew });
+    try {
+      const outputs = [];
+      const snapshots = [];
+      const attaching = socket.attachTerminal("term-epoch", { onOutput: (data) => outputs.push(dec(data)), onSnapshot: (data) => snapshots.push(dec(data)) });
+      await step();
+      push(ws, init, { id: lastPayload(ws).id, ok: true, result: { snapshot: b64("old snapshot"), cursor: 100 }, bridge_epoch: "boot-A" });
+      await attaching;
+      push(ws, init, { type: "term.output", term_id: "term-epoch", cursor: 101, data: b64("old stream"), bridge_epoch: "boot-A" });
+      const input = socket.input("term-epoch", "bytes that must never replay");
+      input.catch(() => {});
+      await step();
+      epoch.acceptGreeting(greeting("boot-B"));
+      await expect(input).rejects.toMatchObject({ code: "uncertain_delivery", uncertain: true, retryable: false });
+      expect(renew).toHaveBeenCalledTimes(1);
+      push(ws, init, { type: "term.output", term_id: "term-epoch", cursor: 102, data: b64("retired opening"), bridge_epoch: "boot-B" });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(callsOn(ws, "term.ack")).toEqual([]);
+      expect(outputs).toEqual(["old stream"]);
+
+      const adopted = socket.adoptTerminalSession({ ...terminalSession("dev-b", "replacement"), bridgeEpoch: epoch }, ws);
+      await step();
+      expect(callsOn(ws, "term.attach")).toHaveLength(2);
+      push(ws, init, { id: lastPayload(ws).id, ok: true, result: { snapshot: b64("new snapshot"), cursor: 0 }, bridge_epoch: "boot-B" });
+      await adopted;
+      push(ws, init, { type: "term.output", term_id: "term-epoch", cursor: 1, data: b64("current stream"), bridge_epoch: "boot-B" });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(snapshots).toEqual(["old snapshot", "new snapshot"]);
+      expect(outputs).toEqual(["old stream", "current stream"]);
+      expect(callsOn(ws, "term.ack").map((frame) => frame.params.cursor)).toEqual([1]);
+      expect(callsOn(ws, "term.input")).toHaveLength(1);
+      epoch.acceptGreeting(greeting("boot-B"));
+      expect(renew).toHaveBeenCalledTimes(1);
+    } finally {
+      socket.close();
+      vi.useRealTimers();
+    }
+  });
+
   it("attaches nothing when it is given a session and a wire (adopting is not attaching)", async () => {
     const { ws } = await connected();
     const methods = ws.sent.map((m) => m.envelope.frameFields.payload.method);

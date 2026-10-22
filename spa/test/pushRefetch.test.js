@@ -128,7 +128,7 @@ describe("a surface against a bridge that pushes", () => {
     const events = await import("../src/core/changeEvents.js");
     const { projectChangesDirectories } = await import("../src/core/projectChangesModel.js");
     const bridge = vi.fn(async (method, params) => method === "session.hello" ? {
-      push_events: true, api_version: "2.0.0", capabilities: ["changes.subscriptions"],
+      push_events: true, api_version: "3.24.0", capabilities: ["changes.subscriptions"],
       changes: { subscriptions: true, mode: params.changes, kinds: ["state", "git", "files"] },
     } : {});
     await events.greetBridge(bridge);
@@ -171,7 +171,7 @@ describe("a surface against a bridge that pushes", () => {
     const events = await import("../src/core/changeEvents.js");
     let capable = true;
     const bridge = vi.fn(async (method, params) => method === "session.hello" ? {
-      push_events: true, api_version: "2.0.0",
+      push_events: true, api_version: "3.24.0",
       capabilities: ["changes.subscriptions", ...(capable ? ["changes.projectSources", "git.projectSources"] : [])],
       changes: { subscriptions: true, mode: params.changes, kinds: ["state", "git", "files"] },
     } : {});

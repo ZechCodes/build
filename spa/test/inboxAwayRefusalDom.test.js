@@ -22,7 +22,7 @@ const PROJECT = "proj-1";
 const PROJECT_KEY = `${DEVICE}/${PROJECT}`;
 const WAIT = { timeout: 5000, interval: 20 };
 const GREETING = {
-  api_version: "2.0.0",
+  api_version: "3.24.0",
   push_events: true,
   capabilities: ["tasks.watching", "tasks.attachments"],
   tasks: { watching: true, attachments: true },

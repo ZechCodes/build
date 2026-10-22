@@ -47,7 +47,7 @@ export async function mountWaitingOnFixture(page, basePath, { theme = "light", a
     const fixture = { tasks, current, calls: [], navigations: [], refusal: null, readsHeld: cachedOnly, old };
     fixture.call = async (method, params) => {
       fixture.calls.push({ method, params: structuredClone(params || {}) });
-      if (method === "session.hello") return { api_version: "3.21.0", capabilities: fixture.old ? [] : ["tasks.waitingOn"], push_events: false };
+      if (method === "session.hello") return { api_version: "3.24.0", capabilities: fixture.old ? [] : ["tasks.waitingOn"], push_events: false };
       if (method === "tasks.get") {
         if (fixture.readsHeld) return new Promise(() => {});
         return { task: structuredClone(fixture.current), timeline: [] };

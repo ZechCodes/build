@@ -30,7 +30,7 @@ it.each(["inbox", "projects"])("dispatches an aged capture through a real editor
       };
       const context = contexts.adoptDeviceSession({ deviceId, call, close() {}, peer() {}, onCarrier() {}, onPush() {} });
       contexts.adoptBridgeSelection(context, { version: "3.21.0" },
-        adapter.create(call, { api_version: "3.21.0", capabilities: [] }));
+        adapter.create(call, { api_version: "3.24.0", capabilities: [] }));
       await cache.writeCached({ deviceId, entityId: "", kind: "projects" },
         [{ id: projectId, project_id: projectId, projectKey, deviceId, name: "Build" }]);
       await cache.writeCached({ deviceId, entityId: "", kind: "feed" }, { items: [capture], runs: [] });

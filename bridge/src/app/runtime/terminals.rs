@@ -146,9 +146,15 @@ pub(in crate::app) fn session_hello(
     // The client record happens with the app mutex released — it takes its
     // own leaf lock, and nothing in this daemon may nest one lock inside
     // another it did not have to.
-    let (changes, qa_agent) = {
+    let (changes, qa_agent, journal_incarnation) = {
         let app = timer.lock(state);
-        (app.changes(), app.qa_agent)
+        (
+            app.changes(),
+            app.qa_agent,
+            app.store
+                .as_ref()
+                .map(|store| store.journal_incarnation().to_owned()),
+        )
     };
     {
         let mut app = timer.lock(state);
@@ -162,7 +168,10 @@ pub(in crate::app) fn session_hello(
     );
     Ok(json!({
         "api_version": API_VERSION,
+        "bridge_epoch": sender.bridge_epoch(),
+        "journal_incarnation": journal_incarnation,
         "capabilities": crate::api::capabilities(qa_agent),
+        "ack_confirm_methods": crate::api::writes::ACK_CONFIRM_METHODS,
         "push_events": true,
         "events": ANNOUNCED_EVENTS,
         "coalesce_window_ms": changes.window().as_millis() as u64,

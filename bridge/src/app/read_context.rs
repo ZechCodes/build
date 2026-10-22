@@ -27,6 +27,7 @@ pub(in crate::app) struct ReadContext {
     tasks: TaskReadContext,
     threads: ThreadReadContext,
     deleting_project: bool,
+    pub(in crate::app) mutations: super::mutations::MutationAuthority,
     addresses: Arc<McpAddresses>,
     bootstrap: Arc<McpBootstrap>,
 }
@@ -54,6 +55,7 @@ impl AppState {
             addresses: Arc::new(McpAddresses::capture(self)),
             bootstrap: Arc::new(McpBootstrap::capture(self)),
             deleting_project: self.project_deletion_in_progress,
+            mutations: super::mutations::MutationAuthority::capture(self),
         })));
     }
 
@@ -81,6 +83,7 @@ impl AppState {
         next.tasks
             .retain_live_owners(&previous.tasks, self, Some((owner, saved)));
         next.deleting_project = self.project_deletion_in_progress;
+        next.mutations = super::mutations::MutationAuthority::capture(self);
         self.read_context.store(Some(Arc::new(next)));
     }
 
@@ -101,6 +104,7 @@ impl AppState {
         next.tasks
             .retain_saved_owners(&previous.tasks, self, owners);
         next.deleting_project = self.project_deletion_in_progress;
+        next.mutations = super::mutations::MutationAuthority::capture(self);
         self.read_context.store(Some(Arc::new(next)));
     }
 
@@ -115,6 +119,7 @@ impl AppState {
         next.tasks = self.task_read_context();
         next.tasks.retain_live_owners(&previous.tasks, self, None);
         next.tasks.forget_live_owner(owner);
+        next.mutations = super::mutations::MutationAuthority::capture(self);
         self.read_context.store(Some(Arc::new(next)));
     }
 
@@ -142,6 +147,7 @@ impl AppState {
             addresses,
             bootstrap: Arc::clone(&previous.bootstrap),
             deleting_project: self.project_deletion_in_progress,
+            mutations: super::mutations::MutationAuthority::capture(self),
         };
         next.tasks.retain_live_owners(&previous.tasks, self, None);
         self.read_context.store(Some(Arc::new(next)));

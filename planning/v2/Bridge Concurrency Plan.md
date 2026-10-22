@@ -441,14 +441,16 @@ ordering, old-generation refusal, partial failure, lost/reordered confirms,
 reload before/after ack and cached paint throughout epoch changes. MCP reads
 must not wait for a write permit or app mutex.
 
-Wire: proposed **3.24.0**, `bridge.epoch`, `writes.ackConfirm`, `writes.status`,
-`writes.subscribe`, exact `ack_confirm_methods` and MCP action allowlists.
-Add request metadata, typed ack/confirmation fixtures and all-push epoch
-stamping. Existing callers retain final replies unless they opt in. Rollback:
-remove methods from *new admission* allowlists, keep status/recovery/outbox
-and cache reconciliation alive for accepted commands; no downgrade to a
-schema-unaware binary, even after all execution drains. Retained terminal
-status/idempotency remains required. See protocol §7 for tests and version allocation.
+Wire: **3.24.0** foundation, `bridge.epoch`, `writes.status` and
+`writes.subscribe`. Hello advertises `ack_confirm_methods`, mirroring the
+bridge allowlist and empty in 6a. Clients use ack/confirm only for listed
+methods, with MCP actions enabled separately in 6b. Add request metadata,
+typed ack/confirmation fixtures and all-push epoch stamping. Per Zech’s
+2026-10-21 decision, bridge and SPA ship together and the SPA requires this
+version: no `write.mode`, legacy final-reply branch or ack-confirm capability
+negotiation. Forward migration, durable identity, status/outbox and intact-store
+restart recovery remain required; rollback-build/downgrade tests and migrated-DB
+rollback guarantees are dropped. See protocol §7.
 
 ### Step 7 — Remaining semantic writes, one patch per family
 
@@ -473,16 +475,16 @@ existing operation-specific rollback and §3's order.
 | `projects/requests.rs::project_*`, `projects/source_update.rs::project_update_source`, `projects/deletion.rs::project_delete`, `projects/conversation.rs::project_ensure_conversation`, `projects/base_sync.rs::project_sync_source`; `config/persistence.rs::{config_value_with_project,persist_config}`, `config/settings.rs::settings_set`, `config/compaction_wire.rs::{set_project_compaction,set_workspace_compaction}` | Config serialization retains concurrent project/workspace edits; disk failure, descendant deletion, parked IDs and stale source generations. |
 | `tracker/reviews.rs::review_*` and `tracker/reviews/{opening,publication,merge,lifecycle}.rs`; `captures/mod.rs::{capture_create,capture_answer,capture_cancel,capture_reroute}` | Explicit/background review conflicts and deletion, receiver-lock order, existing capture recovery, cross-owner destinations and version guards. |
 
-Wire: proposed **3.25.0**, extend `ack_confirm_methods` under
-`writes.ackConfirm` (and MCP action support) as each family is qualified.
+Wire: proposed **3.25.0**, extend the hello-advertised `ack_confirm_methods`
+and MCP action allowlists as each family is qualified.
 No generic “all writes supported” flag before registry coverage passes.
 Tests add process-death interleavings around each external claim/effect,
 staged attachment retention, upload offset/hash deduplication, partial
 effects, multi-owner deletion and terminal-outbox persistence failure.
-Rollback disables only new admissions for that family; the rollback build
-must understand the migrated schema and retain status/idempotency for
-terminal commands as well as recovery for outstanding work. Draining does
-not make a schema-unaware rollback safe.
+The hello-advertised allowlist controls new method enablement. Binary rollback onto
+the migrated journal and rollback-build tests are out of scope under Zech’s
+2026-10-21 decision; status/idempotency and intact-store restart recovery
+remain required for every enabled family (protocol §7).
 
 ### Step 8 — Session/autonomous completion and bounded read coverage
 
@@ -658,10 +660,10 @@ The first column below contains each of `api/effects.rs::WRITE_METHODS`'s
 from potentially slow application. “Already fast” means a bounded/service
 operation can normally apply and publish at admission, then ack and confirm
 back-to-back; it is a design classification, **not measured latency evidence**.
-Both semantic-write policies use the negotiated protocol, durability and
+Both semantic-write policies use the coordinated wire protocol, durability and
 failure policy. **Exempt (real-time)** calls use ordered final replies and
-epoch fences, with no durable early ack or journal. Old clients retain final
-replies. The settled exception is enumerated below, including QA and
+epoch fences, with no durable early ack or journal. Older clients are not
+supported by this protocol rollout (Zech’s 2026-10-21 decision). The settled exception is enumerated below, including QA and
 subscription controls; a write effect classification alone does not imply
 journaling.
 

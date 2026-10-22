@@ -24,6 +24,7 @@
 // leaves this tab: the relay rendezvous, the E2EE session it mints and the
 // direct connection it negotiates, and the account's REST list.
 
+import { transportEpoch } from "./transportEpoch.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -123,7 +124,7 @@ const conversationWithAgent = {
 function bridgeSession(deviceId) {
   const conversation = wire.conversation;
   const answers = {
-    "session.hello": () => ({}),
+    "session.hello": () => ({ api_version: "3.24.0" }),
     "project.list": () => ({ projects: [{ project_id: "proj-1", name: "Payments" }] }),
     "workspace.list": () => ({ workspaces: [{ workspace_id: "ws-1", project_id: "proj-1", title: "Checkout", state: "ready" }] }),
     "board.list": () => ({ items: conversation ? [conversation] : [] }),
@@ -135,6 +136,7 @@ function bridgeSession(deviceId) {
   let carrierChanged = () => {};
   const session = {
     deviceId,
+    bridgeEpoch: transportEpoch(),
     sessionId: `session-${deviceId}-${wire.sessions.length + 1}`,
     call: vi.fn(async (method) => {
       const held = wire.held.get(method);

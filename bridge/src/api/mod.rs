@@ -11,6 +11,7 @@
 pub mod clients;
 pub(crate) mod effects;
 pub mod v1;
+pub mod writes;
 
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -61,7 +62,8 @@ use std::collections::BTreeSet;
 /// deferred assignment and read contracts (#562).
 /// 3.22.0 adds per-harness compaction policies and observations.
 /// 3.23.0 populates attachments on agent replies and agent-to-agent messages (#696).
-pub const API_VERSION: &str = "3.23.0";
+/// 3.24.0 adds bridge epochs and the durable-write journal wire foundation (#739).
+pub const API_VERSION: &str = "3.24.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -90,6 +92,7 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// Cross-verb wire features whose availability cannot be expressed by a
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
+    "bridge.epoch", // Since 3.24.0: authenticated process epochs and journal incarnation (#739).
     "unread.watchScoped", // Since 3.19.0: watched-only unread after the persisted watch baseline (#474).
     "agents.createdBy",   // Since 3.1.0: created_by on an agent's digest (#216).
     "agents.names",
@@ -394,6 +397,9 @@ impl ApiError {
     /// <thing>`), and `internal` for everything else — which a test counts,
     /// so the list shrinks over time.
     pub fn classify(message: String) -> ApiError {
+        if let Some(error) = crate::app::AppState::decode_file_error(&message) {
+            return error;
+        }
         if let Some(error) = v1::reviews::errors::decode(&message) {
             return error;
         }

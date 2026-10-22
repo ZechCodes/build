@@ -126,7 +126,7 @@ async function greetCreatingBridge(page, basePath) {
   }, basePath);
   await page.evaluate(async () => {
     const { contexts, adapter, changes } = window.__layoutModules;
-    const greeting = { api_version: "3.16.0", capabilities: ["fs.uploadBegin", "fs.createDirectory", "fs.createFile"] };
+    const greeting = { api_version: "3.24.0", capabilities: ["fs.uploadBegin", "fs.createDirectory", "fs.createFile"] };
     const call = async (method) => (method === "session.hello" ? greeting : {});
     const context = contexts.adoptDeviceSession({ deviceId: "explorer-device", call, close() {}, peer() {}, onCarrier() {}, onPush() {} });
     contexts.adoptBridgeSelection(context, { version: greeting.api_version }, adapter.create(call, greeting));

@@ -380,3 +380,36 @@ one cold-cache directory-rebinding browser case timed out in unchanged
 `workspaceDirectories.test.js`. That entire file then passed all 14 tests
 in each of three isolated runs, each exit 0. It remains unchanged and the
 full-suite failure is not classified as pre-existing from those reruns alone.
+
+## #704 unread reader isolation — 2026-10-22
+
+Controls 2 and 9 retain their existing ownership boundaries. Reader suppression
+matches the device, owner, canonical conversation (or legacy agent identity)
+and known thread generation. The `READING_HERE` Symbol exists only on derived
+feed copies: persisted unread counts are unchanged. The feed snapshots mounted
+reader visibility before computing descendant indicators and numeric totals.
+Rail disposal unregisters its scope; `stopFeed()` unsubscribes reader events,
+and the final subscriber removes focus, blur and visibility listeners.
+
+`inboxUnread704.test.js` and `agentRailDom.test.js` cover aliases, device and
+generation isolation, focus/visibility, rail transitions and disposal. The
+bridge's `conversation_watch_baselines.rs` tests cover restarted resident tails
+with and without published history. Read progress uses the same watch-scoped
+cursor and full history as unread counts; unavailable or erroring history
+retains unread conservatively. No wire shape or authentication boundary changes.
+
+Fresh desktop/phone Chromium captures preserve cached unread at 1 while every
+sample of the visible open conversation displays zero unread. Worker unread
+still appears on ancestors without duplicating the numeric total. Final gate
+exit codes and scanner limitations are recorded in the #704 handoff.
+
+Final revalidation uses Node 22.23.4/npm 12.0.2 after merging `origin/main`
+at `5b13c50d2`. Transport and SPA clean installs, lint, the completed full SPA
+suite (731 files / 11,279 tests), captures and build exit 0. Bridge test,
+strict Clippy, fmt, vendored WebRTC and Pi gates exit 0. Changed-file Semgrep,
+changed-tree Gitleaks and branch-history Gitleaks exit 0. The handoff retains
+two earlier failed full SPA attempts and an isolated-main exit 1 caused by an
+unhandled Inbox teardown rejection; those attempts are not classified as passes.
+An additional whole-directory secret scan exits 1 on generated Rust metadata
+and unchanged transport vectors, outside this change. No scanner exclusions or
+complexity ratchets were added. **#704 scoped security score: 100/100.**

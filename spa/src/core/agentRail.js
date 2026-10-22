@@ -88,7 +88,7 @@ import { mountContextGauge } from "./contextGauge.js";
 import { catalogForProvider, creatableCatalog, creationModelId, effortLevels, effortSupported, matchCatalogModel, modelParams } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
 import { createChatReadReporter, hasReadProgress } from "./chatReadReporter.js";
-import { onReaderReturns, readerIsHere } from "./readerPresence.js";
+import { onReaderReturns } from "./readerPresence.js";
 import { notifyError, notifySuccess } from "./notify.js";
 import { COMPACTION_SAVED } from "./compactionPresentation.js";
 import { deviceFeedView } from "./deviceContexts.js";
@@ -107,7 +107,7 @@ import {
 import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
 import { hashFromRoute, routeFromHash } from "./router.js";
-import { registerSyncThread, syncPaneShown } from "./syncVisibleScopes.js";
+import { notifyThreadReaders, registerSyncThread, syncPaneShown, threadReaderIsHere } from "./syncVisibleScopes.js";
 import { createRailWorkItem } from "./railWorkItem.js";
 import { forgetRevisionBodies, revisionContents } from "./revisionBodies.js";
 import { readCached, subscribeCache } from "./localCache.js";
@@ -2179,8 +2179,10 @@ function mountRailOnContext(host, context, swap) {
 
   const activeBubble = () => host.querySelector(`${STRIP_BUTTONS}.active`);
 
-  const syncThreadTimeVisibility = () =>
+  const syncThreadTimeVisibility = () => {
     threadTimeWatcher?.setVisible(panelVisible && selectedKind !== "overview" && shownPanelMode() === "chat");
+    notifyThreadReaders();
+  };
 
   const syncPopover = () => {
     syncThreadTimeVisibility();
@@ -2983,7 +2985,8 @@ function mountRailOnContext(host, context, swap) {
   const chatIsVisible = () => standing() && panelVisible && !document.hidden && shownPanelMode() === "chat";
   const unregisterSyncThread = registerSyncThread(
     () => ({ ...controllerInFocus().identity, deviceId: context.deviceId }),
-    () => selectedKind === "agent" && chatIsVisible() && syncPaneShown(host),
+    () => selectedKind === "agent" && !resettingConversation && !conversationIsUnselected()
+      && chatIsVisible() && syncPaneShown(host),
   );
 
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
@@ -3665,8 +3668,9 @@ function mountRailOnContext(host, context, swap) {
     // Shown is not read: a window left showing a chat overnight must not mark
     // what agents post, nor keep the user's session alive. What is on screen
     // is reported when the user comes back (readerPresence.js).
-    if (!chatIsVisible() || !readerIsHere()) return;
     const agent = agentInFocus();
+    const controller = controllerForAgent(agent);
+    if (!controller || !threadReaderIsHere({ ...controller.identity, deviceId: context.deviceId })) return;
     const thread = threadFor();
     // The drawn rows are all `readThroughSequence` can ask, so the items this
     // level left out are folded back in: a reader who has scrolled past where a
@@ -3680,7 +3684,6 @@ function mountRailOnContext(host, context, swap) {
     const read = readThroughHiddenItems(readThroughSequence(body), threadItems(thread), detailLevel());
     unreadFrom = unreadLineFor(thread, read);
     if (!hasReadProgress(agent, read)) return;
-    const controller = controllerForAgent(agent);
     if (!controller.identity.entityId || !controller.identity.agentId) return;
     // The floor is where what the reader was shown starts: the top of the drawn
     // slice when it cuts the window, else the window's own.

@@ -3643,6 +3643,21 @@ gate attachment display.
   fields. Identical results cause no cache write; cache announcements redraw
   badges. Passive clients on
   other devices need the bridge's state push.
+  Inbox uses the same mounted-thread visibility and focused-reader predicate
+  as `agentRail.reportRead` (`syncVisibleScopes.js`). While that conversation
+  is being read, a newly cached count is suppressed on every feed paint,
+  including before `entity.seen` answers. Presence changes synchronously
+  rederive the held feed; hidden, collapsed, TUI, overview and absent-reader
+  states restore normal cached unread. This is a display-only symbol on
+  derived agent digests, keyed by device, owner, canonical conversation and
+  thread generation. Raw counts remain unchanged for history landing and read
+  reports, and local presence is never written to the replicated cache.
+  The bridge's read-window guard uses the same watch-scoped cursor and full
+  conversation history as its unread count (#704). Pre-watch messages below
+  the window do not block reading current news, while unread messages outside
+  the resident tail after restart still block skipping over them. The published
+  history index supplies that check; before publication, the store supplies
+  omitted history. An unavailable history read preserves the cursor.
 - **Optimistic writes** also go into the cache first, and the push that follows
   confirms them.
   Task body checklist changes (#347, `spa/src/core/taskChecklist.js`) rewrite
@@ -4072,6 +4087,10 @@ Conversation reset returns its watch baseline to zero for the new history.
 The SPA also treats cached `watched: false` as zero on older bridges, without
 waiting for a greeting. Wire 3.19.0 announces `unread.watchScoped`; older
 bridges cannot supply watch-start-scoped counts.
+The project Tasks badge follows both cached list and detail records, using the
+same unread calculation as Inbox, so an accepted task-page read clears both
+before the next list refresh. The task page's New divider also starts after
+the watch baseline (`watch_started_after`, or the legacy watch event).
 
 Inbox rows, including Recent and the project Workspaces tab, use
 `spa/src/core/inboxStatusDot.js` for one right-edge status dot. Unread activity
@@ -4080,6 +4099,8 @@ and reduced-motion preferences disable the animation. Watched tasks read their
 assigned agent's running state from cached rosters. A folded project head
 summarizes watched activity, including tasks without a Needs you reason; an
 expanded head leaves status on the project agent’s own row.
+When only descendant news lights a coordinator's dot, its tooltip says
+"A worker has unread messages"; its own unread retains "Unread activity".
 The head offers Hide and New workspace directly.
 
 The Projects face lists every project in one list ordered by the oldest
@@ -4149,6 +4170,12 @@ in its activity panel runs. The task feed derives those descendant rollups
 from the freshest cached rosters, per device and project, using the cached
 `agents.createdBy` capability for Build descendants. The agent's own
 `working` flag stays separate for interruption controls.
+The feed also derives descendant unread from that canonical lineage (#704).
+Only watched conversations supply news; project and workspace ancestor dots
+summarize it with an ephemeral `agents_unread` flag. Their own unread counts
+remain unchanged, so a message contributes to the Inbox total only at its
+owning row. Complete project rosters use the same lineage, including aliases,
+and a cached read update clears ancestor dots without a history fetch.
 
 ### Window chrome
 

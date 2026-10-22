@@ -82,6 +82,27 @@ describe("inbox running activity while an agent waits on another agent (#386)", 
 });
 
 describe("the inbox's shared status dot", () => {
+  it.each([false, true])("names worker-only unread on the coordinator dot while running=%s", (running) => {
+    const row = rowOf(entry({
+      kind: "project_agent", working: running, unreadCount: 0, descendantUnread: true,
+    }));
+    const dot = statusOf(row);
+    const label = `${running ? "Running · " : ""}A worker has unread messages`;
+    expect(dot?.title).toBe(label);
+    expect(dot?.getAttribute("aria-label")).toBe(label);
+    expect(dot?.classList.contains("inbox-status-unread")).toBe(true);
+    expect(dot?.classList.contains("inbox-status-running")).toBe(running);
+  });
+
+  it.each([false, true])("keeps the normal tooltip for the coordinator's own unread while running=%s", (running) => {
+    const row = rowOf(entry({
+      kind: "project_agent", working: running, unreadCount: 1, descendantUnread: true,
+    }));
+    const label = `${running ? "Running · " : ""}Unread activity`;
+    expect(statusOf(row)?.title).toBe(label);
+    expect(statusOf(row)?.getAttribute("aria-label")).toBe(label);
+  });
+
   it.each(["workspace", "branch", "task", "tracker_task", "project_agent"])("puts %s unread activity beside the name with no extra icon or counter", (kind) => {
     const row = rowOf(entry({ kind, state: "unread", unreadCount: 12 }));
     const dot = statusOf(row);

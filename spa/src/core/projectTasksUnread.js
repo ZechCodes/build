@@ -1,15 +1,15 @@
 // The project Tasks tab's count (#104): "For the project it is all unreads" —
 // the unread of every watched task in the project that is not finished
-// (#183), read off its cached `tasks.list` record (core/taskUnread.js).
+// (#183), read off its cached list and task details (core/taskUnread.js).
 //
-// It listens to that record, so an `tasks` push moves the count with nothing
-// asked of the bridge: core/cacheSync.js rewrites the record and
-// core/localCache.js announces it. One project at a time — the one the bar is
-// standing in.
+// A task page's accepted read updates its detail before the list refreshes.
+// Follow both records so this badge agrees with Inbox throughout that gap.
+// Cache announcements supply every update; this follower asks for no reads.
 
 import { subscribeCache } from "./localCache.js";
 import { tasksAddress, readTasksRecord } from "./trackerCache.js";
-import { watchedTasksUnread } from "./taskUnread.js";
+import { countsInTotals, watchedTasksUnread } from "./taskUnread.js";
+import { createTrackerTaskDetailsFeed } from "./trackerTaskDetailsFeed.js";
 
 /**
  * Follow one project's watched unread. `follow(deviceId, projectId)` moves to
@@ -21,7 +21,17 @@ export function followProjectTasksUnread(onChange = () => {}) {
 
   function stop() {
     standing?.unsubscribe();
+    standing?.details.dispose();
     standing = null;
+  }
+
+  function recount(current) {
+    if (standing !== current) return;
+    const details = current.details.read();
+    const count = watchedTasksUnread(current.tasks, { detailOf: (task) => details.get(task.id) });
+    if (count === current.count) return;
+    current.count = count;
+    onChange();
   }
 
   function follow(deviceId, projectId) {
@@ -29,16 +39,18 @@ export function followProjectTasksUnread(onChange = () => {}) {
     if ((standing?.key ?? null) === key) return;
     stop();
     if (!key) return;
-    const current = { key, count: 0, reads: 0, unsubscribe: () => {} };
+    const current = { key, count: 0, reads: 0, tasks: [], unsubscribe: () => {} };
     standing = current;
+    current.details = createTrackerTaskDetailsFeed({
+      deviceId, projectId, onChange: () => recount(current),
+    });
     const reread = async () => {
       const read = ++current.reads;
       const record = await readTasksRecord(deviceId, projectId);
       if (standing !== current || read !== current.reads) return;
-      const count = watchedTasksUnread(record?.tasks || []);
-      if (count === current.count) return;
-      current.count = count;
-      onChange();
+      current.tasks = record?.tasks || [];
+      await current.details.updateTasks(current.tasks.filter((task) => task.watched === true && countsInTotals(task)));
+      if (read === current.reads) recount(current);
     };
     current.unsubscribe = subscribeCache(tasksAddress(deviceId, projectId), () => void reread());
     void reread();

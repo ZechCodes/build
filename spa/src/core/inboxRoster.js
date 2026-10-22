@@ -35,6 +35,9 @@ export const runningAgentCount = (agents = []) => agents.filter(agentIsRunning).
 /** The folded project summary includes only watched running agents. */
 export const watchedAgentsRunning = (agents = []) => agents.some((agent) => agent.watched !== false && agentIsRunning(agent));
 
+/** Descendant news lights the ancestor's dot without adding to its count. */
+export const watchedDescendantsUnread = (agents = []) => agents.some((agent) => agent.watched !== false && agent.agents_unread === true);
+
 /** Everything the watched agents are waiting to tell the user. An agent is
  *  watched unless the bridge says otherwise (#101). */
 export const watchedUnreadCount = rosterUnreadCount;

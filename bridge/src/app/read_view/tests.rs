@@ -1,6 +1,9 @@
 use super::*;
 use serde_json::json;
 
+mod combined_versions;
+mod shared_chunks;
+
 #[test]
 fn disjoint_deltas_merge_and_old_root_remains_immutable() {
     let slot = ReadViewSlot::default();
@@ -9,8 +12,14 @@ fn disjoint_deltas_merge_and_old_root_remains_immutable() {
     let second = SnapshotDelta::new(slot.next_version()).put("agent.list", "b", json!({"n": 2}));
     slot.publish_delta(second);
     slot.publish_delta(first);
-    assert_eq!(slot.load().get("agent.list", "a"), Some(&json!({"n": 1})));
-    assert_eq!(slot.load().get("agent.list", "b"), Some(&json!({"n": 2})));
+    assert_eq!(
+        slot.load().get("agent.list", "a").as_deref(),
+        Some(&json!({"n": 1}))
+    );
+    assert_eq!(
+        slot.load().get("agent.list", "b").as_deref(),
+        Some(&json!({"n": 2}))
+    );
     assert!(before.get("agent.list", "a").is_none());
 }
 
@@ -43,7 +52,7 @@ fn concurrent_delta_publication_retains_every_disjoint_owner() {
     });
     for index in 0..16 {
         assert_eq!(
-            slot.load().get("agent.list", &index.to_string()),
+            slot.load().get("agent.list", &index.to_string()).as_deref(),
             Some(&json!({"index":index}))
         );
     }
@@ -76,6 +85,41 @@ fn current_builder_rebases_on_a_concurrent_publication() {
     slot.publish_delta(SnapshotDelta::new(slot.next_version()).put("agent.list", "a", json!(10)));
     release.send(()).unwrap();
     writer.join().unwrap();
-    assert_eq!(slot.load().get("agent.list", "a"), Some(&json!(11)));
+    assert_eq!(
+        slot.load().get("agent.list", "a").as_deref(),
+        Some(&json!(11))
+    );
     assert_eq!(built.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn stale_observation_context_rejects_the_entire_candidate_delta() {
+    let root = tempfile::tempdir().unwrap();
+    let app = crate::app::AppState::new_unrooted(
+        root.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/observation-version.sock",
+    );
+    let context = || {
+        Arc::new(crate::app::observation_reads::ObservationContext::capture(
+            &app,
+        ))
+    };
+    let slot = ReadViewSlot::default();
+    let stale = SnapshotDelta::new(slot.next_version())
+        .set_observations(context())
+        .put("board.list", "", json!({"candidate":true}));
+    let latest = context();
+    assert!(slot.publish_delta(SnapshotDelta::new(slot.next_version()).set_observations(latest)));
+    let installed = slot.load();
+    assert!(!slot.publish_delta(stale));
+    assert!(Arc::ptr_eq(
+        slot.load().observations.as_ref().unwrap(),
+        installed.observations.as_ref().unwrap()
+    ));
+    assert!(
+        slot.load().get("board.list", "").is_none(),
+        "stale identity rejects associated wire rows"
+    );
 }

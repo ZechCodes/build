@@ -24,9 +24,15 @@ impl AppState {
     /// right now — `None` for a project nobody has talked to yet, because a
     /// read may never mint one.
     pub(in crate::app) fn project_list_rows(&self) -> Vec<ProjectListRow> {
+        #[cfg(test)]
+        crate::app::snapshot_projection::work_counts::project_capture::capture();
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.project_rows.capture");
         self.projects
             .iter()
             .map(|project| {
+                #[cfg(test)]
+                crate::app::snapshot_projection::work_counts::project_capture::project(&project.id);
                 let conversation = self.project_snapshot_conversation_run(&project.id);
                 let scope = crate::compaction::CompactionScope::Project(project.id.clone());
                 ProjectListRow {

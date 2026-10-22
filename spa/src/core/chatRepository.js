@@ -65,6 +65,14 @@ const storedAttachments = (attachments = []) => attachments.map((attachment) => 
   descriptor: attachment.descriptor || null,
   error: attachment.status === "uploading" ? "Attach this file again" : attachment.error || "",
 }));
+const storedMessageDraft = (submission) => ({
+  body: submission.message.body,
+  attachments: submission.message.attachments.map((attachment) => attachment.status
+    ? storedAttachments([attachment])[0]
+    : { name: attachment.name, size: attachment.size, mime: attachment.mime, status: "ready", descriptor: attachment }),
+  message: submission.message,
+  choiceRevision: submission.choiceRevision,
+});
 const deepFreeze = (value) => {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
   Object.values(value).forEach(deepFreeze);
@@ -175,6 +183,7 @@ function assertAddress(identity) {
 }
 
 function validatePostReceipt(receipt, submission) {
+  if (receipt?.phase === "ack" && receipt.operation_id === submission.operationId) return receipt;
   if (!receipt) throw new Error("thread.post returned no receipt");
   if (submission.threadPostOperations) {
     const missing = REQUIRED_OPERATION_RECEIPT_FIELDS.find((field) => receipt[field] === null || receipt[field] === undefined || receipt[field] === "");
@@ -211,6 +220,24 @@ function validateStatusReceipt(receipt, submission) {
   return receipt;
 }
 
+const durableFailure = (operation) => !operation.dismissed && (operation.unresolved || ["failed", "outcome_unknown", "result_expired", "partial", "unknown", "rejected"].includes(operation.state));
+
+const durableError = (operation) => operation.error?.message || operation.confirmation?.error?.message || "Your message wasn't saved.";
+const durableEffect = (operation) => operation.effect || operation.confirmation?.effect;
+
+const durableRecovery = (operation) => ({
+  operationId: operation.operationId,
+  operation,
+  durable: true,
+  status: durableEffect(operation) === "unapplied" ? "rejected" : "uncertain",
+  error: durableError(operation),
+  kind: "message",
+  body: operation.draft?.body || "",
+  attachmentCount: operation.draft?.attachments?.length || 0,
+  canRetry: true,
+  canDismiss: true,
+});
+
 class ChatController {
   #repository;
   #identity;
@@ -226,6 +253,9 @@ class ChatController {
   #threadState;
   #cacheDraft;
   #draftOwner;
+  #restoredDurableFailures = new Set();
+  #draftReady = false;
+  #hadDurableOperations = false;
 
   constructor(repository, identity) {
     this.#repository = repository;
@@ -252,10 +282,12 @@ class ChatController {
     this.#operations = new Map();
     this.#resent = new Set();
     this.#startDraftCache();
+    this.syncDurableOperations();
   }
 
   #startDraftCache() {
-    if (!this.#repository.cacheDrafts) return;
+    if (!this.#repository.cacheDrafts) { this.#draftReady = true; return; }
+    this.#draftReady = false;
     this.#cacheDraft = watchUiState(this.#repository.draftAddress(this.#identity), (saved) => {
       if (!saved || typeof saved.body !== "string") return;
       const savedAttachments = Array.isArray(saved.attachments) ? saved.attachments : [];
@@ -278,6 +310,12 @@ class ChatController {
       }
       this.announce();
     }, { debounceMs: 180 });
+    const writer = this.#cacheDraft;
+    void writer.ready.then(() => {
+      if (!this.#repository.active || this.#cacheDraft !== writer) return;
+      this.#draftReady = true;
+      this.syncDurableOperations();
+    }).catch(() => {});
   }
 
   get identity() {
@@ -364,6 +402,7 @@ class ChatController {
       scopeEpoch: this.#repository.epoch,
       threadPostOperations: this.#repository.threadPostOperations(),
       call,
+      durable: this.#repository.usesWriteOperations("thread.post"),
     });
     this.#operations.set(operationId, { submission, status: "sending", error: "" });
     this.announce();
@@ -399,6 +438,7 @@ class ChatController {
       scopeEpoch: this.#repository.epoch,
       threadPostOperations: this.#repository.threadPostOperations(),
       call,
+      durable: this.#repository.usesWriteOperations("thread.post"),
     });
     this.#operations.set(operationId, { submission, status: "creating", error: "" });
     this.announce();
@@ -435,7 +475,7 @@ class ChatController {
     if (tracked) tracked.extra = { ...extra };
     let receipt;
     try {
-      receipt = await call("thread.post", {
+      const params = {
         ...submission.message,
         ...extra,
         entity_id: entityId,
@@ -444,6 +484,11 @@ class ChatController {
         ...(threadId ? { thread_id: threadId } : {}),
         choice_revision: submission.choiceRevision,
         operation_id: submission.operationId,
+      };
+      receipt = await call("thread.post", params, {
+        operationId: submission.operationId,
+        owner: { kind: "chat", ...submission.address },
+        draft: storedMessageDraft(submission),
       });
     } catch (error) {
       this.recordOperationFailure(submission, error);
@@ -496,8 +541,18 @@ class ChatController {
     this.#operations.set(submission.operationId, { ...operation, kind: "message" });
   }
 
+  writeOperation(submission) {
+    return this.#repository.writeOperationsFor(submission.address || this.#identity)
+      .find((operation) => operation.operationId === submission.operationId);
+  }
+
+  isDurableSubmission(submission) {
+    return Boolean(this.writeOperation(submission));
+  }
+
   async operationStatus(submission) {
     this.#repository.assertSubmissionActive(submission);
+    if (this.isDurableSubmission(submission)) return this.#repository.checkWriteOperation(submission.operationId);
     if (!submission.threadPostOperations) throw new Error("Operation status is unavailable on this bridge");
     const status = await this.#repository.currentCall()(submission.threadPostOperations.statusMethod, {
       entity_id: submission.address.entityId,
@@ -531,7 +586,7 @@ class ChatController {
    *  order is submission order, which is the order they have to be settled in. */
   #uncertainPosts() {
     return [...this.#operations.values()].filter((operation) =>
-      operation.status === "uncertain" && operation.submission.threadPostOperations,
+      operation.status === "uncertain" && !this.isDurableSubmission(operation.submission) && operation.submission.threadPostOperations,
     );
   }
 
@@ -587,7 +642,10 @@ class ChatController {
   }
 
   recoveries() {
-    return [...this.#operations.values()]
+    const durable = this.#durableRecoveries();
+    const durableIds = new Set(this.#repository.writeOperationsFor(this.#identity).map((operation) => operation.operationId));
+    return [...durable, ...[...this.#operations.values()]
+      .filter((operation) => !durableIds.has(operation.submission.operationId))
       .filter((operation) => ["uncertain", "rejected", "execution_error"].includes(operation.status))
       .map((operation) => ({
         operationId: operation.submission.operationId,
@@ -598,10 +656,16 @@ class ChatController {
         attachmentCount: operation.submission.message?.attachments?.length || 0,
         canRetry: operation.kind === "creation" || operation.status === "rejected"
           || (operation.status === "uncertain" && !!operation.submission.threadPostOperations),
-      }));
+      }))];
   }
 
   async retryOperation(operationId, { retryCreation } = {}) {
+    const durable = this.#durableRecoveries().find((row) => row.operationId === operationId);
+    if (durable) return this.#retryDurable(durable);
+    return this.#retryLegacyOperation(operationId, retryCreation);
+  }
+
+  async #retryLegacyOperation(operationId, retryCreation) {
     const operation = this.#operations.get(operationId);
     if (!operation) throw new Error("Unknown chat operation");
     if (operation.kind === "creation") {
@@ -618,6 +682,52 @@ class ChatController {
     this.#failures = this.#failures.filter((failure) => failure.operationId !== operationId);
     this.announce();
     return receipt;
+  }
+
+  #durableRecoveries() {
+    return this.#repository.writeOperationsFor(this.#identity).filter(durableFailure).map(durableRecovery);
+  }
+
+  syncDurableOperations() {
+    if (!this.#draftReady) return;
+    const hasOperations = this.#repository.writeOperationsFor(this.#identity).length > 0;
+    if (!hasOperations && !this.#hadDurableOperations) return;
+    this.#hadDurableOperations = hasOperations;
+    for (const recovery of this.#durableRecoveries()) this.#restoreDurableFailure(recovery);
+    this.announce();
+  }
+
+  #restoreDurableFailure(recovery) {
+    if (recovery.status !== "rejected" || this.#restoredDurableFailures.has(recovery.operationId)) return;
+    this.#restoredDurableFailures.add(recovery.operationId);
+    if (!this.#draft.body && !this.#draft.attachments.length) {
+      this.writeDraft({ body: recovery.body, attachments: recovery.operation.draft?.attachments || [] });
+    }
+  }
+
+  async #retryDurable(recovery) {
+    if (recovery.status === "uncertain") return this.#repository.checkWriteOperation(recovery.operationId);
+    const operation = recovery.operation;
+    const draft = operation.draft || {};
+    const submission = Object.freeze({
+      operationId: this.#repository.createOperationId(),
+      address: publicIdentity(this.#identity),
+      choiceRevision: this.#choices.read().revision,
+      message: messageSnapshot(draft.message || { body: draft.body, attachments: (draft.attachments || []).map((entry) => entry.descriptor || entry) }),
+      scopeEpoch: this.#repository.epoch,
+      threadPostOperations: this.#repository.threadPostOperations(),
+      call: this.#repository.currentCall(),
+      durable: true,
+    });
+    const draftRevision = this.#draft.revision;
+    const result = await this.post(submission);
+    if (this.#draft.revision === draftRevision && this.#draft.body === draft.body) this.writeDraft({ body: "", attachments: [] });
+    await this.dismissOperation(recovery.operationId);
+    return result;
+  }
+
+  dismissOperation(operationId) {
+    return this.#repository.dismissWriteOperation(operationId);
   }
 
   restoreRejected(submission, error) {
@@ -725,6 +835,7 @@ export function createChatRepository({
   createOperationId = randomOperationId,
   viewingContext = null,
   storage: providedStorage,
+  writeOperations = null,
 } = {}) {
   if (typeof call !== "function") throw new Error("Chat repository requires an RPC call function");
   let active = true;
@@ -758,6 +869,9 @@ export function createChatRepository({
   let threadPostOperations = null;
   let messageContext = false;
   const optimisticStore = createOptimisticStore();
+  const stopWriteOperations = writeOperations?.subscribe(() => {
+    if (active) for (const controller of controllers.values()) controller.syncDurableOperations();
+  }) || (() => {});
   const stopThreadGenerations = scope?.deviceId ? subscribeCache({ deviceId: scope.deviceId }, (address) => {
     if (address.kind !== "thread" || !address.sub) return;
     void readCached(address).then((record) => {
@@ -871,6 +985,27 @@ export function createChatRepository({
     currentCall() {
       repository.assertActive();
       return currentCall;
+    },
+
+    usesWriteOperations(method) {
+      return writeOperations?.supports(method) === true;
+    },
+
+    writeOperationsFor(identity) {
+      return (writeOperations?.readOperations() || []).filter((operation) => {
+        const owner = operation.owner;
+        return owner?.kind === "chat" && owner.entityId === identity.entityId
+          && owner.agentId === identity.agentId && owner.conversationId === identity.conversationId
+          && (!owner.threadId || owner.threadId === identity.threadId);
+      });
+    },
+
+    checkWriteOperation(operationId) {
+      return writeOperations.checkAgain(operationId);
+    },
+
+    dismissWriteOperation(operationId) {
+      return writeOperations.dismiss(operationId);
     },
 
     threadPostOperations() {
@@ -1119,6 +1254,7 @@ export function createChatRepository({
       epoch += 1;
       currentCall = null;
       stopThreadGenerations();
+      stopWriteOperations();
       for (const listener of [...retirementListeners]) listener();
       retirementListeners.clear();
       for (const controller of controllers.values()) controller.dispose();

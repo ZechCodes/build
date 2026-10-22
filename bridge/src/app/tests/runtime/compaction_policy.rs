@@ -298,8 +298,7 @@ async fn a_session_opened_for_an_old_thread_cannot_publish_its_policy() {
             old_thread,
             "the replacement generation must differ before publication"
         );
-        app.session_registry
-            .install_mcp_token(fixture.agent.clone(), "new-generation-token".into());
+        app.test_install_mcp_token(fixture.agent.clone(), "new-generation-token".into());
         app.session_registry.waiting_screen_for_attach(
             fixture.key.clone(),
             "new-generation-screen",

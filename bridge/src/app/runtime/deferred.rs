@@ -620,6 +620,14 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
+        self.with_rpc_post_attention(method, |app| app.dispatch_deferring_inner(method, params))
+    }
+
+    fn dispatch_deferring_inner(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
         let queued_before = self.delivery_queue.checkpoint();
         let outcome = self.route(method, params);
         if outcome.is_err() {
@@ -672,7 +680,9 @@ impl AppState {
         };
         match &applied {
             Ok(result) => {
-                self.stamp_interaction_for(method, params);
+                if self.deferred_work.is_none() {
+                    self.stamp_interaction_for(method, params);
+                }
                 // HERE, not before the drain: the decide half only claimed the
                 // checkout, and a browser told to refetch then would have read
                 // the state this write-back is about to replace.
@@ -690,6 +700,10 @@ impl AppState {
         // only the reply is refused. A mismatch is this bridge's own bug —
         // an implementation that drifted from the type `api/v1` declares for
         // its verb — and reads as `internal` to the client.
+        if applied.is_ok() && self.deferred_work.is_some() {
+            self.deferred_result_check = check;
+            return applied;
+        }
         Self::checked_reply(method, check, applied)
     }
 
@@ -971,6 +985,18 @@ impl AppState {
         self.note_board_lists_changed(crate::changes::BoardLists::default());
     }
 
+    /// Attention on a live owner changes its row and dependent details.
+    pub(in crate::app) fn note_owner_board_changed(&self, owner: &str) {
+        {
+            let _ownership = self.begin_snapshot_ownership();
+            self.publish_owner_snapshot_projection(owner);
+            self.publish_read_metadata_only();
+        }
+        self.changes
+            .note_board_lists(crate::changes::BoardLists::default());
+        self.watchers.board_moved(self.worktree_roots());
+    }
+
     /// The feed moved, and so did one of the lists a client caches whole: the
     /// next board item carries that list in full. Every other board note
     /// moves rows, which ride their own items.
@@ -1001,8 +1027,10 @@ impl AppState {
     /// run's worktree and the external checkout it was adopted from, and a
     /// client watching either is looking at the same tab row.
     pub(in crate::app) fn note_terminals_at(&self, root: &std::path::Path) {
-        self.publish_snapshot_projection();
-        for entity_id in self.entities_rooted_at(root) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("terminals.publish");
+        self.publish_terminal_observations();
+        for entity_id in self.publish_terminal_facts_at(root) {
             self.changes.note_terminals(&entity_id);
         }
     }

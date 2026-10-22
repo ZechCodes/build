@@ -1,7 +1,7 @@
 //! Share ownership resolution across every chunk prepared for one publication.
-use super::{AppState, Arc, BTreeSet, Mutex, ProjectionOwnership};
+use super::{AppState, Arc, BTreeSet, Mutex, ProjectionOwnership, Value};
 
-pub(super) struct ProjectionOwnershipGuard<'a> {
+pub(in crate::app) struct ProjectionOwnershipGuard<'a> {
     slot: &'a Mutex<Option<Arc<ProjectionOwnership>>>,
     owns_context: bool,
 }
@@ -18,7 +18,7 @@ impl AppState {
     /// Candidate preparation runs under the app lock. Nested preparation
     /// reuses its context; the outer guard removes it before persistence or
     /// canonical fields can change, including a failed candidate's rollback.
-    pub(super) fn begin_snapshot_ownership(&self) -> ProjectionOwnershipGuard<'_> {
+    pub(in crate::app) fn begin_snapshot_ownership(&self) -> ProjectionOwnershipGuard<'_> {
         let slot = &self.snapshot_observations.ownership;
         let owns_context = slot.lock().unwrap().is_none();
         if owns_context {
@@ -30,6 +30,22 @@ impl AppState {
 
     pub(in crate::app) fn snapshot_ownership_context(&self) -> Option<Arc<ProjectionOwnership>> {
         self.snapshot_observations.ownership.lock().unwrap().clone()
+    }
+
+    /// Pure structure is retained only by the delta's accepted global cache.
+    pub(in crate::app) fn snapshot_projection_structure(
+        &self,
+    ) -> Option<Arc<crate::app::workspaces::ProjectionStructure>> {
+        self.snapshot_projection_initialized()
+            .then(|| self.snapshot_ownership_context())
+            .flatten()
+            .map(|context| context.structure())
+    }
+
+    pub(in crate::app) fn snapshot_ownership_paths(
+        &self,
+    ) -> &std::collections::BTreeMap<std::path::PathBuf, std::path::PathBuf> {
+        &self.snapshot_observations.paths
     }
 
     /// A canonical conversation can appear on another owner's roster. Include
@@ -44,8 +60,9 @@ impl AppState {
             }
         }
         let previous = self.read_view.load();
-        let previous_agents = previous
-            .get("agent.list", owner)
+        let previous_row = previous.get("agent.list", owner);
+        let previous_agents = previous_row
+            .as_deref()
             .and_then(|row| row["agents"].as_array());
         for agent in previous_agents.into_iter().flatten() {
             for field in ["id", "conversation_id"] {
@@ -65,6 +82,25 @@ impl AppState {
                 })
             })
             .collect::<BTreeSet<_>>();
+        #[cfg(test)]
+        if !super::native_reads::task_projection_enabled() {
+            affected.insert(owner.to_string());
+            return affected;
+        }
+        if let Some(plan) = self
+            .runs
+            .get(owner)
+            .and_then(|run| run.run.plan_id.as_ref())
+        {
+            affected.insert(plan.0.clone());
+        }
+        if let Some(plan) = previous
+            .get("task.implementation", owner)
+            .as_deref()
+            .and_then(Value::as_str)
+        {
+            affected.insert(plan.to_owned());
+        }
         affected.insert(owner.to_string());
         affected
     }

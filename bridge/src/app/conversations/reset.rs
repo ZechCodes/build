@@ -52,6 +52,7 @@ impl AppState {
             let held = state.reserve_reset_turns(&address, &agents);
             let refusal = held.as_ref().err().cloned();
             let held = held.ok();
+            let owns_reset_authority = held.is_some();
             let completions = state.reset_delivery_completions(&agents);
             let native = if refusal.is_none() {
                 state.retire_reset_sessions(native)
@@ -88,6 +89,14 @@ impl AppState {
                     if let Some(held) = held {
                         state.delivery_queue.restore_conversation(held);
                     }
+                }
+                // Keep independent readers fenced through the complete commit
+                // (including committed cleanup errors) or failure restoration.
+                // A refused operation never clears another reset's reservation.
+                if owns_reset_authority {
+                    state
+                        .session_registry
+                        .set_mcp_resetting(&address.conversation_id, false);
                 }
                 outcome
             };
@@ -165,9 +174,16 @@ impl AppState {
         self.board
             .attention_mut()
             .advance_conversation(thread_id, 0);
+        // Every alias and canonical generation belongs to one committed reset.
+        // Stage the complete affected set before the first sparse publication.
+        for owner in &owners {
+            self.mark_observation_owner_changed(owner);
+        }
+        self.publish_read_owners(&owners);
         for owner in owners {
-            self.publish_read_owner(&owner, true);
             self.note_entity_changed(&owner);
+            #[cfg(test)]
+            reset_observer::record(&self.read_view.load());
             self.publish_live_roster_for(&owner);
         }
         self.note_board_changed();
@@ -335,9 +351,13 @@ impl AppState {
         self.guard_conversation_reservation(address)?;
         self.resetting_conversations
             .insert(address.conversation_id.clone());
+        self.session_registry
+            .set_mcp_resetting(&address.conversation_id, true);
         if let Err(error) = self.refuse_reset_in_flight(address, agents) {
             self.resetting_conversations
                 .remove(&address.conversation_id);
+            self.session_registry
+                .set_mcp_resetting(&address.conversation_id, false);
             return Err(error);
         }
         Ok(self
@@ -764,4 +784,41 @@ fn native_lineages_share(one: &SessionLineage, other: &SessionLineage) -> bool {
     }
     one_harness.native_history_cwd(std::path::Path::new(one_cwd))
         == other_harness.native_history_cwd(std::path::Path::new(other_cwd))
+}
+
+#[cfg(test)]
+impl AppState {
+    pub(in crate::app) fn observe_reset_publications(
+        callback: impl FnMut(&super::super::read_view::ReadView) + 'static,
+    ) -> impl Drop {
+        reset_observer::install(Box::new(callback))
+    }
+}
+
+#[cfg(test)]
+mod reset_observer {
+    use super::super::super::read_view::ReadView;
+    use std::cell::RefCell;
+    type Callback = Box<dyn FnMut(&ReadView)>;
+    thread_local! { static OBSERVER: RefCell<Option<Callback>> = RefCell::new(None); }
+    pub(super) struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OBSERVER.with(|observer| *observer.borrow_mut() = None);
+        }
+    }
+    pub(super) fn install(callback: Callback) -> Guard {
+        OBSERVER.with(|observer| {
+            assert!(observer.borrow().is_none());
+            *observer.borrow_mut() = Some(callback);
+        });
+        Guard
+    }
+    pub(super) fn record(view: &ReadView) {
+        OBSERVER.with(|observer| {
+            if let Some(callback) = observer.borrow_mut().as_mut() {
+                callback(view);
+            }
+        });
+    }
 }

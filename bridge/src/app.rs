@@ -22,6 +22,8 @@ mod github;
 mod harness_inventory;
 mod mcp;
 mod model_catalog;
+mod mutations;
+mod observation_reads;
 mod projects;
 mod push_keys;
 mod read_context;
@@ -377,6 +379,13 @@ pub struct AppState {
     /// Test-only pause after workspace OID preparation, before materialization.
     #[cfg(test)]
     off_lock_workspace_prepared_gate: Option<OffLockGate>,
+    /// Test-only pause after review publication, before its observation query.
+    #[cfg(test)]
+    off_lock_review_open_observation_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    off_lock_review_observation_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    off_lock_review_observation_loaded: Option<OffLockGate>,
     /// Test-only synchronous drains own AppState directly, even when the
     /// test holds it through an Arc. Their source preflights cannot relock it.
     #[cfg(test)]
@@ -389,6 +398,12 @@ pub struct AppState {
     /// Pause a terminal create after RPC admission, before its spawn guard.
     #[cfg(test)]
     terminal_create_admission_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    terminal_create_spawn_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    terminal_create_scope_probe_gate: Option<OffLockGate>,
+    /// Human attention owners coalesced only inside one RPC thread.post guard.
+    rpc_post_attention_owners: Option<std::collections::BTreeSet<String>>,
     /// The git work a verb handed to the drain, to run with this mutex
     /// released. Set by exactly one verb per dispatch and taken by the drain
     /// in the same breath, so the `Ok` the verb returned meanwhile is a
@@ -706,11 +721,22 @@ impl AppState {
             #[cfg(test)]
             off_lock_workspace_prepared_gate: None,
             #[cfg(test)]
+            off_lock_review_open_observation_gate: None,
+            #[cfg(test)]
+            off_lock_review_observation_gate: None,
+            #[cfg(test)]
+            off_lock_review_observation_loaded: None,
+            #[cfg(test)]
             inline_deferred: false,
             #[cfg(test)]
             off_lock_project_list_gate: None,
             #[cfg(test)]
             terminal_create_admission_gate: None,
+            #[cfg(test)]
+            terminal_create_spawn_gate: None,
+            #[cfg(test)]
+            terminal_create_scope_probe_gate: None,
+            rpc_post_attention_owners: None,
             deferred_work: None,
             deferred_result_check: None,
             pending_rows: Vec::new(),

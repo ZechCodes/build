@@ -135,8 +135,7 @@ async fn project_deletion_retires_workers_and_preserves_sources() {
     state
         .lock()
         .unwrap()
-        .session_registry
-        .test_install_token(worker.clone(), "worker-token".into());
+        .test_install_mcp_token(worker.clone(), "worker-token".into());
     let edit = repo.join("worker-edit.txt");
     std::fs::write(&edit, "uncommitted\n").unwrap();
 

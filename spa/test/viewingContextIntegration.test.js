@@ -25,7 +25,7 @@ function messaging(viewingContext, call = vi.fn(async () => ({ posted_sequence: 
     viewingContext,
     createOperationId: () => `operation-${++operation}`,
   });
-  repository.configureCapabilities({ api_version: "2.0.0", capabilities: ["messages.context"], message_context: { version: 1 } });
+  repository.configureCapabilities({ api_version: "3.24.0", capabilities: ["messages.context"], message_context: { version: 1 } });
   const controller = repository.controller(address);
   return {
     call,
@@ -76,6 +76,10 @@ describe("viewing context across SPA surfaces and outgoing messages", () => {
           { kind: "selection", path: "README.md", text: "selected words" },
         ],
       },
+    }), expect.objectContaining({
+      operationId: "operation-1",
+      owner: expect.objectContaining({ kind: "chat", ...address }),
+      draft: expect.objectContaining({ body: "revise this" }),
     }));
     files.dispose();
     chat.repository.dispose();
@@ -93,6 +97,12 @@ describe("viewing context across SPA surfaces and outgoing messages", () => {
     expect(chat.call).toHaveBeenCalledWith("thread.post", expect.objectContaining({
       option_reply: { message_id: "message-4", option_ids: ["fix"] },
       viewing_context: { version: 1, items: [{ kind: "commit", sha: "a".repeat(40) }] },
+    }), expect.objectContaining({
+      operationId: "operation-1",
+      owner: expect.objectContaining({ kind: "chat", ...address }),
+      draft: expect.objectContaining({ message: expect.objectContaining({
+        viewing_context: { version: 1, items: [{ kind: "commit", sha: "a".repeat(40) }] },
+      }) }),
     }));
     chat.repository.dispose();
   });
@@ -210,16 +220,20 @@ describe("viewing context across SPA surfaces and outgoing messages", () => {
     vi.useRealTimers();
   });
 
-  it("keeps ordinary sends compatible with a legacy bridge", async () => {
+  it("omits viewing context when the current greeting does not advertise it", async () => {
     const viewingContext = createViewingContext();
     viewingContext.set({ kind: "file", path: "src/a.js" });
-    const call = vi.fn(async () => ({ posted_sequence: 2 }));
-    const repository = createChatRepository({ scope: {}, call, viewingContext });
-    const controller = repository.controller(address);
-    await controller.post(controller.captureSubmission({ body: "still works" }));
+    const chat = messaging(viewingContext);
+    chat.repository.configureCapabilities({ api_version: "3.24.0", capabilities: [] });
+    await chat.send({ body: "send without context" });
 
-    expect(call).toHaveBeenCalledWith("thread.post", expect.not.objectContaining({ viewing_context: expect.anything() }));
-    repository.dispose();
+    expect(chat.call).toHaveBeenCalledWith("thread.post", expect.not.objectContaining({ viewing_context: expect.anything() }),
+      expect.objectContaining({
+        operationId: "operation-1",
+        owner: expect.objectContaining({ kind: "chat", ...address }),
+        draft: expect.objectContaining({ body: "send without context" }),
+      }));
+    chat.repository.dispose();
   });
 });
 

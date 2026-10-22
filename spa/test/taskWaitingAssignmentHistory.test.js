@@ -21,7 +21,7 @@ afterEach(async () => {
   document.body.replaceChildren();
 });
 
-const hello = (capable) => ({ api_version: "3.21.0", push_events: false,
+const hello = (capable) => ({ api_version: "3.24.0", push_events: false,
   capabilities: capable ? ["tasks.waitingOn"] : [] });
 
 function greet(context, answer) {

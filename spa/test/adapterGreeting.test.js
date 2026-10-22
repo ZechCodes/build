@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 let bridgeAdapter, bridgeCapabilities, changeEventsArmed, greetBridge, resetChangeEvents, subscriptionsActive, watchChanges;
 
 const NONE = {
+  writes: { epoch: false, ackConfirmMethods: [] },
   term: { projectSources: false },
   changes: { subscriptions: false, kinds: [], projectSources: false },
   git: { projectSources: false },
@@ -37,7 +38,7 @@ const NONE = {
 const SUBSCRIBING_CAPABILITIES = ["changes.subscriptions", "requests.priority", "errors.codes"];
 
 const subscribingGreeting = () => ({
-  api_version: "2.0.0",
+  api_version: "3.24.0",
   capabilities: SUBSCRIBING_CAPABILITIES,
   push_events: true,
   events: ["changes"],
@@ -71,9 +72,10 @@ describe("the adapter a greeting selects", () => {
     const install = vi.fn((selection) => selection.create(async () => ({})));
     await greetBridge(async () => subscribingGreeting(), { install });
     expect(install).toHaveBeenCalledTimes(1);
-    expect(install.mock.calls[0][0]).toMatchObject({ major: 3, version: "2.0.0" });
+    expect(install.mock.calls[0][0]).toMatchObject({ major: 3, version: "3.24.0" });
     expect(bridgeAdapter()).toBe(install.mock.results[0].value);
     expect(bridgeCapabilities()).toEqual({
+      writes: { epoch: false, ackConfirmMethods: [] },
       // The kinds ride through as the greeting states them, so a caller can ask
       // whether this bridge carries the one it is about to subscribe to.
       changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], projectSources: false },
@@ -102,21 +104,17 @@ describe("the adapter a greeting selects", () => {
     });
   });
 
-  it("is created on the greeting call itself when nobody installs it elsewhere", async () => {
-    // A greeting that reports no version is the one bridge shape left that
-    // advertises nothing: the lowest adapter takes it with every flag off.
+  it("installs nothing for an unversioned greeting", async () => {
     await greetBridge(async () => ({ push_events: true }));
-    expect(bridgeAdapter()).toMatchObject({ major: 3, version: "0.0.0" });
-    expect(bridgeCapabilities()).toEqual({ ...NONE, term: { projectSources: false } });
-    expect(changeEventsArmed()).toBe(true);
+    expect(bridgeAdapter()).toBe(null);
+    expect(bridgeCapabilities()).toEqual(NONE);
+    expect(changeEventsArmed()).toBe(false);
   });
 
-  it("serves a bridge that refuses the greeting as pre-alpha on the lowest adapter", async () => {
-    await greetBridge(async () => {
-      throw new Error("unknown method: session.hello");
-    });
-    expect(bridgeAdapter()).toMatchObject({ major: 3, version: "0.0.0" });
-    expect(bridgeCapabilities()).toEqual({ ...NONE, term: { projectSources: false } });
+  it("installs nothing when the bridge refuses the greeting", async () => {
+    await greetBridge(async () => { throw new Error("unknown method: session.hello"); });
+    expect(bridgeAdapter()).toBe(null);
+    expect(bridgeCapabilities()).toEqual(NONE);
   });
 
   it("installs nothing for a bridge above every adapter, and neither arms nor refetches", async () => {
@@ -138,9 +136,9 @@ describe("the adapter a greeting selects", () => {
     await greetBridge(async () => ({ api_version: "4.0.0" }));
     expect(bridgeAdapter()).toBe(null);
     await greetBridge(async () => ({ push_events: true }));
-    expect(bridgeAdapter()).toMatchObject({ version: "0.0.0" });
+    expect(bridgeAdapter()).toBe(null);
     expect(bridgeCapabilities().changes.subscriptions).toBe(false);
-    expect(changeEventsArmed()).toBe(true);
+    expect(changeEventsArmed()).toBe(false);
   });
 
   it("does not install for a greeting whose session stopped owning the application", async () => {
@@ -160,7 +158,7 @@ describe("the adapter a greeting selects", () => {
       queueMicrotask(() => { current = false; });
       return answer;
     };
-    await greetBridge(async () => ({ api_version: "2.0.0" }), { install, isCurrent });
+    await greetBridge(async () => ({ api_version: "3.24.0" }), { install, isCurrent });
     expect(install).not.toHaveBeenCalled();
     expect(bridgeAdapter()).toBe(null);
   });

@@ -30,7 +30,9 @@ impl DeliveryRunner {
     /// nothing else to drain it when the window ends, so the same acquisition
     /// asks for a wake then.
     pub(in crate::app) fn drain(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
-        let admission = state.lock().unwrap().update_admission();
+        #[cfg(test)]
+        timer.mark_request("delivery_admission_start");
+        let admission = timer.lock(state).update_admission();
         let lease = match admission {
             Some(gate) => match gate.try_enter() {
                 Some(lease) => Some(lease),
@@ -38,6 +40,17 @@ impl DeliveryRunner {
             },
             None => None,
         };
+        Self::drain_admitted(state, timer, lease);
+    }
+
+    /// Claim queued work using an admission already held by the complete RPC.
+    /// The caller retains its original lease through the reply; background
+    /// delivery and compaction own this clone until their work finishes.
+    pub(in crate::app) fn drain_admitted(
+        state: &Arc<Mutex<AppState>>,
+        timer: &FrameTimer,
+        lease: Option<AdmissionLease>,
+    ) {
         let (compactions, turns, settle_wake, usage_limit_wake) = {
             let mut app = timer.lock(state);
             // Before the turns are taken: an agent with a turn queued has

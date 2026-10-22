@@ -14,6 +14,7 @@
 mod activity;
 mod agent_files;
 mod attachments;
+pub(in crate::app) use attachments::read_task_attachment;
 mod closure_context;
 mod comments;
 mod completion_authority;
@@ -447,7 +448,7 @@ impl AppState {
             }
         }
         if self.snapshot_projection_initialized() {
-            self.publish_snapshot_projection();
+            self.publish_task_snapshot_projection();
         }
         self.changes.note_tasks(project, &changed);
     }

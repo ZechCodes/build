@@ -68,6 +68,8 @@ import { createTaskReplyNavigation } from "./taskCommentReplies.js";
 import { mountTaskWaitingOn } from "./taskWaitingOnPage.js";
 import { readTaskWaitingOnSupport, taskWaitingOnSupportAddress } from "./taskWaitingOnSupport.js";
 import { mountMeasuredHeight } from "./measuredInset.js";
+import { mountTaskCommentRecovery } from "./taskCommentRecovery.js";
+import { provenExpiredFailure } from "./writeOperationIntent.js";
 
 /** Whether one flush of `tasks` items says anything about this task. */
 const namesTask = (items, taskId) =>
@@ -92,6 +94,12 @@ export function mountTaskPage(host, options) {
   let stopHeadMeasurement = () => {};
   let reviewPage = null;
   let waitingEditor = null;
+  let commentRecovery = null;
+  let consumingCommentDraft = null;
+  let checkingCommentOwnership = null;
+  let checkedCommentOwnership = null;
+  const ownedCommentOperations = new Map();
+  const commentFailures = new WeakMap();
   const state = {
     ...options,
     task: null,
@@ -99,6 +107,7 @@ export function mountTaskPage(host, options) {
     reviewSnapshots: [],
     columns: [],
     draft: "",
+    draftOperationId: null,
     labelsDraft: "",
     busy: false,
     sending: false,
@@ -138,6 +147,7 @@ export function mountTaskPage(host, options) {
   }), (saved) => {
     if (typeof saved?.body !== "string" || state.disposed) return;
     state.draft = saved.body;
+    state.draftOperationId = saved.submittedOperationId || null;
     paint();
   }, { debounceMs: 180 });
 
@@ -367,6 +377,7 @@ export function mountTaskPage(host, options) {
     if (patchTimeline(parts.timeline, painted.has("timeline"))) painted.add("timeline");
     wire(painted);
     syncCommentBox();
+    commentRecovery?.sync();
     syncWaitingEditor();
     if (painted.has("timeline")) unreadPill.sync();
     restoreField(typing);
@@ -412,8 +423,11 @@ export function mountTaskPage(host, options) {
     const send = host.querySelector('[data-task-composer] button[type="submit"]');
     if (!field || !send) return;
     if (field.value !== state.draft) takeDraftInto(field, state.draft);
+    resolveSubmittedCommentOwnership();
+    const submitted = hasSubmittedComment();
     field.disabled = state.sending;
-    send.disabled = !canComment(state.draft, state.sending, state.files.length > 0);
+    send.disabled = !canComment(state.draft, state.sending || submitted, state.files.length > 0);
+    consumeSubmittedCommentDraft();
     send.textContent = commentSendLabel(state.sending);
   }
 
@@ -600,7 +614,7 @@ export function mountTaskPage(host, options) {
   /// A comment that is only a screenshot is a comment, so the tray can carry
   /// one on its own — but a file still going up is not one yet.
   function commentToSend() {
-    if (state.sending || comments?.busy()) return null;
+    if (state.sending || hasSubmittedComment() || comments?.busy()) return null;
     const body = state.draft.trim();
     const files = comments?.attachments() || [];
     if (!body && !files.length) return null;
@@ -611,27 +625,144 @@ export function mountTaskPage(host, options) {
     };
   }
 
-  async function sendComment() {
-    await commentDraft.flush();
+  async function prepareCommentDraft() {
+    try {
+      await commentDraft.flush();
+    } catch (error) {
+      notifyError("Could not add this comment", messageOf(error));
+      return false;
+    }
     if (comments?.hasFailed()) {
       notifyError("Remove the failed attachment before sending this comment.");
-      return;
+      return false;
     }
+    return true;
+  }
+
+  async function sendComment() {
+    if (!await prepareCommentDraft()) return;
     const params = commentToSend();
     if (!params) return;
     state.sending = true;
     paint();
     try {
-      await state.callRpc("tasks.comment", params);
-      await commentDraft.write({ body: "" });
-      comments?.clear();
-      await refresh();
+      const result = await postComment(params);
+      await clearCommentDraft();
+      if (result?.phase === "ack") void refresh();
+      else await refresh();
     } catch (error) {
-      if (!state.disposed) notifyError("Could not add this comment", messageOf(error));
+      if (!state.disposed && !commentFailures.get(error)) notifyError("Could not add this comment", messageOf(error));
     } finally {
       state.sending = false;
       paint();
     }
+  }
+
+  async function postComment(params, draft = null) {
+    const operationId = crypto.randomUUID();
+    if (state.draft.trim() === params.body) {
+      await commentDraft.write({ body: state.draft, submittedOperationId: operationId });
+    }
+    try {
+      return await state.callRpc("tasks.comment", params, {
+        operationId,
+        owner: { kind: "task-comment", taskId: state.taskId, projectId: state.projectId },
+        draft: draft || {
+          body: params.body,
+          attachments: params.attachments || [],
+          files: state.files.map(({ name, size, mime, descriptor }) => ({ name, size, mime, descriptor, status: "ready" })),
+        },
+      });
+    } catch (error) {
+      const operation = commentOperation(operationId);
+      if (!operation || unappliedComment(operation)) await releaseCommentDraft(operationId);
+      const failure = error instanceof Error ? error : new Error(String(error));
+      commentFailures.set(failure, operation);
+      throw failure;
+    }
+  }
+
+  function ownsCommentOperation(row) {
+    return row?.owner?.kind === "task-comment" && row.owner.taskId === state.taskId && row.owner.projectId === state.projectId;
+  }
+
+  function commentOperation(operationId) {
+    return state.writeOperations?.readOperations().find((row) => row.operationId === operationId && ownsCommentOperation(row))
+      || ownedCommentOperations.get(operationId);
+  }
+
+  function hasSubmittedComment() {
+    return Boolean(submittedComment()) || Boolean(state.draftOperationId && state.writeOperations
+      && checkedCommentOwnership !== state.draftOperationId);
+  }
+
+  function resolveSubmittedCommentOwnership() {
+    const operationId = state.draftOperationId;
+    if (!operationId || checkedCommentOwnership === operationId) return;
+    if (commentOperation(operationId) || !state.writeOperations?.get) {
+      checkedCommentOwnership = operationId;
+      return;
+    }
+    if (checkingCommentOwnership === operationId) return;
+    checkingCommentOwnership = operationId;
+    void state.writeOperations.get(operationId).then((row) => {
+      if (ownsCommentOperation(row)) ownedCommentOperations.set(operationId, row);
+      checkedCommentOwnership = operationId;
+      checkingCommentOwnership = null;
+      if (!state.disposed) paint();
+    }).catch(() => {});
+  }
+
+  function unappliedComment(operation) {
+    return provenExpiredFailure(operation)
+      || operation.state === "failed" && (operation.effect || operation.confirmation?.effect) === "unapplied";
+  }
+
+  function submittedComment() {
+    const operation = commentOperation(state.draftOperationId);
+    return operation && !unappliedComment(operation) ? operation : null;
+  }
+
+  async function clearCommentDraft() {
+    if (state.draft || state.draftOperationId) await commentDraft.write({ body: "" });
+    if (state.files.length) comments?.clear();
+  }
+
+  async function releaseCommentDraft(operationId) {
+    if (state.draftOperationId !== operationId) return;
+    await commentDraft.write({ body: state.draft }).catch(() => {});
+  }
+
+  function consumeSubmittedCommentDraft() {
+    const operation = submittedComment();
+    if (!operation || consumingCommentDraft) return;
+    const operationId = operation.operationId;
+    consumingCommentDraft = operationId;
+    void commentDraft.ready.then(async () => {
+      if (state.disposed || state.draftOperationId !== operationId || !submittedComment()) return;
+      await clearCommentDraft();
+    }).finally(() => { consumingCommentDraft = null; }).catch(() => {});
+  }
+
+  async function restoreCommentDraft(saved) {
+    await commentDraft.ready;
+    if (state.sending) return false;
+    if (state.disposed || !saved || state.draft || state.files.length) return true;
+    state.files = saved.files || [];
+    comments?.restoreDraft();
+    await commentDraft.write({ body: saved.body || "" });
+    return true;
+  }
+
+  async function retryComment(row) {
+    await refresh();
+    const draft = row.draft || {};
+    const params = { task_id: state.taskId, body: draft.body || "", ...(draft.attachments?.length ? { attachments: draft.attachments } : {}) };
+    await postComment(params, draft);
+    if (state.draft === draft.body) {
+      await clearCommentDraft();
+    }
+    void refresh();
   }
 
   function openPicker() {
@@ -700,6 +831,7 @@ export function mountTaskPage(host, options) {
     wireCommentAttachments(form);
     field.oninput = () => {
       state.draft = field.value;
+      state.draftOperationId = null;
       commentDraft.schedule({ body: field.value });
       syncCommentBox();
     };
@@ -820,6 +952,10 @@ export function mountTaskPage(host, options) {
     markRead();
   });
 
+  commentRecovery = mountTaskCommentRecovery({
+    host, service: state.writeOperations, taskId: state.taskId, projectId: state.projectId,
+    restoreDraft: restoreCommentDraft, retry: retryComment, onChange: paint,
+  });
   paint();
   void paintFromCache().then(() => refresh());
   // No cadence: nothing in this client polls. An item that names this task
@@ -852,6 +988,7 @@ export function mountTaskPage(host, options) {
       waitingOnSupportWatcher();
       reviewPage?.dispose();
       commentDraft.dispose();
+      commentRecovery.dispose();
       host.removeEventListener("scroll", onScroll);
       stopWaitingForReader();
       watcher.dispose();

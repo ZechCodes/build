@@ -9,6 +9,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast;
 
+#[cfg(test)]
+pub(in crate::app) mod status_publication_probe;
+#[cfg(test)]
+pub(in crate::app) mod status_timing;
+
 /// Start whichever pump this tab's session needs: the byte pump for a terminal,
 /// the activity pump for a session that reports its own work.
 ///
@@ -65,6 +70,8 @@ pub(in crate::app) fn spawn_status_pump(
         key,
         session: Arc::downgrade(&session),
         instance,
+        #[cfg(test)]
+        frame_clock: None,
         recorded_context: None,
         recorded_context_reset_count: 0,
         recorded_limit: super::usage_limits::UsageObservation::default(),
@@ -93,6 +100,8 @@ struct StatusPump {
     key: TabKey,
     session: std::sync::Weak<dyn AgentSession>,
     instance: SessionInstance,
+    #[cfg(test)]
+    frame_clock: Option<Arc<crate::timing::FrameClock>>,
     recorded_context: Option<crate::harness::TurnContext>,
     recorded_context_reset_count: u64,
     recorded_limit: super::usage_limits::UsageObservation,
@@ -106,23 +115,49 @@ impl StatusPump {
         let Some(state) = self.state.upgrade() else {
             return false;
         };
+        #[cfg(test)]
+        let status_timer = self
+            .frame_clock
+            .as_ref()
+            .map(|clock| clock.frame("agent.poll_status"));
         let (ended, retry_deferred, clock) = {
-            let mut app = state.lock().unwrap();
+            // The optional benchmark span drops after the guard. It records
+            // outside the critical section and is absent from production.
+            #[cfg(test)]
+            let mut timing = status_timing::GuardSpan::start();
+            #[cfg(test)]
+            let mut measured_guard = status_timer.as_ref().map(|timer| timer.lock(&state));
+            #[cfg(test)]
+            let mut plain_guard = status_timer.is_none().then(|| state.lock().unwrap());
+            #[cfg(test)]
+            let app: &mut AppState = match measured_guard.as_mut() {
+                Some(guard) => guard,
+                None => plain_guard.as_mut().unwrap(),
+            };
+            #[cfg(not(test))]
+            let mut app_guard = state.lock().unwrap();
+            #[cfg(not(test))]
+            let app: &mut AppState = &mut app_guard;
+            #[cfg(test)]
+            if let Some(timing) = timing.as_mut() {
+                timing.acquired();
+            }
             let Some(session) = self.session.upgrade() else {
                 return false;
             };
             let instance = &self.instance;
-            if !still_pumping_instance(&app, &self.key, &session, instance) {
+            if !still_pumping_instance(app, &self.key, &session, instance) {
                 return false;
             }
             let owner = &instance.entity_id;
-            app.record_agent_status_snapshot(owner, &instance.agent_id, snapshot);
+            let refresh_metadata =
+                app.record_agent_status_snapshot_for_pump(owner, &instance.agent_id, snapshot);
             if snapshot.context_reset_count > self.recorded_context_reset_count {
                 app.forget_agent_context(owner, &instance.agent_id);
                 self.recorded_context = None;
                 self.recorded_context_reset_count = snapshot.context_reset_count;
             }
-            record_new_turn_context(&mut app, instance, snapshot, &mut self.recorded_context);
+            record_new_turn_context(app, instance, snapshot, &mut self.recorded_context);
             // A limit recorded wants its reset waited for, and one cleared
             // may have left agents to start again: either is a drain.
             let usage_limit_moved = app.record_usage_limit(
@@ -137,10 +172,20 @@ impl StatusPump {
             }
             let retry_deferred = usage_limit_moved
                 || !matches!(snapshot.status, AgentStatus::Working)
-                    && something_waits_for_the_turn(&mut app, owner, &instance.agent_id);
-            app.publish_owner_snapshot_projection(owner);
+                    && something_waits_for_the_turn(app, owner, &instance.agent_id);
+            #[cfg(test)]
+            status_publication_probe::before_final_publication();
+            if refresh_metadata {
+                let _ownership = app.begin_snapshot_ownership();
+                app.publish_owner_snapshot_projection(owner);
+                app.publish_read_metadata_only();
+            } else {
+                app.publish_owner_snapshot_projection(owner);
+            }
             (ended, retry_deferred, Arc::clone(&app.frame_clock))
         };
+        #[cfg(test)]
+        drop(status_timer);
         if retry_deferred {
             let timer = clock.frame(AGENT_DELIVERY_METHOD);
             DeliveryRunner::drain(&state, &timer);

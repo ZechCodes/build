@@ -3,6 +3,81 @@ use super::*;
 use crate::thread::MessageDeliveryStatus;
 
 #[test]
+fn frozen_legacy_delivery_rejects_a_replaced_durable_generation_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut record = plan_record("frozen-generation");
+    let thread = &mut record.agents[0].thread;
+    thread.post_user("frozen message", None, NOW);
+    let old_id = thread.id.clone();
+    let old_generation = thread.generation_revision;
+    let ThreadItem::Message(message) = thread.items[0].clone() else {
+        panic!("message")
+    };
+    store.save_task_plan(&record).unwrap();
+    record.agents[0].thread.id = "replacement-thread".into();
+    record.agents[0].thread.generation_revision += 1;
+    store.save_task_plan(&record).unwrap();
+    let before = store.total_changes();
+    assert!(store
+        .set_frozen_legacy_delivery_status(
+            &record.agents[0].id,
+            &old_id,
+            old_generation,
+            &[message],
+            MessageDeliveryStatus::Sent
+        )
+        .unwrap()
+        .is_none());
+    assert_eq!(store.total_changes(), before);
+    assert_eq!(
+        store.thread_items(&record.agents[0].id).unwrap(),
+        record.agents[0].thread.items
+    );
+}
+
+#[test]
+fn frozen_legacy_delivery_deduplicates_exact_selection_and_excludes_managed_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut record = plan_record("frozen-selection");
+    let thread = &mut record.agents[0].thread;
+    thread.post_user("selected", None, NOW);
+    thread.post_user("managed", None, NOW);
+    thread.bind_operation_messages("managed", 1, 2);
+    thread.post_user("unlisted", None, NOW);
+    let messages = thread
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ThreadItem::Message(message) => Some(message.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let before_sequence = thread.last_sequence();
+    store.save_task_plan(&record).unwrap();
+    let delta = store
+        .set_frozen_legacy_delivery_status(
+            &record.agents[0].id,
+            &record.agents[0].thread.id,
+            record.agents[0].thread.generation_revision,
+            &[
+                messages[0].clone(),
+                messages[0].clone(),
+                messages[1].clone(),
+            ],
+            MessageDeliveryStatus::Sent,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(delta.items.len(), 1);
+    assert_eq!(delta.sequence, before_sequence + 1);
+    let updated = store.thread_items(&record.agents[0].id).unwrap();
+    assert_eq!(updated[1], ThreadItem::Message(messages[1].clone()));
+    assert_eq!(updated[2], ThreadItem::Message(messages[2].clone()));
+}
+
+#[test]
 fn thread_post_receipt_and_message_commit_together_and_retry_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
@@ -487,4 +562,35 @@ fn a_backup_is_a_whole_store_and_never_silently_replaces_one() {
     // silently is one that can be lost twice.
     let refused = store.backup_to(&backup).expect_err("the second is refused");
     assert!(refused.to_string().contains("already exists"), "{refused}");
+}
+
+#[test]
+fn a_closed_store_keeps_saved_runs_in_the_database_file_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = dir.path().join("original");
+    let store = Store::new(&original).unwrap();
+    let mut record = run_record("run-after-close", None, NOW);
+    record.agents[0]
+        .thread
+        .post_user("durable after clean close", None, NOW);
+    store.save_run(&record).unwrap();
+    drop(store);
+
+    let copied = dir.path().join("file-only-copy");
+    std::fs::create_dir(&copied).unwrap();
+    std::fs::copy(original.join("build.db"), copied.join("build.db")).unwrap();
+    let restored = Store::new(&copied).unwrap();
+    let runs = restored.load_all_runs().unwrap();
+    assert_eq!(
+        runs.len(),
+        1,
+        "clean close checkpoints saved runs into build.db"
+    );
+    assert_eq!(runs[0].id, record.id);
+    assert_eq!(
+        runs[0].agents[0].thread.items,
+        record.agents[0].thread.items
+    );
+    assert!(!original.join("build.db-wal").exists());
+    assert!(!original.join("build.db-shm").exists());
 }

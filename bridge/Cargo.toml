@@ -1,6 +1,6 @@
 [package]
 name = "build-bridge"
-version = "0.2.12"
+version = "0.2.13"
 edition = "2021"
 description = "Build device daemon: worktrees, full-PTY harnesses, scoped conversation MCP tools, git-diff watcher, task lifecycle."
 license = "AGPL-3.0-only"
@@ -20,6 +20,8 @@ thiserror = "2"
 async-trait = "0.1"
 # Immutable read admission/identity snapshots, loaded without the app lock.
 arc-swap = "1.9.2"
+# Persistent observation input roots; owner updates copy only changed tree paths.
+imbl = { version = "=7.0.2", default-features = false }
 git2 = "0.20"
 portable-pty = "0.9"
 vt100 = "0.15"

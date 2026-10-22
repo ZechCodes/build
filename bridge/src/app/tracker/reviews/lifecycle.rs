@@ -1,7 +1,10 @@
 //! Explicit PR lifecycle; observation and Git run with the app lock released.
 use super::super::StoredAnswer;
+mod closing;
+
+use super::observation::ReviewInvalidation;
 use super::projection;
-use crate::api::v1::reviews::{errors, ReviewCloseParams, ReviewVersionParams};
+use crate::api::v1::reviews::{errors, ReviewVersionParams};
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{AppState, DeferredGit, DeferredWork};
 use crate::changes::{BoardLists, Kind};
@@ -28,8 +31,7 @@ pub(super) fn version(review: &Review, expected: u64) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn invalidates(app: &mut AppState, project: &str, task: &str, workspace: &str) {
-    app.publish_review_observation(project, task, workspace);
+pub(super) fn invalidates(app: &mut AppState, workspace: &str) {
     app.changes.note_kind(workspace, Kind::State);
     app.changes.note_kind(workspace, Kind::Git);
     app.changes.note_board_lists(BoardLists::WORKSPACES);
@@ -50,6 +52,7 @@ struct SyncJob {
     workspace_id: String,
     operation: SyncOperation,
     hooks: WorkspaceHooks,
+    observation: ReviewInvalidation,
 }
 
 impl SyncJob {
@@ -94,15 +97,18 @@ impl SyncJob {
 
 impl DeferredGitWork for SyncJob {
     fn run(&self, _: &Value) -> Result<Value, String> {
-        self.synchronize().and_then(|review| projection::result(&self.store, review))
+        let result = self.synchronize().and_then(|review| projection::result(&self.store, review))
             .map_err(|message| errors::service(message, json!({
                 "task_id":self.task_id(),"workspace_id":self.workspace_id,
                 "recovery":"Read tasks.review.get; restore the recorded bindings before reopening."
-            })))
+            })));
+        self.observation.prepare();
+        result
     }
 
     fn invalidate(&self, app: &mut AppState) {
-        invalidates(app, &self.project_id, self.task_id(), &self.workspace_id);
+        self.observation
+            .invalidate(app, &self.project_id, self.task_id());
     }
 
     fn invalidates_on_error(&self) -> bool {
@@ -157,8 +163,11 @@ impl AppState {
         project: &str,
         task: &str,
         workspace: &str,
+        observed: Option<crate::app::snapshot_projection::WorkspaceReviewObservation>,
     ) {
-        self.refresh_workspace_review_observation(workspace);
+        if let Some(observed) = observed {
+            self.install_workspace_review_observation(workspace, observed);
+        }
         self.note_tasks_changed(project, task);
     }
 
@@ -179,41 +188,6 @@ impl AppState {
             ));
         }
         Ok((project_id, task, review))
-    }
-
-    pub(crate) fn review_close(
-        &mut self,
-        params: ReviewCloseParams,
-        actor: Actor,
-    ) -> Result<Value, String> {
-        params.validate()?;
-        let (project_id, _, review) = self.pull_request(&params.task_id)?;
-        version(&review, params.expected_version)?;
-        if !review
-            .pull_request
-            .as_ref()
-            .expect("PR checked")
-            .status
-            .is_active()
-        {
-            return Err(errors::encode(
-                "conflict",
-                "Only active unmerged PRs can close",
-                json!({
-                    "task_id":params.task_id,"recovery":"Reopen a Closed PR, or open a new PR after merge."
-                }),
-            ));
-        }
-        self.review_complete(crate::api::v1::reviews::ReviewCompleteParams {
-            task_id:params.task_id.clone(),expected_version:params.expected_version,description:params.description,
-        }, actor).map_err(|message| errors::service(message, json!({"task_id":params.task_id,"recovery":"Read tasks.review.get before retrying."})))?;
-        invalidates(self, &project_id, &params.task_id, &review.workspace_id);
-        let saved = self
-            .tracker_store()?
-            .load_review(&params.task_id)
-            .stored()?
-            .ok_or("unknown PR review")?;
-        projection::result(self.tracker_store()?, saved)
     }
 
     pub(crate) fn review_reopen(
@@ -257,6 +231,7 @@ impl AppState {
                 .collect(),
         };
         self.defer_review_sync(SyncJob {
+            observation: ReviewInvalidation::new(self, &review.workspace_id),
             store: self.tracker_store()?.clone(),
             project_id,
             workspace_id: review.workspace_id,
@@ -277,6 +252,7 @@ impl AppState {
         let (project_id, _, review) = self.pull_request(&params.task_id)?;
         version(&review, params.expected_version)?;
         self.defer_review_sync(SyncJob {
+            observation: ReviewInvalidation::new(self, &review.workspace_id),
             store: self.tracker_store()?.clone(),
             project_id,
             workspace_id: review.workspace_id,

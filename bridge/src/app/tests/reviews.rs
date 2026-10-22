@@ -4,10 +4,14 @@ use super::project_agent::{added_project, project_agent, workspace};
 use super::tracker::{filed, tracked};
 use super::*;
 
+mod lifecycle_observations;
+mod maintenance_observations;
 mod merge_contracts;
 mod merge_recovery;
 mod merge_selection;
+mod observation_holds;
 mod opening;
+mod opening_observations;
 mod pull_requests;
 #[path = "reviews/pull_requests/reopen_version.rs"]
 mod reopen_version;

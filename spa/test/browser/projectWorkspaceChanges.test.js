@@ -44,7 +44,7 @@ async function seedProject({ theme, sourceId, supported, greeting, commit, patch
     "fs.tree": (params) => ({ path: params.path, entries: [{ name: "README.md", kind: "file", size: 50 }] }),
     "fs.read": () => ({ path: "README.md", mime: "text/plain", content_b64: btoa("one\ntwo\nthree\nfour\nfive\nsix\nshared source wording"), size: 50, editable: true, encoding: "utf-8", revision: "r1" }),
   };
-  const hello = { api_version: "3.21.0", capabilities: supported ? ["git.projectSources", "fs.projectSources", "sources.syncBase", "sources.syncBasePath"] : [] };
+  const hello = { api_version: "3.24.0", capabilities: supported ? ["git.projectSources", "fs.projectSources", "sources.syncBase", "sources.syncBasePath"] : [] };
   replies["session.hello"] = () => hello;
   const call = async (method, params) => { window.__calls.push({ method, params }); return replies[method]?.(params) || {}; };
   const context = contexts.adoptDeviceSession({ deviceId, call, close() {}, peer() {}, onCarrier() {}, onPush() {} });

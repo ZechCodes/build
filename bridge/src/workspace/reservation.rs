@@ -91,8 +91,7 @@ impl WorkspaceRegistry {
             .capture_workspace(&workspace.root)
             .map_err(|error| error.to_string())?;
         persist(&workspace)?;
-        self.workspaces
-            .insert(workspace.id.clone(), workspace.clone());
+        self.install_workspace(workspace.clone());
         Ok(workspace)
     }
 

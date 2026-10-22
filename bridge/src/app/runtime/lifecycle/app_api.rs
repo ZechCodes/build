@@ -55,7 +55,7 @@ impl AppState {
     }
     fn lifecycle_job<T, S>(
         &self,
-        reservation: AppReservation,
+        mut reservation: AppReservation,
         task: T,
         settlement: S,
     ) -> WorktreeLifecycleJob
@@ -63,6 +63,18 @@ impl AppState {
         T: WorktreeMutation,
         S: LifecycleSettlement<T::Output>,
     {
+        if let Some(checkout_id) = reservation.row.checkout_id.as_deref() {
+            // A removal receipt may arrive after the same key hosts a new
+            // session. Retain the registrations the job actually started for.
+            reservation.terminal_cleanup = self
+                .session_registry
+                .terminal_cleanup_candidates()
+                .into_iter()
+                .filter(|candidate| {
+                    crate::worktree::external_worktree_id(&candidate.key().root) == checkout_id
+                })
+                .collect();
+        }
         #[cfg(test)]
         {
             bind_lifecycle_with_gate(reservation, task, settlement, self.off_lock_gate.clone())

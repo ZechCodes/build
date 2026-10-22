@@ -1,6 +1,8 @@
 use super::*;
 use crate::compaction::{CompactionScope, CompactionSource};
 
+mod structural_reuse;
+
 fn ownership_edge_cases(state: &mut AppState, root: &Path) {
     let project = state.projects.project_id_of("run-00").unwrap().to_owned();
     state.runs.get_mut("run-00").unwrap().run.state = crate::run::RunState::Merged;
@@ -44,7 +46,8 @@ fn ownership_edge_cases(state: &mut AppState, root: &Path) {
 fn projection_ownership_preserves_direct_fallback_terminal_project_and_path_alias_answers() {
     let (tmp, mut state, _) = ownership_fixture(8, false);
     ownership_edge_cases(&mut state, tmp.path());
-    state.refresh_snapshot_observations();
+    // Ownership assertions need the changed physical paths, without review updates.
+    let _ = state.refresh_snapshot_observations();
     let captured = state.capture_snapshot_ownership();
     for workspace in state.workspaces.list(None) {
         assert_eq!(
@@ -278,7 +281,8 @@ fn projection_compaction_keeps_parked_project_workspace_inheritance() {
             .projects
             .retain_entity_path(owner.into(), tmp.path().display().to_string());
     }
-    state.refresh_snapshot_observations();
+    // Parked-project compaction inheritance depends on physical workspace ownership.
+    let _ = state.refresh_snapshot_observations();
     state.publish_all_snapshot_projection();
     assert_published_policy(
         &state,

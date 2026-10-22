@@ -23,14 +23,20 @@ impl AppState {
                     app.revive_parked_projects();
                     app.refresh_workspace_snapshot_observations();
                     app.board_list();
-                    app.refresh_snapshot_observations();
-                    (Arc::clone(&state), app.capture_project_snapshot_refresh())
+                    let reviews = app.refresh_snapshot_observations();
+                    (
+                        Arc::clone(&state),
+                        app.capture_project_snapshot_refresh(),
+                        reviews,
+                    )
                 })
                 .await;
                 off_the_workers(move || {
-                    let (state, refresh) = captured;
+                    let (state, refresh, reviews) = captured;
                     let rendered = refresh.render();
-                    let app = state.lock().unwrap();
+                    let reviews = reviews.load();
+                    let mut app = state.lock().unwrap();
+                    app.install_workspace_review_refresh(reviews);
                     app.install_project_snapshot_refresh(rendered);
                     app.publish_snapshot_projection();
                 })

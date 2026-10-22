@@ -19,6 +19,7 @@
 // session it mints and the direct connection it negotiates, and the account's
 // REST list.
 
+import { transportEpoch } from "./transportEpoch.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -113,6 +114,7 @@ function bridgeSession(own, deviceId) {
   let carrierChanged = () => {};
   const session = {
     deviceId,
+    bridgeEpoch: transportEpoch(),
     sessionId: `session-${deviceId}-${own.sessions.length + 1}`,
     call: vi.fn(async (method) => (answers[method] ? answers[method]() : {})),
     peer: (carrier) => (carrier ? carrierChanged() : undefined),
@@ -151,7 +153,7 @@ beforeEach(async () => {
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1200 });
   history.replaceState(null, "", ROUTE_HASH);
   // Nothing lands until the case says so.
-  wire = { listed: [online], sessions: [], greeting: {}, landing: new Promise(() => {}) };
+  wire = { listed: [online], sessions: [], greeting: { api_version: "3.24.0" }, landing: new Promise(() => {}) };
   standInForTheWire(wire);
   const app = await import("../src/app.js");
   modules = {
@@ -349,7 +351,7 @@ it("builds the route again when the app-behind version gate lets the app back in
 
   // This tab is updated to meet it (a greeting an adapter here claims), and
   // the reader gets their route back — built again, since the gate had #root.
-  wire.greeting = {};
+  wire.greeting = { api_version: "3.24.0" };
   modules.connection.connectDevice(DEVICE).catch(() => {});
   await vi.waitFor(() => expect(mountedPage()).not.toBeNull());
   await settle();

@@ -16,16 +16,14 @@ import * as v1 from "./v1/index.js";
 export { ApiError, normalizeError, UNKNOWN_CODE } from "./v1/index.js";
 export { compare, parse, satisfies } from "./semver.js";
 
-/** A bridge that reports no `api_version` is pre-alpha. Every shipped bridge
- *  reports one; the value stands for a greeting fixture or a refused hello,
- *  and the lowest adapter takes it with every capability flag off. */
+/** A bridge that reports no `api_version` is pre-alpha and requires updating. */
 export const PRE_ALPHA_API_VERSION = "0.0.0";
 
 /** Every major this build speaks, lowest first. */
 export const ADAPTERS = Object.freeze([v1]);
 
 /** The range this SPA declares in `session.hello`, spanning every adapter. */
-export const SPA_API_RANGE = ">=2.0.0 <4.0.0";
+export const SPA_API_RANGE = ">=3.24.0 <4.0.0";
 
 /** The version a greeting reports — `0.0.0` for one that reports none, or for
  *  no greeting at all (a bridge that refused `session.hello`). */
@@ -51,19 +49,18 @@ function unsupportedSide(version, adapters) {
 /**
  * The adapter for this greeting, or which side is out of date.
  *
- * @returns `{ major, range, version, create(call) }` — `create` is the major's
- *   own `create(call, greeting)` with this greeting already bound — or
+ * @returns `{ major, range, version, create(call, options) }` — `create` is the major's
+ *   own `create(call, greeting, options)` with this greeting already bound — or
  *   `{ unsupported: "bridge" | "app", version }`.
  */
 export function selectAdapter(greeting, adapters = ADAPTERS) {
   const version = greetingVersion(greeting);
-  const wanted = version === PRE_ALPHA_API_VERSION ? floorOf(adapters[0]?.range) : version;
-  const adapter = adapters.find((candidate) => satisfies(wanted, candidate.range));
+  const adapter = adapters.find((candidate) => satisfies(version, candidate.range));
   if (!adapter) return { unsupported: unsupportedSide(version, adapters), version };
   return {
     major: adapter.major,
     range: adapter.range,
     version,
-    create: (call) => adapter.create(call, greeting),
+    create: (call, options) => adapter.create(call, greeting, options),
   };
 }

@@ -232,9 +232,7 @@ async fn a_stale_worker_session_cannot_assign() {
     let (owner, project_id) = (project.owner.clone(), project.project_id.clone());
     let task = file(&mut project, "Late hand-off");
     let state = &mut project.state;
-    state
-        .session_registry
-        .test_install_token(worker.clone(), "old-worker-token".into());
+    state.test_install_mcp_token(worker.clone(), "old-worker-token".into());
     let frame = json!({
         "task_id": worker, "session_token": "old-worker-token",
         "request": BridgeAction::TrackerAssignTask {
@@ -269,7 +267,7 @@ async fn a_stale_worker_session_cannot_assign() {
     } = project;
     let shared = Arc::new(Mutex::new(state));
     let clock = Arc::clone(&shared.lock().unwrap().frame_clock);
-    let plane = ControlPlane::new(Arc::clone(&clock));
+    let plane = ControlPlane::new(&shared.lock().unwrap());
     let timer = clock.frame(crate::app::mcp::MCP_CONTROL_METHOD);
     let mut turn = Turn::take(&plane, &timer).await;
     let answered = handle_coding_mcp_frame(&shared, &frame, &generation, &timer, &mut turn).await;

@@ -12,10 +12,10 @@ const { wipeCache } = await import("../src/core/localCache.js");
 beforeEach(async () => { capabilities = { fs: {} }; await wipeCache(); });
 const context = () => ({ deviceId: "d", rpc: vi.fn(async () => ({})), whenGreeted: async (dispatch) => ({ sent: dispatch() }) });
 it("derives flags independently from the announced verbs", () => {
-  expect(capabilitiesOf({ api_version: "3.13.0", capabilities: ["fs.uploadBegin"] }).fs).toMatchObject({ uploads: true, createDirectory: false });
-  expect(capabilitiesOf({ api_version: "3.13.0", capabilities: ["fs.createDirectory"] }).fs).toMatchObject({ uploads: false, createDirectory: true, createFile: false });
-  expect(capabilitiesOf({ api_version: "3.16.0", capabilities: ["fs.createFile"] }).fs).toMatchObject({ uploads: false, createDirectory: false, createFile: true });
-  expect(capabilitiesOf({ api_version: "3.16.0", capabilities: ["fs.write", "fs.createDirectory"] }).fs.createFile).toBe(false);
+  expect(capabilitiesOf({ api_version: "3.24.0", capabilities: ["fs.uploadBegin"] }).fs).toMatchObject({ uploads: true, createDirectory: false });
+  expect(capabilitiesOf({ api_version: "3.24.0", capabilities: ["fs.createDirectory"] }).fs).toMatchObject({ uploads: false, createDirectory: true, createFile: false });
+  expect(capabilitiesOf({ api_version: "3.24.0", capabilities: ["fs.createFile"] }).fs).toMatchObject({ uploads: false, createDirectory: false, createFile: true });
+  expect(capabilitiesOf({ api_version: "3.24.0", capabilities: ["fs.write", "fs.createDirectory"] }).fs.createFile).toBe(false);
 });
 it("remembers support for cold mounts and older greetings", async () => {
   expect(await readFileUploadSupport("d")).toEqual({ uploads: false, createDirectory: false, createFile: false });

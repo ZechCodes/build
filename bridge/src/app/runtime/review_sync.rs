@@ -8,7 +8,12 @@ impl AppState {
     /// Explicit daemon startup; constructing an AppState never starts Git work.
     pub async fn spawn_review_sync(state: Arc<Mutex<AppState>>) -> Option<ReviewSyncHandle> {
         let weak = Arc::downgrade(&state);
-        let store = off_the_workers(move || state.lock().unwrap().store.clone()).await?;
+        let (store, reader) = off_the_workers(move || {
+            let app = state.lock().unwrap();
+            (app.store.clone(), app.workspace_review_reader())
+        })
+        .await;
+        let store = store?;
         let alive = weak.clone();
         Some(sync::spawn(
             store,
@@ -17,6 +22,7 @@ impl AppState {
                 let Some(state) = weak.upgrade() else {
                     return;
                 };
+                let observed = reader.load(&result.workspace_id);
                 let mut app = state.lock().unwrap();
                 let Some(project) = app
                     .projects
@@ -26,7 +32,12 @@ impl AppState {
                 else {
                     return;
                 };
-                app.publish_review_observation(&project, &result.task_id, &result.workspace_id);
+                app.publish_review_observation(
+                    &project,
+                    &result.task_id,
+                    &result.workspace_id,
+                    observed,
+                );
                 app.changes.note_kind(&result.workspace_id, Kind::State);
                 app.changes.note_board_lists(BoardLists::WORKSPACES);
             }),

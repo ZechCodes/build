@@ -1,11 +1,16 @@
+mod capabilities;
 mod registry;
+pub(in crate::app) use capabilities::{
+    McpAuthoritySnapshot, McpIssuer, McpReadAuthority, RouterAuthority,
+};
 #[cfg(test)]
 mod registry_tests;
 
 #[cfg(test)]
 pub(in crate::app) use registry::constant_time_token_eq;
 pub(in crate::app) use registry::{
-    IdleObservation, McpTokenLease, SessionRegistry, SpawnAvailability, SpawnClaimToken,
+    IdleObservation, McpTokenLease, ProjectionRegistration, SessionRegistry, ShellTabFact,
+    SpawnAvailability, SpawnClaimToken, TerminalCleanupCandidate,
 };
 
 use crate::app::{no_terminal_here, AppState, NO_TERMINAL_LEFT};
@@ -282,7 +287,7 @@ impl Tab {
 
     /// The human's own shell: always a terminal, and the one session never
     /// handed a turn, so it is not waited on — a login shell may never announce
-    /// a line editor at all and `term.create` holds the state lock across this.
+    /// a line editor at all. `term.create` opens it outside the state lock.
     pub(in crate::app) fn spawn_shell(
         spec: &HarnessSpec,
         tab_id: String,

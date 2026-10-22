@@ -31,7 +31,7 @@ beforeEach(async () => { await wipeCache(); });
 afterEach(() => { vi.restoreAllMocks(); forgetPushes(); });
 
 it("gates each verb and comments independently and remembers the greeting", async () => {
-  const caps = capabilitiesOf({ api_version: "3.6.0", capabilities: ["tasks.review.get", "tasks.review.diff"] });
+  const caps = capabilitiesOf({ api_version: "3.24.0", capabilities: ["tasks.review.get", "tasks.review.diff"] });
   expect(caps.reviews).toEqual({ ...support, snapshot: false, complete: false, act: false, comments: false });
   await rememberReviewSupport(scope.deviceId, caps);
   expect(await readReviewSupport(scope.deviceId)).toEqual(caps.reviews);

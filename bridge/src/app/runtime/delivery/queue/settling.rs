@@ -134,6 +134,11 @@ impl SettlingTurns {
         self.waiting.is_empty()
     }
 
+    #[cfg(test)]
+    pub(super) fn fixture_is_drained(&self) -> bool {
+        self.waiting.is_empty() && self.wake_asked_for.is_none()
+    }
+
     /// Drop what a refused request queued since `earlier_len`, the way the
     /// queue does. A turn that joined one already waiting cannot be taken back
     /// out of it; its line stays unread on the thread either way.

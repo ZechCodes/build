@@ -11,6 +11,14 @@ export const transport = {
 /** A carrier that records every request sent over it and answers on cue. */
 export function carrier() {
   const readers = new Set();
+  const epoch = "landing-bridge-epoch";
+  const reply = (request, result) => ({
+    id: request.id, ok: true, bridge_epoch: epoch,
+    result: request.method === "session.hello" ? {
+      ...result, bridge_epoch: epoch, journal_incarnation: "landing-journal",
+      capabilities: [...new Set([...(result.capabilities || []), "bridge.epoch"])],
+    } : result,
+  });
   return {
     sent: [],
     onClose: () => () => {},
@@ -26,13 +34,13 @@ export function carrier() {
      *  carrier sends a second session.hello. */
     answer(method, result) {
       const asked = this.sent.findLast((request) => request.method === method);
-      for (const fn of readers) fn({ frameFields: { payload: { id: asked.id, ok: true, result } } });
+      for (const fn of readers) fn({ frameFields: { payload: reply(asked, result) } });
     },
     /** Answer a particular request when two greetings share this carrier. */
     answerNth(method, ordinal, result) {
       const request = this.sent.filter((sent) => sent.method === method)[ordinal];
       if (!request) throw new Error(`No ${method} request at index ${ordinal}`);
-      for (const fn of readers) fn({ frameFields: { payload: { id: request.id, ok: true, result } } });
+      for (const fn of readers) fn({ frameFields: { payload: reply(request, result) } });
     },
   };
 }
@@ -41,7 +49,7 @@ export function carrier() {
 export const asked = (peer) => peer.sent.map((request) => request.method);
 
 /** An API version this tab has an adapter for (core/bridgeApi). */
-export const SUPPORTED_API = "2.0.0";
+export const SUPPORTED_API = "3.24.0";
 
 /** An API version nothing here speaks. */
 export const UNSUPPORTED_API = "99.0.0";

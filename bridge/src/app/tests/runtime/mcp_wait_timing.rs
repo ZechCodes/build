@@ -16,7 +16,8 @@ fn fixture() -> (
     let (clock, lines) = recording_clock();
     let mut app = AppState::new_unrooted(dir.path(), "main", true, "unused");
     app.frame_clock = Arc::clone(&clock);
-    (dir, app.shared(), ControlPlane::new(clock), lines)
+    let plane = ControlPlane::new(&app);
+    (dir, app.shared(), plane, lines)
 }
 
 fn duration(line: &str, field: &str) -> f64 {
@@ -206,7 +207,7 @@ fn rpc_admission_lock_wait_is_reported() {
                 frame_type: "data".into(),
                 sender: "client".into(),
                 created_at: "test".into(),
-                payload: json!({ "id": 1, "method": "term.list", "params": {} }),
+                payload: json!({ "id": 1, "method": "capture.cancel", "params": {"capture_id": "missing"} }),
             },
         )
     });
@@ -216,7 +217,10 @@ fn rpc_admission_lock_wait_is_reported() {
     answering.join().unwrap();
     let lines = lines.lock().unwrap();
     assert_eq!(lines.len(), 1, "one completed RPC: {lines:?}");
-    assert!(lines[0].starts_with("slow frame term.list "), "{lines:?}");
+    assert!(
+        lines[0].starts_with("slow frame capture.cancel "),
+        "{lines:?}"
+    );
     assert!(
         duration(&lines[0], "lock_wait=") >= SLOW_FRAME.as_secs_f64() * 1000.0,
         "RPC admission is charged to lock_wait: {lines:?}"

@@ -1,12 +1,14 @@
 use super::compaction::compact_before_turn;
+use crate::app::conversations::FrozenLegacyDelivery;
 use crate::app::{
     ensure_agent_tab, still_pumping_instance, AgentSpawnRequest, AppState, DeliveryOutcome,
-    DeliveryPreflight, LifecycleDiagnostic, PendingAgentTurn, Spawned, TabKey,
+    DeliveryPreflight, LifecycleDiagnostic, PendingAgentTurn, Spawned, TabKey, TabRole,
     TAB_CLOSED_UNDER_A_TURN,
 };
 use crate::delivery::StartFailure;
 use crate::harness::{AgentStatus, Turn, TurnChoiceSupport, TurnReceiptSupport};
 use crate::store::now_rfc3339;
+use crate::thread::SessionInstance;
 use crate::timing::FrameTimer;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -108,6 +110,14 @@ pub(in crate::app) fn preflight_delivery(
                 .unwrap_or(false);
             return DeliveryPreflight::Proceed { force_fresh };
         };
+        if exact_router_tab(
+            &turn.owner,
+            &turn.agent_id,
+            &tab.role,
+            tab.instance.as_ref(),
+        ) {
+            return DeliveryPreflight::Proceed { force_fresh: false };
+        }
         let exact_tab = tab
             .role
             .agent()
@@ -168,6 +178,37 @@ pub(in crate::app) fn preflight_delivery(
         }
     }
     plan
+}
+
+/// Callers have already checked the queued router against its registered
+/// owner, agent id, conversation binding, and scratch root.
+fn exact_router_tab(
+    owner: &str,
+    agent_id: &str,
+    role: &TabRole,
+    instance: Option<&SessionInstance>,
+) -> bool {
+    crate::router::is_router_agent(agent_id)
+        && role.agent() == Some((owner, agent_id))
+        && instance.is_none()
+}
+
+fn exact_delivery_tab(
+    owner: &str,
+    agent_id: &str,
+    conversation_id: &str,
+    role: &TabRole,
+    instance: Option<&SessionInstance>,
+) -> bool {
+    if crate::router::is_router_agent(agent_id) {
+        exact_router_tab(owner, agent_id, role, instance)
+    } else {
+        instance.is_some_and(|instance| {
+            instance.entity_id == owner
+                && instance.agent_id == agent_id
+                && instance.conversation_id == conversation_id
+        })
+    }
 }
 
 /// The one pipe from Build to a worktree's agent.
@@ -243,22 +284,24 @@ pub(in crate::app) fn deliver(
             .session_registry
             .agent_snapshot(&key)
             .ok_or(TAB_CLOSED_UNDER_A_TURN)?;
-        let exact_instance = tab.instance.as_ref().is_some_and(|instance| {
-            instance.entity_id == turn.owner
-                && instance.agent_id == turn.agent_id
-                && instance.conversation_id == turn.conversation_id
-        });
-        if !exact_instance {
+        if !exact_delivery_tab(
+            owner,
+            agent_id,
+            &turn.conversation_id,
+            &tab.role,
+            tab.instance.as_ref(),
+        ) {
             return Ok(DeliveryOutcome::Delivered(None));
         }
-        if *interrupt && spawned == Spawned::Warm {
+        if let (true, Some(instance)) = (
+            *interrupt && spawned == Spawned::Warm,
+            tab.instance.as_ref(),
+        ) {
             let provider_thread_id = s.recorded_resume_id(owner, agent_id);
             s.session_registry.log_if_agent_current(
                 &key,
                 &tab.session,
-                tab.instance
-                    .as_ref()
-                    .expect("an exact delivery tab has its session instance"),
+                instance,
                 LifecycleDiagnostic {
                     event: "interrupt_requested",
                     origin: "deliver_warm_turn",
@@ -269,18 +312,19 @@ pub(in crate::app) fn deliver(
                 },
             );
         }
-        let legacy_payload = if turn.reads_unread_thread() {
-            s.legacy_delivery_payload(owner, agent_id)?
+        let legacy_payload: Option<FrozenLegacyDelivery> = if turn.reads_unread_thread() {
+            s.freeze_legacy_delivery(owner, agent_id)?
         } else {
             None
         };
         // Every entry path reaches this point: native and legacy posts,
         // notices, reminders, catch-up, and starts with no existing text.
         // Slash commands must remain unadorned for the provider to parse.
-        let asks_name = !legacy_payload
-            .as_ref()
-            .is_some_and(|payload| payload.requires_unadorned_delivery(model_choice.provider))
-            && s.claim_agent_name_request(owner, agent_id);
+        let asks_name = !legacy_payload.as_ref().is_some_and(|frozen| {
+            frozen
+                .payload
+                .requires_unadorned_delivery(model_choice.provider)
+        }) && s.claim_agent_name_request(owner, agent_id);
         if say.is_none() && !asks_name {
             return Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))));
         }
@@ -294,9 +338,7 @@ pub(in crate::app) fn deliver(
         }
         (
             Arc::clone(&tab.session),
-            tab.instance
-                .clone()
-                .expect("an exact delivery tab has its session instance"),
+            tab.instance.clone(),
             legacy_payload,
             asks_name,
         )
@@ -309,7 +351,7 @@ pub(in crate::app) fn deliver(
     let reports_turn_boundaries = session.status_changed().is_some();
     let prompt = delivered_prompt(
         prompt.unwrap_or_default(),
-        legacy_payload.as_ref(),
+        legacy_payload.as_ref().map(|frozen| &frozen.payload),
         model_choice.provider,
     );
     let prompt = if asks_name {
@@ -321,6 +363,7 @@ pub(in crate::app) fn deliver(
     native_turn.operation_id = turn.operation_id.clone().or_else(|| {
         legacy_payload.as_ref().map(|payload| {
             let sequences = payload
+                .payload
                 .messages
                 .iter()
                 .map(|message| message.sequence.to_string())
@@ -380,7 +423,10 @@ pub(in crate::app) fn deliver(
         }
     }
     record_sent_operation_delivery(&mut app, turn, session.turn_receipt_support());
-    if still_pumping_instance(&app, &key, &session, &instance) {
+    if let Some(instance) = instance
+        .as_ref()
+        .filter(|instance| still_pumping_instance(&app, &key, &session, instance))
+    {
         let was_working = app
             .entity_agents(owner)
             .ok()
@@ -389,13 +435,21 @@ pub(in crate::app) fn deliver(
         app.session_registry.mark_delivered_if_current(
             &key,
             &session,
-            &instance,
+            instance,
             std::time::Instant::now(),
         );
         if !reports_turn_boundaries && !was_working {
             app.record_agent_working_since(owner, &turn.agent_id, Some(now.clone()));
             app.observe_working_state(owner, true, &now);
         }
+    } else if instance.is_none() && crate::router::is_router_agent(agent_id) {
+        app.session_registry.mark_router_delivered_if_current(
+            &key,
+            &session,
+            owner,
+            agent_id,
+            std::time::Instant::now(),
+        );
     }
     Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))))
 }
@@ -586,5 +640,95 @@ impl AppState {
     fn surface_prompt(&self, owner: &str, agent_id: &str, cold: &str) -> String {
         self.project_surface_prompt(owner, agent_id)
             .unwrap_or_else(|| cold.to_string())
+    }
+}
+
+#[cfg(test)]
+mod router_identity_tests {
+    use super::*;
+    use crate::models::AgentProvider;
+
+    fn role(owner: &str, agent_id: &str) -> TabRole {
+        TabRole::Agent {
+            owner: owner.into(),
+            agent_id: agent_id.into(),
+            provider: AgentProvider::Claude,
+        }
+    }
+
+    #[test]
+    fn a_router_tab_without_lineage_never_grants_another_owner_or_agent_delivery() {
+        let router = "router-first";
+        let matching = role("capture-first", router);
+        let other_owner = role("capture-second", router);
+        let other_agent = role("capture-first", "router-second");
+        assert!(exact_delivery_tab(
+            "capture-first",
+            router,
+            router,
+            &matching,
+            None
+        ));
+        assert!(!exact_delivery_tab(
+            "capture-first",
+            router,
+            router,
+            &other_owner,
+            None
+        ));
+        assert!(!exact_delivery_tab(
+            "capture-first",
+            router,
+            router,
+            &other_agent,
+            None
+        ));
+        assert!(!exact_delivery_tab(
+            "run-first",
+            "agent-first",
+            "conversation-first",
+            &role("run-first", "agent-first"),
+            None,
+        ));
+        let invented_lineage = SessionInstance {
+            id: "session-invented".into(),
+            entity_id: "capture-first".into(),
+            agent_id: router.into(),
+            conversation_id: router.into(),
+            checkout: "/scratch".into(),
+        };
+        assert!(!exact_delivery_tab(
+            "capture-first",
+            router,
+            router,
+            &matching,
+            Some(&invented_lineage),
+        ));
+    }
+
+    #[test]
+    fn canonical_delivery_still_requires_the_captured_conversation() {
+        let instance = SessionInstance {
+            id: "session-first".into(),
+            entity_id: "run-first".into(),
+            agent_id: "agent-first".into(),
+            conversation_id: "conversation-first".into(),
+            checkout: "/checkout".into(),
+        };
+        let tab_role = role("run-first", "agent-first");
+        assert!(exact_delivery_tab(
+            "run-first",
+            "agent-first",
+            "conversation-first",
+            &tab_role,
+            Some(&instance),
+        ));
+        assert!(!exact_delivery_tab(
+            "run-first",
+            "agent-first",
+            "conversation-replaced",
+            &tab_role,
+            Some(&instance),
+        ));
     }
 }

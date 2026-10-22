@@ -280,16 +280,21 @@ const recoveryExcerpt = (recovery) => {
 };
 
 const recoveryHeading = (recovery) => {
+  if (recovery.durable) return recovery.status === "uncertain" ? "Message outcome unresolved" : "Your message wasn’t saved";
   if (recovery.kind === "creation") return "Agent creation uncertain";
   if (recovery.status === "execution_error") return "Message saved; agent did not start";
   return recovery.status === "uncertain" ? "Delivery uncertain" : "Message not sent";
 };
 
+const legacyRecoveryAction = (recovery) => recovery.kind === "creation" ? "Retry creation" : recovery.status === "uncertain" ? "Check delivery" : "Retry";
+
 const recoveryAction = (recovery) => {
   if (!recovery.canRetry) return "";
-  const label = recovery.kind === "creation" ? "Retry creation" : recovery.status === "uncertain" ? "Check delivery" : "Retry";
-  return `<button type="button">${label}</button>`;
+  const label = recovery.durable && recovery.status === "uncertain" ? "Check again" : legacyRecoveryAction(recovery);
+  return `<button type="button" data-recovery-action="retry">${label}</button>`;
 };
+
+const recoveryNeedsRefresh = (recovery) => recovery?.kind === "creation" || (recovery?.durable && recovery.status === "rejected");
 
 const chatRecoveryHtml = (controller) => controller.recoveries().map((recovery) =>
   `<div class="chat-recovery-entry" data-operation="${esc(recovery.operationId)}">
@@ -298,6 +303,7 @@ const chatRecoveryHtml = (controller) => controller.recoveries().map((recovery) 
       ${recovery.error ? `<span>${esc(recovery.error)}</span>` : ""}
     </span>
     ${recoveryAction(recovery)}
+    ${recovery.canDismiss ? '<button type="button" data-recovery-action="dismiss">Dismiss</button>' : ""}
   </div>`,
 ).join("");
 
@@ -334,6 +340,7 @@ function railChatDependencies(context) {
       scope: cacheScope || {},
       viewingContext: context.viewingContext || App.viewingContext,
       call: (...args) => context.call(...args),
+      writeOperations: context.writeOperations,
     }),
   };
 }
@@ -3136,7 +3143,10 @@ function mountRailOnContext(host, context, swap) {
     };
   };
 
+  const syncComposerDraft = () => composerControl?.syncDraft();
+
   const syncComposer = () => {
+    syncComposerDraft();
     if (composerControl) composerControl.setCanInterrupt(agentCanInterrupt(agentInFocus()));
     if (composerControl) composerControl.setBlocked(composerController?.choice().pending, "Applying model…");
     syncChatRecovery();
@@ -3163,6 +3173,12 @@ function mountRailOnContext(host, context, swap) {
         const operationId = button.closest("[data-operation]").dataset.operation;
         button.disabled = true;
         try {
+          if (button.dataset.recoveryAction === "dismiss") {
+            await controller.dismissOperation(operationId);
+            return;
+          }
+          const recovery = controller.recoveries().find((row) => row.operationId === operationId);
+          if (recoveryNeedsRefresh(recovery)) await refresh();
           await controller.retryOperation(operationId, {
             retryCreation: (submission) => {
               createAgentWithMessage(controller, submission, { retry: true });
@@ -3790,7 +3806,7 @@ function mountRailOnContext(host, context, swap) {
 
     const creationCall = retry ? chatRepository.currentCall() : submission.call;
     controller.markOperationKind(submission, "creation");
-    const call = async (handle) => {
+    const performCreation = async (handle) => {
       const entityId = await ensureEntity(creationCall);
       const added = await creationCall("agent.add", {
         entity_id: entityId,
@@ -3833,10 +3849,7 @@ function mountRailOnContext(host, context, swap) {
     const onRevert = (error) => {
       if (operationIsUncertain(error)) {
         controller.recordOperationFailure(submission, error);
-        if (leaveProvisional()) {
-          selectKind("add");
-          paint();
-        }
+        if (leaveProvisional()) { selectKind("add"); paint(); }
         return;
       }
       if (leaveProvisional()) {
@@ -3859,7 +3872,8 @@ function mountRailOnContext(host, context, swap) {
           clearedBy: creationMessageHasArrived,
         }),
       ],
-      call,
+      call: performCreation,
+      operation: () => controller.writeOperation(submission),
       failureSummary: "Could not start the agent",
       onRevert,
     }).then(async () => {
@@ -3891,7 +3905,7 @@ function mountRailOnContext(host, context, swap) {
     const wakesAgent = (entity.kind === "branch" || entity.kind === "workspace") && !agentIsUp(agent);
 
     let messageDelivered = false;
-    if (address) void writeProvisionalMessage(address, submission.operationId, submission.message);
+    if (address && !submission.durable) void writeProvisionalMessage(address, submission.operationId, submission.message);
 
     const call = async () => {
       await postSubmission(controller, submission, (posted) => {
@@ -3907,6 +3921,7 @@ function mountRailOnContext(host, context, swap) {
       scope: pendingAgentsScope(),
       records: wakesAgent && agent ? [startingRecord(agent.id)] : [],
       call,
+      operation: () => controller.writeOperation(submission),
       failureSummary: "Message failed",
       onRevert: (error) => {
         if (messageDelivered) return;

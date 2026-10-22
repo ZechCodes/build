@@ -936,7 +936,8 @@ fn a_legacy_repo_root_run_still_has_its_run_id_workspace_route() {
     state.workspaces.forget(&run_id);
     state.runs.get_mut(&run_id).unwrap().worktree.path = AppState::canonical_root(&repo);
     state.refresh_workspace_snapshot_observations();
-    state.refresh_snapshot_observations();
+    // Only the adopted checkout paths determine this legacy workspace route.
+    let _ = state.refresh_snapshot_observations();
     state.publish_snapshot_projection();
 
     let detail = state.handle(req("workspace.get", json!({"workspace_id": run_id})));

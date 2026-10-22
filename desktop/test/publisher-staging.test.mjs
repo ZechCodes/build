@@ -122,6 +122,8 @@ function runPublisher(f, contaminate = () => {}) {
         mkdirSync(f.stage, { recursive: true });
         for (const name of expected) writeFileSync(join(f.stage, name), `distributable bytes: ${name}\n`);
         contaminate(f.stage);
+      } else if (action?.startsWith("actions/setup-node@")) {
+        assert.equal(property(step, "node-version"), '"22.23.4"');
       } else {
         assert.match(action ?? "", /^(actions\/checkout|sigstore\/cosign-installer)@/);
       }

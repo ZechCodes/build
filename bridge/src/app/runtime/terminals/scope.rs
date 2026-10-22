@@ -219,7 +219,7 @@ impl AppState {
         Ok(())
     }
 
-    /// Shell creation and move admission both hold the app lock. The existing
+    /// Shell reservation and move admission share the app lock. The existing
     /// Updating reservation lasts through off-lock work and its settlement.
     pub(in crate::app) fn refuse_source_shell_start_at(&self, root: &Path) -> Result<(), String> {
         let checkout_id = crate::worktree::external_worktree_id(root);
@@ -236,13 +236,7 @@ impl AppState {
     pub(in crate::app) fn refuse_source_shells_at(&self, path: &Path) -> Result<(), String> {
         let root = AppState::canonical_root(path);
         self.refuse_source_shell_start_at(&root)?;
-        let shells: Vec<_> = self
-            .session_registry
-            .tab_keys()
-            .into_iter()
-            .filter(|key| key.root.starts_with(&root) && self.session_registry.tab_is_shell(key))
-            .map(|key| key.tab_id)
-            .collect();
+        let shells = self.session_registry.shell_holds_at(&root);
         if !shells.is_empty() {
             return Err(format!("{SOURCE_SHELLS_LIVE}: {}", shells.join(", ")));
         }

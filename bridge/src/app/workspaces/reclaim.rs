@@ -157,6 +157,31 @@ pub(in crate::app) fn probe_reclaim_stop_for_test() -> (
 }
 
 impl AppState {
+    /// Owned reservation facts for bootstrap and keyed observational deltas.
+    pub(in crate::app) fn read_reclaim_reservation_rows(
+        &self,
+    ) -> Vec<(String, (PathBuf, Instant))> {
+        self.reclaim_reserved
+            .iter()
+            .map(|(id, reservation)| {
+                (
+                    id.clone(),
+                    (
+                        reservation.root.clone(),
+                        reservation.since + RESERVATION_LIMIT,
+                    ),
+                )
+            })
+            .collect()
+    }
+    pub(in crate::app) fn read_reclaim_reservation(&self, id: &str) -> Option<(PathBuf, Instant)> {
+        self.reclaim_reserved.get(id).map(|reservation| {
+            (
+                reservation.root.clone(),
+                reservation.since + RESERVATION_LIMIT,
+            )
+        })
+    }
     /// Run the service for the life of the daemon: the first sweep a little
     /// after startup, then one every `sweep_every`, and one soon after a nudge.
     ///
@@ -522,6 +547,8 @@ impl AppState {
                 since: Instant::now(),
             },
         );
+        self.mark_observation_reservation_changed(workspace_id);
+        self.publish_snapshot_projection();
     }
 
     #[cfg(test)]
@@ -529,8 +556,16 @@ impl AppState {
         self.reserve_workspace(workspace_id);
     }
 
+    #[cfg(test)]
+    pub(in crate::app) fn release_workspace_reservation_for_test(&mut self, workspace_id: &str) {
+        self.release_reservation(workspace_id);
+    }
+
     fn release_reservation(&mut self, workspace_id: &str) {
-        self.reclaim_reserved.remove(workspace_id);
+        if self.reclaim_reserved.remove(workspace_id).is_some() {
+            self.mark_observation_reservation_changed(workspace_id);
+            self.publish_snapshot_projection();
+        }
     }
 
     /// What keeps the service from dropping this workspace's build output right
@@ -547,6 +582,7 @@ impl AppState {
         let busy = self.project_deletion_in_progress
             || self.deferred_work.is_some()
             || self.active_deferred_filesystem_jobs > 0
+            || self.workspace_contains_pending_shell(workspace_id)
             || self.upload_open_within(&Self::canonical_root(&workspace.root))
             || (!reserved && self.workspace_reserved(workspace_id));
         if busy || self.refuse_removing_what_is_not_builds(workspace).is_err() {
@@ -709,10 +745,12 @@ impl AppState {
     /// One of the user's terminals open anywhere in the workspace. A shell's
     /// tab lasts exactly as long as its process.
     fn terminal_open_within(&self, root: &Path) -> bool {
-        self.session_registry
-            .tab_keys()
-            .into_iter()
-            .any(|key| !key.is_agent() && key.root.starts_with(root))
+        self.session_registry.pending_shell_within(root)
+            || self
+                .session_registry
+                .tab_keys()
+                .into_iter()
+                .any(|key| !key.is_agent() && key.root.starts_with(root))
     }
 
     /// Every task of every project, filed under each workspace it links. One

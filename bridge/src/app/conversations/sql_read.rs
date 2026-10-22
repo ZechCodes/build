@@ -13,9 +13,13 @@ use crate::store::ReadTransaction;
 use crate::thread::Thread;
 
 use super::inputs::required_operation_id;
-use super::read::conversation_owner_param;
+use super::read::{conversation_owner_param, revision_value};
 
+mod attachments;
+mod mcp;
 mod pages;
+pub(in crate::app) use attachments::{AttachmentOwner, AttachmentReadContext, AttachmentReadFence};
+pub(in crate::app) use mcp::{McpHistoryQuery, McpHistoryWork};
 use pages::{activity, page};
 
 #[derive(Clone, Default)]
@@ -44,6 +48,7 @@ impl From<&Agent> for ReadAddress {
     }
 }
 
+#[derive(Clone)]
 pub(in crate::app) struct ThreadReadFence {
     owner: String,
     agent: String,
@@ -157,12 +162,18 @@ impl ThreadReadContext {
         method: &str,
         params: &Value,
     ) -> Result<(Value, ThreadReadFence), String> {
-        let owner = if method == "thread.operation" {
+        let owner = if matches!(method, "thread.operation" | "thread.revision") {
             require_str(params, "entity_id")?
         } else {
             conversation_owner_param(params)?
         };
+        let revision_id = (method == "thread.revision")
+            .then(|| require_str(params, "revision_id"))
+            .transpose()?;
         let (mut thread, fence) = self.resolve(transaction, &owner, params)?;
+        if let Some(revision_id) = revision_id {
+            return revision_value(&thread, &revision_id).map(|value| (value, fence));
+        }
         if let Some(transaction) = transaction {
             restore_read_counters(transaction, thread.to_mut(), method)?;
         }
@@ -347,6 +358,14 @@ fn conversation_error(error: crate::store::StoreError) -> String {
 }
 
 fn guard_binding(agent: &ReadAddress, thread: &Thread, params: &Value) -> Result<(), String> {
+    guard_binding_values(agent, &thread.id, params)
+}
+
+fn guard_binding_values(
+    agent: &ReadAddress,
+    thread_id: &str,
+    params: &Value,
+) -> Result<(), String> {
     if let Some(expected) = optional_nonempty_string(params, "conversation_id")? {
         if expected != agent.conversation {
             return Err(format!(
@@ -360,10 +379,10 @@ fn guard_binding(agent: &ReadAddress, thread: &Thread, params: &Value) -> Result
             .as_str()
             .filter(|id| !id.is_empty())
             .ok_or("invalid thread_id: expected a non-empty string")?;
-        if expected != thread.id {
+        if expected != thread_id {
             return Err(format!(
                 "stale thread_id {expected}; current thread is {}",
-                thread.id
+                thread_id
             ));
         }
     }

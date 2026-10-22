@@ -22,6 +22,10 @@ use std::collections::{HashMap, HashSet};
 use crate::run::RunState;
 use serde_json::Value;
 
+#[cfg(test)]
+#[path = "branch/owned_rows_tests.rs"]
+mod owned_rows_tests;
+
 /// The kinds of work item, as they ship on the wire. Branch and task are the
 /// work; a capture is the thing the user said that has not become work yet, and
 /// it holds a row of its own only until it does.
@@ -183,7 +187,7 @@ pub fn fold_work_items(candidates: Vec<WorkItemCandidate>) -> Vec<Value> {
         }
     }
     let survivors: HashSet<usize> = winner_of.values().copied().collect();
-    let spoken_for: HashSet<&str> = candidates
+    let spoken_for: HashSet<String> = candidates
         .iter()
         .enumerate()
         .filter(|(index, candidate)| {
@@ -191,10 +195,10 @@ pub fn fold_work_items(candidates: Vec<WorkItemCandidate>) -> Vec<Value> {
                 && candidate.kind == WorkItemKind::Branch
                 && candidate.implementation_active
         })
-        .filter_map(|(_, candidate)| candidate.task_id.as_deref())
+        .filter_map(|(_, candidate)| candidate.task_id.clone())
         .collect();
     candidates
-        .iter()
+        .into_iter()
         .enumerate()
         .filter(|(index, _)| survivors.contains(index))
         .filter(|(_, candidate)| {
@@ -204,7 +208,7 @@ pub fn fold_work_items(candidates: Vec<WorkItemCandidate>) -> Vec<Value> {
                     .as_deref()
                     .is_some_and(|task_id| spoken_for.contains(task_id))
         })
-        .map(|(_, candidate)| named_project_row(candidate.row.clone()))
+        .map(|(_, candidate)| named_project_row(candidate.row))
         .collect()
 }
 
@@ -379,15 +383,11 @@ pub fn task_finish_warnings(implemented: bool) -> Vec<FinishWarning> {
 ///
 /// Stable, so rows that share an anchor keep the order the fold gave them.
 pub fn sort_by_anchor(rows: &mut [Value]) {
-    rows.sort_by(|left, right| {
-        let key = |row: &Value| {
-            row["anchor"]
-                .as_str()
-                .map(str::to_string)
-                .map_or((true, String::new()), |anchor| (false, anchor))
-        };
-        key(left).cmp(&key(right))
-    });
+    rows.sort_by(|left, right| compare_anchors(left["anchor"].as_str(), right["anchor"].as_str()));
+}
+
+pub(crate) fn compare_anchors(left: Option<&str>, right: Option<&str>) -> std::cmp::Ordering {
+    (left.is_none(), left.unwrap_or_default()).cmp(&(right.is_none(), right.unwrap_or_default()))
 }
 
 #[cfg(test)]

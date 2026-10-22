@@ -391,6 +391,8 @@ async fn a_worktree_spelled_two_ways_holds_one_set_of_tabs() {
         let alias = dir.path().join("alias-to-worktree");
         std::os::unix::fs::symlink(&root, &alias).unwrap();
         s.runs.get_mut("run-aliased").unwrap().worktree.path = alias;
+        // Commit the directly seeded scope inputs before observation reads.
+        s.publish_snapshot_projection();
         root
     };
 
@@ -432,6 +434,8 @@ async fn term_list_shows_only_the_shells_of_the_worktree_asked_about() {
         let mut s = state.lock().unwrap();
         insert_run(&mut s, &repo, dir.path(), "run-here", RunState::Building);
         insert_run(&mut s, &repo, dir.path(), "run-there", RunState::Building);
+        // Direct fixture insertion bypasses the run producer's publication.
+        s.publish_snapshot_projection();
     }
     let shell_in = |run_id: &str| {
         let created = call(&handler, "term.create", json!({ "run_id": run_id }));
@@ -827,6 +831,8 @@ async fn project_source_terminal_cannot_attach_sibling() {
         alias.id = "source-4".into();
         rows.push(alias);
         assert!(app.projects.set_sources(&project_id, rows));
+        // Commit this direct fixture edit as project.add_source normally does.
+        app.publish_snapshot_projection();
     }
     let selector = |source_id: &str| source_selector(&state, &project_id, source_id);
 
@@ -980,3 +986,285 @@ async fn project_source_terminal_cannot_attach_sibling() {
         "a refused selector opened a shell"
     );
 }
+
+/// Explicitly own the child lifetime even when a following assertion fails.
+fn close_fixture_shell(state: &Arc<Mutex<AppState>>, handler: &FrameHandler, created: &Value) {
+    let child = {
+        let app = state.lock().unwrap();
+        let key = app
+            .tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap())
+            .unwrap();
+        Arc::clone(&app.session_registry.test_tab(&key).unwrap().session)
+    };
+    let closed = call(
+        handler,
+        "term.close",
+        json!({"term_id":created["result"]["term_id"]}),
+    );
+    child.end();
+    assert!(child.exited_within(Duration::from_secs(2)));
+    assert_eq!(closed["ok"], true, "{closed}");
+}
+
+/// A shell only changes terminal facts. It must not refresh the board,
+/// workspace details or retained conversations while holding the app mutex.
+#[tokio::test]
+async fn term_create_publishes_only_terminal_facts_with_named_guard_phases() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let (project, before, samples) = {
+        let app = state.lock().unwrap();
+        (
+            app.project_at(0).id.clone(),
+            app.read_view.load(),
+            app.frame_clock.capture_phases(),
+        )
+    };
+    let created = call(&handler, "term.create", json!({"project_id": project}));
+    assert_eq!(created["ok"], true, "{created}");
+    let phases = samples.snapshot();
+    let after = state.lock().unwrap().read_view.load();
+    close_fixture_shell(&state, &handler, &created);
+    let phases = &phases["term.create"];
+    assert!(
+        phases.get("entered.publication.global").is_none(),
+        "{phases}"
+    );
+    assert!(
+        phases.get("entered.term.create.spawn").is_none(),
+        "PTY creation must not enter a guarded phase: {phases}"
+    );
+    assert!(
+        phases.get("entered.term.create.scope_probe").is_none(),
+        "physical scope resolution must not enter a guarded phase: {phases}"
+    );
+    for phase in [
+        "term.create.reserve",
+        "term.create.commit",
+        "terminals.publish",
+    ] {
+        assert!(phases.get(phase).is_some(), "missing {phase}: {phases}");
+    }
+    assert!(Arc::ptr_eq(
+        before.global.as_ref().unwrap(),
+        after.global.as_ref().unwrap()
+    ));
+    for key in before.keys() {
+        assert_eq!(
+            before.get_owned(key.method, &key.owner),
+            after.get_owned(key.method, &key.owner)
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_shell_spawn_releases_the_app_lock_and_holds_lifecycle_admission() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let project = state.lock().unwrap().project_at(0).id.clone();
+    let (gate, held) = OffLockGate::new();
+    state.lock().unwrap().terminal_create_spawn_gate = Some(gate);
+    let create = {
+        let handler = handler.clone();
+        let project = project.clone();
+        std::thread::spawn(move || call(&handler, "term.create", json!({"project_id": project})))
+    };
+    held.wait_for_arrival();
+    let held_facts = state.try_lock().ok().map(|app| {
+        (
+            app.active_deferred_filesystem_jobs,
+            app.session_registry.pending_shell_count(),
+            app.refuse_source_shells_at(&repo).is_err(),
+        )
+    });
+    let listed = held_facts
+        .as_ref()
+        .map(|_| call(&handler, "term.list", json!({"project_id":project})));
+    let (done, answered) = std::sync::mpsc::channel();
+    let concurrent = {
+        let handler = handler.clone();
+        std::thread::spawn(move || {
+            let _ = done.send(call(&handler, "session.hello", json!({})));
+        })
+    };
+    let reply = answered.recv_timeout(Duration::from_millis(100));
+    held.release();
+    let created = create.join().unwrap();
+    if created["ok"] == true {
+        close_fixture_shell(&state, &handler, &created);
+    }
+    concurrent.join().unwrap();
+    assert_eq!(created["ok"], true, "{created}");
+    assert_eq!(
+        held_facts,
+        Some((0, 1, true)),
+        "spawn must release the app lock and retain its holds"
+    );
+    assert_eq!(
+        reply.expect("session.hello must answer during shell spawn")["ok"],
+        true
+    );
+    let listed = listed.unwrap();
+    assert!(
+        listed_ids(&listed).is_empty(),
+        "a pending spawn is not a tab: {listed}"
+    );
+    let app = state.lock().unwrap();
+    assert_eq!(app.active_deferred_filesystem_jobs, 0);
+    assert_eq!(app.session_registry.pending_shell_count(), 0);
+}
+
+#[tokio::test]
+async fn failed_shell_spawn_releases_its_capacity_and_filesystem_hold() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let project = {
+        let mut app = state.lock().unwrap();
+        app.term_shell = dir.path().join("missing-shell").display().to_string();
+        app.project_at(0).id.clone()
+    };
+    let samples = state.lock().unwrap().frame_clock.capture_phases();
+    let refused = call(&handler, "term.create", json!({"project_id": project}));
+    assert_eq!(refused["ok"], false, "{refused}");
+    let app = state.lock().unwrap();
+    assert_eq!(app.active_deferred_filesystem_jobs, 0);
+    assert_eq!(app.session_registry.pending_shell_count(), 0);
+    assert_eq!(app.shell_tab_count(), 0);
+    assert!(app.refuse_source_shells_at(&repo).is_ok());
+    let phases = samples.snapshot();
+    assert_eq!(
+        phases["term.create"]["term.create.cancel"]["count"], 1,
+        "{phases}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shell_rejected_at_commit_is_reaped_and_releases_its_hold() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let pid_file = dir.path().join("shell.pid");
+    let shell = dir.path().join("shell");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nwhile IFS= read -r line; do :; done\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let project = {
+        let mut app = state.lock().unwrap();
+        app.term_shell = shell.display().to_string();
+        app.project_at(0).id.clone()
+    };
+    let (gate, held) = OffLockGate::new();
+    state.lock().unwrap().terminal_create_spawn_gate = Some(gate);
+    let create = {
+        let handler = handler.clone();
+        std::thread::spawn(move || call(&handler, "term.create", json!({"project_id":project})))
+    };
+    held.wait_for_arrival();
+    let marker_ready = settles(|| {
+        std::fs::read_to_string(&pid_file)
+            .ok()
+            .is_some_and(|pid| pid.trim().parse::<u32>().is_ok())
+    });
+    let pid = std::fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|pid| pid.trim().parse::<u32>().ok());
+    // Force invalidation after opening, despite the ordinary deletion hold.
+    let invalidated = state.try_lock().ok().map(|mut app| {
+        app.project_deletion_in_progress = true;
+    });
+    held.release();
+    let rejected = create.join().unwrap();
+    if rejected["ok"] == true {
+        state.lock().unwrap().project_deletion_in_progress = false;
+        close_fixture_shell(&state, &handler, &rejected);
+    }
+    let reaped = pid.is_some_and(process_reaped);
+    assert!(invalidated.is_some(), "the spawn must release the app lock");
+    assert!(marker_ready, "the owned child must reach its read loop");
+    assert_eq!(rejected["ok"], false, "{rejected}");
+    assert!(reaped, "the unregistered child must be reaped");
+    let app = state.lock().unwrap();
+    assert_eq!(app.active_deferred_filesystem_jobs, 0);
+    assert_eq!(app.session_registry.pending_shell_count(), 0);
+    assert_eq!(app.shell_tab_count(), 0);
+}
+
+#[tokio::test]
+async fn pending_shells_count_towards_the_terminal_limit() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let (project, claims) = {
+        let mut app = state.lock().unwrap();
+        let root = AppState::canonical_root(&repo);
+        let claims = (0..MAX_USER_TERMINALS)
+            .map(|_| {
+                let key = TabKey {
+                    root: root.clone(),
+                    tab_id: app.session_registry.next_terminal_id(),
+                };
+                app.session_registry.take_spawn_claim(key)
+            })
+            .collect::<Vec<_>>();
+        (app.project_at(0).id.clone(), claims)
+    };
+    let refused = call(&handler, "term.create", json!({"project_id":project}));
+    {
+        let mut app = state.lock().unwrap();
+        for claim in claims {
+            app.session_registry.settle_spawn_claim(claim);
+        }
+    }
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(refused["error"]
+        .as_str()
+        .unwrap()
+        .contains("terminal limit reached"));
+}
+
+#[tokio::test]
+async fn failed_shell_spawn_settles_a_handler_built_from_a_bare_arc() {
+    let (dir, repo) = init_repo();
+    let mut app = AppState::new(
+        repo,
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    app.term_shell = dir.path().join("missing-shell").display().to_string();
+    let state = Arc::new(Mutex::new(app));
+    let handler = AppState::handler(Arc::clone(&state));
+    let project = state.lock().unwrap().project_at(0).id.clone();
+    let failed = call(&handler, "term.create", json!({"project_id":project}));
+    assert_eq!(failed["ok"], false, "{failed}");
+    {
+        let mut app = state.lock().unwrap();
+        assert_eq!(app.active_deferred_filesystem_jobs, 0);
+        assert_eq!(app.session_registry.pending_shell_count(), 0);
+        app.term_shell = "/bin/bash".into();
+    }
+    let created = call(&handler, "term.create", json!({"project_id":project}));
+    assert_eq!(created["ok"], true, "{created}");
+    let child = {
+        let app = state.lock().unwrap();
+        let key = app
+            .tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap())
+            .unwrap();
+        Arc::clone(&app.session_registry.test_tab(&key).unwrap().session)
+    };
+    let closed = call(
+        &handler,
+        "term.close",
+        json!({"term_id":created["result"]["term_id"]}),
+    );
+    child.end();
+    assert!(child.exited_within(Duration::from_secs(2)));
+    assert_eq!(closed["ok"], true, "{closed}");
+}
+mod observations;

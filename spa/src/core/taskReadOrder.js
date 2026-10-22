@@ -34,7 +34,7 @@ export const TASK_READS_KIND = "tracker-task-reads";
 
 /** The count every tab takes a read's number from. Under no device and no
  *  entity, like the device list: every list's reads share the one count. */
-const READ_COUNT_ADDRESS = Object.freeze({ deviceId: "", entityId: "", kind: "tracker-task-read-count" });
+export const TASK_READ_COUNT_ADDRESS = Object.freeze({ deviceId: "", entityId: "", kind: "tracker-task-read-count" });
 
 /** Where the note of what each read had the say on under `address` lives. */
 export const readsAddress = ({ deviceId, entityId, kind, sub = "" }) => ({
@@ -51,7 +51,7 @@ let uncounted = 0;
  *  cache does not start again under a page still out. Without a cache there
  *  is nothing to fold into and nothing to share, and the count is this tab's. */
 export async function nextTaskRead() {
-  const taken = await takeCachedCount(READ_COUNT_ADDRESS, Date.now());
+  const taken = await takeCachedCount(TASK_READ_COUNT_ADDRESS, Date.now());
   if (Number.isFinite(taken)) return taken;
   uncounted = Math.max(uncounted + 1, Date.now());
   return uncounted;

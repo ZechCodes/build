@@ -7,6 +7,8 @@ use super::tracker::{filed, tracked_with_origin};
 use super::*;
 use crate::tracker::{Actor, Assignee, TaskComment, TaskEvent, TaskEventKind};
 
+mod ownership_wrappers;
+
 const TASKS: usize = 50;
 
 #[test]
@@ -126,6 +128,33 @@ async fn published_task(state: &AppState, task: &Value) -> Value {
 }
 
 #[tokio::test]
+async fn user_activity_publishes_task_session_without_rebuilding_snapshots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, project) = tracked_with_origin(tmp.path());
+    state.initialize_snapshot_projection();
+    state.initialize_read_context();
+    let previous = state.read_view.load();
+    let activity = state.user_session.last_activity_ms.unwrap_or(0) + 1;
+
+    state.note_user_activity(activity);
+
+    assert!(
+        Arc::ptr_eq(&previous, &state.read_view.load()),
+        "user presence rebuilt the board/workspace/push projection"
+    );
+    let connection = state.tracker_store().unwrap().read_pool().acquire().await;
+    let answer = state.read_service().call(
+        req("tasks.list", json!({"project_id":project})),
+        Some(connection),
+    );
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(
+        answer["result"]["user_session"]["last_activity_ms"],
+        activity
+    );
+}
+
+#[tokio::test]
 async fn task_read_publication_preserves_another_checked_out_owner() {
     let tmp = tempfile::tempdir().unwrap();
     let (mut state, project) = tracked_with_origin(tmp.path());
@@ -187,6 +216,53 @@ async fn task_read_publication_does_not_admit_a_failed_added_agent() {
     state.publish_read_metadata();
     let answer = published_task(&state, &task).await;
     assert_eq!(answer["identities"][&candidate]["available"], false);
+}
+
+#[tokio::test]
+async fn successful_attention_touch_cannot_admit_a_failed_added_agent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, project) = tracked_with_origin(tmp.path());
+    let (owner, committed_agent) = agent_on_checkout(&mut state, &project, "committed");
+    let task = filed(&mut state, &project, &format!("@agent:{committed_agent}"));
+    state.initialize_snapshot_projection();
+    state.initialize_read_context();
+    let mut candidate = state.take_run(&owner).unwrap();
+    let added = candidate
+        .agents
+        .add(owner.as_str(), candidate.model_choice.clone(), "now")
+        .id
+        .clone();
+    state.store.as_ref().unwrap().fail_next_write();
+    assert!(state.persist_run_record(&owner, &candidate).is_err());
+    // Keep the failed caller's live candidate to exercise admission retention,
+    // rather than relying on the canonical finisher's roster rollback.
+    state.runs.insert(owner.clone(), candidate);
+    state.publish_read_owner(&owner, false);
+    let store = state.tracker_store().unwrap();
+    let mut updated = store
+        .load_tracker_task(task["id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    updated.title = format!("@agent:{added} @agent:{committed_agent}");
+    store
+        .save_tracker_task_activity(&updated, &[], &[])
+        .unwrap();
+    let before = published_task(&state, &task).await;
+    assert_eq!(before["identities"][&added]["available"], false);
+    state.touch_attention(&owner);
+    let after = published_task(&state, &task).await;
+    assert_eq!(after["identities"][&added]["available"], false);
+    assert_eq!(after["identities"][&committed_agent]["available"], true);
+    let connection = state.tracker_store().unwrap().read_pool().acquire().await;
+    let answer = state.read_service().call(
+        req(
+            "thread.page",
+            json!({"entity_id":owner,"agent_id":added,"conversation_id":added}),
+        ),
+        Some(connection),
+    );
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert_ne!(answer["error_code"], "unknown_method", "{answer}");
 }
 
 #[tokio::test]

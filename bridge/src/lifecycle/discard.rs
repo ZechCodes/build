@@ -28,10 +28,11 @@ impl DiscardedCheckout {
         };
         let RemovedCheckout { project, worktree } = removed.as_ref();
         Retirement::wait_all(writers, crate::orchestrator::CHECKOUT_REAP_WAIT, run_id);
+        let root = crate::worktree::canonical_root(&worktree.path);
         project.discard_checkout(worktree, /* keep_branch */ true);
         match worktree.path.exists() {
             false => WorktreeChange {
-                gone: vec![crate::worktree::canonical_root(&worktree.path)],
+                gone: vec![root],
                 ..WorktreeChange::default()
             },
             true => WorktreeChange::undescribed(),

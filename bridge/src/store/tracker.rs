@@ -318,16 +318,7 @@ impl Store {
         &self,
         comment_id: &str,
     ) -> Result<Option<TaskComment>, StoreError> {
-        let conn = self.connection();
-        let mut statement =
-            conn.prepare("SELECT id, record FROM tracker_comments WHERE id = ?1")?;
-        let mut rows = statement.query([comment_id])?;
-        let Some(row) = rows.next()? else {
-            return Ok(None);
-        };
-        let id: String = row.get(0)?;
-        let raw: String = row.get(1)?;
-        decode(&raw, "tracker_comments", &id).map(Some)
+        ReadTransaction::new(&self.connection()).load_tracker_comment(comment_id)
     }
 
     /// One task's comments and events as a single ascending timeline.
@@ -578,6 +569,10 @@ pub(super) fn decode<T: serde::de::DeserializeOwned>(
     table: &str,
     id: &str,
 ) -> Result<T, StoreError> {
+    #[cfg(test)]
+    if table == "tracker_tasks" {
+        let _decoded = crate::timing::phase_samples::phase("task.record_decoded");
+    }
     serde_json::from_str(raw).map_err(|source| StoreError::Corrupt {
         path: PathBuf::from(format!("{table}/{id}")),
         source,
@@ -651,6 +646,10 @@ impl ReadTransaction<'_> {
         let mut last_read = None;
         while seek.take.is_none_or(|take| stretch.tasks.len() < take) {
             let Some(row) = rows.next()? else { break };
+            #[cfg(test)]
+            {
+                let _fetched = crate::timing::phase_samples::phase("task.fetched");
+            }
             // A row past the bound is only fetched, never decoded: it says
             // there is more below, which is what the next stretch is for.
             if seek.scan.is_some_and(|scan| scanned >= scan) {
@@ -660,7 +659,11 @@ impl ReadTransaction<'_> {
             scanned += 1;
             let (id, number, raw): (String, i64, String) = (row.get(0)?, row.get(1)?, row.get(2)?);
             last_read = u64::try_from(number).ok();
-            let task = decode(&raw, "tracker_tasks", &id)?;
+            let task = {
+                #[cfg(test)]
+                let _phase = crate::timing::phase_samples::phase("task.decoded");
+                decode(&raw, "tracker_tasks", &id)?
+            };
             if keep(conn, &task)? {
                 stretch.tasks.push(task);
             }
@@ -705,6 +708,8 @@ impl ReadTransaction<'_> {
         let mut timelines: HashMap<String, Vec<TimelineEntry>> = HashMap::new();
         let mut unique = Vec::with_capacity(task_ids.len());
         for id in task_ids {
+            #[cfg(test)]
+            let _phase = crate::timing::phase_samples::phase("task.timeline_id");
             if timelines.insert(id.clone(), Vec::new()).is_none() {
                 unique.push(id.as_str());
             }
@@ -732,4 +737,22 @@ pub(super) fn initialize_list_key(conn: &rusqlite::Connection) -> Result<(), Sto
         rusqlite::params![LIST_KEY, uuid::Uuid::new_v4().simple().to_string()],
     )?;
     Ok(())
+}
+
+impl ReadTransaction<'_> {
+    pub fn load_tracker_comment(
+        &self,
+        comment_id: &str,
+    ) -> Result<Option<TaskComment>, StoreError> {
+        let conn = self.connection();
+        let mut statement =
+            conn.prepare("SELECT id, record FROM tracker_comments WHERE id = ?1")?;
+        let mut rows = statement.query([comment_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let id: String = row.get(0)?;
+        let raw: String = row.get(1)?;
+        decode(&raw, "tracker_comments", &id).map(Some)
+    }
 }

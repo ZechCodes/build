@@ -25,6 +25,7 @@ impl ProjectConfiguration {
     }
 
     pub(super) fn swap(&mut self, projects: &mut ProjectRegistry, id: &str) {
+        projects.observation_projects.mark(id);
         let project = projects
             .projects
             .iter_mut()
@@ -75,6 +76,8 @@ impl ProjectCandidate {
 /// changed through the operations that preserve their existing relationship.
 pub(in crate::app) struct ProjectRegistry {
     projects: Vec<Project>,
+    observation_projects: crate::observation_changes::ChangeKeys,
+    observation_bindings: crate::observation_changes::ChangeKeys,
     entity_project: HashMap<String, String>,
     entity_project_path: HashMap<String, String>,
     next_project: u64,
@@ -84,9 +87,21 @@ pub(in crate::app) struct ProjectRegistry {
 }
 
 impl ProjectRegistry {
+    pub(in crate::app) fn observation_project_changes(
+        &self,
+    ) -> &crate::observation_changes::ChangeKeys {
+        &self.observation_projects
+    }
+    pub(in crate::app) fn observation_binding_changes(
+        &self,
+    ) -> &crate::observation_changes::ChangeKeys {
+        &self.observation_bindings
+    }
     pub(in crate::app) fn new() -> Self {
         Self {
             projects: Vec::new(),
+            observation_projects: Default::default(),
+            observation_bindings: Default::default(),
             entity_project: HashMap::new(),
             entity_project_path: HashMap::new(),
             next_project: 1,
@@ -127,12 +142,14 @@ impl ProjectRegistry {
             .map(|(entity_id, _)| entity_id.clone())
             .collect();
         for entity_id in unbound {
+            self.observation_bindings.mark(&entity_id);
             self.entity_project
                 .insert(entity_id, project_id.to_string());
         }
     }
 
     pub(in crate::app) fn remove(&mut self, project_id: &str) {
+        self.observation_projects.mark(project_id);
         self.projects.retain(|project| project.id != project_id);
         let entities: Vec<_> = self
             .entity_project
@@ -155,6 +172,7 @@ impl ProjectRegistry {
         project_id: &str,
         source_id: &str,
     ) -> Option<&mut ProjectSource> {
+        self.observation_projects.mark(project_id);
         self.projects
             .iter_mut()
             .find(|project| project.id == project_id)?
@@ -167,7 +185,9 @@ impl ProjectRegistry {
     pub(in crate::app) fn sources_mut(
         &mut self,
     ) -> impl Iterator<Item = (&str, &mut ProjectSource)> {
-        self.projects.iter_mut().flat_map(|project| {
+        let changes = &self.observation_projects;
+        self.projects.iter_mut().flat_map(move |project| {
+            changes.mark(&project.id);
             let project_id = project.id.as_str();
             project
                 .sources
@@ -188,6 +208,7 @@ impl ProjectRegistry {
         project_id: &str,
         isolation: Option<Isolation>,
     ) -> bool {
+        self.observation_projects.mark(project_id);
         let Some(project) = self
             .projects
             .iter_mut()
@@ -200,6 +221,7 @@ impl ProjectRegistry {
     }
 
     pub(in crate::app) fn mark_git(&mut self, project_id: &str) -> bool {
+        self.observation_projects.mark(project_id);
         let Some(project) = self
             .projects
             .iter_mut()
@@ -221,6 +243,7 @@ impl ProjectRegistry {
         expected_path: &Path,
         branch: &str,
     ) -> Result<bool, String> {
+        self.observation_projects.mark(project_id);
         let project = self
             .projects
             .iter_mut()
@@ -256,6 +279,7 @@ impl ProjectRegistry {
         expected_path: &Path,
         record: super::SourceRecord,
     ) -> Result<(), String> {
+        self.observation_projects.mark(project_id);
         let project = self
             .projects
             .iter_mut()
@@ -286,6 +310,7 @@ impl ProjectRegistry {
         project_id: &str,
         sources: Vec<ProjectSource>,
     ) -> bool {
+        self.observation_projects.mark(project_id);
         let Some(project) = self
             .projects
             .iter_mut()
@@ -342,6 +367,7 @@ impl ProjectRegistry {
 
     #[cfg(test)]
     pub(in crate::app) fn at_mut(&mut self, index: usize) -> &mut Project {
+        self.observation_projects.mark(&self.projects[index].id);
         &mut self.projects[index]
     }
 
@@ -357,6 +383,9 @@ impl ProjectRegistry {
 
     #[cfg(test)]
     pub(in crate::app) fn clear(&mut self) {
+        for project in &self.projects {
+            self.observation_projects.mark(&project.id);
+        }
         self.projects.clear();
     }
 
@@ -396,6 +425,7 @@ impl ProjectRegistry {
 
     /// Publish only after the caller's durability step has succeeded.
     pub(super) fn publish(&mut self, candidate: ProjectCandidate) -> ProjectId {
+        self.observation_projects.mark(&candidate.project.id);
         let id = ProjectId(candidate.project.id.clone());
         let number = candidate
             .project
@@ -409,20 +439,24 @@ impl ProjectRegistry {
     }
 
     pub(in crate::app) fn bind_entity(&mut self, entity_id: String, project_id: String) {
+        self.observation_bindings.mark(&entity_id);
         self.entity_project.insert(entity_id, project_id);
     }
 
     pub(in crate::app) fn unbind_entity(&mut self, entity_id: &str) {
+        self.observation_bindings.mark(entity_id);
         self.entity_project.remove(entity_id);
         self.entity_project_path.remove(entity_id);
     }
 
     /// Remove only the live route while retaining any stored recovery path.
     pub(in crate::app) fn unbind_live_entity(&mut self, entity_id: &str) {
+        self.observation_bindings.mark(entity_id);
         self.entity_project.remove(entity_id);
     }
 
     pub(in crate::app) fn retain_entity_path(&mut self, entity_id: String, stored_path: String) {
+        self.observation_bindings.mark(&entity_id);
         self.entity_project_path.insert(entity_id, stored_path);
     }
 }

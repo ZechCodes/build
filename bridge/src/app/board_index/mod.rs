@@ -9,6 +9,14 @@ use std::collections::HashMap;
 use crate::attention::Attention;
 use crate::store::PersistedArchivedWorktree;
 
+#[cfg(test)]
+thread_local! { static ARCHIVE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+pub(in crate::app) fn take_archive_visits() -> usize {
+    ARCHIVE_VISITS.with(|count| count.replace(0))
+}
+
 pub(in crate::app) use attention::AttentionIndex;
 pub(in crate::app) use attention::EntityClock;
 pub(in crate::app) use cache::{
@@ -23,6 +31,7 @@ pub(in crate::app) struct BoardIndex {
     attention: AttentionIndex,
     diff: DiffCache,
     archived_worktrees: HashMap<String, PersistedArchivedWorktree>,
+    observation_archives: crate::observation_changes::ChangeKeys,
 }
 
 impl BoardIndex {
@@ -34,7 +43,12 @@ impl BoardIndex {
             attention: AttentionIndex::new(attention),
             diff: DiffCache::default(),
             archived_worktrees,
+            observation_archives: Default::default(),
         }
+    }
+
+    pub(in crate::app) fn observation_changes(&self) -> &crate::observation_changes::ChangeKeys {
+        &self.observation_archives
     }
 
     pub(in crate::app) fn attention(&self) -> &AttentionIndex {
@@ -61,7 +75,16 @@ impl BoardIndex {
     pub(in crate::app) fn archived_values(
         &self,
     ) -> impl Iterator<Item = &PersistedArchivedWorktree> {
-        self.archived_worktrees.values()
+        #[cfg(test)]
+        {
+            self.archived_worktrees
+                .values()
+                .inspect(|_| ARCHIVE_VISITS.with(|count| count.set(count.get() + 1)))
+        }
+        #[cfg(not(test))]
+        {
+            self.archived_worktrees.values()
+        }
     }
 
     /// Boot hydration replaces only the durable archive index, after Store has
@@ -70,6 +93,7 @@ impl BoardIndex {
         &mut self,
         archived: HashMap<String, PersistedArchivedWorktree>,
     ) {
+        self.observation_archives.mark("retained");
         self.archived_worktrees = archived;
     }
 }

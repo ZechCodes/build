@@ -343,6 +343,7 @@ pub(in crate::app) fn reserve_agent_spawn(
                 .map_err(|error| error.to_string())?,
         )
     };
+    let issuer = s.live_mcp_issuer(owner, agent_id)?;
     let replaced = s
         .session_registry
         .agent_snapshot(key)
@@ -391,9 +392,9 @@ pub(in crate::app) fn reserve_agent_spawn(
     let session_token = uuid::Uuid::new_v4().to_string();
     // Before the child exists, because the child dials the done socket as soon
     // as it is up and an unregistered token is an unauthorized report.
-    let session_token_lease = s
-        .session_registry
-        .install_mcp_token(agent_id.to_string(), session_token.clone());
+    let session_token_lease =
+        s.session_registry
+            .install_mcp_token(agent_id.to_string(), session_token.clone(), issuer);
     let recorded_resume_id = (!force_fresh)
         .then(|| s.resumable_session_id(owner, agent_id, &key.root, model_choice.provider))
         .flatten();
@@ -501,8 +502,12 @@ pub(in crate::app) fn open_agent_session(
         TabRole::Agent {
             owner, agent_id, ..
         } => {
-            let app = timer.lock(state);
-            agent_recovery_context(&app, owner, agent_id).map(Some)
+            if crate::router::is_router_agent(agent_id) {
+                Ok(None)
+            } else {
+                let app = timer.lock(state);
+                agent_recovery_context(&app, owner, agent_id).map(Some)
+            }
         }
         TabRole::Shell => Ok(None),
     };

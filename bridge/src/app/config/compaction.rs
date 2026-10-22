@@ -6,7 +6,7 @@ use crate::compaction::{
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(in crate::app) struct CompactionPolicies {
     pub(in crate::app) device: CompactionThresholds,
     projects: BTreeMap<String, CompactionThresholds>,

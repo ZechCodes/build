@@ -11,15 +11,33 @@
 //! refused before it reached a handler — which is its own test, below.
 
 use build_bridge::carrier::testing::{reporting_handler, within_patience};
-use build_bridge::carrier::FrameHandler;
+use build_bridge::carrier::{FrameHandler, SessionSender};
 use build_bridge::transport::{self, Envelope};
 use common::{
     connected_device, device_identity, recv, request_message, session_init_message, test_intake,
     ConnectedDevice,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 mod common;
+
+fn assert_current_bridge_epoch(payload: &Value) -> &str {
+    let epoch = payload["bridge_epoch"]
+        .as_str()
+        .expect("authenticated replies carry a bridge_epoch string");
+    let parsed = uuid::Uuid::parse_str(epoch).expect("bridge_epoch is a UUID");
+    assert_eq!(parsed.get_version(), Some(uuid::Version::Random));
+    assert_eq!(parsed.get_variant(), uuid::Variant::RFC4122);
+    assert_eq!(epoch, parsed.to_string(), "bridge_epoch is canonical");
+
+    // A separate sender in this process must stamp the same boot identity,
+    // including when the relay refused the request before reaching a handler.
+    let (sender, mut wire, key) = SessionSender::observable("epoch-reference");
+    assert!(sender.push(json!({ "type": "test.epoch" })));
+    let reference = SessionSender::decrypt_push(&key, &wire.try_recv().unwrap());
+    assert_eq!(payload["bridge_epoch"], reference["bridge_epoch"]);
+    epoch
+}
 
 #[tokio::test]
 async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
@@ -76,9 +94,14 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
     let response_env: Envelope = serde_json::from_value(response["envelope"].clone()).unwrap();
     let frame = transport::decrypt_envelope(&session_key, &response_env).unwrap();
     assert_eq!(frame.sender, "device");
+    let epoch = assert_current_bridge_epoch(&frame.payload);
     assert_eq!(
         frame.payload,
-        json!({ "echo": { "method": "rtc.ice", "n": 1 }, "ok": true })
+        json!({
+            "echo": { "method": "rtc.ice", "n": 1 },
+            "ok": true,
+            "bridge_epoch": epoch,
+        })
     );
 
     // Tear down: dropping the browser sender lets the bridge/relay wind down.
@@ -420,6 +443,7 @@ async fn an_app_verb_over_the_relay_is_refused_and_reaches_no_handler() {
     assert_eq!(response["type"], "e2ee_envelope");
     let envelope: Envelope = serde_json::from_value(response["envelope"].clone()).unwrap();
     let frame = transport::decrypt_envelope(&session_key, &envelope).unwrap();
+    let epoch = assert_current_bridge_epoch(&frame.payload);
     assert_eq!(
         frame.payload,
         json!({
@@ -429,6 +453,7 @@ async fn an_app_verb_over_the_relay_is_refused_and_reaches_no_handler() {
             "error_code": "unavailable",
             "retryable": false,
             "details": { "reason": "relay_is_not_a_data_plane" },
+            "bridge_epoch": epoch,
         })
     );
     assert!(

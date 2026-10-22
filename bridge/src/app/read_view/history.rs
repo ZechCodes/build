@@ -21,6 +21,7 @@ pub(in crate::app) struct SharedHistory {
     thread_id: String,
     last_sequence: u64,
     publication_sequence: u64,
+    resident_floor: Option<u64>,
 }
 
 impl SharedHistory {
@@ -44,6 +45,8 @@ impl SharedHistory {
     /// Call only with a successfully saved canonical conversation. An older
     /// generation is never allowed to replace a reset conversation.
     pub fn updated(&self, thread: &Thread) -> Self {
+        #[cfg(test)]
+        crate::app::snapshot_projection::work_counts::history_update();
         let older_revision = thread.generation_revision == self.generation
             && thread.id == self.thread_id
             && thread.publication_sequence() < self.publication_sequence;
@@ -68,6 +71,7 @@ impl SharedHistory {
             thread_id: thread.id.clone(),
             last_sequence: 0,
             publication_sequence: 0,
+            resident_floor: None,
         }
     }
 
@@ -106,6 +110,10 @@ impl SharedHistory {
         self.last_sequence = thread.last_sequence().max(Node::last_sequence(&self.root));
         self.metadata["thread_last_sequence"] = json!(self.last_sequence);
         self.publication_sequence = thread.publication_sequence().max(self.last_sequence);
+        self.resident_floor = thread
+            .items
+            .first()
+            .map(|_| thread.resident_from_sequence());
     }
 
     pub fn render(&self, params: &Value) -> Value {
@@ -118,6 +126,20 @@ impl SharedHistory {
             ThreadDetail::Page(limit) => self.page(limit),
             _ => self.wire(self.items(), false),
         }
+    }
+
+    /// Legacy task details send their resident tail when no window is asked
+    /// for. Explicit pages and cursors still address the complete history.
+    pub fn render_task(&self, params: &Value) -> Value {
+        if thread_cursor(params).is_some() || matches!(thread_detail(params), ThreadDetail::Page(_))
+        {
+            return self.render(params);
+        }
+        let mut items = Vec::new();
+        if let Some(floor) = self.resident_floor {
+            Node::collect_from(&self.root, floor, &mut items);
+        }
+        self.wire(items, false)
     }
 
     fn wire(&self, items: Vec<&ThreadItem>, delta: bool) -> Value {
@@ -199,33 +221,28 @@ mod tests;
 
 /// Existing row summaries share the same committed tip as the history. These
 /// delivery-only edits do not change attention membership or unread counts.
+#[cfg(test)]
+pub(in crate::app) fn thread_digests_need_patch(
+    value: &Value,
+    delta: &crate::store::CommittedThreadItems,
+) -> bool {
+    super::shared_json::value_needs_digest_patch(
+        value,
+        &delta.thread_id,
+        delta.generation_revision,
+        delta.sequence,
+    )
+}
+
+#[cfg(test)]
 pub(in crate::app) fn patch_thread_digests(
     value: &mut Value,
     delta: &crate::store::CommittedThreadItems,
 ) -> bool {
-    match value {
-        Value::Object(object) => {
-            let matching = object.get("thread_id").and_then(Value::as_str)
-                == Some(delta.thread_id.as_str())
-                && object
-                    .get("thread_generation_revision")
-                    .and_then(Value::as_u64)
-                    == Some(delta.generation_revision);
-            let changed = matching
-                && object
-                    .get("last_sequence")
-                    .and_then(Value::as_u64)
-                    .is_some_and(|sequence| sequence < delta.sequence);
-            if changed {
-                object.insert("last_sequence".into(), json!(delta.sequence));
-            }
-            object.values_mut().fold(changed, |changed, value| {
-                patch_thread_digests(value, delta) | changed
-            })
-        }
-        Value::Array(values) => values.iter_mut().fold(false, |changed, value| {
-            patch_thread_digests(value, delta) | changed
-        }),
-        _ => false,
-    }
+    super::shared_json::patch_value_digests(
+        value,
+        &delta.thread_id,
+        delta.generation_revision,
+        delta.sequence,
+    )
 }

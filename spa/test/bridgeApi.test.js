@@ -3,14 +3,14 @@ import { compare, parse, satisfies } from "../src/core/bridgeApi/semver.js";
 import { ApiError, normalizeError, selectAdapter } from "../src/core/bridgeApi/index.js";
 import * as v1 from "../src/core/bridgeApi/v1/index.js";
 
-/** A 2.x bridge's greeting: every feature it has, by name (#190). */
+/** A supported bridge greeting: every feature it has, by name. */
 const ALL_FEATURES = [
   "changes.subscriptions", "requests.priority", "errors.codes", "diffs.perFile",
   "tasks.attachments", "tasks.watching", "tasks.context", "conversations.settings",
 ];
 
 const greetingV1 = (over = {}) => ({
-  api_version: "2.0.0",
+  api_version: "3.24.0",
   capabilities: ALL_FEATURES,
   push_events: true,
   events: ["changes"],
@@ -82,11 +82,10 @@ describe("semver", () => {
 describe("adapter selection", () => {
   it("enables lean activity only by its capability name", () => {
     for (const capabilities of [[], ["threads.leanActivity"], ["thread.page"]]) {
-      const flags = v1.capabilitiesOf({ api_version: "3.20.0", capabilities });
+      const flags = v1.capabilitiesOf({ api_version: "3.24.0", capabilities });
       expect(flags.threads.leanActivity).toBe(capabilities.includes("threads.leanActivity"));
     }
   });
-  const v3 = { major: 3, range: ">=3.0.0 <4.0.0", create: () => ({}) };
 
   it("only enables conversation reset when the bridge advertises its named capability", () => {
     const capabilities = (named) => selectAdapter(greetingV1({ capabilities: named })).create(vi.fn()).capabilities;
@@ -94,10 +93,11 @@ describe("adapter selection", () => {
     expect(capabilities(["conversations.settings"]).conversations.reset).toBe(false);
   });
 
-  it("a 2.0 bridge greeting this SPA: each capability it names is on", () => {
+  it("a supported bridge greeting enables each capability it names", () => {
     const selected = selectAdapter(greetingV1());
     expect(selected.major).toBe(3);
     expect(selected.create(vi.fn()).capabilities).toEqual({
+      writes: { epoch: false, ackConfirmMethods: [] },
       // The kinds come through as the greeting states them: a caller asks
       // whether this bridge carries the one it is about to name, because every
       // kind in one subscribe shares that call's fate.
@@ -142,36 +142,8 @@ describe("adapter selection", () => {
     expect(selected.create(vi.fn()).capabilities.changes.kinds).toContain("tasks");
   });
 
-  it("a 2.1 bridge and a 2.0-only SPA: the 2.0 adapter still serves it", () => {
-    const onlyV2 = [{ major: 2, range: ">=2.0.0 <3.0.0", create: () => ({ stale: true }) }];
-    const selected = selectAdapter(greetingV1({ api_version: "2.1.0" }), onlyV2);
-    expect(selected.unsupported).toBe(undefined);
-    expect(selected.create(vi.fn())).toEqual({ stale: true });
-  });
-
-  // 3.0.0 removed verbs this SPA never called (#207), so one adapter speaks to
-  // both sides of the break: the app can roll before the bridge restarts.
-  it("a 3.x bridge against this SPA: served, no gate", () => {
-    for (const version of ["3.0.0", "3.0.1", "3.9.0"]) {
-      const selected = selectAdapter(greetingV1({ api_version: version }));
-      expect(selected.unsupported).toBe(undefined);
-      expect(selected.major).toBe(3);
-      expect(selected.create(vi.fn()).capabilities.changes.subscriptions).toBe(true);
-    }
-  });
-
-  it("a 2.x bridge against this SPA: still served while the bridge rolls", () => {
-    for (const version of ["2.0.0", "2.1.0", "2.2.0"]) {
-      expect(selectAdapter(greetingV1({ api_version: version })).unsupported).toBe(undefined);
-    }
-  });
-
   it("a 4.x bridge against this SPA: the app is the one to update", () => {
     expect(selectAdapter({ api_version: "4.0.0" })).toEqual({ unsupported: "app", version: "4.0.0" });
-  });
-
-  it("a 2.x bridge with only a v3 adapter: the bridge is the one to update", () => {
-    expect(selectAdapter(greetingV1(), [v3])).toEqual({ unsupported: "bridge", version: "2.0.0" });
   });
 
   // A 1.x bridge still names tasks the old way, on every verb and feature name
@@ -182,51 +154,16 @@ describe("adapter selection", () => {
     }
   });
 
-  it("a greeting with no api_version is 0.0.0 on the lowest adapter, every flag false", () => {
-    for (const greeting of [null, undefined, {}, { push_events: true }]) {
-      const selected = selectAdapter(greeting);
-      expect(selected.version).toBe("0.0.0");
-      expect(selected.major).toBe(3);
-      expect(selected.create(vi.fn()).capabilities).toEqual({
-        changes: { subscriptions: false, kinds: [], projectSources: false },
-        git: { projectSources: false },
-        term: { projectSources: false },
-        fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
-        requests: { priority: false },
-        rtc: { clientLanCache: false },
-        errors: { codes: false },
-        diffs: { perFile: false },
-        bodies: { pages: false, mediaRawPages: false },
-        reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
-      pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
-        tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
-        compaction: { harnessThresholds: false },
-        conversations: { settings: false, reset: false },
-        github: { repos: false },
-        messages: { context: false },
-        threads: { postOperations: false, attachmentChunks: false, leanActivity: false },
-        branches: { finishDelete: false },
-        push: { registerKey: false, revokeKey: false },
-        agents: { createdBy: false, projectWorkers: false },
-        projects: { updateSource: false, syncBase: false, syncBasePath: false },
-        workspaces: { measureSizes: false, setLocked: false },
-      });
-    }
-  });
 
-  it("a 0.0.0 bridge that somehow claims subscriptions is still given none", () => {
-    const selected = selectAdapter({ changes: { subscriptions: true } });
-    expect(selected.create(vi.fn()).capabilities.changes.subscriptions).toBe(false);
-  });
 });
 
 describe("named capabilities", () => {
   it("gates attachment chunks and raw media pages by their announced names", () => {
-    const offered = selectAdapter({ api_version: "2.0.0", capabilities: ["thread.attachmentChunks", "fs.mediaRawPages"] })
+    const offered = selectAdapter({ api_version: "3.24.0", capabilities: ["thread.attachmentChunks", "fs.mediaRawPages"] })
       .create(async () => ({})).capabilities;
     expect(offered.threads.attachmentChunks).toBe(true);
     expect(offered.bodies.mediaRawPages).toBe(true);
-    const older = selectAdapter({ api_version: "2.0.0", capabilities: ["bodies.pages"] })
+    const older = selectAdapter({ api_version: "3.24.0", capabilities: ["bodies.pages"] })
       .create(async () => ({})).capabilities;
     expect(older.threads.attachmentChunks).toBe(false);
     expect(older.bodies.mediaRawPages).toBe(false);
@@ -244,7 +181,7 @@ describe("named capabilities", () => {
     });
   };
   const namedGreeting = (capabilities) => ({
-    api_version: "2.0.0", capabilities,
+    api_version: "3.24.0", capabilities,
     // Old fields cannot override the list, in either direction.
     changes: { subscriptions: true, kinds: ["tasks"] },
     requests: { priority: true }, errors: { codes: true },
@@ -259,8 +196,7 @@ describe("named capabilities", () => {
         if (capabilities === undefined) delete greeting.capabilities;
         const selected = selectAdapter(greeting);
         expect(selected.version).toBe("0.0.0");
-        expect(selected.create(async () => ({})).version).toBe("0.0.0");
-        expect(flags(greeting)).toEqual([]);
+        expect(selected.unsupported).toBe("bridge");
         expect(v1.capabilitiesOf(greeting)).toEqual(v1.capabilitiesOf(null));
       }
     }
@@ -286,7 +222,7 @@ describe("named capabilities", () => {
   });
 
   it("claims nothing off an absent, empty or malformed list, whatever the old fields say", () => {
-    for (const version of ["2.0.0", "2.1.0", "2.99.0"]) {
+    for (const version of ["3.24.0", "3.24.1", "3.99.0"]) {
       for (const capabilities of [undefined, [], null, {}, "tasks.attachments"]) {
         const greeting = { ...namedGreeting(capabilities), api_version: version };
         if (capabilities === undefined) delete greeting.capabilities;
@@ -323,41 +259,18 @@ describe("the adapter", () => {
     ["conversation.unwatch", { entity_id: "entity", agent_id: "agent" }, { thread_id: "generation" }],
   ];
 
-  it.each(generationRequests)("a 3.10 bridge greeting keeps the pre-3.11 %s params", async (method, legacy, added) => {
-    const call = vi.fn(async () => ({}));
-    const adapter = selectAdapter(greetingV1({ api_version: "3.10.0" })).create(call);
-    const params = Object.freeze({ ...legacy, ...added });
-    const options = { priority: "background", timeoutMs: 12345 };
-    await adapter.call(method, params, options);
-    expect(call).toHaveBeenCalledExactlyOnceWith(method, legacy, options);
-    expect(params).toEqual({ ...legacy, ...added });
-  });
-
   it.each(generationRequests)("a reset-capable greeting preserves generation-aware %s params", async (method, legacy, added) => {
     const call = vi.fn(async () => ({}));
-    const adapter = selectAdapter(greetingV1({ api_version: "3.11.0", capabilities: ["conversation.reset"] })).create(call);
+    const adapter = selectAdapter(greetingV1({ api_version: "3.24.0", capabilities: ["conversation.reset"] })).create(call);
     const params = Object.freeze({ ...legacy, ...added });
     await adapter.call(method, params);
     expect(call).toHaveBeenCalledExactlyOnceWith(method, params);
     expect(call.mock.calls[0][1]).toBe(params);
   });
 
-  it.each([
-    null,
-    greetingV1(),
-    { api_version: "3.11.0" },
-    { api_version: "3.11.0", capabilities: "conversation.reset" },
-    { capabilities: ["conversation.reset"] },
-  ])("requires an advertised reset capability even with a newer or missing greeting (%j)", async (greeting) => {
+  it("preserves unrelated params and call arity", async () => {
     const call = vi.fn(async () => ({}));
-    const adapter = selectAdapter(greeting).create(call);
-    await adapter.call("thread.attach", { entity_id: "entity", agent_id: "agent", filename: "paste.png", content_b64: "aW1hZ2U=" });
-    expect(call).toHaveBeenCalledExactlyOnceWith("thread.attach", { entity_id: "entity", filename: "paste.png", content_b64: "aW1hZ2U=" });
-  });
-
-  it("preserves unrelated params and call arity on older bridges", async () => {
-    const call = vi.fn(async () => ({}));
-    const adapter = selectAdapter(greetingV1({ api_version: "3.10.0" })).create(call);
+    const adapter = selectAdapter(greetingV1({ api_version: "3.24.0" })).create(call);
     const params = { thread_id: "belongs-to-another-verb", agent_id: "agent" };
     await adapter.call("future.method", params);
     await adapter.call("thread.attach");
@@ -365,13 +278,12 @@ describe("the adapter", () => {
     expect(call.mock.calls[0][1]).toBe(params);
   });
 
-  it("declares major 3 and still admits 2.x, whose verbs it shares (#207)", () => {
+  it("declares the coordinated 3.24 adapter range", () => {
     expect(v1.major).toBe(3);
-    expect(v1.range).toBe(">=2.0.0 <4.0.0");
-    expect(satisfies("1.30.0", v1.range)).toBe(false);
-    expect(satisfies("2.0.0", v1.range)).toBe(true);
-    expect(satisfies("2.9.4", v1.range)).toBe(true);
-    expect(satisfies("3.0.0", v1.range)).toBe(true);
+    expect(v1.range).toBe(">=3.24.0 <4.0.0");
+    expect(satisfies("3.23.99", v1.range)).toBe(false);
+    expect(satisfies("3.24.0", v1.range)).toBe(true);
+    expect(satisfies("3.99.0", v1.range)).toBe(true);
     expect(satisfies("4.0.0", v1.range)).toBe(false);
   });
 
@@ -385,8 +297,8 @@ describe("the adapter", () => {
   it("names the events the greeting names, and none when it names none", () => {
     expect(v1.create(vi.fn(), greetingV1()).events).toEqual(["changes"]);
     // The legacy pair a push-only bridge was assumed to send went with 3.0.0.
-    expect(v1.create(vi.fn(), { api_version: "2.0.0", push_events: true }).events).toEqual([]);
-    expect(v1.create(vi.fn(), { api_version: "2.0.0" }).events).toEqual([]);
+    expect(v1.create(vi.fn(), { api_version: "3.24.0", push_events: true }).events).toEqual([]);
+    expect(v1.create(vi.fn(), { api_version: "3.24.0" }).events).toEqual([]);
   });
 
   it("no longer lists the legacy board.changed / entity.changed pushes", () => {
@@ -410,9 +322,9 @@ describe("the adapter", () => {
     expect(error.message).toBe("queue is full");
   });
 
-  it("turns a v1.0 bridge's string error into code unknown, message intact", async () => {
+  it("turns an uncoded string error into code unknown, message intact", async () => {
     const adapter = v1.create(vi.fn(async () => { throw new Error("task has no active implementation"); }), {
-      api_version: "1.0.0",
+      api_version: "3.24.0",
     });
     const error = await adapter.call("task.diff", {}).catch((e) => e);
     expect(error).toBeInstanceOf(ApiError);
@@ -477,94 +389,94 @@ describe("the adapter", () => {
 
 describe("github.repos", () => {
   it("is on only when the greeting names the verb, never inferred from a minor", () => {
-    expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["github.repos"] }).github.repos).toBe(true);
-    expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: [] }).github.repos).toBe(false);
-    expect(v1.capabilitiesOf({ api_version: "2.0.0" }).github.repos).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["github.repos"] }).github.repos).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: [] }).github.repos).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0" }).github.repos).toBe(false);
   });
 });
 
 describe("agents.createdBy", () => {
   it("is on only when the greeting names it, never inferred from a minor (#221)", () => {
-    expect(v1.capabilitiesOf({ api_version: "3.1.0", capabilities: ["agents.createdBy"] }).agents.createdBy).toBe(true);
-    expect(v1.capabilitiesOf({ api_version: "3.1.0", capabilities: [] }).agents.createdBy).toBe(false);
-    expect(v1.capabilitiesOf({ api_version: "3.1.0" }).agents.createdBy).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["agents.createdBy"] }).agents.createdBy).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: [] }).agents.createdBy).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0" }).agents.createdBy).toBe(false);
   });
 });
 
 describe("project.update_source", () => {
   it("is on only when the greeting names the verb, never inferred from a minor (#228)", () => {
-    expect(v1.capabilitiesOf({ api_version: "3.2.0", capabilities: ["project.update_source"] }).projects.updateSource).toBe(true);
-    expect(v1.capabilitiesOf({ api_version: "3.2.0", capabilities: [] }).projects.updateSource).toBe(false);
-    expect(v1.capabilitiesOf({ api_version: "3.2.0" }).projects.updateSource).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["project.update_source"] }).projects.updateSource).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: [] }).projects.updateSource).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0" }).projects.updateSource).toBe(false);
   });
 });
 
 describe("sources.syncBase", () => {
   it("is on only when the greeting names it, never inferred from a minor (#267)", () => {
-    expect(v1.capabilitiesOf({ api_version: "3.3.0", capabilities: ["sources.syncBase"] }).projects.syncBase).toBe(true);
-    expect(v1.capabilitiesOf({ api_version: "3.3.0", capabilities: [] }).projects.syncBase).toBe(false);
-    expect(v1.capabilitiesOf({ api_version: "3.3.0" }).projects.syncBase).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["sources.syncBase"] }).projects.syncBase).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: [] }).projects.syncBase).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0" }).projects.syncBase).toBe(false);
   });
 });
 
 describe("tasks.listPaged", () => {
   it("is on only when the greeting names it, never inferred from a minor (#85)", () => {
-    expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["tasks.listPaged"] }).tasks.listPaged).toBe(true);
-    expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["tasks.list"] }).tasks.listPaged).toBe(false);
-    expect(v1.capabilitiesOf({ api_version: "2.0.0" }).tasks.listPaged).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["tasks.listPaged"] }).tasks.listPaged).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["tasks.list"] }).tasks.listPaged).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0" }).tasks.listPaged).toBe(false);
   });
 });
 
 describe("bodies.pages", () => {
   it("is on only when the greeting names it, never inferred from a minor (#95)", () => {
-    expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["bodies.pages"] }).bodies.pages).toBe(true);
-    expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["fs.read", "git.diff"] }).bodies.pages).toBe(false);
-    expect(v1.capabilitiesOf({ api_version: "2.0.0" }).bodies.pages).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["bodies.pages"] }).bodies.pages).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["fs.read", "git.diff"] }).bodies.pages).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0" }).bodies.pages).toBe(false);
   });
 });
 
 describe("push.registerKey and push.revokeKey", () => {
   it("are each on only when the greeting names them (#200)", () => {
-    const push = (capabilities) => v1.capabilitiesOf({ api_version: "2.1.0", capabilities }).push;
+    const push = (capabilities) => v1.capabilitiesOf({ api_version: "3.24.0", capabilities }).push;
     expect(push(["push.registerKey", "push.revokeKey"])).toEqual({ registerKey: true, revokeKey: true });
     expect(push(["push.registerKey"])).toEqual({ registerKey: true, revokeKey: false });
     expect(push(["push.revokeKey"])).toEqual({ registerKey: false, revokeKey: true });
     expect(push(["push"])).toEqual({ registerKey: false, revokeKey: false });
-    expect(v1.capabilitiesOf({ api_version: "2.1.0" }).push).toEqual({ registerKey: false, revokeKey: false });
+    expect(v1.capabilitiesOf({ api_version: "3.24.0" }).push).toEqual({ registerKey: false, revokeKey: false });
   });
 });
 
 describe("workspace.measure_sizes", () => {
   it("is on only when the greeting names the verb, never inferred from a minor (#273)", () => {
-    expect(v1.capabilitiesOf({ api_version: "3.4.0", capabilities: ["workspace.measure_sizes"] }).workspaces.measureSizes).toBe(true);
-    expect(v1.capabilitiesOf({ api_version: "3.4.0", capabilities: [] }).workspaces.measureSizes).toBe(false);
-    expect(v1.capabilitiesOf({ api_version: "3.4.0" }).workspaces.measureSizes).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["workspace.measure_sizes"] }).workspaces.measureSizes).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: [] }).workspaces.measureSizes).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.24.0" }).workspaces.measureSizes).toBe(false);
   });
 });
 
 // Body preconditions are a named feature, independent of the update verb.
 it("gates task body preconditions by capability name", () => {
-  expect(v1.capabilitiesOf({ api_version: "3.10.0", capabilities: ["tasks.bodyPrecondition"] }).tasks.bodyPrecondition).toBe(true);
-  const previous = v1.capabilitiesOf({ api_version: "3.9.0", capabilities: ["tasks.update", "fs.projectSources"] });
+  expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["tasks.bodyPrecondition"] }).tasks.bodyPrecondition).toBe(true);
+  const previous = v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["tasks.update", "fs.projectSources"] });
   expect(previous.tasks.bodyPrecondition).toBe(false);
   expect(previous.fs.projectSources).toBe(true);
 });
 
 it("gates project source paths by capability name", () => {
-  expect(v1.capabilitiesOf({ api_version: "3.17.0", capabilities: ["fs.projectSources", "fs.projectSourcePath"] }).fs.projectSourcePath).toBe(true);
-  expect(v1.capabilitiesOf({ api_version: "3.14.0", capabilities: ["fs.projectSources"] }).fs.projectSourcePath).toBe(false);
+  expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["fs.projectSources", "fs.projectSourcePath"] }).fs.projectSourcePath).toBe(true);
+  expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["fs.projectSources"] }).fs.projectSourcePath).toBe(false);
 });
 
 // Wire 3.21.0 (#529): project source Git scopes and source-qualified change
 // subscriptions are named features of their own, independent of fs.
 it("gates project source Git and change subscriptions by capability name", () => {
   const current = v1.capabilitiesOf({
-    api_version: "3.21.0",
+    api_version: "3.24.0",
     capabilities: ["changes.subscriptions", "git.projectSources", "changes.projectSources"],
   });
   expect(current.git.projectSources).toBe(true);
   expect(current.changes.projectSources).toBe(true);
-  const previous = v1.capabilitiesOf({ api_version: "3.20.0", capabilities: ["changes.subscriptions", "fs.projectSources"] });
+  const previous = v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["changes.subscriptions", "fs.projectSources"] });
   expect(previous.git.projectSources).toBe(false);
   expect(previous.changes.projectSources).toBe(false);
   expect(previous.fs.projectSources).toBe(true);
@@ -577,7 +489,7 @@ it("gates project source terminals only by their capability name", () => {
     ["git.projectSources", "fs.projectSources", "changes.projectSources"],
     ["term.create", "term.list", "term.attach", "term.close"],
   ]) {
-    const flags = selectAdapter({ api_version: "3.21.0", capabilities }).create(vi.fn()).capabilities;
+    const flags = selectAdapter({ api_version: "3.24.0", capabilities }).create(vi.fn()).capabilities;
     expect(flags.term.projectSources).toBe(capabilities.includes("term.projectSources"));
     if (capabilities.includes("term.projectSources")) {
       expect(flags.git.projectSources).toBe(false);
@@ -591,9 +503,9 @@ it("keeps terminal source scopes disabled without a compatible named greeting", 
   for (const greeting of [
     null,
     {},
-    { api_version: "3.21.0" },
-    { api_version: "3.21.0", capabilities: "term.projectSources" },
-    { api_version: "3.20.0", capabilities: [] },
+    { api_version: "3.24.0" },
+    { api_version: "3.24.0", capabilities: "term.projectSources" },
+    { api_version: "3.24.0", capabilities: [] },
     { api_version: "4.0.0", capabilities: ["term.projectSources"] },
     { api_version: 3, capabilities: ["term.projectSources"] },
   ]) {

@@ -143,7 +143,7 @@ impl AppState {
         let conversation = self
             .conversation_thread_for_run(active)
             .unwrap_or(&no_conversation);
-        json!({
+        let mut view = json!({
             "run_id": run_id,
             "implementation_id": run_id,
             "task_id": active.run.plan_id.as_ref().map(|p| p.0.clone()),
@@ -162,7 +162,6 @@ impl AppState {
             // Cleared out of the inbox until the conversation asks again. Mute
             // silences a row that stays; this one is not in the list at all.
             "dismissed": self.is_dismissed(run_id),
-            "attention": self.attention_json(run_id),
             "branch": self.snapshot_run_branch(run_id, &active.worktree),
             "base_branch": active.worktree.base_branch,
             "base_sha": active.base_sha,
@@ -175,13 +174,6 @@ impl AppState {
             "provider": active.model_choice.provider,
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
-            "thread": match thread_detail {
-                ThreadDetail::Digest => self.snapshot_thread_digest(conversation),
-                ThreadDetail::Full => conversation.wire_value(),
-                ThreadDetail::Page(limit) => self.first_thread_page(conversation, limit),
-            },
-            // The rail's bubble strip — see `plan_view`.
-            "agents": self.agent_digests(run_id, scope),
             // Review prioritization: an overlay on the diff, never a gate.
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
@@ -191,12 +183,18 @@ impl AppState {
             "created_at": self.board.attention().clock(run_id).created_at,
             "updated_at": self.board.attention().clock(run_id).updated_at,
             "state_changed_at": self.board.attention().clock(run_id).state_changed_at,
-            "stages": active
-                .stages
-                .iter()
-                .map(run_stage_json)
-                .collect::<Vec<_>>(),
-        })
+        });
+        view["attention"] = self.attention_json(run_id);
+        view["thread"] = match thread_detail {
+            ThreadDetail::Digest => self.snapshot_thread_digest(conversation),
+            ThreadDetail::Full => conversation.wire_value(),
+            ThreadDetail::Page(limit) => self.first_thread_page(conversation, limit),
+        };
+        // The rail's bubble strip — see `plan_view`. These renderers already
+        // return owned JSON, so attach it without serializing a second copy.
+        view["agents"] = Value::Array(self.agent_digests(run_id, scope));
+        view["stages"] = Value::Array(active.stages.iter().map(run_stage_json).collect());
+        view
     }
 
     /// The live run that already owns the checkout a client names by

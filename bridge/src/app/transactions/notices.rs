@@ -46,6 +46,8 @@ impl AppState {
     }
 
     fn flush_committed_mutation_notices(&mut self) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.notices");
         let notices = self.committed_entities.take_notices();
         // Attention persistence prunes absent owners. All borrowed owners must
         // be back before writing, while their in-memory anchors were committed
@@ -56,12 +58,6 @@ impl AppState {
         for MutationNotice { owner, news, .. } in notices {
             self.publish_read_owner(&owner, true);
             self.push_agent_news(&owner, news);
-            if !self.reap_orphaned_terminals().is_empty() {
-                // A waiting screen or an agent without a recorded lineage can
-                // retire without a nested canonical mutation. Publish that
-                // actual runtime observation before notifying readers.
-                self.publish_all_snapshot_projection();
-            }
             self.changes.note_entity(&owner);
             self.publish_live_roster_for(&owner);
         }

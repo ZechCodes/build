@@ -1,4 +1,5 @@
 use super::super::StoredAnswer;
+use super::observation::ReviewInvalidation;
 use crate::api::v1::reviews::{errors, ReviewPushParams, ReviewUpdateParams};
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{AppState, DeferredGit, DeferredWork};
@@ -29,11 +30,12 @@ struct PublicationJob {
     shared: Option<Weak<Mutex<AppState>>>,
     registry_root: PathBuf,
     request: PublicationRequest,
+    observation: ReviewInvalidation,
 }
 
 impl DeferredGitWork for PublicationJob {
     fn run(&self, _: &Value) -> Result<Value, String> {
-        self.run_publication().map_err(|message| {
+        let result = self.run_publication().map_err(|message| {
             let mut details = json!({
                 "task_id": self.task_id, "expected_version": self.expected_version,
                 "recovery": "Refresh the review before retrying publication.",
@@ -42,11 +44,14 @@ impl DeferredGitWork for PublicationJob {
                 details["current_version"] = json!(review.version);
             }
             errors::service(message, details)
-        })
+        });
+        self.observation.prepare();
+        result
     }
 
     fn invalidate(&self, app: &mut AppState) {
-        super::lifecycle::invalidates(app, &self.project_id, &self.task_id, &self.workspace.id);
+        self.observation
+            .invalidate(app, &self.project_id, &self.task_id);
     }
 
     fn invalidates_on_error(&self) -> bool {
@@ -120,6 +125,7 @@ impl AppState {
                 .collect(),
         };
         self.defer_publication(PublicationJob {
+            observation: ReviewInvalidation::new(self, &workspace.id),
             store: self.tracker_store()?.clone(),
             project_id,
             task_id: params.task_id,
@@ -163,6 +169,7 @@ impl AppState {
                 .collect(),
         };
         self.defer_publication(PublicationJob {
+            observation: ReviewInvalidation::new(self, &workspace.id),
             store: self.tracker_store()?.clone(),
             project_id,
             task_id: params.task_id,

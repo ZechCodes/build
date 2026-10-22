@@ -70,7 +70,7 @@ export async function mountProjectTerminal(page, basePath, { theme = "dark", sup
     };
     const capabilities = ["fs.projectSources", "git.projectSources", "changes.projectSources"];
     if (supported) capabilities.push("term.projectSources");
-    const greeting = { api_version: "3.21.0", capabilities };
+    const greeting = { api_version: "3.24.0", capabilities };
     const call = async (method, params) => {
       noteCall(method, params);
       if (method === "session.hello") return greeting;

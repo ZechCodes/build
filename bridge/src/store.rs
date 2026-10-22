@@ -51,6 +51,8 @@ use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 
 pub(crate) use operations::CommittedThreadItems;
 pub(crate) use reviews::TrackingExpectation;

@@ -783,3 +783,10 @@ The fixtures verify that an accepted read clears both badge and Inbox, while
 reload and stale detail cannot resurrect unread. Task-line markup is unchanged;
 `taskLineFixture.test.js` remains the fixture consistency gate. Final gate exit
 codes and the scoped security score are recorded in the #704 handoff.
+
+Final SPA revalidation on Node 22.23.4/npm 12.0.2 exits 0: clean installs,
+lint, all 731 files / 11,279 tests (including the unchanged task-line fixture),
+captures and build. Changed-file Semgrep, changed-tree and branch-history
+Gitleaks exit 0. The #704 handoff preserves earlier failed attempts and the
+independent main teardown error rather than treating focused reruns as full
+passes. **#704 scoped security score: 100/100.**

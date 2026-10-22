@@ -402,3 +402,14 @@ Fresh desktop/phone Chromium captures preserve cached unread at 1 while every
 sample of the visible open conversation displays zero unread. Worker unread
 still appears on ancestors without duplicating the numeric total. Final gate
 exit codes and scanner limitations are recorded in the #704 handoff.
+
+Final revalidation uses Node 22.23.4/npm 12.0.2 after merging `origin/main`
+at `5b13c50d2`. Transport and SPA clean installs, lint, the completed full SPA
+suite (731 files / 11,279 tests), captures and build exit 0. Bridge test,
+strict Clippy, fmt, vendored WebRTC and Pi gates exit 0. Changed-file Semgrep,
+changed-tree Gitleaks and branch-history Gitleaks exit 0. The handoff retains
+two earlier failed full SPA attempts and an isolated-main exit 1 caused by an
+unhandled Inbox teardown rejection; those attempts are not classified as passes.
+An additional whole-directory secret scan exits 1 on generated Rust metadata
+and unchanged transport vectors, outside this change. No scanner exclusions or
+complexity ratchets were added. **#704 scoped security score: 100/100.**

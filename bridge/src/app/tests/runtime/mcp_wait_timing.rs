@@ -207,7 +207,7 @@ fn rpc_admission_lock_wait_is_reported() {
                 frame_type: "data".into(),
                 sender: "client".into(),
                 created_at: "test".into(),
-                payload: json!({ "id": 1, "method": "archived.list", "params": {} }),
+                payload: json!({ "id": 1, "method": "capture.cancel", "params": {"capture_id": "missing"} }),
             },
         )
     });
@@ -218,7 +218,7 @@ fn rpc_admission_lock_wait_is_reported() {
     let lines = lines.lock().unwrap();
     assert_eq!(lines.len(), 1, "one completed RPC: {lines:?}");
     assert!(
-        lines[0].starts_with("slow frame archived.list "),
+        lines[0].starts_with("slow frame capture.cancel "),
         "{lines:?}"
     );
     assert!(

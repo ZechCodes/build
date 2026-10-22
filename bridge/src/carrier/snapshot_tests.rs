@@ -164,8 +164,12 @@ async fn probe_snapshots(
         assert_ne!(reply["error_code"], "busy", "{method}: {reply}");
         match *method {
             "workspace.get" | "agent.list" | "capture.get" | "task.get" | "task.stages"
-            | "tasks.columns" | "stream.events" | "stream.state" => {
+            | "tasks.columns" => {
                 assert_eq!(reply["error_code"], "not_found", "{reply}")
+            }
+            "stream.events" | "stream.state" => {
+                assert_eq!(reply["error_code"], "internal", "{reply}");
+                assert_eq!(reply["error"], "unknown stream_id", "{reply}");
             }
             "bridge.update_status" => assert_eq!(reply["error_code"], "unavailable", "{reply}"),
             _ => assert_eq!(reply["ok"], true, "{method}: {reply}"),

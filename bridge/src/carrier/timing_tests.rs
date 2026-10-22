@@ -98,12 +98,12 @@ async fn a_frame_parked_in_wire_admission_keeps_its_intake_wait() {
     let (handler, running, release) = blocked_handler(clock.clone());
     let (intake, carrier, mut outbound, key) = opened_intake(handler, 1);
 
-    request(&intake, &carrier, &key, 1, "archived.list").await;
+    request(&intake, &carrier, &key, 1, "capture.cancel").await;
     running
         .recv_timeout(PATIENCE)
         .expect("the only worker reached the gate");
-    request(&intake, &carrier, &key, 2, "archived.list").await;
-    request(&intake, &carrier, &key, 3, "archived.list").await;
+    request(&intake, &carrier, &key, 2, "capture.cancel").await;
+    request(&intake, &carrier, &key, 3, "capture.cancel").await;
     wait_for_queue_depth(&clock, 2).await;
 
     // The fourth frame has not reached Dispatcher::dispatch: one slot is full
@@ -127,7 +127,7 @@ async fn a_fold_reports_the_oldest_intake_and_one_computation() {
     let (handler, running, release) = blocked_handler(clock.clone());
     let (intake, carrier, mut outbound, key) = opened_intake(handler, 2);
 
-    request(&intake, &carrier, &key, 1, "archived.list").await;
+    request(&intake, &carrier, &key, 1, "capture.cancel").await;
     running
         .recv_timeout(PATIENCE)
         .expect("the only worker reached the gate");
@@ -137,7 +137,7 @@ async fn a_fold_reports_the_oldest_intake_and_one_computation() {
     request(&intake, &carrier, &key, 3, "board.list").await;
     // Admission preserves this wire's order. Once the nonfolded sentinel has
     // its own ticket, request 3 must already have joined request 2's fold.
-    request(&intake, &carrier, &key, 4, "archived.list").await;
+    request(&intake, &carrier, &key, 4, "capture.cancel").await;
     wait_for_queue_depth(&clock, 2).await;
     release.send(()).unwrap();
     answers_through(&mut outbound, &key, 4).await;

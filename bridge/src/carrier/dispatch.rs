@@ -2517,7 +2517,7 @@ mod dispatcher_tests {
         let (older, mut older_rx, older_key) = SessionSender::observable("s-reordered");
         let (newer, mut newer_rx, newer_key) = SessionSender::observable("s-reordered");
         dispatcher
-            .dispatch(newer.clone(), request(0, "archived.list", json!({})))
+            .dispatch(newer.clone(), request(0, "capture.cancel", json!({})))
             .await;
         gate.wait_until_held();
 

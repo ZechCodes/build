@@ -391,6 +391,8 @@ async fn a_worktree_spelled_two_ways_holds_one_set_of_tabs() {
         let alias = dir.path().join("alias-to-worktree");
         std::os::unix::fs::symlink(&root, &alias).unwrap();
         s.runs.get_mut("run-aliased").unwrap().worktree.path = alias;
+        // Commit the directly seeded scope inputs before observation reads.
+        s.publish_snapshot_projection();
         root
     };
 
@@ -432,6 +434,8 @@ async fn term_list_shows_only_the_shells_of_the_worktree_asked_about() {
         let mut s = state.lock().unwrap();
         insert_run(&mut s, &repo, dir.path(), "run-here", RunState::Building);
         insert_run(&mut s, &repo, dir.path(), "run-there", RunState::Building);
+        // Direct fixture insertion bypasses the run producer's publication.
+        s.publish_snapshot_projection();
     }
     let shell_in = |run_id: &str| {
         let created = call(&handler, "term.create", json!({ "run_id": run_id }));
@@ -827,6 +831,8 @@ async fn project_source_terminal_cannot_attach_sibling() {
         alias.id = "source-4".into();
         rows.push(alias);
         assert!(app.projects.set_sources(&project_id, rows));
+        // Commit this direct fixture edit as project.add_source normally does.
+        app.publish_snapshot_projection();
     }
     let selector = |source_id: &str| source_selector(&state, &project_id, source_id);
 

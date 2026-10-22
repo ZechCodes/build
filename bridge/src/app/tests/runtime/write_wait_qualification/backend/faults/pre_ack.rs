@@ -292,14 +292,15 @@ fn verify_effect(
 fn actual_git_head(directory: &Path) -> Result<SavedEffect, String> {
     let repo = git2::Repository::open(directory).map_err(|e| e.to_string())?;
     let head = repo.head().map_err(|e| e.to_string())?;
+    let actual_commit = head
+        .peel_to_commit()
+        .map_err(|e| e.to_string())?
+        .id()
+        .to_string();
     Ok(SavedEffect::GitHead {
         actual_directory: directory.to_owned(),
         actual_symbolic_head: head.name().ok_or("actual HEAD missing")?.to_owned(),
-        actual_commit: head
-            .peel_to_commit()
-            .map_err(|e| e.to_string())?
-            .id()
-            .to_string(),
+        actual_commit,
     })
 }
 fn prepare_request(

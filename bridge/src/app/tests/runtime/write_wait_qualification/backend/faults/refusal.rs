@@ -160,7 +160,7 @@ pub(in crate::app::tests::runtime::write_wait_qualification) fn validate_candida
     ) {
         BusyDisposition::VerifiedFrontdoor {
             native_write_id, ..
-        } if waits.write_ids == [native_write_id] => Ok(()),
+        } if waits.write_ids == [native_write_id.clone()] => Ok(()),
         BusyDisposition::Invalid { reason, .. } => Err(reason),
         _ => Err("refusal native root differs from final wait archive".into()),
     }

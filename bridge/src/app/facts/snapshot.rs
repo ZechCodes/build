@@ -281,16 +281,10 @@ impl FactsSource {
     }
 
     pub(super) fn entity_ids(&self) -> Vec<String> {
-        let snapshot = self.view.load();
-        snapshot
-            .facts
-            .subjects
-            .keys()
-            .chain(snapshot.facts.terminals.keys())
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
+        // This callback defines board membership, including departure notices.
+        // A surviving terminal-only workspace alias must not keep its removed
+        // conversation on the board. Terminal notes reach subscribers directly.
+        self.view.load().facts.subjects.keys().cloned().collect()
     }
 }
 

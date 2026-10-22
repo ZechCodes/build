@@ -634,6 +634,166 @@ describe("the composer", () => {
     field.dispatchEvent(new Event("input", { bubbles: true }));
   };
 
+  it("keeps a newer persisted comment draft when a cached failed write is restored on mount", async () => {
+    const { writeUiRecord } = await import("../src/core/localUiStore.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    await writeUiRecord(uiAddress({ deviceId: "dev-1", entityId: "task-1", view: "tracker-task", kind: "draft", sub: "proj-1" }), { body: "a newer unsent draft" });
+    const row = { operationId: "old-comment", state: "failed", effect: "unapplied", draft: { body: "the older refused comment" }, owner: { kind: "task-comment", taskId: "task-1", projectId: "proj-1" } };
+    const service = { readOperations: () => [row], subscribe: () => () => {} };
+    await mount({ writeOperations: service });
+    expect(host.querySelector("#task-comment").value).toBe("a newer unsent draft");
+    expect(host.querySelector("[data-comment-recovery]").textContent).toContain("the older refused comment");
+  });
+
+  it("persists comment recovery metadata before support is known and releases its sending state at ack", async () => {
+    const listeners = new Set();
+    let rows = [];
+    const service = { supports: () => false, readOperations: () => rows, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, dismiss: vi.fn(async () => {}), checkAgain: vi.fn(async () => {}) };
+    let holdRead = false;
+    call = vi.fn(async (method) => {
+      if (method === "tasks.comment") return { phase: "ack", operation_id: "accepted-comment" };
+      if (method === "tasks.get") return holdRead ? new Promise(() => {}) : answerFor();
+      return {};
+    });
+    await mount({ writeOperations: service });
+    const field = host.querySelector("#task-comment");
+    typeComment(field, "a comment to preserve");
+    holdRead = true;
+    host.querySelector("[data-task-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(listed("tasks.comment")[0][2]).toMatchObject({ owner: { kind: "task-comment", taskId: "task-1", projectId: "proj-1" }, draft: { body: "a comment to preserve" } });
+    expect(field.disabled).toBe(false);
+    expect(field.value).toBe("");
+    rows = [{ operationId: "accepted-comment", state: "failed", effect: "unapplied", draft: { body: "a comment to preserve" }, owner: { kind: "task-comment", taskId: "task-1", projectId: "proj-1" } }];
+    listeners.forEach((fn) => fn());
+    await flush();
+    expect(field.value).toBe("a comment to preserve");
+    expect(host.querySelector("[data-comment-recovery]").textContent).toContain("Your comment wasn’t saved");
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("keeps the draft usable when its pre-send ownership record cannot be persisted", async () => {
+    await mount();
+    const field = host.querySelector("#task-comment");
+    typeComment(field, "preserve on storage failure");
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    const uiStore = await import("../src/core/localUiStore.js");
+    const refusal = vi.spyOn(uiStore, "writeUiRecord").mockRejectedValueOnce(new Error("draft storage refused"));
+    host.querySelector("[data-task-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    refusal.mockRestore();
+    expect(listed("tasks.comment")).toHaveLength(0);
+    expect(field.value).toBe("preserve on storage failure");
+    expect(field.disabled).toBe(false);
+    expect(notifyError).toHaveBeenCalledWith("Could not add this comment", "draft storage refused");
+  });
+
+  it("reports a legacy uncertain comment failure and keeps its draft", async () => {
+    call = vi.fn(async (method) => {
+      if (method === "tasks.comment") throw Object.assign(new Error("legacy timeout"), { uncertain: true });
+      return method === "tasks.get" ? answerFor() : {};
+    });
+    await mount();
+    const field = host.querySelector("#task-comment");
+    typeComment(field, "keep this legacy draft");
+    host.querySelector("[data-task-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(notifyError).toHaveBeenCalledWith("Could not add this comment", "legacy timeout");
+    expect(field.value).toBe("keep this legacy draft");
+  });
+
+  it("shows only the cached action error when a durable comment is refused before ack", async () => {
+    const listeners = new Set();
+    let rows = [];
+    const service = { readOperations: () => rows, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); } };
+    call = vi.fn(async (method, _params, options) => {
+      if (method === "tasks.comment") {
+        rows = [{ operationId: options.operationId, owner: options.owner, draft: options.draft, state: "failed", effect: "unapplied", error: { message: "not admitted" } }];
+        listeners.forEach((fn) => fn());
+        throw new Error("not admitted");
+      }
+      return method === "tasks.get" ? answerFor() : {};
+    });
+    await mount({ writeOperations: service });
+    typeComment(host.querySelector("#task-comment"), "a refused durable comment");
+    host.querySelector("[data-task-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(host.querySelectorAll(".chat-recovery-entry")).toHaveLength(1);
+    expect(notifyError).not.toHaveBeenCalled();
+    const { readUiRecord } = await import("../src/core/localUiStore.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const saved = await readUiRecord(uiAddress({ deviceId: "dev-1", entityId: "task-1", view: "tracker-task", kind: "draft", sub: "proj-1" }));
+    expect(saved.value).toEqual({ body: "a refused durable comment" });
+    expect(host.querySelector('[data-task-composer] button[type="submit"]').disabled).toBe(false);
+  });
+
+  it.each([true, false])("preserves or restores an expired failed-unapplied comment and retries with a new ID (owned draft: %s)", async (ownedDraft) => {
+    const { writeUiRecord } = await import("../src/core/localUiStore.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const row = {
+      operationId: "expired-comment", state: "result_expired", outcome: "failed", effect: "unapplied",
+      unresolved: false, overlayActive: false, acknowledged: true,
+      owner: { kind: "task-comment", taskId: "task-1", projectId: "proj-1" },
+      draft: { body: "keep this expired comment", attachments: [] },
+    };
+    if (ownedDraft) {
+      await writeUiRecord(uiAddress({ deviceId: "dev-1", entityId: "task-1", view: "tracker-task", kind: "draft", sub: "proj-1" }), {
+        body: row.draft.body, submittedOperationId: row.operationId,
+      });
+    }
+    const service = { readOperations: () => [row], subscribe: () => () => {}, dismiss: vi.fn(async () => {}) };
+    call = vi.fn(async (method, _params, options) => {
+      if (method === "tasks.comment") return { phase: "ack", operation_id: options.operationId };
+      return method === "tasks.get" ? answerFor() : {};
+    });
+    await mount({ writeOperations: service });
+    expect(host.querySelector("#task-comment").value).toBe(row.draft.body);
+    expect(host.querySelector('[data-task-composer] button[type="submit"]').disabled).toBe(false);
+    expect(host.querySelector('[data-write-action="retry"]').textContent).toBe("Retry");
+    host.querySelector('[data-write-action="retry"]').click();
+    await flush();
+    expect(listed("tasks.comment")).toHaveLength(1);
+    expect(listed("tasks.comment")[0][1].body).toBe(row.draft.body);
+    expect(listed("tasks.comment")[0][2].operationId).not.toBe(row.operationId);
+    expect(service.dismiss).toHaveBeenCalledWith(row.operationId);
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("blocks a restored submitted draft while its durable ownership lookup is still loading", async () => {
+    const { writeUiRecord } = await import("../src/core/localUiStore.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    await writeUiRecord(uiAddress({ deviceId: "dev-1", entityId: "task-1", view: "tracker-task", kind: "draft", sub: "proj-1" }), { body: "pending cache lookup", submittedOperationId: "pending-comment" });
+    let resolveLookup;
+    const service = { readOperations: () => [], subscribe: () => () => {}, get: () => new Promise((resolve) => { resolveLookup = resolve; }) };
+    await mount({ writeOperations: service });
+    expect(host.querySelector('[data-task-composer] button[type="submit"]').disabled).toBe(true);
+    host.querySelector("[data-task-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(listed("tasks.comment")).toHaveLength(0);
+    resolveLookup({ operationId: "pending-comment", state: "queued", owner: { kind: "task-comment", taskId: "task-1", projectId: "proj-1" }, draft: { body: "pending cache lookup" } });
+    await flush();
+    expect(host.querySelector("#task-comment").value).toBe("");
+  });
+
+  it("consumes a submitted draft restored before ack and prevents a second write", async () => {
+    const { writeUiRecord } = await import("../src/core/localUiStore.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    await writeUiRecord(uiAddress({ deviceId: "dev-1", entityId: "task-1", view: "tracker-task", kind: "draft", sub: "proj-1" }), { body: "already submitted", submittedOperationId: "pending-comment" });
+    const row = { operationId: "pending-comment", state: "queued", acknowledged: false, owner: { kind: "task-comment", taskId: "task-1", projectId: "proj-1" }, draft: { body: "already submitted" } };
+    const service = { readOperations: () => [row], subscribe: () => () => {} };
+    await mount({ writeOperations: service });
+    host.querySelector("[data-task-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(listed("tasks.comment")).toHaveLength(0);
+    expect(host.querySelector("#task-comment").value).toBe("");
+    typeComment(host.querySelector("#task-comment"), "already submitted");
+    host.querySelector("[data-task-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(listed("tasks.comment")).toHaveLength(1);
+    expect(listed("tasks.comment")[0][2].operationId).not.toBe("pending-comment");
+    expect(row.draft.body).toBe("already submitted");
+  });
+
   it("sends a comment and re-reads the task", async () => {
     await mount();
     const field = host.querySelector("#task-comment");

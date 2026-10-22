@@ -60,11 +60,21 @@ impl AppState {
                 state,
                 status,
                 label,
-            } => self.tasks_list(&scope.params(asked(&[
-                ("state", state),
-                ("status", status),
-                ("label", label),
-            ]))),
+                limit,
+                cursor,
+            } => {
+                let mut params = scope.params(asked(&[
+                    ("state", state),
+                    ("status", status),
+                    ("label", label),
+                    ("cursor", cursor),
+                ]));
+                if let Some(limit) = limit {
+                    params["limit"] = json!(limit);
+                }
+                self.tracker_store()
+                    .and_then(|store| self.task_read_context().mcp_tasks_list(store, &params))
+            }
             BridgeAction::TrackerGetTask { task_id } => {
                 self.scoped_task_call(&scope, task_id, json!({}), |app, params| {
                     app.tasks_get(params)
@@ -395,6 +405,19 @@ impl AppState {
         if project_id != scope.project_id {
             return Err(unknown());
         }
+        let mut read = Self::comment_read_value(&task, &comment);
+        self.decorate_comment_read(
+            scope.actor.agent_id().unwrap_or_default(),
+            &comment,
+            &mut read,
+        );
+        Ok(read)
+    }
+
+    pub(in crate::app) fn comment_read_value(
+        task: &crate::tracker::Task,
+        comment: &crate::tracker::TaskComment,
+    ) -> Value {
         let mut read = json!({
             "comment_id": comment.id,
             "task_id": task.id,
@@ -416,22 +439,29 @@ impl AppState {
         if let Some(reading) = &comment.author_context {
             read["author_context"] = json!(reading);
         }
-        if let Some(line) = self.author_context_line(scope, &comment) {
+        read
+    }
+
+    pub(in crate::app) fn decorate_comment_read(
+        &self,
+        reader: &str,
+        comment: &crate::tracker::TaskComment,
+        read: &mut Value,
+    ) {
+        if let Some(line) = self.comment_author_context_line(reader, comment) {
             read["author_context_line"] = json!(line);
         }
-        Ok(read)
     }
 
     /// The sentence the PROJECT agent reads about a comment's author: how full
     /// its context was as it wrote (#68). A comment reaches the project agent
     /// as a one-line notice naming only its id, so this is where the line
     /// lands. `None` for any other reader, and for a comment with no reading.
-    fn author_context_line(
+    fn comment_author_context_line(
         &self,
-        scope: &TaskScope,
+        reader: &str,
         comment: &crate::tracker::TaskComment,
     ) -> Option<String> {
-        let reader = scope.actor.agent_id()?;
         if !self.is_pinned_coordinator(reader) {
             return None;
         }

@@ -136,7 +136,8 @@ same manifest retry path and canonical SyncLock as workspace retry; changed
 project settings cannot redirect the saved cut or leave Git materialization
 without a pinned commit. Worker source-location holds remain independent.
 
-**Frames.** A request is `{id, method, params}`; a reply is
+**Frames.** A request is `{id, method, params}`, with optional typed `write`
+metadata (`operation_id`, optional `after`) for journaled commands; a reply is
 `{id, ok: true, result}` or `{id, ok: false, error, error_code, retryable, details}`.
 A push is a frame with a `type` that answers no pending request. The SPA's
 `spa/src/core/sessionRpc.js` first matches `id` against its pending calls
@@ -153,8 +154,9 @@ every verb live in `fixtures/api/v1/` and are checked by
 - It answers signaling (`rtc.*`) and attachment writes at once, without
   queueing, so a negotiation never waits behind other work.
 
-The six SQL reads (`thread.page`, `thread.activity`, `thread.operation`,
-`tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`) enter a separate lane
+The nine SQL-lane methods (`thread.page`, `thread.activity`, `thread.operation`,
+`thread.revision`, `tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`,
+`writes.status` and `writes.subscribe`) enter a separate lane
 before terminal or write admission. `carrier/sql.rs` owns eight dedicated
 threads and a fair queue with at most 16 waiting callers per session opening.
 Callers waiting for a read connection still count against that bound. Excess
@@ -163,13 +165,55 @@ Queued compatible callers may fold, but a new caller never joins a running
 query. Carrier release prunes its queued callers and fences running replies;
 a replacement carrier keeps its opening usable. Close signaling wakes a
 parked intake independently of the channel event pump. Stats and the existing
-ping/signaling fast paths bypass this lane.
+ping/signaling fast paths bypass this lane. The daemon calls
+`FrameHandler::start_read_workers` after creating its shared handler and before
+constructing intake or accepting relay/client work, so all eight SQL workers
+are ready before the first read. Handler clones share that executor.
 
-The nine published reads (`board.list`, `project.list`, `workspace.list`,
-`workspace.get`, `agent.list`, `settings.get`, `models.list`, `harnesses.list`
-and `bridge.update_status`) answer at intake from immutable snapshots. They
-take no SQL permit, dispatch slot or app lock, including when those lanes are
-full. Typed parameter normalization and result validation still apply.
+The fifteen published reads (`board.list`, `project.list`, `workspace.list`,
+`workspace.get`, `agent.list`, `settings.get`, `models.list`, `harnesses.list`,
+`bridge.update_status`, `capture.get`, `task.get`, `task.stages`, `tasks.columns`,
+`stream.events` and `stream.state`) answer at intake from immutable snapshots.
+They take no SQL permit, dispatch slot or app lock, including when those lanes are
+full. Typed parameter normalization and result validation still apply to v1
+verbs; the two stream reads retain their legacy shapes and QA-only gate.
+
+The task detail and stage snapshots follow committed owner publication,
+including changes to a linked implementation. Task history is rendered from
+the same published conversation history as workspace detail; unwindowed task
+reads retain the resident-history boundary. Maintenance captures plan IDs under
+the app lock, probes canonical document directories in its existing unlocked
+phase, and commits versioned availability observations. Successful ingestion
+publishes availability directly, fencing older observations. Capture writes
+publish their saved record, and retirement removes it. QA stream producers
+publish each event and its updated head together; an incremental output digest
+keeps state reads independent of log length. The SPA still calls `task.get`
+and `term.list`, so both surfaces remain available. `task.get` is a registered
+v1 planning read; `term.list` retains its legacy wire contract.
+
+Terminal listing's membership snapshot publishes independently of temporarily
+borrowed plan/run owners. Listing reads each terminal's coherent atomic size
+pair, updated after resize, so it does not wait on screen parsing or PTY output.
+
+The 23 observation reads (filesystem/Git, stage documents, review
+reads, attachments, archives, GitHub repositories, Git initialization options
+and `term.list`) enter an independent fair I/O lane before write admission.
+It reuses the SQL lane's bounded per-opening queue and queued-only folding, with its own
+16-caller backlog and up to eight dedicated I/O threads. I/O threads start on
+demand and are reused; they are not all started before the first read. Excess
+intake waits without capacity refusals. Review and task-attachment metadata preparation runs on the
+same fixed SQL executor as ordinary SQL reads; its transaction and connection
+are released before any filesystem/Git work. Pure I/O reads take no SQL slot or
+connection. Carrier closure cancels preparation waits and suppresses replies
+from released carriers; compatible callers on surviving carriers remain live.
+
+Mixed jobs remain counted in the same 16-caller opening backlog while pending,
+preparing metadata or ready for I/O. Separate asynchronous metadata coordinators
+wait for the shared SQL executor and connection pool; physical I/O coordinators
+select only pure jobs or fully prepared jobs. Already admitted pure jobs can
+advance within that opening or on other openings while metadata waits for SQL.
+A full opening still parks its subsequent ordered intake. Queued-only folding,
+carrier cancellation and the eight-worker physical-I/O bound remain in force.
 
 Other queued work uses the worker pool in
 `bridge/src/carrier/dispatch.rs`, which runs handlers on blocking threads.
@@ -177,8 +221,8 @@ Before that pool, a bounded per-wire admitter in `carrier.rs` feeds frames in
 arrival order; its overflow answers retryable `busy`. The pool has eight
 workers and separate foreground/background queues, with at most two workers
 running background frames. Terminal lanes and immediate handlers run outside
-that eight-worker bound. A deferred handler releases the app lock during its
-external work, but retains its dispatch worker until it finishes.
+that eight-worker bound. Deferred writers release the app lock during external
+work and retain their dispatch worker until they finish.
 
 **Dispatch.** Each handled frame goes to `dispatch_frame` in
 `bridge/src/app/rpc.rs`, which tries these in order:
@@ -190,7 +234,22 @@ external work, but retains its dispatch worker until it finishes.
    shared state (`session.hello`, `bridge.stats`, `term.*`, `agent.attach`,
    `agent.start`, `agent.interrupt`).
 4. `routed()` → `AppState::route` → `crate::api::v1::dispatch`, then the legacy
-   arms (`ping`, `term.list`, `term.close`, `stream.*`).
+   arms (`ping`, `term.list`, `term.close`, and the QA stream fixtures). Native read frames
+   have already entered their snapshot, SQL or observation lane at intake.
+
+Routed requests retain their update-admission lease through the reply and
+share it with delivery and compaction workers. Their drain does not acquire
+another gate handle or lease. A request admitted without an update service
+is distinct from an exempt liveness request, whose drain still checks the
+gate independently. Project-deletion refusal runs inside the routed dispatch
+guard before deferred work can be taken. Session-scoped and standalone drains
+keep their existing admission checks.
+
+Idle update handoff reserves a pending claim under the admission mutex, then
+runs its busy probe without that mutex. The claim blocks new non-read work;
+read lanes can still acquire counted leases. Handoff closes admission only
+after a quiet probe and a brief recheck that no leases remain. Rollback and
+reopen invalidate the claim before notifying waiting work.
 
 **The verb registry** is `bridge/src/api/v1/mod.rs`. Each family file (`board.rs`,
 `changes.rs`, `git.rs`, `harnesses.rs`, `push.rs`, `tasks.rs`, `lifecycle.rs`, `thread.rs`, `updates.rs`,
@@ -228,6 +287,43 @@ the reserved `.build-upload-<UUIDv4>.part` namespace, owned by its user with
 mode 0600. It skips active IDs, symlinks and `.git`, with bounded traversal.
 Creation refuses that reserved staging destination namespace, including case
 variants, so a published user file cannot be mistaken for an orphan on boot.
+
+File writes, creation, host `fs.mkdir`, and upload operations use the deferred
+drain in `app/fs/deferred.rs`. They capture source identities under the app
+mutex, resolve paths and acquire filesystem-root serialization off it, then
+validate the captured records before running filesystem service work. Final publication
+invalidates observations and installs any reopened workspace record; its
+manifest is persisted off the app mutex. The existing deferred-job count keeps
+workspace removal and metadata changes out while these stages run.
+Filesystem-root locks have their own namespace keyed by the canonical root,
+separate from Git's common-directory `source_sync::SyncLock`, so a fetch or a
+Git mutation does not make an editor save wait for the repository lock.
+Editor writes and upload finish also hold a destination lock keyed by the
+canonical parent and literal filename, so overlapping source roots serialize
+revision checks and replacement. Their contention waits share a five-second
+budget, and both remain held through final publication.
+An in-memory lease also retains the recorded source root through that final
+publication. `project.remove_source` refuses `busy` while that source is in use;
+unrelated sources can still be removed. The check does not resolve paths or
+wait for filesystem work under the app mutex.
+
+Filesystem service and final publication are separate stages. A write can
+already have changed bytes on disk when publication refuses a moved source
+or a new reclaim reservation, or when persisting the reopened workspace fails.
+The error response does not roll back those bytes. Closing this window belongs
+to step 6b's acknowledgement and confirmation work; the current staging does
+not make disk changes and publication one atomic operation.
+
+Upload admission and quota accounting remain in app state. Staging descriptors
+have separate ownership, so chunk writes, publication, cancellation cleanup,
+session-end cleanup and idle cleanup run outside the app mutex. Finish claims
+publication before its sync and rename: cancellation before that claim wins;
+after it, finish owns the result and invalidation even if the session closes.
+Cancellation does not wait for a staging mutex held by an in-flight service.
+That service retains the staging file and performs cleanup after it finishes.
+Intermediate stages retain the verb's original result-type check. Only the
+final successful stage stamps user activity; that existing `save_user_session`
+call still runs under the app mutex and remains a known #681 violation for step 6b.
 
 `thread.page` is a message-counted page with folded activity digests. Wire
 3.20.0 announces `threads.leanActivity`: with optional `activity: "newest"`,
@@ -281,8 +377,8 @@ section on the blocking pool. A worker parked on the lock behind a slow frame
 would stop the runtime's I/O driver; `bridge/src/app/tests/runtime/off_the_workers.rs`
 holds that line on a one-worker runtime. Parts that must not wait on the lock have their
 own: WebRTC peers sit behind an `RwLock` (`PeersSlot` in `bridge/src/app/rtc.rs`),
-and `Store` wraps its own connection mutex (`bridge/src/store.rs`). Store
-clones share one writer connection. The six migrated SQL RPCs instead borrow
+and `store/writer.rs::StoreWriter` wraps the sole writable connection. Store
+clones and journal admission share that connection. The nine SQL-lane RPCs instead borrow
 one of eight read-only, query-only WAL connections from `store/read_pool.rs`.
 A fair asynchronous permit supplies one borrower; a fresh request transaction
 covers all related rows and ends before the connection returns. Those RPCs
@@ -291,6 +387,15 @@ callers still serialize on the writer connection. Routed v1 handlers receive
 `&mut AppState`, and their Store calls can execute while the app mutex is held.
 `off_the_workers` protects runtime workers from blocking; it does not remove
 these serialization points.
+
+Before publishing its eight readers, `ReadPool::open` initializes each SQLite
+schema by preparing and dropping `SELECT 1 FROM main.sqlite_schema LIMIT 0`.
+This is startup work, without an application-row/result cache or a retained
+statement. The pool also retains the private writer connection until its last
+reader closes, including cloned pools and outstanding borrowers. Closing the
+readers before the final writer permits SQLite's final WAL checkpoint and
+preserves database-file-only backups. Read paths do not acquire the retained
+writer's mutex.
 
 Task identity/done-at backfills and cursor key creation happen before reader
 admission; task reads retain pure derived fallbacks for older records.
@@ -319,6 +424,13 @@ slow-frame threshold now measure from intake, including decrypt and admission;
 compare them only against this change's baseline, not older logs.
 `bridge.stats` answers at intake without an app lock or dispatch worker.
 
+Fine-grained request-phase tracing is test-only: `timing/requests.rs`, its
+observer fields and its call sites compile under `cfg(test)`. The non-test
+`observation_reads::trace_phase!` expansion contains only the measured work.
+Diagnostic test binaries retain that tracer; production retains the ordinary
+FrameClock queue/wait/hold aggregates without request-phase observer locks,
+frame clones or diagnostic timestamps.
+
 **Independent SQL reads (#681 step 2).** `AppState::handler` captures the
 read pool, update-admission service and an atomic immutable `ReadContext` slot.
 Producer hooks publish project/path mappings, live owner admission, task
@@ -333,8 +445,34 @@ review-summary and durable-identity rows share one transaction, with live
 availability supplied by the published overlay. Read replies retain typed
 parameter normalization and result checks without deferred app state.
 
+**Independent observations (#681 step 4).** `app/observation_reads.rs`
+prepares owned jobs from a typed immutable identity context published with the
+versioned `ReadView` delta. The context is staged under the existing committed
+publication boundary, so failed saves and stale refreshes cannot publish
+candidate identities. Preparation never reacquires the app lock or drains
+deferred writes. Dedicated I/O workers execute filesystem/Git observations,
+then validate source, owner and conversation fences against the latest
+publication before returning the existing typed reply. GitHub observations
+retain their service deadline and update admission spans the complete job.
+Writer routing retains its existing mutation boundaries. MCP read scheduling
+is described below under MCP tools.
+
+Ordinary owner/global publication structurally shares unrelated observation
+families and rows. Touched owner rows may be recaptured even when their fields
+compare equal. Producer mutations identify affected inputs and stage their
+family/key values under the committed publication boundary; dirty-key receipts
+are acknowledged only after an accepted delta, so failed or stale candidates
+retain pending work. Legitimate topology changes may rebuild thin owner/run
+order indexes to preserve legacy tie precedence. An unrelated status publication
+does not rebuild the complete observation graph or enumerate all retained
+lineages, attachment homes and archive rows. Existing board rendering and legacy
+producer maintenance remain separate work; this is not a claim that all
+publication is constant time.
+
 **Published snapshots (#681 step 3).** `app/read_view.rs` holds an atomic
-`Arc<ReadView>` root with shared immutable response chunks. Versioned deltas
+`Arc<ReadView>` root with shared immutable response chunks. Chunk and history
+maps use persistent ordered trees, so retaining a root and applying a small
+delta copies bounded tree paths rather than every entry. Versioned deltas
 merge disjoint updates through compare-and-swap; stale overlapping updates
 are rejected as a unit, and deletion versions remain as tombstones. Producers
 warm required observations before admission, then publish committed values
@@ -343,6 +481,12 @@ compaction context and unread summaries. Workspace history shares immutable
 history chunks; response paging preserves the existing cursor and full-history
 contracts without cloning retained history on each publication. Inventory,
 update status and CLI catalogs have their own atomic service snapshots.
+
+An incremental publication captures project rows once, borrows those rows for
+the structural layout check, then renders affected projects from that same
+candidate-local capture. Observed remote and isolation values are still applied
+at rendering. Full rebuilds capture independently; failed or stale candidates
+retain no project-row cache across publications.
 
 Plan/run finishers stage projections before saving and restore committed
 canonical fields after a failed save. Their checkpoints exclude live PTYs;
@@ -358,6 +502,46 @@ New Git adoptions stage their compatibility workspace alongside the owner
 before saving. A failed save removes only that staged in-memory alias, while
 a successful save publishes both before notices, including branch dispatch
 and implementation handover.
+
+Plan/run finishers do not discover or reap unrelated terminals. The periodic
+service in `app/runtime/terminals/cleanup.rs` captures registration identities
+under a brief app guard, probes checkout roots outside the guard, then applies
+each disappearance under its own guard. It rechecks the exact tab role,
+session handle and lineage, or waiting-screen handle, before retiring anything.
+Cleanup attempts the exact session's lineage and turn closure through its
+canonical owner mutation. It publishes actual runtime retirement with committed
+roster fields before completing even if that save fails. Known checkout removals
+carry captured registrations through
+their deferred work and clean up only those covered by a confirmed removal
+receipt before replying. Merge prune uses the same registration checks after
+successful removal; its existing synchronous filesystem work remains guarded.
+Process kill and reap still run separately through `reaper.rs::Retirement`.
+
+User shell creation captures registered scope identity under a brief app guard,
+resolves its physical path outside the app mutex, then reserves a terminal slot
+and a **per-checkout** lifecycle hold. The PTY opens outside the mutex; another
+off-lock path probe and a guarded identity check precede registration. Pending
+shells count toward the cap and prevent movement, deletion, locking and reclaim
+of their own checkout. Other checkouts remain available. A failed or invalidated
+spawn retires its opened child before releasing the reservation.
+
+Terminal open, close and cleanup update terminal rows only for the affected
+checkout aliases, including aliases awaiting their first full publication.
+They preserve unrelated snapshot chunks and use stored path observations for
+notification aliases. Full publications refresh any terminal-only aliases that
+remain registered. Opening a scoped terminal retains its workspace/run
+interaction stamp and board revision bump. Its attention fields patch the
+accepted shared rows without rendering workspace details or a global projection.
+An asynchronous store merge preserves newer seen/mute/cursor state and the exact
+captured resume boundary; the reply does not wait for this attention save.
+Durable run/task rows fence insertion against deletion. External checkout stamps
+may insert their first row while the captured full-map save epoch is current; a
+later live-map replacement cancels that delayed write. Managed workspace IDs
+update only existing rows, matching their exclusion from the old live-map save.
+Terminal creation also records user activity and pushes the terminal row. Its
+user-session persistence runs outside the app mutex, with a conditional save that
+cannot overwrite newer activity. The reply still waits for that save; acknowledgment
+before persistence belongs to the separate ack-then-confirm step (6b).
 
 Task creation, updates and dependency edits capture their watched board rows
 and affected neighbors inside the SQL transaction. A failed projection read
@@ -382,12 +566,104 @@ every root, with repeated filesystem canonicalization under the app lock.
 Counting tests bound the path comparisons for a refresh as runs and workspaces
 grow; ownership tests retain direct IDs, terminal states, project conversations
 and symlink aliases.
-Snapshot preparation captures one ephemeral ownership context shared by board,
-workspace, agent and push projections. It preserves project-scoped workspace
-filters and canonical conversation aliases without resolving paths per agent.
-The context ends before persistence or canonical mutation; it cannot retain a
-failed candidate's workspace mapping. Counting tests include the publication
-producer as well as the pure push reader.
+Snapshot preparation creates one ownership context shared by board, workspace,
+agent and push projections. Pure ownership indexes can reuse the accepted global
+projection's structural data after validating current native paths, observed
+aliases, state root, project and parked bindings, exact run states, roster order
+and workspace name/ID precedence. Validation still walks the current inputs;
+unchanged structure avoids rebuilding and sorting the indexes. Cold observation
+state cannot reuse them. Task live locations use a qualified owner index with
+the existing project/root checks and project-repository exclusion, so each agent resolves its
+location without repeating registry scans. It indexes agent ownership and preferred
+run outcomes in the existing precedence order, and reuses branch candidates and
+canonical agent digests for matching render inputs. Updated canonical histories
+are shared by unread projections and history staging; unread summaries are keyed
+by the effective read cursor. Cached external checkout
+rows are rendered in one pass and reused by push states, retaining the first
+matching project and agent-root entry. Project-scoped workspace filters and
+canonical conversation aliases retain their existing behavior without resolving
+paths per agent. Board workspace summaries observe in-flight delivery roots
+and live session status once for all workspace rows. Push workspace rows join
+summaries through a temporary index that preserves JSON id equality and
+first-match duplicate precedence. Render memos remain fresh for each outer
+guard and end before persistence or canonical mutation. Only an accepted global
+delta retains new pure structural data; failed saves and rejected candidates
+cannot replace it. Metadata publication still refreshes runtime availability
+and saved addressing independently. Adjacent immutable snapshot and read-metadata
+publications share that capture within their wrapper, ending before change
+notifications or later mutations. Complete local read-view deltas retain their atomic publication
+boundary before replies and change notices. Counting tests include the
+publication producer as well as the pure push reader.
+Bounded push tail bodies are shared between publications while conversation
+identity, publication sequence and resident tail geometry match. Each publication
+still captures fresh tip metadata. Historical receipt rows retain their existing
+bounded floor and generation fences.
+
+Global board and list projections retain shared row fragments in the accepted
+`ReadView`, alongside the layout inputs that justify reusing them. Known-owner
+and committed task-observation publications replace affected rows; structural
+changes use the full producer. Alias and shared-root dependencies, active
+session observations, and elapsed-time fields participate in each refresh.
+Registry identities use weak handles so a retained read root cannot keep a
+retired session or terminal screen alive. Attention changes for known owners
+use the same scoped publication; other board invalidations retain their full
+refresh path. Layout reuse compares raw committed compaction policies with
+workspace and project topology rather than rendering every inherited policy to
+check for changes. Workspace detail refresh batches affected owners and aliases
+through one registry and dependency scan. Fresh base rows and agent variants
+share their unchanged JSON subtrees; dependency scans borrow fields from either
+composed or legacy rows without materializing an aggregate. Active-owner and
+elapsed-time fields are still rendered afresh on each publication.
+
+Each incremental refresh discovers current active owners once and builds one
+owner dependency index. Two independent closure walks compute dirty owners and
+the next active set. Previous active owners and explicit state/stat changes join
+the dirty set only; an idle owner receives its cleanup refresh without staying
+active. Failed saves retain pending-owner retries until an accepted publication.
+
+Within one candidate, an incremental board winner and its push state share the
+same normalized branch wire row, keyed by owner and exact stat input. The raw
+fold candidate remains separate, and losing owners retain their own push state.
+This memo ends with the projection guard; full seeds keep their independent
+construction. Observation scope installation still replaces every supplied run
+input and updates lineage, but edits workspace membership only when the
+workspace ID changes. Physical paths and other changed fields still install.
+
+Within `StatusPump::observe`, attention persistence and dirty marks still
+update immediately, while their wire projection joins the final owner
+publication. Changed attention refreshes read metadata with that final
+publication, using one fresh ownership capture after all later helpers have
+finished. A `working_since` roster save keeps its independent committed
+publication and admission update. Direct status APIs and end-of-stream handling
+keep immediate attention publication. Context, reset and usage helpers keep
+their existing save and failure behavior.
+
+An RPC `thread.post` keeps its durable message publication and both attention
+saves, but publishes the two human attention stamps together before returning
+from its dispatch guard. The final owner delta includes every addressed and
+canonical alias. A route error still publishes attention from any committed
+prefix; a deferred job receives that publication before leaving the guard.
+Successful interaction stamping retains its existing timing, including after
+deferred completion. Direct and MCP posts keep immediate attention publication.
+The temporary collection restores its state on unwind without publishing a
+partially mutated candidate, and never spans external work or delivery drain.
+
+Deferred status and RPC attention stamps retain revision-tagged notification
+receipts for each affected owner and alias. Their ordinary early notices remain;
+an accepted publication also emits fresh entity and board notices, so a flush
+that consumed the early notices cannot leave subscribers on the old state.
+Incremental candidates acknowledge only owners they refreshed, while a complete
+candidate can acknowledge removed owners. Rejected or borrowed-owner candidates
+retain their receipts, and an older accepted candidate cannot erase a newer
+stamp. Notification receipts are independent of observation-capture receipts.
+
+`read_view/shared_json.rs` composes immutable JSON leaves without caching a
+materialized aggregate. Intake and push readers materialize their owned wire
+answers after releasing the app guard. Historical receipt patches index exact
+thread identities and replace only advancing leaves, updating cached row
+fragments in the same atomic delta. Preparing or rejecting a candidate cannot
+change the accepted fragments, and direct aggregate replacements invalidate
+their reuse cache. Watched task observations retain unchanged payloads by `Arc`.
 
 ### Liveness and signaling
 
@@ -419,7 +695,33 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.22.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.24.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.24.0 adds the durable write foundation: `bridge.epoch`, bounded
+  `writes.status`/`writes.subscribe`, and typed ack/confirmation envelopes.
+  Every authenticated outgoing application frame is stamped with the same
+  per-process UUID at `SessionSender::seal`, including replies, receipts,
+  terminal/service pushes and authenticated signaling. `session.hello` returns
+  that `bridge_epoch` and the persistent `journal_incarnation`. Planned update
+  handoff emits a best-effort `bridge.restarting`; reconnect greeting remains
+  authoritative when that event is lost.
+  Hello advertises `ack_confirm_methods`, mirroring
+  `api::writes::ACK_CONFIRM_METHODS`; it is empty in #739. Clients use
+  ack/confirm only for methods in that list. There is no `write.mode` or
+  separate ack-confirm capability negotiation.
+  Bridge and SPA ship together; #740 raises the SPA requirement to this version
+  under Zech’s 2026-10-21 decision. Shared envelopes are in
+  `fixtures/api/v1/writes/`; their Rust contracts live in `api/writes.rs`.
+  3.23.0 populates the existing `attachments` descriptors on agent replies,
+  outgoing agent messages and the corresponding incoming messages (#696).
+  The thread page fixture shows all three. No new capability is needed:
+  the SPA paints the descriptors present in its cached thread records.
+  `thread.attachment` now caps an unranged response at 5,242,880 bytes too.
+  Its `size` remains the total file length and `offset` names the chunk start.
+  If `offset + decoded byte count < size`, the client must request the next
+  range at that sum before using the file. The SPA's shared attachment reader follows that metadata even before
+  it knows the paging capability, and checks offsets, size and progress.
+  User uploads remain capped at 5,242,880 bytes by `ATTACHMENT_MAX_BYTES`
+  and the size check in `app/conversations/attachments.rs::thread_attach`.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -692,6 +994,43 @@ and its controls are
   (`bridge/src/identity.rs`), workspace manifests `.build-workspace.json`
   (`MANIFEST_FILE` in `bridge/src/workspace.rs`), and update status and job files
   (`bridge/src/update/`).
+
+#### Durable write foundation (#739)
+
+Schema 18 adds `mutation_commands`, per-owner ordering, dependency edges,
+resource reservations and a terminal outbox. `StoreWriter` owns the same
+connection used by existing Store methods; no second writer is opened.
+New journal admission is a short SQL-only transaction entered outside the app
+and domain guards. Existing Store callers are converted incrementally; this
+foundation does not claim to have removed their existing lock-held SQL.
+
+A command is keyed by the server-derived principal and a canonical operation
+UUID. The normalized semantic intent and saved dependencies fence conflicting
+retries. Admission reserves identities and durable owner order before returning.
+Canonical SQL and the committed marker share one transaction; publication and
+terminal confirmation follow. Reopening the intact store retains its journal
+incarnation and outbox. SQL-only claimed work can return to accepted, while
+ambiguous external claims retain an unknown outcome and block conflicting
+execution until reconciliation. Committed work is returned for the enabled
+verb’s publication recovery and is never applied twice. No verb executor is
+enabled by this slice. The journal exposes 30-day terminal-result compaction for the future enabled
+command service; identity/outcome tombstones remain, and unresolved partial/unknown
+evidence is retained until reconciliation. Active owner fences and the
+principal/cursor outbox index keep settled lifetime history out of claim and
+caught-up subscription queries. Admission limits are 128 nonterminal commands
+per principal, 4,096 per store and 64 KiB per admission payload; terminal outcomes
+are limited to 256 KiB, checked before committing canonical SQL.
+
+`app/mutations.rs` reads journal status using the existing independent SQL lane
+and read-only pool. Status accepts at most 128 operation IDs and returns at most
+512 KiB per page with a cursor bound to the operation set and journal incarnation.
+Subscribe captures the current outbox cursor and states in one SQL snapshot,
+then replays later durable outcomes outside ordinary change coalescing. Readers
+never take the app guard or writer connection. Current RPC authorization is the
+paired device account, represented by a server-owned database-local principal;
+client hints and session IDs do not grant identity. Reads additionally validate
+the original owner scope against current published authority. MCP agent
+principals and semantic method enablement belong to Step 6b.
 
 #### Compaction policy configuration
 
@@ -1104,12 +1443,13 @@ Client detach or reconnect keeps the shell and ID. Explicit tab close, EOF,
 a missing root and project deletion use the existing kill/reap and screen
 closure lifecycle. Source move/remove refuses while shells stand in that
 source folder, naming their IDs. Create and move/remove admission run under
-the app lock; shell spawn stays under that guard, and the existing Updating
-reservation blocks shell starts and source removal throughout deferred source
-update work and settlement. The spawn guard also rechecks project deletion:
-a create admitted earlier refuses before opening a PTY if deletion has already
-collected retirements. A create that spawns first is included in that collection,
-even when its original source folder survives deletion.
+the app lock; physical scope probes and PTY spawn run outside it. A pending
+spawn holds its checkout and source location until registration or child
+retirement. The existing Updating reservation blocks shell starts and source
+removal throughout deferred source update work and settlement. Reserve and
+commit guards recheck project deletion; deletion refuses while that project's
+shell spawn is pending and collects its registered shells for retirement,
+even when their original source folders survive deletion.
 Label changes leave live shells alone. These holds
 keep the source's membership/location consistent; they do not restrict shell
 commands or serialize them with Git/base sync. Worker holds also permit
@@ -1118,8 +1458,8 @@ relocation or removal.
 A worker-held source can open and attach a shell while base sync waits on its
 Git lock, and sync can fast-forward with that shell still open. Closing the
 shell leaves the worker's location hold intact. An already-admitted terminal
-create rechecks Updating at spawn: a move's reservation holds it back during
-the SyncLock wait and after work completes, until config settlement. The old
+create rechecks Updating before reservation and registration: a move's
+reservation holds it back during the SyncLock wait and after work completes, until config settlement. The old
 selector then conflicts; a fresh selector opens at the settled location.
 
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
@@ -1417,6 +1757,29 @@ source and caller identities under the app mutex and drains Git work off it.
 Clients name stable IDs and branches, never repository paths or actors. The
 bridge attributes RPC calls to the user and MCP calls to the authenticated
 agent in that project.
+
+Review opening and the explicit lifecycle jobs load their workspace review
+observations from SQLite off the app mutex, after durable publication.
+Invalidation installs the owned observation before publishing its workspace
+summary and replying. Close commits off the mutex and captures its completed
+task and events in that same transaction. Apply installs the review summary
+before publishing the task and delivering its completion notices once;
+immediate workspace reads after RPC or MCP close see the closed review.
+Merge progress and background review sync load observations
+off the mutex at their existing publication checkpoints, then take the mutex
+to install them. A monotonic observation generation prevents a delayed load
+from replacing a newer lifecycle observation, even when another review task
+now owns the workspace; installation also rejects a removed workspace.
+A failed observation load preserves the accepted summary for maintenance to
+refresh. Periodic maintenance captures the workspace IDs and an owned review
+reader in its existing capture section, loads review summaries alongside the
+off-lock project refresh, and installs them through the same generation fence
+in its existing apply section. Physical workspace refreshes do not query review
+SQL; startup warms review summaries before shared admission.
+Once opening has published durably, an observation failure does not turn it
+into an error or skip settlement. Close likewise returns its captured completed
+review if the subsequent optional sync/merge-intent projection fails, and still
+settles its captured task and completion notices once.
 
 | RPC verb | MCP tool | Contract |
 | --- | --- | --- |
@@ -1840,6 +2203,12 @@ durable notice use the captured cause; a later failure cannot relabel it.
 An exhausted provider notification logs `terminal_error` with `scope: turn`;
 it does not request process shutdown.
 
+Capture routers own no canonical conversation or session lineage, so their
+startup omits conversation recovery context. Delivery accepts their missing
+session instance only after validating the registered router target and tab
+identity. Ordinary agents retain conversation recovery and exact session
+instance fencing.
+
 ADK reports `Working` while a parent turn is open or its background-task roster
 is nonempty. A delivered turn opens when its final newline is written. The
 child can also start a turn itself: top-level assistant text, thinking or tool
@@ -2006,10 +2375,18 @@ work and MCP capabilities. An established running turn is stopped and reaped;
 already admitted sends settle outside the app lock before history is replaced.
 An unadopted spawn or delivery handoff is refused retryably. Reads remain
 available during retirement, while conversation mutations are refused.
-MCP authentication captures the source thread generation, and done reports
-and agent actions validate it under the same lock as their writes. Deferred
-task handoffs retain that source generation until settlement. A late callback
-or a request carrying the old generation cannot restore the cleared content.
+MCP admission captures the source thread generation. Done reports and agent
+writes validate it under the mutation lock. Independent read capabilities also
+retain the issued source generation and validate it against saved addressing
+and private runtime authority. The runtime reset
+reservation remains active through complete commit or failure restoration.
+Saved addressing, thread admission and task overlays publish every affected
+alias in one metadata batch. Source/roster guards consult the reservation;
+router history targets may read the complete old committed history during
+retirement, with their frozen binding/thread fence rejecting a replacement at
+completion. Deferred task handoffs retain the source generation until
+settlement. A late callback or a request carrying the old generation cannot
+restore the cleared content.
 A new project-agent session uses the ordinary fresh-start scaffolding and
 standing instruction templates.
 After the first reset, conversation mutations require the current `thread_id`;
@@ -2055,6 +2432,59 @@ app-lock acquisition (`lock_wait`), including the update-admission check.
 Reacquiring a turn after deferred work is included in the permit wait; the
 deferred work itself is not pool queue time.
 
+The two control turns continue to bound mutation work. MCP task, roster, list,
+history and review reads on an exact allowlist use a service captured during
+listener setup and take neither a writer turn nor the app mutex. Malformed
+actions and done reports retain their existing routing. Private immutable
+capability state publishes token installation, rotation, revocation and router
+incarnations immediately. Token bytes authenticate before issuer data is used;
+coding capabilities bind to the validated issued owner, agent, canonical
+conversation and thread generation. Project scope and tool surface follow
+current committed policy rather than becoming lifetime token entitlements.
+
+Saved immutable addressing retains roster order, canonical bindings, thread
+identity and persisted pin/name policy. Failed saves cannot admit candidate
+identities; temporarily borrowed owners retain their saved records. Roster and
+list reads use accepted producer fragments and scope/selection metadata, with
+roster target stamps taken from the captured payload itself. Read preparation and final
+validation compare those targets with saved addresses and current authority;
+changed bindings, generations, selections or project paths refuse the captured
+request instead of retargeting it. No request initializes producers, probes
+workspace paths or drains deferred writer work.
+
+SQL reads use the shared asynchronous reader pool and one transaction across
+related rows. The pool shares quotas across listeners and service clones:
+three in-flight MCP task-list requests and two per other MCP SQL read type.
+A caller acquires its type's permit before borrowing a connection, so excess
+callers wait outside the eight-reader pool. Three task pages, two task details
+and two history reads occupy at most seven connections, leaving one reader
+for other read types; a fourth task page waits before SQL checkout. Both the
+connection and type permit are released before external I/O; their acquisition
+and work take no app lock.
+Snapshot materialization and the exact harness catalogue resolver
+run off-lock. The catalogue combines accepted default/ordered-role settings
+with the existing CLI readings service, preserving TTL/executable refresh and
+hidden-model startability without a new catalogue cache or publisher-side
+executable probes. Review work releases SQL capacity before external I/O and
+retains its observation fences. Final checks reload immutable capability,
+address and accepted scope metadata; comment-name decoration uses saved policy.
+The update-admission lease survives caller cancellation until blocking work
+finishes, and responses retain their ordinary shape. Calls on one socket remain
+ordered; independent sockets read while mutation turns or the app mutex are
+occupied.
+
+MCP `list_tasks` returns at most 20 full task rows, defaulting to 20. Its
+optional `limit` accepts 1–20; `cursor` continues the same state/status/label
+filter. The reply is `{project_id, tasks, user_session, next_cursor?}`.
+Only an absent `next_cursor` ends the walk: a filtered page may be empty.
+The existing store/project/filter-scoped cursor seeks below an immutable task
+number, in descending order, so editing a task does not move it between pages.
+Selection and the cursor probe precede timeline, identity and summary hydration.
+`get_task` retains the complete task and timeline. This MCP paging contract
+does not change the SPA's separate `tasks.list` RPC or its 100-row page requests.
+Router `list_work` selects its compact fields directly from the accepted shared
+board fragments, without materializing the full board first.
+
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
 `Project`), which a project's agents take from their persisted purpose (see
 A project's agents below). Each action is a `BridgeAction` variant. The tool lists are
@@ -2064,6 +2494,21 @@ A project's agents below). Each action is a `BridgeAction` variant. The tool lis
 `bridge/src/mcp/compaction.rs`), workspace tools (`create_workspace`,
 `add_workspace_agent`, `list_project_agents`, `add_project_agent`, …) and the
 tracker (`get_task`, `comment_task`, `move_task`, `label_task`, …).
+
+`post_thread_message` and `message_agent` accept optional `attachments` entries
+with `path` and optional `name` (#696). They share the task tools' file intake
+in `app/tracker/agent_files.rs`: up to ten files of 50 MiB each, supported image
+and video signatures or UTF-8 text, and regular-file reads without following
+the source leaf symlink. Absolute agent-created paths are allowed by that
+existing policy; relative paths must identify an existing stored attachment.
+The bridge validates every source before copying bytes into its durable store.
+Conversation records and delivery payloads retain the existing
+`{path, name, mime, size}` descriptor, and receiving agents get readable copies
+through the conversation's normal attachment homes. User-supplied attachment
+paths retain their existing storage containment checks.
+`thread.attachment` bounds both default and explicit reads to 5 MiB while
+returning the full file size; the existing ranged SPA reader reconstructs
+larger agent recordings without exceeding the transport message limit.
 
 The task board's column and assignee carry routine status. Agent prompts and
 MCP descriptions tell agents to comment on tasks only for a decision or
@@ -2550,6 +2995,50 @@ nothing else
 
 ### Bridge tests
 
+The busy lock fixture includes MCP permit admission, blocking-pool scheduling
+and all app guards in each frame, and separately times callers through replies
+or completed status observation. Its cohort includes 168 MCP calls, 40 encrypted
+RPC calls and 24 actual private `StatusPump` observations. All callers and
+queued deliveries must finish before assertions. The five-second maximum
+applies to all frame and caller totals, alongside the hold percentile and
+maximum gates. Status timing covers observation work, not watch-notification
+delivery latency.
+
+Three focused MCP timing tests reuse that fixture's 200 conversations, 190 Git
+worktrees, 700 initial tasks and 12 simulated running agents. They measure
+`list_task_dependents`, `search_conversation`, `read_review`, `read_comment`,
+`list_work` and `list_workspaces` with only the read cohort, with the unchanged
+writer/status/RPC cohort, and with that same busy cohort plus concurrent
+`list_tasks`. Each mode captures 24 decoded socket replies per read type,
+rotates the first action across readers, and enforces the 100 ms caller p99
+and maximum for every cohort MCP read and ordinary read RPC.
+Per-type overlap counters require every read type to start while writers are
+outstanding, and while task-list requests are in flight in the final mode.
+`.github/workflows/timing.yml` builds the release test binary before running
+these three tests serially alongside the existing busy lock-hold regression.
+Ordinary tests verify that the recipes use the independent lane and return
+their saved task, comment, conversation, workspace and review witnesses.
+
+The test-only `timing/phase_samples.rs` collector reports exact p50, p95, p99
+and maximum durations. MCP read samples separate blocking-pool scheduling
+(`frame.pool_wait`), per-type admission (`read.class_wait`) and SQL connection
+acquisition (`read.sql_wait`). Synchronous `read.admission`, `read.query`,
+`read.run` and `read.finish` spans are exclusive of nested phases; their
+`.total` counterparts include nested work and record one sample per stage.
+`reply.serialization` measures the socket reply encoding, while `client.total`
+includes socket submission through the parsed reply. These diagnostic fields
+compile only in tests.
+
+The focused `busy_mcp_lists_finish_within_100ms` release regression reuses the
+main busy fixture with 700 tasks, 200 conversations and 190 worktrees. Twelve
+readers request both MCP lists alongside the normal writers and status
+observations. It measures through socket transfer and reply parsing, enforcing
+the 100 ms maximum and p99 for each page. Test-only phase tracing separates SQL
+methods (including record decoding), row construction, snapshot projection and
+reply serialization. The release timing workflow runs this regression alongside
+the existing busy lock test. Normal tests cover bounded page work and keyset
+continuation independently of machine timing.
+
 Unit tests sit beside the code (`#[cfg(test)]` modules, and directories such as
 `bridge/src/app/tests/` and `bridge/src/store/tests/`). Integration tests are in
 `bridge/tests/`: the wire contract (`api_contract.rs`), relay (`relay_*.rs`),
@@ -2584,7 +3073,7 @@ Vanilla JavaScript ES modules with no framework, bundled by Vite
 dependency is self-hosted. `@build/secure-transport` is a `file:../transport/js`
 dependency within this checkout (`spa/package.json`). SPA and web commit their
 portable npm locks; install `transport/js` from its own lock before either
-consumer, using Node 22.23.3/npm 12.0.2 and the install sequence in
+consumer, using Node 22.23.4/npm 12.0.2 and the install sequence in
 [AGENTS.md](AGENTS.md#working-rules). App and QA images build the binding from
 this same checkout; the Build commit pins the shipped transport. The Vite libsodium shim uses SPA-local libsodium 0.7.16, matching the
 transport lock; Node resolves the binding's dependencies from `transport/js`.
@@ -2754,6 +3243,26 @@ path, so reading every worker roster never delays finding the selected
 conversation. The rail's `railWorkItem.js` reads the same complete
 record on project hosts and filters it to the exact pin on a workspace host.
 
+The inbox derives project activity from the same complete roster and cached
+lineage as chat, including workers absent from pinned-only board rows. Lineage
+deduplicates canonical conversations within their owner before building child
+lists or computing descendant totals, and resolves creator aliases to the same
+canonical member. Both chat's Agents entries and inbox counts therefore list a
+spawned conversation once, even when its roster repeats it. Derived
+rollups decorate feed copies of both board agents and complete project agents;
+they never rewrite cache records. A complete project's running count sums each
+independent roster agent's own running loop and running panel rows, counting
+roster descendants on their ancestor's panel only once. An idle pin with three
+running workers says “3 running”; its own running loop adds one. Independent
+project workers also contribute, while workspace and legacy roster counts keep
+their existing per-member meaning. Rows with running activity or conversation
+history omit the empty “Getting started” fallback, retaining any Git or
+pending-operation facts. History comes from the conversation's own session,
+with legacy activity timestamps used only when that session is not explicitly
+empty; project-wide activity and creation anchors do not establish history.
+Topic and ordering still come from the pinned identity and the project
+conversation's own session.
+
 Roster pulls use the sync planner and its two shared background wire slots.
 The selected project's roster has foreground authority; unrelated held roster
 replies cannot delay selected thread, Git or task recovery. Landing a complete
@@ -2829,6 +3338,12 @@ In practice:
 - No view waits on the wire to show what is already known.
 - No view branches on whether a device is connected, connecting or away.
 
+Thread attachment tiles use cached message descriptors and held media bodies
+for user messages, agent replies and expanded outgoing agent messages (#696).
+The shared attachment loader fills missing bodies; the same image lightbox and
+download controls serve all three. Message role and connection status do not
+gate attachment display.
+
 **How it is built:**
 
 - **The cache** is `spa/src/core/localCache.js`: one IndexedDB database
@@ -2838,6 +3353,38 @@ In practice:
   `subscribeCache(prefix, listener)` announces every write to listeners on a
   matching prefix, and a `BroadcastChannel` carries the announcements to other
   tabs.
+- **Pending writes** (#740, wire 3.24.0). `writeOperations.js` persists each
+  normalized intent before transport in separate versioned operation/lease
+  stores inside `build-cache`. The authenticated app shell supplies only the
+  account UUID; operations are keyed by account, paired device, user principal
+  and operation UUID. Without that identity the pending service is unavailable.
+  Boot activates the account's projections before mounting cache readers.
+  `readCached`/`readCachedMany` compose ordered local layers over canonical
+  records; mutation helpers read the canonical records separately. Replica
+  eviction never deletes pending intent. Explicit account reset clears it.
+  BroadcastChannel announces committed operation changes, and an IndexedDB
+  per-device tab lease suppresses duplicate transport. A single worker polls
+  status in batches of at most 128 with jittered 1/2/5/10/30-second backoff.
+  Each subscription replaces the whole set with the oldest 128 outstanding
+  submissions; overflow stays on status polling, and terminal outcomes refill
+  the set. Subscribe pagination continues through status with the same IDs.
+  Subscriptions belong to the opening and carrier, so even a same-epoch carrier
+  change re-establishes status and subscription coverage.
+  Durable ack resolves the action successfully; a receipt does not. Loss,
+  timeout and restart retain the same operation identity and accepted layers.
+  A confirmation invalidation retains its layer until a fresh, guarded canonical
+  read covers the publication's owner kind, ID, generation and sequence.
+  Failed/unapplied removes only its layer; partial/unknown retains evidence.
+  Named refresh obligations survive reload independently of overlays. This
+  foundation consumes inline results; an unknown result reference remains
+  unresolved and cannot become success or authorize retransmission.
+  Expired-result tombstones retain their outcome and effect. Proven
+  failed/unapplied tombstones remove only their layer and restore the draft;
+  the expired operation ID never resolves successfully or executes again.
+  Task comments and thread posts display cached operation errors beside the
+  composer, retain the draft, and distinguish a new-action Retry from same-ID
+  Check again. The method allowlist is empty until bridge execution slices enable
+  methods; typed domain effects are extended together with those slices.
 - **Compaction observations** (`compactionCache.js`, wire 3.22.0) refresh from
   authoritative scope reads and `agent.list` after `compaction.changed` or
   subscription acceptance. The invalidation names no replicated values.
@@ -3319,6 +3866,15 @@ the current lifetime. Affected promises receive retryable uncertain-delivery
 errors; late replies cannot release replacement credits. Cache rendering and
 read coordination remain independent of these admission waits.
 
+`bridgeEpoch.js` accepts epoch/incarnation authority only from a current
+greeting. Application calls await that greeting, and every later app/terminal
+frame is fenced before correlation or push delivery. An unexpected UUID asks
+for a fresh greeting; it does not establish a newer epoch. Replacing an epoch
+settles unsent calls as `scope_ended` and handed-off calls as
+`uncertain_delivery`, releases reservations once, and never replays terminal
+input. `sessionRpc.js` routes durable acks and late confirmations separately
+from transport receipts, including after the original caller timed out.
+
 A surface calls the bridge through its device context: `context.rpc(method,
 params)` from `contextFor(deviceId)` or `routeContext(route)`. `context.rpc`
 refuses when that device cannot answer.
@@ -3329,12 +3885,15 @@ refuses when that device cannot answer.
   client's `api_range`. `greetBridge()` then selects an adapter and arms the
   change subscriptions.
 - `selectAdapter()` in `spa/src/core/bridgeApi/index.js` checks the bridge's
-  `api_version` against `SPA_API_RANGE` (`>=2.0.0 <4.0.0`). A greeting with
+  `api_version` against `SPA_API_RANGE` (`>=3.24.0 <4.0.0`). A greeting with
   no version, or no greeting at all, reads as `PRE_ALPHA_API_VERSION`
-  (`0.0.0`). For compatibility, that is matched at the lowest adapter's floor
-  rather than rejected. Any other version outside the range returns
+  (`0.0.0`), which is rejected. A version outside the range returns
   `{unsupported: "bridge" | "app"}`, and `spa/src/views/versionGate.js` says
   which side needs updating.
+- `bridge.epoch` and the greeting's exact `ack_confirm_methods` select the
+  durable write service. Every listed semantic method uses it; there is no
+  `write.mode` or separate ack-confirm negotiation. Session controls are
+  excluded. The SPA and bridge ship together; #739 rolls before the #740 SPA.
 - `capabilitiesOf()` in `spa/src/core/bridgeApi/v1/index.js` turns the greeting's
   `capabilities` array into feature flags. Every bridge the adapter admits sends
   one; the minor-version table that stood in for it went with 1.x. New features
@@ -3351,15 +3910,10 @@ refuses when that device cannot answer.
   requirement. No new source selectors go to an older bridge. Sync base uses
   `sources.syncBase`; its captured-path precondition additionally requires
   `sources.syncBasePath`.
-- `conversation.reset` also gates the generation fields added to existing
-  conversation requests in wire 3.11. The adapter restores their old shapes
-  with `spa/src/core/bridgeApi/v1/threadParams.js` when the greeting lacks the
-  capability, retaining established selectors and paging parameters. Sessions
-  read their device's cached reset capability from `conversationResetSupport.js`
-  before hello: a cleared conversation keeps its required generation fields on
-  reconnect, and a device without cached support uses legacy shapes. A greeting
-  that settles during that read takes precedence at dispatch. Revision reads
-  retain `agent_id` and `conversation_id`, which older bridges already accept.
+- Conversation requests preserve their captured generation and exact agent,
+  conversation and thread selectors. App dispatch waits for the current
+  greeting and adapter; there is no pre-greeting legacy-shape conversion.
+  `conversation.reset` still controls whether the reset action is offered.
 - The task and conversation watch switches, task attachment buttons, and
   conversation compaction settings are available before a greeting (#182).
   Their values come from cached task and agent records. A late greeting does

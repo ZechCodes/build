@@ -1,11 +1,13 @@
 // One E2EE session's crypto and correlation, over one carrier at a time.
 
+import { transportEpoch } from "./transportEpoch.js";
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { createSessionRpc } from "../src/core/sessionRpc.js";
 import { openCarrier } from "../src/core/carrier.js";
 import { CHUNK_BYTES } from "../src/core/chunk.js";
 import { SQL_READ_LIMIT, isSqlRead } from "../src/core/sqlReadCredits.js";
 import { readFileSync } from "node:fs";
+import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -49,6 +51,7 @@ function fakeCarrier({ sendFails = null, sent = () => {} } = {}) {
 function rpcOn(carrier, overrides = {}) {
   const rpc = createSessionRpc({
     transport: fakeTransport,
+    bridgeEpoch: transportEpoch(),
     sessionId: "sess-1",
     sessionKeyB64: "key-1",
     deviceId: "dev-a",
@@ -57,6 +60,210 @@ function rpcOn(carrier, overrides = {}) {
   rpc.rideOn(carrier);
   return rpc;
 }
+
+describe("epoch fences and durable acknowledgements", () => {
+  const greeting = (bridge_epoch) => ({ bridge_epoch, journal_incarnation: "journal-A", capabilities: ["bridge.epoch"], ack_confirm_methods: ["tasks.comment"] });
+  const ack = (id, bridge_epoch = "boot-A") => ({ id, ok: true, bridge_epoch, write: { phase: "ack", operation_id: "op-A", revision: 1, state: "accepted" }, result: { comment_id: "comment-A" } });
+
+  it("preserves correlated same-epoch write replies on their captured carrier during migration", async () => {
+    const old = fakeCarrier();
+    const next = fakeCarrier();
+    const epoch = createBridgeEpoch();
+    epoch.acceptGreeting(greeting("boot-A"));
+    const rpc = rpcOn(old, { bridgeEpoch: epoch, timeoutMs: 0 });
+    const frames = vi.fn();
+    rpc.onWriteFrame(frames);
+    const write = rpc.call("tasks.comment", {}, { write: { operation_id: "op-A" } });
+    const subscription = rpc.call("writes.subscribe", { operation_ids: ["op-A"] });
+    await tick();
+    const [writeRequest, subscribeRequest] = old.sent.map((entry) => entry.frameFields.payload);
+    rpc.rideOn(next);
+    next.deliver(ack(writeRequest.id)); // a different carrier cannot answer the old request
+    old.deliver(ack(writeRequest.id));
+    old.deliver({ id: subscribeRequest.id, ok: true, bridge_epoch: "boot-A", result: { cursor: "1" } });
+    await expect(write).resolves.toEqual(ack(writeRequest.id));
+    await expect(subscription).resolves.toEqual({ cursor: "1" });
+    old.deliver(ack("late-old-subscription"));
+    await tick();
+    expect(frames).toHaveBeenCalledExactlyOnceWith(ack(writeRequest.id));
+    expect(epoch.current()).toMatchObject({ bridge_epoch: "boot-A", opening: 1 });
+    rpc.close();
+  });
+
+  it("accepts only handshake correlation until a greeting establishes epoch authority", async () => {
+    const wire = fakeCarrier();
+    const epoch = createBridgeEpoch();
+    const rpc = rpcOn(wire, { bridgeEpoch: epoch, timeoutMs: 0 });
+    const pushes = vi.fn();
+    const frames = vi.fn();
+    rpc.onPush(pushes);
+    rpc.onWriteFrame(frames);
+    const hello = rpc.call("session.hello");
+    const read = rpc.call("tasks.get");
+    const answered = vi.fn();
+    read.then(answered);
+    await tick();
+    const helloId = wire.sent.find((entry) => entry.frameFields.payload.method === "session.hello").frameFields.payload.id;
+    const readId = wire.sent.find((entry) => entry.frameFields.payload.method === "tasks.get").frameFields.payload.id;
+    wire.deliver({ id: readId, ok: true, result: "too early", bridge_epoch: "boot-A" });
+    wire.deliver({ type: "tasks.changed", bridge_epoch: "boot-A" });
+    wire.deliver(ack("unsolicited"));
+    await tick();
+    expect(answered).not.toHaveBeenCalled();
+    expect(pushes).not.toHaveBeenCalled();
+    expect(frames).not.toHaveBeenCalled();
+    wire.deliver({ id: helloId, ok: true, result: greeting("boot-A"), bridge_epoch: "boot-A" });
+    epoch.acceptGreeting(await hello);
+    wire.deliver({ id: readId, ok: true, result: "authoritative", bridge_epoch: "boot-A" });
+    await expect(read).resolves.toBe("authoritative");
+    rpc.close();
+  });
+
+  it("transports the published write fixtures without changing the acceptance result shape", async () => {
+    const fixture = (name) => JSON.parse(readFileSync(new URL(`../../fixtures/api/v1/writes/${name}.json`, import.meta.url), "utf8"));
+    const epoch = createBridgeEpoch();
+    epoch.acceptGreeting(fixture("epoch-greeting").result);
+    const wire = fakeCarrier();
+    const rpc = rpcOn(wire, { bridgeEpoch: epoch });
+    const frames = vi.fn();
+    rpc.onWriteFrame(frames);
+    const request = fixture("request");
+    const pending = rpc.call(request.method, request.params, { write: request.write });
+    await tick();
+    expect(wire.sent[0].frameFields.payload).toEqual({ ...request, id: "r1" });
+    const acceptance = { ...fixture("ack"), id: "r1" };
+    wire.deliver(acceptance);
+    await expect(pending).resolves.toEqual(acceptance);
+    wire.deliver(fixture("confirmed-success"));
+    await tick();
+    expect(frames.mock.calls.map(([frame]) => frame)).toEqual([acceptance, fixture("confirmed-success")]);
+    rpc.close();
+  });
+
+  it("keeps receipt, durable ack and final confirmation separate and retains late frames", async () => {
+    const wire = fakeCarrier();
+    const bridgeEpoch = createBridgeEpoch();
+    bridgeEpoch.acceptGreeting(greeting("boot-A"));
+    const rpc = rpcOn(wire, { bridgeEpoch });
+    const frames = vi.fn();
+    rpc.onWriteFrame(frames);
+    const received = vi.fn();
+    const promise = rpc.call("tasks.comment", { body: "saved" }, { write: { operation_id: "op-A", after: ["op-before"] }, onReceipt: received });
+    const settled = vi.fn();
+    promise.then(settled);
+    await tick();
+    const request = wire.sent[0].frameFields.payload;
+    expect(request.write).toEqual({ operation_id: "op-A", after: ["op-before"] });
+    wire.deliver({ id: request.id, accepted: true, bridge_epoch: "boot-A" });
+    await tick();
+    expect(received).toHaveBeenCalledTimes(1);
+    expect(settled).not.toHaveBeenCalled();
+    expect(frames).not.toHaveBeenCalled();
+    wire.deliver(ack(request.id));
+    await expect(promise).resolves.toEqual(ack(request.id));
+    const confirmation = { type: "writes.confirmed", bridge_epoch: "boot-A", operation_id: "op-A", revision: 2, state: "succeeded", result: {} };
+    wire.deliver(confirmation);
+    await tick();
+    expect(frames.mock.calls.map(([frame]) => frame)).toEqual([ack(request.id), confirmation]);
+
+    const timedOut = rpc.call("tasks.comment", {}, { timeoutMs: 1, write: { operation_id: "op-A" } });
+    await expect(timedOut).rejects.toMatchObject({ timedOut: true });
+    wire.deliver(ack(wire.sent.at(-1).frameFields.payload.id));
+    await tick();
+    expect(frames).toHaveBeenCalledTimes(3);
+    rpc.close();
+  });
+
+  it("rejects every mismatched epoch before pending state, SQL credits or cache pushes change", async () => {
+    const wire = fakeCarrier();
+    const bridgeEpoch = createBridgeEpoch();
+    bridgeEpoch.acceptGreeting(greeting("boot-B"));
+    const regreet = vi.fn();
+    bridgeEpoch.onUnexpected(regreet);
+    const rpc = rpcOn(wire, { bridgeEpoch, sqlReadLimit: 1 });
+    const pushes = vi.fn();
+    const frames = vi.fn();
+    rpc.onPush(pushes);
+    rpc.onWriteFrame(frames);
+    const first = rpc.call("tasks.get", {}, { timeoutMs: 0 });
+    const second = rpc.call("tasks.get", {}, { timeoutMs: 0 });
+    await tick();
+    const id = wire.sent[0].frameFields.payload.id;
+    wire.deliver({ id, ok: true, bridge_epoch: "boot-A", result: "stale" });
+    wire.deliver({ type: "tasks.changed", bridge_epoch: "boot-C" });
+    wire.deliver(ack("late", "boot-A"));
+    wire.deliver({ type: "writes.confirmed", bridge_epoch: "boot-C", operation_id: "op-A" });
+    await tick();
+    expect(wire.sent).toHaveLength(1);
+    expect(pushes).not.toHaveBeenCalled();
+    expect(frames).not.toHaveBeenCalled();
+    expect(regreet).toHaveBeenCalledTimes(4);
+    wire.deliver({ id, ok: true, bridge_epoch: "boot-B", result: "current" });
+    await expect(first).resolves.toBe("current");
+    await tick();
+    expect(wire.sent).toHaveLength(2);
+    wire.deliver({ id: wire.sent[1].frameFields.payload.id, ok: true, bridge_epoch: "boot-B", result: "second" });
+    await expect(second).resolves.toBe("second");
+    rpc.close();
+  });
+
+  it("settles old-opening controls once, drops delayed sends, and accepts only correlated re-greetings", async () => {
+    const wire = fakeCarrier();
+    const bridgeEpoch = createBridgeEpoch();
+    bridgeEpoch.acceptGreeting(greeting("boot-A"));
+    const rpc = rpcOn(wire, { bridgeEpoch });
+    let provideCarrier;
+    const carrier = new Promise((resolve) => { provideCarrier = resolve; });
+    const unsent = rpc.call("term.input", {}, { carrier, timeoutMs: 0 });
+    const sent = rpc.call("term.input", {}, { timeoutMs: 0 });
+    unsent.catch(() => {});
+    sent.catch(() => {});
+    await tick();
+    const hello = rpc.call("session.hello", {}, { timeoutMs: 0 });
+    await tick();
+    wire.deliver({ id: wire.sent.at(-1).frameFields.payload.id, ok: true, bridge_epoch: "boot-B", result: greeting("boot-B") });
+    const authoritative = await hello;
+    expect(bridgeEpoch.current().bridge_epoch).toBe("boot-A");
+    bridgeEpoch.acceptGreeting(authoritative);
+    await expect(unsent).rejects.toMatchObject({ code: "scope_ended", uncertain: false, retryable: false });
+    await expect(sent).rejects.toMatchObject({ code: "uncertain_delivery", uncertain: true, retryable: false });
+    provideCarrier(wire);
+    await tick();
+    expect(wire.sent).toHaveLength(2);
+    rpc.close();
+  });
+
+  it.each([
+    "rtc.offer", "rtc.candidate", "session.hello", "changes.subscribe", "changes.unsubscribe", "writes.subscribe",
+    "stream.start", "term.attach", "agent.attach", "term.input", "term.resize", "term.ack", "transport.close",
+  ])("retires queued and handed-off %s controls without replay or accepting their late replies", async (method) => {
+    const wire = fakeCarrier();
+    const epoch = createBridgeEpoch();
+    epoch.acceptGreeting(greeting("boot-A"));
+    const rpc = rpcOn(wire, { bridgeEpoch: epoch, timeoutMs: 0 });
+    let provideCarrier;
+    const carrier = new Promise((resolve) => { provideCarrier = resolve; });
+    const queued = rpc.call(method, {}, { carrier });
+    const handedOff = rpc.call(method);
+    const queuedRejected = vi.fn();
+    const sentRejected = vi.fn();
+    queued.catch(queuedRejected);
+    handedOff.catch(sentRejected);
+    await tick();
+    const id = wire.sent[0].frameFields.payload.id;
+    epoch.acceptGreeting(greeting("boot-B"));
+    await expect(queued).rejects.toMatchObject({ code: "scope_ended", uncertain: false });
+    await expect(handedOff).rejects.toMatchObject({ code: "uncertain_delivery", uncertain: true });
+    epoch.acceptGreeting(greeting("boot-B"));
+    provideCarrier(wire);
+    wire.deliver({ id, ok: true, bridge_epoch: "boot-A", result: "old opening" });
+    await tick();
+    expect(queuedRejected).toHaveBeenCalledTimes(1);
+    expect(sentRejected).toHaveBeenCalledTimes(1);
+    expect(wire.sent).toHaveLength(1);
+    rpc.close();
+  });
+});
 
 describe("createSessionRpc", () => {
   it("addresses the device, rides the carrier it was given, and answers its own reply", async () => {

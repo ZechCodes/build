@@ -5,21 +5,39 @@ use crate::session_summary::UserSession;
 use crate::store::{TaskFilter, TaskSeek};
 use crate::tracker::{Task, TimelineEntry};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 
 #[derive(Clone, Default)]
 pub(in crate::app) struct TaskReadContext {
-    pub(super) project_paths: HashMap<String, String>,
+    pub(super) project_paths: imbl::OrdMap<String, String>,
     pub(super) identities: super::read_identities::TaskIdentityContext,
     user_session: UserSession,
 }
 
+#[derive(Clone)]
 pub(in crate::app) struct TaskReadFence {
     project_id: String,
     project_path: String,
 }
 
+impl TaskReadFence {
+    pub(in crate::app) fn project_id(&self) -> &str {
+        &self.project_id
+    }
+}
+
 impl AppState {
+    /// Mixed observations need project admission only, without identity path probes.
+    pub(in crate::app) fn task_scope_read_context(&self) -> TaskReadContext {
+        TaskReadContext {
+            project_paths: self
+                .projects
+                .iter()
+                .map(|project| (project.id.clone(), project.repo_path.display().to_string()))
+                .collect(),
+            identities: Default::default(),
+            user_session: self.user_session,
+        }
+    }
     /// Producer-only capture. Path aliases are resolved here, never by a read.
     pub(in crate::app) fn task_read_context(&self) -> TaskReadContext {
         TaskReadContext {
@@ -35,6 +53,20 @@ impl AppState {
 }
 
 impl TaskReadContext {
+    pub(in crate::app) fn set_user_session(&mut self, session: UserSession) {
+        self.user_session = session;
+    }
+
+    pub(in crate::app) fn update_scope_project(&mut self, id: &str, path: Option<String>) {
+        match path {
+            Some(path) => {
+                self.project_paths.insert(id.into(), path);
+            }
+            None => {
+                self.project_paths.remove(id);
+            }
+        }
+    }
     /// Only a successful owner save can admit a new live agent. Owners checked
     /// out by a surrounding mutation retain their last published observation.
     pub(in crate::app) fn retain_live_owners(
@@ -45,6 +77,16 @@ impl TaskReadContext {
     ) {
         self.identities
             .retain_live_owners(&previous.identities, app, published);
+    }
+
+    pub(in crate::app) fn retain_saved_owners(
+        &mut self,
+        previous: &Self,
+        app: &AppState,
+        owners: &std::collections::HashSet<String>,
+    ) {
+        self.identities
+            .retain_saved_owners(&previous.identities, app, owners);
     }
 
     pub(in crate::app) fn forget_live_owner(&mut self, owner: &str) {
@@ -87,6 +129,34 @@ impl TaskReadContext {
         source: &impl TaskReadSource,
         params: &Value,
     ) -> Result<Value, String> {
+        self.tasks_list_scanned(source, params, None)
+    }
+
+    /// MCP bounds candidate decoding as well as returned rows. Sparse filters
+    /// can produce an empty page with a cursor; RPC keeps its existing scan policy.
+    pub(in crate::app) fn mcp_tasks_list(
+        &self,
+        source: &impl TaskReadSource,
+        params: &Value,
+    ) -> Result<Value, String> {
+        let limit = match params.get("limit") {
+            None | Some(Value::Null) => crate::mcp::MCP_TASK_LIST_MAX,
+            Some(value) => value
+                .as_u64()
+                .filter(|limit| (1..=crate::mcp::MCP_TASK_LIST_MAX).contains(limit))
+                .ok_or_else(|| format!("limit must be 1 to {}", crate::mcp::MCP_TASK_LIST_MAX))?,
+        };
+        let mut params = params.clone();
+        params["limit"] = json!(limit);
+        self.tasks_list_scanned(source, &params, Some(limit as usize))
+    }
+
+    fn tasks_list_scanned(
+        &self,
+        source: &impl TaskReadSource,
+        params: &Value,
+        scan: Option<usize>,
+    ) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let project_path = self
             .project_paths
@@ -120,7 +190,7 @@ impl TaskReadContext {
                 TaskSeek {
                     below: page.below,
                     take: page.rows_to_keep(),
-                    scan: page.rows_to_scan(),
+                    scan: scan.or_else(|| page.rows_to_scan()),
                 },
                 |task, target| assignee.matches(task, target) && edits::carries_label(task, label),
             )
@@ -148,6 +218,8 @@ impl TaskReadContext {
         tasks
             .into_iter()
             .map(|task| {
+                #[cfg(test)]
+                let _phase = crate::timing::phase_samples::phase("task.row");
                 let timeline = timelines.remove(&task.id).unwrap_or_default();
                 let task = self.read_task(source, task, &timeline, &rosters);
                 let mut row = views::read_task_json(project_id, &task, &timeline);
@@ -244,6 +316,8 @@ fn extend_task_summary(
     task: &Task,
     row: &mut Value,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("task.summary");
     if let Some(review) = source.load_review_summary(&task.id).stored()? {
         row["review_summary"] = json!(review);
     }

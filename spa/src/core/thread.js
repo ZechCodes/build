@@ -978,7 +978,9 @@ function sentMessageHtml(message, { place, threadState, agentModels }) {
       ${timeHtml(message.created_at)}
     </div>
     ${sentPressHtml(key, bodyId, open, firstLine(body).trim())}
-    <div class="thread-body markdown" id="${bodyId}"${open ? "" : " hidden"}>${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(body, { place, taskLabelScope: `message:${messageKey(message)}` })}</div>
+    <div class="thread-body markdown" id="${bodyId}"${open ? "" : " hidden"}>${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(body, { place, taskLabelScope: `message:${messageKey(message)}` })}
+      ${attachmentsHtml(message.attachments, threadState)}
+    </div>
   </article>`;
 }
 
@@ -2766,6 +2768,14 @@ export function wireThreadComposer(root, {
   return {
     setCanInterrupt,
     setBlocked,
+    syncDraft() {
+      if (!input.value && readDraft()) {
+        input.value = readDraft();
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      tray?.restoreDraft();
+      paintAction();
+    },
     /// Put files in the tray as a drop on the box would — for a drop that
     /// landed somewhere else and was carried here.
     addFiles: (files) => {

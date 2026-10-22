@@ -58,6 +58,7 @@ pub mod tasks;
 pub mod thread;
 pub mod updates;
 pub mod workspace;
+pub mod writes;
 
 use crate::api::ApiError;
 use crate::app::AppState;
@@ -348,7 +349,7 @@ pub fn call_typed<P: DeserializeOwned + Serialize, R: Serialize>(
 }
 
 /// Every family's table, in one place.
-fn families() -> [&'static [(&'static str, Handler)]; 12] {
+fn families() -> [&'static [(&'static str, Handler)]; 13] {
     [
         board::methods(),
         changes::methods(),
@@ -362,6 +363,7 @@ fn families() -> [&'static [(&'static str, Handler)]; 12] {
         push::methods(),
         updates::methods(),
         workspace::methods(),
+        writes::methods(),
     ]
 }
 
@@ -414,6 +416,23 @@ pub fn dispatch(
     // along with the work instead: it is checked when the real value lands.
     app.expect_deferred_result(handler.check_result);
     Some(answered)
+}
+
+/// Refuse malformed or unsupported acknowledgement metadata before any fast
+/// path or semantic handler can act on the request.
+pub(crate) fn validate_write_metadata(payload: &Value) -> Result<(), ApiError> {
+    let Some(metadata) = payload.get("write") else {
+        return Ok(());
+    };
+    let _: crate::api::writes::WriteMetadata = serde_json::from_value(metadata.clone())
+        .map_err(|error| ApiError::invalid_params(error.to_string()))?;
+    let method = payload["method"].as_str().unwrap_or("");
+    if !crate::api::writes::ACK_CONFIRM_METHODS.contains(&method) {
+        return Err(ApiError::unavailable(
+            "write acknowledgements are not enabled for this method",
+        ));
+    }
+    Ok(())
 }
 
 /// Independent reads keep the same typed contract without borrowing mutable

@@ -242,7 +242,7 @@ describe("a flush arriving at the real subscriptions", () => {
 // changed in between: not in the snapshot, and pushed to nobody.
 describe("a pass racing the wire", () => {
   const HELLO = {
-    api_version: "2.0.0",
+    api_version: "3.24.0",
     capabilities: ["changes.subscriptions", "requests.priority", "errors.codes"],
     push_events: true,
     changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"], items: "bodies" },

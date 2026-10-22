@@ -72,6 +72,7 @@ impl AppState {
             .map_err(|e| e.to_string())?;
         let capture_id = capture.id.clone();
         self.captures.insert(capture_id.clone(), capture);
+        self.publish_capture_snapshot(&capture_id);
         // Only now: the text is safe, so a router that never starts costs a
         // routing decision and nothing else. A failure to start IS the routing
         // decision failing, and the capture says so rather than sitting in a
@@ -146,6 +147,7 @@ impl AppState {
             .delete_capture(&capture_id)
             .map_err(|e| e.to_string())?;
         self.captures.remove(&capture_id);
+        self.publish_capture_snapshot(&capture_id);
         Ok(json!({ "capture_id": capture_id, "cancelled": true }))
     }
 
@@ -324,7 +326,9 @@ impl AppState {
         self.require_store()?
             .save_capture(&capture)
             .map_err(|e| e.to_string())?;
-        self.captures.insert(capture.id.clone(), capture);
+        let id = capture.id.clone();
+        self.captures.insert(id.clone(), capture);
+        self.publish_capture_snapshot(&id);
         // A capture is a feed row from the moment it is taken, and it moves
         // again at every step of the route it is on.
         self.note_board_changed();

@@ -266,6 +266,7 @@ async fn a_process_that_exits_after_handing_back_records_no_interruption() {
             "run-handback",
             &agent_id,
             BridgeAction::PostThreadMessage {
+                attachments: Vec::new(),
                 body: "here is what I did".to_string(),
                 still_working: false,
                 options: Vec::new(),
@@ -351,7 +352,7 @@ async fn the_reaper_closes_the_turn_of_an_agent_whose_worktree_vanished() {
     );
 
     std::fs::remove_dir_all(&tab_key.root).expect("the user rm -rfs the checkout");
-    let reaped = state.lock().unwrap().reap_orphaned_terminals();
+    let reaped = AppState::reap_orphaned_terminals(&state);
     assert!(
         reaped.contains(&wire_id),
         "the reaper closes the vanished worktree's tab: {reaped:?}"
@@ -793,7 +794,18 @@ async fn the_terminal_cap_counts_shell_tabs_and_never_the_agent() {
 #[test]
 fn mcp_control_frames_require_the_current_session_token() {
     let mut sessions = SessionRegistry::new();
-    sessions.test_install_token("run-1".to_string(), "secret-current".to_string());
+    // This byte-matcher control grants no actual committed read identity.
+    let issuer = crate::app::runtime::sessions::McpIssuer::Coding(
+        crate::app::read_context::IssuedCodingAddress {
+            owner: "matcher-owner".into(),
+            agent: "run-1".into(),
+            canonical_owner: "matcher-owner".into(),
+            conversation: "run-1".into(),
+            thread_id: "matcher-thread".into(),
+            generation: 0,
+        },
+    );
+    sessions.test_install_token("run-1".to_string(), "secret-current".to_string(), issuer);
     let valid = json!({
         "task_id": "run-1",
         "session_token": "secret-current",

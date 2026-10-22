@@ -56,7 +56,7 @@ const greet = (capabilities, { deviceId = "dev-1", states } = {}) =>
   greetBridge(
     async () => ({
       push_events: true,
-      api_version: "2.0.0",
+      api_version: "3.24.0",
       capabilities,
       ...(states === undefined ? {} : { tasks: { watching: states } }),
     }),
@@ -106,7 +106,7 @@ afterEach(() => {
 describe("the gate, asked of a bridge that actually greeted", () => {
   it("offers watching to a machine whose greeting names tasks.watching", async () => {
     await greet(WATCHING);
-    expect(bridgeApiVersion("dev-1")).toBe("2.0.0");
+    expect(bridgeApiVersion("dev-1")).toBe("3.24.0");
     expect(carriesWatching("dev-1")).toBe(true);
   });
 

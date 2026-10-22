@@ -1,3 +1,8 @@
+#[cfg(unix)]
+mod read_lane;
+#[cfg(all(test, unix))]
+pub(in crate::app) use read_lane::probe::{SqlReadProbe, SqlReadProbeEvent};
+
 use crate::app::{
     apply_thread_action, off_the_workers, AppState, DeferredJob, DeferredNext, DeliveryRunner,
     SessionRegistry,
@@ -25,8 +30,8 @@ pub(in crate::app) enum AddressedSession {
     },
 }
 
-/// The conversation generation authenticated before a frame waits for its
-/// mutation lock. Never resolve it again after crossing an async boundary.
+/// The conversation generation authenticated before a writer frame waits for
+/// its mutation lock. Never retarget it after crossing an async boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::app) struct McpConversationGeneration {
     pub entity_id: String,
@@ -46,20 +51,43 @@ impl McpConversationGeneration {
 /// gets a name of its own rather than borrowing one from the wire.
 pub(in crate::app) const MCP_CONTROL_METHOD: &str = "mcp.control";
 
-/// How many agents' control frames may be at the app mutex at once.
+/// How many mutation/report frames may enter the control plane's writer lane.
 ///
-/// Every tool call takes the lock, and off the workers nothing else limits how
-/// many wait for it together: a dozen busy agents would stand a dozen deep in
-/// front of every frame the user is waiting on. At this many at a time, the
-/// user's frame waits behind two agents' holds at most; the rest take their
-/// turn on the runtime, asleep, holding no thread.
+/// The remaining writers wait asynchronously instead of parking a dozen
+/// blocking threads at the app mutex. Explicit read adapters bypass these
+/// permits and use the once-captured immutable read service for admission,
+/// query work and final fences, without acquiring the app mutex.
 pub(in crate::app) const CONTROL_FRAMES_AT_THE_LOCK: usize = 2;
 
-/// What every control stream shares: the clock its frames are timed by, and
-/// the turns they take at the app mutex.
+#[cfg(all(test, unix))]
+pub(in crate::app) fn is_independent_read(frame: &Value) -> bool {
+    read_lane::action(frame).is_some()
+}
+
+#[cfg(all(test, unix))]
+pub(in crate::app) fn probe_guarded_mcp_read(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+    before_final: impl FnOnce(),
+) -> (Value, usize) {
+    read_lane::probe_guarded_read(state, frame, before_final)
+}
+
+#[cfg(all(test, unix))]
+pub(in crate::app) fn probe_guarded_mcp_executables(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+) -> (Value, usize) {
+    read_lane::probe_guarded_executables(state, frame)
+}
+
+/// The arrival clock shared by every control stream and the bounded mutation
+/// turns used by writers and completion reports.
 pub(in crate::app) struct ControlPlane {
     clock: Arc<FrameClock>,
     turns: Arc<tokio::sync::Semaphore>,
+    #[cfg(unix)]
+    reads: Arc<read_lane::service::McpReadService>,
     #[cfg(test)]
     at_the_lock: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
@@ -67,9 +95,19 @@ pub(in crate::app) struct ControlPlane {
 }
 
 impl ControlPlane {
-    pub(in crate::app) fn new(clock: Arc<FrameClock>) -> Arc<ControlPlane> {
+    #[cfg(all(test, unix))]
+    pub(in crate::app) fn with_sql_probe(app: &AppState, probe: SqlReadProbe) -> Arc<Self> {
+        let mut plane = Self::new(app);
+        let service = &mut Arc::get_mut(&mut plane).unwrap().reads;
+        Arc::get_mut(service).unwrap().sql_probe = Some(probe);
+        plane
+    }
+
+    pub(in crate::app) fn new(app: &AppState) -> Arc<ControlPlane> {
         Arc::new(ControlPlane {
-            clock,
+            clock: Arc::clone(&app.frame_clock),
+            #[cfg(unix)]
+            reads: read_lane::service::McpReadService::capture(app),
             turns: Arc::new(tokio::sync::Semaphore::new(CONTROL_FRAMES_AT_THE_LOCK)),
             #[cfg(test)]
             at_the_lock: Default::default(),
@@ -78,17 +116,19 @@ impl ControlPlane {
         })
     }
 
-    /// Answer one frame on the blocking pool, once it is this frame's turn.
-    /// The frame is timed from its arrival, so the wait for a turn counts
-    /// against it the way a queued RPC's wait does.
+    /// Route exact supported reads independently; other frames take a writer
+    /// turn. The arrival timer includes permit, pool and app-lock waits.
     #[cfg(unix)]
     async fn answer(self: &Arc<Self>, state: Arc<Mutex<AppState>>, frame: Value) -> Option<Value> {
         let timer = self.clock.frame(MCP_CONTROL_METHOD);
+        if let Some(action) = read_lane::action(&frame) {
+            return Some(read_lane::answer(Arc::clone(&self.reads), frame, action, timer).await);
+        }
         let turn = Turn::take(self, &timer).await;
         answer_off_the_workers(state, frame, timer, turn).await
     }
 
-    /// The most control frames that have been at the lock at once.
+    /// The most writer/report frames admitted to the mutation lane at once.
     #[cfg(test)]
     pub(in crate::app) fn most_at_the_lock(&self) -> usize {
         self.most_at_the_lock
@@ -96,7 +136,7 @@ impl ControlPlane {
     }
 }
 
-/// One control frame's turn at the app mutex.
+/// One mutation/report frame's turn in the bounded writer lane.
 ///
 /// Held while the frame is at the lock, and given back while it waits on the
 /// git it handed back: that git runs with the guard released, and a turn kept
@@ -237,9 +277,11 @@ pub(in crate::app) async fn serve_done_listener(
 ) {
     let plane = {
         let state = Arc::clone(&state);
-        ControlPlane::new(
-            off_the_workers(move || Arc::clone(&state.lock().unwrap().frame_clock)).await,
-        )
+        off_the_workers(move || {
+            let app = state.lock().unwrap();
+            ControlPlane::new(&app)
+        })
+        .await
     };
     let mut accept_backoff =
         crate::backoff::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));
@@ -275,21 +317,30 @@ pub(in crate::app) async fn handle_done_stream(
         let Ok(frame) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        #[cfg(test)]
+        let tool = read_lane::action(&frame).map(|action| action.tool_name());
         if let Some(response) = plane.answer(Arc::clone(&state), frame).await {
-            let _ = write_half.write_all(response.to_string().as_bytes()).await;
+            #[cfg(test)]
+            let serialized = match tool {
+                Some(tool) => plane
+                    .clock
+                    .sample_serialization(tool, || response.to_string()),
+                None => response.to_string(),
+            };
+            #[cfg(not(test))]
+            let serialized = response.to_string();
+            let _ = write_half.write_all(serialized.as_bytes()).await;
             let _ = write_half.write_all(b"\n").await;
             let _ = write_half.flush().await;
         }
     }
 }
 
-/// Answer one control frame on the blocking pool.
+/// Answer one writer/report frame on the blocking pool after permit admission.
 ///
-/// Every tool call takes the app mutex, some of them for as long as the
-/// tracker takes to read, and a harness waiting on its answer must not park a
-/// runtime worker behind whichever frame holds the lock. The frame's own awaits
-/// — the git it hands back, run with the guard released — are driven from the
-/// same blocking thread.
+/// App-lock waits and synchronous writer work must not park a runtime worker.
+/// The frame's deferred awaits, including Git work with the guard released,
+/// are driven from the same blocking thread. Supported reads use read_lane.
 #[cfg(unix)]
 async fn answer_off_the_workers(
     state: Arc<Mutex<AppState>>,
@@ -314,6 +365,13 @@ pub(in crate::app) async fn handle_authenticated_mcp_frame(
     timer: &FrameTimer,
     turn: &mut Turn,
 ) -> Option<Value> {
+    #[cfg(test)]
+    timer.sample_tool(
+        serde_json::from_value::<BridgeAction>(frame["request"].clone())
+            .as_ref()
+            .map(BridgeAction::tool_name)
+            .unwrap_or("done"),
+    );
     let admission = timer.lock(state).update_admission();
     let _lease = match admission {
         Some(gate) => match gate.try_enter() {
@@ -424,7 +482,12 @@ fn parse_action_request(frame: &Value) -> Result<BridgeAction, String> {
 
 pub(in crate::app) fn mcp_action_response(result: Result<Value, String>) -> Value {
     match result {
-        Ok(result) => json!({ "ok": true, "result": result }),
+        Ok(result) => {
+            let mut response = serde_json::Map::new();
+            response.insert("ok".into(), Value::Bool(true));
+            response.insert("result".into(), result);
+            Value::Object(response)
+        }
         Err(error) => match crate::api::v1::reviews::errors::decode(&error) {
             Some(error) => {
                 let mut response = error.into_reply(Value::Null);
@@ -771,13 +834,14 @@ impl AppState {
         if let BridgeAction::MessageAgent {
             agent_id: target,
             body,
+            attachments,
         } = &action
         {
             let sender = crate::app::AgentSender {
                 entity_id,
                 agent_id,
             };
-            return self.agent_message_agent(sender, target, body);
+            return self.agent_message_agent(sender, target, body, attachments);
         }
         // The task tracker, before the per-surface tables: it is the one
         // family both working surfaces carry, so it is answered in one place
@@ -813,6 +877,15 @@ impl AppState {
         if let BridgeAction::SetName { name } = &action {
             return self.set_agent_name(entity_id, agent_id, name);
         }
+        let attachments = if let BridgeAction::PostThreadMessage {
+            body, attachments, ..
+        } = &action
+        {
+            crate::app::conversations::validate_agent_message_body(body)?;
+            self.take_in_agent_message_files(entity_id, agent_id, attachments)?
+        } else {
+            Vec::new()
+        };
         let posted_still_working = match &action {
             BridgeAction::PostThreadMessage { still_working, .. } => Some(*still_working),
             _ => None,
@@ -822,7 +895,7 @@ impl AppState {
         // `edit_agent_conversation`'s.
         let now = now_rfc3339();
         let result = self.edit_agent_conversation(entity_id, agent_id, |thread, _| {
-            apply_thread_action(thread, action, &now)
+            apply_thread_action(thread, action, attachments, &now)
         });
         if result.is_ok() {
             match posted_still_working {

@@ -17,6 +17,12 @@
     "params": ["offset", "length"],
     "fields": ["offset"]
   },
+  "agent_file_reads": {
+    "since": "3.23.0",
+    "max_file_bytes": 52428800,
+    "max_response_bytes": 5242880,
+    "note": "The default response is also bounded; size remains the full file size. Ranged readers continue from offset plus decoded bytes."
+  },
   "examples": [
     {
       "params": {

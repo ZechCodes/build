@@ -550,7 +550,7 @@ describe("attachments on the record", () => {
     const path = ".build/attachments/clip.mp4";
     const state = createThreadState();
     document.body.innerHTML = threadHtml(withAttachments([{ name: "clip.mp4", path, mime: "video/mp4", size: 4 }]), { threadState: state });
-    const call = vi.fn(async (_method, params) => ({ mime: "video/mp4", size: 4,
+    const call = vi.fn(async (_method, params) => ({ mime: "video/mp4", size: 4, offset: params.offset,
       content_b64: params.offset ? "Y2Q=" : "YWI=" }));
     wireThreadAttachments(document.body, (name) => fetchThreadAttachment(call, "entity-1", name, true), state);
     document.querySelector(".thread-attachment-preview").click();

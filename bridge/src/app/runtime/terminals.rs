@@ -1,8 +1,8 @@
 use crate::api::clients::DeclaredClient;
 use crate::api::API_VERSION;
 use crate::app::{
-    capture_conversation_names, err, off_the_workers, record_idle_in_thread, require_str,
-    spawn_tab_pumps, AppState, HarnessExit, IdleObservation, LifecycleDiagnostic, Tab, TabKey,
+    capture_conversation_names, err, off_the_workers, record_idle_in_thread, require_str, AppState,
+    HarnessExit, IdleObservation, TabKey,
 };
 use crate::carrier::SessionSender;
 use crate::changes::{Kind, ANNOUNCED_EVENTS, MAX_BATCH_MS, MIN_BATCH_MS};
@@ -10,13 +10,16 @@ use crate::encoding::b64decode;
 use crate::models::AgentProvider;
 use crate::pty::HarnessSpec;
 use crate::screen::{AttachSnapshot, TerminalHandle};
-use crate::thread::SessionInstance;
 use crate::timing::FrameTimer;
 use portable_pty::PtySize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+mod cleanup;
+mod create;
+mod create_scope;
+mod holds;
 mod scope;
 
 use scope::resolve_terminal_scope;
@@ -146,9 +149,15 @@ pub(in crate::app) fn session_hello(
     // The client record happens with the app mutex released — it takes its
     // own leaf lock, and nothing in this daemon may nest one lock inside
     // another it did not have to.
-    let (changes, qa_agent) = {
+    let (changes, qa_agent, journal_incarnation) = {
         let app = timer.lock(state);
-        (app.changes(), app.qa_agent)
+        (
+            app.changes(),
+            app.qa_agent,
+            app.store
+                .as_ref()
+                .map(|store| store.journal_incarnation().to_owned()),
+        )
     };
     {
         let mut app = timer.lock(state);
@@ -162,7 +171,10 @@ pub(in crate::app) fn session_hello(
     );
     Ok(json!({
         "api_version": API_VERSION,
+        "bridge_epoch": sender.bridge_epoch(),
+        "journal_incarnation": journal_incarnation,
         "capabilities": crate::api::capabilities(qa_agent),
+        "ack_confirm_methods": crate::api::writes::ACK_CONFIRM_METHODS,
         "push_events": true,
         "events": ANNOUNCED_EVENTS,
         "coalesce_window_ms": changes.window().as_millis() as u64,
@@ -220,53 +232,7 @@ pub(in crate::app) fn term_create(
     params: &Value,
     timer: &FrameTimer,
 ) -> Result<Value, String> {
-    let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
-    let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
-    require_shell_kind(params)?;
-
-    let (key, pumps) = {
-        let mut s = timer.lock(state);
-        // RPC admission can precede deletion's retirement collection. Recheck
-        // under the spawn guard so a shell cannot appear after that collection.
-        if s.project_deletion_in_progress {
-            return Err(crate::app::rpc::PROJECT_DELETION_IN_PROGRESS.into());
-        }
-        let scope = resolve_terminal_scope(&mut s, params)?;
-        let root = scope.root;
-        s.refuse_source_shell_start_at(&root)?;
-        s.refuse_writers_while_reserved(&root)?;
-        // The cap counts the human's shells and never an agent: sixteen open
-        // terminals must not be able to crowd a worktree's agent out of a
-        // registry they now share.
-        if s.shell_tab_count() >= MAX_USER_TERMINALS {
-            return Err(format!(
-                "terminal limit reached ({MAX_USER_TERMINALS} open terminals) — close one first"
-            ));
-        }
-        let tab_id = s.session_registry.next_terminal_id();
-        let shell = s.term_shell.clone();
-        let key = TabKey {
-            root: root.clone(),
-            tab_id: tab_id.clone(),
-        };
-        let (mut tab, rx) = Tab::spawn_shell(
-            &shell_harness_spec(&shell),
-            tab_id,
-            root,
-            terminal_size(cols, rows),
-        )?;
-        tab.project_source = scope.source;
-        let pumps = s.session_registry.insert_shell(key.clone(), tab, rx);
-        s.note_terminals_at(&key.root);
-        (key, pumps)
-    };
-    spawn_tab_pumps(state, key.clone(), pumps);
-    Ok(json!({
-        "term_id": key.tab_id,
-        "kind": SHELL_TAB_KIND,
-        "cols": cols,
-        "rows": rows,
-    }))
+    create::create(state, params, timer)
 }
 
 /// Attach this client to a tab by its wire id — `term-<n>` or
@@ -465,27 +431,7 @@ impl AppState {
     /// The same rows, for a root already resolved: what `term.list` answers
     /// with, and what a `terminals` push item carries.
     pub(in crate::app) fn shell_tabs_for(&self, scope: &TerminalScope) -> Vec<Value> {
-        let mut terminals: Vec<(u64, Value)> = self
-            .session_registry
-            .shell_tabs_at(&scope.root)
-            .into_iter()
-            .filter(|tab| scope.accepts(tab.project_source.as_ref()))
-            .filter_map(|tab| {
-                let (cols, rows) = tab.size?;
-                Some((
-                    term_id_suffix(&tab.key.tab_id),
-                    json!({
-                        "term_id": tab.tab_id,
-                        "kind": SHELL_TAB_KIND,
-                        "cols": cols,
-                        "rows": rows,
-                        "created_at": tab.created_at,
-                    }),
-                ))
-            })
-            .collect();
-        terminals.sort_by_key(|(suffix, _)| *suffix);
-        terminals.into_iter().map(|(_, entry)| entry).collect()
+        shell_tab_rows(&self.session_registry.shell_tabs(), scope)
     }
 
     /// Close a user terminal: remove it, kill AND reap its shell (the existing
@@ -535,92 +481,6 @@ impl AppState {
         }
     }
 
-    /// Close every tab whose worktree is gone from disk (spec §2.6.3), killing
-    /// AND reaping each one, and tell every attached client. Returns the closed
-    /// wire ids. Called at the tail of `finish_mutation` (prompt closure right
-    /// after abandon/delete/merge-prune) and by the periodic reaper loop
-    /// (out-of-band disappearance, e.g. a user `rm -rf`ing a worktree).
-    ///
-    /// A tab lives as long as the WORKTREE it is rooted in — not as long as the
-    /// entity that happens to own it. That is one rule for shells and agents
-    /// alike, and it is the right one for both: a merged run kept with
-    /// `cleanup=keep` keeps its directory and everything open in it, and
-    /// releasing or deleting an adopted run leaves the human's worktree exactly
-    /// where it was. The two verbs that remove a run while keeping its worktree
-    /// close Build's agent themselves ([`AppState::retire_agent_tabs`]), because
-    /// an agent whose owner is gone reports `done` into the unknown-entity log
-    /// forever.
-    pub(in crate::app) fn reap_orphaned_terminals(&mut self) -> Vec<String> {
-        let vanished: Vec<TabKey> = self
-            .session_registry
-            .tab_keys()
-            .into_iter()
-            .filter(|key| !key.root.exists())
-            .collect();
-        let mut reaped = Vec::new();
-        let mut killed_agents: Vec<SessionInstance> = Vec::new();
-        for key in vanished {
-            let provider = self.session_registry.agent_snapshot(&key).and_then(|tab| {
-                tab.role
-                    .agent()
-                    .map(|(owner, agent)| (owner.to_string(), agent.to_string()))
-            });
-            let provider_thread_id = provider
-                .as_ref()
-                .and_then(|(owner, agent)| self.recorded_resume_id(owner, agent));
-            let shell = self.session_registry.tab_is_shell(&key);
-            let Some(retired) = self.session_registry.retire_tab(
-                &key,
-                "reaped",
-                LifecycleDiagnostic {
-                    event: "shutdown_requested",
-                    origin: "tab_retirement",
-                    reason: Some("reaped"),
-                    operation_id: None,
-                    provider_thread_id: provider_thread_id.as_deref(),
-                    caller: Some(std::panic::Location::caller()),
-                },
-            ) else {
-                continue;
-            };
-            if let Some(instance) = retired.instance {
-                killed_agents.push(instance);
-            }
-            if shell {
-                self.note_terminals_at(&key.root);
-            }
-            reaped.push(retired.wire_id);
-        }
-        // The kill above is one the pump can never report: the tab left the
-        // registry before the process died, so the pump's EOF finds no tab and
-        // records nothing. This is the one teardown where the OWNER may stay on
-        // the board (a worktree deleted by hand out from under a live run) — so
-        // the session lineage and any turn the dead agent was holding close
-        // here, or the row reads as working forever. Owners that left the board
-        // in the same mutation (delete, merge-prune) make this a quiet no-op,
-        // and abandon already closed its own. The loop runs after every removal
-        // above so the nested reap inside `finish_run_mutation` finds nothing
-        // left to take.
-        for instance in killed_agents {
-            self.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
-        }
-        // The screens waiting for a first spawn go the same way: a worktree
-        // that is gone will never host the agent their clients are watching
-        // for, and a screen nothing can ever paint is not one to keep.
-        let orphaned: Vec<TabKey> = self
-            .session_registry
-            .waiting_screen_keys()
-            .into_iter()
-            .filter(|key| !key.root.exists())
-            .collect();
-        for key in orphaned {
-            if let Some(wire_id) = self.session_registry.remove_waiting_screen(&key, "reaped") {
-                reaped.push(wire_id);
-            }
-        }
-        reaped
-    }
-
     /// Periodically close tabs whose worktree vanished out-of-band (nothing
     /// went through `finish_*_mutation` — e.g. the user deleted a worktree by
     /// hand). Runs beside `spawn_idle_monitor`.
@@ -629,9 +489,7 @@ impl AppState {
             loop {
                 tokio::time::sleep(interval).await;
                 let reaping = Arc::clone(&state);
-                let reaped =
-                    off_the_workers(move || reaping.lock().unwrap().reap_orphaned_terminals())
-                        .await;
+                let reaped = off_the_workers(move || Self::reap_orphaned_terminals(&reaping)).await;
                 for term_id in reaped {
                     eprintln!("terminal reaper: closed {term_id} (worktree gone)");
                 }
@@ -822,4 +680,32 @@ impl AppState {
         // harness's transcript tree, which is a filesystem read.
         capture_conversation_names(state);
     }
+}
+
+/// One rendering for live registry facts and independently published facts.
+/// Screen handles preserve the latest resize without retaining a session.
+pub(in crate::app) fn shell_tab_rows(
+    tabs: &[crate::app::runtime::sessions::ShellTabFact],
+    scope: &TerminalScope,
+) -> Vec<Value> {
+    let mut terminals: Vec<(u64, Value)> = tabs
+        .iter()
+        .filter(|tab| tab.key.root == scope.root)
+        .filter(|tab| scope.accepts(tab.project_source.as_ref()))
+        .filter_map(|tab| {
+            let (cols, rows) = tab.screen.as_ref()?.size();
+            Some((
+                term_id_suffix(&tab.key.tab_id),
+                json!({
+                    "term_id": tab.tab_id,
+                    "kind": SHELL_TAB_KIND,
+                    "cols": cols,
+                    "rows": rows,
+                    "created_at": tab.created_at,
+                }),
+            ))
+        })
+        .collect();
+    terminals.sort_by_key(|(suffix, _)| *suffix);
+    terminals.into_iter().map(|(_, entry)| entry).collect()
 }

@@ -5,7 +5,11 @@
 
 use super::*;
 
+mod global_publication;
+mod incremental_parity;
 mod projection_ownership;
+mod read_identity_work;
+mod workspace_summaries;
 
 fn conversation_run(state: &mut AppState, workspace_id: &str) -> String {
     let conversation = state.handle(req(
@@ -145,13 +149,28 @@ fn snapshot_publication_counts_cached_ownership_lookups() {
     add_tip_agents(&mut state, 1);
     state.initialize_snapshot_projection();
     let before = state.read_view.load().facts_version;
-    let (_, comparisons) =
-        crate::app::workspaces::count_path_comparisons(|| state.publish_snapshot_projection());
+    let (_, work) =
+        crate::workspace::read_work_counts::measure(|| state.publish_snapshot_projection());
     assert!(state.read_view.load().facts_version > before);
     assert!(
-        comparisons > 0,
-        "the path comparison counter did not cover warmed snapshot publication"
+        work.observed_roots > 0,
+        "the input root counter did not cover warmed snapshot publication"
     );
+}
+
+#[test]
+fn task_identity_publication_reuses_observed_paths() {
+    for shared_root in [false, true] {
+        let (_tmp, mut state, _) = ownership_fixture(16, shared_root);
+        add_tip_agents(&mut state, 4);
+        state.initialize_snapshot_projection();
+        let (_, canonicalizations) =
+            crate::app::workspaces::count_path_canonicalizations(|| state.task_read_context());
+        assert_eq!(
+            canonicalizations, 0,
+            "task identity publication probed warmed paths (shared_root={shared_root})"
+        );
+    }
 }
 
 /// Ownership work belongs to the publication producer, while the immutable

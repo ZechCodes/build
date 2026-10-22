@@ -15,8 +15,7 @@ fn admitted_frame(
     token: &str,
     payload: Value,
 ) -> (Value, AddressedSession) {
-    app.session_registry
-        .test_install_token(agent.into(), token.into());
+    app.test_install_mcp_token(agent.into(), token.into());
     let mut frame = json!({ "task_id": agent, "session_token": token });
     frame
         .as_object_mut()
@@ -51,7 +50,7 @@ async fn finish_admitted_frame(
 ) -> (Arc<Mutex<AppState>>, Option<Value>) {
     let state = Arc::new(Mutex::new(app));
     let clock = Arc::clone(&state.lock().unwrap().frame_clock);
-    let plane = ControlPlane::new(Arc::clone(&clock));
+    let plane = ControlPlane::new(&state.lock().unwrap());
     let timer = clock.frame(MCP_CONTROL_METHOD);
     let mut turn = Turn::take(&plane, &timer).await;
     let AddressedSession::Coding(generation) = endpoint else {
@@ -102,6 +101,7 @@ async fn mcp_generation_rejects_message_agent_authenticated_before_clear() {
         .unwrap()
         .to_string();
     let action = BridgeAction::MessageAgent {
+        attachments: Vec::new(),
         agent_id: target.clone(),
         body: "old private outbound answer".into(),
     };
@@ -174,6 +174,7 @@ async fn mcp_generation_accepts_the_fresh_endpoint_after_clear() {
     let agent = primary_agent_id(&app, &owner);
     clear_agent(&mut app, &owner, &agent);
     let action = BridgeAction::PostThreadMessage {
+        attachments: Vec::new(),
         body: "fresh answer".into(),
         still_working: false,
         options: Vec::new(),

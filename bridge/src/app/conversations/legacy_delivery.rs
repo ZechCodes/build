@@ -1,8 +1,42 @@
 //! Native delivery for reviewer messages posted through the legacy API.
 
-use super::AppState;
+use super::{AppState, ConversationAddress};
 use crate::operation::OperationPayload;
 use crate::thread::{MessageDeliveryStatus, Thread, ThreadItem, ThreadMessage};
+
+/// Local admission identity for the provider handoff. Payloads and legacy
+/// receipt tokens keep their wire shape; this identity never crosses the wire.
+pub(in crate::app) struct FrozenLegacyDelivery {
+    address: ConversationAddress,
+    pub(in crate::app) thread_id: String,
+    pub(in crate::app) generation_revision: u64,
+    pub(in crate::app) payload: OperationPayload,
+}
+
+impl FrozenLegacyDelivery {
+    fn is_current(&self, app: &AppState, owner: &str, agent: &str) -> bool {
+        let Ok(address) = app.resolve_conversation_address(owner, Some(agent)) else {
+            return false;
+        };
+        address == self.address
+            && app.conversation_at(&address).is_ok_and(|thread| {
+                thread.id == self.thread_id
+                    && thread.generation_revision == self.generation_revision
+            })
+    }
+
+    fn apply_status(&self, thread: &mut Thread, status: MessageDeliveryStatus) {
+        for message in &self.payload.messages {
+            let matches = thread.items.iter().any(|item| {
+                matches!(item, ThreadItem::Message(current)
+                    if current.id == message.id && current.sequence == message.sequence)
+            });
+            if matches {
+                thread.set_legacy_delivery_status(message.sequence, message.sequence, status);
+            }
+        }
+    }
+}
 
 impl AppState {
     /// Apply an internal native-session receipt for an operationless turn.
@@ -65,6 +99,7 @@ impl AppState {
     /// Freeze every pending legacy reviewer message from the complete durable
     /// conversation. The returned bounds are also the receipt used to mark the
     /// same messages after the provider accepts the prompt.
+    #[cfg(test)]
     pub(in crate::app) fn legacy_delivery_payload(
         &self,
         owner_id: &str,
@@ -72,6 +107,33 @@ impl AppState {
     ) -> Result<Option<OperationPayload>, String> {
         let address = self.resolve_conversation_address(owner_id, Some(agent_id))?;
         let thread = self.conversation_at(&address)?;
+        self.legacy_payload_at(owner_id, thread)
+    }
+
+    /// Capture the canonical generation with the pending input while the app
+    /// is held. Every handoff callback retains this same admission identity.
+    pub(in crate::app) fn freeze_legacy_delivery(
+        &self,
+        owner_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<FrozenLegacyDelivery>, String> {
+        let address = self.resolve_conversation_address(owner_id, Some(agent_id))?;
+        let thread = self.conversation_at(&address)?;
+        Ok(self
+            .legacy_payload_at(owner_id, thread)?
+            .map(|payload| FrozenLegacyDelivery {
+                address,
+                thread_id: thread.id.clone(),
+                generation_revision: thread.generation_revision,
+                payload,
+            }))
+    }
+
+    fn legacy_payload_at(
+        &self,
+        owner_id: &str,
+        thread: &Thread,
+    ) -> Result<Option<OperationPayload>, String> {
         let messages = self.waiting_legacy_messages(thread)?;
         let Some(first) = messages.first() else {
             return Ok(None);
@@ -115,37 +177,47 @@ impl AppState {
             .map_err(|error| format!("conversation store: {error}"))
     }
 
-    /// Record provider acceptance for the exact legacy message range rendered
-    /// into a prompt, including messages outside the resident thread window.
+    /// Record one provider transition for the frozen sparse message set,
+    /// including rows outside the resident tail. Stale callbacks leave the
+    /// replacement history unchanged.
     pub(in crate::app) fn record_legacy_delivery_status(
         &mut self,
         owner_id: &str,
         agent_id: &str,
-        payload: &OperationPayload,
+        frozen: &FrozenLegacyDelivery,
         status: MessageDeliveryStatus,
     ) -> Result<(), String> {
-        let address = self.resolve_conversation_address(owner_id, Some(agent_id))?;
-        if !payload.messages.is_empty() {
-            for message in &payload.messages {
-                self.record_legacy_delivery_range(
-                    owner_id,
-                    agent_id,
-                    &address.conversation_id,
-                    message.sequence,
-                    message.sequence,
-                    status,
-                )?;
-            }
+        if frozen.payload.messages.is_empty() || !frozen.is_current(self, owner_id, agent_id) {
             return Ok(());
         }
-        self.record_legacy_delivery_range(
-            owner_id,
-            agent_id,
-            &address.conversation_id,
-            payload.start_sequence,
-            payload.end_sequence,
-            status,
-        )
+        let payload = &frozen.payload;
+        let committed = match &self.store {
+            Some(store) => {
+                let committed = store
+                    .set_frozen_legacy_delivery_status(
+                        &frozen.address.conversation_id,
+                        &frozen.thread_id,
+                        frozen.generation_revision,
+                        &payload.messages,
+                        status,
+                    )
+                    .map_err(|error| format!("legacy message store: {error}"))?;
+                let Some(committed) = committed else {
+                    return Ok(());
+                };
+                self.apply_committed_thread_items(&committed);
+                Some(committed)
+            }
+            None => None,
+        };
+        self.edit_agent_conversation(owner_id, agent_id, |thread, _| {
+            frozen.apply_status(thread, status);
+            if let Some(committed) = committed {
+                thread.advance_sequence_to(committed.sequence);
+            }
+            Ok(serde_json::Value::Null)
+        })?;
+        Ok(())
     }
 
     fn record_legacy_delivery_range(

@@ -242,7 +242,7 @@ impl BrowserChannel {
                 // The receipt says the device holds the request, not what it
                 // answers — the browser reads it the same way, as proof of
                 // delivery that leaves the call waiting.
-                if payload.get("accepted").is_some() {
+                if payload["id"] != json!(id) || payload.get("accepted").is_some() {
                     continue;
                 }
                 return payload;

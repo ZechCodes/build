@@ -5,21 +5,27 @@ use super::read_view::{ReadView, SnapshotDelta};
 use super::workspaces::ProjectionOwnership;
 use super::{AppState, ProjectListRow};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+pub(in crate::app) use workspace_reviews::{WorkspaceReviewObservation, WorkspaceReviewReader};
 
 #[derive(Default)]
 pub(in crate::app) struct SnapshotObservations {
     ready: bool,
+    plan_docs: BTreeMap<String, plan_docs::PlanDocObservation>,
+    pub(in crate::app) observation_owners: crate::observation_changes::ChangeKeys,
+    pub(in crate::app) observation_reservations: crate::observation_changes::ChangeKeys,
     pending_owners: Mutex<BTreeSet<String>>,
+    deferred_attention_notices: crate::observation_changes::ChangeKeys,
     ownership: Mutex<Option<Arc<ProjectionOwnership>>>,
     paths: BTreeMap<PathBuf, PathBuf>,
     existing_paths: BTreeSet<PathBuf>,
     branches: BTreeMap<String, String>,
-    watched_tasks: Mutex<BTreeMap<String, Vec<Value>>>,
+    watched_tasks: Mutex<BTreeMap<String, Vec<Arc<Value>>>>,
     projects: Mutex<BTreeMap<String, ProjectObservation>>,
-    workspace_reviews: BTreeMap<String, Value>,
+    workspace_reviews: BTreeMap<String, WorkspaceReviewObservation>,
 }
 
 pub(in crate::app) struct ProjectObservation {
@@ -76,10 +82,13 @@ impl AppState {
             .map(|row| (row.project_id.clone(), row.render()))
             .collect();
         self.install_project_snapshot_observations(observed);
-        self.refresh_snapshot_observations();
+        let reviews = self.refresh_snapshot_observations().load();
+        self.install_workspace_review_refresh(reviews);
         self.refresh_snapshot_task_observations().expect(
             "initial watched-task observations must be authoritative before snapshot admission",
         );
+        self.initialize_native_snapshots();
+        self.initialize_stream_snapshots();
         let histories = self
             .prepare_snapshot_histories(SnapshotDelta::new(self.read_view.next_version()), None);
         self.read_view.publish_delta(histories);
@@ -107,6 +116,32 @@ impl AppState {
             .unwrap()
             .clone();
         let delta = self.prepare_snapshot_owner_rows(delta, &previous, &owners, false);
+        self.publish_prepared_snapshot_projection(delta);
+    }
+
+    /// A committed task observation changes the watched-task rows. Keep the
+    /// usual publication barrier and fall back when other owners are pending.
+    pub(in crate::app) fn publish_task_snapshot_projection(&self) {
+        if !self.can_publish_snapshot_projection() {
+            return;
+        }
+        let owners_pending = !self
+            .snapshot_observations
+            .pending_owners
+            .lock()
+            .unwrap()
+            .is_empty();
+        let _ownership = self.begin_snapshot_ownership();
+        let previous = self.read_view.load();
+        let delta = if owners_pending {
+            None
+        } else {
+            self.prepare_incremental_task_snapshot(
+                SnapshotDelta::new(self.read_view.next_version()),
+                &previous,
+            )
+        }
+        .unwrap_or_else(|| self.prepare_fallback_snapshot_projection(&previous));
         self.publish_prepared_snapshot_projection(delta);
     }
 
@@ -176,6 +211,33 @@ impl AppState {
         }
     }
 
+    /// Keep every named alias pending before a deferred human attention stamp
+    /// can unwind or be folded into a later ordinary owner publication.
+    pub(in crate::app) fn mark_post_attention_snapshot_owner_pending(&self, owner: &str) {
+        if !self.snapshot_projection_initialized() {
+            return;
+        }
+        self.mark_observation_owner_changed(owner);
+        for affected in self.snapshot_affected_owner_ids(owner) {
+            self.mark_snapshot_owner_pending(&affected);
+        }
+    }
+
+    /// Flush all RPC post-stamp dependencies in one ordinary owner delta.
+    /// The normal publisher still enforces borrowed-owner and stale barriers.
+    pub(in crate::app) fn publish_post_attention_snapshot_projection(
+        &self,
+        owners: &BTreeSet<String>,
+    ) {
+        let Some(first) = owners.iter().next() else {
+            return;
+        };
+        for owner in owners {
+            self.mark_post_attention_snapshot_owner_pending(owner);
+        }
+        self.publish_owner_snapshot_projection(first);
+    }
+
     pub(in crate::app) fn publish_owner_snapshot_projection(&self, owner: &str) {
         if let Some(delta) = self.prepare_owner_snapshot_projection(owner) {
             self.publish_prepared_snapshot_projection(delta);
@@ -189,6 +251,7 @@ impl AppState {
         if !self.snapshot_observations.ready {
             return None;
         }
+        self.mark_observation_owner_changed(owner);
         self.snapshot_observations
             .pending_owners
             .lock()
@@ -199,27 +262,63 @@ impl AppState {
         }
         let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
-        let delta = self
-            .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), &previous);
         let owners = self
             .snapshot_observations
             .pending_owners
             .lock()
             .unwrap()
             .clone();
-        Some(self.prepare_snapshot_owner_rows(delta, &previous, &owners, true))
+        Some(
+            match self.prepare_incremental_owner_snapshot(
+                SnapshotDelta::new(self.read_view.next_version()),
+                &previous,
+                &owners,
+            ) {
+                Some(delta) => self.prepare_snapshot_owner_rows(delta, &previous, &owners, false),
+                None => self.prepare_fallback_snapshot_projection(&previous),
+            },
+        )
     }
 
-    pub(in crate::app) fn publish_prepared_snapshot_projection(&self, delta: SnapshotDelta) {
-        self.read_view.publish_delta(delta);
-        self.snapshot_observations
-            .pending_owners
-            .lock()
-            .unwrap()
-            .clear();
+    fn prepare_fallback_snapshot_projection(&self, previous: &ReadView) -> SnapshotDelta {
+        // A changed layout can affect a different owner from the trigger,
+        // including one whose session or workspace has just disappeared.
+        let owners = self
+            .snapshot_owner_ids()
+            .into_iter()
+            .chain(
+                previous
+                    .keys()
+                    .filter(|key| key.method == "agent.list")
+                    .map(|key| key.owner.clone()),
+            )
+            .collect();
+        let delta = self
+            .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), previous);
+        let delta = self.prepare_workspace_snapshot_details(delta, previous, None);
+        let delta = self.prepare_snapshot_agent_rows(delta, previous, &owners);
+        self.prepare_snapshot_histories(delta, None)
     }
 
-    fn can_publish_snapshot_projection(&self) -> bool {
+    pub(in crate::app) fn publish_prepared_snapshot_projection(&self, mut delta: SnapshotDelta) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.install");
+        let receipts = delta.take_observation_receipts();
+        let attention_notices = delta.take_attention_notice_receipts();
+        if self.read_view.publish_delta(delta) {
+            if let Some(receipts) = receipts {
+                receipts.acknowledge(self);
+            }
+            self.snapshot_observations
+                .pending_owners
+                .lock()
+                .unwrap()
+                .clear();
+            self.publish_attention_notice_receipts(&attention_notices);
+        }
+    }
+
+    pub(in crate::app) fn can_publish_snapshot_projection(&self) -> bool {
         self.snapshot_observations.ready && !self.committed_entities.has_borrowed(self)
     }
 
@@ -254,99 +353,39 @@ impl AppState {
                 Err(_) => delta.remove("agent.list", owner),
             };
         }
-        delta
+        self.prepare_native_owner_snapshots(delta, previous, owners)
     }
 
     pub(in crate::app) fn prepare_global_snapshot(
         &self,
-        mut delta: SnapshotDelta,
+        delta: SnapshotDelta,
         previous: &ReadView,
     ) -> SnapshotDelta {
-        let board = self.board_snapshot();
-        let projects = self.snapshot_project_list();
-        let workspaces = self
-            .workspace_list_snapshot(&json!({}))
-            .unwrap_or_else(|error| {
-                eprintln!("workspace snapshot: {error}");
-                previous
-                    .get("workspace.list", "")
-                    .cloned()
-                    .expect("workspace observations warmed before publication")
-            });
-        let lists = json!({"projects": projects["projects"], "workspaces": snapshot_push_workspace_rows(&workspaces["workspaces"], &board["workspace_summaries"]), "usage_limits": board["usage_limits"]});
-        delta = put_changed(delta, previous, "board.list", "", board);
-        delta = put_changed(delta, previous, "project.list", "", projects);
-        delta = put_changed(delta, previous, "workspace.list", "", workspaces.clone());
-        delta = self.prepare_workspace_lists(delta, previous, &workspaces);
-        delta = put_changed(
-            delta,
-            previous,
-            "settings.get",
-            "",
-            self.settings_get_observed(self.snapshot_account_availability()),
-        );
-        delta = put_changed(
-            delta,
-            previous,
-            "models.list",
-            "",
-            self.models_list_snapshot(),
-        );
-        delta.set_facts(Arc::new(self.push_facts_snapshot(lists)))
-    }
-
-    fn prepare_workspace_lists(
-        &self,
-        mut delta: SnapshotDelta,
-        previous: &ReadView,
-        workspaces: &Value,
-    ) -> SnapshotDelta {
-        let projects = self
-            .projects
-            .iter()
-            .map(|project| project.id.as_str())
-            .collect::<BTreeSet<_>>();
-        for key in previous
-            .keys()
-            .filter(|key| key.method == "workspace.list" && !key.owner.is_empty())
-        {
-            if !projects.contains(key.owner.as_str()) {
-                delta = delta.remove(key.method, key.owner.clone());
-            }
-        }
-        for project in projects {
-            let rows = workspaces["workspaces"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|workspace| workspace["project_id"] == project)
-                .cloned()
-                .collect::<Vec<_>>();
-            delta = put_changed(
-                delta,
-                previous,
-                "workspace.list",
-                project,
-                json!({"workspaces": rows}),
-            );
-        }
-        delta
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.global");
+        self.prepare_full_global_snapshot(delta, previous)
     }
 }
 
+#[cfg(test)]
 fn snapshot_push_workspace_rows(workspaces: &Value, summaries: &Value) -> Value {
+    let mut by_workspace = HashMap::new();
+    for summary in summaries.as_array().into_iter().flatten() {
+        #[cfg(test)]
+        summary_counts::join_visit();
+        // The old search selected the first equal id, including missing/null
+        // and legacy non-string ids. Keep Value equality for every input.
+        by_workspace
+            .entry(&summary["workspace_id"])
+            .or_insert(summary);
+    }
     let rows = workspaces
         .as_array()
         .into_iter()
         .flatten()
         .map(|workspace| {
             let mut workspace = workspace.clone();
-            if let Some(summary) = summaries
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|summary| summary["workspace_id"] == workspace["workspace_id"])
-            {
+            if let Some(summary) = by_workspace.get(&workspace["workspace_id"]) {
                 for key in ["work_summary", "can_finish", "finish_blockers"] {
                     workspace[key] = summary[key].clone();
                 }
@@ -354,7 +393,7 @@ fn snapshot_push_workspace_rows(workspaces: &Value, summaries: &Value) -> Value 
             workspace
         })
         .collect::<Vec<_>>();
-    json!(rows)
+    Value::Array(rows)
 }
 
 fn put_changed(
@@ -364,18 +403,32 @@ fn put_changed(
     owner: &str,
     value: Value,
 ) -> SnapshotDelta {
-    if previous.get(method, owner) == Some(&value) {
+    if previous
+        .get_shared(method, owner)
+        .is_some_and(|previous| previous.equals_value(&value))
+    {
         delta
     } else {
         delta.put(method, owner, value)
     }
 }
 
+mod attention_notices;
 mod history;
+pub(in crate::app) mod incremental;
 mod maintenance;
+mod native_reads;
 mod observations;
 mod ownership;
+mod plan_docs;
 mod projects;
+mod workspace_reviews;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(in crate::app) mod work_counts;
+
+#[cfg(test)]
+pub(in crate::app) mod summary_counts;

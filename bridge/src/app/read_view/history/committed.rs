@@ -1,12 +1,16 @@
 //! Separately committed historical row edits share the same immutable root as
 //! their existing digest rows and bounded push tails.
-use super::{insert, patch_thread_digests, SharedHistory};
+use super::{insert, SharedHistory};
+use crate::app::read_view::shared_json::DigestPatch;
 use crate::app::read_view::SnapshotDelta;
 use crate::app::AppState;
 use crate::store::CommittedThreadItems;
 use crate::thread::Thread;
 use serde_json::{json, Value};
 use std::sync::Arc;
+
+#[cfg(test)]
+mod tests;
 
 impl SharedHistory {
     pub fn with_committed_items(&self, delta: &CommittedThreadItems) -> Option<Self> {
@@ -34,6 +38,22 @@ impl SharedHistory {
     fn matches(&self, thread: &Thread) -> bool {
         self.thread_id == thread.id && self.generation == thread.generation_revision
     }
+
+    /// Only a message-page failure may use the already accepted resident
+    /// rows. A stale projection from before reset cannot supply that fallback.
+    pub(in crate::app) fn resident_fallback_items(
+        &self,
+        thread: &Thread,
+        floor: u64,
+    ) -> Option<Vec<crate::thread::ThreadItem>> {
+        self.matches(thread).then(|| {
+            self.items()
+                .into_iter()
+                .filter(|item| item.sequence() >= floor)
+                .cloned()
+                .collect()
+        })
+    }
 }
 
 impl AppState {
@@ -43,6 +63,8 @@ impl AppState {
         &mut self,
         committed: &CommittedThreadItems,
     ) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.committed");
         self.committed_entities.apply_thread_items(committed);
         for agents in self
             .plans
@@ -58,16 +80,30 @@ impl AppState {
             let history = previous
                 .history(&committed.conversation_id)?
                 .with_committed_items(committed)?;
+            let mut patch = DigestPatch::new(
+                &committed.thread_id,
+                committed.generation_revision,
+                committed.sequence,
+            );
             let mut facts = previous.facts.as_ref().clone();
-            facts.apply_committed_history_delta(committed);
+            facts.apply_committed_history_delta_with_patch(committed, &mut patch);
             let mut delta = SnapshotDelta::new(version)
                 .put_history(&committed.conversation_id, history)
                 .set_facts(Arc::new(facts));
+            #[cfg(test)]
+            let _phase = crate::timing::phase_samples::phase("publication.committed.chunks");
             for key in previous.keys() {
-                let mut row = previous.get(key.method, &key.owner)?.clone();
-                if patch_thread_digests(&mut row, committed) {
-                    delta = delta.put(key.method, &key.owner, row);
+                let row = previous.get_shared(key.method, &key.owner)?;
+                if let Some(row) = patch.apply(row) {
+                    #[cfg(test)]
+                    tests::record_chunk_copy();
+                    delta = delta.put_shared(key.method, &key.owner, row);
                 }
+            }
+            if let Some(global) = &previous.global {
+                let next = global
+                    .patch_shared(&mut |value| patch.apply(value).unwrap_or_else(|| value.clone()));
+                delta = delta.set_global(Arc::new(next));
             }
             Some(delta)
         });

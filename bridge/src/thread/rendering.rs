@@ -121,6 +121,16 @@ impl Thread {
     pub fn catch_up_markdown(&self, limit: usize) -> String {
         catch_up_lines(self.items.iter(), limit, None)
     }
+
+    /// A transcript whose messages have already been selected by a reader.
+    /// SQL metadata carries no resident tail, so its floor must not filter
+    /// the supplied rows before the common formatter sees them.
+    pub(crate) fn catch_up_markdown_from<'a>(
+        items: impl DoubleEndedIterator<Item = &'a ThreadItem>,
+        limit: usize,
+    ) -> String {
+        catch_up_lines(items, limit, None)
+    }
     /// Context safe to freeze beside a new managed operation. Another managed
     /// operation owns its own delivery, so it must never leak into this one's
     /// provider turn merely because it was accepted first.

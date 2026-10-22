@@ -1,4 +1,4 @@
-use crate::api::v1::git::{FsCreateDirectoryParams, FsCreateDirectoryResult, SourceScopeParams};
+use crate::api::v1::git::FsCreateDirectoryParams;
 use crate::api::v1::WireParams;
 use crate::api::ApiError;
 use crate::app::{expand_tilde, mime_hint};
@@ -12,12 +12,29 @@ use serde_json::{json, Value};
 
 use super::{b64encode, fenced_scope_path, media_mime_hint, require_str, AppState, TermScope};
 
+mod deferred;
+mod errors;
+pub(in crate::app) mod path_lock;
 pub(in crate::app) mod uploads;
+use deferred::{FileMutation, FileTarget};
+
+#[cfg(test)]
+#[path = "fs/service_test.rs"]
+pub(in crate::app) mod service_test;
 
 /// The refusal when a caller's `source_path` no longer names the folder its
 /// project source resolves to: the source moved after the caller opened it.
 pub(crate) const MOVED_SOURCE: &str =
     "Build cannot use this project folder: it moved. Reopen Files before reading or saving it.";
+
+pub(in crate::app) fn refuse_active_source(root: &std::path::Path) -> Result<(), String> {
+    if path_lock::source_in_use(root) {
+        return Err(errors::encode(ApiError::busy(
+            "A filesystem operation is still using this source; try again.",
+        )));
+    }
+    Ok(())
+}
 
 /// The directory whose files an `fs.*` call may reach.
 ///
@@ -25,7 +42,7 @@ pub(crate) const MOVED_SOURCE: &str =
 /// worktree-backed shapes remain valid for clients that have not learned
 /// workspace sources yet; they continue to resolve through `TermScope`.
 #[derive(Debug, Clone)]
-enum FileScope {
+pub(in crate::app) enum FileScope {
     WorkspaceSource {
         workspace_id: String,
         source_id: String,
@@ -40,7 +57,7 @@ enum FileScope {
 }
 
 impl FileScope {
-    fn parse(params: &Value) -> Result<Self, String> {
+    pub(in crate::app) fn parse(params: &Value) -> Result<Self, String> {
         let workspace_id = scope_field(params, "workspace_id")?;
         let source_id = scope_field(params, "source_id")?;
         if workspace_id.is_none() && params.get("project_id").is_some() {
@@ -171,136 +188,144 @@ pub(in crate::app) fn directory_listing(
     Ok(json!({ "path": path, "entries": entries }))
 }
 
+pub(in crate::app) fn host_directory_list(params: &Value) -> Result<Value, String> {
+    let path = match params
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        Some(p) => expand_tilde(p),
+        None => expand_tilde("~"),
+    };
+    let path =
+        std::fs::canonicalize(&path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    let reader =
+        std::fs::read_dir(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut dirs: Vec<(String, std::path::PathBuf, bool)> = reader
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| {
+            let p = e.path();
+            let is_git = p.join(".git").exists();
+            (e.file_name().to_string_lossy().into_owned(), p, is_git)
+        })
+        .collect();
+    dirs.sort_by_key(|a| a.0.to_lowercase());
+    let entries: Vec<Value> = dirs
+        .into_iter()
+        .map(|(name, p, is_git)| {
+            let is_hidden = name.starts_with('.');
+            json!({ "name": name, "path": p.display().to_string(), "is_git": is_git, "is_hidden": is_hidden })
+        })
+        .collect();
+    Ok(json!({
+        "path": path.display().to_string(),
+        "parent": path.parent().map(|p| p.display().to_string()),
+        "is_git": path.join(".git").exists(),
+        "entries": entries,
+    }))
+}
+
+pub(in crate::app) fn read_scoped_file(
+    root: &std::path::Path,
+    params: &Value,
+) -> Result<Value, String> {
+    let path = require_str(params, "path")?;
+    let target = fenced_scope_path(root, &path)?;
+    let leaf =
+        std::fs::symlink_metadata(&target).map_err(|e| format!("cannot read {path}: {e}"))?;
+    if leaf.file_type().is_symlink() {
+        return Err("refusing to read a symlink".to_string());
+    }
+    let (file, opened_metadata) = open_regular_read(&target, &path)?;
+    if let Some(range) = FileRange::from_params(params)? {
+        return read_page(
+            file,
+            &target,
+            &path,
+            range.body(),
+            range.raw.unwrap_or(false),
+        );
+    }
+    let size = opened_metadata.len();
+    let read_limit = if media_mime_hint(&target).is_some() {
+        FS_MEDIA_LEGACY_READ_MAX_BYTES
+    } else {
+        FS_READ_MAX_BYTES
+    };
+    let mut content = Vec::with_capacity(size.min(read_limit) as usize);
+    file.take(read_limit)
+        .read_to_end(&mut content)
+        .map_err(|e| format!("cannot read {path}: {e}"))?;
+    let truncated = size > read_limit;
+    let head_len = content.len().min(8192);
+    let mime = mime_hint(&target, &content[..head_len]);
+    let editable = is_editable(&content, !truncated) && text_mime(mime);
+    let revision = (!truncated).then(|| revision_hex(&content));
+    Ok(json!({
+        "path": path,
+        "size": size,
+        "truncated": truncated,
+        "mime": mime,
+        "content_b64": b64encode(&content),
+        "editable": editable,
+        "encoding": editable.then_some("utf-8"),
+        "revision": revision,
+    }))
+}
+
 impl AppState {
     pub(crate) fn fs_create_directory(
         &mut self,
         params: FsCreateDirectoryParams,
-    ) -> Result<FsCreateDirectoryResult, ApiError> {
-        let (scope, root) = self.file_mutation_scope(&params.scope)?;
-        let destination =
-            crate::scoped_upload::Destination::open(&root, &params.parent, &params.name)?;
-        destination.create_directory()?;
-        self.finish_file_mutation(&scope, &root)?;
-        Ok(FsCreateDirectoryResult {
-            path: destination.path().into(),
-        })
+    ) -> Result<Value, ApiError> {
+        self.create_scoped_entry(params, true)
     }
 
-    /// Create one empty file beside `fs.createDirectory`, under the same
-    /// scope, fence and refusal of an existing name. `fs.write` only replaces
-    /// a file it has read, so a new file starts here.
     pub(crate) fn fs_create_file(
         &mut self,
         params: FsCreateDirectoryParams,
-    ) -> Result<FsCreateDirectoryResult, ApiError> {
-        let (scope, root) = self.file_mutation_scope(&params.scope)?;
-        let destination =
-            crate::scoped_upload::Destination::open(&root, &params.parent, &params.name)?;
-        destination.create_file()?;
-        self.finish_file_mutation(&scope, &root)?;
-        Ok(FsCreateDirectoryResult {
-            path: destination.path().into(),
-        })
+    ) -> Result<Value, ApiError> {
+        self.create_scoped_entry(params, false)
     }
 
-    fn file_mutation_scope(
+    fn create_scoped_entry(
         &mut self,
-        params: &SourceScopeParams,
-    ) -> Result<(FileScope, std::path::PathBuf), ApiError> {
-        let scope = FileScope::parse(&params.wire()).map_err(ApiError::classify)?;
-        let root = scope.resolve_root(self).map_err(ApiError::classify)?;
-        self.refuse_writers_while_reserved(&root)
-            .map_err(ApiError::classify)?;
-        let root = std::fs::canonicalize(root).map_err(|error| {
-            ApiError::invalid_params(format!("cannot resolve scope root: {error}"))
-        })?;
-        Ok((scope, root))
-    }
-
-    fn finish_file_mutation(
-        &mut self,
-        scope: &FileScope,
-        root: &std::path::Path,
-    ) -> Result<(), ApiError> {
-        self.invalidate_snapshot_checkout_observations(root);
-        if let FileScope::WorkspaceSource { workspace_id, .. } = scope {
-            self.reopen_workspace(workspace_id)
-                .map_err(ApiError::classify)?;
-        }
-        self.invalidate_file_scope(scope);
-        Ok(())
+        params: FsCreateDirectoryParams,
+        directory: bool,
+    ) -> Result<Value, ApiError> {
+        let scope = FileScope::parse(&params.scope.wire()).map_err(ApiError::classify)?;
+        let target = FileTarget::capture(self, scope)?;
+        Ok(self.file_mutation(target, move |root| {
+            let destination =
+                crate::scoped_upload::Destination::open(root, &params.parent, &params.name)?;
+            if directory {
+                destination.create_directory()?;
+            } else {
+                destination.create_file()?;
+            }
+            Ok(json!({"path": destination.path()}))
+        }))
     }
 
     /// Browse host directories so the user can pick a repo without typing a path.
     /// Returns the canonical path, its parent (for "up"), whether it is itself a git
     /// repo, and its subdirectories (each flagged if it is a git repo).
     pub(crate) fn fs_list(&self, params: &Value) -> Result<Value, String> {
-        let path = match params
-            .get("path")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-        {
-            Some(p) => expand_tilde(p),
-            None => expand_tilde("~"),
-        };
-        let path = std::fs::canonicalize(&path)
-            .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
-        let reader =
-            std::fs::read_dir(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let mut dirs: Vec<(String, std::path::PathBuf, bool)> = reader
-            .flatten()
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .map(|e| {
-                let p = e.path();
-                let is_git = p.join(".git").exists();
-                (e.file_name().to_string_lossy().into_owned(), p, is_git)
-            })
-            .collect();
-        dirs.sort_by_key(|a| a.0.to_lowercase());
-        let entries: Vec<Value> = dirs
-            .into_iter()
-            .map(|(name, p, is_git)| {
-                let is_hidden = name.starts_with('.');
-                json!({ "name": name, "path": p.display().to_string(), "is_git": is_git, "is_hidden": is_hidden })
-            })
-            .collect();
-        Ok(json!({
-            "path": path.display().to_string(),
-            "parent": path.parent().map(|p| p.display().to_string()),
-            "is_git": path.join(".git").exists(),
-            "entries": entries,
-        }))
+        host_directory_list(params)
     }
 
     /// Create one plain directory in a host folder selected by the user.
     /// The parent follows `fs.list`'s host-browsing authority; accepting the
     /// child separately keeps traversal and implicit parent creation out of the
     /// mutation surface.
-    pub(crate) fn fs_mkdir(&self, params: &Value) -> Result<Value, String> {
-        let parent_value = require_str(params, "parent")?;
-        let parent = std::fs::canonicalize(expand_tilde(&parent_value))
-            .map_err(|error| format!("cannot open parent folder: {error}"))?;
-        if !parent.is_dir() {
-            return Err("parent is not a directory".to_string());
-        }
-        let name = require_str(params, "name")?;
-        let is_single_component = !name.is_empty()
-            && name != "."
-            && name != ".."
-            && !name.contains(['/', '\\'])
-            && std::path::Path::new(&name)
-                .components()
-                .all(|part| matches!(part, std::path::Component::Normal(_)));
-        if !is_single_component {
-            return Err("name must be a single folder name".to_string());
-        }
-        self.refuse_writers_while_reserved(&parent)?;
-        let target = parent.join(name);
-        std::fs::create_dir(&target)
-            .map_err(|error| format!("cannot create {}: {error}", target.display()))?;
-        let path = std::fs::canonicalize(&target)
-            .map_err(|error| format!("cannot open created folder: {error}"))?;
-        Ok(json!({ "path": path.display().to_string() }))
+    pub(crate) fn fs_mkdir(&mut self, params: &Value) -> Result<Value, String> {
+        let parent = expand_tilde(&require_str(params, "parent")?);
+        let target = FileTarget::host(parent);
+        let params = params.clone();
+        Ok(self.file_mutation(target, move |root| {
+            make_host_directory(root, &params).map_err(ApiError::classify)
+        }))
     }
 
     /// One directory level of a source or worktree scope (spec §4.2): server-side
@@ -322,48 +347,7 @@ impl AppState {
     pub(crate) fn fs_read(&mut self, params: &Value) -> Result<Value, String> {
         let scope = FileScope::parse(params)?;
         let root = scope.resolve_root(self)?;
-        let path = require_str(params, "path")?;
-        let target = fenced_scope_path(&root, &path)?;
-        let leaf =
-            std::fs::symlink_metadata(&target).map_err(|e| format!("cannot read {path}: {e}"))?;
-        if leaf.file_type().is_symlink() {
-            return Err("refusing to read a symlink".to_string());
-        }
-        let (file, opened_metadata) = open_regular_read(&target, &path)?;
-        if let Some(range) = FileRange::from_params(params)? {
-            return read_page(
-                file,
-                &target,
-                &path,
-                range.body(),
-                range.raw.unwrap_or(false),
-            );
-        }
-        let size = opened_metadata.len();
-        let read_limit = if media_mime_hint(&target).is_some() {
-            FS_MEDIA_LEGACY_READ_MAX_BYTES
-        } else {
-            FS_READ_MAX_BYTES
-        };
-        let mut content = Vec::with_capacity(size.min(read_limit) as usize);
-        file.take(read_limit)
-            .read_to_end(&mut content)
-            .map_err(|e| format!("cannot read {path}: {e}"))?;
-        let truncated = size > read_limit;
-        let head_len = content.len().min(8192);
-        let mime = mime_hint(&target, &content[..head_len]);
-        let editable = is_editable(&content, !truncated) && text_mime(mime);
-        let revision = (!truncated).then(|| revision_hex(&content));
-        Ok(json!({
-            "path": path,
-            "size": size,
-            "truncated": truncated,
-            "mime": mime,
-            "content_b64": b64encode(&content),
-            "editable": editable,
-            "encoding": editable.then_some("utf-8"),
-            "revision": revision,
-        }))
+        read_scoped_file(&root, params)
     }
 
     /// Replace an existing editable text file after verifying the exact bytes
@@ -371,30 +355,10 @@ impl AppState {
     /// parent through the atomic rename, defeating ancestor symlink swaps.
     pub(crate) fn fs_write(&mut self, params: &Value) -> Result<Value, String> {
         let scope = FileScope::parse(params)?;
-        let root = scope.resolve_root(self)?;
-        let path = require_str(params, "path")?;
-        let expected_revision = require_str(params, "expected_revision")?;
-        let encoded = require_str(params, "content_b64")?;
-        if encoded.len() > (EDITABLE_MAX_BYTES * 4).div_ceil(3) + 4 {
-            return Err("replacement exceeds the 1048576-byte limit".to_string());
-        }
-        let replacement = b64decode(&encoded)?;
-        if replacement.len() > EDITABLE_MAX_BYTES {
-            return Err("replacement exceeds the 1048576-byte limit".to_string());
-        }
-
-        self.refuse_writers_while_reserved(&root)?;
-        let current = self.fs_read(params)?;
-        if current.get("editable") != Some(&Value::Bool(true)) {
-            return Err("file is not editable UTF-8 text".to_string());
-        }
-        replace_text(&root, &path, &expected_revision, &replacement)?;
-        self.invalidate_snapshot_checkout_observations(&root);
-        if let FileScope::WorkspaceSource { workspace_id, .. } = &scope {
-            self.reopen_workspace(workspace_id)?;
-        }
-        self.invalidate_file_scope(&scope);
-        self.fs_read(params)
+        let mut target = FileTarget::capture(self, scope).map_err(deferred::encode_error)?;
+        target.destination = Some(require_str(params, "path")?);
+        let params = params.clone();
+        Ok(self.file_mutation_result(target, move |root| replace_scoped_file(root, &params)))
     }
 
     fn invalidate_file_scope(&mut self, scope: &FileScope) {
@@ -417,6 +381,62 @@ impl AppState {
         }
         self.note_board_changed();
     }
+}
+
+fn make_host_directory(parent: &std::path::Path, params: &Value) -> Result<Value, String> {
+    if !parent.is_dir() {
+        return Err("parent is not a directory".into());
+    }
+    let name = require_str(params, "name")?;
+    let is_single_component = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\'])
+        && std::path::Path::new(&name)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)));
+    if !is_single_component {
+        return Err("name must be a single folder name".into());
+    }
+    let target = parent.join(name);
+    std::fs::create_dir(&target)
+        .map_err(|error| format!("cannot create {}: {error}", target.display()))?;
+    let path = std::fs::canonicalize(&target)
+        .map_err(|error| format!("cannot open created folder: {error}"))?;
+    Ok(json!({"path": path.display().to_string()}))
+}
+
+fn replace_scoped_file(root: &std::path::Path, params: &Value) -> FileMutation {
+    if let Err(error) = write_scoped_text(root, params) {
+        return FileMutation {
+            answer: Err(ApiError::classify(error)),
+            changed: false,
+        };
+    }
+    #[cfg(test)]
+    service_test::after_replace();
+    FileMutation {
+        answer: read_scoped_file(root, params).map_err(ApiError::classify),
+        changed: true,
+    }
+}
+
+fn write_scoped_text(root: &std::path::Path, params: &Value) -> Result<(), String> {
+    let path = require_str(params, "path")?;
+    let expected_revision = require_str(params, "expected_revision")?;
+    let encoded = require_str(params, "content_b64")?;
+    if encoded.len() > (EDITABLE_MAX_BYTES * 4).div_ceil(3) + 4 {
+        return Err("replacement exceeds the 1048576-byte limit".into());
+    }
+    let replacement = b64decode(&encoded)?;
+    if replacement.len() > EDITABLE_MAX_BYTES {
+        return Err("replacement exceeds the 1048576-byte limit".into());
+    }
+    let current = read_scoped_file(root, params)?;
+    if current.get("editable") != Some(&Value::Bool(true)) {
+        return Err("file is not editable UTF-8 text".into());
+    }
+    replace_text(root, &path, &expected_revision, &replacement)
 }
 
 /// One page of an open file (`fs.read` with a `range`, #95): whole lines for

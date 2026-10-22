@@ -6,7 +6,7 @@
 //! the implementation that already exists under `app/`, and names the shape
 //! that implementation answers in. Every `git.*` verb and every diff read
 //! defers its work to the off-lock drain, so what the handler returns is the
-//! placeholder [`Answer`] documents; the `fs.*` verbs answer inline.
+//! placeholder [`Answer`] documents; the file mutations defer their filesystem work too.
 //!
 //! Optionals: `skip_serializing_if` throughout, so a field's absence and its
 //! `null` mean the same to every client, exactly as step 2.2 requires.
@@ -1110,43 +1110,43 @@ fn fs_write(app: &mut AppState, params: FsWriteParams) -> Result<Answer<FsFileRe
 fn fs_create_directory(
     app: &mut AppState,
     params: FsCreateDirectoryParams,
-) -> Result<FsCreateDirectoryResult, ApiError> {
-    app.fs_create_directory(params)
+) -> Result<Answer<FsCreateDirectoryResult>, ApiError> {
+    answer(Ok(app.fs_create_directory(params)?))
 }
 
 fn fs_create_file(
     app: &mut AppState,
     params: FsCreateDirectoryParams,
-) -> Result<FsCreateDirectoryResult, ApiError> {
-    app.fs_create_file(params)
+) -> Result<Answer<FsCreateDirectoryResult>, ApiError> {
+    answer(Ok(app.fs_create_file(params)?))
 }
 
 fn fs_upload_begin(
     app: &mut AppState,
     params: FsUploadBeginParams,
-) -> Result<FsUploadBeginResult, ApiError> {
-    app.fs_upload_begin(params, &super::changes::caller()?)
+) -> Result<Answer<FsUploadBeginResult>, ApiError> {
+    answer(Ok(app.fs_upload_begin(params, &super::changes::caller()?)?))
 }
 
 fn fs_upload_chunk(
     app: &mut AppState,
     params: FsUploadChunkParams,
-) -> Result<FsUploadChunkResult, ApiError> {
-    app.fs_upload_chunk(params, &super::changes::caller()?)
+) -> Result<Answer<FsUploadChunkResult>, ApiError> {
+    answer(Ok(app.fs_upload_chunk(params, &super::changes::caller()?)?))
 }
 
 fn fs_upload_finish(
     app: &mut AppState,
     params: FsUploadIdParams,
-) -> Result<FsUploadFinishResult, ApiError> {
-    app.fs_upload_finish(params, &super::changes::caller()?)
+) -> Result<Answer<FsUploadFinishResult>, ApiError> {
+    answer(Ok(app.fs_upload_finish(params, &super::changes::caller()?)?))
 }
 
 fn fs_upload_abort(
     app: &mut AppState,
     params: FsUploadIdParams,
-) -> Result<FsUploadAbortResult, ApiError> {
-    app.fs_upload_abort(params, &super::changes::caller()?)
+) -> Result<Answer<FsUploadAbortResult>, ApiError> {
+    answer(Ok(app.fs_upload_abort(params, &super::changes::caller()?)?))
 }
 
 fn worktree_diff(

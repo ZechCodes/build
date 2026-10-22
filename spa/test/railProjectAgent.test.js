@@ -232,7 +232,7 @@ describe("pressing the project's agent", () => {
     expect(headWho()).toBe("Fix login redirect");
 
     projectBubble().click();
-    await flush();
+    await painted(() => headWho() === "Sort the workspaces");
 
     expect(callsTo("project.ensure_conversation")).toHaveLength(1);
     expect(headWho()).toBe("Sort the workspaces");

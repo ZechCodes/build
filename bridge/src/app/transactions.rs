@@ -38,6 +38,8 @@ impl AppState {
         active: &ActivePlan,
         clock: EntityClock,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.save");
         let Some(store) = self.store.as_ref() else {
             self.operation_ledger.remember_in_memory_acceptance(plan_id);
             return Ok(());
@@ -105,6 +107,8 @@ impl AppState {
         active: &ActiveRun,
         clock: EntityClock,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.save");
         let Some(store) = self.store.as_ref() else {
             self.operation_ledger.remember_in_memory_acceptance(run_id);
             self.note_run_messages(run_id, active);

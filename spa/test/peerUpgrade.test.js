@@ -71,6 +71,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
 }));
 
 const { App, resetApplication } = await import("../src/app.js");
+const { selectAdapter } = await import("../src/core/bridgeApi/index.js");
 const { adoptBridgeSelection, contextFor, onDeviceStateChanged } = await import("../src/core/deviceContexts.js");
 const {
   connectDevice,
@@ -135,7 +136,7 @@ class FakeWebSocket {
     const reply = FakeWebSocket.refuses
       ? { id: asked.id, ok: false, error: { message: "the bridge would not take it" } }
       : { id: asked.id, ok: true, result: { deviceId, sdp: "answer" } };
-    this.serverSend({ type: "e2ee_envelope", session_id: message.session_id, envelope: { frameFields: { payload: reply } } });
+    this.serverSend({ type: "e2ee_envelope", session_id: message.session_id, envelope: { frameFields: { payload: { bridge_epoch: "test-epoch", ...reply } } } });
   }
   close() {
     if (this.readyState === 3) return;
@@ -178,7 +179,7 @@ function fakeCarrier(name) {
       const asked = envelope.frameFields.payload;
       queueMicrotask(() => carrier.deliver({ id: asked.id, ok: true, result: {} }));
     },
-    deliver: (payload) => envelopeListeners.forEach((fn) => fn({ frameFields: { payload } })),
+    deliver: (payload) => envelopeListeners.forEach((fn) => fn({ frameFields: { payload: { bridge_epoch: "test-epoch", ...payload } } })),
     onEnvelope: (fn) => {
       envelopeListeners.add(fn);
       return () => envelopeListeners.delete(fn);
@@ -256,7 +257,13 @@ beforeEach(() => {
   account.pinnedKey.mockReset();
   account.pinnedKey.mockResolvedValue("pk");
   greetings.greet.mockReset();
-  greetings.greet.mockResolvedValue(true);
+  greetings.greet.mockImplementation(async (_call, { acceptGreeting, install, onGreeting }) => {
+    const greeting = { api_version: "3.24.0", bridge_epoch: "test-epoch", journal_incarnation: "test-journal", capabilities: ["bridge.epoch"] };
+    acceptGreeting(greeting);
+    install(selectAdapter(greeting));
+    onGreeting(greeting);
+    return true;
+  });
   linkOpensWith(fakeLink());
 });
 
@@ -678,7 +685,7 @@ describe("what the live connection tells the surfaces", () => {
   it("applies the live bridge's operation capability to its chat repository", async () => {
     const context = await connect("dev-a");
     greetings.greet.mockImplementationOnce(async (_call, { onGreeting }) => {
-      onGreeting({ api_version: "2.0.0", capabilities: ["threads.postOperations"] });
+      onGreeting({ api_version: "3.24.0", capabilities: ["threads.postOperations"] });
       return true;
     });
 
@@ -702,7 +709,7 @@ describe("what the live connection tells the surfaces", () => {
 
     // Every push carries the device it came from; `rtc.ice` belongs to the
     // upgrade that negotiated it and describes nothing the surfaces show.
-    expect(changed).toEqual([[{ type: "entity.changed", id: "run-7" }, "dev-a"]]);
+    expect(changed).toEqual([[{ type: "entity.changed", id: "run-7", bridge_epoch: "test-epoch" }, "dev-a"]]);
   });
 });
 

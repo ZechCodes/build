@@ -1,3 +1,5 @@
+mod delivery_status;
+
 use super::{
     is_json_record, now_rfc3339, write_run, write_task, PersistedPlan, PersistedRun, Store,
     StoreError,
@@ -250,91 +252,6 @@ impl Store {
     ) -> Result<u64, StoreError> {
         self.set_delivery_status(conversation_id, None, start_sequence, end_sequence, status)
             .map(|delta| delta.sequence)
-    }
-    pub(crate) fn set_delivery_status(
-        &self,
-        conversation_id: &str,
-        operation_id: Option<&str>,
-        start_sequence: u64,
-        end_sequence: u64,
-        status: MessageDeliveryStatus,
-    ) -> Result<CommittedThreadItems, StoreError> {
-        self.in_transaction(|tx| {
-            let raw_agent: String = tx.query_row(
-                "SELECT record FROM agents WHERE id = ?1",
-                [conversation_id],
-                |row| row.get(0),
-            )?;
-            let mut agent: Agent =
-                serde_json::from_str(&raw_agent).map_err(|source| StoreError::Corrupt {
-                    path: PathBuf::from(format!("agents/{conversation_id}")),
-                    source,
-                })?;
-            let mut statement = tx.prepare(
-                "SELECT item FROM thread_items WHERE agent_id = ?1 \
-                 AND sequence BETWEEN ?2 AND ?3 ORDER BY sequence",
-            )?;
-            agent.thread.items = statement
-                .query_map(
-                    rusqlite::params![
-                        conversation_id,
-                        i64::try_from(start_sequence).unwrap_or(i64::MAX),
-                        i64::try_from(end_sequence).unwrap_or(i64::MAX)
-                    ],
-                    |row| row.get::<_, String>(0),
-                )?
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .map(|raw| {
-                    serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
-                        path: PathBuf::from(format!("thread_items/{conversation_id}")),
-                        source,
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            drop(statement);
-            match operation_id {
-                Some(operation_id) => agent.thread.set_operation_delivery_status(
-                    operation_id,
-                    start_sequence,
-                    end_sequence,
-                    status,
-                ),
-                None => {
-                    agent
-                        .thread
-                        .set_legacy_delivery_status(start_sequence, end_sequence, status)
-                }
-            }
-            let resulting_sequence = agent.thread.last_sequence();
-            for item in &agent.thread.items {
-                tx.execute(
-                    "UPDATE thread_items SET item = ?3, updated_sequence = ?4 \
-                     WHERE agent_id = ?1 AND sequence = ?2",
-                    rusqlite::params![
-                        conversation_id,
-                        i64::try_from(item.sequence()).unwrap_or(i64::MAX),
-                        serde_json::to_string(item).expect("a thread item always serializes"),
-                        i64::try_from(item.latest_sequence()).unwrap_or(i64::MAX),
-                    ],
-                )?;
-            }
-            let items = std::mem::take(&mut agent.thread.items);
-            tx.execute(
-                "UPDATE agents SET record = ?2 WHERE id = ?1",
-                rusqlite::params![
-                    conversation_id,
-                    serde_json::to_string(&agent).expect("an agent always serializes")
-                ],
-            )?;
-            Ok(CommittedThreadItems {
-                conversation_id: conversation_id.to_owned(),
-                thread_id: agent.thread.id,
-                generation_revision: agent.thread.generation_revision,
-                sequence: resulting_sequence,
-                items,
-            })
-        })
     }
     /// Boot recovery for provider delivery intents. A queued intent never left
     /// this database and is safe to replay. A durable claim might have crossed

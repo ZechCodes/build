@@ -17,11 +17,11 @@ pub(in crate::app) struct GitScope {
     /// project. Legacy scopes keep their established keys; sources need the
     /// enclosing identity because different directories can contain
     /// identical Git state and identical relative paths.
-    cache_namespace: Option<String>,
+    pub(in crate::app) cache_namespace: Option<String>,
     /// Whether history marks the commits its push destination lacks: a
     /// workspace directory's review semantics, chosen per scope rather than
     /// implied by having a cache namespace.
-    marks_unpushed: bool,
+    pub(in crate::app) marks_unpushed: bool,
     /// Set for project scope: the project whose repository this is.
     pub(in crate::app) project_id: Option<String>,
     pub(in crate::app) run: Option<GitScopeRun>,
@@ -157,7 +157,7 @@ impl GitScope {
     /// The changeset `git.changeset_diff` reads for a source scope: a
     /// workspace directory's unpublished work, or a project source's
     /// uncommitted work exactly as the primary checkout's is read.
-    fn source_changeset(self) -> ReadSubject {
+    pub(in crate::app) fn source_changeset(self) -> ReadSubject {
         match self.source {
             Some(source) => ReadSubject::Project {
                 key_namespace: Some(project_source_namespace(&source)),
@@ -224,6 +224,83 @@ impl GitScope {
     ) -> Result<Value, String> {
         crate::gitgui::file_patch_page(&self.repo_path, paths, range)
             .map(|payload| self.namespace_payload_keys(payload))
+    }
+}
+
+impl GitScope {
+    /// Run only owned, read-only Git inputs; no state callback or Git write lease.
+    pub(in crate::app) fn read(&self, method: &str, params: &Value) -> Result<Value, String> {
+        match method {
+            "git.refs" => self.read_refs(params),
+            "git.log" => self.read_log(params),
+            "git.show" => self.read_show(params),
+            "git.status" => self.read_status(params),
+            "git.unpushed" => self.read_unpushed(params),
+            "git.diff" => self.read_diff(params),
+            _ => Err(format!("unknown Git observation: {method}")),
+        }
+    }
+    fn read_refs(&self, _params: &Value) -> Result<Value, String> {
+        Ok(crate::gitgui::ref_list(&self.repo_path)?.into_json())
+    }
+
+    fn read_log(&self, params: &Value) -> Result<Value, String> {
+        let since = params.get("since").and_then(Value::as_str);
+        // A cursored read asks what has landed since a hash it already
+        // holds, and the answer to that is usually nothing — so its
+        // default page is the small one. A browsing read keeps the page
+        // it has always had.
+        let default_limit = match since {
+            Some(_) => crate::api::v1::git::LATEST_COMMITS,
+            None => 30,
+        };
+        let limit = params
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(default_limit)
+            .clamp(1, 200) as usize;
+        let skip = params.get("skip").and_then(Value::as_u64).unwrap_or(0) as usize;
+        crate::gitgui::log_page(&self.repo_path, self.log_highlight(), limit, skip, since)
+    }
+
+    fn read_show(&self, params: &Value) -> Result<Value, String> {
+        let hash = require_str(params, "hash")?;
+        if let Some(range) = crate::body_page::BodyRange::from_params(params)? {
+            if params.get("max_bytes").is_some_and(|cap| !cap.is_null()) {
+                return Err("git.show takes range or max_bytes, not both".to_string());
+            }
+            return crate::gitgui::show_commit_page(&self.repo_path, &hash, range);
+        }
+        // Clamped, never refused: a caller that asked for a byte wants a
+        // small answer, and one that asked for the moon wants the most
+        // the wire carries.
+        let max_bytes = params
+            .get("max_bytes")
+            .and_then(Value::as_u64)
+            .map(|cap| cap.clamp(1024, crate::api::v1::git::COMMIT_PATCH_MAX_BYTES) as usize);
+        crate::gitgui::show_commit(&self.repo_path, &hash, max_bytes)
+    }
+
+    fn read_status(&self, params: &Value) -> Result<Value, String> {
+        let if_status_key = params.get("if_status_key").and_then(Value::as_str);
+        self.status_payload_unless(if_status_key)
+    }
+
+    fn read_unpushed(&self, params: &Value) -> Result<Value, String> {
+        self.unpushed_payload(
+            params.get("if_diff_key").and_then(Value::as_str),
+            // Absent means yes: a client that has not heard of the flag
+            // is answered exactly as it always was.
+            params.get("patch").and_then(Value::as_bool).unwrap_or(true),
+        )
+    }
+
+    fn read_diff(&self, params: &Value) -> Result<Value, String> {
+        let paths = require_path_list(params)?;
+        match crate::body_page::BodyRange::from_params(params)? {
+            Some(range) => self.file_patch_page(&paths, range),
+            None => self.file_patches(&paths),
+        }
     }
 }
 
@@ -601,9 +678,7 @@ impl AppState {
     /// by a workspace directory, including its current branch or detached commit.
     /// The shared resolver keeps this available to the legacy scopes too.
     pub(crate) fn git_refs(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_git(params, false, |scope, _| {
-            Ok(crate::gitgui::ref_list(&scope.repo_path)?.into_json())
-        })
+        self.defer_git(params, false, |scope, params| scope.read_refs(params))
     }
 
     /// `git.checkout_ref` — check out one exact listed branch or tag. Git's
@@ -621,46 +696,13 @@ impl AppState {
     /// scope additionally marks each commit as ahead of (unreachable from)
     /// the base branch.
     pub(crate) fn git_log(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_git(params, false, |scope, params| {
-            let since = params.get("since").and_then(Value::as_str);
-            // A cursored read asks what has landed since a hash it already
-            // holds, and the answer to that is usually nothing — so its
-            // default page is the small one. A browsing read keeps the page
-            // it has always had.
-            let default_limit = match since {
-                Some(_) => crate::api::v1::git::LATEST_COMMITS,
-                None => 30,
-            };
-            let limit = params
-                .get("limit")
-                .and_then(Value::as_u64)
-                .unwrap_or(default_limit)
-                .clamp(1, 200) as usize;
-            let skip = params.get("skip").and_then(Value::as_u64).unwrap_or(0) as usize;
-            crate::gitgui::log_page(&scope.repo_path, scope.log_highlight(), limit, skip, since)
-        })
+        self.defer_git(params, false, |scope, params| scope.read_log(params))
     }
 
     /// `git.show` — one commit's metadata, stat, and capped patch. The hash
     /// param is a strict object-id prefix, never a general revspec.
     pub(crate) fn git_show(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_git(params, false, |scope, params| {
-            let hash = require_str(params, "hash")?;
-            if let Some(range) = crate::body_page::BodyRange::from_params(params)? {
-                if params.get("max_bytes").is_some_and(|cap| !cap.is_null()) {
-                    return Err("git.show takes range or max_bytes, not both".to_string());
-                }
-                return crate::gitgui::show_commit_page(&scope.repo_path, &hash, range);
-            }
-            // Clamped, never refused: a caller that asked for a byte wants a
-            // small answer, and one that asked for the moon wants the most
-            // the wire carries.
-            let max_bytes = params
-                .get("max_bytes")
-                .and_then(Value::as_u64)
-                .map(|cap| cap.clamp(1024, crate::api::v1::git::COMMIT_PATCH_MAX_BYTES) as usize);
-            crate::gitgui::show_commit(&scope.repo_path, &hash, max_bytes)
-        })
+        self.defer_git(params, false, |scope, params| scope.read_show(params))
     }
 
     /// `git.status` — branch/head, per-file staging tri-state, content keys and
@@ -670,34 +712,18 @@ impl AppState {
     /// `if_status_key` is what the browser is already painting; when it still
     /// names the working tree the answer is `{"unchanged": true}` and its key.
     pub(crate) fn git_status(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_git(params, false, |scope, params| {
-            let if_status_key = params.get("if_status_key").and_then(Value::as_str);
-            scope.status_payload_unless(if_status_key)
-        })
+        self.defer_git(params, false, |scope, params| scope.read_status(params))
     }
 
     /// Every local change not represented by the checkout's push destination.
     pub(crate) fn git_unpushed(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_git(params, false, |scope, params| {
-            scope.unpushed_payload(
-                params.get("if_diff_key").and_then(Value::as_str),
-                // Absent means yes: a client that has not heard of the flag
-                // is answered exactly as it always was.
-                params.get("patch").and_then(Value::as_bool).unwrap_or(true),
-            )
-        })
+        self.defer_git(params, false, |scope, params| scope.read_unpushed(params))
     }
 
     /// `git.diff` — the uncommitted patch of the named paths, one entry each,
     /// keyed by content so a browser caches a body until that file moves.
     pub(crate) fn git_diff(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_git(params, false, |scope, params| {
-            let paths = require_path_list(params)?;
-            match crate::body_page::BodyRange::from_params(params)? {
-                Some(range) => scope.file_patch_page(&paths, range),
-                None => scope.file_patches(&paths),
-            }
-        })
+        self.defer_git(params, false, |scope, params| scope.read_diff(params))
     }
 
     /// `git.stage` — stage the given repo-relative paths, answering with the

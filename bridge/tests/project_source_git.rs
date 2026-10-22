@@ -216,7 +216,7 @@ async fn original_project_sources_drive_git_and_pushes_end_to_end() {
     let state = daemon(&root, &primary);
     let mut browser = Browser::new(AppState::handler(Arc::clone(&state)));
     let greeting = browser.ok("session.hello", json!({ "changes": "subscriptions" }));
-    assert_eq!(greeting["api_version"], "3.22.0");
+    assert_eq!(greeting["api_version"], build_bridge::api::API_VERSION);
     for capability in ["git.projectSources", "changes.projectSources"] {
         assert!(
             greeting["capabilities"]

@@ -7,6 +7,9 @@ use crate::run::{RunState, StageProgress, StageProgressState, StagePublication};
 use crate::thread::ThreadDetail;
 use serde_json::{json, Value};
 
+#[cfg(test)]
+thread_local! { static IMPLEMENTATION_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 /// The wire view of a plan stage doc: id/title/summary/path, its plan-side
 /// review sub-state, and its open-comment count.
 pub(in crate::app) fn plan_stage_json(active: &ActivePlan, doc: &StageDoc) -> Value {
@@ -104,6 +107,15 @@ pub(in crate::app) fn canonical_stage_execution(progress: &StageProgress) -> &'s
 }
 
 impl AppState {
+    #[cfg(test)]
+    pub(in crate::app) fn note_implementation_lookup_visit() {
+        IMPLEMENTATION_LOOKUPS.with(|count| count.set(count.get() + 1));
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn take_implementation_lookup_visits() -> usize {
+        IMPLEMENTATION_LOOKUPS.with(|count| count.replace(0))
+    }
     pub(crate) fn plan_get(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
@@ -163,7 +175,7 @@ impl AppState {
         self.plan_run_stage_diff(&run_params, Some(task_id))
     }
 
-    pub(crate) fn task_stages(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn task_stages(&self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
         let task = self.plans.get(&task_id).ok_or("unknown task_id")?;
         // A task with no stages yet answers with the empty list that is the
@@ -240,7 +252,11 @@ impl AppState {
         let mut implementations = self
             .runs
             .values()
-            .filter(|run| run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(task_id))
+            .filter(|run| {
+                #[cfg(test)]
+                Self::note_implementation_lookup_visit();
+                run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(task_id)
+            })
             .collect::<Vec<_>>();
         implementations.sort_by_key(|run| {
             self.board
@@ -401,10 +417,7 @@ impl AppState {
             // False when the store holds no docs (a migrated plan whose docs
             // were unrecoverable): the client disables doc reads + Implement
             // instead of retrying reads that can never succeed.
-            "docs_available": self
-                .store
-                .as_ref()
-                .is_some_and(|store| store.has_plan_docs(plan_id)),
+            "docs_available": self.snapshot_plan_docs_available(plan_id),
             "created_at": self.board.attention().clock(plan_id).created_at,
             "updated_at": self.board.attention().clock(plan_id).updated_at,
             "state_changed_at": self.board.attention().clock(plan_id).state_changed_at,

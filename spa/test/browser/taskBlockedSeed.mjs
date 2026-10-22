@@ -55,7 +55,7 @@ export async function mountBlockedTasks(page, basePath, { legacy = false, theme 
     window.__blockedWireOpen = false;
     const pending = [];
     const reply = (method, params) => {
-      if (method === "session.hello") return { api_version: "3.21.0", push_events: true,
+      if (method === "session.hello") return { api_version: "3.24.0", push_events: true,
         capabilities: ["tasks.waitingOn", "tasks.commentUserNotifies", "changes.subscriptions"], change_kinds: ["tasks"] };
       if (method === "tasks.list") return { tasks: window.__blockedTasks };
       if (method === "tasks.columns") return { columns: [] };

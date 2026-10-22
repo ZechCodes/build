@@ -6,6 +6,7 @@ assets under ``static/assets/`` (js, css, self-hosted fonts). Zero CDN.
 """
 
 import asyncio
+from html import escape
 from pathlib import Path
 
 from litestar import Controller, Request, get, post
@@ -98,6 +99,7 @@ class BuildController(Controller):
 
         html = await asyncio.to_thread((STATIC_DIR / "index.html").read_text)
         html = html.replace("{{USER0}}", email[0:1].upper())
+        html = html.replace("{{ACCOUNT_ID}}", escape(str(user_id), quote=True))
         # Never cached. Every asset this names is content-hashed and served
         # immutable, so fetching this document again is the ONLY way a browser
         # moves to a new build — and sent with no cache headers it was the one

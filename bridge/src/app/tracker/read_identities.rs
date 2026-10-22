@@ -30,6 +30,12 @@ pub(super) struct ReadRosters {
 
 impl AppState {
     pub(super) fn task_identity_context(&self) -> TaskIdentityContext {
+        let _ownership = self.begin_snapshot_ownership();
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("read_context.task_identity");
+        let context = self
+            .snapshot_ownership_context()
+            .expect("ownership guard captures a context");
         let live = self
             .plans
             .iter()
@@ -37,42 +43,40 @@ impl AppState {
             .chain(self.runs.iter().map(|(owner, run)| (owner, &run.agents)))
             .flat_map(|(owner, roster)| roster.agents().iter().map(move |agent| (owner, agent)))
             .filter_map(|(owner, agent)| {
-                self.live_task_identity(&agent.id)
-                    .map(|identity| (owner, identity))
-            })
-            .map(|(owner, identity)| {
-                (
-                    identity.agent_id,
-                    LiveTaskLocation {
-                        owner: owner.clone(),
-                        workspace_id: identity.workspace_id,
-                        workspace_name: identity.workspace_name,
-                        available: identity.available,
-                    },
-                )
+                self.task_live_location(&context, owner, &agent.id)
+                    .map(|location| (agent.id.clone(), location))
             })
             .collect();
-        let mut workspaces = HashMap::new();
-        for workspace in self.workspaces.list(None) {
-            workspaces
-                .entry(workspace.root.clone())
-                .or_insert_with(|| workspace.id.clone());
-            if let Ok(path) = std::fs::canonicalize(&workspace.root) {
-                workspaces
-                    .entry(path)
-                    .or_insert_with(|| workspace.id.clone());
-            }
-        }
-        // Retain aliases known at publication. SQL readers only compare these
-        // immutable paths, even after the corresponding directory disappears.
-        for run in self.runs.values() {
-            if let Ok(path) = std::fs::canonicalize(&run.worktree.path) {
-                if let Some(id) = workspaces.get(&path).cloned() {
-                    workspaces.entry(run.worktree.path.clone()).or_insert(id);
-                }
-            }
-        }
+        let workspaces = context.task_paths().clone();
         TaskIdentityContext { live, workspaces }
+    }
+
+    fn task_live_location(
+        &self,
+        context: &crate::app::workspaces::ProjectionOwnership,
+        owner: &str,
+        agent: &str,
+    ) -> Option<LiveTaskLocation> {
+        let project_agent = crate::agent::is_project_agent(agent);
+        let workspace = if project_agent {
+            None
+        } else {
+            self.runs.get(owner)?;
+            self.projects.project_id_of(owner)?;
+            context
+                .task_workspace(owner)
+                .and_then(|id| self.workspaces.get(id))
+        };
+        Some(LiveTaskLocation {
+            owner: owner.into(),
+            workspace_id: workspace.map(|workspace| workspace.id.clone()),
+            workspace_name: workspace.map(|workspace| workspace.name.clone()),
+            available: !self.session_registry.agent_binding_retired(agent)
+                && (project_agent
+                    || workspace.is_some_and(|workspace| {
+                        workspace.status == crate::workspace::WorkspaceStatus::Ready
+                    })),
+        })
     }
 }
 
@@ -83,26 +87,48 @@ impl TaskIdentityContext {
         app: &AppState,
         published: Option<(&str, bool)>,
     ) {
-        self.live.retain(
-            |id, live| match published.filter(|(owner, _)| *owner == live.owner) {
-                Some((_, true)) => true,
-                Some((_, false)) => match previous.live.get(id) {
-                    Some(prior) => {
-                        // A roster rollback preserves committed association,
-                        // but cannot undo actual runtime retirement or start.
-                        let available = live.available;
-                        *live = prior.clone();
-                        live.available = available;
-                        true
-                    }
-                    None => false,
-                },
-                None => previous.live.contains_key(id),
+        self.retain_with(previous, app, |owner| {
+            published
+                .filter(|(saved, _)| *saved == owner)
+                .map(|(_, saved)| saved)
+        });
+    }
+
+    pub(super) fn retain_saved_owners(
+        &mut self,
+        previous: &Self,
+        app: &AppState,
+        owners: &std::collections::HashSet<String>,
+    ) {
+        self.retain_with(previous, app, |owner| {
+            owners.contains(owner).then_some(true)
+        });
+    }
+
+    fn retain_with(
+        &mut self,
+        previous: &Self,
+        app: &AppState,
+        published: impl Fn(&str) -> Option<bool>,
+    ) {
+        self.live.retain(|id, live| match published(&live.owner) {
+            Some(true) => true,
+            Some(false) => match previous.live.get(id) {
+                Some(prior) => {
+                    // A roster rollback preserves committed association,
+                    // but cannot undo actual runtime retirement or start.
+                    let available = live.available;
+                    *live = prior.clone();
+                    live.available = available;
+                    true
+                }
+                None => false,
             },
-        );
+            None => previous.live.contains_key(id),
+        });
         for (id, live) in &previous.live {
             let present = app.plans.contains_key(&live.owner) || app.runs.contains_key(&live.owner);
-            let publishing = published.is_some_and(|(owner, _)| owner == live.owner);
+            let publishing = published(&live.owner).is_some();
             if !present && !publishing {
                 self.live.entry(id.clone()).or_insert_with(|| live.clone());
             }
@@ -215,3 +241,6 @@ pub(super) fn unknown_identity(id: &str) -> TaskAgentIdentity {
         available: false,
     }
 }
+
+#[cfg(test)]
+mod tests;

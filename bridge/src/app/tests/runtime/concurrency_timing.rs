@@ -7,6 +7,7 @@
 //! The fresh directory receives `bridge-concurrency-baseline.jsonl` and
 //! `bridge-concurrency-baseline.md`. Ordinary runs write only to fixture temps.
 
+mod io_observations;
 mod measurements;
 
 use self::measurements::SqlMeasurements;
@@ -460,6 +461,10 @@ struct Sample {
 
 impl Sample {
     fn new(workers: usize, git_gate: Option<WorkGate>) -> Self {
+        Self::new_with_clock(workers, git_gate, FrameClock::new())
+    }
+
+    fn new_with_clock(workers: usize, git_gate: Option<WorkGate>, clock: Arc<FrameClock>) -> Self {
         let state_root = tempfile::tempdir().unwrap();
         let (repo_home, mut app, project_id) = tracked(state_root.path());
         let task_ids = (0..SAMPLE_COUNT)
@@ -473,7 +478,6 @@ impl Sample {
         let history = HistorySample::new(&mut app, &project_id);
         app = app.with_update_service(timing_update_service(state_root.path()));
         let repo = app.project_at(0).repo_path.clone();
-        let clock = FrameClock::new();
         app.frame_clock = Arc::clone(&clock);
         let state = app.shared();
         let (peers, reads, read_pool, snapshots) = {
@@ -1008,16 +1012,16 @@ async fn snapshot_generation_publication_and_clone_costs_are_reported() {
         let mut elapsed = Vec::new();
         for _ in 0..SAMPLE_COUNT {
             let started = Instant::now();
-            let cloned = value.clone();
+            let cloned = value.as_ref().clone();
             elapsed.push(started.elapsed());
-            assert_eq!(&cloned, value);
+            assert_eq!(&cloned, value.as_ref());
             std::hint::black_box(cloned);
         }
         clones.insert(
             method.into(),
             json!({
                 "value_clone": snapshot_duration_summary(&elapsed),
-                "serialized_bytes": serde_json::to_vec(value).unwrap().len(),
+                "serialized_bytes": serde_json::to_vec(value.as_ref()).unwrap().len(),
             }),
         );
     }

@@ -1,4 +1,4 @@
-use super::{invalid, require_task, DependencyDigest, DependencySummary, DependentsPage};
+use super::{invalid, DependencyDigest, DependencySummary, DependentsPage};
 use crate::store::ReadTransaction;
 use crate::store::{Store, StoreError};
 use crate::tracker::{TaskState, DONE_STATUS};
@@ -186,7 +186,14 @@ impl ReadTransaction<'_> {
         );
         let after = parse_cursor(cursor, &scope)?;
         let conn = self.connection();
-        require_task(conn, project, id)?;
+        let exists = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tracker_tasks WHERE id = ?1 AND project_key = ?2)",
+            params![id, project],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !exists {
+            return Err(invalid("task not found in project"));
+        }
         let take = limit.clamp(1, 100);
         let mut statement = conn.prepare(&format!("SELECT {DIGEST_COLUMNS} FROM tracker_task_dependencies d JOIN tracker_tasks t ON t.id = d.task_id
             WHERE d.waiting_on_task_id = ?1 AND d.task_number > ?2 AND t.project_key = ?3 ORDER BY d.task_number LIMIT ?4"))?;

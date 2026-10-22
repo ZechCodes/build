@@ -78,6 +78,7 @@ fn worker_messages_the_project_agent(state: &mut AppState, handed: &HandedOver, 
             &handed.entity_id,
             &handed.worker,
             BridgeAction::MessageAgent {
+                attachments: Vec::new(),
                 agent_id: handed.agent_id.clone(),
                 body: body.to_string(),
             },
@@ -137,6 +138,7 @@ fn only_the_project_agent_is_told_the_line() {
             &handed.owner,
             &handed.agent_id,
             BridgeAction::MessageAgent {
+                attachments: Vec::new(),
                 agent_id: handed.worker.clone(),
                 body: "and then the rail".to_string(),
             },

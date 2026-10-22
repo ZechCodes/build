@@ -103,6 +103,32 @@ fn diagnostic<'a>() -> LifecycleDiagnostic<'a> {
 }
 
 #[test]
+fn terminal_cleanup_rechecks_session_lineage_and_owner_before_effect() {
+    let root = Path::new("/fixture/checkout");
+    let mut registry = SessionRegistry::new();
+    let (key, _, instance) = insert_agent(&mut registry, root, "owner-a", "agent-a", "thread-a");
+    let candidate = registry.terminal_cleanup_candidates().pop().unwrap();
+    assert!(registry.cleanup_candidate_is_current(&candidate));
+
+    let tab = registry.test_tab_mut(&key).unwrap();
+    tab.session_instance.as_mut().unwrap().id = "replacement-generation".into();
+    assert!(
+        !registry.cleanup_candidate_is_current(&candidate),
+        "a reused session handle cannot authorize retiring another lineage"
+    );
+
+    let tab = registry.test_tab_mut(&key).unwrap();
+    tab.session_instance = Some(instance);
+    if let TabRole::Agent { owner, .. } = &mut tab.role {
+        *owner = "owner-b".into();
+    }
+    assert!(
+        !registry.cleanup_candidate_is_current(&candidate),
+        "a changed binding is another owner's cleanup command"
+    );
+}
+
+#[test]
 fn token_comparison_preserves_exact_length_and_byte_behavior() {
     assert!(constant_time_token_eq("same-token", "same-token"));
     assert!(!constant_time_token_eq("same-token", "same-tokeN"));
@@ -130,8 +156,16 @@ fn claim_take_and_settle_are_infallible() {
 #[test]
 fn conditional_token_revoke_preserves_a_newer_rotation() {
     let mut registry = SessionRegistry::new();
-    let old = registry.install_mcp_token("agent-a".into(), "old".into());
-    let _new = registry.install_mcp_token("agent-a".into(), "new".into());
+    let issuer = super::McpIssuer::Coding(crate::app::read_context::IssuedCodingAddress {
+        owner: "matcher-owner".into(),
+        agent: "agent-a".into(),
+        canonical_owner: "matcher-owner".into(),
+        conversation: "agent-a".into(),
+        thread_id: "matcher-thread".into(),
+        generation: 0,
+    });
+    let old = registry.install_mcp_token("agent-a".into(), "old".into(), issuer.clone());
+    let _new = registry.install_mcp_token("agent-a".into(), "new".into(), issuer);
     registry.revoke_mcp_token_if_current(&old);
     assert!(registry.token_matches("agent-a", "new"));
     assert!(!registry.token_matches("agent-a", "old"));
@@ -210,4 +244,45 @@ fn retirement_returns_the_instance_and_removes_only_the_named_tab() {
         registry.contains(&second),
         "another tab is not swept implicitly"
     );
+}
+
+#[test]
+fn shell_tabs_preserve_the_agent_projection_layout_through_capacity_growth() {
+    let root = Path::new("/fixture/checkout");
+    for agent_count in [3, 27, 200] {
+        let mut registry = SessionRegistry::new();
+        for index in 0..agent_count {
+            let agent = format!("agent-{index}");
+            let (tab, _, _) = agent_tab(root, &agent, &agent, &agent);
+            registry.insert_opened(TabKey::agent(root, &agent), tab);
+        }
+        let before = registry.projection_layout();
+        for _ in 0..256 {
+            let mut shells = Vec::new();
+            for _ in 0..crate::app::runtime::terminals::MAX_USER_TERMINALS {
+                let id = registry.next_terminal_id();
+                let key = TabKey {
+                    root: root.into(),
+                    tab_id: id.clone(),
+                };
+                let (mut tab, _, _) = agent_tab(root, "unused", "unused", "unused");
+                tab.role = TabRole::Shell;
+                tab.tab_id = id;
+                tab.session_instance = None;
+                registry.test_insert_tab(key.clone(), tab);
+                assert!(
+                    before == registry.projection_layout(),
+                    "opening a shell changed agent layout"
+                );
+                shells.push(key);
+            }
+            for key in shells {
+                registry.test_remove_tab(&key).unwrap();
+                assert!(
+                    before == registry.projection_layout(),
+                    "closing a shell changed agent layout"
+                );
+            }
+        }
+    }
 }

@@ -53,6 +53,16 @@ describe("the project agent's conversation facts", () => {
     expect(render(agentEntry()).querySelector(".inbox-facts").textContent).toBe("Getting started");
   });
 
+  it.each([[undefined, {}], [undefined, { quiet: true }], [[], {}], [[], { quiet: true }]])(
+    "keeps empty facts for a conversation with history and agents %j, with UI %j", (agents, ui) => {
+      const entry = agentEntry({ items: [conversation({ agents, session_started_ms: 100, last_activity_ms: 200 })] });
+      expect(entry.facts).toBe("");
+      const doc = render(entry, ui);
+      expect(doc.body.textContent).not.toContain("Getting started");
+      expect(doc.querySelector(".inbox-facts")).toBeNull();
+    },
+  );
+
   it("renders the latest conversation facts held in the cache", async () => {
     vi.resetModules();
     globalThis.indexedDB = new IDBFactory();

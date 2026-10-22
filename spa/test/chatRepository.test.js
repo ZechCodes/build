@@ -21,9 +21,9 @@ const createRepository = (call = vi.fn(async () => ({}))) => {
 
 /** A greeting that names message context, and one that names post operations
  *  beside the status verb the repository reads from its metadata. */
-const CONTEXT_GREETING = { api_version: "2.0.0", capabilities: ["messages.context"], message_context: { version: 1 } };
+const CONTEXT_GREETING = { api_version: "3.24.0", capabilities: ["messages.context"], message_context: { version: 1 } };
 const OPERATIONS_GREETING = {
-  api_version: "2.0.0",
+  api_version: "3.24.0",
   capabilities: ["threads.postOperations"],
   thread_post_operations: { version: 1, status_method: "thread.operation" },
 };
@@ -146,7 +146,7 @@ describe("chat controller ownership", () => {
     });
     const controller = repository.controller(address());
     await controller.post(controller.captureSubmission({ body: "look" }));
-    expect(call).toHaveBeenCalledWith("thread.post", expect.not.objectContaining({ viewing_context: expect.anything() }));
+    expect(call).toHaveBeenCalledWith("thread.post", expect.not.objectContaining({ viewing_context: expect.anything() }), expect.any(Object));
   });
 
   it("uses the named capabilities for message context and post operations without legacy metadata", () => {
@@ -155,7 +155,7 @@ describe("chat controller ownership", () => {
     const repository = createChatRepository({ scope: {}, call: vi.fn(), viewingContext });
 
     repository.configureCapabilities({
-      api_version: "2.0.0",
+      api_version: "3.24.0",
       capabilities: ["messages.context", "threads.postOperations"],
     });
     expect(repository.contextualize({ body: "look" }).viewing_context).toEqual(context);
@@ -163,7 +163,7 @@ describe("chat controller ownership", () => {
     expect(viewingContext.setEnabled).toHaveBeenLastCalledWith(true);
 
     repository.configureCapabilities({
-      api_version: "2.0.0",
+      api_version: "3.24.0",
       capabilities: [],
       message_context: { version: 1 },
       thread_post_operations: { version: 1, status_method: "thread.operation" },
@@ -176,7 +176,7 @@ describe("chat controller ownership", () => {
   it("treats a missing capabilities list as no chat capabilities", () => {
     const repository = createChatRepository({ scope: {}, call: vi.fn() });
     repository.configureCapabilities({
-      api_version: "2.0.0",
+      api_version: "3.24.0",
       message_context: { version: 1 },
       thread_post_operations: { version: 1, status_method: "thread.operation" },
     });
@@ -255,7 +255,7 @@ describe("chat controller ownership", () => {
       choice_revision: 7,
       body: "ship this",
       attachments: [{ path: "uploads/a.png", name: "a.png" }],
-    }));
+    }), expect.any(Object));
     expect(newCall).not.toHaveBeenCalled();
   });
 
@@ -368,7 +368,7 @@ describe("chat controller ownership", () => {
     await expect(controller.retry(submission)).resolves.toMatchObject({ operation_id: "operation-1" });
     expect(newCall).toHaveBeenLastCalledWith("thread.post", expect.objectContaining({
       operation_id: "operation-1", agent_id: "agent-1", body: "retry me",
-    }));
+    }), expect.any(Object));
   });
 
   it("consumes the shared bridge operation fixture", () => {
@@ -468,5 +468,88 @@ describe("per-agent model choices", () => {
     expect(controller.choice()).toMatchObject({
       requestedModel: "authoritative", effort: "low", revision: 3, pending: false,
     });
+  });
+});
+
+describe("shared durable thread writes", () => {
+  const durableHarness = () => {
+    let rows = [];
+    const listeners = new Set();
+    const service = {
+      supports: (method) => method === "thread.post",
+      readOperations: () => rows,
+      subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+      checkAgain: vi.fn(async () => {}),
+      dismiss: vi.fn(async (id) => { rows = rows.filter((row) => row.operationId !== id); for (const fn of listeners) fn(); }),
+    };
+    const call = vi.fn(async (_method, params) => ({ phase: "ack", operation_id: params.operation_id }));
+    let sequence = 0;
+    const repository = createChatRepository({ scope: { accountId: "a", deviceId: "d" }, call, writeOperations: service, storage: null, createOperationId: () => `durable-${++sequence}` });
+    const controller = repository.controller(address());
+    const publish = (next) => { rows = next; for (const fn of listeners) fn(); };
+    return { repository, controller, service, call, publish };
+  };
+  const failed = (over = {}) => ({ operationId: "old-op", method: "thread.post", state: "failed", effect: "unapplied", error: { message: "Your message wasn't saved" }, owner: { kind: "chat", ...address() }, draft: { body: "my preserved message", attachments: [] }, ...over });
+
+  it("passes the existing identity and draft into the shared store and accepts an ack without a final receipt", async () => {
+    const { controller, call } = durableHarness();
+    controller.writeDraft({ body: "save exactly once" });
+    const submission = controller.captureSubmission();
+    expect(await controller.post(submission)).toEqual({ phase: "ack", operation_id: "durable-1" });
+    expect(call).toHaveBeenCalledWith("thread.post", expect.objectContaining({ operation_id: "durable-1" }), expect.objectContaining({ operationId: "durable-1", owner: expect.objectContaining({ kind: "chat", ...address() }), draft: expect.objectContaining({ body: "save exactly once" }) }));
+    expect(controller.recoveries()).toEqual([]);
+  });
+
+  it.each([true, false])("leaves durable uncertainty to the shared status worker when initial support is %s", async (supported) => {
+    const { controller, repository, publish, service, call } = durableHarness();
+    repository.configureCapabilities(OPERATIONS_GREETING);
+    service.supports = () => supported;
+    const submission = controller.captureSubmission({ body: "check this once" });
+    controller.recordOperationFailure(submission, Object.assign(new Error("missing ack"), { uncertain: true }));
+    publish([{ operationId: submission.operationId, state: "accepted", owner: { kind: "chat", ...address() } }]);
+    expect(controller.recoveries()).toEqual([]);
+    await controller.resolveUncertain();
+    expect(call).not.toHaveBeenCalled();
+    await controller.operationStatus(submission);
+    expect(service.checkAgain).toHaveBeenCalledWith(submission.operationId);
+  });
+
+  it("renders a cached post-ack failure and restores its draft without replacing newer text", async () => {
+    const { controller, publish } = durableHarness();
+    publish([failed()]);
+    expect(controller.readDraft().body).toBe("my preserved message");
+    expect(controller.recoveries()).toEqual([expect.objectContaining({ operationId: "old-op", status: "rejected", durable: true, canRetry: true, canDismiss: true, body: "my preserved message" })]);
+    controller.writeDraft({ body: "a newer thought" });
+    publish([failed(), failed({ operationId: "another", draft: { body: "another preserved message" } })]);
+    expect(controller.readDraft().body).toBe("a newer thought");
+  });
+
+  it.each(["partial", "unknown"])("checks %s outcomes with their original ID", async (effect) => {
+    const { controller, publish, service, call } = durableHarness();
+    publish([failed({ effect })]);
+    expect(controller.recoveries()[0]).toMatchObject({ status: "uncertain", body: "my preserved message" });
+    await controller.retryOperation("old-op");
+    expect(service.checkAgain).toHaveBeenCalledWith("old-op");
+    expect(call).not.toHaveBeenCalled();
+    expect(controller.readDraft().body).toBe("");
+  });
+
+  it("retries a terminal refusal as a new action and keeps a newer composer draft", async () => {
+    const { controller, publish, call, service } = durableHarness();
+    controller.writeDraft({ body: "a newer thought" });
+    publish([failed()]);
+    await controller.retryOperation("old-op");
+    expect(call).toHaveBeenCalledWith("thread.post", expect.objectContaining({ operation_id: "durable-1", body: "my preserved message" }), expect.anything());
+    expect(controller.readDraft().body).toBe("a newer thought");
+    expect(service.dismiss).toHaveBeenCalledWith("old-op");
+  });
+
+  it("dismisses the cached error without deleting the draft", async () => {
+    const { controller, publish, service } = durableHarness();
+    publish([failed()]);
+    await controller.dismissOperation("old-op");
+    expect(service.dismiss).toHaveBeenCalledWith("old-op");
+    expect(controller.readDraft().body).toBe("my preserved message");
+    expect(controller.recoveries()).toEqual([]);
   });
 });

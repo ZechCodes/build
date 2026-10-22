@@ -127,6 +127,7 @@ fn pressing_a_suggested_action_answers_the_agent_and_marks_the_offer() {
         .on_mcp_action(
             &run_id,
             BridgeAction::PostThreadMessage {
+                attachments: Vec::new(),
                 body: "Two ways out. Which?".into(),
                 still_working: false,
                 options: suggested(&[
@@ -186,6 +187,7 @@ fn a_choice_made_after_the_conversation_moved_on_is_refused() {
         .on_mcp_action(
             &run_id,
             BridgeAction::PostThreadMessage {
+                attachments: Vec::new(),
                 body: "Two ways out. Which?".into(),
                 still_working: false,
                 options: suggested(&[("Revert it", None), ("Fix forward", None)]),
@@ -225,6 +227,7 @@ fn an_option_the_agent_never_offered_cannot_be_answered_with() {
         .on_mcp_action(
             &run_id,
             BridgeAction::PostThreadMessage {
+                attachments: Vec::new(),
                 body: "Which?".into(),
                 still_working: false,
                 options: suggested(&[("Revert it", None)]),
@@ -739,6 +742,7 @@ fn operation_payload_preserves_batches_attachments_and_normalized_options() {
             &run_id,
             &agent_id,
             BridgeAction::PostThreadMessage {
+                attachments: Vec::new(),
                 body: "Choose a repair".into(),
                 still_working: false,
                 options: suggested(&[(

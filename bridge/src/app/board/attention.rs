@@ -1,3 +1,6 @@
+mod post_scope;
+mod terminal;
+
 use crate::app::{named_agent_id, require_str, thread_cursor, thread_detail};
 use crate::run::RunState;
 use crate::store::now_rfc3339;
@@ -314,7 +317,7 @@ impl AppState {
             .attention_mut()
             .observe_working(entity_id, working, now)
         {
-            self.persist_attention();
+            self.persist_attention_for_owner(entity_id);
         }
     }
 
@@ -322,7 +325,7 @@ impl AppState {
     pub(in crate::app) fn touch_attention(&mut self, id: &str) {
         let now = now_rfc3339();
         self.board.attention_mut().interact(id, &now);
-        self.persist_attention();
+        self.persist_post_stamp_attention(id);
     }
 
     /// Record that the human has seen `id` as of its current state clock, and
@@ -347,7 +350,7 @@ impl AppState {
             .attention_mut()
             .mark_seen(id, Some(&state_changed_at), &read_through);
         self.mark_snapshot_owner_pending(id);
-        self.persist_attention();
+        self.persist_attention_for_owner(id);
     }
 
     /// How far each of an entity's conversations has got, as
@@ -598,12 +601,10 @@ impl AppState {
         thread: &crate::thread::Thread,
         cursor: u64,
     ) -> crate::thread::UnreadSummary {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.unread_history");
         if self.snapshot_projection_initialized() {
-            let mut summary = thread.unread_since(cursor);
-            if let Some(history) = self.read_view.load().history(agent_id) {
-                summary.count = history.updated(thread).unread_since(cursor).count;
-            }
-            return summary;
+            return self.snapshot_unread_history(agent_id, thread, cursor);
         }
         let mut summary = thread.unread_since(cursor);
         let floor = thread.resident_from_sequence();
@@ -650,11 +651,53 @@ impl AppState {
     /// (one small file) and done on every stamp, so a crash costs at most the
     /// action in flight rather than the day's ordering.
     pub(in crate::app) fn persist_attention(&mut self) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.attention");
         // The inbox is ordered and coloured by this map, so a stamp on it IS a
         // feed change — an interaction, a seen, a mute, a dismissal. Noted
         // ahead of the write, because the map moved whether or not there is a
         // store under this bridge to write it to.
         self.note_board_changed();
+        self.save_attention_map();
+    }
+
+    /// Keep known-owner stamps scoped while retaining full publication for
+    /// workspace, external checkout and entity-less attention identities.
+    pub(in crate::app) fn persist_attention_for_owner(&mut self, owner: &str) {
+        if !self.plans.contains_key(owner) && !self.runs.contains_key(owner) {
+            self.persist_attention();
+            return;
+        }
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.attention");
+        self.mark_snapshot_owner_pending(owner);
+        self.note_owner_board_changed(owner);
+        self.save_attention_map();
+    }
+
+    /// Only StatusPump::observe may defer this wire projection: it publishes
+    /// the exact owner unconditionally before releasing its observation guard.
+    /// Persistence and change/watch notifications retain their ordinary order.
+    /// Admission metadata joins that final candidate after any later saves.
+    pub(in crate::app) fn persist_status_attention_before_final_publication(
+        &mut self,
+        owner: &str,
+    ) -> bool {
+        if !self.plans.contains_key(owner) && !self.runs.contains_key(owner) {
+            self.persist_attention();
+            return false;
+        }
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.attention");
+        self.mark_deferred_attention_notice(owner);
+        self.changes
+            .note_board_lists(crate::changes::BoardLists::default());
+        self.watchers.board_moved(self.worktree_roots());
+        self.save_attention_map();
+        true
+    }
+
+    fn save_attention_map(&self) {
         let Ok(store) = self.require_store() else {
             return;
         };
@@ -1073,7 +1116,7 @@ impl AppState {
         let attention = self.board.attention_mut();
         attention.seed_anchor(entity_id, &created_at);
         attention.note_user_message(entity_id, &now);
-        self.persist_attention();
+        self.persist_post_stamp_attention(entity_id);
     }
 
     /// Take a capture's anchor onto the work it just became, so the inbox holds

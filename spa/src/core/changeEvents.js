@@ -85,6 +85,7 @@ import { rememberWorkspaceLockSupport } from "./workspaceLockSupport.js";
 import { rememberWorkspaceSizeSupport } from "./workspaceSizeSupport.js";
 import { rememberCompactionSupport } from "./compactionSupport.js";
 import { invalidateCompactionCaches } from "./compactionCache.js";
+import { dispatchWriteConfirmation } from "./writeOperationRuntime.js";
 
 /** The wire API majors this build of the SPA speaks, declared in every
  *  greeting so `bridge.stats` can count who is still on which. */
@@ -93,6 +94,7 @@ export { SPA_API_RANGE };
 /** What no adapter claims: every capability off. What a surface reads before
  *  a greeting, and about a bridge nobody here speaks to. */
 const NO_CAPABILITIES = Object.freeze({
+  writes: Object.freeze({ epoch: false, ackConfirmMethods: Object.freeze([]) }),
   changes: Object.freeze({ subscriptions: false, kinds: Object.freeze([]), projectSources: false }),
   git: Object.freeze({ projectSources: false }),
   term: Object.freeze({ projectSources: false }),
@@ -799,11 +801,24 @@ function dispatchItems(payload, deviceId) {
  *  here is an event this client does not act on. */
 const EVENT_DISPATCHERS = new Map([["changes", dispatchItems]]);
 
+// Project the UpdateStatus wire shape at the push boundary. Envelope metadata
+// belongs to the session and must never become cached domain state.
+const UPDATE_STATUS_FIELDS = [
+  "running_version", "platform", "development_build", "latest_release",
+  "last_checked_at", "state", "last_error", "update_available", "can_install",
+  "can_replace_development_build", "running_from_cargo_target",
+];
+function updateStatusPayload(payload) {
+  return Object.fromEntries(UPDATE_STATUS_FIELDS.filter((field) => Object.hasOwn(payload, field))
+    .map((field) => [field, payload[field]]));
+}
+
 /** Events about the machine rather than anything on it, acted on whether or
  *  not its change subscriptions are armed. */
 const DEVICE_EVENTS = new Map([
-  ["bridge.update_status", ({ type: _type, ...status }, deviceId) => {
-    void rememberBridgeUpdateStatus(deviceId, status);
+  ["writes.confirmed", dispatchWriteConfirmation],
+  ["bridge.update_status", (payload, deviceId) => {
+    void rememberBridgeUpdateStatus(deviceId, updateStatusPayload(payload));
   }],
   ["models.changed", (_payload, deviceId) => modelsChangedOn(deviceId)],
   ["harnesses.changed", ({ revision }, deviceId) => harnessesChangedOn(deviceId, revision)],
@@ -931,19 +946,24 @@ export async function greetBridge(
     isCurrent = () => true,
     isHistoryCurrent,
     onGreeting = () => {},
+    acceptGreeting = () => true,
     install = (selection) => (selection.unsupported ? null : selection.create(call)),
     strict = false,
   } = {},
 ) {
   const { greeting, current } = await negotiate(call, isCurrent, strict);
   rememberGreetingHistory(deviceId, greeting, isCurrent, isHistoryCurrent);
-  if (!current || !isCurrent()) return changeEventsArmed(deviceId);
+  if (!acceptCurrentGreeting(current, isCurrent, acceptGreeting, greeting)) return changeEventsArmed(deviceId);
   const adapter = install(selectAdapter(greeting));
   // Installing announces device state; a listener may issue another greeting
   // synchronously. That newer greeting now owns the shared bridge state too.
   if (!isCurrent()) return changeEventsArmed(deviceId);
   rememberGreetedReviews(deviceId, adapter, isCurrent);
   return publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurrent);
+}
+
+function acceptCurrentGreeting(current, isCurrent, acceptGreeting, greeting) {
+  return current && isCurrent() && acceptGreeting(greeting);
 }
 
 function rememberGreetingHistory(deviceId, greeting, isCurrent, isHistoryCurrent) {

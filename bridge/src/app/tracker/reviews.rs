@@ -3,6 +3,7 @@
 
 mod lifecycle;
 mod merge;
+mod observation;
 mod opening;
 mod projection;
 mod publication;

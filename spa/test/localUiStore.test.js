@@ -103,7 +103,8 @@ describe("the local UI store", () => {
     await seedOldCache(4, { [DRAFT_KEY]: { at: 1, value: { body: "before" } } });
     await store.adoptCachedUiRecords();
     const captured = await store.uiDraftRecords("dev-1");
-    await seedOldCache(4, { [DRAFT_KEY]: { at: 2, value: { body: "newer" } } });
+    // This rewrites an old-shaped record after the replica schema upgrade.
+    await seedOldCache(undefined, { [DRAFT_KEY]: { at: 2, value: { body: "newer" } } });
     await store.adoptCachedUiRecords();
     await store.deleteUiDraftsIfUnwritten(captured, () => true);
     expect((await store.readUiRecord(DRAFT)).value).toEqual({ body: "newer" });
@@ -250,7 +251,7 @@ describe("drafts a build before the split left in the replica store", () => {
   it("never overwrite a newer draft already in the UI store", async () => {
     await store.writeUiRecord(DRAFT, { body: "newer, typed here" });
     await new Promise((resolve, reject) => {
-      const request = indexedDB.open("build-cache", 4);
+      const request = indexedDB.open("build-cache");
       request.onerror = () => reject(request.error);
       request.onsuccess = () => {
         const transaction = request.result.transaction("records", "readwrite");

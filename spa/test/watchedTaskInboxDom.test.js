@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { comment, event, task as wireTask, taskDetail } from "./trackerWireFixture.js";
+import { announced } from "./waits.js";
 
 const NOW = Date.parse("2026-09-24T12:00:00Z");
 const task = (over = {}) => wireTask({ created_at: "2026-09-24T00:00:00Z", updated_at: "2026-09-24T01:00:00Z", ...over });
@@ -23,7 +24,7 @@ const DEVICE = "watch-device";
 const PROJECT = "proj-1";
 const WAIT = { timeout: 5000, interval: 20 };
 const GREETING = {
-  api_version: "2.0.0",
+  api_version: "3.24.0",
   push_events: true,
   capabilities: ["tasks.watching", "tasks.attachments"],
   tasks: { watching: true, attachments: true },
@@ -431,7 +432,7 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
   beforeEach(() => boot({
     tasks: [asked],
     timelines: { [asked.id]: [question] },
-    hello: { api_version: "2.0.0", push_events: true, capabilities: ["tasks.watching", "tasks.commentUserNotifies"] },
+    hello: { api_version: "3.24.0", push_events: true, capabilities: ["tasks.watching", "tasks.commentUserNotifies"] },
   }));
   afterEach(() => pane?.dispose());
 
@@ -452,6 +453,7 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
     rowFor(asked.id).querySelector(".inbox-watch[data-unwatch]").click();
   };
   const heldList = async () => (await modules.cache.readCached(modules.tracker.tasksAddress(DEVICE, PROJECT))).value;
+  const watchList = (heard) => modules.cache.subscribeCache(modules.tracker.tasksAddress(DEVICE, PROJECT), heard);
 
   it("leaves the Dashboard when it leaves the inbox, whatever the board's row still says", async () => {
     await vi.waitFor(async () => expect(await modules.needsYouRule.readNeedsYouRule(DEVICE)).toBe(true), WAIT);
@@ -462,6 +464,7 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
     answers["tasks.unwatch"] = async () => ({ task: { ...asked, watched: false } });
     await pressStopWatching();
     await vi.waitFor(() => expect(rowFor(asked.id)).toBe(null), WAIT);
+    await announced(watchList, async () => (await heldList()).tasks[0].watched === false);
     expect((await modules.tracker.readTasksRecord(DEVICE, PROJECT)).tasks[0].watched).toBe(false);
     await vi.waitFor(() => expect(needsYou()).toEqual([]), WAIT);
   });
@@ -487,6 +490,7 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
       answers["tasks.unwatch"] = async () => ({ task: { ...asked, watched: false } });
       await pressStopWatching();
       await vi.waitFor(() => expect(rowFor(asked.id)).toBe(null), WAIT);
+      await announced(watchList, async () => (await heldList()).tasks[0].watched === false);
       expect((await heldList()).tasks[0].watched).toBe(false);
       await vi.waitFor(() => expect(needsYou()).toEqual([]), WAIT);
     });
@@ -499,11 +503,18 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
       answers["tasks.unwatch"] = () => new Promise((_, reject) => { refuse = reject; });
       await pressStopWatching();
       await vi.waitFor(() => expect(needsYou()).toEqual([]), WAIT);
+      // A pane can paint its optimistic query before the whole-list write lands.
+      await announced(watchList, async () => (await heldList()).tasks[0].watched === false);
       const unwatchedAs = (await heldList()).read_order;
 
       await vi.waitFor(() => expect(refuse).toBeTypeOf("function"), WAIT);
       refuse(new Error("Build cannot stop watching that task."));
       await vi.waitFor(() => expect(rowFor(asked.id)).not.toBe(null), WAIT);
+      // Clearing the inbox hold precedes the asynchronous rollback cache write.
+      await announced(watchList, async () => {
+        const restored = await heldList();
+        return restored.tasks[0].watched && restored.read_order > unwatchedAs;
+      });
       const restored = await heldList();
       expect(restored.tasks[0].watched).toBe(true);
       expect(restored.read_order).toBeGreaterThan(unwatchedAs);

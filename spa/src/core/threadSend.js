@@ -58,6 +58,7 @@ export const creationMessageHasArrived = (entry, provisional) => {
  *  gone, where no receipt said one. */
 export const rekeyPostedMessage = (handle, messageKey, provisional, posted, submission) => {
   const sequence = (posted && posted.posted_sequence) ?? null;
+  if (sequence === null && posted?.phase === "ack") return;
   if (sequence === null) handle.drop(messageKey);
   else handle.rekey(messageKey, String(sequence), {
     ...provisional,
@@ -80,6 +81,7 @@ export const conversationRecordAddress = (cacheScope, address) => {
  *  written, and the stand-in goes. */
 export const settleProvisional = (address, submission, posted) => {
   const sequence = (posted && posted.posted_sequence) ?? null;
+  if (sequence === null && posted?.phase === "ack") return;
   if (sequence === null) return withdrawProvisionalMessage(address, submission.operationId);
   return acknowledgeProvisionalMessage(
     address,
@@ -103,7 +105,7 @@ export const postSubmission = async (controller, submission, settle) => {
   try {
     posted = await replyOrNothing(controller.post(submission, MUTATION_THREAD_PAGE));
   } catch (error) {
-    if (!error.uncertain) throw error;
+    if (controller.isDurableSubmission(submission) || !error.uncertain) throw error;
     posted = null;
   }
   if (posted) settle(posted);

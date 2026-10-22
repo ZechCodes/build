@@ -21,7 +21,7 @@ async function seedLeanThread(warm) {
   const message = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
   App.devices = [{ id: deviceId, name: "This computer" }];
   App.selectedDeviceId = deviceId;
-  await greetBridge(async () => ({ api_version: "3.20.0", capabilities: ["threads.leanActivity"], push_events: false }), { deviceId });
+  await greetBridge(async () => ({ api_version: "3.24.0", capabilities: ["threads.leanActivity"], push_events: false }), { deviceId });
   const threadAddress = { deviceId, entityId, kind: "thread", sub: agentId };
   await writeCached({ deviceId, entityId, kind: "row", sub: "" }, {
     kind: "workspace", entity_id: entityId, project_id: "lean-project", workspace_id: "lean-workspace",

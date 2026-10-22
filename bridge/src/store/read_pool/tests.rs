@@ -3,6 +3,39 @@ use crate::store::Store;
 use std::time::Duration;
 
 #[tokio::test]
+async fn review_metadata_uses_one_readonly_snapshot_without_the_writer_connection() {
+    let fixture = crate::reviews::sync::reconcile::tests::Fixture::new();
+    fixture.sync();
+    let review = fixture.review();
+    let sync = fixture
+        .store
+        .load_review_sync_observations(&review.task_id)
+        .unwrap();
+    let intents = fixture
+        .store
+        .load_review_merge_intents(&review.task_id)
+        .unwrap();
+    let mut reader = fixture.store.read_pool().acquire().await;
+    let _writer = fixture.store.connection();
+    reader
+        .read(|read| {
+            assert_eq!(
+                read.load_review(&review.task_id).unwrap(),
+                Some(review.clone())
+            );
+            assert_eq!(
+                read.load_review_sync_observations(&review.task_id).unwrap(),
+                sync
+            );
+            assert_eq!(
+                read.load_review_merge_intents(&review.task_id).unwrap(),
+                intents
+            );
+        })
+        .unwrap();
+}
+
+#[tokio::test]
 async fn eight_readers_are_independent_and_the_ninth_waits_fairly() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
@@ -190,4 +223,104 @@ async fn unwinding_a_query_rolls_back_its_snapshot_before_the_connection_returns
         .await
         .read(|read| assert!(!read.connection().is_autocommit()))
         .unwrap();
+}
+
+fn store_with_close_marker(path: &Path) -> Store {
+    let store = Store::new(path).unwrap();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO meta (key, value) VALUES ('close-marker', 'committed')",
+            [],
+        )
+        .unwrap();
+    store
+}
+
+fn assert_close_marker_in_database_file_alone(path: &Path) {
+    let copy = path.join("file-only-copy.db");
+    std::fs::copy(path.join(crate::store::DB_FILE), &copy).unwrap();
+    let connection = Connection::open_with_flags(copy, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let value: String = connection
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'close-marker'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("closing the final reader checkpoints schema and saved data into build.db");
+    assert_eq!(value, "committed");
+    assert!(!path.join("build.db-wal").exists());
+    assert!(!path.join("build.db-shm").exists());
+}
+
+#[tokio::test]
+async fn a_cloned_read_pool_keeps_the_writer_until_its_readers_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_with_close_marker(dir.path());
+    let writer = Arc::downgrade(&store.writer.connection);
+    let pool = store.read_pool();
+    let retained = pool.clone();
+    drop(store);
+    drop(pool);
+    let writer_lived_with_pool = writer.strong_count() > 0;
+    let mut reader = retained.acquire().await;
+    reader
+        .read(|read| {
+            let value: String = read
+                .connection()
+                .query_row(
+                    "SELECT value FROM meta WHERE key = 'close-marker'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(value, "committed");
+        })
+        .unwrap();
+    drop(reader);
+    drop(retained);
+    assert_close_marker_in_database_file_alone(dir.path());
+    assert!(
+        writer_lived_with_pool,
+        "a read-only pool retains the writer lifetime for final checkpoint"
+    );
+    assert!(
+        writer.upgrade().is_none(),
+        "closing the pool releases the writer"
+    );
+}
+
+#[tokio::test]
+async fn a_borrowed_reader_keeps_the_writer_until_the_final_pool_owner_closes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_with_close_marker(dir.path());
+    let writer = Arc::downgrade(&store.writer.connection);
+    let pool = store.read_pool();
+    let mut reader = pool.acquire().await;
+    drop(store);
+    drop(pool);
+    let writer_lived_with_reader = writer.strong_count() > 0;
+    reader
+        .read(|read| {
+            let value: String = read
+                .connection()
+                .query_row(
+                    "SELECT value FROM meta WHERE key = 'close-marker'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(value, "committed");
+        })
+        .unwrap();
+    drop(reader);
+    assert_close_marker_in_database_file_alone(dir.path());
+    assert!(
+        writer_lived_with_reader,
+        "an outstanding read keeps the final writer alive"
+    );
+    assert!(
+        writer.upgrade().is_none(),
+        "returning the last reader releases the writer"
+    );
 }

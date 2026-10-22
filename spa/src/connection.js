@@ -212,7 +212,7 @@ const reasonOf = (error) => error?.blockedReason || "failed";
  */
 async function mintAppSession(deviceId, rendezvous, authority) {
   try {
-    return await openSession({
+    const session = await openSession({
       rendezvous,
       transport,
       deviceId,
@@ -229,6 +229,15 @@ async function mintAppSession(deviceId, rendezvous, authority) {
         if (authority.current() && !isSignaling(payload.type)) dispatchChangeEvent(payload, deviceId);
       },
     });
+    let regreeting = null;
+    session.bridgeEpoch.onUnexpected(() => {
+      if (!authority.current() || regreeting) return;
+      const context = contextFor(deviceId);
+      if (context?.session !== session) return;
+      regreeting = greetLiveBridge(context, { isAuthoritative: () => authority.current() });
+      void regreeting.finally(() => { regreeting = null; });
+    });
+    return session;
   } catch (error) {
     throw becauseOf(error, error?.securityCritical ? "refused" : "unreached");
   }
@@ -526,6 +535,7 @@ async function mintTerminalSession(deviceId) {
     const minted = await lease.rendezvous.mint({});
     return {
       ...minted,
+      bridgeEpoch: contextFor(deviceId)?.session?.bridgeEpoch,
       release: lease.release,
     };
   } catch (error) {
@@ -707,6 +717,11 @@ export function greetLiveBridge(context, {
     // greeting on this same session before the first hello answers.
     isCurrent,
     isHistoryCurrent: () => context.active(),
+    acceptGreeting: (greeting) => {
+      if (session.acceptGreeting?.(greeting, { isCurrent }) === false) return false;
+      void context.writeOperations?.bind({ session, greeting, active: isCurrent }).catch(() => {});
+      return true;
+    },
     onGreeting: (greeting) => {
       repository?.configureCapabilities(greeting);
       rememberRtcClientSupport(session.deviceId, pairedTransportKey(session.deviceId), greeting);
@@ -715,7 +730,7 @@ export function greetLiveBridge(context, {
     // then the device's context, which is where every surface reads what this
     // machine's bridge speaks (core/deviceContexts.js).
     install: (selection) => {
-      const adapter = session.installAdapter(selection);
+      const adapter = session.installAdapter(selection, { writeOperations: context.writeOperations });
       adoptBridgeSelection(context, selection, adapter, greetingAuthority);
       return adapter;
     },

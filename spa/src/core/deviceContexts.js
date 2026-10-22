@@ -21,6 +21,7 @@ import { createDeviceLifecycles } from "./deviceLifecycle.js";
 import { needsCompactionSupport } from "./bridgeApi/v1/compactionParams.js";
 import { ApiError } from "./bridgeApi/v1/index.js";
 import { TASK_WAITING_ON_UPDATE } from "./taskWaitingOnSupport.js";
+import { deviceWriteOperations } from "./writeOperationRuntime.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
 const deviceLifecycles = createDeviceLifecycles();
@@ -164,6 +165,7 @@ function createDeviceContext(deviceId) {
     rpc: null, // asking this machine; stood up below, over the context itself
     cacheScope: scopeFor(deviceId),
     chatRepository: null,
+    writeOperations: deviceWriteOperations(deviceId),
     adapter: null, // the API adapter this bridge's greeting installed, or null
     apiVersion: null, // the `api_version` it greeted with
     unsupported: null, // "app" | "bridge" when no adapter here speaks to it
@@ -470,6 +472,7 @@ function bindRepository(context, call) {
   // The reader's position is the person's, not the device's: every repository
   // is given the one App.viewingContext.
   context.chatRepository = createChatRepository({
+    writeOperations: context.writeOperations,
     scope: context.cacheScope,
     call,
     viewingContext: App.viewingContext,

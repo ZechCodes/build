@@ -2,7 +2,7 @@
 //! review service before `save_review_snapshot` commits their identities here.
 
 use super::tracker::{append_activity, write_tracker_task};
-use super::{now_rfc3339, Store, StoreError};
+use super::{now_rfc3339, ReadTransaction, Store, StoreError};
 use crate::reviews::model::ReviewSnapshot;
 use crate::reviews::records::{
     PullRequestMetadata, PullRequestStatus, Review, ReviewCompletion, ReviewMode, ReviewState,
@@ -41,6 +41,13 @@ struct CompletionWrite<'a> {
     description: &'a str,
     now: &'a str,
     terminal_status: Option<PullRequestStatus>,
+}
+
+impl ReadTransaction<'_> {
+    /// Complete review metadata from this request's SQLite snapshot.
+    pub fn load_review(&self, task_id: &str) -> Result<Option<Review>, StoreError> {
+        load_review(self.connection(), task_id)
+    }
 }
 
 impl Store {
@@ -140,21 +147,25 @@ impl Store {
     ) -> Result<(Review, Vec<TaskEvent>), StoreError> {
         let description = validate_description(description)?;
         self.in_waiting_on_transaction(|tx| {
+            complete_review_requested(tx, task_id, expected_version, actor, description)
+        })
+    }
+
+    /// Capture the completed task and events in the completion transaction.
+    /// A failed capture rolls back the review and its task activity together.
+    pub(crate) fn complete_review_with_task(
+        &self,
+        task_id: &str,
+        expected_version: u64,
+        actor: &Actor,
+        description: &str,
+    ) -> Result<(Review, Task, Vec<TaskEvent>), StoreError> {
+        let description = validate_description(description)?;
+        self.in_waiting_on_transaction(|tx| {
+            let (review, events) =
+                complete_review_requested(tx, task_id, expected_version, actor, description)?;
             let task = require_task(tx, task_id)?;
-            let now = now_rfc3339();
-            complete_review_in_tx(
-                tx,
-                CompletionWrite {
-                    task: &task,
-                    comments: &[],
-                    events: &[],
-                    actor,
-                    expected_version: Some(expected_version),
-                    description,
-                    now: &now,
-                    terminal_status: None,
-                },
-            )
+            Ok((review, task, events))
         })
     }
 
@@ -217,6 +228,30 @@ pub(super) fn load_reviews_of_project(
             })
         })
         .collect()
+}
+
+fn complete_review_requested(
+    tx: &Transaction,
+    task_id: &str,
+    expected_version: u64,
+    actor: &Actor,
+    description: &str,
+) -> Result<(Review, Vec<TaskEvent>), StoreError> {
+    let task = require_task(tx, task_id)?;
+    let now = now_rfc3339();
+    complete_review_in_tx(
+        tx,
+        CompletionWrite {
+            task: &task,
+            comments: &[],
+            events: &[],
+            actor,
+            expected_version: Some(expected_version),
+            description,
+            now: &now,
+            terminal_status: None,
+        },
+    )
 }
 
 fn complete_review_in_tx(

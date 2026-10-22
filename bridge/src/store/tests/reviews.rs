@@ -316,3 +316,24 @@ fn store_completion_description_boundary_counts_utf8_bytes() {
         }
     }
 }
+
+#[test]
+fn completion_task_capture_failure_rolls_back_review_task_and_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let task = task(&store);
+    store
+        .save_review_snapshot(&task.id, "ws-1", 0, snapshot("rs-first"))
+        .unwrap();
+    store.connection().execute_batch("CREATE TRIGGER corrupt_completed_task AFTER UPDATE OF status ON tracker_tasks WHEN NEW.status = 'done' BEGIN UPDATE tracker_tasks SET record = '{}' WHERE id = NEW.id; END;").unwrap();
+    assert!(store
+        .complete_review_with_task(&task.id, 1, &Actor::User, "Closed")
+        .is_err());
+    assert_eq!(
+        store.load_review(&task.id).unwrap().unwrap().version,
+        1,
+        "failed capture must roll back durable completion"
+    );
+    assert_eq!(store.load_tracker_task(&task.id).unwrap().unwrap(), task);
+    assert!(task_events(&store, &task.id).is_empty());
+}

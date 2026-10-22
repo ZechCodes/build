@@ -25,9 +25,13 @@ from buildapp.controllers import BuildController
 
 
 # What `npm run build` in spa/ writes as the shell, cut to the parts under test:
-# the `{{USER0}}` slot and the mount point. The build output is gitignored, so
+# the account and `{{USER0}}` slots and the mount point. The build output is gitignored, so
 # a checkout that never built the SPA (a CI runner's) has none of its own.
-SHELL = '<!doctype html><div id="app" data-user="{{USER0}}"></div>'
+SHELL = (
+    '<!doctype html><meta name="build-account-id" content="{{ACCOUNT_ID}}">'
+    '<div id="app" data-user="{{USER0}}"></div>'
+    '<!-- {{ACCOUNT_ID_EXTRA}} -->'
+)
 
 
 @pytest.fixture(autouse=True)
@@ -43,9 +47,11 @@ def _answer(value):
     return answer
 
 
-def _shell():
+def _shell(user_id=None, **request_fields):
     """The SPA shell as a signed-in member is served it."""
-    request = SimpleNamespace(session={SESSION_USER_ID: str(uuid4())})
+    request = SimpleNamespace(
+        session={SESSION_USER_ID: str(user_id or uuid4())}, **request_fields
+    )
     with patch.object(controllers, "is_alpha_member", _answer(True)), patch.object(
         controllers, "account_email", _answer("someone@example.com")
     ):
@@ -64,3 +70,49 @@ def test_the_shell_still_carries_the_app():
     response = _shell()
     assert response.media_type == "text/html"
     assert '<div id="app" data-user="S">' in response.content
+
+
+def test_the_shell_names_only_the_authenticated_account():
+    own_id, other_id = uuid4(), uuid4()
+    response = _shell(
+        own_id,
+        query_params={"account_id": str(other_id)},
+        headers={"X-Build-Account-Id": str(other_id)},
+        scope={"state": {"build_user_id": str(other_id)}},
+    )
+
+    assert f'<meta name="build-account-id" content="{own_id}">' in response.content
+    assert str(other_id) not in response.content
+    assert "{{ACCOUNT_ID}}" not in response.content
+    assert "{{ACCOUNT_ID_EXTRA}}" in response.content
+
+
+@pytest.mark.parametrize("session", [{}, {SESSION_USER_ID: "not-a-uuid"}])
+def test_a_signed_out_request_carries_no_account_id(session):
+    other_id = uuid4()
+    request = SimpleNamespace(
+        session=session, query_params={"account_id": str(other_id)}
+    )
+    response = asyncio.run(
+        BuildController.index.fn(BuildController, request=request, db_session=None)
+    )
+
+    assert response.status_code == 302
+    assert "build-account-id" not in str(response.content)
+    assert str(other_id) not in str(response.content)
+
+
+def test_the_account_placeholder_is_encoded_as_an_html_attribute():
+    account_id = '"<>&\''
+    with patch.object(controllers, "account_email", _answer("someone@example.com")):
+        response = asyncio.run(BuildController._render_spa(account_id, None))
+
+    assert (
+        '<meta name="build-account-id" content="&quot;&lt;&gt;&amp;&#x27;">'
+        in response.content
+    )
+
+
+def test_the_spa_source_declares_the_account_placeholder():
+    source = Path(__file__).resolve().parents[2] / "spa" / "index.html"
+    assert '<meta name="build-account-id" content="{{ACCOUNT_ID}}"' in source.read_text()

@@ -9,7 +9,7 @@ globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 const capability = "compaction.harnessThresholds";
 const capabilities = { compaction: { harnessThresholds: true }, agents: { projectWorkers: true } };
-const greeting = { api_version: "3.22.0", capabilities: [capability] };
+const greeting = { api_version: "3.24.0", capabilities: [capability] };
 const address = (kind, entityId = "") => ({ deviceId: "device", entityId, kind });
 const observation = { configured: { tokens: 100, source: { kind: "project", id: "project" } }, active: null,
   enforcement: "unsupported", pending_change: null, reason: "cli_unavailable", future: { retained: true } };
@@ -19,7 +19,7 @@ beforeEach(async () => { await wipeCache(); });
 
 it("gates thresholds independently by name and accepts its invalidation event", () => {
   expect(capabilitiesOf(greeting).compaction).toEqual({ harnessThresholds: true });
-  expect(capabilitiesOf({ api_version: "3.22.0", capabilities: [] }).compaction).toEqual({ harnessThresholds: false });
+  expect(capabilitiesOf({ api_version: "3.24.0", capabilities: [] }).compaction).toEqual({ harnessThresholds: false });
   const event = { type: "compaction.changed", scope: "device", owner_id: null };
   expect(parseEvent(event)).toEqual(event);
 });

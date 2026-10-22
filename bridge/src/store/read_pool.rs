@@ -1,6 +1,8 @@
 //! Bounded independent SQLite readers. Checkout waits asynchronously; SQL runs
 //! on the dedicated read workers, and every request gets one fresh snapshot.
+mod classes;
 use super::StoreError;
+pub(crate) use classes::ReadClass;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -16,6 +18,22 @@ pub struct ReadPool {
 struct Pool {
     available: Mutex<Vec<Connection>>,
     permits: Arc<Semaphore>,
+    classes: classes::ReadQuotas,
+    // Fields drop in declaration order: close every idle reader before the
+    // final writable connection, so SQLite can checkpoint and remove its WAL.
+    // This is ownership only; read paths never acquire the writer mutex.
+    _writer_lifetime: Arc<Mutex<Connection>>,
+    #[cfg(test)]
+    initialization: ReadPoolInitialization,
+}
+
+/// Natural startup work, nested inside Store::new rather than any request.
+#[cfg(test)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ReadPoolInitialization {
+    pub total: std::time::Duration,
+    pub schema_total: std::time::Duration,
+    pub schema_count: usize,
 }
 
 /// One exclusively borrowed connection; dropping it returns its capacity.
@@ -33,21 +51,64 @@ pub struct ReadTransaction<'a> {
     connection: &'a Connection,
 }
 
+fn open_read_connection(path: &Path) -> Result<Connection, StoreError> {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.pragma_update(None, "query_only", true)?;
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    Ok(connection)
+}
+
 impl ReadPool {
-    pub(super) fn open(path: &Path) -> Result<Self, StoreError> {
+    pub(super) fn open(path: &Path, writer: Arc<Mutex<Connection>>) -> Result<Self, StoreError> {
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        #[cfg(test)]
+        let mut initialization = ReadPoolInitialization::default();
         let mut available = Vec::with_capacity(READ_CONNECTIONS);
         for _ in 0..READ_CONNECTIONS {
-            let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-            connection.pragma_update(None, "query_only", true)?;
-            connection.busy_timeout(std::time::Duration::from_secs(5))?;
+            let connection = open_read_connection(path)?;
+            #[cfg(test)]
+            let schema_started = std::time::Instant::now();
+            // Store startup precedes request acceptance. Load every reader's
+            // schema here so the ready pool never defers this work to a read.
+            // Preparing needs no application table, rows, or retained statement.
+            drop(connection.prepare("SELECT 1 FROM main.sqlite_schema LIMIT 0")?);
+            #[cfg(test)]
+            {
+                initialization.schema_total += schema_started.elapsed();
+                initialization.schema_count += 1;
+            }
             available.push(connection);
         }
-        Ok(Self {
+        let pool = Self::from_connections(available, writer);
+        #[cfg(test)]
+        let pool = {
+            let mut pool = pool;
+            initialization.total = started.elapsed();
+            Arc::get_mut(&mut pool.inner)
+                .expect("startup pool has not been published")
+                .initialization = initialization;
+            pool
+        };
+        Ok(pool)
+    }
+
+    fn from_connections(available: Vec<Connection>, writer: Arc<Mutex<Connection>>) -> Self {
+        Self {
             inner: Arc::new(Pool {
                 available: Mutex::new(available),
                 permits: Arc::new(Semaphore::new(READ_CONNECTIONS)),
+                classes: classes::ReadQuotas::new(),
+                _writer_lifetime: writer,
+                #[cfg(test)]
+                initialization: ReadPoolInitialization::default(),
             }),
-        })
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn initialization_timing(&self) -> ReadPoolInitialization {
+        self.inner.initialization
     }
 
     /// Tokio's semaphore queues borrowers fairly and removes cancelled waits.
@@ -143,6 +204,15 @@ impl<'a> ReadTransaction<'a> {
         self.connection
     }
 }
+
+#[cfg(test)]
+mod classes_tests;
+
+#[cfg(test)]
+mod metadata_timing;
+
+#[cfg(test)]
+mod schema_tests;
 
 #[cfg(test)]
 mod tests;

@@ -9,6 +9,7 @@ use crate::orchestrator::OrchestratorError;
 use crate::timing::FrameTimer;
 use crate::transport;
 use crate::transport::Frame;
+use crate::update::AdmissionLease;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -119,6 +120,36 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "workspace.retry",
 ];
 
+/// A lookup that found no update service still admits the request. Exempt
+/// liveness verbs instead let their drain consult admission independently.
+enum RequestAdmission {
+    Entered(Option<AdmissionLease>),
+    Bypassed,
+}
+
+impl RequestAdmission {
+    fn enter(
+        state: &Arc<Mutex<AppState>>,
+        method: &str,
+        timer: &FrameTimer,
+    ) -> Result<Self, ApiError> {
+        if matches!(method, "ping" | "bridge.stats" | "bridge.update_status") {
+            return Ok(Self::Bypassed);
+        }
+        // The service is installed before sharing AppState. A completed lookup
+        // finding no service is admitted and must not fetch it again at drain.
+        let gate = timer.lock(state).update_admission();
+        let lease = match gate {
+            Some(gate) => Some(
+                gate.try_enter()
+                    .ok_or_else(|| ApiError::busy("bridge update handoff in progress"))?,
+            ),
+            None => None,
+        };
+        Ok(Self::Entered(lease))
+    }
+}
+
 /// Dispatch one decrypted request frame. [`session_scoped`] answers the verbs
 /// that need the shared `Arc` (background producer/pump) or the caller's own
 /// `SessionSender` (somewhere to push live output to); [`routed`] answers
@@ -175,22 +206,9 @@ pub(in crate::app) fn dispatch_frame(
 
     // Keep a request admitted through its off-lock git work and queue drain.
     // The idle updater can claim the bridge only between complete requests.
-    let admission = if matches!(
-        method.as_str(),
-        "ping" | "bridge.stats" | "bridge.update_status"
-    ) {
-        None
-    } else {
-        timer.lock(state).update_admission()
-    };
-    let _lease = match admission {
-        Some(gate) => match gate.try_enter() {
-            Some(lease) => Some(lease),
-            None => {
-                return api::reply(id, Err(ApiError::busy("bridge update handoff in progress")))
-            }
-        },
-        None => None,
+    let admission = match RequestAdmission::enter(state, &method, &timer) {
+        Ok(admission) => admission,
+        Err(error) => return api::reply(id, Err(error)),
     };
 
     let result = match session_scoped(state, &sender, &method, &params, &timer) {
@@ -208,7 +226,7 @@ pub(in crate::app) fn dispatch_frame(
         // The caller is named for the frame: the `changes.*` verbs push to
         // it, and `routed` carries only the state.
         None => crate::api::v1::changes::with_session(&sender, || {
-            routed(state, &method, &params, &timer)
+            routed(state, &method, &params, &timer, &admission)
         }),
     };
     api::reply(id, result)
@@ -225,7 +243,11 @@ fn conversation_session_refusal(error: String) -> ApiError {
     }
 }
 
-fn terminal_session_refusal(method: &str, params: &Value, error: String) -> ApiError {
+pub(in crate::app) fn terminal_session_refusal(
+    method: &str,
+    params: &Value,
+    error: String,
+) -> ApiError {
     if (method.starts_with("term.") && super::runtime::terminals::source_scope_requested(params))
         || error == crate::app::SOURCE_TERMINAL_BUSY
     {
@@ -246,9 +268,29 @@ fn noted_as_user_activity(
 ) -> Result<Value, String> {
     if outcome.is_ok() && USER_ACTIVITY_VERBS.contains(&method) {
         let now = i64::try_from(crate::agent::now_ms()).unwrap_or(i64::MAX);
-        timer.lock(state).note_user_activity(now);
+        if method == "term.create" {
+            note_terminal_activity(state, now, timer);
+        } else {
+            timer.lock(state).note_user_activity(now);
+        }
     }
     outcome
+}
+
+/// Terminal creation's store wait must not extend any application guard.
+fn note_terminal_activity(state: &Arc<Mutex<AppState>>, now: i64, timer: &FrameTimer) {
+    let pending = {
+        let mut app = timer.lock(state);
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("term.create.activity");
+        let updated = app.observe_user_activity(now);
+        updated.zip(app.store.clone())
+    };
+    if let Some((updated, store)) = pending {
+        if let Err(error) = store.save_user_session_if_newer(&updated) {
+            eprintln!("user session persist failed: {error}");
+        }
+    }
 }
 
 /// The three signaling verbs, answered from the peers slot alone. `None` is
@@ -298,6 +340,22 @@ fn session_scoped(
     params: &Value,
     timer: &FrameTimer,
 ) -> Option<Result<Value, String>> {
+    if !matches!(
+        method,
+        "session.hello"
+            | "bridge.stats"
+            | "stream.start"
+            | "term.create"
+            | "term.attach"
+            | "term.input"
+            | "term.resize"
+            | "term.ack"
+            | "agent.attach"
+            | "agent.start"
+            | "agent.interrupt"
+    ) {
+        return None;
+    }
     if !allowed_during_project_deletion(method) && timer.lock(state).project_deletion_in_progress {
         return Some(Err(PROJECT_DELETION_IN_PROGRESS.to_string()));
     }
@@ -312,24 +370,10 @@ fn session_scoped(
         "bridge.stats" => Ok(timer.clock().stats()),
         // QA-only (`BRIDGE_QA_AGENT=1`); unknown to everyone else.
         "stream.start" if timer.lock(state).qa_agent => stream_start(state, params, timer),
-        // Opening a terminal or an agent in a worktree IS interacting with it in
-        // Build — it is the reason a hand-made worktree graduates out of the
-        // Worktrees row. This arm bypasses `dispatch`, so it stamps for itself.
         "term.create" => {
             #[cfg(test)]
             pause_terminal_create_after_admission(state, timer);
-            let created = term_create(state, params, timer);
-            if created.is_ok() {
-                if let Some(scope_id) = params
-                    .get("workspace_id")
-                    .or_else(|| params.get("run_id"))
-                    .or_else(|| params.get("worktree_id"))
-                    .and_then(Value::as_str)
-                {
-                    timer.lock(state).touch_attention(scope_id);
-                }
-            }
-            created
+            term_create(state, params, timer)
         }
         "term.attach" => term_attach(state, sender, params, timer),
         // A write to a child's pty blocks while the child is not draining, so
@@ -360,19 +404,41 @@ fn routed(
     method: &str,
     params: &Value,
     timer: &FrameTimer,
+    admission: &RequestAdmission,
 ) -> Result<Value, ApiError> {
     // A verb whose git work must not run under the lock hands that work back
     // rather than doing it here; the drain below runs it with the mutex
     // released. See `AppState::deferred_work`.
-    let (dispatched, deferred) = timer.lock(state).dispatch_deferring(method, params);
+    #[cfg(test)]
+    timer.mark_request("dispatch_start");
+    let (dispatched, deferred) = {
+        let mut app = timer.lock(state);
+        // Refuse before dispatch_deferring can take an existing deferred job
+        // or checkpoint queued work, just as the session precheck did.
+        if !allowed_during_project_deletion(method) && app.project_deletion_in_progress {
+            return Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS));
+        }
+        app.dispatch_deferring(method, params)
+    };
+    #[cfg(test)]
+    timer.mark_request("dispatch_end");
     let dispatched = match deferred {
         // THE POINT OF ALL THIS: seconds to minutes of git — a status walk, a
         // fetch, a merge, a `git worktree remove` of a six-gigabyte checkout —
         // with every other frame, every terminal pump and the relay's own read
         // loop free to make progress meanwhile.
         Some(mut deferred) => loop {
+            #[cfg(test)]
+            timer.mark_request("external_start");
             let done = deferred.run();
-            match timer.lock(state).apply_deferred_stage(method, params, done) {
+            #[cfg(test)]
+            timer.mark_request("external_end");
+            #[cfg(test)]
+            timer.mark_request("apply_start");
+            let applied = timer.lock(state).apply_deferred_stage(method, params, done);
+            #[cfg(test)]
+            timer.mark_request("apply_end");
+            match applied {
                 DeferredNext::Answered(answer) => break answer.map_err(ApiError::classify),
                 DeferredNext::Again(next) => deferred = next,
             }
@@ -384,7 +450,16 @@ fn routed(
     // cold spawn blocks for seconds on the harness's readiness wait while the
     // browser gives up at twelve.
     if dispatched.is_ok() {
-        DeliveryRunner::drain(state, timer);
+        #[cfg(test)]
+        timer.mark_request("drain_start");
+        match admission {
+            RequestAdmission::Entered(lease) => {
+                DeliveryRunner::drain_admitted(state, timer, lease.clone());
+            }
+            RequestAdmission::Bypassed => DeliveryRunner::drain(state, timer),
+        }
+        #[cfg(test)]
+        timer.mark_request("drain_end");
     }
     dispatched
 }
@@ -446,7 +521,7 @@ fn pause_terminal_create_after_admission(state: &Arc<Mutex<AppState>>, timer: &F
 
 /// Keep observations and session subscriptions available during filesystem cleanup.
 /// New verbs default to blocked until their read-only behavior is established.
-fn allowed_during_project_deletion(method: &str) -> bool {
+pub(in crate::app) fn allowed_during_project_deletion(method: &str) -> bool {
     matches!(
         method,
         "ping"
@@ -540,7 +615,7 @@ impl AppState {
     /// this mutex with no handler behind it, and both must record against one
     /// set of since-boot counters.
     pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
-        let (clock, peers, pool, reads, snapshots) = {
+        let (clock, peers, pool, reads, snapshots, observations, mutations) = {
             let mut app = state.lock().unwrap();
             app.initialize_snapshot_projection();
             app.initialize_read_context();
@@ -550,21 +625,36 @@ impl AppState {
                 app.store.as_ref().map(crate::store::Store::read_pool),
                 app.read_service(),
                 app.snapshot_service(),
+                app.observation_service(),
+                super::mutations::MutationService::new(&app),
             )
         };
         let ending = Arc::clone(&state);
         FrameHandler::new(clock, move |sender, frame, timer| {
             dispatch_frame(&state, &peers, sender, frame, timer)
         })
-        .with_sql_reads(pool, move |_sender, frame, _timer, connection| {
-            reads.call(frame, connection)
+        .with_observation_reads(pool.clone(), move |frame, connection| {
+            observations.prepare(frame, connection)
+        })
+        .with_sql_reads(pool, move |sender, frame, _timer, connection| {
+            if matches!(
+                frame.payload["method"].as_str(),
+                Some("writes.status" | "writes.subscribe")
+            ) {
+                mutations.call(sender, frame, connection)
+            } else {
+                reads.call(frame, connection)
+            }
         })
         .with_snapshot_reads(move |frame| snapshots.call(frame))
         .on_session_end(move |session_id| {
-            ending
+            let removed = ending
                 .lock()
                 .unwrap()
                 .drop_ended_session_uploads(session_id);
+            for upload in removed {
+                upload.dispose();
+            }
         })
     }
 
@@ -662,6 +752,8 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> Result<Value, ApiError> {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("routing.handler");
         if self.project_deletion_in_progress && !allowed_during_project_deletion(method) {
             return Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS));
         }

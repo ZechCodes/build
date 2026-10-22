@@ -448,6 +448,17 @@ impl AppState {
         } else if let Some(delivery) = legacy_delivery {
             self.queue_message_delivery(&delivery, None);
         }
+        if !resume && address.conversation_entity_id == entity_id {
+            // The append already committed this owner; return its current view.
+            let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
+            let view = self.run_view(
+                &entity_id,
+                active,
+                thread_detail(params),
+                crate::app::DigestScope::Detail,
+            );
+            return Ok(with_post_receipt(view, posted_sequence, receipt.as_ref()));
+        }
         let mut active = self.take_run(&entity_id)?;
         if resume {
             active.run.apply(RunEvent::Reply).expect("parked run reply");

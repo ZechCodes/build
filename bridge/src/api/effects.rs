@@ -1,6 +1,6 @@
 //! Audited effects of every RPC entry. Migrated immutable snapshots execute
-//! at intake; SQL reads use dedicated workers, and other observations keep
-//! their existing routing.
+//! at intake; SQL reads use dedicated workers, and filesystem/Git observations
+//! use an independent bounded I/O lane.
 
 use serde_json::Value;
 
@@ -15,9 +15,12 @@ pub(crate) enum Effect {
 }
 
 pub const SQL_READ_METHODS: &[&str] = &[
+    "writes.status",
+    "writes.subscribe",
     "thread.page",
     "thread.activity",
     "thread.operation",
+    "thread.revision",
     "tasks.list",
     "tasks.get",
     "tasks.waiting_on.blocks",
@@ -34,6 +37,12 @@ pub const INTAKE_SNAPSHOT_METHODS: &[&str] = &[
     "models.list",
     "harnesses.list",
     "bridge.update_status",
+    "capture.get",
+    "task.get",
+    "task.stages",
+    "tasks.columns",
+    "stream.events",
+    "stream.state",
 ];
 
 pub(crate) fn is_snapshot_read(payload: &Value) -> bool {
@@ -56,9 +65,9 @@ const SNAPSHOT_METHODS: &[&str] = &[
     "models.list",
     "harnesses.list",
     "bridge.update_status",
+    "task.get",
     "task.stages",
     "tasks.columns",
-    "thread.revision",
     "stream.events",
     "stream.state",
 ];
@@ -85,9 +94,10 @@ const EXTERNAL_READ_METHODS: &[&str] = &[
     "tasks.attachment",
     "thread.attachment",
     "workspace.git_init_options",
+    "term.list",
 ];
 
-const LEGACY_READ_METHODS: &[&str] = &["archived.list", "task.get", "term.list"];
+const LEGACY_READ_METHODS: &[&str] = &["archived.list"];
 
 const WRITE_METHODS: &[&str] = &[
     "agent.add",
@@ -210,6 +220,22 @@ pub(crate) fn effect(method: &str) -> Option<Effect> {
     ]
     .into_iter()
     .find_map(|(methods, effect)| methods.contains(&method).then_some(effect))
+}
+
+/// External observations use an independent bounded I/O lane. Archive reads
+/// also observe checkout existence despite their legacy classification.
+pub(crate) fn is_observation_read(payload: &Value) -> bool {
+    payload
+        .get("method")
+        .and_then(Value::as_str)
+        .is_some_and(|method| EXTERNAL_READ_METHODS.contains(&method) || method == "archived.list")
+}
+
+pub(crate) fn observation_needs_sql(payload: &Value) -> bool {
+    matches!(
+        payload.get("method").and_then(Value::as_str),
+        Some("tasks.review.get" | "tasks.review.diff" | "tasks.attachment")
+    )
 }
 
 pub(crate) fn is_sql_read(payload: &Value) -> bool {

@@ -53,27 +53,7 @@ impl Store {
         &self,
         task_id: &str,
     ) -> Result<Vec<ReviewMergeIntent>, StoreError> {
-        let conn = self.connection();
-        let mut statement = conn.prepare(
-            "SELECT project_key, request_id, record FROM review_merge_intents \
-             WHERE task_id = ?1 ORDER BY json_extract(record, '$.created_at'), request_id",
-        )?;
-        let rows = statement.query_map([task_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (project, request, raw) = row?;
-            decode(
-                &raw,
-                "review_merge_intents",
-                &format!("{project}/{request}"),
-            )
-        })
-        .collect()
+        crate::store::ReadTransaction::new(&self.connection()).load_review_merge_intents(task_id)
     }
 
     /// Store references to durable per-source action results. Saving success
@@ -237,3 +217,32 @@ pub(super) fn write_intent(tx: &Transaction, intent: &ReviewMergeIntent) -> Resu
 
 mod execution;
 mod refresh;
+
+impl crate::store::ReadTransaction<'_> {
+    pub fn load_review_merge_intents(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<ReviewMergeIntent>, StoreError> {
+        let conn = self.connection();
+        let mut statement = conn.prepare(
+            "SELECT project_key, request_id, record FROM review_merge_intents \
+             WHERE task_id = ?1 ORDER BY json_extract(record, '$.created_at'), request_id",
+        )?;
+        let rows = statement.query_map([task_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (project, request, raw) = row?;
+            decode(
+                &raw,
+                "review_merge_intents",
+                &format!("{project}/{request}"),
+            )
+        })
+        .collect()
+    }
+}

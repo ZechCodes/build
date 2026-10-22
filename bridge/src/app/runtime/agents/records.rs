@@ -237,23 +237,31 @@ impl AppState {
     /// is the PUMP that calls it — the only place that learns a harness died on
     /// its own. An owner that no longer exists (its record was deleted with the
     /// tab) has no lineage left to close, which is why this is quiet.
+    /// Returns whether a successful canonical save carries this owner's runtime
+    /// projection, including publication deferred behind an outer mutation.
+    /// Callers that removed runtime state can otherwise schedule its projection.
     pub(in crate::app) fn record_agent_session_end(
         &mut self,
         owner: &str,
         agent_id: &str,
         instance: &SessionInstance,
-    ) {
+    ) -> bool {
         let now = now_rfc3339();
         let mut ended_current = false;
-        if let Err(error) = self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
+        let publishes_owner = self
+            .resolve_conversation_address(owner, Some(agent_id))
+            .is_ok_and(|address| address.conversation_entity_id == owner);
+        let saved = self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
             let was_current = thread.open_session_instance(agent_id).as_ref() == Some(instance);
             ended_current = thread.finish_session_instance(instance, &now) && was_current;
             Ok(())
-        }) {
+        });
+        if let Err(error) = &saved {
             eprintln!("record_agent_session_end {owner}: {error}");
         }
+        let published_owner = publishes_owner && saved.is_ok();
         if !ended_current {
-            return;
+            return published_owner;
         }
         self.close_turn_of_dead_agent(owner, agent_id);
         self.record_agent_working_since(owner, agent_id, None);
@@ -270,6 +278,7 @@ impl AppState {
         // than left to the mutation tails above, which do nothing at all for an
         // owner whose record is already gone.
         self.note_board_changed();
+        published_owner
     }
 
     /// `agent_id`'s process is gone. If it died mid-turn, say so on the
@@ -830,19 +839,48 @@ impl AppState {
         agent_id: &str,
         snapshot: &crate::harness::SessionStatusSnapshot,
     ) {
+        if self.update_agent_status_snapshot(owner, agent_id, snapshot) {
+            self.persist_attention_for_owner(owner);
+            self.changes.note_entity(owner);
+        }
+    }
+
+    /// The private status observer always publishes this owner after applying
+    /// context and usage observations. Keep the independently committed roster
+    /// write, but let that final publication carry the attention stamp too.
+    pub(in crate::app) fn record_agent_status_snapshot_for_pump(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        snapshot: &crate::harness::SessionStatusSnapshot,
+    ) -> bool {
+        if !self.update_agent_status_snapshot(owner, agent_id, snapshot) {
+            return false;
+        }
+        let refresh_metadata = self.persist_status_attention_before_final_publication(owner);
+        self.changes.note_entity(owner);
+        refresh_metadata
+    }
+
+    /// Save the agent interval before deriving aggregate attention. Callers
+    /// decide when to publish the changed stamp, without combining its save
+    /// with the roster transaction or changing either failure boundary.
+    fn update_agent_status_snapshot(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        snapshot: &crate::harness::SessionStatusSnapshot,
+    ) -> bool {
         let working_since =
             matches!(snapshot.status, AgentStatus::Working).then(|| snapshot.changed_at.clone());
         self.record_agent_working_since(owner, agent_id, working_since);
         let working = self.entity_agents_working(owner);
-        if self.board.attention_mut().observe_status(
+        self.board.attention_mut().observe_status(
             owner,
             working,
             &snapshot.changed_at,
             snapshot.last_worked_at.as_deref(),
-        ) {
-            self.persist_attention();
-            self.note_entity_changed(owner);
-        }
+        )
     }
 
     /// Post one thing the agent reported doing into the conversation it speaks

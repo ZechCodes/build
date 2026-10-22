@@ -14,7 +14,7 @@ import { sessionAnswering } from "./deviceSessionFixture.js";
  *  a new `call` is that bridge answering differently, not another machine. */
 const bridge = { call: null };
 /** What a bridge that carries watching says in its greeting. */
-const WATCHING_GREETING = Object.freeze({ api_version: "2.0.0", capabilities: ["tasks.watching"] });
+const WATCHING_GREETING = Object.freeze({ api_version: "3.24.0", capabilities: ["tasks.watching"] });
 
 // The device's conversations, as the registry holds them for this one machine:
 // the rail is handed one and writes every draft and message through it.

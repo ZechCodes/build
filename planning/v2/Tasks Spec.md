@@ -728,6 +728,15 @@ Eight tools, on **both** the coding surface and the project surface:
 `move_task`, `close_task`, `link_task`, `track_task`, `untrack_task`. The
 waiting-on addition also supplies `unlink_task` and `list_task_dependents`.
 
+`list_tasks` returns one page in task-number descending order:
+`{project_id, tasks, user_session, next_cursor?}`. It defaults to 20 tasks;
+optional `limit` must be 1–20. Pass `next_cursor` as `cursor` to continue
+with the same `state`, `status`, and `label` filters. A filtered page can be
+empty and still have `next_cursor`; finish only when `next_cursor` is absent.
+Every listed row remains a full task record. Use `get_task` for its full
+detail and timeline. This MCP limit does not change `tasks.list` RPC paging
+or its full task records.
+
 Each is a thin wrapper over the verb of the same shape. The bridge knows who is
 calling, so:
 

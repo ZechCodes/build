@@ -413,6 +413,7 @@ fn an_agent_hand_off_leaves_the_name_request_for_delivery() {
             &entity_id,
             &named,
             BridgeAction::MessageAgent {
+                attachments: Vec::new(),
                 agent_id: unnamed.clone(),
                 body: "take the retry path".into(),
             },
@@ -484,6 +485,7 @@ fn the_name_travels_with_everything_the_agent_is_named_on() {
             &entity_id,
             &agent_id,
             BridgeAction::MessageAgent {
+                attachments: Vec::new(),
                 agent_id: watcher.clone(),
                 body: "take the retry path".into(),
             },

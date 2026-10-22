@@ -24,7 +24,7 @@ const address = (over = {}) => ({
 });
 
 const OPERATIONS = {
-  api_version: "2.0.0",
+  api_version: "3.24.0",
   capabilities: ["threads.postOperations"],
   thread_post_operations: { version: 1, status_method: "thread.operation" },
 };
@@ -119,6 +119,10 @@ describe("resolving uncertain posts after a reconnect", () => {
     expect(reconnected).toHaveBeenLastCalledWith("thread.post", expect.objectContaining({
       operation_id: "operation-1",
       body: "first",
+    }), expect.objectContaining({
+      operationId: "operation-1",
+      owner: expect.objectContaining({ kind: "chat", ...address() }),
+      draft: expect.objectContaining({ body: "first" }),
     }));
     expect(controller.recoveries()).toEqual([]);
   });

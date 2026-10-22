@@ -3,18 +3,21 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Condvar};
+use std::sync::{Arc, Condvar, Weak};
 use std::time::Instant;
 
 use serde_json::Value;
 
 use crate::harness::{AgentSession, AgentStatus, SessionOutput};
 use crate::reaper::Retirement;
-use crate::screen::{ScreenHandle, TerminalHandle};
+use crate::screen::{ScreenHandle, ScreenIdentity, TerminalHandle};
 use crate::thread::SessionInstance;
 
 use super::{LifecycleDiagnostic, MintedCallRow, Tab, TabKey, TabPumps, TabRole};
 use crate::app::runtime::terminals::{TabAttachment, TabFacts};
+
+mod tabs;
+use tabs::Tabs;
 
 /// Compare an MCP token without making the compared byte position depend on
 /// either input's length. This is the exact body currently used by AppState.
@@ -37,11 +40,14 @@ pub(in crate::app) fn constant_time_token_eq(actual: &str, expected: &str) -> bo
 /// In particular, `spawn_finished` is paired with that original mutex guard;
 /// SessionRegistry must never acquire an independent mutex.
 pub(in crate::app) struct SessionRegistry {
-    tabs: HashMap<TabKey, Tab>,
+    tabs: Tabs,
+    shell_generation: u64,
     spawn_claims: HashSet<TabKey>,
+    shell_checkout_holds: HashMap<TabKey, ShellCheckoutHold>,
     spawn_finished: Arc<Condvar>,
     waiting_screens: HashMap<TabKey, ScreenHandle>,
     mcp_tokens: HashMap<String, String>,
+    mcp_read_authority: super::McpReadAuthority,
     /// A failed roster save cannot undo an agent binding's actual retirement.
     /// Agent IDs are shared by aliases; owner IDs only support deletion cleanup.
     retired_bindings: HashMap<String, String>,
@@ -49,6 +55,12 @@ pub(in crate::app) struct SessionRegistry {
     /// Where the tabs' byte pumps paint: the daemon's push runtime, or — with
     /// none set, as in the tests — whatever runtime starts them.
     push_runtime: Option<tokio::runtime::Handle>,
+}
+
+struct ShellCheckoutHold {
+    project_id: String,
+    workspace_id: Option<String>,
+    raw_root: std::path::PathBuf,
 }
 
 /// A claimed spawn key. Runtime owns the RAII wrapper that settles this token
@@ -87,12 +99,88 @@ pub(in crate::app) struct AgentTabFact {
     pub instance: Option<SessionInstance>,
 }
 
+/// Immutable registration identity retained across an off-lock root probe.
+/// Keeping the handles alive also prevents allocation identity from being reused.
+pub(in crate::app) enum TerminalCleanupCandidate {
+    Tab {
+        key: TabKey,
+        role: TabRole,
+        session: Arc<dyn AgentSession>,
+        instance: Option<SessionInstance>,
+    },
+    WaitingScreen {
+        key: TabKey,
+        screen: ScreenHandle,
+    },
+}
+
+/// Accepted projections retain weak allocation identities. This prevents ABA
+/// while allowing retired sessions and terminal buffers to drop immediately.
+#[derive(Clone)]
+pub(in crate::app) enum ProjectionRegistration {
+    Tab {
+        key: TabKey,
+        role: TabRole,
+        session: Weak<dyn AgentSession>,
+        instance: Option<SessionInstance>,
+    },
+    WaitingScreen {
+        key: TabKey,
+        screen: ScreenIdentity,
+    },
+}
+
+impl PartialEq for ProjectionRegistration {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Tab {
+                    key,
+                    role,
+                    session,
+                    instance,
+                },
+                Self::Tab {
+                    key: other_key,
+                    role: other_role,
+                    session: other_session,
+                    instance: other_instance,
+                },
+            ) => {
+                key == other_key
+                    && role == other_role
+                    && instance == other_instance
+                    && session.ptr_eq(other_session)
+            }
+            (
+                Self::WaitingScreen { key, screen },
+                Self::WaitingScreen {
+                    key: other_key,
+                    screen: other_screen,
+                },
+            ) => key == other_key && screen == other_screen,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ProjectionRegistration {}
+
+impl TerminalCleanupCandidate {
+    pub(in crate::app) fn key(&self) -> &TabKey {
+        match self {
+            Self::Tab { key, .. } | Self::WaitingScreen { key, .. } => key,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(in crate::app) struct ShellTabFact {
     pub project_source: Option<crate::changes::ProjectSourceScope>,
     pub key: TabKey,
     pub tab_id: String,
     pub created_at: String,
-    pub size: Option<(u16, u16)>,
+    pub screen: Option<ScreenHandle>,
 }
 
 /// Owned facts for preflight, capture, digest, and callback adapters. Session
@@ -141,15 +229,39 @@ pub(in crate::app) struct RetainedTab {
 impl SessionRegistry {
     pub(in crate::app) fn new() -> Self {
         Self {
-            tabs: HashMap::new(),
+            tabs: Tabs::new(),
+            shell_generation: 0,
             spawn_claims: HashSet::new(),
+            shell_checkout_holds: HashMap::new(),
             spawn_finished: Arc::new(Condvar::new()),
             waiting_screens: HashMap::new(),
             mcp_tokens: HashMap::new(),
+            mcp_read_authority: super::McpReadAuthority::new(),
             retired_bindings: HashMap::new(),
             next_terminal: 1,
             push_runtime: None,
         }
+    }
+
+    fn insert_tab(&mut self, key: TabKey, tab: Tab) -> Option<Tab> {
+        let shell = tab.role == TabRole::Shell;
+        let previous = self.tabs.insert(key, tab);
+        if shell
+            || previous
+                .as_ref()
+                .is_some_and(|tab| tab.role == TabRole::Shell)
+        {
+            self.shell_generation += 1;
+        }
+        previous
+    }
+
+    fn remove_tab(&mut self, key: &TabKey) -> Option<Tab> {
+        let tab = self.tabs.remove(key)?;
+        if tab.role == TabRole::Shell {
+            self.shell_generation += 1;
+        }
+        Some(tab)
     }
 
     pub(in crate::app) fn set_push_runtime(&mut self, runtime: tokio::runtime::Handle) {
@@ -168,6 +280,77 @@ impl SessionRegistry {
         let id = format!("term-{}", self.next_terminal);
         self.next_terminal += 1;
         id
+    }
+
+    pub(in crate::app) fn take_shell_spawn_claim(
+        &mut self,
+        key: TabKey,
+        project_id: String,
+        workspace_id: Option<String>,
+        raw_root: std::path::PathBuf,
+    ) -> SpawnClaimToken {
+        self.shell_checkout_holds.insert(
+            key.clone(),
+            ShellCheckoutHold {
+                project_id,
+                workspace_id,
+                raw_root,
+            },
+        );
+        self.take_spawn_claim(key)
+    }
+
+    pub(in crate::app) fn pending_shell_for_project(&self, project_id: &str) -> bool {
+        self.shell_checkout_holds
+            .values()
+            .any(|hold| hold.project_id == project_id)
+    }
+
+    pub(in crate::app) fn pending_shell_for_workspace(&self, workspace_id: &str) -> bool {
+        self.shell_checkout_holds
+            .values()
+            .any(|hold| hold.workspace_id.as_deref() == Some(workspace_id))
+    }
+
+    pub(in crate::app) fn pending_shell_within(&self, root: &Path) -> bool {
+        self.spawn_claims
+            .iter()
+            .any(|key| !key.is_agent() && key.root.starts_with(root))
+            || self
+                .shell_checkout_holds
+                .values()
+                .any(|hold| hold.raw_root.starts_with(root))
+    }
+
+    pub(in crate::app) fn pending_shell_at(&self, root: &Path) -> bool {
+        self.spawn_claims
+            .iter()
+            .any(|key| !key.is_agent() && key.root == root)
+            || self
+                .shell_checkout_holds
+                .values()
+                .any(|hold| hold.raw_root == root)
+    }
+
+    pub(in crate::app) fn pending_shell_count(&self) -> usize {
+        self.spawn_claims
+            .iter()
+            .filter(|key| !key.is_agent())
+            .count()
+    }
+
+    pub(in crate::app) fn shell_holds_at(&self, root: &Path) -> Vec<String> {
+        self.tabs
+            .iter()
+            .filter(|(key, tab)| key.root.starts_with(root) && tab.role == TabRole::Shell)
+            .map(|(key, _)| key)
+            .chain(
+                self.spawn_claims
+                    .iter()
+                    .filter(|key| !key.is_agent() && key.root.starts_with(root)),
+            )
+            .map(|key| key.tab_id.clone())
+            .collect()
     }
 
     pub(in crate::app) fn shell_count(&self) -> usize {
@@ -198,6 +381,8 @@ impl SessionRegistry {
             .iter()
             .filter(|(_, tab)| tab.role.agent().is_some())
             .map(|(_, tab)| {
+                #[cfg(test)]
+                crate::app::snapshot_projection::summary_counts::status_visit();
                 (
                     tab.root.clone(),
                     tab.live && matches!(tab.session.status(), AgentStatus::Working),
@@ -213,7 +398,7 @@ impl SessionRegistry {
         output: SessionOutput,
     ) -> TabPumps {
         let pumps = self.pumps_of(&tab, output);
-        self.tabs.insert(key, tab);
+        self.insert_tab(key, tab);
         pumps
     }
 
@@ -259,6 +444,7 @@ impl SessionRegistry {
 
     /// The adapter must call this before an under-lock RAII wrapper is dropped.
     pub(in crate::app) fn settle_spawn_claim(&mut self, claim: SpawnClaimToken) {
+        self.shell_checkout_holds.remove(&claim.key);
         self.spawn_claims.remove(&claim.key);
         self.spawn_finished.notify_all();
     }
@@ -267,8 +453,11 @@ impl SessionRegistry {
         &mut self,
         agent_id: String,
         token: String,
+        issuer: super::McpIssuer,
     ) -> McpTokenLease {
         self.mcp_tokens.insert(agent_id.clone(), token.clone());
+        self.mcp_read_authority
+            .install(agent_id.clone(), &token, issuer);
         McpTokenLease { agent_id, token }
     }
 
@@ -280,6 +469,28 @@ impl SessionRegistry {
 
     pub(in crate::app) fn revoke_mcp_token(&mut self, agent_id: &str) {
         self.mcp_tokens.remove(agent_id);
+        self.mcp_read_authority.revoke(agent_id);
+    }
+
+    pub(in crate::app) fn mcp_read_authority(&self) -> super::McpReadAuthority {
+        self.mcp_read_authority.clone()
+    }
+
+    pub(in crate::app) fn register_mcp_router(
+        &mut self,
+        capture: String,
+        agent: String,
+    ) -> super::RouterAuthority {
+        self.mcp_read_authority.register_router(capture, agent)
+    }
+
+    pub(in crate::app) fn remove_mcp_router(&mut self, capture: &str, agent: &str) {
+        self.mcp_read_authority.remove_router(capture, agent);
+    }
+
+    pub(in crate::app) fn set_mcp_resetting(&mut self, conversation: &str, resetting: bool) {
+        self.mcp_read_authority
+            .set_resetting(conversation, resetting);
     }
 
     pub(in crate::app) fn retire_agent_binding(&mut self, owner: &str, agent: &str) {
@@ -304,8 +515,43 @@ impl SessionRegistry {
             .get(&lease.agent_id)
             .is_some_and(|current| constant_time_token_eq(current, &lease.token))
         {
-            self.mcp_tokens.remove(&lease.agent_id);
+            self.revoke_mcp_token(&lease.agent_id);
         }
+    }
+
+    /// Preserve native registry order, including the first root status match.
+    pub(in crate::app) fn projection_layout(&self) -> Vec<ProjectionRegistration> {
+        self.tabs
+            .iter()
+            // Shells publish only terminal facts. Their membership never
+            // changes board/workspace/history projection structure.
+            .filter(|(_, tab)| tab.role.agent().is_some())
+            .map(|(key, tab)| ProjectionRegistration::Tab {
+                key: key.clone(),
+                role: tab.role.clone(),
+                session: Arc::downgrade(&tab.session),
+                instance: tab.session_instance.clone(),
+            })
+            .chain(self.waiting_screens.iter().map(|(key, screen)| {
+                ProjectionRegistration::WaitingScreen {
+                    key: key.clone(),
+                    screen: screen.identity(),
+                }
+            }))
+            .collect()
+    }
+
+    /// Retained sessions can change their status and surfaces independently of
+    /// a producer's owner. Refresh all of them on incremental publications.
+    pub(in crate::app) fn projection_agent_owners(&self) -> std::collections::BTreeSet<String> {
+        self.tabs
+            .values()
+            .filter_map(|tab| {
+                #[cfg(test)]
+                crate::app::snapshot_projection::work_counts::owner_closure::registry_tab();
+                tab.role.agent().map(|(owner, _)| owner.to_owned())
+            })
+            .collect()
     }
 
     pub(in crate::app) fn agent_tabs_at(&self, root: &Path) -> Vec<AgentTabFact> {
@@ -349,22 +595,67 @@ impl SessionRegistry {
         self.tabs.get(key)?.project_source.as_ref()
     }
 
-    pub(in crate::app) fn shell_tabs_at(&self, root: &Path) -> Vec<ShellTabFact> {
+    pub(in crate::app) fn shell_generation(&self) -> u64 {
+        self.shell_generation
+    }
+
+    pub(in crate::app) fn shell_tabs(&self) -> Vec<ShellTabFact> {
         self.tabs
             .iter()
-            .filter(|(key, tab)| key.root == root && tab.role == TabRole::Shell)
+            .filter(|(_, tab)| tab.role == TabRole::Shell)
             .map(|(key, tab)| ShellTabFact {
                 project_source: tab.project_source.clone(),
                 key: key.clone(),
                 tab_id: tab.tab_id.clone(),
                 created_at: tab.created_at.clone(),
-                size: tab.screen.as_ref().map(ScreenHandle::size),
+                screen: tab.screen.clone(),
             })
             .collect()
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn waiting_screen_keys(&self) -> Vec<TabKey> {
         self.waiting_screens.keys().cloned().collect()
+    }
+
+    pub(in crate::app) fn terminal_cleanup_candidates(&self) -> Vec<TerminalCleanupCandidate> {
+        self.tabs
+            .iter()
+            .map(|(key, tab)| TerminalCleanupCandidate::Tab {
+                key: key.clone(),
+                role: tab.role.clone(),
+                session: Arc::clone(&tab.session),
+                instance: tab.session_instance.clone(),
+            })
+            .chain(self.waiting_screens.iter().map(|(key, screen)| {
+                TerminalCleanupCandidate::WaitingScreen {
+                    key: key.clone(),
+                    screen: screen.clone(),
+                }
+            }))
+            .collect()
+    }
+
+    pub(in crate::app) fn cleanup_candidate_is_current(
+        &self,
+        candidate: &TerminalCleanupCandidate,
+    ) -> bool {
+        match candidate {
+            TerminalCleanupCandidate::Tab {
+                key,
+                role,
+                session,
+                instance,
+            } => self.tabs.get(key).is_some_and(|tab| {
+                tab.role == *role
+                    && Arc::ptr_eq(&tab.session, session)
+                    && tab.session_instance == *instance
+            }),
+            TerminalCleanupCandidate::WaitingScreen { key, screen } => self
+                .waiting_screens
+                .get(key)
+                .is_some_and(|current| current.same_screen(screen)),
+        }
     }
 
     /// Session detach needs every live and waiting screen, but no map identity.
@@ -576,6 +867,30 @@ impl SessionRegistry {
         true
     }
 
+    /// Routers have no conversation lineage, so fence their delivery by the
+    /// live process and exact router role instead of a session instance.
+    pub(in crate::app) fn mark_router_delivered_if_current(
+        &mut self,
+        key: &TabKey,
+        session: &Arc<dyn AgentSession>,
+        owner: &str,
+        agent_id: &str,
+        at: Instant,
+    ) -> bool {
+        let Some(tab) = self.tabs.get_mut(key) else {
+            return false;
+        };
+        if !crate::router::is_router_agent(agent_id)
+            || !Arc::ptr_eq(&tab.session, session)
+            || tab.session_instance.is_some()
+            || tab.role.agent() != Some((owner, agent_id))
+        {
+            return false;
+        }
+        tab.last_delivered_at = Some(at);
+        true
+    }
+
     pub(in crate::app) fn parent_call_sequence(&self, key: &TabKey, call_id: &str) -> Option<u64> {
         Some(self.tabs.get(key)?.call_sequences.get(call_id)?.sequence)
     }
@@ -715,7 +1030,7 @@ impl SessionRegistry {
         if let Some((_, agent)) = tab.role.agent() {
             self.forget_retired_agent(agent);
         }
-        self.tabs.insert(key, tab);
+        self.insert_tab(key, tab);
     }
 
     /// Publication step 7, after the app adapter records lineage.
@@ -739,7 +1054,7 @@ impl SessionRegistry {
         key: &TabKey,
         diagnostic: LifecycleDiagnostic<'_>,
     ) -> Option<RetainedTab> {
-        let tab = self.tabs.remove(key)?;
+        let tab = self.remove_tab(key)?;
         tab.log_lifecycle(diagnostic);
         Some(RetainedTab {
             retirement: Retirement::begin(tab.session),
@@ -754,7 +1069,7 @@ impl SessionRegistry {
         reason: &str,
         diagnostic: LifecycleDiagnostic<'_>,
     ) -> Option<RetiredAgent> {
-        let tab = self.tabs.remove(key)?;
+        let tab = self.remove_tab(key)?;
         tab.log_lifecycle(diagnostic);
         let wire_id = tab.wire_id();
         if let Some(screen) = &tab.screen {
@@ -781,7 +1096,7 @@ impl SessionRegistry {
 
     #[cfg(test)]
     pub(in crate::app) fn test_insert_tab(&mut self, key: TabKey, tab: Tab) -> Option<Tab> {
-        self.tabs.insert(key, tab)
+        self.insert_tab(key, tab)
     }
 
     #[cfg(test)]
@@ -796,7 +1111,7 @@ impl SessionRegistry {
 
     #[cfg(test)]
     pub(in crate::app) fn test_remove_tab(&mut self, key: &TabKey) -> Option<Tab> {
-        self.tabs.remove(key)
+        self.remove_tab(key)
     }
 
     #[cfg(test)]
@@ -817,8 +1132,13 @@ impl SessionRegistry {
     }
 
     #[cfg(test)]
-    pub(in crate::app) fn test_install_token(&mut self, agent_id: String, token: String) {
-        self.mcp_tokens.insert(agent_id, token);
+    pub(in crate::app) fn test_install_token(
+        &mut self,
+        agent_id: String,
+        token: String,
+        issuer: super::McpIssuer,
+    ) {
+        self.install_mcp_token(agent_id, token, issuer);
     }
 
     #[cfg(test)]

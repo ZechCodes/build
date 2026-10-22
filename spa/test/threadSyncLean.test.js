@@ -16,7 +16,7 @@ beforeEach(async () => {
   events = await import("../src/core/changeEvents.js");
 });
 
-const greet = (capabilities) => events.greetBridge(async () => ({ api_version: "3.20.0", capabilities, push_events: false }), { deviceId: address.deviceId });
+const greet = (capabilities) => events.greetBridge(async () => ({ api_version: "3.24.0", capabilities, push_events: false }), { deviceId: address.deviceId });
 const read = (call) => sync.syncThreadWindow({ ...address, agentId: address.sub, call });
 
 describe("lean thread page requests", () => {

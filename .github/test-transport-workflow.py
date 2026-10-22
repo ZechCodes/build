@@ -92,7 +92,7 @@ class TransportWorkflow(unittest.TestCase):
         return self.jobs[name]
 
     def assert_node_pins(self, block):
-        self.assertRegex(block, r'node-version: [\'"]22\.23\.3[\'"]')
+        self.assertRegex(block, r'node-version: [\'"]22\.23\.4[\'"]')
         self.assertRegex(block, r"npm install (?:--global|-g) npm@12\.0\.2(?:\s|$)")
 
     def assert_consumer_install(self, job, directory, consumer_command):
@@ -118,7 +118,7 @@ class TransportWorkflow(unittest.TestCase):
 
     def test_bridge_uv_pin_precedes_test(self):
         block = self.job("bridge")
-        self.assertRegex(block, r'version: [\'"]0\.12\.13[\'"]')
+        self.assertRegex(block, r'version: [\'"]0\.13\.4[\'"]')
         self.assertLess(block.index("Install uv"), block.index("run: cargo test --all"))
 
     def test_transport_job_is_gated_and_runs_every_binding(self):
@@ -129,7 +129,7 @@ class TransportWorkflow(unittest.TestCase):
             with self.subTest(owed=owed):
                 context = {"needs": {"changes": {"outputs": {"transport": owed}}}}
                 self.assertEqual(evaluate_condition(expression, context), owed == "true")
-        self.assertRegex(block, r'version: [\'"]0\.12\.13[\'"]')
+        self.assertRegex(block, r'version: [\'"]0\.13\.4[\'"]')
         self.assert_node_pins(block)
         self.assertIn("npm ci --prefix transport/js --ignore-scripts", block)
         self.assertRegex(block, r"python -m unittest discover -s (?:transport/)?python/tests(?:\s|$)")

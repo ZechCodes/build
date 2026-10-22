@@ -65,7 +65,7 @@ Design rules:
   places today's code departs from it are listed under "Current exceptions" in
   [Render from cache](ARCHITECTURE.md#render-from-cache). They are not
   precedent.
-- SPA and web use Node 22.23.3 and npm 12.0.2 (their `.nvmrc` and
+- SPA and web use Node 22.23.4 and npm 12.0.2 (their `.nvmrc` and
   `packageManager` pins). Their portable `package-lock.json` files are committed.
   From the repo root, first run `nice -n 10 npm ci --prefix transport/js
   --ignore-scripts`, then `cd spa && nice -n 10 npm ci --legacy-peer-deps`
@@ -129,7 +129,7 @@ cmd > /tmp/gate.log 2>&1; echo "exit=$?"
 | --- | --- | --- |
 | bridge | `bridge/` | `nice -n 10 cargo test` · `nice -n 10 cargo clippy --all-targets -- -D warnings` · `nice -n 10 cargo fmt --check` |
 | bridge vendored webrtc | `bridge/` | `nice -n 10 cargo test --locked --manifest-path vendor/Cargo.toml --lib` (the patched webrtc on the patched rtc, `bridge/vendor/README.md`) |
-| bridge Pi extension | repo root, Node 22.23.3 / npm 12.0.2 | `nice -n 10 npm ci --prefix bridge/tests/fixtures --ignore-scripts` · `nice -n 10 npm run --prefix bridge/tests/fixtures test:compaction` · `nice -n 10 npm run --prefix bridge/tests/fixtures typecheck:compaction` (locked test-only compiler and Node types; CI's QA client job runs both for bridge changes) |
+| bridge Pi extension | repo root, Node 22.23.4 / npm 12.0.2 | `nice -n 10 npm ci --prefix bridge/tests/fixtures --ignore-scripts` · `nice -n 10 npm run --prefix bridge/tests/fixtures test:compaction` · `nice -n 10 npm run --prefix bridge/tests/fixtures typecheck:compaction` (locked test-only compiler and Node types; CI's QA client job runs both for bridge changes) |
 | SPA | `spa/` | `nice -n 10 npm ci --legacy-peer-deps` (fresh install; transport first) · `nice -n 10 npm install --legacy-peer-deps` (dependency edits; commit lock) · `nice -n 10 npm run lint` · `nice -n 10 npm test` · `nice -n 10 npm run build` |
 | skriftapp | `skriftapp/` | `nice -n 10 uv run --frozen ruff check buildapp` · `nice -n 10 uv run --frozen pytest buildapp -q` |
 | landing | `landing/` | `nice -n 10 npm ci` · `nice -n 10 npm test` (builds the Astro page, then reads it back) |
@@ -138,7 +138,7 @@ cmd > /tmp/gate.log 2>&1; echo "exit=$?"
 | desktop | `desktop/` | `nice -n 10 npm test` |
 | shell | repo root | `git ls-files '*.sh' \| nice -n 10 xargs shellcheck` |
 
-The two `#[ignore]`d timing tests (git child cost, daemon under PTY flood) are out of `cargo test`; `.github/workflows/timing.yml` runs them nightly and by hand.
+The three `#[ignore]`d timing regressions are out of `cargo test`; `.github/workflows/timing.yml` runs git child cost and daemon under PTY flood in their debug profile, and busy app-lock holds in the release profile. Each job builds before its serial timed runs, nightly and by hand.
 
 Transport is maintained in this checkout; [transport/README.md](transport/README.md)
 records ownership, tests and the historical source pin. The dedicated CI job

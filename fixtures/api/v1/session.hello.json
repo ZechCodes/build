@@ -3,7 +3,8 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.22.0",
+    "api_version": "3.24.0",
+    "ack_confirm_methods": [],
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -24,6 +25,7 @@
       "branch.finish",
       "branches.finishDelete",
       "bridge.check_update",
+      "bridge.epoch",
       "bridge.install_update",
       "bridge.stats",
       "bridge.update_status",
@@ -218,16 +220,20 @@
       "workspace.set_locked",
       "workspaces.lifecycle",
       "workspaces.reclaimBranches",
-      "worktree.diff"
+      "worktree.diff",
+      "writes.status",
+      "writes.subscribe"
     ],
     "push_events": true,
     "events": [
-      "changes",
+      "bridge.restarting",
       "bridge.update_status",
+      "changes",
+      "compaction.changed",
+      "harnesses.changed",
       "models.changed",
       "rtc.diagnostics",
-      "harnesses.changed",
-      "compaction.changed"
+      "writes.confirmed"
     ],
     "coalesce_window_ms": 250,
     "changes": {
@@ -264,7 +270,9 @@
     },
     "message_context": {
       "version": 1
-    }
+    },
+    "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6",
+    "journal_incarnation": "276cf083-7e02-464e-af91-9ffaf0f3f516"
   },
   "errors": [],
   "client_lan_cache": {

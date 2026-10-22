@@ -291,6 +291,18 @@ fn an_attachment_outlives_the_worktree_it_was_written_into() {
     );
 }
 
+/// Check the shared contract of an unranged read, an offset-only read, and
+/// a requested range larger than the transport permits.
+fn assert_attachment_first_piece(reply: &Value, complete: &[u8]) -> Vec<u8> {
+    assert_eq!(reply["ok"], true);
+    assert_eq!(reply["result"]["size"], complete.len());
+    assert_eq!(reply["result"]["offset"], 0);
+    let piece = b64decode(reply["result"]["content_b64"].as_str().unwrap()).unwrap();
+    assert_eq!(piece.len() as u64, ATTACHMENT_MAX_BYTES);
+    assert!(piece == complete[..ATTACHMENT_MAX_BYTES as usize]);
+    piece
+}
+
 #[test]
 fn thread_attachment_pages_are_bounded_and_cover_the_last_byte() {
     let (dir, repo) = init_repo();
@@ -304,15 +316,11 @@ fn thread_attachment_pages_are_bounded_and_cover_the_last_byte() {
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
     std::fs::write(&target, &bytes).unwrap();
 
-    let legacy = state.handle(req(
+    let unranged = state.handle(req(
         "thread.attachment",
         json!({ "entity_id": run_id, "path": path }),
     ));
-    assert_eq!(legacy["ok"], true, "{legacy:?}");
-    assert_eq!(
-        b64decode(legacy["result"]["content_b64"].as_str().unwrap()).unwrap(),
-        bytes
-    );
+    let unranged_bytes = assert_attachment_first_piece(&unranged, &bytes);
 
     let read = |state: &mut AppState, offset: u64, length: Option<u64>| {
         let mut params = json!({ "entity_id": run_id, "path": path, "offset": offset });
@@ -322,27 +330,18 @@ fn thread_attachment_pages_are_bounded_and_cover_the_last_byte() {
         state.handle(req("thread.attachment", params))
     };
     let first = read(&mut state, 0, None);
-    assert_eq!(first["ok"], true, "{first:?}");
-    assert_eq!(first["result"]["size"], bytes.len());
-    assert_eq!(first["result"]["offset"], 0);
-    let first_bytes = b64decode(first["result"]["content_b64"].as_str().unwrap()).unwrap();
-    assert_eq!(first_bytes.len() as u64, ATTACHMENT_MAX_BYTES);
-    assert_eq!(first_bytes, bytes[..ATTACHMENT_MAX_BYTES as usize]);
+    assert_attachment_first_piece(&first, &bytes);
     let capped = read(&mut state, 0, Some(u64::MAX));
-    assert_eq!(capped["ok"], true, "{capped:?}");
-    assert_eq!(
-        b64decode(capped["result"]["content_b64"].as_str().unwrap())
-            .unwrap()
-            .len() as u64,
-        ATTACHMENT_MAX_BYTES
-    );
+    assert_attachment_first_piece(&capped, &bytes);
 
     let last = read(&mut state, ATTACHMENT_MAX_BYTES, Some(u64::MAX));
     assert_eq!(last["ok"], true, "{last:?}");
     assert_eq!(last["result"]["offset"], ATTACHMENT_MAX_BYTES);
-    assert_eq!(
-        b64decode(last["result"]["content_b64"].as_str().unwrap()).unwrap(),
-        bytes[ATTACHMENT_MAX_BYTES as usize..]
+    let last_bytes = b64decode(last["result"]["content_b64"].as_str().unwrap()).unwrap();
+    assert_eq!(last_bytes, bytes[ATTACHMENT_MAX_BYTES as usize..]);
+    assert!(
+        [unranged_bytes, last_bytes].concat() == bytes,
+        "the default piece and ranged continuation cover every byte"
     );
     let short = read(&mut state, 7, Some(3));
     assert_eq!(

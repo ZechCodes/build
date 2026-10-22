@@ -568,6 +568,13 @@ export function mountComposerAttachments(root, {
       render();
     },
     addFiles,
+    restoreDraft() {
+      if (entries.length || !readAttachments) return;
+      const saved = readAttachments();
+      if (!saved.length) return;
+      entries = saved;
+      render();
+    },
   };
 }
 

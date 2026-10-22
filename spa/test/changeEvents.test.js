@@ -250,7 +250,7 @@ describe("a hidden tab", () => {
 
 describe("the greeting", () => {
   it("arms event mode when the bridge answers the flag", async () => {
-    const call = vi.fn(async () => ({ push_events: true, events: ["board.changed"] }));
+    const call = vi.fn(async () => ({ api_version: "3.24.0", push_events: true, events: ["changes"] }));
     await greetBridge(call, { deviceId: "dev-a" });
     expect(call).toHaveBeenCalledWith("session.hello", expect.objectContaining({ client: expect.any(Object) }));
     expect(changeEventsArmed("dev-a")).toBe(true);
@@ -260,7 +260,7 @@ describe("the greeting", () => {
     const call = vi.fn(async () => ({ push_events: true }));
     await greetBridge(call);
     expect(call).toHaveBeenCalledWith("session.hello", {
-      client: { name: "spa", version: expect.any(String), api_range: ">=2.0.0 <4.0.0" },
+      client: { name: "spa", version: expect.any(String), api_range: ">=3.24.0 <4.0.0" },
       changes: "subscriptions",
     });
     expect(call.mock.calls[0][1].client.version).not.toBe("");
@@ -268,11 +268,11 @@ describe("the greeting", () => {
 
   it("remembers the bridge's api_version, and reads 0.0.0 from a bridge that reports none", async () => {
     expect(bridgeApiVersion()).toBe("0.0.0");
-    await greetBridge(async () => ({ push_events: true, api_version: "2.0.0" }));
-    expect(bridgeApiVersion()).toBe("2.0.0");
+    await greetBridge(async () => ({ push_events: true, api_version: "3.24.0" }));
+    expect(bridgeApiVersion()).toBe("3.24.0");
     await greetBridge(async () => ({ push_events: true }));
     expect(bridgeApiVersion()).toBe("0.0.0");
-    await greetBridge(async () => ({ push_events: true, api_version: "2.0.0" }));
+    await greetBridge(async () => ({ push_events: true, api_version: "3.24.0" }));
     await greetBridge(async () => {
       throw new Error("unknown method: session.hello");
     });
@@ -281,7 +281,7 @@ describe("the greeting", () => {
 
   it("still hands the whole greeting, api_version included, to onGreeting", async () => {
     const accepted = vi.fn();
-    const greeting = { push_events: true, api_version: "2.0.0" };
+    const greeting = { push_events: true, api_version: "3.24.0" };
     await greetBridge(async () => greeting, { onGreeting: accepted });
     expect(accepted).toHaveBeenCalledWith(greeting);
   });
@@ -296,9 +296,7 @@ describe("the greeting", () => {
 
     expect(changeEventsArmed("dev-a")).toBe(false);
     expect(entityMoved("run-7", "dev-a")).toBe(false);
-    // The greeting itself still reads everything once: the gap behind a
-    // session that has just been greeted announced nothing.
-    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh).not.toHaveBeenCalled();
   });
 
   it("requires an actual transport acknowledgement for a strict initial greeting", async () => {
@@ -307,18 +305,16 @@ describe("the greeting", () => {
     await expect(greetBridge(async () => { throw new Error("unknown method: session.hello"); }, { strict: true })).resolves.toBe(false);
   });
 
-  it("refetches every surface, whichever mode it lands in", async () => {
+  it("refetches every surface after supported greetings with or without pushes", async () => {
     const armedRefresh = vi.fn();
     watchChanges({ refresh: armedRefresh });
-    await greetBridge(async () => ({ push_events: true }), { deviceId: "dev-a" });
+    await greetBridge(async () => ({ api_version: "3.24.0", push_events: true }), { deviceId: "dev-a" });
     expect(armedRefresh).toHaveBeenCalledTimes(1);
 
     resetChangeEvents();
     const pollingRefresh = vi.fn();
     watchChanges({ refresh: pollingRefresh });
-    await greetBridge(async () => {
-      throw new Error("unknown method: session.hello");
-    }, { deviceId: "dev-a" });
+    await greetBridge(async () => ({ api_version: "3.24.0", push_events: false }), { deviceId: "dev-a" });
     expect(pollingRefresh).toHaveBeenCalledTimes(1);
   });
 
@@ -436,7 +432,7 @@ describe("several devices", () => {
     watchChanges({ refresh: feedB, deviceId: "dev-b" });
     watchChanges({ refresh: inbox });
 
-    await greetBridge(async () => ({ push_events: true }), { deviceId: "dev-b" });
+    await greetBridge(async () => ({ api_version: "3.24.0", push_events: true }), { deviceId: "dev-b" });
 
     expect(changeEventsArmed("dev-b")).toBe(true);
     expect(changeEventsArmed("dev-a")).toBe(false);

@@ -12,7 +12,10 @@ use crate::carrier::SessionSender;
 use crate::changes::models_changed_payload;
 use crate::harness::harness_for;
 use crate::harness::installed::{model_offer_from, Readings};
-use crate::models::{AgentProvider, AgentRole, ModelChoice, RoleModel};
+use crate::models::{
+    self, AgentCapability, AgentProvider, AgentRole, ModelChoice, RoleModel, RoleModels,
+};
+use serde_json::{json, Value};
 
 impl AppState {
     /// Serve catalogs, and announce their changes, from `readings` rather
@@ -70,9 +73,13 @@ impl AppState {
         role: AgentRole,
         capability: Option<crate::models::AgentCapability>,
     ) -> Option<&RoleModel> {
-        self.role_models.for_role_where(role, capability, |entry| {
-            self.runs_here(entry.provider.unwrap_or(self.default_harness), &entry.model)
-        })
+        role_model_from(
+            self.default_harness,
+            &self.role_models,
+            &self.cli_readings,
+            role,
+            capability,
+        )
     }
 
     /// `choice`, less a model this machine's CLI cannot run: a default the
@@ -87,4 +94,58 @@ impl AppState {
         }
         choice
     }
+}
+
+/// Resolve the existing catalogue from captured, committed settings. This may
+/// inspect executable identity and schedule normal CLI refreshes, so independent
+/// readers call it only after releasing AppState.
+pub(in crate::app) fn harness_table_from(
+    default_harness: AgentProvider,
+    role_models: &RoleModels,
+    readings: &Arc<Readings>,
+) -> Value {
+    let by_role = crate::models::AgentRole::ALL
+        .into_iter()
+        .map(|role| {
+            let filled =
+                role_model_from(default_harness, role_models, readings, role, None).map(|entry| {
+                    json!({
+                        "provider": entry.provider.unwrap_or(default_harness),
+                        "model": entry.model,
+                        "capability": entry.capability,
+                        "direction": entry.capability.describes(),
+                    })
+                });
+            (role.wire_id().to_string(), json!(filled))
+        })
+        .collect::<serde_json::Map<_, _>>();
+    json!({
+        "harnesses": models::provider_catalogs_from(readings),
+        "default_harness": default_harness,
+        "roles": crate::models::AgentRole::ALL
+            .map(|role| json!({ "id": role.wire_id(), "describes": role.describes() })),
+        "capabilities": crate::models::AgentCapability::ALL.map(|capability| json!({
+            "id": capability.wire_id(),
+            "direction": capability.describes(),
+        })),
+        // What this device has declared, in the user's own order.
+        "role_models": role_models,
+        // And which model answers each role right now.
+        "roles_in_effect": by_role,
+    })
+}
+
+fn role_model_from<'a>(
+    default_harness: AgentProvider,
+    role_models: &'a RoleModels,
+    readings: &Arc<Readings>,
+    role: AgentRole,
+    capability: Option<AgentCapability>,
+) -> Option<&'a RoleModel> {
+    role_models.for_role_where(role, capability, |entry| {
+        let provider = entry.provider.unwrap_or(default_harness);
+        model_offer_from(readings, provider)
+            .refusal(&entry.model, harness_for(provider).cli_name())
+            .is_none()
+    })
 }

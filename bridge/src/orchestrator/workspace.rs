@@ -1017,18 +1017,19 @@ impl Orchestrator {
     /// work outlives an abandon so it can be re-attempted, and a dispatch that
     /// checked out a branch somebody else made must hand that branch back
     /// whole.
-    pub fn discard_checkout(&self, worktree: &Worktree, keep_branch: bool) {
+    pub fn discard_checkout(&self, worktree: &Worktree, keep_branch: bool) -> bool {
         let removed = if keep_branch {
             self.worktrees.remove_keeping_branch(worktree)
         } else {
             self.worktrees.remove(worktree)
         };
-        if let Err(e) = removed {
+        if let Err(e) = &removed {
             eprintln!(
                 "discard_checkout {} (keep_branch {keep_branch}): {e}",
                 worktree.name
             );
         }
+        removed.is_ok()
     }
     /// Write the per-entity MCP config under `.build/` so it never trips
     /// plan-scope enforcement, pointing the harness at the owning entity's

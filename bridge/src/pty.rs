@@ -1251,9 +1251,11 @@ mod tests {
     async fn cwd_is_respected() {
         let dir = tempfile::tempdir().unwrap();
         let canonical = dir.path().canonicalize().unwrap();
-        let spec = HarnessSpec::new("sh").arg("-c").arg("pwd");
+        let spec = HarnessSpec::new("sh").arg("-c").arg("read _; pwd");
         let session = PtySession::spawn(&spec, Some(canonical.clone()), small_pty()).unwrap();
         let mut rx = session.subscribe();
+        // A fast child must not emit pwd before the broadcast subscription exists.
+        session.write_input(b"go\r").unwrap();
 
         let leaf = canonical.file_name().unwrap().to_string_lossy().to_string();
         let out = read_until(&mut rx, &leaf).await;

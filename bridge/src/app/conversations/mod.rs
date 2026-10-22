@@ -18,6 +18,7 @@ pub(in crate::app) use agent_to_agent::AgentSender;
 pub(in crate::app) use attachments::media_mime_hint;
 pub(crate) use attachments::mime_hint;
 pub use attachments::ATTACHMENT_MAX_BYTES;
+pub(in crate::app) use attachments::{read_thread_attachment, AttachmentHomes};
 // The tracker files the same kind of object under the same rules, so it reads
 // them from here rather than keeping a second copy of what an attachment is.
 pub(in crate::app) use attachments::{
@@ -25,8 +26,9 @@ pub(in crate::app) use attachments::{
 };
 pub(in crate::app) use inputs::{
     append_user_thread_messages, apply_thread_action, optional_operation_id, parse_thread_inputs,
-    parse_viewing_context, with_post_receipt,
+    parse_viewing_context, validate_agent_message_body, with_post_receipt,
 };
+pub(in crate::app) use legacy_delivery::FrozenLegacyDelivery;
 pub use read::LATEST_THREAD_ITEMS;
 pub(in crate::app) use read::{thread_cursor, thread_detail, view_thread_detail, ReadReport};
 

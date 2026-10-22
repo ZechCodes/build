@@ -31,7 +31,7 @@ afterEach(async () => {
 async function greet(deviceId, waitingOn) {
   session.context = { deviceId, adapter: null };
   await greetBridge(async () => ({
-    api_version: "3.21.0", push_events: false,
+    api_version: "3.24.0", push_events: false,
     capabilities: waitingOn ? ["tasks.waitingOn"] : [],
   }), {
     deviceId,

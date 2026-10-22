@@ -113,7 +113,7 @@ const SETTINGS_CAPABILITIES = ["conversations.settings"];
 
 const mountWorkspaceRail = async (capabilities = SETTINGS_CAPABILITIES) => {
   if (capabilities !== null) {
-    await greetBridge(async () => ({ push_events: true, api_version: "2.0.0", capabilities }), { deviceId: DEVICE_ID });
+    await greetBridge(async () => ({ push_events: true, api_version: "3.24.0", capabilities }), { deviceId: DEVICE_ID });
   }
   await writeRailBoard({
     projects: [{ project_id: PROJECT_ID, name: "build" }],

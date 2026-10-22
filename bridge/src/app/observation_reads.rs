@@ -40,6 +40,23 @@ macro_rules! trace_phase {
     };
 }
 
+// Terminal verbs retain their legacy, permissive wire contract.
+fn normalize_observation_params(method: &str, params: &Value) -> Result<Value, ApiError> {
+    if method == "term.list" {
+        Ok(params.clone())
+    } else {
+        api::v1::normalize_read_params(method, params)
+    }
+}
+
+fn check_observation_result(method: &str, result: Value) -> Result<Value, ApiError> {
+    if method == "term.list" {
+        Ok(result)
+    } else {
+        api::v1::check_read_result(method, result)
+    }
+}
+
 #[derive(Clone)]
 pub(in crate::app) struct ObservationContext {
     versions: imbl::OrdMap<publication::InputKey, u64>,
@@ -50,6 +67,10 @@ pub(in crate::app) struct ObservationContext {
 }
 
 impl ObservationContext {
+    pub(in crate::app) fn deleting_project(&self) -> bool {
+        self.deleting_project
+    }
+
     pub(in crate::app) fn with_base_version(&self, version: u64) -> Self {
         let mut context = self.clone();
         context.base_version = version;
@@ -188,7 +209,7 @@ impl ObservationService {
                                     &observed,
                                     "result_check_start",
                                     "result_check_end",
-                                    api::v1::check_read_result(&method, result)
+                                    check_observation_result(&method, result)
                                 )
                             })
                     )
@@ -208,7 +229,7 @@ impl ObservationService {
             .admission
             .as_ref()
             .map(|gate| {
-                gate.try_enter()
+                gate.try_enter_read()
                     .ok_or_else(|| ApiError::busy("bridge update handoff in progress"))
             })
             .transpose()?;
@@ -217,7 +238,7 @@ impl ObservationService {
             observed,
             "prepare_normalize_start",
             "prepare_normalize_end",
-            api::v1::normalize_read_params(method, params)
+            normalize_observation_params(method, params)
         )?;
         let context = trace_phase!(
             &self.clock,

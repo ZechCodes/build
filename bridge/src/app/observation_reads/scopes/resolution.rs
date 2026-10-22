@@ -344,6 +344,15 @@ impl ScopeReadContext {
                 let run = self.run(id)?;
                 Ok(run.checkout == *checkout && run.git_root == *git_root)
             }
+            Binding::TerminalRun { id, checkout } => {
+                Ok(self.runs.get(id).ok_or("unknown run_id")?.checkout == *checkout)
+            }
+            Binding::WorkspaceRoot { id, root } => Ok(self
+                .workspaces
+                .get(id)
+                .ok_or_else(|| format!("unknown workspace_id: {id}"))?
+                .root
+                == *root),
             Binding::Stage { run, stage } => Ok(self.run(run)?.stages.iter().any(|current| {
                 current.stage_id == stage.stage_id
                     && current.start_sha == stage.start_sha

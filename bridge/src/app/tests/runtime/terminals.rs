@@ -1261,3 +1261,4 @@ async fn failed_shell_spawn_settles_a_handler_built_from_a_bare_arc() {
     assert!(child.exited_within(Duration::from_secs(2)));
     assert_eq!(closed["ok"], true, "{closed}");
 }
+mod observations;

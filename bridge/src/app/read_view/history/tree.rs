@@ -101,6 +101,19 @@ impl Node {
         }
     }
 
+    pub fn collect_from<'a>(root: &'a Link, floor: u64, items: &mut Vec<&'a ThreadItem>) {
+        let Some(node) = root else {
+            return;
+        };
+        if node.item.sequence() < floor {
+            Self::collect_from(&node.right, floor, items);
+            return;
+        }
+        Self::collect_from(&node.left, floor, items);
+        items.push(&node.item);
+        Self::collect(&node.right, items);
+    }
+
     pub fn collect_after<'a>(root: &'a Link, cursor: u64, items: &mut Vec<&'a ThreadItem>) {
         let Some(node) = root.as_ref().filter(|node| node.latest > cursor) else {
             return;

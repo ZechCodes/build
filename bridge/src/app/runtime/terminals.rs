@@ -431,27 +431,7 @@ impl AppState {
     /// The same rows, for a root already resolved: what `term.list` answers
     /// with, and what a `terminals` push item carries.
     pub(in crate::app) fn shell_tabs_for(&self, scope: &TerminalScope) -> Vec<Value> {
-        let mut terminals: Vec<(u64, Value)> = self
-            .session_registry
-            .shell_tabs_at(&scope.root)
-            .into_iter()
-            .filter(|tab| scope.accepts(tab.project_source.as_ref()))
-            .filter_map(|tab| {
-                let (cols, rows) = tab.size?;
-                Some((
-                    term_id_suffix(&tab.key.tab_id),
-                    json!({
-                        "term_id": tab.tab_id,
-                        "kind": SHELL_TAB_KIND,
-                        "cols": cols,
-                        "rows": rows,
-                        "created_at": tab.created_at,
-                    }),
-                ))
-            })
-            .collect();
-        terminals.sort_by_key(|(suffix, _)| *suffix);
-        terminals.into_iter().map(|(_, entry)| entry).collect()
+        shell_tab_rows(&self.session_registry.shell_tabs(), scope)
     }
 
     /// Close a user terminal: remove it, kill AND reap its shell (the existing
@@ -700,4 +680,32 @@ impl AppState {
         // harness's transcript tree, which is a filesystem read.
         capture_conversation_names(state);
     }
+}
+
+/// One rendering for live registry facts and independently published facts.
+/// Screen handles preserve the latest resize without retaining a session.
+pub(in crate::app) fn shell_tab_rows(
+    tabs: &[crate::app::runtime::sessions::ShellTabFact],
+    scope: &TerminalScope,
+) -> Vec<Value> {
+    let mut terminals: Vec<(u64, Value)> = tabs
+        .iter()
+        .filter(|tab| tab.key.root == scope.root)
+        .filter(|tab| scope.accepts(tab.project_source.as_ref()))
+        .filter_map(|tab| {
+            let (cols, rows) = tab.screen.as_ref()?.size();
+            Some((
+                term_id_suffix(&tab.key.tab_id),
+                json!({
+                    "term_id": tab.tab_id,
+                    "kind": SHELL_TAB_KIND,
+                    "cols": cols,
+                    "rows": rows,
+                    "created_at": tab.created_at,
+                }),
+            ))
+        })
+        .collect();
+    terminals.sort_by_key(|(suffix, _)| *suffix);
+    terminals.into_iter().map(|(_, entry)| entry).collect()
 }

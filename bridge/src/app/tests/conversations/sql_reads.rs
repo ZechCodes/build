@@ -1,6 +1,7 @@
 use super::*;
 
 mod operations;
+mod revisions;
 mod work;
 
 #[test]

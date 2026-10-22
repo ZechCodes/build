@@ -254,7 +254,7 @@ impl ReadService {
             .admission
             .as_ref()
             .map(|gate| {
-                gate.try_enter()
+                gate.try_enter_read()
                     .ok_or_else(|| ApiError::busy("bridge update handoff in progress"))
             })
             .transpose()?;

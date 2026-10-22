@@ -20,6 +20,10 @@ pub(in crate::app) struct GlobalProjection {
 }
 
 impl GlobalProjection {
+    pub(in crate::app) fn project_ids(&self) -> impl Iterator<Item = &str> {
+        self.projects.iter().map(|row| row.id.as_str())
+    }
+
     #[cfg(test)]
     pub(in crate::app) fn active_owners_for_test(&self) -> &BTreeSet<String> {
         &self.active_owners

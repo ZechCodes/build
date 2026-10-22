@@ -297,6 +297,7 @@ impl AppState {
                 })?;
             }
             self.captures.remove(&id);
+            self.publish_capture_snapshot(&id);
         }
         let mut config =
             self.config_value(&self.projects_dir, self.default_harness, self.isolation);

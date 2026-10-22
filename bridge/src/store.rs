@@ -51,6 +51,8 @@ use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 
 pub(crate) use operations::CommittedThreadItems;
 pub(crate) use reviews::TrackingExpectation;
@@ -283,6 +285,9 @@ pub struct Store {
     /// the refusal is injected here instead of simulated.
     #[cfg(test)]
     fail_next_write: Arc<std::sync::atomic::AtomicBool>,
+    /// Test-only pause at the actual canonical plan-doc directory probe.
+    #[cfg(test)]
+    plan_docs_probe_gate: Arc<Mutex<Option<crate::test_support::off_lock::OffLockGate>>>,
     /// Whether this open ran the task rename (#190): the boot that did is
     /// the one whose resumed agents remember tools that no longer exist.
     renamed_tasks: bool,
@@ -390,6 +395,8 @@ impl Store {
             attention_map_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
             fail_next_write: writer.fail_next_write.clone(),
+            #[cfg(test)]
+            plan_docs_probe_gate: Arc::new(Mutex::new(None)),
             writer,
             journal_incarnation: journal_incarnation.into(),
             waiting_on_wakeup: Arc::new(tokio::sync::Notify::new()),

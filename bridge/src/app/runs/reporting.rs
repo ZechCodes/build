@@ -549,6 +549,7 @@ impl AppState {
         );
         if outcome.is_ok() {
             if let (Some(pid), Some(plan_ref)) = (plan_id.as_deref(), plan.as_mut()) {
+                self.record_ingested_plan_docs(pid);
                 if let Some(contents) = self.plan_revision_contents(pid, plan_ref) {
                     plan_ref.agents.sole_thread_mut().add_revision(
                         crate::thread::ArtifactKind::Plan,

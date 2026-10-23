@@ -235,6 +235,21 @@ def test_actual_hosted_cookie_headers_csrf_and_passkey_rp(tmp_path, monkeypatch,
             assert "domain=" not in cookie
             assert f"wss://{relay}" in page.headers["content-security-policy"]
             assert "access-control-allow-origin" not in page.headers
+            # Exercise onboarding through the real config and dependency wiring.
+            downloads = client.get("/app/downloads").json()
+            if config_name == "app.channel-dev.yaml":
+                assert downloads["install_command"] is None
+                assert "source-built" in downloads["installation_notice"]
+                assert client.get("/install.sh").status_code == 404
+                assert client.get("/install-desktop.sh").status_code == 404
+                assert client.get("/app/downloads/linux-x86_64").status_code == 404
+                docs = client.get("/docs")
+                assert docs.status_code == 200
+                assert "source-built" in docs.text
+                assert "curl" not in docs.text
+            else:
+                assert downloads["install_command"] == 'curl -fsSL "https://getbuild.ing/install.sh" | sh'
+                assert client.get("/install.sh").status_code == 200
             refused = client.post("/auth/passkey/options", data={"email": "test@example.com"})
             assert refused.status_code == 400
             assert refused.json()["error"] == "invalid_csrf"

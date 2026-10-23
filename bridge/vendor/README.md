@@ -627,7 +627,7 @@ tree after `webrtc-host-candidate-sweep.patch`. It touches
 
 ## #794 TURN diagnostics
 
-`rtc-turn-diagnostics.patch` SHA-256: `15ce69bafbc8feb24be2ee4e5ee043bfdd2274d13c3debbc8ba3f4f6aa5fef25`.
+`rtc-turn-diagnostics.patch` SHA-256: `a71b7e49314c8356bd863594f7b0113b80c43989c6131b915e9f0ba4031bf009`.
 
 `rtc-turn` 0.20.4 is vendored from the registry with only
 `rtc-turn-diagnostics.patch` applied. `rtc-turn` is patched in both manifests
@@ -670,7 +670,9 @@ Packet traffic counts silently per peer and direction. Existing peers use one
 map entry lookup per packet; keyed endpoint fingerprints are computed only on
 first insertion. Folded method/outcome keys are static strings and allocate no
 per-event strings. Only a direction's first use
-emits an immediate data row; it consumes no control-plane budget. Control-plane
+emits an immediate data row; it consumes no control-plane budget. A new direction's
+first-use row preserves any pending count summary from another direction, for
+both periodic and terminal flushes. Control-plane
 rows retain their independent limit of 32 detailed rows per second, with excess
 folded by generation, peer, method, outcome and code. Packet storms cannot delay
 control outcomes. Timeout-driven flushes emit at most 32 folded control rows and

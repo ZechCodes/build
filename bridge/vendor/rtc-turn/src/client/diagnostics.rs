@@ -373,7 +373,7 @@ impl AllocationDiagnostics {
         let (peer, state) = self.peer_state(peer);
         state.counts[index] += 1;
         let first_use = state.counts[index] == 1;
-        state.dirty = !first_use;
+        state.dirty |= !first_use;
         if peer == PeerKey::Overflow {
             self.overflow_events += 1;
         }
@@ -962,6 +962,38 @@ mod local_mock_tests {
         assert!(logs().lines().any(|line| line.contains("method=Send")
             && line.contains("outcome=local-error")
             && line.contains("ordinal=1")));
+    }
+    fn mixed_direction_first_use_preserves_pending_summary(terminal: bool) {
+        let (mut client, _) = client();
+        let diag = client.diagnostics.as_mut().unwrap();
+        let peer = "192.0.2.96:50000".parse().unwrap();
+        // Direction A has unsummarized repeated traffic when direction B starts.
+        diag.data(peer, None, false, TransactionId::default());
+        diag.data(peer, None, false, TransactionId::default());
+        diag.data(peer, Some(16384), true, TransactionId::default());
+        let deadline = diag.window + Duration::from_secs(1);
+        if terminal {
+            drop(client);
+        } else {
+            client.handle_timeout(deadline).unwrap();
+        }
+        assert!(
+            logs()
+                .lines()
+                .any(|line| line.contains("method=DataSummary")
+                    && line.contains("outcome=summary")
+                    && line.contains("send_indication=2")
+                    && line.contains("receive_channel=1")),
+            "a new direction must preserve earlier unsummarized traffic"
+        );
+    }
+    #[test]
+    fn diagnostics_mixed_direction_keeps_periodic_summary_pending() {
+        mixed_direction_first_use_preserves_pending_summary(false);
+    }
+    #[test]
+    fn diagnostics_mixed_direction_keeps_terminal_summary_pending() {
+        mixed_direction_first_use_preserves_pending_summary(true);
     }
     #[test]
     fn diagnostics_idle_storm_gets_a_summary_timer() {

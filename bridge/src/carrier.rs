@@ -125,6 +125,7 @@ struct OpeningState {
     client_hint: OnceLock<uuid::Uuid>,
     /// Process-wide opening order, so a newer session presenting a hint is known.
     ordinal: u64,
+    diagnostic_key: std::collections::hash_map::RandomState,
 }
 
 impl OpeningState {
@@ -134,6 +135,7 @@ impl OpeningState {
             is_open: AtomicBool::new(true),
             client_hint: OnceLock::new(),
             ordinal: OPENED.fetch_add(1, Ordering::Relaxed),
+            diagnostic_key: std::collections::hash_map::RandomState::new(),
         })
     }
 }
@@ -141,6 +143,16 @@ impl OpeningState {
 impl Opening {
     pub fn is_open(&self) -> bool {
         self.0.is_open.load(Ordering::SeqCst)
+    }
+
+    /// A process-local correlation ID; never a client identity or bearer hint.
+    pub(crate) fn diagnostic_id(&self) -> u64 {
+        self.0.ordinal
+    }
+
+    /// Keyed endpoint fingerprints remain comparable across this opening's peers.
+    pub(crate) fn diagnostic_key(&self) -> std::collections::hash_map::RandomState {
+        self.0.diagnostic_key.clone()
     }
 
     /// The first valid hint wins, even when later offers omit or change it.

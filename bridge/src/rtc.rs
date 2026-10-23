@@ -61,6 +61,7 @@ mod checks;
 pub(crate) mod chunk;
 pub(crate) mod client_hint;
 mod mdns;
+mod pair_diagnostics;
 mod policy;
 mod remote;
 #[cfg(test)]
@@ -707,7 +708,7 @@ impl SessionPeerFactory for WebrtcPeerFactory {
             remote,
             check_pending_direct_pairs: self.check_pending_direct_pairs,
             host_candidate_sweep: self.host_candidate_sweep,
-            negotiation: tokio::sync::Mutex::new(None),
+            negotiation: Arc::new(tokio::sync::Mutex::new(None)),
             ice: Arc::default(),
         }))
     }
@@ -721,7 +722,7 @@ struct WebrtcPeer {
     remote: Arc<remote::RemoteCandidates>,
     check_pending_direct_pairs: bool,
     host_candidate_sweep: bool,
-    negotiation: tokio::sync::Mutex<Option<Negotiation>>,
+    negotiation: Arc<tokio::sync::Mutex<Option<Negotiation>>>,
     ice: Arc<IceHealth>,
 }
 
@@ -883,6 +884,17 @@ impl SessionPeer for WebrtcPeer {
             .remote
             .begin_with_stats(&allowed_offer, Some(&previous_stats))
             .await;
+        let generation = self.remote.generation().await;
+        self.signaling
+            .generation
+            .store(generation, Ordering::SeqCst);
+        diagnostic(
+            &self.session_id,
+            &format!(
+                "opening={} generation={generation}",
+                self.signaling.opening_id.get().unwrap()
+            ),
+        );
         let stable = connection.pending_remote_description().await.is_none();
         let applied = connection.set_remote_description(offer).await;
         if stable && connection.pending_remote_description().await.is_some() {
@@ -960,6 +972,13 @@ impl WebrtcPeer {
             ),
             None => None,
         };
+        // Retirement can abort the queued reporter. Preserve terminal evidence
+        // here, before dropping its task, using this already-held offer lock.
+        if let (Some(open), Some(report)) = (negotiation.as_ref(), stats.as_ref()) {
+            if open.offers_delivered.load(Ordering::SeqCst) >= open.offers_queued {
+                report_pair_snapshot(&self.session_id, &self.signaling, report);
+            }
+        }
         self.remote.close_with_stats(stats.as_ref()).await;
         self.signaling.close();
         let Some(open) = negotiation.take() else {
@@ -974,6 +993,7 @@ impl WebrtcPeer {
     /// candidates it trickles back, and the one line it logs about the path
     /// that won.
     async fn connect(&self, configuration: RTCConfiguration) -> Result<Negotiation, RtcError> {
+        let (opening_id, opening_key) = self.signaling.turn_diagnostic_context(&self.session_id);
         let (connected, first_connect) = mpsc::unbounded_channel();
         let (sweeps, sweep_events) = mpsc::channel(256);
         let offers_delivered = Arc::new(AtomicU64::new(0));
@@ -990,6 +1010,11 @@ impl WebrtcPeer {
         let mut engine = self.policy.setting_engine(MulticastDnsMode::Disabled);
         engine.set_check_pending_direct_pairs(self.check_pending_direct_pairs);
         engine.set_host_candidate_sweep(self.host_candidate_sweep);
+        engine.set_turn_diagnostic_context_with_key(
+            opening_id,
+            self.signaling.generation.clone(),
+            opening_key,
+        );
         // Browser mDNS names are resolved by our interface-explicit resolver;
         // the crate's one OS-selected multicast socket is disabled.
         let connection: Arc<dyn PeerConnection> = Arc::new(
@@ -1007,9 +1032,10 @@ impl WebrtcPeer {
         let sweep_report = tokio::spawn(sweep::report(self.remote.clone(), sweep_events));
         let path_report = tokio::spawn(report_negotiated_path(
             self.session_id.clone(),
-            connection.clone(),
+            Arc::downgrade(&self.negotiation),
             first_connect,
             self.intake.ledger(),
+            self.signaling.clone(),
         ));
         let mut carriers = Vec::new();
         for (label, id) in NEGOTIATED_CHANNELS {
@@ -1046,15 +1072,50 @@ struct Trickling {
     signaling: Mutex<Option<SessionSender>>,
     bundle_mid: Mutex<Option<String>>,
     diagnostic_channels: Mutex<Vec<(Arc<FrameIntake>, CarrierHandle)>>,
+    opening_id: OnceLock<String>,
+    opening_key: OnceLock<std::collections::hash_map::RandomState>,
+    opening_fallback_warning: OnceLock<()>,
+    generation: Arc<AtomicU64>,
 }
 
 impl Trickling {
+    fn turn_diagnostic_context(
+        &self,
+        session_id: &str,
+    ) -> (String, std::collections::hash_map::RandomState) {
+        let bound = self.opening_id.get().is_some() && self.opening_key.get().is_some();
+        debug_assert!(
+            bound,
+            "hold() must bind opening id and key before peer construction"
+        );
+        if !bound {
+            self.opening_fallback_warning.get_or_init(|| {
+                diagnostic(
+                    session_id,
+                    "warning=opening-context-missing fallback=unknown-opening",
+                );
+            });
+        }
+        // Release builds keep negotiation available after an ordering bug.
+        // Cache its fallback too, so recreated peers never invent a new key.
+        (
+            self.opening_id.get_or_init(|| "unknown".into()).clone(),
+            self.opening_key
+                .get_or_init(std::collections::hash_map::RandomState::new)
+                .clone(),
+        )
+    }
+
     fn close(&self) {
         self.diagnostic_channels.lock().unwrap().clear();
         *self.signaling.lock().unwrap() = None;
         *self.bundle_mid.lock().unwrap() = None;
     }
     fn hold(&self, signaling: SessionSender) {
+        self.opening_id
+            .get_or_init(|| signaling.opening().diagnostic_id().to_string());
+        self.opening_key
+            .get_or_init(|| signaling.opening().diagnostic_key());
         *self.signaling.lock().unwrap() = Some(signaling);
     }
 
@@ -1133,7 +1194,7 @@ fn bundle_mid_of(sdp: &str) -> Option<String> {
 struct PeerEvents {
     session_id: String,
     signaling: Arc<Trickling>,
-    connected: mpsc::UnboundedSender<()>,
+    connected: mpsc::UnboundedSender<PairObservation>,
     /// The kinds of candidate this gathering has produced so far, said and
     /// cleared when it completes.
     gathered: Mutex<GatheredTypes>,
@@ -1141,6 +1202,16 @@ struct PeerEvents {
     ice: Arc<IceHealth>,
     /// Have-remote-offer events delivered, each after the drain that took it.
     offers: Arc<AtomicU64>,
+}
+
+struct PairObservation {
+    event: &'static str,
+}
+
+impl PeerEvents {
+    fn observe_pair(&self, event: &'static str) {
+        let _ = self.connected.send(PairObservation { event });
+    }
 }
 
 #[async_trait]
@@ -1166,7 +1237,7 @@ impl PeerConnectionEventHandler for PeerEvents {
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
         diagnostic(&self.session_id, &format!("connection_state={state}"));
         if state == RTCPeerConnectionState::Connected {
-            let _ = self.connected.send(());
+            self.observe_pair("carrying");
         }
     }
 
@@ -1181,6 +1252,13 @@ impl PeerConnectionEventHandler for PeerEvents {
 
     async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
         diagnostic(&self.session_id, &format!("ice_state={state}"));
+        match state {
+            RTCIceConnectionState::Connected | RTCIceConnectionState::Completed => {
+                self.observe_pair("selected")
+            }
+            RTCIceConnectionState::Failed => self.observe_pair("failed"),
+            _ => {}
+        }
         self.ice.observe(state);
     }
 
@@ -1266,14 +1344,21 @@ static GATHERER_LINES: crate::logline::Throttle =
 
 impl log::Log for GathererLog {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Warn
-            && GATHERER_LOG_TARGETS
-                .iter()
-                .any(|target| metadata.target().starts_with(target))
+        (metadata.target() == "turn_diagnostics" && metadata.level() <= log::Level::Info)
+            || (metadata.level() <= log::Level::Warn
+                && GATHERER_LOG_TARGETS
+                    .iter()
+                    .any(|target| metadata.target().starts_with(target)))
     }
 
     fn log(&self, record: &log::Record) {
         if !self.enabled(record.metadata()) {
+            return;
+        }
+        // TURN diagnostics already enforce their own allocation budget and
+        // preserve per-peer folds. A global text throttle would erase identity.
+        if record.target() == "turn_diagnostics" {
+            crate::logline::say(format!("rtc: {}", record.args()));
             return;
         }
         // One line per kind per window: Cloudflare answered 8,000 `ChannelBind
@@ -1299,7 +1384,9 @@ impl log::Log for GathererLog {
 fn install_gatherer_log() {
     static GATHERER_LOG: GathererLog = GathererLog;
     if log::set_logger(&GATHERER_LOG).is_ok() {
-        log::set_max_level(log::LevelFilter::Warn);
+        // This is process-wide: rtc/webrtc INFO records now reach enabled(),
+        // which admits only turn_diagnostics; gatherer records stay WARN-only.
+        log::set_max_level(log::LevelFilter::Info);
     }
 }
 
@@ -1315,26 +1402,90 @@ fn install_gatherer_log() {
 /// one log stream, so a measurement is not split off from the errors around it.
 async fn report_negotiated_path(
     session_id: String,
-    connection: Arc<dyn PeerConnection>,
-    mut connected: mpsc::UnboundedReceiver<()>,
+    negotiation: std::sync::Weak<tokio::sync::Mutex<Option<Negotiation>>>,
+    mut connected: mpsc::UnboundedReceiver<PairObservation>,
     ledger: Arc<dyn TransportLedger>,
+    signaling: Arc<Trickling>,
 ) {
-    while connected.recv().await.is_some() {
+    while let Some(observation) = connected.recv().await {
+        let Some(negotiation) = negotiation.upgrade() else {
+            break;
+        };
+        let (connection, offers_queued, generation, offers_ready) = {
+            let guard = negotiation.lock().await;
+            let Some(open) = guard.as_ref() else { continue };
+            (
+                open.connection.clone(),
+                open.offers_queued,
+                signaling.generation.load(Ordering::SeqCst),
+                open.offers_delivered.load(Ordering::SeqCst) >= open.offers_queued,
+            )
+        };
+        // Diagnostics must not hold up an offer, restart or close while the
+        // native driver's statistics request is pending.
         let report = connection
             .get_stats(std::time::Instant::now(), StatsSelector::None)
             .await;
-        let path = negotiated_path(&report);
-        ledger.record(
-            &session_id,
-            TransportEvent::Carrying {
-                path: if path.billed() {
-                    TransportPath::Turn
-                } else {
-                    TransportPath::Direct
+        if observation.event == "carrying" {
+            let path = negotiated_path(&report);
+            ledger.record(
+                &session_id,
+                TransportEvent::Carrying {
+                    path: if path.billed() {
+                        TransportPath::Turn
+                    } else {
+                        TransportPath::Direct
+                    },
+                    detail: path.to_string(),
                 },
-                detail: path.to_string(),
-            },
-        );
+            );
+        }
+        // The offer must have drained before the snapshot. A drain that
+        // finishes afterwards cannot validate an earlier failed snapshot.
+        if !offers_ready {
+            continue;
+        }
+        let guard = negotiation.lock().await;
+        let Some(open) = guard.as_ref() else { continue };
+        // Only diagnostic rows need this fence: never label an old peer or
+        // generation's snapshot with a newly accepted offer's identity.
+        if Arc::ptr_eq(&connection, &open.connection)
+            && open.offers_queued == offers_queued
+            && open.offers_delivered.load(Ordering::SeqCst) >= offers_queued
+            && signaling.generation.load(Ordering::SeqCst) == generation
+        {
+            report_pair_snapshot(&session_id, &signaling, &report);
+        }
+    }
+}
+
+/// Classify the native snapshot, never the callback that prompted it: a
+/// delayed failure callback may belong to a generation already restarted.
+fn pair_snapshot_lines(signaling: &Trickling, report: &RTCStatsReport) -> Vec<String> {
+    let event = match native_ice_state(report) {
+        Some(RTCIceTransportState::Connected | RTCIceTransportState::Completed) => "selected",
+        Some(RTCIceTransportState::Failed) => "failed",
+        _ => return Vec::new(),
+    };
+    pair_diagnostics::lines(report)
+        .into_iter()
+        .map(|line| {
+            format!(
+                "opening={} generation={} event={event} {line}",
+                signaling
+                    .opening_id
+                    .get()
+                    .map(String::as_str)
+                    .unwrap_or("unknown"),
+                signaling.generation.load(Ordering::SeqCst),
+            )
+        })
+        .collect()
+}
+
+fn report_pair_snapshot(session_id: &str, signaling: &Trickling, report: &RTCStatsReport) {
+    for line in pair_snapshot_lines(signaling, report) {
+        diagnostic(session_id, &line);
     }
 }
 
@@ -2463,7 +2614,7 @@ mod trickle_tests {
             ),
             check_pending_direct_pairs: true,
             host_candidate_sweep: true,
-            negotiation: tokio::sync::Mutex::new(None),
+            negotiation: Arc::new(tokio::sync::Mutex::new(None)),
             ice: Arc::default(),
         };
         assert!(!outgoing.is_closed());
@@ -2764,7 +2915,7 @@ mod ice_diagnostic_tests {
                 None,
             ),
             check_pending_direct_pairs: true,
-            negotiation: tokio::sync::Mutex::new(None),
+            negotiation: Arc::new(tokio::sync::Mutex::new(None)),
             host_candidate_sweep: true,
             ice: Arc::default(),
         };
@@ -2897,6 +3048,107 @@ mod ice_diagnostic_tests {
         assert_eq!(gathered.to_string(), "gathered host=2 relay=0 srflx=0");
         gathered.count("relay");
         assert_eq!(gathered.to_string(), "gathered host=2 relay=1 srflx=0");
+    }
+
+    #[tokio::test]
+    async fn selected_and_failed_states_prompt_pair_snapshots() {
+        let (connected, mut observed) = mpsc::unbounded_channel();
+        let (sweeps, _) = mpsc::channel(1);
+        let signaling = Arc::new(Trickling::default());
+        signaling.generation.store(7, Ordering::SeqCst);
+        let events = PeerEvents {
+            session_id: "pair-events".into(),
+            signaling,
+            connected,
+            gathered: Mutex::new(GatheredTypes::default()),
+            sweeps,
+            ice: Arc::default(),
+            offers: Arc::default(),
+        };
+        events
+            .on_ice_connection_state_change(RTCIceConnectionState::Connected)
+            .await;
+        events
+            .on_ice_connection_state_change(RTCIceConnectionState::Failed)
+            .await;
+        let selected = observed.try_recv().unwrap();
+        assert_eq!(selected.event, "selected");
+        let failed = observed.try_recv().unwrap();
+        assert_eq!(failed.event, "failed");
+    }
+
+    #[test]
+    fn recreated_peers_keep_the_openings_endpoint_key() {
+        use std::hash::BuildHasher;
+        let sender = SessionSender::detached("same-session");
+        let first = Trickling::default();
+        first.hold(sender.clone());
+        let recreated = Trickling::default();
+        recreated.hold(sender);
+        let endpoint = "192.0.2.1:5000";
+        assert_eq!(
+            first.opening_key.get().unwrap().hash_one(endpoint),
+            recreated.opening_key.get().unwrap().hash_one(endpoint)
+        );
+        let replacement = Trickling::default();
+        replacement.hold(SessionSender::detached("same-session"));
+        assert_ne!(first.opening_id.get(), replacement.opening_id.get());
+        assert_ne!(
+            first.opening_key.get().unwrap().hash_one(endpoint),
+            replacement.opening_key.get().unwrap().hash_one(endpoint)
+        );
+    }
+
+    #[test]
+    fn allocation_diagnostics_are_not_folded_by_the_global_throttle() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "rtc::ice_diagnostic_tests::emit_allocation_diagnostics",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let lines = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(
+            lines
+                .lines()
+                .filter(|line| line.contains("allocation=test-allocation"))
+                .count(),
+            50
+        );
+    }
+
+    #[test]
+    fn emit_allocation_diagnostics() {
+        for tid in 0..50 {
+            GathererLog.log(
+                &log::Record::builder()
+                    .target("turn_diagnostics")
+                    .level(log::Level::Info)
+                    .args(format_args!(
+                        "allocation=test-allocation method=ChannelBind tid={tid}"
+                    ))
+                    .build(),
+            );
+        }
+    }
+
+    #[test]
+    fn allocation_diagnostics_bypass_the_global_warning_filter() {
+        assert!(GathererLog.enabled(
+            &log::Metadata::builder()
+                .target("turn_diagnostics")
+                .level(log::Level::Info)
+                .build()
+        ));
+        assert!(!GathererLog.enabled(
+            &log::Metadata::builder()
+                .target("turn_diagnostics_untrusted")
+                .level(log::Level::Info)
+                .build()
+        ));
     }
 
     /// Only the gatherers' warnings and errors reach stderr: the rest of what

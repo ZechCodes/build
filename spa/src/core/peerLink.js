@@ -3,7 +3,7 @@ import { classifyTransportPath, TURN } from "./transportPath.js";
 import { candidateTypeOf, createRelayHold, directPairStatus, hasLocalHostCandidate, offerHasHostCandidate } from "./iceCandidates.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { createDirectPairMonitor } from "./directPairMonitor.js";
-import { candidateDiagnostic, directPairNoTryReason, safeCandidateReason } from "./rtcDiagnostics.js";
+import { browserCandidateDiagnostic, browserRtcErrorName, candidateDiagnostic, directPairNoTryReason, remoteCandidateOutcome, safeCandidateReason } from "./rtcDiagnostics.js";
 
 const CHANNELS = [["app", 0], ["term", 1]];
 const OPEN_TIMEOUT_MS = 15000;
@@ -112,6 +112,12 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
    *  watcher and the direct-pair attempt can both want one. */
   let renegotiating = false;
   let negotiationGeneration = 0;
+  const answerDiagnostic = () => {
+    const generation = negotiationGeneration;
+    return (state, error) => diagnostic("answer", {
+      state, generation, ...(state === "error" ? { error: browserRtcErrorName(error) } : {}),
+    });
+  };
   let renegotiationDeadline = 0;
   let cancelSignaling = () => {};
   let initialSignalingComplete = Promise.resolve();
@@ -179,9 +185,16 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   // bridge's race and leave the browser's — and the browser is the offerer, so
   // the browser is the controlling agent, and nomination is the browser's.
   const holdInbound = createRelayHold({
-    deliver: (candidate) => {
+    deliver: async (candidate) => {
       if (torn) return;
-      peer.addIceCandidate(candidate).catch(() => diagnostic("candidate-failed", { direction: "remote" }));
+      const detail = { ...browserCandidateDiagnostic(candidate), generation: negotiationGeneration };
+      try {
+        await peer.addIceCandidate(candidate);
+        diagnostic("remote-candidate", { ...detail, outcome: "accepted" });
+      } catch (error) {
+        diagnostic("remote-candidate", { ...detail, outcome: remoteCandidateOutcome(error), error: browserRtcErrorName(error) });
+        diagnostic("candidate-failed", { direction: "remote" });
+      }
     },
   });
   const outboundCandidatesDelivered = (round = localCandidates) => Promise.all([...round.pending]);
@@ -245,6 +258,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       return;
     }
     localCandidates.gathered[countedCandidateType(event.candidate)] += 1;
+    diagnostic("local-candidate", { ...browserCandidateDiagnostic(event.candidate), generation: negotiationGeneration });
     holdOutbound.offer(event.candidate);
   };
   peer.addEventListener("icecandidate", outgoingCandidate);
@@ -263,6 +277,10 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   observe(peer, "iceconnectionstatechange", () => {
     readIceState();
     diagnostic("ice-state", { state: safeIceState(peer.iceConnectionState) });
+  });
+  observe(peer, "icegatheringstatechange", () => {
+    const state = ["new", "gathering", "complete"].includes(peer.iceGatheringState) ? peer.iceGatheringState : "unknown";
+    diagnostic("gathering-state", { state, generation: negotiationGeneration });
   });
   for (const channel of channels) {
     observe(channel, "close", () => diagnostic("channel", { channel: channel.label, state: "closed" }));
@@ -422,7 +440,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     diagnostic("negotiating", { phase: "initial" });
     const initialDeadline = Date.now() + openTimeoutMs;
     await withinDeadline(openTimeoutMs, async (remaining) => {
-      await offer(peer, signal, iceServers, {}, ensureActive, clientId, rememberLocalOffer);
+      await offer(peer, signal, iceServers, {}, ensureActive, clientId, rememberLocalOffer, answerDiagnostic());
       initialSignalingComplete = finishSignaling(initialDeadline);
       currentSignalingComplete = initialSignalingComplete;
       await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelWait = cancel), ensureActive, true);
@@ -476,7 +494,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
         const freshServers = await fetchIceServers();
         ensureNegotiationActive();
         peer.setConfiguration?.({ iceServers: freshServers });
-        await offer(peer, signal, freshServers, { iceRestart: true }, ensureNegotiationActive, clientId, rememberLocalOffer);
+        await offer(peer, signal, freshServers, { iceRestart: true }, ensureNegotiationActive, clientId, rememberLocalOffer, answerDiagnostic());
         if (phase === "direct-pair") {
           await gatheringComplete(peer, (cancel) => (cancelActivity = cancel), ensureNegotiationActive);
           ensureNegotiationActive();
@@ -564,7 +582,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
 
 const reportLocalOffer = (peer, local, remember) => remember?.(peer.localDescription?.sdp || local.sdp);
 
-async function offer(peer, signal, iceServers, options, ensureActive, clientId, rememberLocalOffer) {
+async function offer(peer, signal, iceServers, options, ensureActive, clientId, rememberLocalOffer, diagnostic) {
   const local = await peer.createOffer(options);
   ensureActive();
   rememberLocalOffer?.(local.sdp);
@@ -574,7 +592,14 @@ async function offer(peer, signal, iceServers, options, ensureActive, clientId, 
   const hint = clientId?.();
   const answer = await signal("rtc.offer", { sdp: local.sdp, ice_servers: iceServers, ...(hint ? { client_id: hint } : {}) });
   ensureActive();
-  await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+  diagnostic("received");
+  try {
+    await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+    diagnostic("applied");
+  } catch (error) {
+    diagnostic("error", error);
+    throw error;
+  }
   ensureActive();
   reportLocalOffer(peer, local, rememberLocalOffer);
 }

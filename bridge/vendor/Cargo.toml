@@ -6,7 +6,10 @@
 # tests run here too. rtc is not a member: its tests'
 # dev-dependencies (webrtc 0.14 and a web stack) are not ours to build.
 [workspace]
-members = ["webrtc", "rtc-ice"]
+members = ["webrtc", "rtc-ice", "rtc-turn"]
+# rtc-turn upstream tests contact public STUN servers. Only its diagnostic tests
+# run explicitly; the normal gate stays strictly local.
+default-members = ["webrtc", "rtc-ice"]
 # The bridge's resolver (edition 2021), so features unify the way they do in
 # the daemon.
 resolver = "2"
@@ -14,3 +17,4 @@ resolver = "2"
 [patch.crates-io]
 rtc = { path = "rtc" }
 rtc-ice = { path = "rtc-ice" }
+rtc-turn = { path = "rtc-turn" }

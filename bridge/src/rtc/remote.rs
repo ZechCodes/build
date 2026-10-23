@@ -391,6 +391,9 @@ impl RemoteCandidates {
         self.report(&mut state, "generation", None);
         restarting
     }
+    pub(super) async fn generation(&self) -> u64 {
+        self.state.lock().await.generation
+    }
     /// Advance the restart baseline only after native description acceptance.
     pub(super) async fn accept_offer(&self, offer: &str) {
         self.state.lock().await.accepted_credentials = Some(ice_credentials(offer));

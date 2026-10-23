@@ -334,6 +334,7 @@ pub struct SettingEngine {
     pub(crate) timeout: Timeout,
     pub(crate) check_pending_direct_pairs: bool,
     pub(crate) host_candidate_sweep: bool,
+    turn_diagnostic_context: Option<turn::client::diagnostics::DiagnosticContext>,
     pub(crate) candidates: Candidates,
     pub(crate) multicast_dns: MulticastDNS,
     pub(crate) replay_protection: ReplayProtection,
@@ -369,6 +370,35 @@ impl SettingEngine {
     /// ICE-lite agents never initiate these checks.
     pub fn set_check_pending_direct_pairs(&mut self, enabled: bool) {
         self.check_pending_direct_pairs = enabled;
+    }
+
+    /// Enable bounded, privacy-preserving TURN diagnostics for an opening token.
+    /// Requests retain their generation through response and timeout.
+    pub fn set_turn_diagnostic_context(
+        &mut self,
+        opening: String,
+        generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) {
+        self.turn_diagnostic_context = Some(turn::client::diagnostics::DiagnosticContext::new(
+            opening, generation,
+        ));
+    }
+
+    /// Reuse an opening's keyed endpoint identity across peer-connection recreation.
+    pub fn set_turn_diagnostic_context_with_key(
+        &mut self,
+        opening: String,
+        generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        key: std::collections::hash_map::RandomState,
+    ) {
+        self.turn_diagnostic_context = Some(
+            turn::client::diagnostics::DiagnosticContext::with_key(opening, generation, key),
+        );
+    }
+
+    /// Shared correlation context for TURN allocations.
+    pub fn turn_diagnostic_context(&self) -> Option<turn::client::diagnostics::DiagnosticContext> {
+        self.turn_diagnostic_context.clone()
     }
 
     /// Opt in to bounded, credential-free on-link probes from ICE host sockets.

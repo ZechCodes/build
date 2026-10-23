@@ -1,0 +1,164 @@
+diff --git a/webrtc/src/peer_connection/mod.rs b/webrtc/src/peer_connection/mod.rs
+index 4232db2..f426ee6 100644
+--- a/webrtc/src/peer_connection/mod.rs
++++ b/webrtc/src/peer_connection/mod.rs
+@@ -195,6 +195,7 @@ where
+     mdns_mode: MulticastDnsMode,
+     discard_local_candidates_during_ice_restart: bool,
+     host_candidate_sweep: bool,
++    turn_diagnostic_context: Option<rtc::turn::client::diagnostics::DiagnosticContext>,
+     udp_addrs: Vec<A>,
+     tcp_addrs: Vec<A>,
+     dedicated_reactor: bool,
+@@ -211,6 +212,7 @@ impl<A: ToSocketAddrs> Default for PeerConnectionBuilder<A, NoopInterceptor> {
+             mdns_mode: MulticastDnsMode::Disabled,
+             discard_local_candidates_during_ice_restart: false,
+             host_candidate_sweep: false,
++            turn_diagnostic_context: None,
+             udp_addrs: vec![],
+             tcp_addrs: vec![],
+             dedicated_reactor: false,
+@@ -250,6 +252,7 @@ where
+     pub fn with_setting_engine(mut self, setting_engine: SettingEngine) -> Self {
+         self.mdns_mode = setting_engine.multicast_dns().mode;
+         self.host_candidate_sweep = setting_engine.host_candidate_sweep();
++        self.turn_diagnostic_context = setting_engine.turn_diagnostic_context();
+         self.discard_local_candidates_during_ice_restart =
+             setting_engine.discard_local_candidates_during_ice_restart();
+         self.builder = self.builder.with_setting_engine(setting_engine);
+@@ -302,6 +305,7 @@ where
+             discard_local_candidates_during_ice_restart: self
+                 .discard_local_candidates_during_ice_restart,
+             host_candidate_sweep: self.host_candidate_sweep,
++            turn_diagnostic_context: self.turn_diagnostic_context,
+             udp_addrs: self.udp_addrs,
+             tcp_addrs: self.tcp_addrs,
+             dedicated_reactor: self.dedicated_reactor,
+@@ -478,6 +482,7 @@ where
+             self.mdns_mode,
+             self.discard_local_candidates_during_ice_restart,
+             self.host_candidate_sweep,
++            self.turn_diagnostic_context,
+             self.udp_addrs,
+             self.tcp_addrs,
+             self.dedicated_reactor,
+@@ -694,6 +699,7 @@ where
+     /// same decision (webrtc#868).
+     pub(crate) discard_local_candidates_during_ice_restart: bool,
+     pub(crate) host_candidate_sweep: bool,
++    pub(crate) turn_diagnostic_context: Option<rtc::turn::client::diagnostics::DiagnosticContext>,
+     pub(crate) host_sweep_control: host_sweep::HostSweepControl,
+     /// Set when an ICE restart is detected, cleared by the driver when it has rebound.
+     ///
+@@ -851,6 +857,7 @@ where
+         mdns_mode: MulticastDnsMode,
+         discard_local_candidates_during_ice_restart: bool,
+         host_candidate_sweep: bool,
++        turn_diagnostic_context: Option<rtc::turn::client::diagnostics::DiagnosticContext>,
+         udp_addrs: Vec<A>,
+         tcp_addrs: Vec<A>,
+         dedicated_reactor: bool,
+@@ -880,6 +887,7 @@ where
+                 data_channel_backpressure: crate::runtime::Notify::new(),
+                 discard_local_candidates_during_ice_restart,
+                 host_candidate_sweep,
++                turn_diagnostic_context,
+                 host_sweep_control: host_sweep::HostSweepControl::default(),
+                 ice_restart_rebind_pending: AtomicBool::new(false),
+             }),
+@@ -1525,6 +1533,7 @@ mod tests {
+             rtp_transceivers: Mutex::new(HashMap::new()),
+             discard_local_candidates_during_ice_restart,
+             host_candidate_sweep: false,
++            turn_diagnostic_context: None,
+             host_sweep_control: host_sweep::HostSweepControl::default(),
+             ice_restart_rebind_pending: AtomicBool::new(false),
+         });
+diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
+index c244d26..5b678c1 100644
+--- a/webrtc/src/peer_connection/driver.rs
++++ b/webrtc/src/peer_connection/driver.rs
+@@ -2,9 +2,7 @@
+ //!
+ //! Follows the rtc EventLoop pattern with async select
+ 
+-use super::host_sweep::{
+-    HostSweep, SweepCredentials, SweepSubnet, binding_indication,
+-};
++use super::host_sweep::{HostSweep, SweepCredentials, SweepSubnet, binding_indication};
+ use super::transports::stun_gatherer::{
+     RTCStunGatherEventIn, RTCStunGatherEventOut, RTCStunGatherer,
+ };
+@@ -626,7 +624,8 @@ where
+             self.ice_servers.clone(),
+             self.ice_gather_policy,
+             runtime,
+-        );
++        )
++        .with_diagnostic_context(self.inner.turn_diagnostic_context.clone());
+ 
+         Ok(())
+     }
+@@ -648,6 +647,7 @@ where
+         discard_local_candidates_during_ice_restart: bool,
+     ) -> Self {
+         let runtime = Arc::clone(&inner.runtime);
++        let turn_diagnostic_context = inner.turn_diagnostic_context.clone();
+         Self {
+             inner,
+             // Placeholders until `bind_transports` runs; constructing them costs no I/O.
+@@ -662,7 +662,8 @@ where
+                 ice_servers.clone(),
+                 ice_gather_policy,
+                 runtime,
+-            ),
++            )
++            .with_diagnostic_context(turn_diagnostic_context),
+             mdns_socket: None,
+             udp_sockets: HashMap::new(),
+             host_sweep: HostSweep::default(),
+diff --git a/webrtc/src/peer_connection/transports/turn_relayer.rs b/webrtc/src/peer_connection/transports/turn_relayer.rs
+index a5168cc..dc8ec54 100644
+--- a/webrtc/src/peer_connection/transports/turn_relayer.rs
++++ b/webrtc/src/peer_connection/transports/turn_relayer.rs
+@@ -56,6 +56,7 @@ pub(crate) struct RTCTurnRelayer {
+     state: RTCIceGatheringState,
+     /// Host runtime, used to resolve TURN server hostnames.
+     runtime: Arc<dyn Runtime>,
++    context: Option<rtc::turn::client::diagnostics::DiagnosticContext>,
+     clients: HashMap<FourTuple, ManagedTurnClient>,
+     relay_addrs: HashMap<SocketAddr, FourTuple>,
+     pending_permissions: HashMap<rtc::stun::message::TransactionId, PendingPermission>,
+@@ -79,6 +80,7 @@ impl RTCTurnRelayer {
+             ice_gather_policy,
+             state: RTCIceGatheringState::New,
+             runtime,
++            context: None,
+             clients: HashMap::new(),
+             relay_addrs: HashMap::new(),
+             pending_permissions: HashMap::new(),
+@@ -90,6 +92,14 @@ impl RTCTurnRelayer {
+         }
+     }
+ 
++    pub(crate) fn with_diagnostic_context(
++        mut self,
++        context: Option<rtc::turn::client::diagnostics::DiagnosticContext>,
++    ) -> Self {
++        self.context = context;
++        self
++    }
++
+     pub(crate) fn state(&self) -> RTCIceGatheringState {
+         self.state
+     }
+@@ -303,6 +313,9 @@ impl RTCTurnRelayer {
+                         rto_in_ms: 0,
+                     })?;
+ 
++                    if let Some(context) = self.context.clone() {
++                        client.set_diagnostic_context(context);
++                    }
+                     let allocate_tid = client.allocate()?;
+                     debug!(
+                         "TURN allocation started from {} to {} via {}",

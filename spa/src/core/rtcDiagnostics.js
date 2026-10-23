@@ -1,3 +1,5 @@
+import { candidateTypeOf } from "./iceCandidates.js";
+
 // Only content-free reason names and counters can enter a shareable report.
 const DIRECT_CHECK_REASONS = ["direct-checks-pending", "direct-checks-not-sent", "direct-checks-no-reply", "direct-checks-succeeded"];
 const DISCOVERY_CHECK_REASONS = ["mdns-pending", "mdns-unresolved", "no-host-candidates", ...DIRECT_CHECK_REASONS];
@@ -60,3 +62,26 @@ export function directPairNoTryReason(browserReason, bridgeReason) {
   return DISCOVERY_CHECK_REASONS.includes(bridgeReason)
     ? bridgeReason : browserReason;
 }
+
+// Only fixed classifications enter the diagnostic history; candidate endpoints,
+// SDP, credentials and native exception text stay outside it.
+export function browserCandidateDiagnostic(candidate) {
+  const rawType = candidateTypeOf(candidate);
+  const type = ["host", "srflx", "prflx", "relay"].includes(rawType) ? rawType : "unknown";
+  const address = typeof candidate?.candidate === "string" ? candidate.candidate.trim().split(/\s+/)[4] || "" : "";
+  return { type, family: candidateAddressFamily(address) };
+}
+
+function candidateAddressFamily(address) {
+  if (/\.local$/i.test(address)) return "mdns";
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(address) && address.split(".").every((part) => Number(part) <= 255)) return "ipv4";
+  if (address.includes(":") && /^[0-9a-f:]+$/i.test(address)) return "ipv6";
+  return "unknown";
+}
+
+export const remoteCandidateOutcome = (error) =>
+  ["OperationError", "TypeError", "InvalidStateError"].includes(error?.name) ? "rejected" : "error";
+
+export const browserRtcErrorName = (error) =>
+  ["OperationError", "TypeError", "InvalidStateError", "InvalidAccessError", "SyntaxError", "NotSupportedError", "SecurityError"].includes(error?.name)
+    ? error.name : "unknown";

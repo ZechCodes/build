@@ -219,3 +219,18 @@ test("a malformed answer is not mistaken for a network failure", async () => {
   assert.equal((await ceremonies.verify()).error, "Checking your passkey didn't work. Try again.");
   assert.deepEqual(credentials.log, []);
 });
+
+for (const kind of ["register", "verify"]) {
+  test(`a ${kind} site verification failure keeps recovery on the original sign-in page`, async () => {
+    const server = fakeServer();
+    const credentials = new OneAtATimeCredentials();
+    credentials.outcome = "SecurityError";
+    const ceremonies = createCeremonies({ credentials, post: server.post });
+
+    const outcome = await (kind === "register" ? ceremonies.register("Laptop") : ceremonies.verify());
+
+    assert.equal(outcome.error, "Passkeys could not verify this site. Open the original sign-in page and try again.");
+    assert.equal(outcome.redirect, undefined);
+    assert.deepEqual(server.calls.map((call) => call.path), ["options"]);
+  });
+}

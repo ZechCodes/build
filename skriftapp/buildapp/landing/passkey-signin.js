@@ -111,7 +111,7 @@ export function describeError(kind, error) {
         ? "This device already has a passkey for that email. Sign in instead."
         : "Your browser is still finishing another passkey request. Wait a moment and try again.";
     case "SecurityError":
-      return "Passkeys only work on getbuild.ing. Open the page there and try again.";
+      return "Passkeys could not verify this site. Open the original sign-in page and try again.";
     case "NotSupportedError":
       return "This device can't use a passkey here. Try another browser or device.";
     case "TypeError":

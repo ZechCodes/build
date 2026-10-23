@@ -1,0 +1,5 @@
+# Operator bootstrap only; deliberately outside kustomization.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: build-dev

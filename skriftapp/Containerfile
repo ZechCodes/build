@@ -21,8 +21,9 @@ COPY spa/ ./spa/
 # Preserve relay/version inputs and Vite's output beside the source tree.
 ARG VITE_RELAY_URL=wss://relay.getbuild.ing
 ARG VITE_BUILD_VERSION=dev
+ARG VITE_BUILD_CHANNEL=prod
 RUN cd spa \
- && VITE_RELAY_URL="$VITE_RELAY_URL" VITE_BUILD_VERSION="$VITE_BUILD_VERSION" npm run build
+ && VITE_RELAY_URL="$VITE_RELAY_URL" VITE_BUILD_VERSION="$VITE_BUILD_VERSION" VITE_BUILD_CHANNEL="$VITE_BUILD_CHANNEL" npm run build
 # → emits /build/repo/skriftapp/buildapp/static/ (vite outDir).
 
 # --- landing: Astro static build (multi-stage node builder) ----------------
@@ -65,7 +66,10 @@ RUN uv sync --frozen --no-dev
 COPY transport/LICENSE.md ./licenses/secure-transport-LICENSE.md
 
 # App code + the spa stage's bundle.
-COPY skriftapp/app.yaml skriftapp/entrypoint.sh ./
+# Select the hosted channel config; production remains the default.
+ARG APP_CONFIG=app.yaml
+COPY skriftapp/${APP_CONFIG} ./app.yaml
+COPY skriftapp/entrypoint.sh ./
 COPY skriftapp/buildapp ./buildapp
 COPY skriftapp/migrations ./migrations
 # The app's own admin templates: Skrift's engine also reads ./templates/.

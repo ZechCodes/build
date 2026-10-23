@@ -122,7 +122,7 @@ def test_deploy_requires_success_protection_digest_and_dev_only_apply(name):
     assert job["concurrency"]["cancel-in-progress"] is False
     assert job["concurrency"]["group"] == name + "-dev"
     image_job = name.replace("deploy", "build")
-    assert image_job in job["needs"] and "checks" in job["needs"]
+    assert job["needs"] == ["resolve", "checks", image_job]
     assert job["if"] == f"${{{{ needs.checks.result == 'success' && needs['{image_job}'].result == 'success' }}}}"
     source = yaml.safe_dump(job)
     assert "DEV_KUBECONFIG" in source
@@ -176,7 +176,7 @@ def test_renderer_refuses_out_of_scope_resources(mutation):
         renderer().render(docs, APP_IMAGE, RELAY_IMAGE)
 
 
-def test_existing_prod_workflow_contract_still_passes():
+def test_failed_cancelled_or_skipped_gates_never_publish_or_deploy():
     # Reuse its interpreter to test actual failure conditions rather than summaries.
     contract = runpy.run_path(str(ROOT / ".github/test-transport-workflow.py"))
     evaluate = contract["evaluate_condition"]
@@ -185,3 +185,58 @@ def test_existing_prod_workflow_contract_still_passes():
         for result in ("failure", "cancelled", "skipped", "success"):
             context = {"needs": {"checks": {"result": result}, "build-app": {"result": result}, "build-relay": {"result": result}}}
             assert evaluate(condition, context) == (result == "success")
+
+
+@pytest.mark.parametrize("target", ["app", "relay"])
+def test_independent_rollout_requires_only_its_own_digest(target):
+    phases = renderer().render(dev_resources(), APP_IMAGE if target == "app" else None,
+                               RELAY_IMAGE if target == "relay" else None, target=target)
+    assert set(phases) == ({"infrastructure", "migrate", "app"} if target == "app" else {"relay"})
+    with pytest.raises(ValueError):
+        renderer().render(dev_resources(), None, None, target=target)
+
+
+@pytest.mark.parametrize("config_name,host,relay", [
+    ("app.yaml", "getbuild.ing", "relay.getbuild.ing"),
+    ("app.channel-dev.yaml", "dev.getbuild.ing", "relay-dev.getbuild.ing"),
+])
+def test_actual_hosted_cookie_headers_csrf_and_passkey_rp(tmp_path, monkeypatch, config_name, host, relay):
+    import asyncio
+    from types import SimpleNamespace
+
+    from litestar.testing import TestClient
+    from skrift.asgi import create_app
+    from skrift.auth.second_factors.passkey_service import _resolve_origin, _resolve_rp_id
+    from skrift.config import get_settings
+
+    from buildapp.db_test_support import create_skrift_schema_in
+
+    database = tmp_path / "hosted.db"
+    asyncio.run(create_skrift_schema_in(database))
+    (tmp_path / "app.yaml").write_text((ROOT / "skriftapp" / config_name).read_text())
+    (tmp_path / "templates").symlink_to(ROOT / "skriftapp/templates")
+    monkeypatch.chdir(tmp_path)
+    for key, value in {"SKRIFT_ENV": "production", "SECRET_KEY": "disposable-unique-" + host,
+                       "DATABASE_URL": f"sqlite+aiosqlite:///{database}",
+                       "SMTP_USERNAME": "test@example.com", "SMTP_PASSWORD": "disposable",
+                       "SMTP_FROM_ADDRESS": "test@example.com"}.items():
+        monkeypatch.setenv(key, value)
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+        request = SimpleNamespace(base_url="https://spoofed.invalid", app=SimpleNamespace(state=SimpleNamespace()))
+        assert _resolve_origin(request, settings) == f"https://{host}"
+        assert _resolve_rp_id(request, settings) == host
+        with TestClient(create_app(), base_url=f"https://{host}") as client:
+            page = client.get("/auth/login")
+            assert page.status_code == 200
+            cookie = page.headers["set-cookie"].lower()
+            assert "secure" in cookie and "httponly" in cookie and "samesite=lax" in cookie
+            assert "domain=" not in cookie
+            assert f"wss://{relay}" in page.headers["content-security-policy"]
+            assert "access-control-allow-origin" not in page.headers
+            refused = client.post("/auth/passkey/options", data={"email": "test@example.com"})
+            assert refused.status_code == 400
+            assert refused.json()["error"] == "invalid_csrf"
+    finally:
+        get_settings.cache_clear()

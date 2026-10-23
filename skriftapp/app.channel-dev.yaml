@@ -1,0 +1,260 @@
+# Hosted dev channel: production security settings, separate origin and secrets.
+# Baked as app.yaml; SKRIFT_ENV remains production. app.dev.yaml is local-only.
+#
+# Required environment (set via the container/deployment, or .env):
+#   SECRET_KEY           — Skrift session signing key
+#   DATABASE_URL         — postgresql+asyncpg://user:pass@host:5432/dbname
+#   INTERNAL_API_SECRET  — shared secret the relay presents as X-Internal-Secret
+#   VAPID_PRIVATE_KEY    — web-push VAPID private key (base64url raw P-256 scalar)
+#   VAPID_PUBLIC_KEY     — web-push VAPID public key (base64url uncompressed point)
+#   VAPID_SUBJECT        — optional contact claim, default mailto:ops@getbuild.ing
+#   CF_TURN_KEY_ID       — Cloudflare TURN key id (optional: absent means the
+#   CF_TURN_KEY_API_TOKEN  ICE-servers route answers a STUN-only list)
+#   SMTP_USERNAME        — FastMail login address
+#   SMTP_PASSWORD        — FastMail app password (not the account password)
+#   SMTP_FROM_ADDRESS    — an address or alias on that account, e.g. Build <hello@getbuild.ing>
+#   WAITLIST_NOTIFY_ADDRESS — read from the environment by the app (not interpolated here);
+#                          empty disables the owner notification on a new signup
+controllers:
+  - buildapp.root_controller:RootController
+  - buildapp.controllers:BuildController
+  - buildapp.health_controller:HealthController
+  - buildapp.health_controller:ReadinessController
+  - buildapp.devices_controller:DevicesController
+  - buildapp.push_controller:PushController
+  - buildapp.rtc_controller:RtcController
+  - buildapp.transport_controller:TransportController
+  - buildapp.transport_admin:TransportAdminController
+  - buildapp.waitlist_controller:WaitlistController
+  - buildapp.invites_controller:InvitesController
+  - buildapp.invites_admin:InvitesAdminController
+  - buildapp.waitlist_admin:WaitlistAdminController
+  - buildapp.auth_controller:BuildAuthController
+  - skrift.admin.controller:AdminController
+models:
+  - buildapp.models
+db:
+  # Env-driven (Skrift interpolates $VARS at config load, failing fast if unset).
+  url: $DATABASE_URL
+auth:
+  # Also the pinned WebAuthn origin/RP ID for passkeys — must match the app host.
+  redirect_base_url: https://dev.getbuild.ing
+  methods:
+    passkey:
+      type: passkey
+      label: Passkey
+oauth2_enabled: true
+# Every budget below is per resolved client IP (Traefik's hop is trusted, so the
+# visitor is the key), per pod, in memory. They are sized so about 50 people
+# behind one NAT (an office, a campus, a carrier's CGNAT) are never answered
+# 429 in normal use, counting what the SPA, the landing page and the bridge
+# actually request (#173):
+#   /app cold load: the document and /app/sw.js, about 13 /app/static files
+#     (theme-boot, manifest, icon, 4 bundle files, 3-5 font faces, libsodium,
+#     ghostty when a terminal opens), then per online device one GET
+#     /api/devices, one POST /api/gateway-token and one POST
+#     /api/rtc/ice-servers. A warm reload refetches the document, sw.js and 3
+#     uncached static files; the hashed assets are immutable.
+#   /app idle: GET /api/devices every 15 s (4 a minute) and version.json every
+#     10 min. The all-machines-offline gate polls every 3 s (20 a minute); a
+#     device being recovered costs up to 6 token + 6 ice-servers calls a minute.
+rate_limit:
+  enabled: true
+  # Pages: /, /docs, /privacy, /install.sh, the /app document and /app/sw.js,
+  # and anything no rule below names. 50 people each loading /app twice and the
+  # landing page once in the same minute is 50 x 5 = 250; 300 leaves headroom.
+  default:
+    limit: 300
+    per: minute
+  rules:
+    # The SPA's static files. 50 people cold-loading /app in the same minute is
+    # 50 x 13 = 650, and each reloading once more (3 uncached files) is 150:
+    # 800. 1200 covers pages that render more font faces.
+    - name: app_static
+      match:
+        path: /app/static/
+        prefix: true
+        method: GET
+      key: ip
+      limits:
+        - limit: 1200
+          per: minute
+    # The SPA's API calls. 50 idle tabs polling devices is 50 x 4 = 200; all 50
+    # loading in that minute adds 50 x 3 = 150; 5 people on the offline gate
+    # add 5 x 20 = 100 and 5 devices in recovery 5 x 12 = 60: 510. 600 also
+    # absorbs a device being paired (#321): its bridge asks for its approval
+    # every second until it is approved, and from then the tab that approved
+    # it reads the devices every second while it comes up. The two take turns,
+    # so any one minute holds about 60 of them, 62 with the second they
+    # overlap: 572. The waitlist join and the bridge's signed posts keep rules
+    # of their own.
+    - name: spa_api
+      match:
+        path: /api/
+        prefix: true
+      key: ip
+      limits:
+        - limit: 600
+          per: minute
+    # A landing view fetches about 20 /landing/ files in film mode (scripts,
+    # CSS, fonts, poster, models, first screen textures) and up to 12 more as
+    # it scrolls; nothing there is cached, so a reload fetches them all again.
+    # 50 people scrolling through it in the same minute is 50 x 32 = 1600.
+    - name: landing_assets
+      match:
+        path: /landing/
+        prefix: true
+        method: GET
+      key: ip
+      limits:
+        - limit: 2000
+          per: minute
+    - name: waitlist_join
+      match:
+        path: /api/waitlist
+        method: POST
+      key: ip
+      limits:
+        - limit: 3
+          per: minute
+        - limit: 100
+          per: day
+    # A bridge's device-signed posts, each on a budget of its own: they shared
+    # the 60/minute default with everyone at the same address, and a household
+    # browsing through a bridge's reconnects cost it its heartbeats (14 refused
+    # 429 in one evening, #131). Sized for 50 bridges behind one address, one
+    # per person. A bridge beats twice a minute; a beat refused in passing is
+    # tried again after about 5, 10 and 20 s, so a bridge redialing through an
+    # api deploy makes at most 4 in its first minute: 50 x 4 = 200.
+    - name: bridge_heartbeat
+      match:
+        path: /api/devices/heartbeat
+        method: POST
+      key: ip
+      limits:
+        - limit: 300
+          per: minute
+    # About 5 reports per session (minted, carrying, a carrying again for an
+    # ICE restart or the move off TURN, channels lost, ended). 50 people whose
+    # sessions all drop and redial in the same minute, two devices each, is
+    # 50 x 2 x 5 = 500.
+    - name: bridge_transport_report
+      match:
+        path: /api/transport/report
+        method: POST
+      key: ip
+      limits:
+        - limit: 600
+          per: minute
+    # A bridge pushes at most once per task a minute (NOTIFY_DEBOUNCE_SECONDS);
+    # 50 bridges each with 6 tasks needing their person in the same minute.
+    - name: bridge_push_notify
+      match:
+        path: /api/push/notify
+        method: POST
+      key: ip
+      limits:
+        - limit: 300
+          per: minute
+    # The relay's lookups. Every one comes from the relay pod's address, so
+    # this is the whole service's budget, not one caller's: on the 60/minute
+    # default, the 61st connected bridge's revalidation was refused, and past
+    # that a bridge connecting or a browser dialing was turned away (the
+    # connect lookups fail closed). Per connected bridge the relay revalidates
+    # once a minute (DEVICE_REVALIDATION_INTERVAL) and looks it up once per
+    # connect; per browser relay dial it looks up one gateway token. 1000
+    # bridges revalidating (1000), all reconnecting after a relay deploy (1000)
+    # and 1000 tabs redialing twice (2000) is 4000. The X-Internal-Secret guard,
+    # not this budget, is what keeps everyone else out.
+    - name: relay_internal
+      match:
+        path: /internal/
+        prefix: true
+      key: ip
+      limits:
+        - limit: 6000
+          per: minute
+    # An invite link is a secret; a caller walking the token space gets 30 tries a
+    # minute and nothing else.
+    - name: invite_open
+      match:
+        path: /invite/
+        prefix: true
+        method: GET
+      key: ip
+      limits:
+        - limit: 30
+          per: minute
+    # Each send mails a real person from our domain. Administrator-only, but a
+    # stolen session or a runaway script should still not burn the sender's
+    # reputation: 20 a minute clears a batch by hand, 300 a day is a big day.
+    - name: waitlist_invite_send
+      match:
+        path: /admin/waitlist/
+        prefix: true
+        method: POST
+      key: ip
+      limits:
+        - limit: 20
+          per: minute
+        - limit: 300
+          per: day
+    # Both administrator creation forms and the JSON API mint invitation tokens.
+    # Keep their shared budget at the same 20/minute and 300/day as waitlist sends.
+    - name: invite_create
+      match:
+        path: /admin/invites
+        method: POST
+      key: ip
+      limits:
+        - limit: 20
+          per: minute
+        - limit: 300
+          per: day
+    - name: invite_create
+      match:
+        path: /admin/invites/open-link
+        method: POST
+      key: ip
+      limits:
+        - limit: 20
+          per: minute
+        - limit: 300
+          per: day
+    - name: invite_create
+      match:
+        path: /api/invites
+        method: POST
+      key: ip
+      limits:
+        - limit: 20
+          per: minute
+        - limit: 300
+          per: day
+email:
+  backend: skrift.lib.email_backends:SMTPEmailBackend
+  from_address: $SMTP_FROM_ADDRESS
+  reply_to: $SMTP_FROM_ADDRESS
+  public_base_url: https://dev.getbuild.ing
+  smtp_host: smtp.fastmail.com
+  smtp_port: 587
+  smtp_starttls: true
+  smtp_username: $SMTP_USERNAME
+  smtp_password: $SMTP_PASSWORD
+# The relay must present X-Internal-Secret on /internal/* — no localhost fallback.
+internal_api:
+  allow_localhost: false
+# Same-origin CSP: the SPA bundle, fonts, and crypto are all served from this app
+# (no esm.sh, no Google fonts). The only external target is the relay websocket.
+# Deviations from bare 'self', each load-bearing for the SPA:
+#   script-src 'wasm-unsafe-eval' — libsodium compiles WASM (does NOT allow JS eval)
+#   style-src  'unsafe-inline'    — xterm/Monaco inject runtime styles; Skrift's CSP
+#                                   nonce covers script-src only
+#   worker-src blob:              — Monaco editor workers
+#   img-src    data: blob: https: — icons, captured previews and explicitly loaded HTTPS images
+#   media-src  blob:              — captured video playback
+#   connect-src data:             — ghostty-web instantiates its wasm from a data: URL
+security_headers:
+  # OAuth consent may hand navigation back to the registered desktop client.
+  csp_nonce: true
+  content_security_policy: "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob:; font-src 'self'; connect-src 'self' data: wss://relay-dev.getbuild.ing; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self' getbuilding:; base-uri 'self'; object-src 'none'"

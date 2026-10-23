@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
-const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const html = readFileSync(resolve("index.html"), "utf8");
 const body = html.match(/<body>([\s\S]*)<\/body>/)[1];
 const originalTitle = "Build — review is the product";
 

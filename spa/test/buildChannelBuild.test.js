@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { build } from "vite";
 import { expect, it } from "vitest";
 
@@ -10,7 +10,7 @@ it.each(["dev", "prod"])("bakes %s into an output that needs no runtime environm
     define: { "import.meta.env.VITE_BUILD_CHANNEL": JSON.stringify(channel) },
     build: {
       write: false,
-      lib: { entry: fileURLToPath(new URL("../src/core/buildChannel.js", import.meta.url)), formats: ["es"] },
+      lib: { entry: resolve("src/core/buildChannel.js"), formats: ["es"] },
     },
   });
   const code = output.output.find((file) => file.type === "chunk").code;

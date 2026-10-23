@@ -23,6 +23,7 @@ def test_real_postgres_schema_migrations_bootstrap_and_app(tmp_path, monkeypatch
     if not url:
         pytest.skip('requires disposable local PostgreSQL16')
     parsed = make_url(url)
+    assert parsed.drivername == 'postgresql+asyncpg' and not parsed.query
     assert parsed.host in ('localhost', '127.0.0.1', '::1')
     assert parsed.database == 'build' and parsed.username == 'build_dev'
     config = yaml.safe_load((ROOT / 'skriftapp/app.channel-dev.yaml').read_text())

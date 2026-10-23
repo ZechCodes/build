@@ -280,3 +280,47 @@ and this is the text to read instead:
 Tests: `uv run --frozen pytest buildapp` (from this directory).
 Lint: `uv run --frozen ruff check buildapp` — correctness plus the C901
 complexity cap (CLAUDE.md “Complexity gates”).
+
+
+### Hosted dev schema regression on disposable PostgreSQL
+
+The normal Python gate skips `test_dev_schema_postgres.py` unless
+`TEST_DEV_POSTGRES_URL` is set. This additional proof runs both real migration
+heads twice, bootstrap and rollout checks, and the real ASGI dispatcher against
+a restricted role. It verifies that dev tables, foreign keys, and migration
+version records stay in `build_dev`; production canary reads/writes, public DDL,
+and assuming the production role must fail. The proof accepts only an asyncpg
+URL with a loopback host, database `build`, role `build_dev`, and no URL query
+options. Never use a cluster connection or live credentials.
+
+From `skriftapp/`, create the disposable PostgreSQL16 instance (the passwords
+below are public test fixtures):
+
+```bash
+docker run --detach --rm --name build-dev-schema-proof \
+  --publish 127.0.0.1:55480:5432 \
+  --env POSTGRES_PASSWORD=disposable-admin --env POSTGRES_DB=build postgres:16-alpine
+docker exec build-dev-schema-proof pg_isready -U postgres -d build
+# Wait for pg_isready to succeed before running the SQL.
+docker exec -i build-dev-schema-proof psql -U postgres -d build -v ON_ERROR_STOP=1 <<'SQL'
+CREATE ROLE build LOGIN PASSWORD 'disposable-prod';
+CREATE TABLE public.prod_canary (id integer PRIMARY KEY, value text NOT NULL);
+INSERT INTO public.prod_canary VALUES (1, 'untouched');
+ALTER TABLE public.prod_canary OWNER TO build;
+CREATE ROLE build_dev LOGIN PASSWORD 'disposable-dev' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 10;
+CREATE SCHEMA build_dev AUTHORIZATION build_dev;
+ALTER ROLE build_dev IN DATABASE build SET search_path = build_dev;
+GRANT CONNECT ON DATABASE build TO build_dev;
+SQL
+TEST_DEV_POSTGRES_URL=postgresql+asyncpg://build_dev:disposable-dev@127.0.0.1:55480/build \
+  nice -n 10 uv run --frozen pytest buildapp/test_dev_schema_postgres.py -q
+docker exec build-dev-schema-proof psql -U postgres -d build -At \
+  -c 'SELECT id,value FROM public.prod_canary'
+# Expected canary: 1|untouched
+docker stop build-dev-schema-proof
+```
+
+Use a fresh container for each proof run; the test intentionally requires an
+empty dev schema. The test writes its disposable invite only into pytest's
+private temporary directory. Live operator bootstrap follows the stricter
+private invite path and provisioning order in `deploy/k8s/dev/README.md`.

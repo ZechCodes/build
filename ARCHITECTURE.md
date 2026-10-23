@@ -2849,11 +2849,17 @@ not the protocol, sessions or network behavior.
   remote ICE generation and TURN allocation ID. Opt-in vendored TURN diagnostics
   use a private hash key shared within the opening, so an endpoint can be compared
   across fresh allocations without logging its address. Each allocation assigns
-  lifetime first-use ordinals and records transaction outcomes and directional
-  indication/ChannelData counters. The dedicated diagnostic log target bypasses
-  the general gatherer warning throttle and folds repeated traffic locally.
+  lifetime first-use ordinals for up to 256 peers, aggregating additional peers
+  under an overflow ordinal. It records transaction outcomes and directional
+  indication/ChannelData counters. Packets update counters silently after first
+  use; periodic and terminal summaries carry those counts. Data rows do not
+  consume the control-plane log budget. The dedicated diagnostic log target
+  bypasses the general gatherer warning throttle and folds control-plane storms.
   ICE selection and failure snapshots record pair types and connectivity-check
-  counters with opaque pair IDs. These are observations, not proof of why a
+  counters with opaque pair IDs. Statistics requests run outside the negotiation
+  mutex; diagnostic rows are checked against the current peer and offer generation
+  before logging. Connected events always record Carrying in the transport ledger,
+  including while a restart offer awaits delivery. These are observations, not proof of why a
   provider rejected or dropped traffic, and do not change the retry state machine.
 - **Paired LAN hint**: `rtc.offer` accepts optional `client_id` under
   `rtc.clientLanCache` (wire 3.12.0). The SPA sends it only after a greeting from

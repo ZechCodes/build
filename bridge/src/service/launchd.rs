@@ -6,9 +6,53 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::config::Channel;
+
 use super::{ServiceConfig, ServiceContext, ServiceManager, ShellCommand, SERVICE_LABEL};
 
 pub struct Launchd;
+
+pub(super) struct LaunchAgent {
+    label: &'static str,
+}
+
+impl LaunchAgent {
+    pub(super) fn for_channel(channel: Channel) -> Self {
+        Self {
+            label: match channel {
+                Channel::Prod => SERVICE_LABEL,
+                Channel::Dev => "ing.getbuild.bridge.dev",
+            },
+        }
+    }
+}
+
+/// Keep the production manager available to callers that do not select a channel.
+impl ServiceManager for Launchd {
+    fn name(&self) -> &'static str {
+        LaunchAgent::for_channel(Channel::Prod).name()
+    }
+
+    fn unit_path(&self, home: &Path) -> PathBuf {
+        LaunchAgent::for_channel(Channel::Prod).unit_path(home)
+    }
+
+    fn render_unit(&self, config: &ServiceConfig) -> String {
+        LaunchAgent::for_channel(Channel::Prod).render_unit(config)
+    }
+
+    fn activate(&self, ctx: &ServiceContext, unit_path: &Path) -> Vec<ShellCommand> {
+        LaunchAgent::for_channel(Channel::Prod).activate(ctx, unit_path)
+    }
+
+    fn deactivate(&self, ctx: &ServiceContext, unit_path: &Path) -> Vec<ShellCommand> {
+        LaunchAgent::for_channel(Channel::Prod).deactivate(ctx, unit_path)
+    }
+
+    fn after_install_hint(&self) -> Option<&'static str> {
+        LaunchAgent::for_channel(Channel::Prod).after_install_hint()
+    }
+}
 
 fn xml_escape(raw: &str) -> String {
     raw.replace('&', "&amp;")
@@ -16,14 +60,14 @@ fn xml_escape(raw: &str) -> String {
         .replace('>', "&gt;")
 }
 
-impl ServiceManager for Launchd {
+impl ServiceManager for LaunchAgent {
     fn name(&self) -> &'static str {
         "launchd LaunchAgent"
     }
 
     fn unit_path(&self, home: &Path) -> PathBuf {
         home.join("Library/LaunchAgents")
-            .join(format!("{SERVICE_LABEL}.plist"))
+            .join(format!("{}.plist", self.label))
     }
 
     /// Run at load, keep alive across crashes, log under the bridge's own state
@@ -55,7 +99,7 @@ impl ServiceManager for Launchd {
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>{SERVICE_LABEL}</string>
+    <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
       <string>{binary}</string>
@@ -77,7 +121,8 @@ impl ServiceManager for Launchd {
     <string>{stderr_log}</string>
   </dict>
 </plist>
-"#
+"#,
+            label = self.label,
         )
     }
 
@@ -85,7 +130,7 @@ impl ServiceManager for Launchd {
     /// was loaded — normal, and tolerated.
     fn activate(&self, ctx: &ServiceContext, unit_path: &Path) -> Vec<ShellCommand> {
         vec![
-            ShellCommand::tolerated("launchctl", &["bootout", &gui_service(ctx)]),
+            ShellCommand::tolerated("launchctl", &["bootout", &gui_service(ctx, self.label)]),
             ShellCommand::required(
                 "launchctl",
                 &["bootstrap", &gui_domain(ctx), &unit_path.to_string_lossy()],
@@ -96,7 +141,7 @@ impl ServiceManager for Launchd {
     fn deactivate(&self, ctx: &ServiceContext, _unit_path: &Path) -> Vec<ShellCommand> {
         vec![ShellCommand::tolerated(
             "launchctl",
-            &["bootout", &gui_service(ctx)],
+            &["bootout", &gui_service(ctx, self.label)],
         )]
     }
 
@@ -109,8 +154,8 @@ fn gui_domain(ctx: &ServiceContext) -> String {
     format!("gui/{}", ctx.uid)
 }
 
-fn gui_service(ctx: &ServiceContext) -> String {
-    format!("{}/{SERVICE_LABEL}", gui_domain(ctx))
+fn gui_service(ctx: &ServiceContext, label: &str) -> String {
+    format!("{}/{label}", gui_domain(ctx))
 }
 
 #[cfg(test)]

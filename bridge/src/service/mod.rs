@@ -8,8 +8,8 @@
 //!
 //! What a "service" is varies by platform, so it is a trait, not a branch:
 //! [`Launchd`] writes a LaunchAgent plist and bootstraps it into the user's gui
-//! domain, [`Systemd`] writes a `--user` unit and enables it. [`manager_for`] is
-//! the ONE place in the crate that looks at which platform this is; everything
+//! domain, [`Systemd`] writes a `--user` unit and enables it.
+//! [`manager_for_channel`] selects the platform and isolated service identity; everything
 //! above it — install, uninstall, `main.rs` — is platform-blind.
 //!
 //! Nothing here spawns a process: [`install`] and [`uninstall`] take the command
@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 pub use launchd::Launchd;
 pub use systemd::Systemd;
 
+use crate::config::Channel;
 use crate::identity::StoredIdentity;
 use crate::pairing::{Lapse, PairingError, StatusResponse};
 
@@ -265,12 +266,18 @@ pub trait ServiceManager {
     fn after_install_hint(&self) -> Option<&'static str>;
 }
 
-/// The crate's ONLY platform branch. `os` is `std::env::consts::OS` at the one
-/// call site in `main.rs`; anything else is a platform Build has no daemon for.
+/// The production service manager for callers that do not select a channel.
 pub fn manager_for(os: &str) -> Option<Box<dyn ServiceManager>> {
+    manager_for_channel(os, Channel::Prod)
+}
+
+/// The crate's platform branch, with an explicit service channel. `os` is
+/// `std::env::consts::OS`; other values name platforms Build has no daemon for.
+/// This selection never consults process environment.
+pub fn manager_for_channel(os: &str, channel: Channel) -> Option<Box<dyn ServiceManager>> {
     match os {
-        "macos" => Some(Box::new(Launchd)),
-        "linux" => Some(Box::new(Systemd)),
+        "macos" => Some(Box::new(launchd::LaunchAgent::for_channel(channel))),
+        "linux" => Some(Box::new(systemd::SystemdUnit::for_channel(channel))),
         _ => None,
     }
 }
@@ -648,8 +655,16 @@ mod tests {
     #[test]
     fn dev_service_install_and_uninstall_leave_production_untouched() {
         for (os, relative_path, service_target) in [
-            ("linux", ".config/systemd/user/build-bridge-dev.service", "build-bridge-dev.service"),
-            ("macos", "Library/LaunchAgents/ing.getbuild.bridge.dev.plist", "gui/501/ing.getbuild.bridge.dev"),
+            (
+                "linux",
+                ".config/systemd/user/build-bridge-dev.service",
+                "build-bridge-dev.service",
+            ),
+            (
+                "macos",
+                "Library/LaunchAgents/ing.getbuild.bridge.dev.plist",
+                "gui/501/ing.getbuild.bridge.dev",
+            ),
         ] {
             assert_dev_service_is_isolated(os, relative_path, service_target);
         }
@@ -672,33 +687,51 @@ mod tests {
         let path = install(dev.as_ref(), &ctx, &config, &mut |command| {
             activated.push(command.clone());
             Ok(true)
-        }).expect("mock install");
+        })
+        .expect("mock install");
         assert_eq!(path, expected_path);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains(".build-dev/log/bridge.log"), "{text}");
-        assert!(text.contains("BRIDGE_CHANNEL"), "{text}");
-        assert!(text.contains("dev"), "{text}");
+        assert!(
+            text.contains("BRIDGE_CHANNEL=dev")
+                || text.contains("<key>BRIDGE_CHANNEL</key>\n      <string>dev</string>"),
+            "{text}"
+        );
         if os == "macos" {
             assert!(text.contains("<string>ing.getbuild.bridge.dev</string>"));
         }
-        assert!(activated.iter().any(|command| command.args.iter().any(|arg| arg == target)));
+        assert!(activated
+            .iter()
+            .any(|command| command.args.iter().any(|arg| arg == target)));
         let mut deactivated = Vec::new();
-        assert_eq!(uninstall(dev.as_ref(), &ctx, &mut |command| {
-            deactivated.push(command.clone());
-            Ok(true)
-        }).expect("mock uninstall"), Uninstalled::Removed(expected_path));
-        assert!(deactivated.iter().any(|command| command.args.iter().any(|arg| arg == target)));
+        assert_eq!(
+            uninstall(dev.as_ref(), &ctx, &mut |command| {
+                deactivated.push(command.clone());
+                Ok(true)
+            })
+            .expect("mock uninstall"),
+            Uninstalled::Removed(expected_path)
+        );
+        assert!(deactivated
+            .iter()
+            .any(|command| command.args.iter().any(|arg| arg == target)));
         assert_no_production_target(&activated);
         assert_no_production_target(&deactivated);
         assert!(!path.exists());
-        assert_eq!(std::fs::read_to_string(prod_path).unwrap(), "production sentinel");
+        assert_eq!(
+            std::fs::read_to_string(prod_path).unwrap(),
+            "production sentinel"
+        );
     }
 
     fn assert_no_production_target(commands: &[ShellCommand]) {
         for command in commands {
-            assert!(!command.args.iter().any(|arg| {
-                arg == "build-bridge.service" || arg == "gui/501/ing.getbuild.bridge"
-            }), "{command:?}");
+            assert!(
+                !command.args.iter().any(|arg| {
+                    arg == "build-bridge.service" || arg == "gui/501/ing.getbuild.bridge"
+                }),
+                "{command:?}"
+            );
         }
     }
 

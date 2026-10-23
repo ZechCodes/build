@@ -7,6 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::config::Channel;
+
 use super::{ServiceConfig, ServiceContext, ServiceManager, ShellCommand};
 
 /// The unit's name — how the operator addresses it with `systemctl --user`.
@@ -22,6 +24,48 @@ const AGENTS_SLICE_NOT_SET: &str =
 const MIB: u64 = 1024 * 1024;
 
 pub struct Systemd;
+
+pub(super) struct SystemdUnit {
+    unit_name: &'static str,
+}
+
+impl SystemdUnit {
+    pub(super) fn for_channel(channel: Channel) -> Self {
+        Self {
+            unit_name: match channel {
+                Channel::Prod => UNIT_NAME,
+                Channel::Dev => "build-bridge-dev.service",
+            },
+        }
+    }
+}
+
+/// Keep the production manager available to callers that do not select a channel.
+impl ServiceManager for Systemd {
+    fn name(&self) -> &'static str {
+        SystemdUnit::for_channel(Channel::Prod).name()
+    }
+
+    fn unit_path(&self, home: &Path) -> PathBuf {
+        SystemdUnit::for_channel(Channel::Prod).unit_path(home)
+    }
+
+    fn render_unit(&self, config: &ServiceConfig) -> String {
+        SystemdUnit::for_channel(Channel::Prod).render_unit(config)
+    }
+
+    fn activate(&self, ctx: &ServiceContext, unit_path: &Path) -> Vec<ShellCommand> {
+        SystemdUnit::for_channel(Channel::Prod).activate(ctx, unit_path)
+    }
+
+    fn deactivate(&self, ctx: &ServiceContext, unit_path: &Path) -> Vec<ShellCommand> {
+        SystemdUnit::for_channel(Channel::Prod).deactivate(ctx, unit_path)
+    }
+
+    fn after_install_hint(&self) -> Option<&'static str> {
+        SystemdUnit::for_channel(Channel::Prod).after_install_hint()
+    }
+}
 
 /// systemd's own quoting for a unit value: a double-quoted string in which `\`
 /// and `"` are backslash-escaped and `%` is doubled. Quoting unconditionally
@@ -39,13 +83,13 @@ fn systemd_quote(value: &str) -> String {
     )
 }
 
-impl ServiceManager for Systemd {
+impl ServiceManager for SystemdUnit {
     fn name(&self) -> &'static str {
         "systemd user unit"
     }
 
     fn unit_path(&self, home: &Path) -> PathBuf {
-        home.join(".config/systemd/user").join(UNIT_NAME)
+        home.join(".config/systemd/user").join(self.unit_name)
     }
 
     /// Restart on failure rather than `always`: a bridge that exits 0 was told
@@ -106,7 +150,7 @@ impl ServiceManager for Systemd {
     /// starts, so the first agent it spawns already runs behind the user's
     /// apps; the ceiling is sized from this machine's RAM.
     fn activate(&self, _ctx: &ServiceContext, _unit_path: &Path) -> Vec<ShellCommand> {
-        activation_commands(crate::priority::physical_memory_bytes())
+        activation_commands(self.unit_name, crate::priority::physical_memory_bytes())
     }
 
     /// Both tolerated: uninstalling a unit that was never enabled still has to
@@ -114,7 +158,7 @@ impl ServiceManager for Systemd {
     /// bridge's agents run under them again.
     fn deactivate(&self, _ctx: &ServiceContext, _unit_path: &Path) -> Vec<ShellCommand> {
         vec![
-            ShellCommand::tolerated("systemctl", &["--user", "disable", "--now", UNIT_NAME]),
+            ShellCommand::tolerated("systemctl", &["--user", "disable", "--now", self.unit_name]),
             ShellCommand::tolerated("systemctl", &["--user", "daemon-reload"]),
         ]
     }
@@ -128,11 +172,11 @@ impl ServiceManager for Systemd {
 /// The slice properties are best effort: an older systemd, or a machine
 /// without user slices, still gets a working bridge, told why its agents are
 /// not deprioritised.
-fn activation_commands(mem_total_bytes: Option<u64>) -> Vec<ShellCommand> {
+fn activation_commands(unit_name: &str, mem_total_bytes: Option<u64>) -> Vec<ShellCommand> {
     vec![
         ShellCommand::required("systemctl", &["--user", "daemon-reload"]),
         agents_slice_priority(mem_total_bytes),
-        ShellCommand::required("systemctl", &["--user", "enable", "--now", UNIT_NAME]),
+        ShellCommand::required("systemctl", &["--user", "enable", "--now", unit_name]),
     ]
 }
 
@@ -273,7 +317,7 @@ mod tests {
     #[test]
     fn activation_reloads_weights_the_agents_slice_then_enables_now() {
         assert_eq!(
-            activation_commands(Some(MEM_128_GIB)),
+            activation_commands(UNIT_NAME, Some(MEM_128_GIB)),
             vec![
                 ShellCommand::required("systemctl", &["--user", "daemon-reload"]),
                 ShellCommand::best_effort(
@@ -303,7 +347,7 @@ mod tests {
 
         assert_eq!(
             Systemd.activate(&ctx, &unit),
-            activation_commands(crate::priority::physical_memory_bytes())
+            activation_commands(UNIT_NAME, crate::priority::physical_memory_bytes())
         );
     }
 

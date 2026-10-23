@@ -85,6 +85,50 @@ def test_manifests_are_namespace_local_with_no_cluster_bootstrap():
         assert ingress["metadata"]["annotations"]["traefik.ingress.kubernetes.io/router.entrypoints"] == "websecure"
 
 
+def test_operator_ci_rbac_has_only_required_namespace_permissions():
+    resources = list(yaml.safe_load_all((DEV / "ci-rbac.yaml").read_text()))
+    assert len(resources) == 3
+    by_kind = {document["kind"]: document for document in resources}
+    assert set(by_kind) == {"ServiceAccount", "Role", "RoleBinding"}
+    for document in resources:
+        assert document["metadata"] == {"namespace": "build-dev", "name": "dev-deploy"}
+        assert document["apiVersion"] == ("v1" if document["kind"] == "ServiceAccount"
+                                          else "rbac.authorization.k8s.io/v1")
+    account = by_kind["ServiceAccount"]
+    assert set(account) == {"apiVersion", "kind", "metadata", "automountServiceAccountToken"}
+    assert account["automountServiceAccountToken"] is False
+    role = by_kind["Role"]
+    assert set(role) == {"apiVersion", "kind", "metadata", "rules"}
+    actual = set()
+    for rule in role["rules"]:
+        assert set(rule) == {"apiGroups", "resources", "verbs"}
+        actual.update((group, resource, verb) for group in rule["apiGroups"]
+                      for resource in rule["resources"] for verb in rule["verbs"])
+    read = {"get", "list", "watch"}
+    write = read | {"create", "update", "patch"}
+    expected = {
+        (group, resource, verb)
+        for group, resource, verbs in [
+            ("", "services", write), ("apps", "deployments", write),
+            ("apps", "replicasets", read), ("batch", "jobs", write | {"delete"}),
+            ("networking.k8s.io", "ingresses", write), ("", "pods", read),
+            ("", "pods/log", {"get"}),
+        ] for verb in verbs
+    }
+    assert actual == expected
+    binding = by_kind["RoleBinding"]
+    assert set(binding) == {"apiVersion", "kind", "metadata", "roleRef", "subjects"}
+    assert binding["roleRef"] == {"apiGroup": "rbac.authorization.k8s.io",
+                                  "kind": "Role", "name": "dev-deploy"}
+    assert binding["subjects"] == [{"kind": "ServiceAccount", "name": "dev-deploy",
+                                    "namespace": "build-dev"}]
+    kustomization = yaml.safe_load((DEV / "kustomization.yaml").read_text())
+    assert "ci-rbac.yaml" not in kustomization["resources"]
+    for document in resources:
+        with pytest.raises(ValueError, match="unexpected resource or namespace"):
+            renderer().render(dev_resources() + [document], APP_IMAGE, RELAY_IMAGE)
+
+
 def workflow():
     return yaml.safe_load((ROOT / ".github/workflows/dev-deploy.yml").read_text())
 

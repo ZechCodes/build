@@ -130,3 +130,4 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc
 webrtc = { path = "vendor/webrtc" }
 rtc = { path = "vendor/rtc" }
 rtc-ice = { path = "vendor/rtc-ice" }
+rtc-turn = { path = "vendor/rtc-turn" }

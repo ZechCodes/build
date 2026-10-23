@@ -195,6 +195,7 @@ where
     mdns_mode: MulticastDnsMode,
     discard_local_candidates_during_ice_restart: bool,
     host_candidate_sweep: bool,
+    turn_diagnostic_context: Option<rtc::turn::client::diagnostics::DiagnosticContext>,
     udp_addrs: Vec<A>,
     tcp_addrs: Vec<A>,
     dedicated_reactor: bool,
@@ -211,6 +212,7 @@ impl<A: ToSocketAddrs> Default for PeerConnectionBuilder<A, NoopInterceptor> {
             mdns_mode: MulticastDnsMode::Disabled,
             discard_local_candidates_during_ice_restart: false,
             host_candidate_sweep: false,
+            turn_diagnostic_context: None,
             udp_addrs: vec![],
             tcp_addrs: vec![],
             dedicated_reactor: false,
@@ -250,6 +252,7 @@ where
     pub fn with_setting_engine(mut self, setting_engine: SettingEngine) -> Self {
         self.mdns_mode = setting_engine.multicast_dns().mode;
         self.host_candidate_sweep = setting_engine.host_candidate_sweep();
+        self.turn_diagnostic_context = setting_engine.turn_diagnostic_context();
         self.discard_local_candidates_during_ice_restart =
             setting_engine.discard_local_candidates_during_ice_restart();
         self.builder = self.builder.with_setting_engine(setting_engine);
@@ -302,6 +305,7 @@ where
             discard_local_candidates_during_ice_restart: self
                 .discard_local_candidates_during_ice_restart,
             host_candidate_sweep: self.host_candidate_sweep,
+            turn_diagnostic_context: self.turn_diagnostic_context,
             udp_addrs: self.udp_addrs,
             tcp_addrs: self.tcp_addrs,
             dedicated_reactor: self.dedicated_reactor,
@@ -478,6 +482,7 @@ where
             self.mdns_mode,
             self.discard_local_candidates_during_ice_restart,
             self.host_candidate_sweep,
+            self.turn_diagnostic_context,
             self.udp_addrs,
             self.tcp_addrs,
             self.dedicated_reactor,
@@ -694,6 +699,7 @@ where
     /// same decision (webrtc#868).
     pub(crate) discard_local_candidates_during_ice_restart: bool,
     pub(crate) host_candidate_sweep: bool,
+    pub(crate) turn_diagnostic_context: Option<rtc::turn::client::diagnostics::DiagnosticContext>,
     pub(crate) host_sweep_control: host_sweep::HostSweepControl,
     /// Set when an ICE restart is detected, cleared by the driver when it has rebound.
     ///
@@ -851,6 +857,7 @@ where
         mdns_mode: MulticastDnsMode,
         discard_local_candidates_during_ice_restart: bool,
         host_candidate_sweep: bool,
+        turn_diagnostic_context: Option<rtc::turn::client::diagnostics::DiagnosticContext>,
         udp_addrs: Vec<A>,
         tcp_addrs: Vec<A>,
         dedicated_reactor: bool,
@@ -880,6 +887,7 @@ where
                 data_channel_backpressure: crate::runtime::Notify::new(),
                 discard_local_candidates_during_ice_restart,
                 host_candidate_sweep,
+                turn_diagnostic_context,
                 host_sweep_control: host_sweep::HostSweepControl::default(),
                 ice_restart_rebind_pending: AtomicBool::new(false),
             }),
@@ -1525,6 +1533,7 @@ mod tests {
             rtp_transceivers: Mutex::new(HashMap::new()),
             discard_local_candidates_during_ice_restart,
             host_candidate_sweep: false,
+            turn_diagnostic_context: None,
             host_sweep_control: host_sweep::HostSweepControl::default(),
             ice_restart_rebind_pending: AtomicBool::new(false),
         });

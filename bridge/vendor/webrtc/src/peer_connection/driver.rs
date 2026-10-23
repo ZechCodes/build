@@ -2,9 +2,7 @@
 //!
 //! Follows the rtc EventLoop pattern with async select
 
-use super::host_sweep::{
-    HostSweep, SweepCredentials, SweepSubnet, binding_indication,
-};
+use super::host_sweep::{HostSweep, SweepCredentials, SweepSubnet, binding_indication};
 use super::transports::stun_gatherer::{
     RTCStunGatherEventIn, RTCStunGatherEventOut, RTCStunGatherer,
 };
@@ -626,7 +624,8 @@ where
             self.ice_servers.clone(),
             self.ice_gather_policy,
             runtime,
-        );
+        )
+        .with_diagnostic_context(self.inner.turn_diagnostic_context.clone());
 
         Ok(())
     }
@@ -648,6 +647,7 @@ where
         discard_local_candidates_during_ice_restart: bool,
     ) -> Self {
         let runtime = Arc::clone(&inner.runtime);
+        let turn_diagnostic_context = inner.turn_diagnostic_context.clone();
         Self {
             inner,
             // Placeholders until `bind_transports` runs; constructing them costs no I/O.
@@ -662,7 +662,8 @@ where
                 ice_servers.clone(),
                 ice_gather_policy,
                 runtime,
-            ),
+            )
+            .with_diagnostic_context(turn_diagnostic_context),
             mdns_socket: None,
             udp_sockets: HashMap::new(),
             host_sweep: HostSweep::default(),

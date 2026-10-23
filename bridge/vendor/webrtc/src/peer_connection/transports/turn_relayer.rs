@@ -56,6 +56,7 @@ pub(crate) struct RTCTurnRelayer {
     state: RTCIceGatheringState,
     /// Host runtime, used to resolve TURN server hostnames.
     runtime: Arc<dyn Runtime>,
+    context: Option<rtc::turn::client::diagnostics::DiagnosticContext>,
     clients: HashMap<FourTuple, ManagedTurnClient>,
     relay_addrs: HashMap<SocketAddr, FourTuple>,
     pending_permissions: HashMap<rtc::stun::message::TransactionId, PendingPermission>,
@@ -79,6 +80,7 @@ impl RTCTurnRelayer {
             ice_gather_policy,
             state: RTCIceGatheringState::New,
             runtime,
+            context: None,
             clients: HashMap::new(),
             relay_addrs: HashMap::new(),
             pending_permissions: HashMap::new(),
@@ -88,6 +90,14 @@ impl RTCTurnRelayer {
             routs: VecDeque::new(),
             events: VecDeque::new(),
         }
+    }
+
+    pub(crate) fn with_diagnostic_context(
+        mut self,
+        context: Option<rtc::turn::client::diagnostics::DiagnosticContext>,
+    ) -> Self {
+        self.context = context;
+        self
     }
 
     pub(crate) fn state(&self) -> RTCIceGatheringState {
@@ -303,6 +313,9 @@ impl RTCTurnRelayer {
                         rto_in_ms: 0,
                     })?;
 
+                    if let Some(context) = self.context.clone() {
+                        client.set_diagnostic_context(context);
+                    }
                     let allocate_tid = client.allocate()?;
                     debug!(
                         "TURN allocation started from {} to {} via {}",

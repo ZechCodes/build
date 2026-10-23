@@ -1,18 +1,19 @@
-# Vendored crates: webrtc, rtc and rtc-ice 0.20.4, patched (#166, #179, #298, #372, #374, #375, #376, #674)
+# Vendored crates: webrtc, rtc, rtc-ice and rtc-turn 0.20.4, patched (#166, #179, #298, #372, #374, #375, #376, #674, #794)
 
-The bridge builds `webrtc`, `rtc` and `rtc-ice` from here instead of crates.io, through
+The bridge builds `webrtc`, `rtc`, `rtc-ice` and `rtc-turn` from here instead of crates.io, through
 the `[patch.crates-io]` entries at the end of `bridge/Cargo.toml`:
 
 | crate | upstream | crates.io checksum | patch |
 | --- | --- | --- | --- |
 | `webrtc/` | [webrtc 0.20.4](https://crates.io/crates/webrtc/0.20.4) (github.com/webrtc-rs/webrtc) | `3daa8f2f6366331ae3275a6c02a855c6fb3faa1d16960498d7daaf61c96e76bd` | `webrtc-driver-drain.patch`, then `webrtc-negotiated-first-message-test.patch`, `webrtc-late-direct-tests.patch`, `webrtc-host-candidate-sweep.patch`, `webrtc-gso-batch-cap.patch` |
 | `rtc/` | [rtc 0.20.4](https://crates.io/crates/rtc/0.20.4) (github.com/webrtc-rs/rtc) | `c9005c36795ad076abd36db3ea9ae0275a60395944647d58c1f2bc3e118dddba` | `rtc-dtls-client-hello.patch`, `rtc-negotiated-first-message.patch`, `rtc-late-direct-stats.patch`, `rtc-host-candidate-sweep.patch` |
+| `rtc-turn/` | [rtc-turn 0.20.4](https://crates.io/crates/rtc-turn/0.20.4) | `ebf0b5fbb94085c86be7277c38ae8f1c21ec75ab47ba975be0984409732020dd` | `rtc-turn-diagnostics.patch` (#794) |
 | `rtc-ice/` | [rtc-ice 0.20.4](https://crates.io/crates/rtc-ice/0.20.4) (github.com/webrtc-rs/rtc) | `2c06eeabd250a7693e1e8b28222b78c4a81a7c6ca7fe3cb99bbdff2f6c0ff0ab` | `rtc-ice-late-direct-checks.patch`, then `rtc-ice-host-candidate-sweep.patch` |
 
 `webrtc` is the async driver. `rtc` is the sans-I/O peer connection it drives
 (ICE, DTLS, SCTP), which the bridge also uses directly. `rtc-ice` is its ICE
 agent. The other `rtc-*`
-crates still come from crates.io.
+crates still come from crates.io, except `rtc-turn` below.
 
 Each directory is the published crate as the registry unpacks it, with its
 upstream `Cargo.toml`, `Cargo.toml.orig`, `Cargo.lock` and license files, plus
@@ -623,3 +624,64 @@ vendored trees exactly.
 tree after `webrtc-host-candidate-sweep.patch`. It touches
 `src/peer_connection/{driver.rs,transports/mod.rs,host_scout_socket_tests.rs}` and
 `src/runtime/host_egress.rs`.
+
+## #794 TURN diagnostics
+
+`rtc-turn` 0.20.4 is vendored from the registry with only
+`rtc-turn-diagnostics.patch` applied. `rtc-turn` is patched in both manifests
+and is a workspace member for explicit diagnostic unit tests. It is deliberately
+**not a default member**: upstream client tests contact public STUN services.
+Never run its unfiltered tests for this task. Run only the local diagnostic
+regressions:
+
+    nice -n 10 cargo test --locked --manifest-path vendor/Cargo.toml -p rtc-turn --lib diagnostics
+
+Batched CreatePermission refreshes log every encoded peer under the same TID
+for request, response and timeout.
+
+The mock operates entirely in-process on STUN bytes: ten bindings succeed,
+the eleventh gets 400, early peers still exchange ChannelData; no credentials
+or payloads appear in diagnostic logs. Tests also cover original-method and
+original-generation timeout attribution, lifetime peer ordinals, keyed identity
+across fresh allocations, bounded storms and a terminal folded-count flush.
+
+`SettingEngine::set_turn_diagnostic_context_with_key(opening, generation, key)` opts in to
+`turn_diagnostics` Info events. The process-local opening token and shared atomic
+generation correlate bridge negotiation. The caller retains the random SipHash key for the opening across peer-connection
+recreation. That per-opening key gives
+server and full peer socket tuples stable fingerprints within the opening;
+ordinals count first use within an allocation without eviction. Allocation IDs
+are process-local monotonic ordinals. A response/timeout retains its request's
+generation. Send indications are explicitly `queued-no-ack`: they have no TURN
+acknowledgment, and queueing does not prove server receipt or peer delivery.
+Server reasons are mapped from numeric codes to fixed labels; arbitrary reason
+strings, credentials, SDP, payloads and endpoint addresses are omitted.
+
+Each allocation emits at most 32 detailed rows per second. Suppressed rows fold
+by generation, peer, method, outcome and code; each summary carries cumulative
+per-peer indication/ChannelData counts in both directions. Timeout-driven flushes
+emit at most 32 folded rows per second, retaining additional rows for later
+flushes. Drop drains every retained folded row so the final per-peer evidence survives
+allocation teardown; this one-off terminal flush is not capped. Error and timeout
+rows take priority during capped periodic flushes. Diagnostic state never changes
+permissions, binding retries, allocation lifetime or wire traffic. The separate
+retry/fallback task owns those behavior changes.
+
+The plumbing is layered after the existing patches, in
+`rtc-turn-diagnostic-context.patch` (rtc SettingEngine) and
+`webrtc-turn-diagnostics.patch` (builder, driver and TURN relayer). Reconstruct
+all earlier patches as above, copy pristine `rtc-turn-0.20.4` from the registry
+using `pristine rtc-turn $V/rtc-turn`, then apply:
+
+    for p in rtc-turn-diagnostics rtc-turn-diagnostic-context webrtc-turn-diagnostics; do
+      (cd $V && patch -p1 < "$OLDPWD/bridge/vendor/$p.patch")
+    done
+    diff -r -x target $V/rtc-turn bridge/vendor/rtc-turn
+    diff -r -x target $V/rtc bridge/vendor/rtc
+    diff -r -x target $V/webrtc bridge/vendor/webrtc
+
+The new patch file lists are exact: `rtc-turn/src/client/{mod.rs,proto.rs,relay.rs,diagnostics.rs}`;
+`rtc/src/peer_connection/configuration/setting_engine.rs`; and
+`webrtc/src/peer_connection/{mod.rs,driver.rs,transports/turn_relayer.rs}`.
+Regenerate each diff against its tree immediately before these three patches,
+using the `a/<crate>/` and `b/<crate>/` paths described above.

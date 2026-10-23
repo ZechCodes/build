@@ -627,7 +627,7 @@ tree after `webrtc-host-candidate-sweep.patch`. It touches
 
 ## #794 TURN diagnostics
 
-`rtc-turn-diagnostics.patch` SHA-256: `93d7a60c4242b1daa6f5173b24d6f78f20804b5bcc79c829df662b953a781083`.
+`rtc-turn-diagnostics.patch` SHA-256: `15ce69bafbc8feb24be2ee4e5ee043bfdd2274d13c3debbc8ba3f4f6aa5fef25`.
 
 `rtc-turn` 0.20.4 is vendored from the registry with only
 `rtc-turn-diagnostics.patch` applied. `rtc-turn` is patched in both manifests
@@ -652,7 +652,14 @@ across fresh allocations, bounded storms and a terminal folded-count flush.
 generation correlate bridge negotiation. The caller retains the random SipHash key for the opening across peer-connection
 recreation. That per-opening key gives
 server and full peer socket tuples stable fingerprints within the opening;
-ordinals count first use within an allocation without eviction. Allocation IDs
+the first 256 distinct peers receive lifetime first-use ordinals without eviction.
+Further peers share ordinal 257, `peer_scope=overflow` and ID zero: this is an
+explicit aggregate, not a claim of endpoint identity. The cap applies to retained
+peer identities; folded/pending overflow events also use the shared key rather
+than retaining additional socket addresses. `overflow_peer_observations` counts
+untracked peer observations, not distinct endpoints; `overflow_events` counts
+all associated data/control events. Aggregate direction counts and control
+method/error codes remain visible in periodic and terminal rows. Allocation IDs
 are process-local monotonic ordinals. A response/timeout retains its request's
 generation. Send indications are explicitly `queued-no-ack`: they have no TURN
 acknowledgment, and queueing does not prove server receipt or peer delivery.

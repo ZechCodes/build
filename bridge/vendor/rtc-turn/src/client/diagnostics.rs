@@ -10,6 +10,12 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use stun::error_code::ErrorCodeAttribute;
 use stun::message::*;
+const MAX_DIAGNOSTIC_PEERS: usize = 256;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum PeerKey {
+    Known(SocketAddr),
+    Overflow,
+}
 static NEXT_ALLOCATION: AtomicU64 = AtomicU64::new(1);
 
 /// Shared by every TURN allocation within one peer opening.
@@ -53,6 +59,9 @@ pub(super) struct AllocationDiagnostics {
     server_family: &'static str,
     relay_family: &'static str,
     peers: HashMap<SocketAddr, Peer>,
+    overflow: Peer,
+    overflow_peer_observations: u64,
+    overflow_events: u64,
     window: Instant,
     detail_window: Instant,
     summary_round: u64,
@@ -60,8 +69,8 @@ pub(super) struct AllocationDiagnostics {
     identity_hashes: usize,
     emitted: usize,
     suppressed: u64,
-    pending: HashMap<TransactionId, (&'static str, Vec<Option<SocketAddr>>, Option<u16>, u64)>,
-    folded: HashMap<(u64, Option<SocketAddr>, &'static str, &'static str, u16), Folded>,
+    pending: HashMap<TransactionId, (&'static str, Vec<Option<PeerKey>>, Option<u16>, u64)>,
+    folded: HashMap<(u64, Option<PeerKey>, &'static str, &'static str, u16), Folded>,
 }
 impl AllocationDiagnostics {
     pub(super) fn new(context: DiagnosticContext) -> Self {
@@ -72,6 +81,12 @@ impl AllocationDiagnostics {
             server_family: "unknown",
             relay_family: "unknown",
             peers: HashMap::new(),
+            overflow: Peer {
+                ordinal: MAX_DIAGNOSTIC_PEERS + 1,
+                ..Default::default()
+            },
+            overflow_peer_observations: 0,
+            overflow_events: 0,
             window: Instant::now(),
             detail_window: Instant::now(),
             summary_round: 0,
@@ -94,28 +109,43 @@ impl AllocationDiagnostics {
     pub(super) fn relay(&mut self, relay: SocketAddr) {
         self.relay_family = family(relay);
     }
-    fn peer_state(&mut self, addr: SocketAddr) -> &mut Peer {
+    fn peer_state(&mut self, addr: SocketAddr) -> (PeerKey, &mut Peer) {
+        use std::collections::hash_map::Entry;
         let ordinal = self.peers.len() + 1;
-        let key = &self.context.key;
-        #[cfg(test)]
-        let hashes = &mut self.identity_hashes;
-        self.peers.entry(addr).or_insert_with(|| {
-            #[cfg(test)]
-            {
-                *hashes += 1;
+        match self.peers.entry(addr) {
+            Entry::Occupied(peer) => (PeerKey::Known(addr), peer.into_mut()),
+            Entry::Vacant(peer) if ordinal <= MAX_DIAGNOSTIC_PEERS => {
+                #[cfg(test)]
+                {
+                    self.identity_hashes += 1;
+                }
+                let mut hash = self.context.key.build_hasher();
+                addr.hash(&mut hash);
+                (
+                    PeerKey::Known(addr),
+                    peer.insert(Peer {
+                        id: hash.finish(),
+                        ordinal,
+                        ..Default::default()
+                    }),
+                )
             }
-            let mut hash = key.build_hasher();
-            addr.hash(&mut hash);
-            Peer {
-                id: hash.finish(),
-                ordinal,
-                ..Default::default()
+            Entry::Vacant(_) => {
+                self.overflow_peer_observations += 1;
+                (PeerKey::Overflow, &mut self.overflow)
             }
-        })
+        }
     }
+    #[cfg(test)]
     fn peer(&mut self, addr: SocketAddr) -> (u64, usize) {
-        let peer = self.peer_state(addr);
+        let (_, peer) = self.peer_state(addr);
         (peer.id, peer.ordinal)
+    }
+    fn state(&self, key: PeerKey) -> &Peer {
+        match key {
+            PeerKey::Known(addr) => &self.peers[&addr],
+            PeerKey::Overflow => &self.overflow,
+        }
     }
     pub(super) fn flush(&mut self, now: Instant, force: bool) {
         if !force && now.saturating_duration_since(self.window) < Duration::from_secs(1) {
@@ -129,9 +159,7 @@ impl AllocationDiagnostics {
                 } else {
                     1
                 },
-                key.1
-                    .and_then(|peer| self.peers.get(&peer))
-                    .map_or(0, |peer| peer.ordinal),
+                key.1.map_or(0, |peer| self.state(peer).ordinal),
             )
         });
         if !force {
@@ -156,8 +184,15 @@ impl AllocationDiagnostics {
             .peers
             .iter()
             .filter(|(_, peer)| peer.dirty)
-            .map(|(addr, peer)| (*addr, peer.last_summary, peer.ordinal))
+            .map(|(addr, peer)| (PeerKey::Known(*addr), peer.last_summary, peer.ordinal))
             .collect();
+        if self.overflow.dirty {
+            dirty.push((
+                PeerKey::Overflow,
+                self.overflow.last_summary,
+                self.overflow.ordinal,
+            ));
+        }
         dirty.sort_by_key(|(_, last_summary, ordinal)| (*last_summary, *ordinal));
         if !force {
             dirty.truncate(32);
@@ -175,15 +210,20 @@ impl AllocationDiagnostics {
                 0,
                 "none",
             );
-            let peer = self.peers.get_mut(&peer).unwrap();
+            let peer = match peer {
+                PeerKey::Known(addr) => self.peers.get_mut(&addr).unwrap(),
+                PeerKey::Overflow => &mut self.overflow,
+            };
             peer.dirty = false;
             peer.last_summary = self.summary_round;
         }
         self.window = now;
     }
     pub(super) fn poll_timeout(&self) -> Option<Instant> {
-        (!self.folded.is_empty() || self.peers.values().any(|peer| peer.dirty))
-            .then(|| self.window + Duration::from_secs(1))
+        (!self.folded.is_empty()
+            || self.overflow.dirty
+            || self.peers.values().any(|peer| peer.dirty))
+        .then(|| self.window + Duration::from_secs(1))
     }
     fn admit(&mut self, now: Instant) -> bool {
         // Only timeout/close paths flush summaries: never put a summary batch in
@@ -205,7 +245,7 @@ impl AllocationDiagnostics {
         &self,
         method: &str,
         tid: TransactionId,
-        peer: Option<SocketAddr>,
+        peer: Option<PeerKey>,
         channel: Option<u16>,
         outcome: &str,
         code: u16,
@@ -213,22 +253,32 @@ impl AllocationDiagnostics {
         repeats: u64,
         folded_outcome: &str,
     ) {
-        let state = peer.and_then(|addr| self.peers.get(&addr));
+        let state = peer.map(|key| self.state(key));
+        let scope = match peer {
+            Some(PeerKey::Known(_)) => "tracked",
+            Some(PeerKey::Overflow) => "overflow",
+            None => "none",
+        };
+        let peer_family = match peer {
+            Some(PeerKey::Known(addr)) => family(addr),
+            Some(PeerKey::Overflow) => "mixed",
+            None => "none",
+        };
         let counts = state.map_or([0; 4], |p| p.counts);
-        log::info!(target: "turn_diagnostics", "turn opening={} generation={} allocation={} server={:x} peer={:x} ordinal={} family={} server_family={} relay_family={} method={} tid={:?} channel={:?} outcome={} code={} reason={} send_indication={} send_channel={} receive_indication={} receive_channel={} repeats={} folded_outcome={}", self.context.opening, generation, self.allocation, self.server_id, state.map_or(0, |p| p.id), state.map_or(0, |p| p.ordinal), peer.map_or("none", family), self.server_family, self.relay_family, method, tid, channel, outcome, code, reason(code), counts[0], counts[1], counts[2], counts[3], repeats, folded_outcome);
+        log::info!(target: "turn_diagnostics", "turn opening={} generation={} allocation={} server={:x} peer={:x} ordinal={} peer_scope={} family={} server_family={} relay_family={} method={} tid={:?} channel={:?} outcome={} code={} reason={} send_indication={} send_channel={} receive_indication={} receive_channel={} repeats={} folded_outcome={} overflow_peer_observations={} overflow_events={}", self.context.opening, generation, self.allocation, self.server_id, state.map_or(0, |p| p.id), state.map_or(0, |p| p.ordinal), scope, peer_family, self.server_family, self.relay_family, method, tid, channel, outcome, code, reason(code), counts[0], counts[1], counts[2], counts[3], repeats, folded_outcome, self.overflow_peer_observations, self.overflow_events);
     }
     fn emit(
         &mut self,
         method: &'static str,
         tid: TransactionId,
-        peer: Option<SocketAddr>,
+        peer: Option<PeerKey>,
         channel: Option<u16>,
         outcome: &'static str,
         code: u16,
         generation: u64,
     ) {
-        if let Some(peer) = peer {
-            self.peer(peer);
+        if peer == Some(PeerKey::Overflow) {
+            self.overflow_events += 1;
         }
         if !self.admit(Instant::now()) {
             let folded = self
@@ -249,7 +299,10 @@ impl AllocationDiagnostics {
         );
     }
     pub(super) fn request(&mut self, msg: &Message, transaction: &TransactionType) {
-        let peers = request_peers(msg, transaction);
+        let peers: Vec<_> = request_peers(msg, transaction)
+            .into_iter()
+            .map(|peer| peer.map(|addr| self.peer_state(addr).0))
+            .collect();
         let mut channel = crate::proto::channum::ChannelNumber::default();
         let channel = channel.get_from(msg).ok().map(|_| channel.0);
         let method = method_name(msg.typ.method);
@@ -298,6 +351,7 @@ impl AllocationDiagnostics {
         }
     }
     pub(super) fn send_failure(&mut self, peer: SocketAddr) {
+        let peer = self.peer_state(peer).0;
         self.emit(
             "Send",
             TransactionId::default(),
@@ -316,10 +370,13 @@ impl AllocationDiagnostics {
         tid: TransactionId,
     ) {
         let index = usize::from(incoming) * 2 + usize::from(channel.is_some());
-        let state = self.peer_state(peer);
+        let (peer, state) = self.peer_state(peer);
         state.counts[index] += 1;
         let first_use = state.counts[index] == 1;
         state.dirty = !first_use;
+        if peer == PeerKey::Overflow {
+            self.overflow_events += 1;
+        }
         if !first_use {
             return;
         }
@@ -692,6 +749,94 @@ mod local_mock_tests {
                 );
             }
         }
+    }
+    #[test]
+    fn diagnostics_overflow_keeps_channel_bind_error_method_and_code() {
+        let (mut client, relay) = client();
+        let diag = client.diagnostics.as_mut().unwrap();
+        for port in 10000..10256 {
+            diag.peer(SocketAddr::from(([192, 0, 2, 8], port)));
+        }
+        let peer = "192.0.2.9:20000".parse().unwrap();
+        let mut request = Message::new();
+        request
+            .build(&[
+                Box::new(TransactionId::new()),
+                Box::new(MessageType::new(METHOD_CHANNEL_BIND, CLASS_REQUEST)),
+            ])
+            .unwrap();
+        diag.request(&request, &TransactionType::ChannelBindRequest(relay, peer));
+        let mut error = Message::new();
+        error
+            .build(&[
+                Box::new(request.transaction_id),
+                Box::new(MessageType::new(METHOD_CHANNEL_BIND, CLASS_ERROR_RESPONSE)),
+                Box::new(ErrorCodeAttribute {
+                    code: ErrorCode(400),
+                    reason: b"private".to_vec(),
+                }),
+            ])
+            .unwrap();
+        diag.response(&error);
+        assert!(
+            logs()
+                .lines()
+                .any(|line| line.contains("peer_scope=overflow")
+                    && line.contains("method=ChannelBind")
+                    && line.contains("outcome=error code=400 reason=bad-request"))
+        );
+        assert_eq!(diag.peers.len(), 256);
+        assert!(!logs().contains("192.0.2.9"));
+    }
+    #[test]
+    fn diagnostics_caps_peer_identity_and_normalizes_overflow_fold_keys() {
+        let (mut client, _) = client();
+        let diag = client.diagnostics.as_mut().unwrap();
+        let first = SocketAddr::from(([192, 0, 2, 7], 10000));
+        let identity = diag.peer(first);
+        for port in 10001..10256 {
+            diag.peer(SocketAddr::from(([192, 0, 2, 7], port)));
+        }
+        diag.emitted = 32;
+        for port in 20000..21000 {
+            let peer = SocketAddr::from(([192, 0, 2, 7], port));
+            diag.send_failure(peer);
+            diag.data(peer, None, false, TransactionId::default());
+        }
+        assert_eq!(
+            diag.peers.len(),
+            256,
+            "unknown peers must not grow retained identity state"
+        );
+        assert_eq!(diag.identity_hashes, 256);
+        assert_eq!(
+            diag.folded.len(),
+            1,
+            "overflow control rows must share a key, never retain raw endpoints"
+        );
+        assert_eq!(
+            diag.peer(first),
+            identity,
+            "admitted ordinals must never be evicted"
+        );
+        diag.flush(Instant::now(), true);
+        let logs = logs();
+        assert!(
+            logs.lines().any(|line| line.contains("peer_scope=overflow")
+                && line.contains("ordinal=257 ")
+                && line.contains("outcome=folded")
+                && line.contains("folded_outcome=local-error")
+                && line.contains("repeats=1000")),
+            "{logs}"
+        );
+        assert!(
+            logs.lines().any(|line| line.contains("peer_scope=overflow")
+                && line.contains("outcome=summary")
+                && line.contains("send_indication=1000")
+                && line.contains("overflow_peer_observations=2000")
+                && line.contains("overflow_events=2000")),
+            "{logs}"
+        );
     }
     #[test]
     fn diagnostics_repeated_packets_compute_identity_only_on_first_insert() {

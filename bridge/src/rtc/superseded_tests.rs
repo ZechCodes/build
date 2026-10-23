@@ -1198,3 +1198,36 @@ async fn path_report_releases_negotiation_while_stats_are_pending() {
         "a diagnostic get_stats await must not block offer, restart or close"
     );
 }
+
+#[cfg(debug_assertions)]
+async fn build_and_close_unbound_peer(peer: &WebrtcPeer) {
+    let open = peer
+        .connect(RTCConfigurationBuilder::new().build())
+        .await
+        .unwrap();
+    open.connection.close().await.unwrap();
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+#[should_panic(expected = "hold() must bind opening id and key before peer construction")]
+async fn peer_construction_requires_opening_id_even_when_key_is_bound() {
+    let peer = webrtc_peer("missing-opening-id");
+    peer.signaling
+        .opening_key
+        .set(std::collections::hash_map::RandomState::new())
+        .unwrap();
+    build_and_close_unbound_peer(&peer).await;
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+#[should_panic(expected = "hold() must bind opening id and key before peer construction")]
+async fn peer_construction_requires_opening_key_even_when_id_is_bound() {
+    let peer = webrtc_peer("missing-opening-key");
+    peer.signaling
+        .opening_id
+        .set("test-opening".into())
+        .unwrap();
+    build_and_close_unbound_peer(&peer).await;
+}

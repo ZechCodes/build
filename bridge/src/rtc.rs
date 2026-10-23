@@ -993,6 +993,7 @@ impl WebrtcPeer {
     /// candidates it trickles back, and the one line it logs about the path
     /// that won.
     async fn connect(&self, configuration: RTCConfiguration) -> Result<Negotiation, RtcError> {
+        let (opening_id, opening_key) = self.signaling.turn_diagnostic_context(&self.session_id);
         let (connected, first_connect) = mpsc::unbounded_channel();
         let (sweeps, sweep_events) = mpsc::channel(256);
         let offers_delivered = Arc::new(AtomicU64::new(0));
@@ -1010,17 +1011,9 @@ impl WebrtcPeer {
         engine.set_check_pending_direct_pairs(self.check_pending_direct_pairs);
         engine.set_host_candidate_sweep(self.host_candidate_sweep);
         engine.set_turn_diagnostic_context_with_key(
-            self.signaling
-                .opening_id
-                .get()
-                .cloned()
-                .unwrap_or_else(|| "unknown".into()),
+            opening_id,
             self.signaling.generation.clone(),
-            self.signaling
-                .opening_key
-                .get()
-                .cloned()
-                .unwrap_or_default(),
+            opening_key,
         );
         // Browser mDNS names are resolved by our interface-explicit resolver;
         // the crate's one OS-selected multicast socket is disabled.
@@ -1081,10 +1074,38 @@ struct Trickling {
     diagnostic_channels: Mutex<Vec<(Arc<FrameIntake>, CarrierHandle)>>,
     opening_id: OnceLock<String>,
     opening_key: OnceLock<std::collections::hash_map::RandomState>,
+    opening_fallback_warning: OnceLock<()>,
     generation: Arc<AtomicU64>,
 }
 
 impl Trickling {
+    fn turn_diagnostic_context(
+        &self,
+        session_id: &str,
+    ) -> (String, std::collections::hash_map::RandomState) {
+        let bound = self.opening_id.get().is_some() && self.opening_key.get().is_some();
+        debug_assert!(
+            bound,
+            "hold() must bind opening id and key before peer construction"
+        );
+        if !bound {
+            self.opening_fallback_warning.get_or_init(|| {
+                diagnostic(
+                    session_id,
+                    "warning=opening-context-missing fallback=unknown-opening",
+                );
+            });
+        }
+        // Release builds keep negotiation available after an ordering bug.
+        // Cache its fallback too, so recreated peers never invent a new key.
+        (
+            self.opening_id.get_or_init(|| "unknown".into()).clone(),
+            self.opening_key
+                .get_or_init(std::collections::hash_map::RandomState::new)
+                .clone(),
+        )
+    }
+
     fn close(&self) {
         self.diagnostic_channels.lock().unwrap().clear();
         *self.signaling.lock().unwrap() = None;
@@ -1363,6 +1384,8 @@ impl log::Log for GathererLog {
 fn install_gatherer_log() {
     static GATHERER_LOG: GathererLog = GathererLog;
     if log::set_logger(&GATHERER_LOG).is_ok() {
+        // This is process-wide: rtc/webrtc INFO records now reach enabled(),
+        // which admits only turn_diagnostics; gatherer records stay WARN-only.
         log::set_max_level(log::LevelFilter::Info);
     }
 }

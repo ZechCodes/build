@@ -72,7 +72,13 @@ future hardening, not prerequisites or work in these three tasks.
 - Add one switch, `BRIDGE_CHANNEL=dev`, resolved by `config.rs::resolve` and
   `main.rs::bridge_config`; absent retains every existing prod default. Unknown
   channel errors. Dev defaults API/web to `https://dev.getbuild.ing` and relay
-  to `wss://relay-dev.getbuild.ing`. Existing individual `BRIDGE_*` overrides win.
+  to `wss://relay-dev.getbuild.ing`. Existing individual `BRIDGE_*` overrides win,
+  subject to #789's fail-closed guard: before dev command dispatch, refuse any
+  state, identity, config, tasks, derived harness root, projects, worktrees,
+  socket or log path at or inside canonical `~/.build`. Follow symlinks and
+  resolve nonexistent leaves without creating state; resolution errors refuse
+  startup. Validate every path override, including environment project paths,
+  and make runtime consumers use the validated paths. Prod remains unchanged.
 - Consolidate defaults currently split across `config.rs` and `main.rs::serve`,
   `backup`, `default_tasks_dir`, `install_service` and `daemon_environment`.
   Dev root: `~/.local/state/build-dev/`, containing `identity.json`, `config.json`,

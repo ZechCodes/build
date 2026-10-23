@@ -2,9 +2,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: build-dev
 # Namespace, RBAC and secrets are operator-owned bootstrap, never CI-applied.
-# render_dev.py splits this into infrastructure/migration/app/relay phases.
+# render_dev.py splits this into migration/app/relay phases.
 resources:
-  - postgres.yaml
   - migrate.yaml
   - app.yaml
   - relay.yaml

@@ -207,10 +207,6 @@ jobs:
           umask 077
           printf '%s' "$DEV_KUBECONFIG" > "$RUNNER_TEMP/dev-kubeconfig"
           echo "KUBECONFIG=$RUNNER_TEMP/dev-kubeconfig" >> "$GITHUB_ENV"
-      - name: Prepare dev database
-        run: |
-          kubectl --namespace=build-dev apply -f /tmp/dev-deploy/infrastructure.yaml
-          kubectl --namespace=build-dev rollout status statefulset/build-postgres --timeout=300s
       - name: Migrate dev database before app rollout
         run: |
           kubectl --namespace=build-dev delete job build-app-migrate --ignore-not-found --cascade=foreground --wait=true

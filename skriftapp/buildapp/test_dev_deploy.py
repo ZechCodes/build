@@ -17,7 +17,7 @@ def config(name):
     return yaml.safe_load((ROOT / "skriftapp" / name).read_text())
 
 
-def test_channel_config_is_production_with_only_public_endpoints_changed():
+def test_channel_config_is_production_with_dev_endpoints_and_database_isolation():
     prod = config("app.yaml")
     dev = config("app.channel-dev.yaml")
     assert dev["auth"]["redirect_base_url"] == "https://dev.getbuild.ing"
@@ -33,6 +33,7 @@ def test_channel_config_is_production_with_only_public_endpoints_changed():
     expected["security_headers"]["content_security_policy"] = prod["security_headers"]["content_security_policy"].replace(
         "wss://relay.getbuild.ing", "wss://relay-dev.getbuild.ing"
     )
+    expected["db"].update(schema="build_dev", pool_size=2, pool_overflow=0)
     assert dev == expected
     assert prod["auth"]["redirect_base_url"] == "https://getbuild.ing"
 
@@ -59,7 +60,7 @@ def dev_resources():
 
 def test_manifests_are_namespace_local_with_no_cluster_bootstrap():
     docs = dev_resources()
-    assert {d["kind"] for d in docs} == {"Deployment", "Service", "Ingress", "StatefulSet", "Job"}
+    assert {d["kind"] for d in docs} == {"Deployment", "Service", "Ingress", "Job"}
     assert all(d["metadata"]["namespace"] == "build-dev" for d in docs)
     assert yaml.safe_load((DEV / "namespace.yaml").read_text())["metadata"]["name"] == "build-dev"
     serialized = yaml.safe_dump_all(docs)
@@ -75,8 +76,8 @@ def test_manifests_are_namespace_local_with_no_cluster_bootstrap():
     assert env["RELAY_INTERNAL_SECRET"]["valueFrom"]["secretKeyRef"]["name"] == "build-relay"
     app_env = {e["name"]: e for e in app["spec"]["template"]["spec"]["containers"][0]["env"]}
     assert app_env["DATABASE_URL"]["valueFrom"]["secretKeyRef"]["name"] == "build-app"
-    pg = by_name["StatefulSet", "build-postgres"]
-    assert pg["spec"]["volumeClaimTemplates"][0]["metadata"]["name"] == "data"
+    assert not (DEV / "postgres.yaml").exists()
+    assert all(d["metadata"]["name"] != "build-postgres" for d in docs)
     for name, host in (("build-app", "dev.getbuild.ing"), ("build-relay", "relay-dev.getbuild.ing")):
         ingress = by_name["Ingress", name]
         assert ingress["spec"]["rules"][0]["host"] == host
@@ -130,8 +131,16 @@ def test_deploy_requires_success_protection_digest_and_dev_only_apply(name):
     assert "--namespace=build-dev" in source
     assert "8ly" not in source and "doctl" not in source
     assert "deploy/k8s/dev" in source
+    commands = "\n".join(s.get("run", "") for s in job["steps"])
+    assert "infrastructure.yaml" not in commands
+    assert "statefulset" not in commands.lower()
+    assert "kubectl exec" not in commands
+    assert "create secret" not in commands
+    assert "create namespace" not in commands
+    applied = [line.split("apply -f ", 1)[1] for line in commands.splitlines() if "apply -f " in line]
+    assert applied == (["/tmp/dev-deploy/migrate.yaml", "/tmp/dev-deploy/app.yaml"]
+                       if name == "deploy-app" else ["/tmp/dev-deploy/relay.yaml"])
     if name == "deploy-app":
-        commands = "\n".join(s.get("run", "") for s in job["steps"])
         assert commands.index("apply -f /tmp/dev-deploy/migrate.yaml") < commands.index("apply -f /tmp/dev-deploy/app.yaml")
         assert "wait --for=condition=complete job/build-app-migrate" in commands
 
@@ -145,7 +154,7 @@ def renderer():
 
 def test_renderer_pins_every_image_and_splits_migration_before_rollout():
     phases = renderer().render(dev_resources(), APP_IMAGE, RELAY_IMAGE)
-    assert set(phases) == {"infrastructure", "migrate", "app", "relay"}
+    assert set(phases) == {"migrate", "app", "relay"}
     assert [d["kind"] for d in phases["migrate"]] == ["Job"]
     for phase in ("app", "migrate", "relay"):
         pods = [d for d in phases[phase] if d["kind"] in ("Deployment", "Job")]
@@ -176,6 +185,17 @@ def test_renderer_refuses_out_of_scope_resources(mutation):
         renderer().render(docs, APP_IMAGE, RELAY_IMAGE)
 
 
+@pytest.mark.parametrize("resources", [
+    [{"kind": "StatefulSet", "metadata": {"namespace": "build-dev", "name": "build-postgres"}}],
+    [{"kind": "Service", "metadata": {"namespace": "build-dev", "name": "build-postgres"}}],
+    [{"kind": "PersistentVolumeClaim", "metadata": {"namespace": "build-dev", "name": "data-build-postgres-0"}}],
+])
+def test_renderer_refuses_dev_database_resources(resources):
+    docs = [d for d in dev_resources() if d["metadata"]["name"] != "build-postgres"]
+    with pytest.raises(ValueError, match="unexpected resource or namespace"):
+        renderer().render(docs + resources, APP_IMAGE, RELAY_IMAGE)
+
+
 def test_failed_cancelled_or_skipped_gates_never_publish_or_deploy():
     # Reuse its interpreter to test actual failure conditions rather than summaries.
     contract = runpy.run_path(str(ROOT / ".github/test-transport-workflow.py"))
@@ -191,7 +211,7 @@ def test_failed_cancelled_or_skipped_gates_never_publish_or_deploy():
 def test_independent_rollout_requires_only_its_own_digest(target):
     phases = renderer().render(dev_resources(), APP_IMAGE if target == "app" else None,
                                RELAY_IMAGE if target == "relay" else None, target=target)
-    assert set(phases) == ({"infrastructure", "migrate", "app"} if target == "app" else {"relay"})
+    assert set(phases) == ({"migrate", "app"} if target == "app" else {"relay"})
     with pytest.raises(ValueError):
         renderer().render(dev_resources(), None, None, target=target)
 
@@ -213,7 +233,9 @@ def test_actual_hosted_cookie_headers_csrf_and_passkey_rp(tmp_path, monkeypatch,
 
     database = tmp_path / "hosted.db"
     asyncio.run(create_skrift_schema_in(database))
-    (tmp_path / "app.yaml").write_text((ROOT / "skriftapp" / config_name).read_text())
+    hosted_config = config(config_name)
+    hosted_config["db"].pop("schema", None)  # SQLite fixture has no schema support.
+    (tmp_path / "app.yaml").write_text(yaml.safe_dump(hosted_config))
     (tmp_path / "templates").symlink_to(ROOT / "skriftapp/templates")
     monkeypatch.chdir(tmp_path)
     for key, value in {"SKRIFT_ENV": "production", "SECRET_KEY": "disposable-unique-" + host,

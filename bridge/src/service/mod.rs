@@ -653,6 +653,33 @@ mod tests {
     }
 
     #[test]
+    fn concrete_managers_default_to_production_and_keep_the_selected_channel() {
+        let home = Path::new("/tmp/service-home");
+        for (os, default, dev) in [
+            (
+                "linux",
+                Box::new(Systemd::default()) as Box<dyn ServiceManager>,
+                Box::new(Systemd::for_channel(Channel::Dev)) as Box<dyn ServiceManager>,
+            ),
+            (
+                "macos",
+                Box::new(Launchd::default()) as Box<dyn ServiceManager>,
+                Box::new(Launchd::for_channel(Channel::Dev)) as Box<dyn ServiceManager>,
+            ),
+        ] {
+            assert_eq!(
+                default.unit_path(home),
+                manager_for(os).unwrap().unit_path(home)
+            );
+            assert_eq!(
+                dev.unit_path(home),
+                manager_for_channel(os, Channel::Dev).unwrap().unit_path(home)
+            );
+            assert_ne!(default.unit_path(home), dev.unit_path(home));
+        }
+    }
+
+    #[test]
     fn dev_service_install_and_uninstall_leave_production_untouched() {
         for (os, relative_path, service_target) in [
             (

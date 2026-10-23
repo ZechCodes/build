@@ -93,7 +93,7 @@ def test_workflow_dispatch_pins_dev_sha_and_only_dev_images():
     assert set(flow.get("on", flow.get(True))) == {"workflow_dispatch"}
     jobs = flow["jobs"]
     resolver = jobs["resolve"]
-    assert resolver["steps"][0]["with"]["ref"] == "dev"
+    assert resolver["steps"][0]["with"]["ref"] == "refs/heads/dev"
     assert "git rev-parse HEAD" in resolver["steps"][1]["run"]
     assert "sha" in resolver["outputs"]
     for name, job in jobs.items():

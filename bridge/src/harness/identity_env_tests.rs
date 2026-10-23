@@ -93,6 +93,7 @@ fn every_agent_spec_unsets_the_daemon_identity() {
         ..crate::harness::SpawnOptions::default()
     };
     let context = crate::harness::HarnessContext {
+        channel: crate::config::Channel::Prod,
         bridge_exe: "/usr/local/bin/build-bridge".into(),
         mcp_socket: state.path().join("build-mcp.sock"),
         state_root: state.path().to_path_buf(),

@@ -9,6 +9,7 @@ fn scope_app(root: &Path) -> AppState {
         "main",
         true,
         crate::harness::HarnessContext {
+            channel: crate::config::Channel::Prod,
             mcp_socket: root.join("mcp.sock"),
             state_root: state_root.clone(),
             bridge_exe: root.join("unused-bridge"),

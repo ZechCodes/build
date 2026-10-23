@@ -107,6 +107,7 @@ fn native_tui(agent: &CompactingAgent, directory: &Path) -> (EndingSession, TabK
         ..SpawnOptions::default()
     };
     let context = HarnessContext {
+        channel: crate::config::Channel::Prod,
         bridge_exe: directory.join("unused-bridge"),
         mcp_socket: directory.join("unused-socket"),
         state_root: directory.join("state"),

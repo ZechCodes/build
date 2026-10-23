@@ -68,6 +68,7 @@ pub(super) fn choice(provider: AgentProvider) -> ModelChoice {
 fn claude_compaction_fallback_settings_override_inherited_policy_preserve_hooks_and_resume() {
     let root = tempfile::tempdir().unwrap();
     let context = HarnessContext {
+        channel: crate::config::Channel::Prod,
         bridge_exe: "/fake/bridge".into(),
         mcp_socket: root.path().join("socket"),
         state_root: root.path().join("state"),

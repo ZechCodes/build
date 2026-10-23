@@ -155,6 +155,7 @@ fn launch(agent: &CompactingAgent, directory: &Path, outcome: &str) -> (EndingSe
         ..SpawnOptions::default()
     };
     let context = HarnessContext {
+        channel: crate::config::Channel::Prod,
         state_root: directory.join("state"),
         bridge_exe: directory.join("unused-bridge"),
         mcp_socket: directory.join("unused-socket"),

@@ -219,6 +219,7 @@ impl Harness for ClaudeHarness {
                 "BRIDGE_MCP_SOCKET",
                 context.mcp_socket.to_string_lossy().into_owned(),
             )
+            .env("BRIDGE_CHANNEL", context.channel.as_str())
             .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token);
         let spec =
             super::claude_compaction::apply(spec, choice, options.compaction_policy.as_ref())?;
@@ -552,6 +553,7 @@ mod tests {
                 &ModelChoice::default(),
                 options,
                 &HarnessContext {
+                    channel: crate::config::Channel::Prod,
                     bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
                     mcp_socket: PathBuf::from("/tmp/build-mcp.sock"),
                     state_root: PathBuf::from("/tmp/build-state"),
@@ -566,6 +568,7 @@ mod tests {
     fn claude_tui_installs_silent_scoped_compaction_hooks_without_writing_state() {
         let state = tempfile::tempdir().unwrap();
         let context = HarnessContext {
+            channel: crate::config::Channel::Prod,
             bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
             mcp_socket: PathBuf::from("/tmp/build-mcp.sock"),
             state_root: state.path().to_path_buf(),

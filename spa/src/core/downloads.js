@@ -7,6 +7,7 @@
 // host ships the placeholder in its own markup and fills it once the api
 // answers, so a slow or refusing api never leaves a blank screen behind.
 
+import { developmentInstallationHtml, isDevelopmentChannel } from "./developmentInstallation.js";
 import { esc } from "./text.js";
 import { downloadsAddress, watchSettingsRecord } from "./settingsRecords.js";
 
@@ -45,6 +46,14 @@ const desktopHtml = (downloads) => `
  *  record rather than branched on: this module knows the four keys only as
  *  strings the api also uses. */
 export function downloadsHtml(downloads, platformKey) {
+  if (isDevelopmentChannel()) return `<div id="downloads">${developmentInstallationHtml()}</div>`;
+  if (downloads?.installation_notice) {
+    return `<div id="downloads">${dim(esc(downloads.installation_notice))}<a href="/docs#setup">Dev setup documentation</a></div>`;
+  }
+  return releaseDownloadsHtml(downloads, platformKey);
+}
+
+function releaseDownloadsHtml(downloads, platformKey) {
   const platforms = Array.isArray(downloads?.platforms) ? downloads.platforms : [];
   const matched = platforms.find((platform) => platform.key === platformKey);
   return `<div id="downloads">
@@ -59,6 +68,7 @@ export function downloadsHtml(downloads, platformKey) {
 /** What a host embeds before mounting: the slot the payload lands in, and the
  *  one line a refusal gets to say. */
 export function downloadsPlaceholderHtml() {
+  if (isDevelopmentChannel()) return downloadsHtml();
   return `<div id="downloads">${dim("loading…")}</div>
       <div class="adderr" id="downloadserr"></div>`;
 }
@@ -84,6 +94,10 @@ export async function mountDownloads(
 ) {
   const slot = host?.querySelector?.("#downloads");
   if (!slot) return;
+  if (isDevelopmentChannel()) {
+    slot.outerHTML = downloadsHtml();
+    return;
+  }
   let painted = false;
   const record = watchSettingsRecord(downloadsAddress, (downloads) => {
     if (!host.querySelector("#downloads")) {

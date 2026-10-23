@@ -98,3 +98,15 @@ describe("downloadsHtml", () => {
     expect(host.querySelector("#installcmd").textContent).toBe("curl | sh");
   });
 });
+
+it("honors the dev server withholding installation even in a production bundle", () => {
+  const host = parse(downloadsHtml(downloadsPayload({
+    installation_notice: "Use a reviewed source-built dev bridge. <safe>",
+    docs_url: "/docs#setup",
+  }), "linux-x86_64"));
+  expect(host.textContent).toContain("Use a reviewed source-built dev bridge. <safe>");
+  expect(host.querySelector("safe")).toBeNull();
+  expect(host.querySelectorAll("button, a[download]")).toHaveLength(0);
+  expect(linkUrls(host)).toEqual(["/docs#setup"]);
+  expect(host.innerHTML).not.toContain("getbuild.ing/install");
+});

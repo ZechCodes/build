@@ -6,6 +6,7 @@
 // Everything a bridge owns — the projects it holds, the folder it keeps them in,
 // how agents run there — is on that machine's own page, which this one links to.
 
+import { isDevelopmentChannel } from "../core/developmentInstallation.js";
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App } from "../app.js";
@@ -169,7 +170,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
     </div>
     <div class="panel">
       <h3>⬇️ Downloads</h3>
-      <div class="dim" style="font-size:13px;margin-bottom:8px">Install the bridge on another machine, or update this one.</div>
+      <div class="dim" style="font-size:13px;margin-bottom:8px">${isDevelopmentChannel() ? "Dev bridges use a separately authorized source build." : "Install the bridge on another machine, or update this one."}</div>
       ${downloadsPlaceholderHtml()}
     </div>
     ${connectionDiagnosticsPanelHtml()}
@@ -189,7 +190,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
     const devices = App.devices;
     $("#devlist").innerHTML = devices.length
       ? devices.map(deviceRowHtml).join("")
-      : '<div class="dim" style="font-size:13px">No devices yet. Install the bridge above, then add it with its pairing code.</div>';
+      : `<div class="dim" style="font-size:13px">No devices yet. ${isDevelopmentChannel() ? "Add a source-built dev bridge only after pairing is separately authorized." : "Install the bridge above, then add it with its pairing code."}</div>`;
     $("#devlist").querySelectorAll(".revoke").forEach(
       (btn) =>
         (btn.onclick = async () => {

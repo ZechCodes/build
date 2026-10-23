@@ -1,3 +1,5 @@
+import { DEV_INSTALLATION_NOTICE, isDevelopmentChannel } from "./developmentInstallation.js";
+
 // Pure text helpers shared by every surface.
 
 // Quotes are escaped too: esc() output is interpolated into attribute values
@@ -133,8 +135,11 @@ export const pairingConnectingText = (name) =>
   `Approved. Waiting for ${name || "your device"} to come online — this usually takes a few seconds.`;
 
 /** A device approved and never heard from since: what to check. */
-export const pairingLateText = (name) =>
-  `${name || "Your device"} was approved but has not come online. Check that its bridge is running on that machine: the installer starts it, and after a manual build-bridge pair, run build-bridge install-service.`;
+export const pairingLateText = (name) => {
+  const waiting = `${name || "Your device"} was approved but has not come online.`;
+  if (isDevelopmentChannel()) return `${waiting} ${DEV_INSTALLATION_NOTICE}`;
+  return `${waiting} Check that its bridge is running on that machine: the installer starts it, and after a manual build-bridge pair, run build-bridge install-service.`;
+};
 
 /** What it says where nothing is reachable: no device to name, and no time that
  *  would mean anything, so it says what is true and what happens. */

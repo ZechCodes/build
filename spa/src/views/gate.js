@@ -7,6 +7,7 @@
 // has nothing to stand on: the gate takes the app back and says which machines
 // it is waiting for, and hands it straight back when one of them lands.
 
+import { isDevelopmentChannel } from "../core/developmentInstallation.js";
 import { $ } from "../dom.js";
 import {
   allDevicesOfflineText,
@@ -419,12 +420,12 @@ function onboardingStepsHtml() {
       <div class="panel">
         ${stepHtml(
           1,
-          `<b>Install the bridge</b> on the machine where your code lives.
+          `<b>${isDevelopmentChannel() ? "Prepare a dev bridge" : "Install the bridge"}</b> on the machine where your code lives.
           <div style="margin-top:8px">${downloadsPlaceholderHtml()}</div>`,
         )}
         ${stepHtml(
           2,
-          `<b>Enter its pairing code</b> — the bridge prints it when it starts, and again while it waits for you.
+          `<b>Enter its pairing code</b> — ${isDevelopmentChannel() ? "only after dev pairing has been separately authorized." : "the bridge prints it when it starts, and again while it waits for you."}
           <div class="addproj" style="margin-top:6px"><input id="ocode" ${fieldTraits("code")} placeholder="e.g. G6ZP-KD2U" style="text-transform:uppercase" />
             <button class="btn primary" id="olookup">Add device</button></div>`,
         )}
@@ -708,6 +709,7 @@ async function showBridgeBehindGate(context) {
   const root = $("#root");
   const shown = { deviceName: deviceNameOf(App.devices, context.deviceId), bridgeVersion: context.apiVersion };
   renderBridgeBehindAppGate(root, shown);
+  if (isDevelopmentChannel()) return;
   let minted;
   try {
     minted = await mintInstallCommand();

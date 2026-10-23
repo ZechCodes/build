@@ -62,14 +62,19 @@ jobs:
           nice -n 10 uv run --frozen pytest buildapp -q
       - name: SPA
         working-directory: spa
+        # Match ci.yml's baseline test environment. buildChannelBuild,
+        # buildChannelDom and browser/buildChannelLayout explicitly set their
+        # own channel fixtures; the whole suite must not inherit build inputs.
+        run: |
+          nice -n 10 npm run lint
+          nice -n 10 npm test
+      - name: Build dev SPA
+        working-directory: spa
         env:
           VITE_BUILD_CHANNEL: dev
           VITE_RELAY_URL: wss://relay-dev.getbuild.ing
           VITE_BUILD_VERSION: ${{ needs.resolve.outputs.sha }}
-        run: |
-          nice -n 10 npm run lint
-          nice -n 10 npm test
-          nice -n 10 npm run build
+        run: nice -n 10 npm run build
       - name: Landing image inputs
         run: nice -n 10 npm test --prefix landing
       - name: Relay and bridge regression gates

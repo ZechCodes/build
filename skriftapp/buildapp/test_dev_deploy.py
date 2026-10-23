@@ -134,6 +134,27 @@ def workflow():
     return yaml.safe_load((ROOT / ".github/workflows/dev-deploy.yml").read_text())
 
 
+def test_spa_checks_do_not_inherit_build_environment():
+    flow = workflow()
+    checks = flow["jobs"]["checks"]
+    spa = next(step for step in checks["steps"] if step.get("name") == "SPA")
+    for scope in (flow, checks, spa):
+        assert not any(key.startswith("VITE_BUILD_") or key == "VITE_RELAY_URL"
+                       for key in scope.get("env", {})), "SPA tests must use the baseline environment"
+    assert spa["working-directory"] == "spa"
+    assert spa["run"].splitlines() == ["nice -n 10 npm run lint", "nice -n 10 npm test"]
+
+    build = next(step for step in checks["steps"] if step.get("name") == "Build dev SPA")
+    assert checks["steps"].index(spa) < checks["steps"].index(build)
+    assert build["working-directory"] == "spa"
+    assert build["run"] == "nice -n 10 npm run build"
+    assert build["env"] == {
+        "VITE_BUILD_CHANNEL": "dev",
+        "VITE_RELAY_URL": "wss://relay-dev.getbuild.ing",
+        "VITE_BUILD_VERSION": "${{ needs.resolve.outputs.sha }}",
+    }
+
+
 def test_workflow_dispatch_pins_dev_sha_and_only_dev_images():
     flow = workflow()
     assert set(flow.get("on", flow.get(True))) == {"workflow_dispatch"}

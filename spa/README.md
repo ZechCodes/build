@@ -96,6 +96,10 @@ assertion gate, not a pixel comparison against historical screenshots.
 - `VITE_RELAY_URL` — the relay's WebSocket origin for `/ws/client`.
   Default `ws://localhost:18090` (local dev relay); production builds use
   `VITE_RELAY_URL=wss://relay.getbuild.ing npm run build`.
+- `VITE_BUILD_CHANNEL` — the build-time channel. `dev` shows a persistent
+  `Dev` badge and sets the title to `Build Dev — review is the product`.
+  Unset or `prod` shows no badge and keeps the original title. The label comes
+  from build configuration only, independent of connection or device state.
 
 ## Serving
 

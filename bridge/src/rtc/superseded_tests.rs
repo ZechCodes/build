@@ -312,7 +312,7 @@ fn webrtc_peer(session_id: &str) -> WebrtcPeer {
         ),
         check_pending_direct_pairs: true,
         host_candidate_sweep: true,
-        negotiation: tokio::sync::Mutex::new(None),
+        negotiation: Arc::new(tokio::sync::Mutex::new(None)),
         ice: Arc::default(),
     }
 }

@@ -2845,6 +2845,16 @@ not the protocol, sessions or network behavior.
   browser ARP but emitted zero
   feature packets. The 12-case namespace matrix is recorded in
   `web/rtc-lan-upgrade/arp-findings.md`.
+- **TURN/ICE diagnostics**: the bridge correlates its process-local opening ordinal,
+  remote ICE generation and TURN allocation ID. Opt-in vendored TURN diagnostics
+  use a private hash key shared within the opening, so an endpoint can be compared
+  across fresh allocations without logging its address. Each allocation assigns
+  lifetime first-use ordinals and records transaction outcomes and directional
+  indication/ChannelData counters. The dedicated diagnostic log target bypasses
+  the general gatherer warning throttle and folds repeated traffic locally.
+  ICE selection and failure snapshots record pair types and connectivity-check
+  counters with opaque pair IDs. These are observations, not proof of why a
+  provider rejected or dropped traffic, and do not change the retry state machine.
 - **Paired LAN hint**: `rtc.offer` accepts optional `client_id` under
   `rtc.clientLanCache` (wire 3.12.0). The SPA sends it only after a greeting from
   that paired bridge advertised the capability. It uses `crypto.randomUUID`,
@@ -3884,6 +3894,10 @@ through the same device's rendezvous (`mintTerminalSession`), and it rides the
   direct pair does not close the browser's TURN allocation. Retiring that
   allocation is a follow-up: browser capabilities and ICE reconfiguration risks
   need investigation. `spa/src/core/transportPath.js` classifies the carrying path.
+  The private connection trace records answer receipt/application, candidate
+  acceptance and local candidate type/family, alongside gathering, ICE and
+  connection transitions. Native failures use fixed exception-name categories;
+  addresses, SDP and native error messages never enter these added trace lines.
 - **Session**: `openSession` (`spa/src/core/session.js`) combines
   `spa/src/core/sessionRpc.js` (encryption, pending calls, receipts, pushes)
   with `spa/src/core/sessionSwitch.js`, which sends `rtc.*` over the rendezvous

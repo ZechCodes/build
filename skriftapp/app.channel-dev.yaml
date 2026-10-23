@@ -36,6 +36,10 @@ models:
 db:
   # Env-driven (Skrift interpolates $VARS at config load, failing fast if unset).
   url: $DATABASE_URL
+  schema: build_dev
+  # Keep two app slots; the dedicated dev role has a ten-connection limit.
+  pool_size: 2
+  pool_overflow: 0
 auth:
   # Also the pinned WebAuthn origin/RP ID for passkeys — must match the app host.
   redirect_base_url: https://dev.getbuild.ing

@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 import pytest
+import yaml
 from buildapp.db_test_support import engine_for, file_session_maker
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -13,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.fixture
 def fresh_hosted_dev(tmp_path, monkeypatch):
-    (tmp_path / 'app.yaml').write_text((ROOT / 'skriftapp/app.channel-dev.yaml').read_text())
+    config = yaml.safe_load((ROOT / 'skriftapp/app.channel-dev.yaml').read_text())
+    config['db'].pop('schema', None)  # SQLite offline proof has no schemas.
+    (tmp_path / 'app.yaml').write_text(yaml.safe_dump(config))
     for name in ('templates', 'migrations'):
         (tmp_path / name).symlink_to(ROOT / 'skriftapp' / name)
     url = f"sqlite+aiosqlite:///{tmp_path / 'fresh.db'}"
@@ -160,7 +163,63 @@ def test_guard_refuses_production_database_before_connecting(fresh_hosted_dev, m
 def test_guard_refuses_connection_query_overrides(fresh_hosted_dev, monkeypatch, suffix):
     from skrift.config import get_settings
     from buildapp.dev_bootstrap import dev_database_url
-    monkeypatch.setenv('DATABASE_URL', 'postgresql+asyncpg://build:private@build-postgres.build-dev.svc.cluster.local:5432/build' + suffix)
+    _, directory = fresh_hosted_dev
+    config = yaml.safe_load((directory / 'app.yaml').read_text())
+    config['db']['schema'] = 'build_dev'
+    (directory / 'app.yaml').write_text(yaml.safe_dump(config))
+    monkeypatch.setenv('DATABASE_URL', 'postgresql+asyncpg://build_dev:private@build-postgres.8ly.svc.cluster.local:5432/build' + suffix)
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match='hosted dev database'):
+        dev_database_url()
+
+
+def test_guard_accepts_only_dedicated_dev_role_and_schema(fresh_hosted_dev, monkeypatch):
+    from skrift.config import get_settings
+    from buildapp.dev_bootstrap import dev_database_url
+    _, directory = fresh_hosted_dev
+    config = yaml.safe_load((directory / 'app.yaml').read_text())
+    config['db']['schema'] = 'build_dev'
+    (directory / 'app.yaml').write_text(yaml.safe_dump(config))
+    url = 'postgresql+asyncpg://build_dev:private@build-postgres.8ly.svc.cluster.local:5432/build'
+    monkeypatch.setenv('DATABASE_URL', url)
+    get_settings.cache_clear()
+    assert dev_database_url() == url
+    for invalid in (url.replace('build_dev:private', 'build:private'),
+                    url + '?options=-csearch_path=public',
+                    url.replace('8ly', 'build-dev'),
+                    url.replace(':5432/build', ':5432/production'),
+                    url.replace(':5432/build', ':5433/build'),
+                    url.replace('postgresql+asyncpg', 'postgresql+psycopg')):
+        monkeypatch.setenv('DATABASE_URL', invalid)
+        get_settings.cache_clear()
+        with pytest.raises(RuntimeError, match='hosted dev database'):
+            dev_database_url()
+    monkeypatch.setenv('DATABASE_URL', url)
+    config['db']['schema'] = 'public'
+    (directory / 'app.yaml').write_text(yaml.safe_dump(config))
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match='hosted dev database'):
+        dev_database_url()
+
+
+def test_operator_migrate_only_does_not_require_or_create_bootstrap(fresh_hosted_dev):
+    from buildapp.dev_bootstrap import check_bootstrapped
+    url, directory = fresh_hosted_dev
+    result = subprocess.run([sys.executable, '-m', 'buildapp.dev_bootstrap', 'migrate'],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    with pytest.raises(RuntimeError, match='bootstrap'):
+        asyncio.run(check_bootstrapped(url))
+    assert not list(directory.glob('*.txt'))
+
+
+def test_sqlite_offline_proof_requires_no_configured_schema(fresh_hosted_dev):
+    from skrift.config import get_settings
+    from buildapp.dev_bootstrap import dev_database_url
+    _, directory = fresh_hosted_dev
+    config = yaml.safe_load((directory / 'app.yaml').read_text())
+    config['db']['schema'] = 'build_dev'
+    (directory / 'app.yaml').write_text(yaml.safe_dump(config))
     get_settings.cache_clear()
     with pytest.raises(RuntimeError, match='hosted dev database'):
         dev_database_url()

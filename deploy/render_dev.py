@@ -13,8 +13,6 @@ import yaml
 APP_REPOSITORY = "ghcr.io/zechcodes/build-app-dev"
 RELAY_REPOSITORY = "ghcr.io/zechcodes/build-relay-dev"
 RESOURCES = {
-    ("Service", "build-postgres"): "infrastructure",
-    ("StatefulSet", "build-postgres"): "infrastructure",
     ("Job", "build-app-migrate"): "migrate",
     ("Deployment", "build-app"): "app",
     ("Service", "build-app"): "app",
@@ -33,16 +31,12 @@ def pinned_image(image, repository):
 
 def pin_pod(document, app_image, relay_image):
     kind = document["kind"]
-    if kind not in ("Deployment", "Job", "StatefulSet"):
+    if kind not in ("Deployment", "Job"):
         return
     containers = document["spec"]["template"]["spec"]["containers"]
     if len(containers) != 1:
         raise ValueError("unexpected dev pod containers")
     container = containers[0]
-    if kind == "StatefulSet":
-        if container["image"] != "docker.io/library/postgres:16":
-            raise ValueError("unexpected dev database image")
-        return
     repository = RELAY_REPOSITORY if document["metadata"]["name"] == "build-relay" else APP_REPOSITORY
     if container["image"] != repository + ":unbuilt":
         raise ValueError("unexpected source image; use the dev image placeholder")
@@ -52,8 +46,8 @@ def pin_pod(document, app_image, relay_image):
 
 
 def selected_phases(target):
-    return {"all": {"infrastructure", "migrate", "app", "relay"},
-            "app": {"infrastructure", "migrate", "app"}, "relay": {"relay"}}[target]
+    return {"all": {"migrate", "app", "relay"},
+            "app": {"migrate", "app"}, "relay": {"relay"}}[target]
 
 
 def render(documents, app_image, relay_image, *, target="all"):
@@ -62,7 +56,7 @@ def render(documents, app_image, relay_image, *, target="all"):
         app_image = pinned_image(app_image or "", APP_REPOSITORY)
     if "relay" in selected:
         relay_image = pinned_image(relay_image or "", RELAY_REPOSITORY)
-    phases = {name: [] for name in ("infrastructure", "migrate", "app", "relay")}
+    phases = {name: [] for name in ("migrate", "app", "relay")}
     seen = set()
     for document in deepcopy(documents):
         metadata = document["metadata"]

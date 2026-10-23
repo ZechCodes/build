@@ -53,6 +53,8 @@ pub struct BridgeConfig {
     /// Explicitly configured default repo; `None` means projects come from the
     /// UI (clone/add) and persisted config only — never a phantom default path.
     pub repo: Option<String>,
+    /// Extra environment projects, with the exact paths startup will register.
+    pub environment_projects: Vec<(PathBuf, String)>,
     pub worktrees: PathBuf,
     pub base_branch: String,
     pub identity_file: PathBuf,
@@ -60,6 +62,16 @@ pub struct BridgeConfig {
     /// The home directory the paths above were resolved against; what the
     /// bridge prints names paths under it with `~`.
     pub home: PathBuf,
+}
+
+impl BridgeConfig {
+    /// The task store and harness share the task directory's parent as state.
+    pub fn task_state_root(&self) -> &Path {
+        self.tasks_dir
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+    }
 }
 
 /// Resolve config from an environment lookup and the user's home directory.
@@ -81,6 +93,8 @@ pub fn resolve(
     let state_root = home.join(root);
     let expand = |raw: String| expand_home(&raw, home);
     let api_url = lookup("BRIDGE_API_URL").unwrap_or_else(|| api.to_string());
+    let base_branch =
+        lookup("BRIDGE_BASE_BRANCH").unwrap_or_else(|| DEFAULT_BASE_BRANCH.to_string());
     let worktrees = lookup("BRIDGE_WORKTREES")
         .map(expand)
         .unwrap_or_else(|| state_root.join("worktrees"));
@@ -104,10 +118,19 @@ pub fn resolve(
         relay_url: lookup("BRIDGE_RELAY_URL").unwrap_or_else(|| relay.to_string()),
         web_url: lookup("BRIDGE_WEB_URL").unwrap_or_else(|| api_url.clone()),
         api_url,
-        repo: lookup("BRIDGE_REPO"),
+        repo: lookup("BRIDGE_REPO").map(|raw| {
+            project_path(&raw, channel, home)
+                .to_string_lossy()
+                .into_owned()
+        }),
+        environment_projects: resolve_environment_projects(
+            lookup("BRIDGE_PROJECTS").as_deref(),
+            channel,
+            home,
+            &base_branch,
+        ),
         worktrees,
-        base_branch: lookup("BRIDGE_BASE_BRANCH")
-            .unwrap_or_else(|| DEFAULT_BASE_BRANCH.to_string()),
+        base_branch,
         identity_file: lookup("BRIDGE_IDENTITY_FILE")
             .map(expand)
             .unwrap_or_else(|| state_root.join("identity.json")),
@@ -116,7 +139,7 @@ pub fn resolve(
         state_root,
     };
     if channel == Channel::Dev {
-        validate_dev_paths(&config, lookup("BRIDGE_PROJECTS").as_deref())?;
+        validate_dev_paths(&config)?;
     }
     Ok(config)
 }
@@ -129,30 +152,53 @@ fn expand_home(raw: &str, home: &Path) -> PathBuf {
     }
 }
 
-fn validate_dev_paths(config: &BridgeConfig, projects: Option<&str>) -> Result<(), String> {
+fn project_path(raw: &str, channel: Channel, home: &Path) -> PathBuf {
+    match channel {
+        Channel::Prod => PathBuf::from(raw),
+        Channel::Dev => expand_home(raw, home),
+    }
+}
+
+fn resolve_environment_projects(
+    value: Option<&str>,
+    channel: Channel,
+    home: &Path,
+    base_branch: &str,
+) -> Vec<(PathBuf, String)> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let (path, branch) = entry.split_once('=').unwrap_or((entry, base_branch));
+            (project_path(path, channel, home), branch.to_string())
+        })
+        .collect()
+}
+
+fn validate_dev_paths(config: &BridgeConfig) -> Result<(), String> {
     let prod = canonicalize_state_path(&config.home.join(".build"))
         .map_err(|error| format!("cannot resolve production state root: {error}"))?;
-    for (name, path) in [
+    let paths: [(&str, &Path); 9] = [
         ("state_root", &config.state_root),
         ("BRIDGE_IDENTITY_FILE", &config.identity_file),
         ("BRIDGE_CONFIG", &config.config_path),
         ("BRIDGE_TASKS_DIR", &config.tasks_dir),
+        ("task_state_root", config.task_state_root()),
         ("BRIDGE_PROJECTS_DIR", &config.projects_dir),
         ("BRIDGE_WORKTREES", &config.worktrees),
         ("BRIDGE_MCP_SOCKET", &config.mcp_socket),
         ("log_dir", &config.log_dir),
-    ] {
+    ];
+    for (name, path) in paths {
         validate_dev_path(name, path, &prod)?;
     }
     if let Some(repo) = &config.repo {
-        validate_dev_path("BRIDGE_REPO", &expand_home(repo, &config.home), &prod)?;
+        validate_dev_path("BRIDGE_REPO", Path::new(repo), &prod)?;
     }
-    for entry in projects.unwrap_or_default().split(',') {
-        let entry = entry.trim();
-        if !entry.is_empty() {
-            let path = entry.split_once('=').map_or(entry, |(path, _)| path);
-            validate_dev_path("BRIDGE_PROJECTS", &expand_home(path, &config.home), &prod)?;
-        }
+    for (path, _) in &config.environment_projects {
+        validate_dev_path("BRIDGE_PROJECTS", path, &prod)?;
     }
     Ok(())
 }

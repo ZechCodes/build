@@ -77,16 +77,15 @@ use build_bridge::{identity, pairing, service, transport};
 #[tokio::main]
 async fn main() {
     // Every dev command, including MCP, validates paths before accessing state.
-    match config::Channel::resolve(std::env::var("BRIDGE_CHANNEL").ok().as_deref()) {
-        Ok(config::Channel::Dev) => {
-            bridge_config();
-        }
-        Ok(config::Channel::Prod) => {}
+    let dev_config = match config::Channel::resolve(std::env::var("BRIDGE_CHANNEL").ok().as_deref())
+    {
+        Ok(config::Channel::Dev) => Some(bridge_config()),
+        Ok(config::Channel::Prod) => None,
         Err(error) => exit_startup(error),
-    }
+    };
     match std::env::args().nth(1).as_deref() {
         Some("serve") | None => serve().await,
-        Some("mcp") => mcp_stdio(),
+        Some("mcp") => mcp_stdio(dev_config.as_ref()),
         Some("provision") => provision(),
         Some("pair") => pair().await,
         Some("backup") => backup(),
@@ -360,10 +359,7 @@ fn resolve_runtime_paths(config: BridgeConfig) -> Result<RuntimePaths, String> {
         Ok("1") | Ok("true")
     );
     let tasks_dir = config.tasks_dir.clone();
-    let state_root = tasks_dir
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| std::path::Path::new("."));
+    let state_root = config.task_state_root();
     let harness_context = HarnessContext::resolved_for_channel(
         config.mcp_socket.clone(),
         state_root.into(),
@@ -523,7 +519,7 @@ fn construct_app(runtime: &RuntimePaths, identity: &DeviceIdentity) -> Result<Ap
         &identity.device_id,
         &identity.identity_private_key_b64,
     ));
-    let app = register_environment_projects(app, &config.base_branch);
+    let app = register_environment_projects(app, config);
     let app = app
         .with_projects_dir_default(config.projects_dir.clone())
         .with_config(&runtime.config_path)
@@ -532,18 +528,10 @@ fn construct_app(runtime: &RuntimePaths, identity: &DeviceIdentity) -> Result<Ap
         .map_err(|error| task_store_startup_error(&runtime.tasks_dir, &error))
 }
 
-fn register_environment_projects(mut app: AppState, base_branch: &str) -> AppState {
-    for entry in std::env::var("BRIDGE_PROJECTS")
-        .unwrap_or_default()
-        .split(',')
-    {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            continue;
-        }
-        let (path, branch) = entry.split_once('=').unwrap_or((entry, base_branch));
-        let id = app.add_project(std::path::PathBuf::from(path), branch.to_string());
-        println!("  + project {id}: {path} (base {branch})");
+fn register_environment_projects(mut app: AppState, config: &BridgeConfig) -> AppState {
+    for (path, branch) in &config.environment_projects {
+        let id = app.add_project(path.clone(), branch.clone());
+        println!("  + project {id}: {} (base {branch})", path.display());
     }
     app
 }
@@ -1288,7 +1276,7 @@ fn bridge_config() -> build_bridge::config::BridgeConfig {
 /// with; the daemon routes it by owner lookup to `on_plan_done` / `on_run_done`.
 /// The wire key stays `task_id` for cross-version compatibility. Without the
 /// socket it just logs (for testing).
-fn mcp_stdio() {
+fn mcp_stdio(dev_config: Option<&BridgeConfig>) {
     use std::io::Write;
 
     let args: Vec<String> = std::env::args().collect();
@@ -1298,7 +1286,9 @@ fn mcp_stdio() {
         .and_then(|i| args.get(i + 1))
         .cloned()
         .unwrap_or_else(|| "unknown".to_string());
-    let socket = std::env::var("BRIDGE_MCP_SOCKET").ok();
+    let socket = dev_config
+        .map(|config| config.mcp_socket.to_string_lossy().into_owned())
+        .or_else(|| std::env::var("BRIDGE_MCP_SOCKET").ok());
     let session_token = std::env::var("BRIDGE_MCP_TOKEN").ok();
 
     // The owner id decides the tool surface: a router session's id is prefixed,

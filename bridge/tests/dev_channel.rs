@@ -393,7 +393,11 @@ fn dev_refuses_a_derived_state_root_inside_production() {
     use std::os::unix::fs::symlink;
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir(home.path().join(".build")).unwrap();
-    symlink(home.path().join("safe-tasks"), home.path().join(".build/tasks-link")).unwrap();
+    symlink(
+        home.path().join("safe-tasks"),
+        home.path().join(".build/tasks-link"),
+    )
+    .unwrap();
     let result = config::resolve(
         |key| match key {
             "BRIDGE_CHANNEL" => Some("dev".into()),
@@ -417,8 +421,13 @@ fn dev_repo_path_uses_the_same_home_expansion_as_validation() {
                 _ => None,
             },
             home.path(),
-        ).unwrap();
-        let expected = if channel == "dev" { home.path().join("repo") } else { "~/repo".into() };
+        )
+        .unwrap();
+        let expected = if channel == "dev" {
+            home.path().join("repo")
+        } else {
+            "~/repo".into()
+        };
         assert_eq!(Path::new(cfg.repo.as_ref().unwrap()), expected);
     }
 }
@@ -433,12 +442,22 @@ fn environment_projects_use_validated_paths_and_preserve_production_parsing() {
                 "BRIDGE_BASE_BRANCH" => Some("trunk".into()),
                 "BRIDGE_PROJECTS" => Some(" , ~/repo=topic, relative-repo, ".into()),
                 _ => None,
-            }, home.path()
-        ).unwrap();
-        let expanded = if channel == "dev" { home.path().join("repo") } else { "~/repo".into() };
-        assert_eq!(cfg.environment_projects, vec![
-            (expanded, "topic".into()), ("relative-repo".into(), "trunk".into())
-        ]);
+            },
+            home.path(),
+        )
+        .unwrap();
+        let expanded = if channel == "dev" {
+            home.path().join("repo")
+        } else {
+            "~/repo".into()
+        };
+        assert_eq!(
+            cfg.environment_projects,
+            vec![
+                (expanded, "topic".into()),
+                ("relative-repo".into(), "trunk".into())
+            ]
+        );
     }
 }
 
@@ -448,7 +467,10 @@ fn dev_mcp_uses_the_validated_socket_instead_of_a_raw_tilde_path() {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::{fs::symlink, net::UnixListener};
     use std::process::Stdio;
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     use std::time::Duration;
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
@@ -463,7 +485,9 @@ fn dev_mcp_uses_the_validated_socket_instead_of_a_raw_tilde_path() {
         while !stopped.load(Ordering::SeqCst) {
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut request = String::new();
-                BufReader::new(stream.try_clone().unwrap()).read_line(&mut request).unwrap();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
                 writeln!(stream, "{{\"ok\":true,\"result\":{{}}}}").unwrap();
                 return true;
             }
@@ -472,18 +496,34 @@ fn dev_mcp_uses_the_validated_socket_instead_of_a_raw_tilde_path() {
         false
     });
     let mut child = Command::new(env!("CARGO_BIN_EXE_build-bridge"))
-        .env_clear().env("HOME", home.path()).env("PATH", "/usr/bin:/bin")
-        .env("BRIDGE_CHANNEL", "dev").env("BRIDGE_MCP_SOCKET", "~/mcp.sock")
-        .current_dir(cwd.path()).args(["mcp", "--task", "unused"])
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().unwrap();
-    writeln!(child.stdin.take().unwrap(), "{}", serde_json::json!({
-        "jsonrpc":"2.0", "id":1, "method":"tools/call",
-        "params":{"name":"set_topic","arguments":{"topic":"Fixture socket check"}}
-    })).unwrap();
+        .env_clear()
+        .env("HOME", home.path())
+        .env("PATH", "/usr/bin:/bin")
+        .env("BRIDGE_CHANNEL", "dev")
+        .env("BRIDGE_MCP_SOCKET", "~/mcp.sock")
+        .current_dir(cwd.path())
+        .args(["mcp", "--task", "unused"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(
+        child.stdin.take().unwrap(),
+        "{}",
+        serde_json::json!({
+            "jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{"name":"set_topic","arguments":{"topic":"Fixture socket check"}}
+        })
+    )
+    .unwrap();
     let output = child.wait_with_output().unwrap();
     stop.store(true, Ordering::SeqCst);
-    assert!(!mock.join().unwrap(), "dev MCP contacted the production socket alias");
+    assert!(
+        !mock.join().unwrap(),
+        "dev MCP contacted the production socket alias"
+    );
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("isError"));
+    let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["result"]["isError"], true);
 }

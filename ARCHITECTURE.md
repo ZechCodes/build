@@ -92,8 +92,10 @@ overrides still win, but dev refuses any resolved state path or environment
 project path at or inside the production state root (`~/.build`). The check
 resolves symlinks and missing leaf components without creating files; inability
 to resolve a path is an error. This includes the state and log roots, identity,
-config, tasks, projects, worktrees and MCP socket. Backup and service installation use the same resolved
-paths as serve. Service environments pin the channel, URLs and resolved paths;
+config, tasks, the task-derived harness root, projects, worktrees and MCP socket.
+Dev MCP and project registration consume the validated paths, including home
+expansion. Backup and service installation use the same resolved paths as serve.
+Service environments pin the channel, URLs and resolved paths;
 MCP launches carry the channel and socket, while private-key stripping remains.
 Dev ignores environment-provisioned device keys and pairs its own identity.
 

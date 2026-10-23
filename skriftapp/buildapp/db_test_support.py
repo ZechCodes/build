@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from buildapp import invites
 from buildapp.clock import utc_now
@@ -57,6 +57,11 @@ def file_session_maker(database: Path) -> async_sessionmaker[AsyncSession]:
     """Independent connections to one throwaway file, for competing transactions."""
     engine = _new_engine(f"sqlite+aiosqlite:///{database}")
     return async_sessionmaker(engine, expire_on_commit=False)
+
+
+def postgres_proof_engine(url: str) -> AsyncEngine:
+    """One disposable PostgreSQL connection; callers validate local proof URLs."""
+    return _new_engine(url, poolclass=NullPool)
 
 
 def _new_engine(url: str, **options) -> AsyncEngine:

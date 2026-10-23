@@ -94,8 +94,7 @@ def test_real_postgres_schema_migrations_bootstrap_and_app(tmp_path, monkeypatch
 @pytest.fixture
 def disposable_postgres_connections():
     """Privileged fixture is opt-in and must share the dev proof's local server."""
-    from sqlalchemy.ext.asyncio import create_async_engine
-    from sqlalchemy.pool import NullPool
+    from buildapp.db_test_support import postgres_proof_engine
     from buildapp.dev_bootstrap import dev_engine
 
     dev_url = os.environ.get('TEST_DEV_POSTGRES_URL')
@@ -109,18 +108,27 @@ def disposable_postgres_connections():
         assert parsed.database == 'build'
     assert dev.username == 'build_dev' and admin.username == 'postgres'
     assert (dev.host, dev.port) == (admin.host, admin.port)
-    return dev_engine(dev_url), create_async_engine(admin_url, poolclass=NullPool)
+    return dev_engine(dev_url), postgres_proof_engine(admin_url)
 
 
-@pytest.mark.parametrize('privilege', ['SELECT', 'INSERT', 'UPDATE', 'REFERENCES'])
-def test_preflight_rejects_column_only_production_privilege(disposable_postgres_connections, privilege):
+@pytest.mark.parametrize('privilege,grant,revoke', [
+    ('SELECT', text('GRANT SELECT (value) ON public.prod_canary TO build_dev'),
+     text('REVOKE SELECT (value) ON public.prod_canary FROM build_dev')),
+    ('INSERT', text('GRANT INSERT (value) ON public.prod_canary TO build_dev'),
+     text('REVOKE INSERT (value) ON public.prod_canary FROM build_dev')),
+    ('UPDATE', text('GRANT UPDATE (value) ON public.prod_canary TO build_dev'),
+     text('REVOKE UPDATE (value) ON public.prod_canary FROM build_dev')),
+    ('REFERENCES', text('GRANT REFERENCES (value) ON public.prod_canary TO build_dev'),
+     text('REVOKE REFERENCES (value) ON public.prod_canary FROM build_dev')),
+])
+def test_preflight_rejects_column_only_production_privilege(disposable_postgres_connections, privilege, grant, revoke):
     from buildapp.dev_bootstrap import verify_dev_connection
     dev, admin = disposable_postgres_connections
 
     async def prove():
         try:
             async with admin.begin() as connection:
-                await connection.execute(text(f'GRANT {privilege} (value) ON public.prod_canary TO build_dev'))
+                await connection.execute(grant)
             async with dev.connect() as connection:
                 assert not await connection.scalar(text(
                     'SELECT has_table_privilege(\'public.prod_canary\', :privilege)'),
@@ -129,14 +137,23 @@ def test_preflight_rejects_column_only_production_privilege(disposable_postgres_
                     await verify_dev_connection(connection)
         finally:
             async with admin.begin() as connection:
-                await connection.execute(text(f'REVOKE {privilege} (value) ON public.prod_canary FROM build_dev'))
+                await connection.execute(revoke)
             await dev.dispose()
             await admin.dispose()
     asyncio.run(prove())
 
 
-@pytest.mark.parametrize('schema', ['public', 'unrelated_app', 'pg_catalog', 'information_schema'])
-def test_preflight_rejects_create_on_every_other_schema(disposable_postgres_connections, schema):
+@pytest.mark.parametrize('grant,revoke', [
+    pytest.param(text('GRANT CREATE ON SCHEMA public TO build_dev'),
+                 text('REVOKE CREATE ON SCHEMA public FROM build_dev'), id='public'),
+    pytest.param(text('GRANT CREATE ON SCHEMA unrelated_app TO build_dev'),
+                 text('REVOKE CREATE ON SCHEMA unrelated_app FROM build_dev'), id='unrelated_app'),
+    pytest.param(text('GRANT CREATE ON SCHEMA pg_catalog TO build_dev'),
+                 text('REVOKE CREATE ON SCHEMA pg_catalog FROM build_dev'), id='pg_catalog'),
+    pytest.param(text('GRANT CREATE ON SCHEMA information_schema TO build_dev'),
+                 text('REVOKE CREATE ON SCHEMA information_schema FROM build_dev'), id='information_schema'),
+])
+def test_preflight_rejects_create_on_every_other_schema(disposable_postgres_connections, grant, revoke):
     from buildapp.dev_bootstrap import verify_dev_connection
     dev, admin = disposable_postgres_connections
 
@@ -144,13 +161,13 @@ def test_preflight_rejects_create_on_every_other_schema(disposable_postgres_conn
         try:
             async with admin.begin() as connection:
                 await connection.execute(text('CREATE SCHEMA IF NOT EXISTS unrelated_app'))
-                await connection.execute(text(f'GRANT CREATE ON SCHEMA {schema} TO build_dev'))
+                await connection.execute(grant)
             async with dev.connect() as connection:
                 with pytest.raises(RuntimeError, match='identity and schema'):
                     await verify_dev_connection(connection)
         finally:
             async with admin.begin() as connection:
-                await connection.execute(text(f'REVOKE CREATE ON SCHEMA {schema} FROM build_dev'))
+                await connection.execute(revoke)
                 await connection.execute(text('DROP SCHEMA unrelated_app'))
             await dev.dispose()
             await admin.dispose()

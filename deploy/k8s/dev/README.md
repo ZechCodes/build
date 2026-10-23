@@ -32,14 +32,22 @@ manual deployment. Zech handles DNS; do not change it in this procedure.
 The protected `development` environment supplies `DEV_KUBECONFIG` as raw
 kubeconfig text. Its principal must be restricted to `build-dev` and only the
 Deployment, Service, Ingress, Job and pod/log/rollout read operations
-needed by this workflow. It must have no Namespace, RBAC, Secret-write or
-pod-exec or production namespace permissions. The operator-only `ci-rbac.yaml`
+needed by this workflow. It has no direct Secret API access, Namespace/RBAC
+permissions, pod-exec permission or production namespace permissions. However,
+Job/Deployment create plus pods/log is equivalent to reading the dev secrets:
+a workload can mount them and print them. This is accepted because only
+dev-scoped credentials live in `build-dev` and the `development` environment is
+protected (Zech as required reviewer, `main` only). The operator-only `ci-rbac.yaml`
 defines this ServiceAccount, Role and RoleBinding; it is excluded from the CI
 render. Create its token separately, store the kubeconfig only in the protected
 environment, and verify permissions with that actual credential, including
 denial of pod exec and access to `8ly`. CI never bootstraps these permissions or
 secrets. Repository package permissions must allow publishing `build-app-dev`
 and `build-relay-dev`. Build/check jobs receive no kube credential.
+
+CI's Ingress create/update/patch verbs could claim any Traefik host, including a
+production host. Only the protected environment and the pinned, reviewed render
+prevent that; namespace-scoped RBAC does not restrict Ingress hostnames.
 
 ## Shared database preflight and provisioning
 

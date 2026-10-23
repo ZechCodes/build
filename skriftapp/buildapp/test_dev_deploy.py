@@ -86,6 +86,7 @@ def test_manifests_are_namespace_local_with_no_cluster_bootstrap():
 
 
 def test_operator_ci_rbac_has_only_required_namespace_permissions():
+    """Pin direct API grants, not indirect secret reads or Ingress host claims."""
     resources = list(yaml.safe_load_all((DEV / "ci-rbac.yaml").read_text()))
     assert len(resources) == 3
     by_kind = {document["kind"]: document for document in resources}

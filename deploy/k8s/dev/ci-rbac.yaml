@@ -1,5 +1,11 @@
 # Operator-owned bootstrap. Never include in kustomization or CI render/apply.
 # A session-specific token Secret is created separately by the operator.
+# No direct Secret API access. Job/Deployment create plus pods/log is equivalent
+# to reading dev secrets: workloads can mount them and print them. Accepted only
+# because build-dev contains dev-scoped credentials and the development
+# environment is protected (Zech as reviewer, main only).
+# Ingress verbs can claim any Traefik host, including production's; the protected
+# environment and pinned, reviewed render are the controls, not namespace RBAC.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

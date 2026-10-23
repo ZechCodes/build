@@ -26,6 +26,7 @@ for (const width of [375, 1280]) {
             document.querySelector("#root").innerHTML = '<div class="shell-stub"><h2>Welcome to Build</h2></div>';
           });
         } else await mountNavigationBreadcrumbs(page, basePath, { inboxHeader: true });
+        await page.evaluate(() => { window.__channelShellModules = window.__layoutModules; });
         await loadBrowserModules(page, { channel: "src/core/buildChannel.js" }, basePath);
         await page.evaluate(() => window.__layoutModules.channel.initBuildChannel());
         const badge = page.locator("#build-channel");
@@ -43,6 +44,22 @@ for (const width of [375, 1280]) {
               && Math.min(rect.y + rect.height, box.y + box.height) > Math.max(rect.y, box.y);
             expect(overlap, selector).toBe(false);
           }
+        }
+        if (!gated) {
+          await page.evaluate(async () => {
+            Object.assign(window.__layoutModules, window.__channelShellModules);
+            await window.__layoutModules.inbox.setInboxCollapsed(true, { animate: false, persist: false, reveal: false });
+            document.body.classList.add("inbox-popover-open");
+          });
+          const offset = await page.evaluate(() => {
+            const rail = document.querySelector("#inbox-rail");
+            const caret = getComputedStyle(rail, "::before");
+            const width = parseFloat(caret.width) + parseFloat(caret.borderLeftWidth) + parseFloat(caret.borderRightWidth);
+            const centre = rail.getBoundingClientRect().left + rail.clientLeft + parseFloat(caret.left) + width / 2 + new DOMMatrixReadOnly(caret.transform).m41;
+            const toggle = document.querySelector("#inbox-open").getBoundingClientRect();
+            return centre - toggle.left - toggle.width / 2;
+          });
+          expect(Math.abs(offset), "popover caret follows the moved inbox button").toBeLessThanOrEqual(1);
         }
         await captureLayout(page, `build-channel-${width}-${gated ? "welcome" : "shell"}.png`);
       }, { width, height: 820 });

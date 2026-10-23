@@ -3,6 +3,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+// Keep startup local: boot and browser services are isolated, while main.js,
+// the real config and badge initializer execute together.
+vi.mock("../src/app.js", () => ({ App: {}, initRouter: vi.fn(), go: vi.fn(), followNotificationLink: vi.fn() }));
+vi.mock("../src/devices.js", () => ({ initDevicePicker: vi.fn() }));
+vi.mock("../src/push.js", () => ({ installPushOpenListener: vi.fn(), registerPushWorker: vi.fn() }));
+vi.mock("../src/core/pushKeySync.js", () => ({ startPushKeySync: vi.fn() }));
+vi.mock("../src/core/version.js", () => ({ createVersionWatcher: vi.fn(), fetchServedVersion: vi.fn() }));
+vi.mock("../src/core/sheetDismiss.js", () => ({ requestSheetDismiss: vi.fn() }));
+vi.mock("../src/core/theme.js", () => ({ installTheme: vi.fn() }));
+vi.mock("../src/core/composeView.js", () => ({ initCompose: vi.fn() }));
+vi.mock("../src/views/gate.js", () => ({ boot: vi.fn(), openPairingLink: vi.fn() }));
+vi.mock("../src/core/pairLink.js", () => ({ watchPairLinks: vi.fn() }));
+vi.mock("../src/connectionStatus.js", () => ({ mountConnectionStatus: vi.fn() }));
+vi.mock("../src/core/userPresence.js", () => ({ startUserPresence: vi.fn() }));
+vi.mock("../src/core/windowControlsOverlay.js", () => ({ installWindowControlsOverlay: vi.fn() }));
+vi.mock("../src/core/markdownNavigation.js", () => ({ installMarkdownNavigation: vi.fn() }));
+vi.mock("../src/core/markdownTableFocus.js", () => ({ installMarkdownTableFocus: vi.fn() }));
+vi.mock("../src/core/markdownImages.js", () => ({ installMarkdownImages: vi.fn() }));
+
 const html = readFileSync(resolve("index.html"), "utf8");
 const body = html.match(/<body>([\s\S]*)<\/body>/)[1];
 const originalTitle = "Build — review is the product";
@@ -22,6 +41,17 @@ async function initialize(channel) {
 }
 
 describe("build channel chrome", () => {
+  it("initializes the Dev identity from main before the gate boots", async () => {
+    vi.stubEnv("VITE_BUILD_CHANNEL", "dev");
+    const { boot } = await import("../src/views/gate.js");
+    boot.mockImplementationOnce(() => {
+      expect(document.querySelector("#build-channel").hidden).toBe(false);
+      expect(document.title).toBe("Build Dev — review is the product");
+    });
+    await import("../src/main.js");
+    expect(boot).toHaveBeenCalledOnce();
+  });
+
   it("exports the configured channel and shows Dev beside the global controls", async () => {
     await initialize("dev");
     expect((await import("../src/config.js")).BUILD_CHANNEL).toBe("dev");

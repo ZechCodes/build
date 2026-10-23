@@ -13,7 +13,8 @@ it.each(["dev", "prod"])("bakes %s into an output that needs no runtime environm
       lib: { entry: resolve("src/core/buildChannel.js"), formats: ["es"] },
     },
   });
-  const code = output.output.find((file) => file.type === "chunk").code;
+  const bundle = Array.isArray(output) ? output[0] : output;
+  const code = bundle.output.find((file) => file.type === "chunk").code;
   expect(code).not.toContain("import.meta.env");
   document.body.innerHTML = '<span id="build-channel" hidden>Dev</span>';
   document.title = "Build — review is the product";

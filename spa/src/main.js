@@ -8,6 +8,7 @@ import "@fontsource/inter/800.css";
 import "./styles.css";
 
 import { $ } from "./dom.js";
+import { initBuildChannel } from "./core/buildChannel.js";
 import { App, followNotificationLink, go, initRouter } from "./app.js";
 import { initDevicePicker } from "./devices.js";
 import { installPushOpenListener, registerPushWorker } from "./push.js";
@@ -25,6 +26,7 @@ import { installMarkdownNavigation } from "./core/markdownNavigation.js";
 import { installMarkdownTableFocus } from "./core/markdownTableFocus.js";
 import { installMarkdownImages } from "./core/markdownImages.js";
 
+initBuildChannel();
 installWindowControlsOverlay();
 installMarkdownNavigation();
 installMarkdownTableFocus();

@@ -1,0 +1,264 @@
+name: Dev deploy
+
+# Operator-authorized manual deployments only. The workflow ref is NOT the
+# source ref: resolve the dev branch once, then use that commit everywhere.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: refs/heads/dev
+          persist-credentials: false
+      - name: Record source commit
+        id: source
+        run: |
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Dev source commit: $sha" >> "$GITHUB_STEP_SUMMARY"
+
+  checks:
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dev-deploy-checks
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.4"
+      - name: Match locked npm
+        run: npm install -g npm@12.0.2 --ignore-scripts --no-audit --no-fund
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.13.4"
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt, clippy
+      - name: Install locked JS dependencies
+        run: |
+          nice -n 10 npm ci --prefix transport/js --ignore-scripts
+          nice -n 10 npm ci --prefix spa --legacy-peer-deps
+          nice -n 10 npm ci --prefix web
+          nice -n 10 npm ci --prefix landing --ignore-scripts
+          nice -n 10 npm ci --prefix bridge/tests/fixtures --ignore-scripts
+      - name: Python API and deployment contracts
+        working-directory: skriftapp
+        run: |
+          nice -n 10 uv run --frozen ruff check buildapp ../deploy/render_dev.py
+          nice -n 10 uv run --frozen pytest buildapp -q
+      - name: SPA
+        working-directory: spa
+        env:
+          VITE_BUILD_CHANNEL: dev
+          VITE_RELAY_URL: wss://relay-dev.getbuild.ing
+          VITE_BUILD_VERSION: ${{ needs.resolve.outputs.sha }}
+        run: |
+          nice -n 10 npm run lint
+          nice -n 10 npm test
+          nice -n 10 npm run build
+      - name: Landing image inputs
+        run: nice -n 10 npm test --prefix landing
+      - name: Relay and bridge regression gates
+        working-directory: bridge
+        run: |
+          nice -n 10 cargo test --locked
+          nice -n 10 cargo clippy --all-targets -- -D warnings
+          nice -n 10 cargo fmt --check
+          nice -n 10 cargo test --locked --manifest-path vendor/Cargo.toml --lib
+      - name: Web and transport interoperability
+        run: |
+          nice -n 10 python3 scripts/transport_import.py check
+          nice -n 10 python3 -m unittest discover -s transport/tests -v
+          nice -n 10 uv run --project transport/python --frozen python -m unittest discover -s transport/python/tests -v
+          nice -n 10 uv run --project transport/python --frozen python -m unittest discover -s transport/compatibility -v
+          nice -n 10 npm test --prefix transport/js
+          nice -n 10 npm test --prefix web
+          CHROMIUM_PATH="$(command -v chromium || command -v google-chrome)" nice -n 10 node --test web/devStackIsolation.browser.mjs
+          nice -n 10 npm run --prefix bridge/tests/fixtures test:compaction
+          nice -n 10 npm run --prefix bridge/tests/fixtures typecheck:compaction
+      - name: Offline dev manifest render
+        run: |
+          nice -n 10 kubectl kustomize deploy/k8s/dev > /tmp/dev-resources.yaml
+          nice -n 10 uv run --project skriftapp --frozen python deploy/render_dev.py \
+            --input /tmp/dev-resources.yaml --output /tmp/dev-render-check \
+            --app-image "ghcr.io/zechcodes/build-app-dev@sha256:$(printf '%064d' 0)" \
+            --relay-image "ghcr.io/zechcodes/build-relay-dev@sha256:$(printf '%064d' 0)"
+
+  build-app:
+    needs: [resolve, checks]
+    if: ${{ needs.checks.result == 'success' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dev-deploy-build-app
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish dev image
+        id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: skriftapp/Containerfile
+          build-args: |
+            APP_CONFIG=app.channel-dev.yaml
+            VITE_BUILD_CHANNEL=dev
+            VITE_RELAY_URL=wss://relay-dev.getbuild.ing
+            VITE_BUILD_VERSION=${{ needs.resolve.outputs.sha }}
+          push: true
+          tags: ghcr.io/zechcodes/build-app-dev:${{ needs.resolve.outputs.sha }}
+      - name: Record published image
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: echo "build-app-dev $SOURCE_SHA $IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+  build-relay:
+    needs: [resolve, checks]
+    if: ${{ needs.checks.result == 'success' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dev-deploy-build-relay
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish dev image
+        id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: bridge
+          file: bridge/Containerfile
+          target: relay
+          push: true
+          tags: ghcr.io/zechcodes/build-relay-dev:${{ needs.resolve.outputs.sha }}
+      - name: Record published image
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: echo "build-relay-dev $SOURCE_SHA $IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-app:
+    needs: [resolve, checks, build-app]
+    if: ${{ needs.checks.result == 'success' && needs['build-app'].result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: development
+    concurrency:
+      group: deploy-app-dev
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.13.4"
+      - name: Render exact built digests offline
+        env:
+          APP_DIGEST: ${{ needs['build-app'].outputs.digest }}
+        run: |
+          nice -n 10 kubectl kustomize deploy/k8s/dev > /tmp/dev-resources.yaml
+          nice -n 10 uv run --project skriftapp --frozen python deploy/render_dev.py \
+            --input /tmp/dev-resources.yaml --output /tmp/dev-deploy \
+            --target app --app-image "ghcr.io/zechcodes/build-app-dev@$APP_DIGEST"
+      - name: Configure namespace-scoped dev credential
+        env:
+          DEV_KUBECONFIG: ${{ secrets.DEV_KUBECONFIG }}
+        run: |
+          umask 077
+          printf '%s' "$DEV_KUBECONFIG" > "$RUNNER_TEMP/dev-kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/dev-kubeconfig" >> "$GITHUB_ENV"
+      - name: Prepare dev database
+        run: |
+          kubectl --namespace=build-dev apply -f /tmp/dev-deploy/infrastructure.yaml
+          kubectl --namespace=build-dev rollout status statefulset/build-postgres --timeout=300s
+      - name: Migrate dev database before app rollout
+        run: |
+          kubectl --namespace=build-dev delete job build-app-migrate --ignore-not-found --cascade=foreground --wait=true
+          kubectl --namespace=build-dev apply -f /tmp/dev-deploy/migrate.yaml
+          kubectl --namespace=build-dev wait --for=condition=complete job/build-app-migrate --timeout=600s
+      - name: Roll out dev app
+        run: |
+          kubectl --namespace=build-dev apply -f /tmp/dev-deploy/app.yaml
+          kubectl --namespace=build-dev rollout status deployment/build-app --timeout=300s
+      - name: Remove temporary kube credential
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dev-kubeconfig"
+
+  deploy-relay:
+    needs: [resolve, checks, build-relay]
+    if: ${{ needs.checks.result == 'success' && needs['build-relay'].result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: development
+    concurrency:
+      group: deploy-relay-dev
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.13.4"
+      - name: Render exact built digests offline
+        env:
+          RELAY_DIGEST: ${{ needs['build-relay'].outputs.digest }}
+        run: |
+          nice -n 10 kubectl kustomize deploy/k8s/dev > /tmp/dev-resources.yaml
+          nice -n 10 uv run --project skriftapp --frozen python deploy/render_dev.py \
+            --input /tmp/dev-resources.yaml --output /tmp/dev-deploy \
+            --target relay --relay-image "ghcr.io/zechcodes/build-relay-dev@$RELAY_DIGEST"
+      - name: Configure namespace-scoped dev credential
+        env:
+          DEV_KUBECONFIG: ${{ secrets.DEV_KUBECONFIG }}
+        run: |
+          umask 077
+          printf '%s' "$DEV_KUBECONFIG" > "$RUNNER_TEMP/dev-kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/dev-kubeconfig" >> "$GITHUB_ENV"
+      - name: Roll out dev relay
+        run: |
+          kubectl --namespace=build-dev apply -f /tmp/dev-deploy/relay.yaml
+          kubectl --namespace=build-dev rollout status deployment/build-relay --timeout=300s
+      - name: Remove temporary kube credential
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dev-kubeconfig"

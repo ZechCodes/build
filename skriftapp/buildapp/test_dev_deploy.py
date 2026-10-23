@@ -1,0 +1,242 @@
+"""Dev deploy isolation contracts; no cluster access or workflow dispatch."""
+from copy import deepcopy
+import importlib.util
+from pathlib import Path
+import runpy
+
+import pytest
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+DEV = ROOT / "deploy/k8s/dev"
+APP_IMAGE = "ghcr.io/zechcodes/build-app-dev@sha256:" + "a" * 64
+RELAY_IMAGE = "ghcr.io/zechcodes/build-relay-dev@sha256:" + "b" * 64
+
+
+def config(name):
+    return yaml.safe_load((ROOT / "skriftapp" / name).read_text())
+
+
+def test_channel_config_is_production_with_only_public_endpoints_changed():
+    prod = config("app.yaml")
+    dev = config("app.channel-dev.yaml")
+    assert dev["auth"]["redirect_base_url"] == "https://dev.getbuild.ing"
+    assert dev["email"]["public_base_url"] == "https://dev.getbuild.ing"
+    assert dev["internal_api"]["allow_localhost"] is False
+    assert dev["auth"]["methods"] == {"passkey": {"type": "passkey", "label": "Passkey"}}
+    policy = dev["security_headers"]["content_security_policy"]
+    assert "connect-src 'self' data: wss://relay-dev.getbuild.ing;" in policy
+    assert "wss://relay.getbuild.ing" not in policy
+    expected = deepcopy(prod)
+    expected["auth"]["redirect_base_url"] = "https://dev.getbuild.ing"
+    expected["email"]["public_base_url"] = "https://dev.getbuild.ing"
+    expected["security_headers"]["content_security_policy"] = prod["security_headers"]["content_security_policy"].replace(
+        "wss://relay.getbuild.ing", "wss://relay-dev.getbuild.ing"
+    )
+    assert dev == expected
+    assert prod["auth"]["redirect_base_url"] == "https://getbuild.ing"
+
+
+def test_image_defaults_preserve_prod_and_accept_explicit_dev_inputs():
+    source = (ROOT / "skriftapp/Containerfile").read_text()
+    assert "ARG APP_CONFIG=app.yaml" in source
+    assert "COPY skriftapp/${APP_CONFIG} ./app.yaml" in source
+    assert "ARG VITE_BUILD_CHANNEL=prod" in source
+    assert 'VITE_BUILD_CHANNEL="$VITE_BUILD_CHANNEL"' in source
+    assert "ARG VITE_RELAY_URL=wss://relay.getbuild.ing" in source
+    assert "ARG VITE_BUILD_VERSION=dev" in source
+
+
+def dev_resources():
+    kustomization = yaml.safe_load((DEV / "kustomization.yaml").read_text())
+    assert kustomization["namespace"] == "build-dev"
+    docs = []
+    for name in kustomization["resources"]:
+        assert "/" not in name and name.endswith(".yaml")
+        docs.extend(yaml.safe_load_all((DEV / name).read_text()))
+    return docs
+
+
+def test_manifests_are_namespace_local_with_no_cluster_bootstrap():
+    docs = dev_resources()
+    assert {d["kind"] for d in docs} == {"Deployment", "Service", "Ingress", "StatefulSet", "Job"}
+    assert all(d["metadata"]["namespace"] == "build-dev" for d in docs)
+    assert yaml.safe_load((DEV / "namespace.yaml").read_text())["metadata"]["name"] == "build-dev"
+    serialized = yaml.safe_dump_all(docs)
+    for forbidden in ("8ly", "getbuild.ing-tls", "build-app:latest", "build-relay:latest"):
+        assert forbidden not in serialized
+    by_name = {(d["kind"], d["metadata"]["name"]): d for d in docs}
+    app = by_name["Deployment", "build-app"]
+    relay = by_name["Deployment", "build-relay"]
+    assert relay["spec"]["strategy"]["type"] == "Recreate"
+    env = {e["name"]: e for e in relay["spec"]["template"]["spec"]["containers"][0]["env"]}
+    for key in ("API_INTERNAL_URL", "RELAY_API_URL"):
+        assert env[key]["value"] == "http://build-app.build-dev.svc.cluster.local:8080"
+    assert env["RELAY_INTERNAL_SECRET"]["valueFrom"]["secretKeyRef"]["name"] == "build-relay"
+    app_env = {e["name"]: e for e in app["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert app_env["DATABASE_URL"]["valueFrom"]["secretKeyRef"]["name"] == "build-app"
+    pg = by_name["StatefulSet", "build-postgres"]
+    assert pg["spec"]["volumeClaimTemplates"][0]["metadata"]["name"] == "data"
+    for name, host in (("build-app", "dev.getbuild.ing"), ("build-relay", "relay-dev.getbuild.ing")):
+        ingress = by_name["Ingress", name]
+        assert ingress["spec"]["rules"][0]["host"] == host
+        assert ingress["spec"]["tls"][0]["hosts"] == [host]
+        assert ingress["metadata"]["annotations"]["traefik.ingress.kubernetes.io/router.entrypoints"] == "websecure"
+
+
+def workflow():
+    return yaml.safe_load((ROOT / ".github/workflows/dev-deploy.yml").read_text())
+
+
+def test_workflow_dispatch_pins_dev_sha_and_only_dev_images():
+    flow = workflow()
+    assert set(flow.get("on", flow.get(True))) == {"workflow_dispatch"}
+    jobs = flow["jobs"]
+    resolver = jobs["resolve"]
+    assert resolver["steps"][0]["with"]["ref"] == "refs/heads/dev"
+    assert "git rev-parse HEAD" in resolver["steps"][1]["run"]
+    assert "sha" in resolver["outputs"]
+    for name, job in jobs.items():
+        if name != "resolve":
+            checkout = next(s for s in job["steps"] if "actions/checkout@" in s.get("uses", ""))
+            assert checkout["with"]["ref"] == "${{ needs.resolve.outputs.sha }}"
+        if not name.startswith("deploy-"):
+            assert "environment" not in job
+            assert "KUBECONFIG" not in yaml.safe_dump(job)
+    for name, image in (("build-app", "build-app-dev"), ("build-relay", "build-relay-dev")):
+        job = jobs[name]
+        assert job["needs"] == ["resolve", "checks"]
+        assert job["if"] == "${{ needs.checks.result == 'success' }}"
+        build = next(s for s in job["steps"] if "docker/build-push-action@" in s.get("uses", ""))
+        assert build["with"]["tags"] == f"ghcr.io/zechcodes/{image}:${{{{ needs.resolve.outputs.sha }}}}"
+        assert "digest" in job["outputs"]
+    args = next(s for s in jobs["build-app"]["steps"] if "docker/build-push-action@" in s.get("uses", ""))["with"]["build-args"]
+    for arg in ("APP_CONFIG=app.channel-dev.yaml", "VITE_BUILD_CHANNEL=dev", "VITE_RELAY_URL=wss://relay-dev.getbuild.ing", "VITE_BUILD_VERSION=${{ needs.resolve.outputs.sha }}"):
+        assert arg in args
+
+
+@pytest.mark.parametrize("name", ["deploy-app", "deploy-relay"])
+def test_deploy_requires_success_protection_digest_and_dev_only_apply(name):
+    job = workflow()["jobs"][name]
+    assert job["environment"] == "development"
+    assert job["concurrency"]["cancel-in-progress"] is False
+    assert job["concurrency"]["group"] == name + "-dev"
+    image_job = name.replace("deploy", "build")
+    assert job["needs"] == ["resolve", "checks", image_job]
+    assert job["if"] == f"${{{{ needs.checks.result == 'success' && needs['{image_job}'].result == 'success' }}}}"
+    source = yaml.safe_dump(job)
+    assert "DEV_KUBECONFIG" in source
+    assert f"needs['{image_job}'].outputs.digest" in source
+    assert "--namespace=build-dev" in source
+    assert "8ly" not in source and "doctl" not in source
+    assert "deploy/k8s/dev" in source
+    if name == "deploy-app":
+        commands = "\n".join(s.get("run", "") for s in job["steps"])
+        assert commands.index("apply -f /tmp/dev-deploy/migrate.yaml") < commands.index("apply -f /tmp/dev-deploy/app.yaml")
+        assert "wait --for=condition=complete job/build-app-migrate" in commands
+
+
+def renderer():
+    spec = importlib.util.spec_from_file_location("dev_render", ROOT / "deploy/render_dev.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_renderer_pins_every_image_and_splits_migration_before_rollout():
+    phases = renderer().render(dev_resources(), APP_IMAGE, RELAY_IMAGE)
+    assert set(phases) == {"infrastructure", "migrate", "app", "relay"}
+    assert [d["kind"] for d in phases["migrate"]] == ["Job"]
+    for phase in ("app", "migrate", "relay"):
+        pods = [d for d in phases[phase] if d["kind"] in ("Deployment", "Job")]
+        assert len(pods) == 1
+        container = pods[0]["spec"]["template"]["spec"]["containers"][0]
+        assert container["image"] == (RELAY_IMAGE if phase == "relay" else APP_IMAGE)
+
+
+@pytest.mark.parametrize("image", ["ghcr.io/zechcodes/build-app:latest", "ghcr.io/zechcodes/build-app-dev:abc", APP_IMAGE[:-1]])
+def test_renderer_refuses_non_dev_or_unpinned_images(image):
+    with pytest.raises(ValueError):
+        renderer().render(dev_resources(), image, RELAY_IMAGE)
+
+
+@pytest.mark.parametrize("mutation", ["namespace", "cluster-resource", "secret", "unknown-image"])
+def test_renderer_refuses_out_of_scope_resources(mutation):
+    docs = dev_resources()
+    if mutation == "namespace":
+        docs[0]["metadata"]["namespace"] = "8ly"
+    elif mutation == "cluster-resource":
+        docs.append({"kind": "Namespace", "metadata": {"name": "build-dev"}})
+    elif mutation == "secret":
+        docs.append({"kind": "Secret", "metadata": {"namespace": "build-dev", "name": "unexpected"}})
+    else:
+        deployment = next(d for d in docs if d["kind"] == "Deployment")
+        deployment["spec"]["template"]["spec"]["containers"][0]["image"] = "ghcr.io/zechcodes/build-app:latest"
+    with pytest.raises(ValueError):
+        renderer().render(docs, APP_IMAGE, RELAY_IMAGE)
+
+
+def test_failed_cancelled_or_skipped_gates_never_publish_or_deploy():
+    # Reuse its interpreter to test actual failure conditions rather than summaries.
+    contract = runpy.run_path(str(ROOT / ".github/test-transport-workflow.py"))
+    evaluate = contract["evaluate_condition"]
+    for name in ("build-app", "build-relay", "deploy-app", "deploy-relay"):
+        condition = workflow()["jobs"][name]["if"][3:-2].strip()
+        for result in ("failure", "cancelled", "skipped", "success"):
+            context = {"needs": {"checks": {"result": result}, "build-app": {"result": result}, "build-relay": {"result": result}}}
+            assert evaluate(condition, context) == (result == "success")
+
+
+@pytest.mark.parametrize("target", ["app", "relay"])
+def test_independent_rollout_requires_only_its_own_digest(target):
+    phases = renderer().render(dev_resources(), APP_IMAGE if target == "app" else None,
+                               RELAY_IMAGE if target == "relay" else None, target=target)
+    assert set(phases) == ({"infrastructure", "migrate", "app"} if target == "app" else {"relay"})
+    with pytest.raises(ValueError):
+        renderer().render(dev_resources(), None, None, target=target)
+
+
+@pytest.mark.parametrize("config_name,host,relay", [
+    ("app.yaml", "getbuild.ing", "relay.getbuild.ing"),
+    ("app.channel-dev.yaml", "dev.getbuild.ing", "relay-dev.getbuild.ing"),
+])
+def test_actual_hosted_cookie_headers_csrf_and_passkey_rp(tmp_path, monkeypatch, config_name, host, relay):
+    import asyncio
+    from types import SimpleNamespace
+
+    from litestar.testing import TestClient
+    from skrift.asgi import create_app
+    from skrift.auth.second_factors.passkey_service import _resolve_origin, _resolve_rp_id
+    from skrift.config import get_settings
+
+    from buildapp.db_test_support import create_skrift_schema_in
+
+    database = tmp_path / "hosted.db"
+    asyncio.run(create_skrift_schema_in(database))
+    (tmp_path / "app.yaml").write_text((ROOT / "skriftapp" / config_name).read_text())
+    (tmp_path / "templates").symlink_to(ROOT / "skriftapp/templates")
+    monkeypatch.chdir(tmp_path)
+    for key, value in {"SKRIFT_ENV": "production", "SECRET_KEY": "disposable-unique-" + host,
+                       "DATABASE_URL": f"sqlite+aiosqlite:///{database}",
+                       "SMTP_USERNAME": "test@example.com", "SMTP_PASSWORD": "disposable",
+                       "SMTP_FROM_ADDRESS": "test@example.com"}.items():
+        monkeypatch.setenv(key, value)
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+        request = SimpleNamespace(base_url="https://spoofed.invalid", app=SimpleNamespace(state=SimpleNamespace()))
+        assert _resolve_origin(request, settings) == f"https://{host}"
+        assert _resolve_rp_id(request, settings) == host
+        with TestClient(create_app(), base_url=f"https://{host}") as client:
+            page = client.get("/auth/login")
+            assert page.status_code == 200
+            cookie = page.headers["set-cookie"].lower()
+            assert "secure" in cookie and "httponly" in cookie and "samesite=lax" in cookie
+            assert "domain=" not in cookie
+            assert f"wss://{relay}" in page.headers["content-security-policy"]
+            assert "access-control-allow-origin" not in page.headers
+            refused = client.post("/auth/passkey/options", data={"email": "test@example.com"})
+            assert refused.status_code == 400
+            assert refused.json()["error"] == "invalid_csrf"
+    finally:
+        get_settings.cache_clear()

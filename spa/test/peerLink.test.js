@@ -222,6 +222,65 @@ const diagnosticsOf = (event) =>
   connectionDiagnosticHistory().filter((entry) => entry.event === event).map((entry) => entry.state);
 
 describe("openPeerLink", () => {
+  it("records answer receipt and successful application without SDP or credentials", async () => {
+    clearConnectionDiagnosticHistory();
+    const { resolved } = await upgrade();
+    expect(diagnosticsOf("answer")).toEqual(["received", "applied"]);
+    expect(JSON.stringify(connectionDiagnosticHistory())).not.toContain("v=0 answer");
+    resolved.close();
+  });
+
+  it("records answer application failure and preserves the original rejection", async () => {
+    clearConnectionDiagnosticHistory();
+    const error = new DOMException("private.local 203.0.113.1 secret", "OperationError");
+    const stood = stand({ signalImpl: async () => {
+      FakePeerConnection.instances.at(-1).setRemoteDescription = async () => { throw error; };
+      return { sdp: "private answer" };
+    } });
+    await expect(stood.link).rejects.toBe(error);
+    expect(diagnosticsOf("answer")).toEqual(["received", "error"]);
+    expect(connectionDiagnosticHistory().find(({ event, state }) => event === "answer" && state === "error"))
+      .toMatchObject({ error: "OperationError", generation: 0 });
+    expect(JSON.stringify(connectionDiagnosticHistory())).not.toMatch(/private|203\.0\.113\.1|secret/);
+  });
+
+  it("records safe remote candidate acceptance, rejection and unexpected error", async () => {
+    clearConnectionDiagnosticHistory();
+    const { peer, resolved, candidateSinks } = await upgrade();
+    const receive = (candidate) => candidateSinks[0]({ type: "rtc.ice", candidate: { candidate } });
+    receive("candidate:1 1 udp 1 203.0.113.1 5000 typ relay");
+    await tick();
+    peer.addIceCandidate = () => { throw new DOMException("private.local credential", "OperationError"); };
+    receive("candidate:2 1 udp 1 2001:db8::1 5000 typ srflx");
+    await tick();
+    peer.addIceCandidate = async () => { throw new Error("private.local credential"); };
+    receive("candidate:3 1 udp 1 private.local 5000 typ host");
+    await tick();
+    expect(connectionDiagnosticHistory().filter(({ event }) => event === "remote-candidate"))
+      .toMatchObject([
+        { type: "relay", family: "ipv4", outcome: "accepted", generation: 0 },
+        { type: "srflx", family: "ipv6", outcome: "rejected", generation: 0, error: "OperationError" },
+        { type: "host", family: "mdns", outcome: "error", generation: 0, error: "unknown" },
+      ]);
+    expect(JSON.stringify(connectionDiagnosticHistory())).not.toMatch(/private|203\.0\.113\.1|2001:db8|credential/);
+    resolved.close();
+  });
+
+  it("records gathering transitions and each local candidate's safe type and family", async () => {
+    clearConnectionDiagnosticHistory();
+    const { peer, resolved } = await upgrade();
+    peer.iceGatheringState = "gathering";
+    peer.emit("icegatheringstatechange");
+    peer.gather({ candidate: "candidate:1 1 udp 1 203.0.113.1 5000 typ srflx" });
+    peer.iceGatheringState = "complete";
+    peer.emit("icegatheringstatechange");
+    expect(diagnosticsOf("gathering-state")).toEqual(["gathering", "complete"]);
+    expect(connectionDiagnosticHistory().find(({ event }) => event === "local-candidate"))
+      .toMatchObject({ type: "srflx", family: "ipv4", generation: 0 });
+    resolved.close();
+    expect(peer.listenerCount("icegatheringstatechange")).toBe(0);
+  });
+
   it("omits the optional client hint before its capability is known", async () => {
     const { resolved, signalled } = await upgrade({ clientId: () => null });
     expect(signalled.find(([method]) => method === "rtc.offer")[1]).not.toHaveProperty("client_id");
@@ -416,7 +475,7 @@ describe("openPeerLink", () => {
       expect(finished).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       await completion;
-      expect(peer.listenerCount("icegatheringstatechange")).toBe(0);
+      expect(peer.listenerCount("icegatheringstatechange")).toBe(1); // the persistent diagnostic observer remains
       expect(peer.closed).toBe(false);
     } finally {
       resolved.close();
@@ -653,7 +712,7 @@ describe("openPeerLink", () => {
     answerCandidate({});
     await complete;
     expect(settled).toBe(true);
-    expect(peer.listenerCount("icegatheringstatechange")).toBe(0);
+    expect(peer.listenerCount("icegatheringstatechange")).toBe(1); // the persistent diagnostic observer remains
     expect(peer.closed).toBe(false);
     resolved.close();
   });
@@ -687,7 +746,7 @@ describe("openPeerLink", () => {
       await vi.advanceTimersByTimeAsync(1);
       await complete;
       expect(settled).toBe(true);
-      expect(peer.listenerCount("icegatheringstatechange")).toBe(0);
+      expect(peer.listenerCount("icegatheringstatechange")).toBe(1); // the persistent diagnostic observer remains
       expect(peer.closed).toBe(false);
     } finally {
       resolved.close();
@@ -1614,10 +1673,10 @@ describe("a session that landed on a relayed pair", () => {
     peer.iceGatheringState = "gathering";
     await vi.advanceTimersByTimeAsync(20000);
     expect(released).not.toHaveBeenCalled();
-    expect(peer.listenerCount("icegatheringstatechange")).toBe(1);
+    expect(peer.listenerCount("icegatheringstatechange")).toBe(2);
     await vi.advanceTimersByTimeAsync(15001);
     expect(released).toHaveBeenCalledTimes(1);
-    expect(peer.listenerCount("icegatheringstatechange")).toBe(0);
+    expect(peer.listenerCount("icegatheringstatechange")).toBe(1); // the persistent diagnostic observer remains
     expect(peer.closed).toBe(false);
     resolved.close();
     expect(vi.getTimerCount()).toBe(0);

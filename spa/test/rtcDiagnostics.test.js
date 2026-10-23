@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { candidateDiagnostic, directPairNoTryReason, safeCandidateReason } from "../src/core/rtcDiagnostics.js";
+import { browserCandidateDiagnostic, browserRtcErrorName, candidateDiagnostic, directPairNoTryReason, safeCandidateReason } from "../src/core/rtcDiagnostics.js";
 
 const SCOUT_COUNTERS = ["scout_datagrams_sent", "scout_attempted", "destinations_scouted", "neighbors_pending", "neighbors_pending_peak", "early_neighbors_probed", "scout_holds", "scout_starts"];
 const baseSweep = { status: "progress", eligible: true, eligible_unresolved: 1, generation: 2, addresses_sent: 3, reason: null, prflx_followed: false };
@@ -170,5 +170,22 @@ describe("candidate diagnostic privacy", () => {
     expect(directPairNoTryReason("no-direct-pairs", "mdns-unresolved")).toBe("mdns-unresolved");
     expect(directPairNoTryReason("direct-checks-failed", "direct-checks-no-success")).toBe("direct-checks-failed");
     expect(directPairNoTryReason("direct-checks-pending", null)).toBe("direct-checks-pending");
+  });
+});
+
+describe("browser candidate diagnostic privacy", () => {
+  it("copies only allowlisted native error names", () => {
+    expect(browserRtcErrorName({ name: "OperationError", message: "secret.local" })).toBe("OperationError");
+    expect(browserRtcErrorName({ name: "secret.local", message: "secret" })).toBe("unknown");
+    expect(browserRtcErrorName(null)).toBe("unknown");
+  });
+  it.each([
+    [null, { type: "unknown", family: "unknown" }],
+    [{ type: "private.local", candidate: "private payload" }, { type: "unknown", family: "unknown" }],
+    [{ candidate: "candidate:1 1 udp 1 999.0.0.1 5000 typ host" }, { type: "host", family: "unknown" }],
+    [{ candidate: "candidate:1 1 udp 1 private.local 5000 typ host" }, { type: "host", family: "mdns" }],
+    [{ candidate: "candidate:1 1 udp 1 2001:db8::1 5000 typ relay" }, { type: "relay", family: "ipv6" }],
+  ])("copies only fixed type and family for %j", (candidate, expected) => {
+    expect(browserCandidateDiagnostic(candidate)).toEqual(expected);
   });
 });

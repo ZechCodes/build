@@ -629,6 +629,26 @@ mod tests {
         assert_ne!(context.bridge_exe, PathBuf::from("build-bridge"));
     }
 
+    #[test]
+    fn resolved_context_keeps_the_explicit_channel() {
+        let state = tempfile::tempdir().unwrap();
+        let socket = state.path().join("dev-mcp.sock");
+        let context = HarnessContext::resolved_for_channel(
+            socket.clone(),
+            state.path().to_path_buf(),
+            crate::config::Channel::Dev,
+        )
+        .unwrap();
+        assert_eq!(context.channel, crate::config::Channel::Dev);
+        assert_eq!(context.mcp_socket, socket);
+        assert_eq!(
+            HarnessContext::resolved(socket, state.path().to_path_buf())
+                .unwrap()
+                .channel,
+            crate::config::Channel::Prod
+        );
+    }
+
     /// A catalog entry a harness advertises must be one the same harness will
     /// accept back, or the picker offers a selection that cannot be dispatched.
     #[test]

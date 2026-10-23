@@ -9,6 +9,15 @@ use crate::models::{AgentProvider, ModelChoice};
 use crate::pty::HarnessSpec;
 
 fn spec_for(provider: AgentProvider, owner_id: &str, granted: McpSurface) -> HarnessSpec {
+    spec_for_channel(provider, owner_id, granted, crate::config::Channel::Prod).0
+}
+
+fn spec_for_channel(
+    provider: AgentProvider,
+    owner_id: &str,
+    granted: McpSurface,
+    channel: crate::config::Channel,
+) -> (HarnessSpec, String) {
     let worktree = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
     let options = SpawnOptions {
@@ -19,6 +28,7 @@ fn spec_for(provider: AgentProvider, owner_id: &str, granted: McpSurface) -> Har
         ..SpawnOptions::default()
     };
     let context = HarnessContext {
+        channel,
         bridge_exe: "/usr/local/bin/build-bridge".into(),
         mcp_socket: state.path().join("build-mcp.sock"),
         state_root: state.path().to_path_buf(),
@@ -27,26 +37,18 @@ fn spec_for(provider: AgentProvider, owner_id: &str, granted: McpSurface) -> Har
         provider,
         ..ModelChoice::default()
     };
-    harness_for(provider)
+    let expected_socket = context.mcp_socket.to_string_lossy().into_owned();
+    let spec = harness_for(provider)
         .spec(&choice, &options, &context)
-        .unwrap_or_else(|error| panic!("{provider:?}: {error}"))
+        .unwrap_or_else(|error| panic!("{provider:?}: {error}"));
+    (spec, expected_socket)
 }
 
 /// What the launch tells its MCP server about the surface: through the
 /// environment the server inherits, or (codex) through the server's own
 /// configured environment.
 fn declared_surface(spec: &HarnessSpec) -> Option<String> {
-    let inherited = spec
-        .env
-        .iter()
-        .find(|(key, _)| key == MCP_SURFACE_ENV)
-        .map(|(_, value)| value.clone());
-    let configured_prefix = format!("mcp_servers.build.env.{MCP_SURFACE_ENV}=");
-    let configured = spec.args.iter().find_map(|arg| {
-        arg.strip_prefix(&configured_prefix)
-            .map(|value| serde_json::from_str::<String>(value).unwrap())
-    });
-    inherited.or(configured)
+    declared_environment(spec, MCP_SURFACE_ENV)
 }
 
 #[test]
@@ -119,4 +121,43 @@ fn a_launch_declaration_only_narrows_the_listed_surface() {
         DoneServer::launched("router-01R", Some("coding")).surface(),
         McpSurface::Router
     );
+}
+
+#[test]
+fn every_harness_pins_the_channel_and_configured_mcp_socket() {
+    for channel in [crate::config::Channel::Prod, crate::config::Channel::Dev] {
+        for provider in AgentProvider::ALL {
+            let (spec, expected_socket) =
+                spec_for_channel(provider, "agent-01CHANNEL", McpSurface::Coding, channel);
+            assert_eq!(
+                declared_environment(&spec, "BRIDGE_CHANNEL").as_deref(),
+                Some(channel.as_str()),
+                "{provider:?} {channel:?}"
+            );
+            let socket = declared_environment(&spec, "BRIDGE_MCP_SOCKET")
+                .unwrap_or_else(|| panic!("{provider:?}: no configured socket"));
+            assert_eq!(socket, expected_socket, "{provider:?}");
+            for key in super::DAEMON_IDENTITY_VARS {
+                assert!(
+                    spec.unset.iter().any(|name| name == key),
+                    "{provider:?}: {key}"
+                );
+            }
+            assert!(!spec.unset.iter().any(|name| name == "BRIDGE_CHANNEL"));
+        }
+    }
+}
+
+fn declared_environment(spec: &HarnessSpec, key: &str) -> Option<String> {
+    let inherited = spec
+        .env
+        .iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.clone());
+    let prefix = format!("mcp_servers.build.env.{key}=");
+    let configured = spec.args.iter().find_map(|arg| {
+        arg.strip_prefix(&prefix)
+            .map(|value| serde_json::from_str::<String>(value).unwrap())
+    });
+    inherited.or(configured)
 }

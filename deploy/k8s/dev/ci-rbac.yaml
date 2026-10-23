@@ -1,5 +1,5 @@
 # Operator-owned bootstrap. Never include in kustomization or CI render/apply.
-# A session-specific token Secret is created separately by the operator.
+# The operator creates and rotates the token Secret separately.
 # No direct Secret API access. Job/Deployment create plus pods/log is equivalent
 # to reading dev secrets: workloads can mount them and print them. Accepted only
 # because build-dev contains dev-scoped credentials and the development

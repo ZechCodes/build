@@ -629,6 +629,79 @@ mod tests {
         assert!(manager_for("freebsd").is_none());
     }
 
+    #[test]
+    fn channel_managers_keep_production_service_names() {
+        for os in ["linux", "macos"] {
+            let home = Path::new("/tmp/service-home");
+            let production = manager_for(os).expect("supported platform");
+            let explicit = manager_for_channel(os, crate::config::Channel::Prod)
+                .expect("supported production platform");
+            assert_eq!(explicit.unit_path(home), production.unit_path(home));
+            assert_eq!(
+                explicit.render_unit(&fixtures::sample_config("/tmp/service-home")),
+                production.render_unit(&fixtures::sample_config("/tmp/service-home"))
+            );
+        }
+        assert!(manager_for_channel("windows", crate::config::Channel::Dev).is_none());
+    }
+
+    #[test]
+    fn dev_service_install_and_uninstall_leave_production_untouched() {
+        for (os, relative_path, service_target) in [
+            ("linux", ".config/systemd/user/build-bridge-dev.service", "build-bridge-dev.service"),
+            ("macos", "Library/LaunchAgents/ing.getbuild.bridge.dev.plist", "gui/501/ing.getbuild.bridge.dev"),
+        ] {
+            assert_dev_service_is_isolated(os, relative_path, service_target);
+        }
+    }
+
+    fn assert_dev_service_is_isolated(os: &str, relative_path: &str, target: &str) {
+        let home = tempfile::tempdir().expect("temporary home");
+        let ctx = fixtures::context(home.path(), "501");
+        let production = manager_for(os).expect("production manager");
+        let prod_path = production.unit_path(home.path());
+        std::fs::create_dir_all(prod_path.parent().unwrap()).unwrap();
+        std::fs::write(&prod_path, "production sentinel").unwrap();
+        let dev = manager_for_channel(os, crate::config::Channel::Dev).expect("dev manager");
+        let mut config = fixtures::sample_config(home.path().to_str().unwrap());
+        config.log_dir = home.path().join(".build-dev/log");
+        config.env = vec![("BRIDGE_CHANNEL".into(), "dev".into())];
+        let expected_path = home.path().join(relative_path);
+        assert_eq!(dev.unit_path(home.path()), expected_path);
+        let mut activated = Vec::new();
+        let path = install(dev.as_ref(), &ctx, &config, &mut |command| {
+            activated.push(command.clone());
+            Ok(true)
+        }).expect("mock install");
+        assert_eq!(path, expected_path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(".build-dev/log/bridge.log"), "{text}");
+        assert!(text.contains("BRIDGE_CHANNEL"), "{text}");
+        assert!(text.contains("dev"), "{text}");
+        if os == "macos" {
+            assert!(text.contains("<string>ing.getbuild.bridge.dev</string>"));
+        }
+        assert!(activated.iter().any(|command| command.args.iter().any(|arg| arg == target)));
+        let mut deactivated = Vec::new();
+        assert_eq!(uninstall(dev.as_ref(), &ctx, &mut |command| {
+            deactivated.push(command.clone());
+            Ok(true)
+        }).expect("mock uninstall"), Uninstalled::Removed(expected_path));
+        assert!(deactivated.iter().any(|command| command.args.iter().any(|arg| arg == target)));
+        assert_no_production_target(&activated);
+        assert_no_production_target(&deactivated);
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_to_string(prod_path).unwrap(), "production sentinel");
+    }
+
+    fn assert_no_production_target(commands: &[ShellCommand]) {
+        for command in commands {
+            assert!(!command.args.iter().any(|arg| {
+                arg == "build-bridge.service" || arg == "gui/501/ing.getbuild.bridge"
+            }), "{command:?}");
+        }
+    }
+
     /// A manager with no platform behind it: its unit is a nested file under
     /// HOME and its commands are whatever the test hands it, so the shared
     /// orchestration can be observed on its own.

@@ -88,7 +88,11 @@ anything else errors before command dispatch). Dev defaults API/web to
 `https://dev.getbuild.ing`, relay to `wss://relay-dev.getbuild.ing`, and all
 bridge state to `~/.local/state/build-dev/`: identity, config, tasks/SQLite and
 documents, projects, worktrees, `mcp.sock`, and logs. Individual `BRIDGE_*`
-overrides still win. Backup and service installation use the same resolved
+overrides still win, but dev refuses any resolved state path or environment
+project path at or inside the production state root (`~/.build`). The check
+resolves symlinks and missing leaf components without creating files; inability
+to resolve a path is an error. This includes the state and log roots, identity,
+config, tasks, projects, worktrees and MCP socket. Backup and service installation use the same resolved
 paths as serve. Service environments pin the channel, URLs and resolved paths;
 MCP launches carry the channel and socket, while private-key stripping remains.
 Dev ignores environment-provisioned device keys and pairs its own identity.
@@ -3009,6 +3013,9 @@ binary, whose explicit release-replacement behavior below is unchanged.
   systemd user unit (`systemd.rs`) or a LaunchAgent (`launchd.rs`). Dev selects
   `build-bridge-dev.service` / `ing.getbuild.bridge.dev`; production keeps
   `build-bridge.service` / `ing.getbuild.bridge`. Both use their resolved log root.
+  Set `BRIDGE_CHANNEL=dev` in the invoking shell for both `install-service`
+  and `uninstall-service` to select the dev service; an absent channel selects
+  production. Service installation persists the selected channel in its environment.
 - `scripts/install.sh` is the public installer. It verifies and installs the
   binary, then runs `build-bridge pair` and `build-bridge install-service`.
 

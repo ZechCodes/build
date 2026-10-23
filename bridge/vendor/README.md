@@ -627,7 +627,7 @@ tree after `webrtc-host-candidate-sweep.patch`. It touches
 
 ## #794 TURN diagnostics
 
-`rtc-turn-diagnostics.patch` SHA-256: `80433dc5f781ef8ba79d21a33d452f0045544fa321aaa78ea48fd1e6868d6001`.
+`rtc-turn-diagnostics.patch` SHA-256: `5e4646268a30ac4582ded71db6956494868391406c1118060ce59a184e55581e`.
 
 `rtc-turn` 0.20.4 is vendored from the registry with only
 `rtc-turn-diagnostics.patch` applied. `rtc-turn` is patched in both manifests
@@ -665,7 +665,9 @@ rows retain their independent limit of 32 detailed rows per second, with excess
 folded by generation, peer, method, outcome and code. Packet storms cannot delay
 control outcomes. Timeout-driven flushes emit at most 32 folded control rows and
 32 dirty-peer count summaries per second, retaining additional rows for later
-flushes. Drop drains every retained folded control row and dirty-peer summary so
+flushes. Count summaries rotate by last reporting round so active early peers
+cannot starve later peers. Only timeout and close paths flush summaries; an
+incoming control event never synchronously drains packet summaries ahead of itself. Drop drains every retained folded control row and dirty-peer summary so
 final per-peer evidence survives teardown. Error and timeout rows take priority
 during capped periodic flushes. Diagnostic state never changes
 permissions, binding retries, allocation lifetime or wire traffic. The separate

@@ -39,6 +39,7 @@ struct Peer {
     ordinal: usize,
     counts: [u64; 4],
     dirty: bool,
+    last_summary: u64,
 }
 struct Folded {
     repeats: u64,
@@ -53,6 +54,8 @@ pub(super) struct AllocationDiagnostics {
     relay_family: &'static str,
     peers: HashMap<SocketAddr, Peer>,
     window: Instant,
+    detail_window: Instant,
+    summary_round: u64,
     emitted: usize,
     suppressed: u64,
     pending: HashMap<TransactionId, (String, Vec<Option<SocketAddr>>, Option<u16>, u64)>,
@@ -68,6 +71,8 @@ impl AllocationDiagnostics {
             relay_family: "unknown",
             peers: HashMap::new(),
             window: Instant::now(),
+            detail_window: Instant::now(),
+            summary_round: 0,
             emitted: 0,
             suppressed: 0,
             pending: HashMap::new(),
@@ -135,13 +140,14 @@ impl AllocationDiagnostics {
             .peers
             .iter()
             .filter(|(_, peer)| peer.dirty)
-            .map(|(addr, peer)| (*addr, peer.ordinal))
+            .map(|(addr, peer)| (*addr, peer.last_summary, peer.ordinal))
             .collect();
-        dirty.sort_by_key(|(_, ordinal)| *ordinal);
+        dirty.sort_by_key(|(_, last_summary, ordinal)| (*last_summary, *ordinal));
         if !force {
             dirty.truncate(32);
         }
-        for (peer, _) in dirty {
+        self.summary_round += 1;
+        for (peer, _, _) in dirty {
             self.record(
                 "DataSummary",
                 TransactionId::default(),
@@ -153,18 +159,24 @@ impl AllocationDiagnostics {
                 0,
                 "none",
             );
-            self.peers.get_mut(&peer).unwrap().dirty = false;
+            let peer = self.peers.get_mut(&peer).unwrap();
+            peer.dirty = false;
+            peer.last_summary = self.summary_round;
         }
         self.window = now;
-        self.emitted = 0;
-        self.suppressed = 0;
     }
     pub(super) fn poll_timeout(&self) -> Option<Instant> {
         (!self.folded.is_empty() || self.peers.values().any(|peer| peer.dirty))
             .then(|| self.window + Duration::from_secs(1))
     }
     fn admit(&mut self, now: Instant) -> bool {
-        self.flush(now, false);
+        // Only timeout/close paths flush summaries: never put a summary batch in
+        // front of the control-plane row which triggered this admission check.
+        if now.saturating_duration_since(self.detail_window) >= Duration::from_secs(1) {
+            self.detail_window = now;
+            self.emitted = 0;
+            self.suppressed = 0;
+        }
         if self.emitted >= 32 {
             self.suppressed += 1;
             false
@@ -653,6 +665,58 @@ mod local_mock_tests {
                 );
             }
         }
+    }
+    #[test]
+    fn diagnostics_control_never_flushes_packet_summaries_inline() {
+        let (mut client, _) = client();
+        let diag = client.diagnostics.as_mut().unwrap();
+        let peer = "192.0.2.95:50001".parse().unwrap();
+        for _ in 0..2 {
+            diag.data(peer, None, false, TransactionId::default());
+        }
+        diag.window = Instant::now() - Duration::from_secs(2);
+        diag.send_failure(peer);
+        let rows = logs();
+        assert_eq!(
+            rows.lines().count(),
+            2,
+            "a due packet summary must not precede control"
+        );
+        assert!(rows.lines().last().unwrap().contains("outcome=local-error"));
+        diag.flush(Instant::now(), false);
+        assert!(logs().lines().last().unwrap().contains("outcome=summary"));
+    }
+    #[test]
+    fn diagnostics_periodic_summaries_fairly_visit_continuously_dirty_peers() {
+        let (mut client, _) = client();
+        let diag = client.diagnostics.as_mut().unwrap();
+        for port in 50000..50033 {
+            for _ in 0..2 {
+                diag.data(
+                    SocketAddr::from(([192, 0, 2, 95], port)),
+                    None,
+                    false,
+                    TransactionId::default(),
+                );
+            }
+        }
+        let now = Instant::now();
+        diag.flush(now + Duration::from_secs(1), false);
+        for port in 50000..50032 {
+            diag.data(
+                SocketAddr::from(([192, 0, 2, 95], port)),
+                None,
+                false,
+                TransactionId::default(),
+            );
+        }
+        diag.flush(now + Duration::from_secs(2), false);
+        assert!(
+            logs()
+                .lines()
+                .any(|line| line.contains("ordinal=33 ") && line.contains("outcome=summary")),
+            "the last dirty peer must not starve behind active early peers"
+        );
     }
     #[test]
     fn diagnostics_packet_storm_counts_silently_and_leaves_control_budget_free() {

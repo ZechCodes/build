@@ -1388,33 +1388,51 @@ async fn report_negotiated_path(
         let Some(negotiation) = negotiation.upgrade() else {
             break;
         };
-        let guard = negotiation.lock().await;
-        let Some(open) = guard.as_ref() else { continue };
-        // Callback delivery can lag a restart. Read current core evidence under
-        // the same lock as offers, after the driver has drained that offer.
-        if open.offers_delivered.load(Ordering::SeqCst) < open.offers_queued {
-            continue;
-        }
-        let report = open
-            .connection
+        let (connection, offers_queued, generation, offers_ready) = {
+            let guard = negotiation.lock().await;
+            let Some(open) = guard.as_ref() else { continue };
+            (
+                open.connection.clone(),
+                open.offers_queued,
+                signaling.generation.load(Ordering::SeqCst),
+                open.offers_delivered.load(Ordering::SeqCst) >= open.offers_queued,
+            )
+        };
+        // Diagnostics must not hold up an offer, restart or close while the
+        // native driver's statistics request is pending.
+        let report = connection
             .get_stats(std::time::Instant::now(), StatsSelector::None)
             .await;
-        report_pair_snapshot(&session_id, &signaling, &report);
-        if observation.event != "carrying" {
+        if observation.event == "carrying" {
+            let path = negotiated_path(&report);
+            ledger.record(
+                &session_id,
+                TransportEvent::Carrying {
+                    path: if path.billed() {
+                        TransportPath::Turn
+                    } else {
+                        TransportPath::Direct
+                    },
+                    detail: path.to_string(),
+                },
+            );
+        }
+        // The offer must have drained before the snapshot. A drain that
+        // finishes afterwards cannot validate an earlier failed snapshot.
+        if !offers_ready {
             continue;
         }
-        let path = negotiated_path(&report);
-        ledger.record(
-            &session_id,
-            TransportEvent::Carrying {
-                path: if path.billed() {
-                    TransportPath::Turn
-                } else {
-                    TransportPath::Direct
-                },
-                detail: path.to_string(),
-            },
-        );
+        let guard = negotiation.lock().await;
+        let Some(open) = guard.as_ref() else { continue };
+        // Only diagnostic rows need this fence: never label an old peer or
+        // generation's snapshot with a newly accepted offer's identity.
+        if Arc::ptr_eq(&connection, &open.connection)
+            && open.offers_queued == offers_queued
+            && open.offers_delivered.load(Ordering::SeqCst) >= offers_queued
+            && signaling.generation.load(Ordering::SeqCst) == generation
+        {
+            report_pair_snapshot(&session_id, &signaling, &report);
+        }
     }
 }
 

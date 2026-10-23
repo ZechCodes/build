@@ -597,6 +597,8 @@ struct CorePeer {
     /// Let the driver handle every wake sent so far before the next remote
     /// description, the way it can while `answer()` awaits its reads.
     idle_before_offer: AtomicBool,
+    stats_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    stats_entered: tokio::sync::Semaphore,
 }
 
 impl CorePeer {
@@ -610,6 +612,8 @@ impl CorePeer {
             deferred: Mutex::default(),
             wakes: AtomicU64::new(0),
             idle_before_offer: AtomicBool::new(false),
+            stats_gate: Mutex::default(),
+            stats_entered: tokio::sync::Semaphore::new(0),
         })
     }
 
@@ -650,6 +654,11 @@ impl PeerConnection for CorePeer {
     }
 
     async fn get_stats(&self, now: Instant, selector: StatsSelector) -> RTCStatsReport {
+        let gate = self.stats_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            self.stats_entered.add_permits(1);
+            gate.acquire().await.unwrap().forget();
+        }
         self.native.lock().unwrap().core.get_stats(now, selector)
     }
 
@@ -1130,4 +1139,62 @@ async fn r5_refusal_after_native_restart_must_still_protect_checking() {
         Some(vec![RTCIceConnectionState::Checking])
     );
     assert_eq!(try_close(&peer, &connection).await, KEPT);
+}
+
+#[tokio::test]
+async fn path_report_keeps_carrying_while_a_restart_offer_is_pending() {
+    let (peer, connection) = native_peer("pending-carrying", NativeCore::answering()).await;
+    connection.deliver().await;
+    let restart = connection.with_native(|native| native.restart_offer("pending"));
+    peer.answer(&restart, &[], session("pending-carrying"))
+        .await
+        .unwrap();
+    {
+        let guard = peer.negotiation.lock().await;
+        let open = guard.as_ref().unwrap();
+        assert!(open.offers_delivered.load(Ordering::SeqCst) < open.offers_queued);
+    }
+    let ledger = crate::transport_ledger::RecordingLedger::new();
+    let (sender, receiver) = mpsc::unbounded_channel();
+    sender.send(PairObservation { event: "carrying" }).unwrap();
+    drop(sender);
+    report_negotiated_path(
+        "pending-carrying".into(),
+        Arc::downgrade(&peer.negotiation),
+        receiver,
+        ledger.clone(),
+        peer.signaling.clone(),
+    )
+    .await;
+    assert_eq!(
+        ledger.carrying_details_of("pending-carrying").len(),
+        1,
+        "Connected must still record carrying before the restart's offer callback arrives"
+    );
+}
+
+#[tokio::test]
+async fn path_report_releases_negotiation_while_stats_are_pending() {
+    let (peer, connection) = native_peer("stats-wait", NativeCore::answering()).await;
+    connection.deliver().await;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *connection.stats_gate.lock().unwrap() = Some(gate.clone());
+    let (sender, receiver) = mpsc::unbounded_channel();
+    sender.send(PairObservation { event: "selected" }).unwrap();
+    drop(sender);
+    let report = tokio::spawn(report_negotiated_path(
+        "stats-wait".into(),
+        Arc::downgrade(&peer.negotiation),
+        receiver,
+        crate::transport_ledger::RecordingLedger::new(),
+        peer.signaling.clone(),
+    ));
+    connection.stats_entered.acquire().await.unwrap().forget();
+    let available = peer.negotiation.try_lock().is_ok();
+    gate.add_permits(1);
+    report.await.unwrap();
+    assert!(
+        available,
+        "a diagnostic get_stats await must not block offer, restart or close"
+    );
 }

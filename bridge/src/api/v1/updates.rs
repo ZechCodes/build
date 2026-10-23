@@ -61,7 +61,9 @@ fn install_update(app: &mut AppState, params: InstallParams) -> Result<UpdateSta
 
 fn update_error(error: UpdateError) -> ApiError {
     match error {
-        UpdateError::DevelopmentBuild => ApiError::unavailable(error.to_string()),
+        UpdateError::DevelopmentBuild | UpdateError::ChannelDisabled => {
+            ApiError::unavailable(error.to_string())
+        }
         UpdateError::NoUpdateAvailable | UpdateError::ReplacementNotConfirmed => {
             ApiError::conflict(error.to_string(), None)
         }

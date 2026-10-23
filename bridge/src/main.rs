@@ -4,7 +4,9 @@
 //! application RPC over the E2EE channel. Configuration is by environment:
 //!
 //! Defaults are production: a fresh install needs NO environment — it pairs
-//! against getbuild.ing and keeps state under `~/.build`. Dev stacks override.
+//! against getbuild.ing and keeps state under `~/.build`.
+//! `BRIDGE_CHANNEL=dev` selects dev hosts, `~/.local/state/build-dev`, a separate
+//! service identity, and disables self-update. Individual overrides still win.
 //!
 //! - `BRIDGE_RELAY_URL`   relay base URL (default `wss://relay.getbuild.ing`;
 //!   TLS is rustls with bundled webpki roots)
@@ -56,7 +58,7 @@ use std::time::Duration;
 
 use build_bridge::app::AppState;
 use build_bridge::carrier::FrameIntake;
-use build_bridge::config::BridgeConfig;
+use build_bridge::config::{self, BridgeConfig};
 use build_bridge::harness::HarnessContext;
 use build_bridge::liveness::DedicatedRuntime;
 use build_bridge::notify::Notifier;
@@ -74,6 +76,10 @@ use build_bridge::{identity, pairing, service, transport};
 
 #[tokio::main]
 async fn main() {
+    // Reject a mistyped channel before any command can read or write state.
+    if let Err(error) = config::Channel::resolve(std::env::var("BRIDGE_CHANNEL").ok().as_deref()) {
+        exit_startup(error);
+    }
     match std::env::args().nth(1).as_deref() {
         Some("serve") | None => serve().await,
         Some("mcp") => mcp_stdio(),
@@ -101,6 +107,9 @@ async fn main() {
 /// Run independently of the daemon while its executable is replaced and
 /// restarted. The job file is written by the update backend before spawning.
 fn update_helper() {
+    if bridge_config().channel == config::Channel::Dev {
+        exit_startup("self-update is disabled for BRIDGE_CHANNEL=dev".into());
+    }
     let Some(job_path) = std::env::args().nth(2) else {
         eprintln!("usage: build-bridge update-helper <job-path>");
         std::process::exit(2);
@@ -123,11 +132,11 @@ fn backup() {
         eprintln!("usage: build-bridge backup <path>");
         std::process::exit(2);
     };
-    let tasks_dir = env("BRIDGE_TASKS_DIR", &default_tasks_dir());
+    let tasks_dir = bridge_config().tasks_dir;
     let store = match build_bridge::store::Store::new(&tasks_dir) {
         Ok(store) => store,
         Err(error) => {
-            eprintln!("cannot open the store at {tasks_dir}: {error}");
+            eprintln!("cannot open the store at {}: {error}", tasks_dir.display());
             std::process::exit(1);
         }
     };
@@ -178,10 +187,13 @@ async fn serve() {
     // A power loss can remove the helper's transient service while leaving a
     // candidate that fails before full app construction. Relaunch recovery as
     // early as possible so that candidate cannot strand its prior binary.
-    if let Err(error) = build_bridge::update::installer::ensure_recovery(&home_dir()) {
-        eprintln!("bridge update recovery: {error}");
+    let config = bridge_config();
+    if config.channel == config::Channel::Prod {
+        if let Err(error) = build_bridge::update::installer::ensure_recovery(&config.home) {
+            eprintln!("bridge update recovery: {error}");
+        }
     }
-    let runtime = match resolve_runtime_paths() {
+    let runtime = match resolve_runtime_paths(config) {
         Ok(runtime) => runtime,
         Err(error) => exit_startup(error),
     };
@@ -204,7 +216,13 @@ async fn serve() {
 }
 
 fn configure_updates(app: AppState, runtime: &RuntimePaths) -> Result<AppState, String> {
-    let home = home_dir();
+    if runtime.config.channel == config::Channel::Dev {
+        return Ok(app.with_update_service(Arc::new(UpdateService::disabled(
+            env!("CARGO_PKG_VERSION").to_string(),
+            format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+        ))));
+    }
+    let home = runtime.config.home.clone();
     let running_binary = std::env::current_exe()
         .map_err(|error| format!("cannot locate running bridge: {error}"))?;
     let managed_binary = build_bridge::update::provenance::managed_binary(&home, &running_binary);
@@ -315,8 +333,7 @@ struct RuntimePaths {
     qa_agent: bool,
 }
 
-fn resolve_runtime_paths() -> Result<RuntimePaths, String> {
-    let config = bridge_config();
+fn resolve_runtime_paths(config: BridgeConfig) -> Result<RuntimePaths, String> {
     // Placeholders and completed checkouts must hash the same canonical root.
     std::fs::create_dir_all(&config.worktrees).map_err(|error| {
         format!(
@@ -338,8 +355,7 @@ fn resolve_runtime_paths() -> Result<RuntimePaths, String> {
         std::env::var("BRIDGE_QA_AGENT").as_deref(),
         Ok("1") | Ok("true")
     );
-    let home = home_dir();
-    let tasks_dir = std::path::PathBuf::from(env("BRIDGE_TASKS_DIR", &default_tasks_dir()));
+    let tasks_dir = config.tasks_dir.clone();
     let state_root = tasks_dir
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -351,11 +367,7 @@ fn resolve_runtime_paths() -> Result<RuntimePaths, String> {
         ice_policy,
         device_url,
         worktrees,
-        config_path: env(
-            "BRIDGE_CONFIG",
-            &format!("{}/.build/config.json", home.display()),
-        )
-        .into(),
+        config_path: config.config_path.clone(),
         mcp_socket: config.mcp_socket.to_string_lossy().into_owned(),
         config,
         tasks_dir,
@@ -419,7 +431,7 @@ struct LoadedIdentity {
 /// The transport keypair travels beside the identity, not inside it: its one
 /// owner is the intake that opens session keys with it (`carrier.rs`).
 async fn load_device_identity(config: &BridgeConfig) -> Result<LoadedIdentity, String> {
-    match provisioned_identity() {
+    match provisioned_identity(config.channel) {
         Some(provisioned) => Ok(provisioned),
         None => load_stored_identity(config).await,
     }
@@ -454,13 +466,23 @@ async fn load_stored_identity(config: &BridgeConfig) -> Result<LoadedIdentity, S
 }
 
 /// The identity seeded into the environment, if all three keys are there.
-fn provisioned_identity() -> Option<LoadedIdentity> {
-    let id_priv = std::env::var("BRIDGE_IDENTITY_PRIV").ok()?;
-    let tp_priv = std::env::var("BRIDGE_TRANSPORT_PRIV").ok()?;
-    let tp_pub = std::env::var("BRIDGE_TRANSPORT_PUB").ok()?;
+fn provisioned_identity(channel: config::Channel) -> Option<LoadedIdentity> {
+    provisioned_identity_from(channel, |key| std::env::var(key).ok())
+}
+
+fn provisioned_identity_from(
+    channel: config::Channel,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<LoadedIdentity> {
+    if channel == config::Channel::Dev {
+        return None;
+    }
+    let id_priv = lookup("BRIDGE_IDENTITY_PRIV")?;
+    let tp_priv = lookup("BRIDGE_TRANSPORT_PRIV")?;
+    let tp_pub = lookup("BRIDGE_TRANSPORT_PUB")?;
     Some(LoadedIdentity {
         identity: DeviceIdentity {
-            device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
+            device_id: lookup("BRIDGE_DEVICE_ID").unwrap_or_else(|| "bridge-dev".into()),
             identity_private_key_b64: id_priv,
         },
         transport: transport::KeyPairB64 {
@@ -494,12 +516,10 @@ fn construct_app(runtime: &RuntimePaths, identity: &DeviceIdentity) -> Result<Ap
         &identity.identity_private_key_b64,
     ));
     let app = register_environment_projects(app, &config.base_branch);
-    let app = match std::env::var_os("BRIDGE_PROJECTS_DIR") {
-        Some(dir) => app.with_projects_dir_default(std::path::PathBuf::from(dir)),
-        None => app,
-    }
-    .with_config(&runtime.config_path)
-    .map_err(|error| format!("cannot load config: {error}"))?;
+    let app = app
+        .with_projects_dir_default(config.projects_dir.clone())
+        .with_config(&runtime.config_path)
+        .map_err(|error| format!("cannot load config: {error}"))?;
     app.with_task_store(&runtime.tasks_dir)
         .map_err(|error| task_store_startup_error(&runtime.tasks_dir, &error))
 }
@@ -598,7 +618,9 @@ async fn run_daemon(
     // open a session to — and saying "online" for it is what had this account
     // dialling two machines that were never going to answer.
     let reachable = Reachability::unreachable();
-    spawn_update_heartbeat(home_dir(), app.clone());
+    if runtime.config.channel == config::Channel::Prod {
+        spawn_update_heartbeat(runtime.config.home.clone(), app.clone());
+    }
     // The service manager's stderr file, rotated rather than left to grow.
     build_bridge::logfile::spawn_rotation();
     // The runtime the relay socket, the presence beat and every peer's
@@ -628,7 +650,9 @@ async fn run_daemon(
     // restored. Keep it off the relay until the helper commits: no browser or
     // agent can create work in state that might be discarded. The local health
     // beat still proves the daemon initialized and its app lock is responsive.
-    wait_for_update_probation(&home_dir()).await;
+    if runtime.config.channel == config::Channel::Prod {
+        wait_for_update_probation(&runtime.config.home).await;
+    }
     let cleaning = app.clone();
     let removed =
         tokio::task::spawn_blocking(move || cleaning.lock().unwrap().sweep_stale_uploads())
@@ -663,7 +687,9 @@ async fn run_daemon(
     );
     AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
     AppState::spawn_upload_reaper(app.clone(), Duration::from_secs(30));
-    AppState::spawn_update_checks(app.clone(), Duration::from_secs(5));
+    if runtime.config.channel == config::Channel::Prod {
+        AppState::spawn_update_checks(app.clone(), Duration::from_secs(5));
+    }
     // Measures every workspace and tells the project agent about quiet ones
     // (#135). It never removes a workspace; `workspace.reclaim` does. It drops
     // build output only when BRIDGE_WORKSPACE_PRUNE is on.
@@ -912,7 +938,8 @@ async fn pair() {
             std::process::exit(2);
         }
     };
-    let outcome = pair_device(&bridge_config(), provisioned_identity(), when).await;
+    let cfg = bridge_config();
+    let outcome = pair_device(&cfg, provisioned_identity(cfg.channel), when).await;
     let said = pair_said(&outcome);
     match outcome {
         Ok(_) => println!("{said}"),
@@ -1018,10 +1045,10 @@ async fn install_service() {
             std::process::exit(1);
         }
     };
-    let manager = manager_or_exit();
+    let manager = manager_or_exit(cfg.channel);
 
-    let home = home_dir();
-    let log_dir = home.join(".build/log");
+    let home = cfg.home.clone();
+    let log_dir = cfg.log_dir.clone();
     std::fs::create_dir_all(&log_dir).expect("create log dir");
     let config = service::ServiceConfig {
         binary_path: std::env::current_exe().expect("current executable path"),
@@ -1050,7 +1077,8 @@ async fn install_service() {
 
 /// Remove the service unit: stop the daemon, then delete the file.
 fn uninstall_service() {
-    let manager = manager_or_exit();
+    let cfg = bridge_config();
+    let manager = manager_or_exit(cfg.channel);
     match service::uninstall(&*manager, &service_context(home_dir()), &mut run_shell) {
         Ok(service::Uninstalled::Removed(path)) => println!("removed {}", path.display()),
         Ok(service::Uninstalled::NothingInstalled(path)) => {
@@ -1104,8 +1132,8 @@ async fn approved_owner(cfg: &BridgeConfig) -> Result<String, String> {
 }
 
 /// The one platform decision in the crate, and the one place it is refused.
-fn manager_or_exit() -> Box<dyn ServiceManager> {
-    match service::manager_for(std::env::consts::OS) {
+fn manager_or_exit(channel: config::Channel) -> Box<dyn ServiceManager> {
+    match service::manager_for_channel(std::env::consts::OS, channel) {
         Some(manager) => manager,
         None => {
             eprintln!("install-service supports macOS (launchd) and Linux (systemd --user)");
@@ -1157,19 +1185,43 @@ fn service_environment(
     cfg: &BridgeConfig,
     path: impl FnOnce() -> Option<String>,
 ) -> Vec<(String, String)> {
-    let mut env = service::without_device_keys(env);
-    for (key, value) in [
+    let pinned = [
+        ("BRIDGE_CHANNEL", cfg.channel.as_str().to_string()),
         ("BRIDGE_API_URL", cfg.api_url.clone()),
+        ("BRIDGE_WEB_URL", cfg.web_url.clone()),
         ("BRIDGE_RELAY_URL", cfg.relay_url.clone()),
         (
             "BRIDGE_IDENTITY_FILE",
             cfg.identity_file.to_string_lossy().into_owned(),
         ),
-    ] {
-        if !env.iter().any(|(existing, _)| existing == key) {
-            env.push((key.to_string(), value));
-        }
-    }
+        (
+            "BRIDGE_TASKS_DIR",
+            cfg.tasks_dir.to_string_lossy().into_owned(),
+        ),
+        (
+            "BRIDGE_CONFIG",
+            cfg.config_path.to_string_lossy().into_owned(),
+        ),
+        (
+            "BRIDGE_PROJECTS_DIR",
+            cfg.projects_dir.to_string_lossy().into_owned(),
+        ),
+        (
+            "BRIDGE_WORKTREES",
+            cfg.worktrees.to_string_lossy().into_owned(),
+        ),
+        (
+            "BRIDGE_MCP_SOCKET",
+            cfg.mcp_socket.to_string_lossy().into_owned(),
+        ),
+    ];
+    let mut env = service::without_device_keys(env);
+    env.retain(|(key, _)| !pinned.iter().any(|(name, _)| key == name));
+    env.extend(
+        pinned
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value)),
+    );
     let mut env = service::with_install_path(env, path);
     env.sort();
     env
@@ -1209,20 +1261,10 @@ fn home_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var("HOME").expect("HOME is set"))
 }
 
-/// Where the state dir lives unless `BRIDGE_TASKS_DIR` says otherwise. `serve`
-/// and `backup` both resolve it and must agree, or a backup copies a database
-/// the daemon never wrote.
-fn default_tasks_dir() -> String {
-    format!("{}/.build/tasks", home_dir().display())
-}
-
 /// Resolve the runtime config from BRIDGE_* env against $HOME.
 fn bridge_config() -> build_bridge::config::BridgeConfig {
     build_bridge::config::resolve(|key| std::env::var(key).ok(), &home_dir())
-}
-
-fn env(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
+        .unwrap_or_else(|error| exit_startup(error))
 }
 
 /// `build-bridge mcp --task <id>` — the per-session MCP server the harness spawns
@@ -1310,7 +1352,7 @@ mod tests {
 
     /// A config as `install-service` resolves one, from no environment at all.
     fn config() -> build_bridge::config::BridgeConfig {
-        build_bridge::config::resolve(|_| None, std::path::Path::new("/home/dev"))
+        build_bridge::config::resolve(|_| None, std::path::Path::new("/home/dev")).unwrap()
     }
 
     /// The unit file is a copy of this environment that outlives the installing
@@ -1332,9 +1374,16 @@ mod tests {
             env.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
             vec![
                 "BRIDGE_API_URL",
+                "BRIDGE_CHANNEL",
+                "BRIDGE_CONFIG",
                 "BRIDGE_DEVICE_ID",
                 "BRIDGE_IDENTITY_FILE",
+                "BRIDGE_MCP_SOCKET",
+                "BRIDGE_PROJECTS_DIR",
                 "BRIDGE_RELAY_URL",
+                "BRIDGE_TASKS_DIR",
+                "BRIDGE_WEB_URL",
+                "BRIDGE_WORKTREES",
             ]
         );
     }
@@ -1346,16 +1395,20 @@ mod tests {
         let cfg = config();
         let env = service_environment(vec![], &cfg, || None);
 
+        let values: std::collections::BTreeMap<_, _> = env.into_iter().collect();
+        assert_eq!(values["BRIDGE_CHANNEL"], "prod");
+        assert_eq!(values["BRIDGE_API_URL"], cfg.api_url);
+        assert_eq!(values["BRIDGE_RELAY_URL"], cfg.relay_url);
         assert_eq!(
-            env,
-            vec![
-                ("BRIDGE_API_URL".to_string(), cfg.api_url.clone()),
-                (
-                    "BRIDGE_IDENTITY_FILE".to_string(),
-                    cfg.identity_file.to_string_lossy().into_owned()
-                ),
-                ("BRIDGE_RELAY_URL".to_string(), cfg.relay_url.clone()),
-            ]
+            values["BRIDGE_IDENTITY_FILE"],
+            cfg.identity_file.to_string_lossy()
+        );
+        assert_eq!(values["BRIDGE_TASKS_DIR"], "/home/dev/.build/tasks");
+        assert_eq!(values["BRIDGE_CONFIG"], "/home/dev/.build/config.json");
+        assert_eq!(values["BRIDGE_PROJECTS_DIR"], "/home/dev/.build/projects");
+        assert_eq!(
+            values["BRIDGE_MCP_SOCKET"],
+            "/home/dev/.build/worktrees/build-bridge-mcp.sock"
         );
     }
 
@@ -1372,7 +1425,7 @@ mod tests {
             "main.rs must leave the platform to service::manager_for"
         );
         assert!(
-            source.contains("service::manager_for(std::env::consts::OS)"),
+            source.contains("service::manager_for_channel(std::env::consts::OS, channel)"),
             "and it must ask service::manager_for, so the two stay one decision"
         );
     }
@@ -1470,6 +1523,7 @@ mod tests {
             },
             home,
         )
+        .unwrap()
     }
 
     fn stored_approved(path: &std::path::Path, by: &str) -> identity::StoredIdentity {
@@ -1763,3 +1817,6 @@ mod tests {
         assert_eq!(pair_args(&args(&["-r"])), Err("-r".into()));
     }
 }
+
+#[cfg(test)]
+mod dev_mode_tests;

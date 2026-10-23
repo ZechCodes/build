@@ -153,3 +153,45 @@ fn dev_and_prod_config_paths_and_override_precedence_are_explicit() {
         }
     }
 }
+
+#[test]
+fn config_rejects_unknown_channels_and_keeps_web_override_fallback() {
+    let home = tempfile::tempdir().unwrap();
+    for channel in ["", "DEV", "preview"] {
+        let result = config::resolve(
+            |key| (key == "BRIDGE_CHANNEL").then(|| channel.into()),
+            home.path(),
+        );
+        assert!(result.unwrap_err().contains("BRIDGE_CHANNEL"));
+    }
+    let cfg = config::resolve(
+        |key| match key {
+            "BRIDGE_CHANNEL" => Some("dev".into()),
+            "BRIDGE_API_URL" => Some("https://custom.example.test".into()),
+            _ => None,
+        },
+        home.path(),
+    )
+    .unwrap();
+    assert_eq!(cfg.web_url, "https://custom.example.test");
+}
+
+#[test]
+fn dev_mints_an_identity_distinct_from_existing_production_keys() {
+    let home = tempfile::tempdir().unwrap();
+    let prod = config::resolve(|_| None, home.path()).unwrap();
+    let dev = config::resolve(
+        |key| (key == "BRIDGE_CHANNEL").then(|| "dev".into()),
+        home.path(),
+    )
+    .unwrap();
+    let production = build_bridge::identity::load_or_generate(&prod.identity_file, "prod").unwrap();
+    let before = std::fs::read(&prod.identity_file).unwrap();
+    let development = build_bridge::identity::load_or_generate(&dev.identity_file, "dev").unwrap();
+    assert_ne!(production.device_id, development.device_id);
+    assert_ne!(
+        production.transport.public_key_b64,
+        development.transport.public_key_b64
+    );
+    assert_eq!(std::fs::read(&prod.identity_file).unwrap(), before);
+}

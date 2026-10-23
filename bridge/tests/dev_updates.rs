@@ -56,6 +56,18 @@ async fn dev_refuses_every_update_request_and_ignores_persisted_schedule_without
         service.request_check(),
         Err(UpdateError::ChannelDisabled)
     ));
+    assert!(matches!(
+        service.check_at(time::OffsetDateTime::now_utc()).await,
+        Err(UpdateError::ChannelDisabled)
+    ));
+    assert_eq!(
+        service
+            .tick_at(time::OffsetDateTime::now_utc(), false)
+            .await
+            .unwrap()
+            .state,
+        UpdateState::Idle
+    );
     for when in [InstallWhen::Now, InstallWhen::Idle] {
         assert!(matches!(
             service.install(when, false).await,

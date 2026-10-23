@@ -622,9 +622,7 @@ async fn run_daemon(
     // open a session to — and saying "online" for it is what had this account
     // dialling two machines that were never going to answer.
     let reachable = Reachability::unreachable();
-    if runtime.config.channel == config::Channel::Prod {
-        spawn_update_heartbeat(runtime.config.home.clone(), app.clone());
-    }
+    spawn_update_heartbeat(&runtime.config, app.clone());
     // The service manager's stderr file, rotated rather than left to grow.
     build_bridge::logfile::spawn_rotation();
     // The runtime the relay socket, the presence beat and every peer's
@@ -654,9 +652,7 @@ async fn run_daemon(
     // restored. Keep it off the relay until the helper commits: no browser or
     // agent can create work in state that might be discarded. The local health
     // beat still proves the daemon initialized and its app lock is responsive.
-    if runtime.config.channel == config::Channel::Prod {
-        wait_for_update_probation(&runtime.config.home).await;
-    }
+    wait_for_update_probation(&runtime.config).await;
     let cleaning = app.clone();
     let removed =
         tokio::task::spawn_blocking(move || cleaning.lock().unwrap().sweep_stale_uploads())
@@ -691,9 +687,7 @@ async fn run_daemon(
     );
     AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
     AppState::spawn_upload_reaper(app.clone(), Duration::from_secs(30));
-    if runtime.config.channel == config::Channel::Prod {
-        AppState::spawn_update_checks(app.clone(), Duration::from_secs(5));
-    }
+    spawn_update_checks(&runtime.config, app.clone());
     // Measures every workspace and tells the project agent about quiet ones
     // (#135). It never removes a workspace; `workspace.reclaim` does. It drops
     // build output only when BRIDGE_WORKSPACE_PRUNE is on.
@@ -876,7 +870,11 @@ fn spawn_resume_after_restart(
     });
 }
 
-async fn wait_for_update_probation(home: &std::path::Path) {
+async fn wait_for_update_probation(config: &BridgeConfig) {
+    if config.channel == config::Channel::Dev {
+        return;
+    }
+    let home = &config.home;
     while build_bridge::update::installer::probation_active(home) {
         if let Err(error) = build_bridge::update::installer::ensure_recovery(home) {
             eprintln!("bridge update recovery: {error}");
@@ -885,10 +883,17 @@ async fn wait_for_update_probation(home: &std::path::Path) {
     }
 }
 
-fn spawn_update_heartbeat(
-    home: std::path::PathBuf,
-    app: std::sync::Arc<std::sync::Mutex<AppState>>,
-) {
+fn spawn_update_checks(config: &BridgeConfig, app: Arc<std::sync::Mutex<AppState>>) {
+    if config.channel == config::Channel::Prod {
+        AppState::spawn_update_checks(app, Duration::from_secs(5));
+    }
+}
+
+fn spawn_update_heartbeat(config: &BridgeConfig, app: std::sync::Arc<std::sync::Mutex<AppState>>) {
+    if config.channel == config::Channel::Dev {
+        return;
+    }
+    let home = config.home.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         loop {

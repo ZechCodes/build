@@ -9,9 +9,42 @@ pub const DEFAULT_RELAY_URL: &str = "wss://relay.getbuild.ing";
 pub const DEFAULT_API_URL: &str = "https://getbuild.ing";
 pub const DEFAULT_BASE_BRANCH: &str = "main";
 
+/// The selected stack. A channel is explicit authority for state and updates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Channel {
+    #[default]
+    Prod,
+    Dev,
+}
+
+impl Channel {
+    pub fn resolve(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("prod") => Ok(Self::Prod),
+            Some("dev") => Ok(Self::Dev),
+            Some(other) => Err(format!(
+                "unknown BRIDGE_CHANNEL: {other:?}; expected prod or dev"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Prod => "prod",
+            Self::Dev => "dev",
+        }
+    }
+}
+
 /// The resolved serve/install configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeConfig {
+    pub channel: Channel,
+    pub state_root: PathBuf,
+    pub tasks_dir: PathBuf,
+    pub config_path: PathBuf,
+    pub projects_dir: PathBuf,
+    pub log_dir: PathBuf,
     pub relay_url: String,
     pub api_url: String,
     /// The web app base URL shown in the pairing approval link.
@@ -30,7 +63,20 @@ pub struct BridgeConfig {
 
 /// Resolve config from an environment lookup and the user's home directory.
 /// Pure so the default/override matrix is unit-testable.
-pub fn resolve(lookup: impl Fn(&str) -> Option<String>, home: &Path) -> BridgeConfig {
+pub fn resolve(
+    lookup: impl Fn(&str) -> Option<String>,
+    home: &Path,
+) -> Result<BridgeConfig, String> {
+    let channel = Channel::resolve(lookup("BRIDGE_CHANNEL").as_deref())?;
+    let (root, api, relay) = match channel {
+        Channel::Prod => (".build", DEFAULT_API_URL, DEFAULT_RELAY_URL),
+        Channel::Dev => (
+            ".local/state/build-dev",
+            "https://dev.getbuild.ing",
+            "wss://relay-dev.getbuild.ing",
+        ),
+    };
+    let state_root = home.join(root);
     let expand = |raw: String| -> PathBuf {
         match raw.strip_prefix("~/") {
             Some(rest) => home.join(rest),
@@ -38,15 +84,28 @@ pub fn resolve(lookup: impl Fn(&str) -> Option<String>, home: &Path) -> BridgeCo
             None => PathBuf::from(raw),
         }
     };
-    let api_url = lookup("BRIDGE_API_URL").unwrap_or_else(|| DEFAULT_API_URL.to_string());
+    let api_url = lookup("BRIDGE_API_URL").unwrap_or_else(|| api.to_string());
     let worktrees = lookup("BRIDGE_WORKTREES")
         .map(expand)
-        .unwrap_or_else(|| home.join(".build/worktrees"));
+        .unwrap_or_else(|| state_root.join("worktrees"));
     let mcp_socket = lookup("BRIDGE_MCP_SOCKET")
         .map(expand)
-        .unwrap_or_else(|| worktrees.join("build-bridge-mcp.sock"));
-    BridgeConfig {
-        relay_url: lookup("BRIDGE_RELAY_URL").unwrap_or_else(|| DEFAULT_RELAY_URL.to_string()),
+        .unwrap_or_else(|| match channel {
+            Channel::Prod => worktrees.join("build-bridge-mcp.sock"),
+            Channel::Dev => state_root.join("mcp.sock"),
+        });
+    let state_path = |key: &str, leaf: &str| {
+        lookup(key)
+            .map(expand)
+            .unwrap_or_else(|| state_root.join(leaf))
+    };
+    Ok(BridgeConfig {
+        channel,
+        tasks_dir: state_path("BRIDGE_TASKS_DIR", "tasks"),
+        config_path: state_path("BRIDGE_CONFIG", "config.json"),
+        projects_dir: state_path("BRIDGE_PROJECTS_DIR", "projects"),
+        log_dir: state_root.join("log"),
+        relay_url: lookup("BRIDGE_RELAY_URL").unwrap_or_else(|| relay.to_string()),
         web_url: lookup("BRIDGE_WEB_URL").unwrap_or_else(|| api_url.clone()),
         api_url,
         repo: lookup("BRIDGE_REPO"),
@@ -55,10 +114,11 @@ pub fn resolve(lookup: impl Fn(&str) -> Option<String>, home: &Path) -> BridgeCo
             .unwrap_or_else(|| DEFAULT_BASE_BRANCH.to_string()),
         identity_file: lookup("BRIDGE_IDENTITY_FILE")
             .map(expand)
-            .unwrap_or_else(|| home.join(".build/identity.json")),
+            .unwrap_or_else(|| state_root.join("identity.json")),
         mcp_socket,
         home: home.to_path_buf(),
-    }
+        state_root,
+    })
 }
 
 #[cfg(test)]
@@ -71,7 +131,7 @@ mod tests {
 
     #[test]
     fn defaults_are_production_and_need_no_environment() {
-        let config = resolve(no_env, Path::new("/Users/dev"));
+        let config = resolve(no_env, Path::new("/Users/dev")).unwrap();
         assert_eq!(config.relay_url, "wss://relay.getbuild.ing");
         assert_eq!(config.api_url, "https://getbuild.ing");
         assert_eq!(config.web_url, "https://getbuild.ing");
@@ -112,7 +172,7 @@ mod tests {
                 .to_string(),
             )
         };
-        let config = resolve(env, Path::new("/Users/dev"));
+        let config = resolve(env, Path::new("/Users/dev")).unwrap();
         assert_eq!(config.relay_url, "ws://relay:8081"); // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
         assert_eq!(config.api_url, "http://app:8080");
         assert_eq!(config.web_url, "http://localhost:8090");
@@ -126,7 +186,7 @@ mod tests {
     #[test]
     fn web_url_follows_an_overridden_api_url() {
         let env = |key: &str| (key == "BRIDGE_API_URL").then(|| "http://app:8080".to_string());
-        let config = resolve(env, Path::new("/Users/dev"));
+        let config = resolve(env, Path::new("/Users/dev")).unwrap();
         assert_eq!(config.web_url, "http://app:8080");
     }
 
@@ -137,7 +197,7 @@ mod tests {
             "BRIDGE_IDENTITY_FILE" => Some("~/ids/bridge.json".to_string()),
             _ => None,
         };
-        let config = resolve(env, Path::new("/Users/dev"));
+        let config = resolve(env, Path::new("/Users/dev")).unwrap();
         assert_eq!(config.worktrees, PathBuf::from("/Users/dev/work/trees"));
         assert_eq!(
             config.identity_file,

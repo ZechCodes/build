@@ -56,10 +56,12 @@ pub(super) struct AllocationDiagnostics {
     window: Instant,
     detail_window: Instant,
     summary_round: u64,
+    #[cfg(test)]
+    identity_hashes: usize,
     emitted: usize,
     suppressed: u64,
-    pending: HashMap<TransactionId, (String, Vec<Option<SocketAddr>>, Option<u16>, u64)>,
-    folded: HashMap<(u64, Option<SocketAddr>, String, String, u16), Folded>,
+    pending: HashMap<TransactionId, (&'static str, Vec<Option<SocketAddr>>, Option<u16>, u64)>,
+    folded: HashMap<(u64, Option<SocketAddr>, &'static str, &'static str, u16), Folded>,
 }
 impl AllocationDiagnostics {
     pub(super) fn new(context: DiagnosticContext) -> Self {
@@ -73,6 +75,8 @@ impl AllocationDiagnostics {
             window: Instant::now(),
             detail_window: Instant::now(),
             summary_round: 0,
+            #[cfg(test)]
+            identity_hashes: 0,
             emitted: 0,
             suppressed: 0,
             pending: HashMap::new(),
@@ -90,15 +94,27 @@ impl AllocationDiagnostics {
     pub(super) fn relay(&mut self, relay: SocketAddr) {
         self.relay_family = family(relay);
     }
-    fn peer(&mut self, addr: SocketAddr) -> (u64, usize) {
+    fn peer_state(&mut self, addr: SocketAddr) -> &mut Peer {
         let ordinal = self.peers.len() + 1;
-        let mut hash = self.context.key.build_hasher();
-        addr.hash(&mut hash);
-        let peer = self.peers.entry(addr).or_insert(Peer {
-            id: hash.finish(),
-            ordinal,
-            ..Default::default()
-        });
+        let key = &self.context.key;
+        #[cfg(test)]
+        let hashes = &mut self.identity_hashes;
+        self.peers.entry(addr).or_insert_with(|| {
+            #[cfg(test)]
+            {
+                *hashes += 1;
+            }
+            let mut hash = key.build_hasher();
+            addr.hash(&mut hash);
+            Peer {
+                id: hash.finish(),
+                ordinal,
+                ..Default::default()
+            }
+        })
+    }
+    fn peer(&mut self, addr: SocketAddr) -> (u64, usize) {
+        let peer = self.peer_state(addr);
         (peer.id, peer.ordinal)
     }
     pub(super) fn flush(&mut self, now: Instant, force: bool) {
@@ -108,7 +124,7 @@ impl AllocationDiagnostics {
         let mut keys: Vec<_> = self.folded.keys().cloned().collect();
         keys.sort_by_key(|key| {
             (
-                if matches!(key.3.as_str(), "error" | "timeout" | "local-error") {
+                if matches!(key.3, "error" | "timeout" | "local-error") {
                     0
                 } else {
                     1
@@ -203,11 +219,11 @@ impl AllocationDiagnostics {
     }
     fn emit(
         &mut self,
-        method: &str,
+        method: &'static str,
         tid: TransactionId,
         peer: Option<SocketAddr>,
         channel: Option<u16>,
-        outcome: &str,
+        outcome: &'static str,
         code: u16,
         generation: u64,
     ) {
@@ -217,7 +233,7 @@ impl AllocationDiagnostics {
         if !self.admit(Instant::now()) {
             let folded = self
                 .folded
-                .entry((generation, peer, method.into(), outcome.into(), code))
+                .entry((generation, peer, method, outcome, code))
                 .or_insert(Folded {
                     repeats: 0,
                     tid,
@@ -236,11 +252,11 @@ impl AllocationDiagnostics {
         let peers = request_peers(msg, transaction);
         let mut channel = crate::proto::channum::ChannelNumber::default();
         let channel = channel.get_from(msg).ok().map(|_| channel.0);
-        let method = msg.typ.method.to_string();
+        let method = method_name(msg.typ.method);
         let generation = self.context.generation.load(Ordering::Relaxed);
         for peer in &peers {
             self.emit(
-                &method,
+                method,
                 msg.transaction_id,
                 *peer,
                 channel,
@@ -277,7 +293,7 @@ impl AllocationDiagnostics {
     pub(super) fn timeout(&mut self, tid: TransactionId) {
         if let Some((method, peers, channel, generation)) = self.pending.remove(&tid) {
             for peer in peers {
-                self.emit(&method, tid, peer, channel, "timeout", 0, generation);
+                self.emit(method, tid, peer, channel, "timeout", 0, generation);
             }
         }
     }
@@ -299,9 +315,8 @@ impl AllocationDiagnostics {
         incoming: bool,
         tid: TransactionId,
     ) {
-        self.peer(peer);
         let index = usize::from(incoming) * 2 + usize::from(channel.is_some());
-        let state = self.peers.get_mut(&peer).unwrap();
+        let state = self.peer_state(peer);
         state.counts[index] += 1;
         let first_use = state.counts[index] == 1;
         state.dirty = !first_use;
@@ -331,6 +346,18 @@ impl AllocationDiagnostics {
             1,
             "none",
         );
+    }
+}
+fn method_name(method: Method) -> &'static str {
+    match method {
+        METHOD_BINDING => "Binding",
+        METHOD_ALLOCATE => "Allocate",
+        METHOD_REFRESH => "Refresh",
+        METHOD_CREATE_PERMISSION => "CreatePermission",
+        METHOD_CHANNEL_BIND => "ChannelBind",
+        METHOD_SEND => "Send",
+        METHOD_DATA => "Data",
+        _ => "Unknown",
     }
 }
 // Decode each XOR-PEER-ADDRESS independently using the original transaction ID.
@@ -665,6 +692,27 @@ mod local_mock_tests {
                 );
             }
         }
+    }
+    #[test]
+    fn diagnostics_repeated_packets_compute_identity_only_on_first_insert() {
+        let (mut client, _) = client();
+        let diag = client.diagnostics.as_mut().unwrap();
+        let peer = "192.0.2.94:50001".parse().unwrap();
+        for _ in 0..1000 {
+            diag.data(peer, None, false, TransactionId::default());
+        }
+        assert_eq!(diag.identity_hashes, 1);
+        assert_eq!(diag.peers.len(), 1);
+        for _ in 0..100 {
+            diag.send_failure(peer);
+        }
+        let key = diag.folded.keys().next().unwrap();
+        assert_eq!(std::any::type_name_of_val(&key.2), "&str");
+        assert_eq!(std::any::type_name_of_val(&key.3), "&str");
+        assert_eq!(
+            diag.identity_hashes, 1,
+            "control rows must reuse the identity too"
+        );
     }
     #[test]
     fn diagnostics_control_never_flushes_packet_summaries_inline() {

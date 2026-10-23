@@ -627,7 +627,7 @@ tree after `webrtc-host-candidate-sweep.patch`. It touches
 
 ## #794 TURN diagnostics
 
-`rtc-turn-diagnostics.patch` SHA-256: `5e4646268a30ac4582ded71db6956494868391406c1118060ce59a184e55581e`.
+`rtc-turn-diagnostics.patch` SHA-256: `93d7a60c4242b1daa6f5173b24d6f78f20804b5bcc79c829df662b953a781083`.
 
 `rtc-turn` 0.20.4 is vendored from the registry with only
 `rtc-turn-diagnostics.patch` applied. `rtc-turn` is patched in both manifests
@@ -659,7 +659,10 @@ acknowledgment, and queueing does not prove server receipt or peer delivery.
 Server reasons are mapped from numeric codes to fixed labels; arbitrary reason
 strings, credentials, SDP, payloads and endpoint addresses are omitted.
 
-Packet traffic counts silently per peer and direction. Only a direction's first use
+Packet traffic counts silently per peer and direction. Existing peers use one
+map entry lookup per packet; keyed endpoint fingerprints are computed only on
+first insertion. Folded method/outcome keys are static strings and allocate no
+per-event strings. Only a direction's first use
 emits an immediate data row; it consumes no control-plane budget. Control-plane
 rows retain their independent limit of 32 detailed rows per second, with excess
 folded by generation, peer, method, outcome and code. Packet storms cannot delay

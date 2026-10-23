@@ -289,7 +289,11 @@ The normal Python gate skips `test_dev_schema_postgres.py` unless
 heads twice, bootstrap and rollout checks, and the real ASGI dispatcher against
 a restricted role. It verifies that dev tables, foreign keys, and migration
 version records stay in `build_dev`; production canary reads/writes, public DDL,
-and assuming the production role must fail. The proof accepts only an asyncpg
+and assuming the production role must fail. With the separate local-admin URL
+below, it also grants and revokes each column privilege and CREATE on several
+other schemas (including catalog schemas), requiring preflight rejection each
+time. These privileged tests accept only the same loopback server and database
+as the dev URL, with the disposable `postgres` administrator. The proof accepts only an asyncpg
 URL with a loopback host, database `build`, role `build_dev`, and no URL query
 options. Never use a cluster connection or live credentials.
 
@@ -313,6 +317,7 @@ ALTER ROLE build_dev IN DATABASE build SET search_path = build_dev;
 GRANT CONNECT ON DATABASE build TO build_dev;
 SQL
 TEST_DEV_POSTGRES_URL=postgresql+asyncpg://build_dev:disposable-dev@127.0.0.1:55480/build \
+TEST_DEV_POSTGRES_ADMIN_URL=postgresql+asyncpg://postgres:disposable-admin@127.0.0.1:55480/build \
   nice -n 10 uv run --frozen pytest buildapp/test_dev_schema_postgres.py -q
 docker exec build-dev-schema-proof psql -U postgres -d build -At \
   -c 'SELECT id,value FROM public.prod_canary'

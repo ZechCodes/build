@@ -73,11 +73,15 @@ async def verify_dev_connection(connection) -> None:
                    OR r.rolreplication OR r.rolbypassrls)
           AND NOT EXISTS (SELECT 1 FROM pg_auth_members WHERE member = r.oid)
           AND NOT EXISTS (
+            SELECT 1 FROM pg_namespace other
+            WHERE other.nspname <> :schema AND has_schema_privilege(other.oid, 'CREATE'))
+          AND NOT EXISTS (
             SELECT 1 FROM pg_class c JOIN pg_namespace p ON p.oid = c.relnamespace
             WHERE p.nspname !~ '^pg_' AND p.nspname <> 'information_schema'
               AND p.nspname <> :schema AND (
                 (c.relkind IN ('r', 'p', 'v', 'm', 'f') AND
-                  has_table_privilege(c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
+                  (has_table_privilege(c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+                   OR has_any_column_privilege(c.oid, 'SELECT,INSERT,UPDATE,REFERENCES')))
                 OR (c.relkind = 'S' AND has_sequence_privilege(c.oid, 'USAGE,SELECT,UPDATE'))))
         FROM pg_roles r JOIN pg_namespace n ON n.nspname = :schema
         WHERE r.rolname = current_user

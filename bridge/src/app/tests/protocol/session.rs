@@ -675,6 +675,7 @@ fn headless_argv(options: &SpawnOptions) -> String {
             },
             options,
             &crate::harness::HarnessContext {
+                channel: crate::config::Channel::Prod,
                 bridge_exe: std::path::PathBuf::from("/usr/local/bin/build-bridge"),
                 mcp_socket: std::path::PathBuf::from("/tmp/build-mcp.sock"),
                 state_root: std::path::PathBuf::from("/tmp/build-state"),

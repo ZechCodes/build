@@ -330,6 +330,7 @@ fn spawn_options() -> SpawnOptions {
 
 fn context() -> HarnessContext {
     HarnessContext {
+        channel: crate::config::Channel::Prod,
         bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
         mcp_socket: PathBuf::from("/tmp/build-mcp.sock"),
         state_root: PathBuf::from("/tmp/build-state"),

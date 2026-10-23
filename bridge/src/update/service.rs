@@ -1,5 +1,6 @@
 use super::status::ErrorKind;
 use super::{AdmissionGate, HelperResult, InstallWhen, Release, UpdateState, UpdateStatus};
+use crate::config::Channel;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,19 @@ pub trait UpdateBackend: Send + Sync {
     /// Repair an update whose helper launch or execution did not finish.
     fn maintain(&self) -> Result<(), String> {
         Ok(())
+    }
+}
+
+struct DisabledBackend;
+
+#[async_trait]
+impl UpdateBackend for DisabledBackend {
+    async fn latest(&self) -> Result<Release, String> {
+        Err(UpdateError::ChannelDisabled.to_string())
+    }
+
+    async fn install(&self, _release: &Release, _attempt_id: &str) -> Result<(), String> {
+        Err(UpdateError::ChannelDisabled.to_string())
     }
 }
 
@@ -94,6 +108,8 @@ pub struct UpdateConfig {
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateError {
+    #[error("updates are disabled for BRIDGE_CHANNEL=dev")]
+    ChannelDisabled,
     #[error("this development build cannot be replaced from the app; install a release build with the install script")]
     DevelopmentBuild,
     #[error("replacing a development build needs replace_development_build")]
@@ -128,6 +144,7 @@ pub enum UpdateError {
 /// watches for the helper's final outcome. The process that owns this service
 /// can be killed after `install`: its state is restored from disk on boot.
 pub struct UpdateService {
+    channel: Channel,
     config: UpdateConfig,
     backend: Arc<dyn UpdateBackend>,
     transition: Mutex<AttemptMetadata>,
@@ -141,6 +158,19 @@ pub struct UpdateService {
 
 impl UpdateService {
     pub fn new(config: UpdateConfig, backend: Arc<dyn UpdateBackend>) -> Result<Self, UpdateError> {
+        Self::new_for_channel(config, backend, Channel::Prod)
+    }
+
+    /// Dev never reads saved updater state or inspects a helper. Its channel
+    /// remains disabled even if this executable otherwise resembles a release.
+    pub fn new_for_channel(
+        config: UpdateConfig,
+        backend: Arc<dyn UpdateBackend>,
+        channel: Channel,
+    ) -> Result<Self, UpdateError> {
+        if matches!(channel, Channel::Dev) {
+            return Ok(Self::disabled(config.running_version, config.platform));
+        }
         let (mut status, mut attempt) = match std::fs::read(&config.status_path) {
             Ok(bytes) => serde_json::from_slice::<PersistedUpdate>(&bytes)
                 .map_err(|source| UpdateError::Json {
@@ -188,20 +218,69 @@ impl UpdateService {
             || attempt.rollback_pending
             || !no_active_attempt;
         status.hold_installs_unless(!attempt.rollback_pending && no_active_attempt);
+        Ok(Self::from_status(
+            config,
+            backend,
+            channel,
+            status,
+            attempt,
+            helper_may_own_bridge,
+        ))
+    }
+
+    /// Build a channel-disabled service without probing production paths,
+    /// service provenance, or constructing a production update backend.
+    pub fn disabled(running_version: String, platform: String) -> Self {
+        let status = UpdateStatus::new(running_version.clone(), platform.clone(), true);
+        let config = UpdateConfig {
+            status_path: PathBuf::new(),
+            result_path: PathBuf::new(),
+            running_version,
+            platform,
+            development_build: true,
+            replaceable_development_build: false,
+            running_from_cargo_target: false,
+            check_interval: Duration::ZERO,
+        };
+        Self::from_status(
+            config,
+            Arc::new(DisabledBackend),
+            Channel::Dev,
+            status,
+            AttemptMetadata::default(),
+            false,
+        )
+    }
+
+    fn from_status(
+        config: UpdateConfig,
+        backend: Arc<dyn UpdateBackend>,
+        channel: Channel,
+        status: UpdateStatus,
+        attempt: AttemptMetadata,
+        helper_may_own_bridge: bool,
+    ) -> Self {
         let snapshot = ArcSwap::from_pointee(status.clone());
         let (status_tx, _) = watch::channel(status);
-        let admission = AdmissionGate::new(helper_may_own_bridge);
-        Ok(Self {
+        Self {
+            channel,
             config,
             backend,
             transition: Mutex::new(attempt),
             check_in_flight: AtomicBool::new(false),
             staging: AtomicBool::new(false),
             working_agents_probe: OnceLock::new(),
-            admission,
+            admission: AdmissionGate::new(helper_may_own_bridge),
             status: snapshot,
             status_tx,
-        })
+        }
+    }
+
+    fn require_updates_enabled(&self) -> Result<(), UpdateError> {
+        if matches!(self.channel, Channel::Dev) {
+            return Err(UpdateError::ChannelDisabled);
+        }
+        Ok(())
     }
 
     pub fn status(&self) -> UpdateStatus {
@@ -233,6 +312,7 @@ impl UpdateService {
     /// Accept one manual check without making the request wait on the network.
     /// The watch subscription publishes its result when it completes.
     pub fn request_check(self: &Arc<Self>) -> Result<UpdateStatus, UpdateError> {
+        self.require_updates_enabled()?;
         if self.check_in_flight.swap(true, Ordering::AcqRel) {
             return Err(UpdateError::AlreadyChecking);
         }
@@ -273,6 +353,7 @@ impl UpdateService {
     }
 
     pub async fn check_at(&self, now: OffsetDateTime) -> Result<UpdateStatus, UpdateError> {
+        self.require_updates_enabled()?;
         let mut guard = self.transition.lock().await;
         self.check_locked(now, &mut guard).await
     }
@@ -282,6 +363,7 @@ impl UpdateService {
         now: OffsetDateTime,
         attempt: &mut AttemptMetadata,
     ) -> Result<UpdateStatus, UpdateError> {
+        self.require_updates_enabled()?;
         let mut status = self.status();
         // An in-flight helper owns the version transition; a network refresh
         // must not replace its saved target.
@@ -362,6 +444,7 @@ impl UpdateService {
         working_agents: bool,
         replace_development_build: bool,
     ) -> Result<UpdateStatus, UpdateError> {
+        self.require_updates_enabled()?;
         let mut guard = self.transition.lock().await;
         self.admit_build(replace_development_build)?;
         if self.check_in_flight.load(Ordering::Acquire) {
@@ -405,6 +488,7 @@ impl UpdateService {
         working_agents: bool,
         replace_development_build: bool,
     ) -> Result<UpdateStatus, UpdateError> {
+        self.require_updates_enabled()?;
         let mut guard = self.transition.try_lock().map_err(|_| UpdateError::Busy)?;
         self.admit_build(replace_development_build)?;
         if self.check_in_flight.load(Ordering::Acquire) {
@@ -461,6 +545,7 @@ impl UpdateService {
     /// A release build installs; a development build only when the service
     /// runs it and this request confirms replacing it.
     fn admit_build(&self, replace_development_build: bool) -> Result<(), UpdateError> {
+        self.require_updates_enabled()?;
         if !self.config.development_build {
             return Ok(());
         }
@@ -527,6 +612,7 @@ impl UpdateService {
         mut status: UpdateStatus,
         attempt: &mut AttemptMetadata,
     ) -> Result<(UpdateStatus, Release, String), UpdateError> {
+        self.require_updates_enabled()?;
         let release = status
             .latest_release
             .clone()
@@ -567,6 +653,7 @@ impl UpdateService {
         attempt: &mut AttemptMetadata,
         working_agents: bool,
     ) -> Result<UpdateStatus, UpdateError> {
+        self.require_updates_enabled()?;
         let release = status
             .latest_release
             .clone()
@@ -625,6 +712,7 @@ impl UpdateService {
         release: Release,
         attempt: &mut AttemptMetadata,
     ) -> Result<UpdateStatus, UpdateError> {
+        self.require_updates_enabled()?;
         let attempt_id = attempt
             .attempt_id
             .clone()
@@ -662,6 +750,17 @@ impl UpdateService {
     }
 
     pub async fn tick_at(
+        &self,
+        now: OffsetDateTime,
+        working_agents: bool,
+    ) -> Result<UpdateStatus, UpdateError> {
+        if matches!(self.channel, Channel::Dev) {
+            return Ok(self.status());
+        }
+        self.tick_enabled_at(now, working_agents).await
+    }
+
+    async fn tick_enabled_at(
         &self,
         now: OffsetDateTime,
         working_agents: bool,
@@ -864,6 +963,7 @@ impl UpdateService {
         mut status: UpdateStatus,
         attempt: &AttemptMetadata,
     ) -> Result<UpdateStatus, UpdateError> {
+        self.require_updates_enabled()?;
         status.refresh_computed();
         status.hold_installs_unless(self.helper_free(attempt));
         save_status(&self.config.status_path, &status, attempt)?;

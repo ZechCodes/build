@@ -115,6 +115,8 @@ pub const DAEMON_IDENTITY_VARS: [&str; 5] = [
 /// is being launched.
 #[derive(Debug, Clone)]
 pub struct HarnessContext {
+    /// The daemon channel pinned into every provider's MCP server environment.
+    pub channel: crate::config::Channel,
     /// The daemon's own executable. Providers that spawn Build's MCP server
     /// themselves re-exec this rather than a binary looked up on PATH.
     pub bridge_exe: PathBuf,
@@ -126,6 +128,14 @@ pub struct HarnessContext {
 
 impl HarnessContext {
     pub fn resolved(mcp_socket: PathBuf, state_root: PathBuf) -> Result<Self, HarnessError> {
+        Self::resolved_for_channel(mcp_socket, state_root, crate::config::Channel::Prod)
+    }
+
+    pub fn resolved_for_channel(
+        mcp_socket: PathBuf,
+        state_root: PathBuf,
+        channel: crate::config::Channel,
+    ) -> Result<Self, HarnessError> {
         std::fs::create_dir_all(&state_root).map_err(|error| {
             HarnessError::Setup(format!(
                 "create harness state root {}: {error}",
@@ -153,6 +163,7 @@ impl HarnessContext {
             )));
         }
         Ok(HarnessContext {
+            channel,
             bridge_exe,
             mcp_socket,
             state_root,
@@ -627,6 +638,26 @@ mod tests {
         );
         assert_eq!(context.mcp_socket, state.path().join("mcp.sock"));
         assert_ne!(context.bridge_exe, PathBuf::from("build-bridge"));
+    }
+
+    #[test]
+    fn resolved_context_keeps_the_explicit_channel() {
+        let state = tempfile::tempdir().unwrap();
+        let socket = state.path().join("dev-mcp.sock");
+        let context = HarnessContext::resolved_for_channel(
+            socket.clone(),
+            state.path().to_path_buf(),
+            crate::config::Channel::Dev,
+        )
+        .unwrap();
+        assert_eq!(context.channel, crate::config::Channel::Dev);
+        assert_eq!(context.mcp_socket, socket);
+        assert_eq!(
+            HarnessContext::resolved(socket, state.path().to_path_buf())
+                .unwrap()
+                .channel,
+            crate::config::Channel::Prod
+        );
     }
 
     /// A catalog entry a harness advertises must be one the same harness will

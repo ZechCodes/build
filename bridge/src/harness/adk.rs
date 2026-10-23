@@ -158,6 +158,7 @@ impl Harness for AdkHarness {
                 "BRIDGE_MCP_SOCKET",
                 context.mcp_socket.to_string_lossy().into_owned(),
             )
+            .env("BRIDGE_CHANNEL", context.channel.as_str())
             .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token);
         let spec =
             super::claude_compaction::apply(spec, choice, options.compaction_policy.as_ref())?;

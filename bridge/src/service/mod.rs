@@ -8,8 +8,8 @@
 //!
 //! What a "service" is varies by platform, so it is a trait, not a branch:
 //! [`Launchd`] writes a LaunchAgent plist and bootstraps it into the user's gui
-//! domain, [`Systemd`] writes a `--user` unit and enables it. [`manager_for`] is
-//! the ONE place in the crate that looks at which platform this is; everything
+//! domain, [`Systemd`] writes a `--user` unit and enables it.
+//! [`manager_for_channel`] selects the platform and isolated service identity; everything
 //! above it — install, uninstall, `main.rs` — is platform-blind.
 //!
 //! Nothing here spawns a process: [`install`] and [`uninstall`] take the command
@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 pub use launchd::Launchd;
 pub use systemd::Systemd;
 
+use crate::config::Channel;
 use crate::identity::StoredIdentity;
 use crate::pairing::{Lapse, PairingError, StatusResponse};
 
@@ -265,12 +266,18 @@ pub trait ServiceManager {
     fn after_install_hint(&self) -> Option<&'static str>;
 }
 
-/// The crate's ONLY platform branch. `os` is `std::env::consts::OS` at the one
-/// call site in `main.rs`; anything else is a platform Build has no daemon for.
+/// The production service manager for callers that do not select a channel.
 pub fn manager_for(os: &str) -> Option<Box<dyn ServiceManager>> {
+    manager_for_channel(os, Channel::Prod)
+}
+
+/// The crate's platform branch, with an explicit service channel. `os` is
+/// `std::env::consts::OS`; other values name platforms Build has no daemon for.
+/// This selection never consults process environment.
+pub fn manager_for_channel(os: &str, channel: Channel) -> Option<Box<dyn ServiceManager>> {
     match os {
-        "macos" => Some(Box::new(Launchd)),
-        "linux" => Some(Box::new(Systemd)),
+        "macos" => Some(Box::new(Launchd::for_channel(channel))),
+        "linux" => Some(Box::new(Systemd::for_channel(channel))),
         _ => None,
     }
 }
@@ -627,6 +634,134 @@ mod tests {
     fn manager_for_knows_no_other_platform() {
         assert!(manager_for("windows").is_none());
         assert!(manager_for("freebsd").is_none());
+    }
+
+    #[test]
+    fn channel_managers_keep_production_service_names() {
+        for os in ["linux", "macos"] {
+            let home = Path::new("/tmp/service-home");
+            let production = manager_for(os).expect("supported platform");
+            let explicit = manager_for_channel(os, crate::config::Channel::Prod)
+                .expect("supported production platform");
+            assert_eq!(explicit.unit_path(home), production.unit_path(home));
+            assert_eq!(
+                explicit.render_unit(&fixtures::sample_config("/tmp/service-home")),
+                production.render_unit(&fixtures::sample_config("/tmp/service-home"))
+            );
+        }
+        assert!(manager_for_channel("windows", crate::config::Channel::Dev).is_none());
+    }
+
+    #[test]
+    fn concrete_managers_default_to_production_and_keep_the_selected_channel() {
+        let home = Path::new("/tmp/service-home");
+        for (os, default, dev) in [
+            (
+                "linux",
+                Box::new(Systemd::default()) as Box<dyn ServiceManager>,
+                Box::new(Systemd::for_channel(Channel::Dev)) as Box<dyn ServiceManager>,
+            ),
+            (
+                "macos",
+                Box::new(Launchd::default()) as Box<dyn ServiceManager>,
+                Box::new(Launchd::for_channel(Channel::Dev)) as Box<dyn ServiceManager>,
+            ),
+        ] {
+            assert_eq!(
+                default.unit_path(home),
+                manager_for(os).unwrap().unit_path(home)
+            );
+            assert_eq!(
+                dev.unit_path(home),
+                manager_for_channel(os, Channel::Dev)
+                    .unwrap()
+                    .unit_path(home)
+            );
+            assert_ne!(default.unit_path(home), dev.unit_path(home));
+        }
+    }
+
+    #[test]
+    fn dev_service_install_and_uninstall_leave_production_untouched() {
+        for (os, relative_path, service_target) in [
+            (
+                "linux",
+                ".config/systemd/user/build-bridge-dev.service",
+                "build-bridge-dev.service",
+            ),
+            (
+                "macos",
+                "Library/LaunchAgents/ing.getbuild.bridge.dev.plist",
+                "gui/501/ing.getbuild.bridge.dev",
+            ),
+        ] {
+            assert_dev_service_is_isolated(os, relative_path, service_target);
+        }
+    }
+
+    fn assert_dev_service_is_isolated(os: &str, relative_path: &str, target: &str) {
+        let home = tempfile::tempdir().expect("temporary home");
+        let ctx = fixtures::context(home.path(), "501");
+        let production = manager_for(os).expect("production manager");
+        let prod_path = production.unit_path(home.path());
+        std::fs::create_dir_all(prod_path.parent().unwrap()).unwrap();
+        std::fs::write(&prod_path, "production sentinel").unwrap();
+        let dev = manager_for_channel(os, crate::config::Channel::Dev).expect("dev manager");
+        let mut config = fixtures::sample_config(home.path().to_str().unwrap());
+        config.log_dir = home.path().join(".build-dev/log");
+        config.env = vec![("BRIDGE_CHANNEL".into(), "dev".into())];
+        let expected_path = home.path().join(relative_path);
+        assert_eq!(dev.unit_path(home.path()), expected_path);
+        let mut activated = Vec::new();
+        let path = install(dev.as_ref(), &ctx, &config, &mut |command| {
+            activated.push(command.clone());
+            Ok(true)
+        })
+        .expect("mock install");
+        assert_eq!(path, expected_path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(".build-dev/log/bridge.log"), "{text}");
+        assert!(
+            text.contains("BRIDGE_CHANNEL=dev")
+                || text.contains("<key>BRIDGE_CHANNEL</key>\n      <string>dev</string>"),
+            "{text}"
+        );
+        if os == "macos" {
+            assert!(text.contains("<string>ing.getbuild.bridge.dev</string>"));
+        }
+        assert!(activated
+            .iter()
+            .any(|command| command.args.iter().any(|arg| arg == target)));
+        let mut deactivated = Vec::new();
+        assert_eq!(
+            uninstall(dev.as_ref(), &ctx, &mut |command| {
+                deactivated.push(command.clone());
+                Ok(true)
+            })
+            .expect("mock uninstall"),
+            Uninstalled::Removed(expected_path)
+        );
+        assert!(deactivated
+            .iter()
+            .any(|command| command.args.iter().any(|arg| arg == target)));
+        assert_no_production_target(&activated);
+        assert_no_production_target(&deactivated);
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read_to_string(prod_path).unwrap(),
+            "production sentinel"
+        );
+    }
+
+    fn assert_no_production_target(commands: &[ShellCommand]) {
+        for command in commands {
+            assert!(
+                !command.args.iter().any(|arg| {
+                    arg == "build-bridge.service" || arg == "gui/501/ing.getbuild.bridge"
+                }),
+                "{command:?}"
+            );
+        }
     }
 
     /// A manager with no platform behind it: its unit is a nested file under

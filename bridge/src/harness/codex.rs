@@ -343,6 +343,7 @@ pub(super) fn trust_override(cwd: &Path) -> String {
 }
 
 pub(super) struct CodexMcpConfig {
+    channel: String,
     command: String,
     args: String,
     socket: String,
@@ -355,6 +356,7 @@ pub(super) struct CodexMcpConfig {
 impl CodexMcpConfig {
     pub(super) fn new(options: &SpawnOptions, context: &HarnessContext) -> CodexMcpConfig {
         CodexMcpConfig {
+            channel: serde_json::to_string(context.channel.as_str()).expect("channel serializes"),
             command: serde_json::to_string(&context.bridge_exe).expect("path serializes"),
             args: serde_json::to_string(&vec!["mcp", "--task", options.owner_id.as_str()])
                 .expect("MCP args serialize"),
@@ -372,6 +374,7 @@ impl CodexMcpConfig {
 
     pub(super) fn overrides(&self) -> Vec<String> {
         let mut overrides = vec![
+            format!("mcp_servers.build.env.BRIDGE_CHANNEL={}", self.channel),
             format!("mcp_servers.build.command={}", self.command),
             format!("mcp_servers.build.args={}", self.args),
             format!("mcp_servers.build.env.BRIDGE_MCP_SOCKET={}", self.socket),
@@ -684,6 +687,7 @@ mod tests {
                 &ModelChoice::default(),
                 options,
                 &HarnessContext {
+                    channel: crate::config::Channel::Prod,
                     bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
                     mcp_socket: PathBuf::from("/tmp/build-mcp.sock"),
                     state_root: PathBuf::from("/tmp/build-state"),

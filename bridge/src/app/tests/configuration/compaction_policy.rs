@@ -6,6 +6,7 @@ fn policy_app(root: &Path) -> AppState {
         "main",
         true,
         crate::harness::HarnessContext {
+            channel: crate::config::Channel::Prod,
             mcp_socket: root.join("mcp.sock"),
             state_root: root.join("state"),
             bridge_exe: root.join("unused-bridge"),

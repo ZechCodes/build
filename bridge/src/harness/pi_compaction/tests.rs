@@ -128,6 +128,7 @@ fn options(
 
 fn context(state: &std::path::Path) -> crate::harness::HarnessContext {
     crate::harness::HarnessContext {
+        channel: crate::config::Channel::Prod,
         state_root: state.to_owned(),
         bridge_exe: "/fake/bridge".into(),
         mcp_socket: state.join("socket"),

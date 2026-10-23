@@ -40,3 +40,25 @@ person can choose to put a release in place of one. What must not follow:
 | 8 | A successful replacement leaves a marker for the release, so later updates take the release path with its checks. | [x] | `replacing_an_unmarked_development_build_marks_the_release`. |
 | 9 | The SPA sends the confirmation only from the warning that names the release and says the bridge restarts and local source changes leave the running bridge; Install alone sends nothing. | [x] | `deviceSettingsDom.test.js` "replaces a development build only after its warning is confirmed"; `bridgeUpdateLayout.test.js` "shows the replacement warning on a development build the app can replace". |
 | 10 | A development build makes no release check of its own, at startup or daily, and nothing in the SPA marks it as having an update. | [x] | `development_build_never_checks_on_its_own`; `deviceSettingsDom.test.js` "marks nothing for a development build, whatever its cached status says"; `settingsModal.test.js` "does not mark a development build in the settings sidebar". |
+
+## Dev channel isolation (#783)
+
+The controls above describe production-channel development binaries.
+`BRIDGE_CHANNEL=dev` has no release-replacement exception. Its updater is
+constructed without reading saved update state or consulting a backend;
+manual check, install and scheduling requests refuse even a confirmed
+replacement. Runtime startup skips production recovery/provenance, heartbeat
+and probation, and update-helper dispatch refuses before opening its job.
+
+Evidence: `bridge/tests/dev_updates.rs` supplies paths that cannot be read as
+JSON and a backend that panics on every method, and exercises checks, both
+install modes, confirmations and ticks. `bridge/tests/dev_channel.rs` checks
+helper refusal before state creation and channel-correct backup selection;
+`bridge/src/dev_mode_tests.rs` covers provisioned-key isolation and pinned
+service paths. All fixtures use injected or temporary homes.
+
+Dev path resolution also refuses production state aliases before command
+dispatch (including MCP): every state path and environment project override
+is checked against the canonical production root, following symlinks and
+resolving missing leaves without creating state. `dev_channel.rs` covers each
+override, symlinked roots/logs, dangling aliases, traversal and symlink loops.

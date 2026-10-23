@@ -114,6 +114,7 @@ fn every_harness_path_uses_the_contexts_canonical_bridge_executable() {
     let state_root = directory.path().join("state");
     std::fs::create_dir(&state_root).unwrap();
     let context = HarnessContext {
+        channel: crate::config::Channel::Prod,
         bridge_exe: bridge_exe.clone(),
         mcp_socket: directory.path().join("mcp.sock"),
         state_root: std::fs::canonicalize(state_root).unwrap(),

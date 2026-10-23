@@ -6,9 +6,27 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::config::Channel;
+
 use super::{ServiceConfig, ServiceContext, ServiceManager, ShellCommand, SERVICE_LABEL};
 
-pub struct Launchd;
+#[derive(Default)]
+pub struct Launchd {
+    channel: Channel,
+}
+
+impl Launchd {
+    pub fn for_channel(channel: Channel) -> Self {
+        Self { channel }
+    }
+
+    fn label(&self) -> &'static str {
+        match self.channel {
+            Channel::Prod => SERVICE_LABEL,
+            Channel::Dev => "ing.getbuild.bridge.dev",
+        }
+    }
+}
 
 fn xml_escape(raw: &str) -> String {
     raw.replace('&', "&amp;")
@@ -23,7 +41,7 @@ impl ServiceManager for Launchd {
 
     fn unit_path(&self, home: &Path) -> PathBuf {
         home.join("Library/LaunchAgents")
-            .join(format!("{SERVICE_LABEL}.plist"))
+            .join(format!("{}.plist", self.label()))
     }
 
     /// Run at load, keep alive across crashes, log under the bridge's own state
@@ -55,7 +73,7 @@ impl ServiceManager for Launchd {
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>{SERVICE_LABEL}</string>
+    <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
       <string>{binary}</string>
@@ -77,7 +95,8 @@ impl ServiceManager for Launchd {
     <string>{stderr_log}</string>
   </dict>
 </plist>
-"#
+"#,
+            label = self.label(),
         )
     }
 
@@ -85,7 +104,7 @@ impl ServiceManager for Launchd {
     /// was loaded — normal, and tolerated.
     fn activate(&self, ctx: &ServiceContext, unit_path: &Path) -> Vec<ShellCommand> {
         vec![
-            ShellCommand::tolerated("launchctl", &["bootout", &gui_service(ctx)]),
+            ShellCommand::tolerated("launchctl", &["bootout", &gui_service(ctx, self.label())]),
             ShellCommand::required(
                 "launchctl",
                 &["bootstrap", &gui_domain(ctx), &unit_path.to_string_lossy()],
@@ -96,7 +115,7 @@ impl ServiceManager for Launchd {
     fn deactivate(&self, ctx: &ServiceContext, _unit_path: &Path) -> Vec<ShellCommand> {
         vec![ShellCommand::tolerated(
             "launchctl",
-            &["bootout", &gui_service(ctx)],
+            &["bootout", &gui_service(ctx, self.label())],
         )]
     }
 
@@ -109,8 +128,8 @@ fn gui_domain(ctx: &ServiceContext) -> String {
     format!("gui/{}", ctx.uid)
 }
 
-fn gui_service(ctx: &ServiceContext) -> String {
-    format!("{}/{SERVICE_LABEL}", gui_domain(ctx))
+fn gui_service(ctx: &ServiceContext, label: &str) -> String {
+    format!("{}/{label}", gui_domain(ctx))
 }
 
 #[cfg(test)]
@@ -124,7 +143,7 @@ mod tests {
 
     #[test]
     fn plist_runs_serve_keeps_alive_and_carries_env() {
-        let plist = Launchd.render_unit(&sample_config(HOME));
+        let plist = Launchd::default().render_unit(&sample_config(HOME));
         assert!(plist.contains("<string>ing.getbuild.bridge</string>"));
         assert!(plist.contains("<string>/Users/dev/.local/bin/build-bridge</string>"));
         assert!(plist.contains("<string>serve</string>"));
@@ -145,7 +164,7 @@ mod tests {
     fn the_plist_carries_the_pinned_path() {
         let env = with_install_path(vec![], || Some("/opt/homebrew/bin:/usr/bin".to_string()));
 
-        let plist = Launchd.render_unit(&ServiceConfig {
+        let plist = Launchd::default().render_unit(&ServiceConfig {
             env,
             ..sample_config(HOME)
         });
@@ -158,7 +177,7 @@ mod tests {
     fn plist_escapes_xml_significant_characters() {
         let mut config = sample_config(HOME);
         config.env = vec![("BRIDGE_DEVICE_NAME".into(), "Ada's <Mac> & co".into())];
-        let plist = Launchd.render_unit(&config);
+        let plist = Launchd::default().render_unit(&config);
         assert!(plist.contains("Ada's &lt;Mac&gt; &amp; co"));
         assert!(!plist.contains("<Mac>"));
     }
@@ -166,7 +185,7 @@ mod tests {
     #[test]
     fn plist_path_is_the_user_launch_agent() {
         assert_eq!(
-            Launchd.unit_path(Path::new("/Users/dev")),
+            Launchd::default().unit_path(Path::new("/Users/dev")),
             PathBuf::from("/Users/dev/Library/LaunchAgents/ing.getbuild.bridge.plist")
         );
     }
@@ -174,8 +193,8 @@ mod tests {
     #[test]
     fn activation_boots_out_then_bootstraps_in_the_users_gui_domain() {
         let ctx = context(HOME, "501");
-        let unit = Launchd.unit_path(&ctx.home);
-        let commands = Launchd.activate(&ctx, &unit);
+        let unit = Launchd::default().unit_path(&ctx.home);
+        let commands = Launchd::default().activate(&ctx, &unit);
 
         assert_eq!(
             commands,
@@ -196,10 +215,10 @@ mod tests {
     #[test]
     fn deactivation_only_boots_out() {
         let ctx = context(HOME, "501");
-        let unit = Launchd.unit_path(&ctx.home);
+        let unit = Launchd::default().unit_path(&ctx.home);
 
         assert_eq!(
-            Launchd.deactivate(&ctx, &unit),
+            Launchd::default().deactivate(&ctx, &unit),
             vec![ShellCommand::tolerated(
                 "launchctl",
                 &["bootout", "gui/501/ing.getbuild.bridge"]
@@ -209,6 +228,6 @@ mod tests {
 
     #[test]
     fn launchd_asks_the_operator_for_nothing_after_install() {
-        assert_eq!(Launchd.after_install_hint(), None);
+        assert_eq!(Launchd::default().after_install_hint(), None);
     }
 }

@@ -35,6 +35,7 @@ print(json.dumps({'args':args,'env':{k:effective.get(k) for k in ['CLAUDE_CODE_A
     .to_string();
     std::fs::write(&user_path, &original).unwrap();
     let context = HarnessContext {
+        channel: crate::config::Channel::Prod,
         bridge_exe: "/fake/bridge".into(),
         mcp_socket: dir.path().join("socket"),
         state_root: dir.path().join("state"),

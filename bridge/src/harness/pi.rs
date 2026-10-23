@@ -109,6 +109,7 @@ impl Harness for PiHarness {
                 "BRIDGE_MCP_SOCKET",
                 context.mcp_socket.to_string_lossy().into_owned(),
             )
+            .env("BRIDGE_CHANNEL", context.channel.as_str())
             .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token)
             .env(
                 "BUILD_PI_MCP_COMMAND",
@@ -550,6 +551,7 @@ mod tests {
 
     fn context(state_root: &Path) -> HarnessContext {
         HarnessContext {
+            channel: crate::config::Channel::Prod,
             bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
             mcp_socket: PathBuf::from("/tmp/build-mcp.sock"),
             state_root: state_root.to_path_buf(),

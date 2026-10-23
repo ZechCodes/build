@@ -1,4 +1,4 @@
-# Rendered separately from the resource set: migrate before app rollout.
+# Migrate, then refuse app rollout until operator first-boot bootstrap is complete.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -27,7 +27,7 @@ spec:
         - name: migrate
           image: ghcr.io/zechcodes/build-app-dev:unbuilt
           imagePullPolicy: Always
-          command: ["skrift", "db", "upgrade", "heads"]
+          command: ["python", "-m", "buildapp.dev_bootstrap", "migrate-check"]
           securityContext:
             runAsNonRoot: true
             runAsUser: 10001

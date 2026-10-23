@@ -76,9 +76,13 @@ use build_bridge::{identity, pairing, service, transport};
 
 #[tokio::main]
 async fn main() {
-    // Reject a mistyped channel before any command can read or write state.
-    if let Err(error) = config::Channel::resolve(std::env::var("BRIDGE_CHANNEL").ok().as_deref()) {
-        exit_startup(error);
+    // Every dev command, including MCP, validates paths before accessing state.
+    match config::Channel::resolve(std::env::var("BRIDGE_CHANNEL").ok().as_deref()) {
+        Ok(config::Channel::Dev) => {
+            bridge_config();
+        }
+        Ok(config::Channel::Prod) => {}
+        Err(error) => exit_startup(error),
     }
     match std::env::args().nth(1).as_deref() {
         Some("serve") | None => serve().await,

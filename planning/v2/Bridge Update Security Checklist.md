@@ -56,3 +56,9 @@ install modes, confirmations and ticks. `bridge/tests/dev_channel.rs` checks
 helper refusal before state creation and channel-correct backup selection;
 `bridge/src/dev_mode_tests.rs` covers provisioned-key isolation and pinned
 service paths. All fixtures use injected or temporary homes.
+
+Dev path resolution also refuses production state aliases before command
+dispatch (including MCP): every state path and environment project override
+is checked against the canonical production root, following symlinks and
+resolving missing leaves without creating state. `dev_channel.rs` covers each
+override, symlinked roots/logs, dangling aliases, traversal and symlink loops.

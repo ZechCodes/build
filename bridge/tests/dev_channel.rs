@@ -263,7 +263,8 @@ fn dev_refuses_production_extra_projects_override() {
         |key| match key {
             "BRIDGE_CHANNEL" => Some("dev".into()),
             "BRIDGE_PROJECTS" => Some(format!(
-                "{}, {}=main", home.path().join("safe").display(),
+                "{}, {}=main",
+                home.path().join("safe").display(),
                 home.path().join(".build/missing/repo").display()
             )),
             _ => None,
@@ -315,9 +316,12 @@ fn dev_refuses_a_symlinked_production_root_and_default_state_or_log_alias() {
     let state = home.path().join(".local/state");
     std::fs::create_dir_all(&state).unwrap();
     symlink(&prod, state.join("build-dev")).unwrap();
-    let resolve_dev = || config::resolve(
-        |key| (key == "BRIDGE_CHANNEL").then(|| "dev".into()), home.path()
-    );
+    let resolve_dev = || {
+        config::resolve(
+            |key| (key == "BRIDGE_CHANNEL").then(|| "dev".into()),
+            home.path(),
+        )
+    };
     assert!(resolve_dev().unwrap_err().contains("state_root"));
     std::fs::remove_file(state.join("build-dev")).unwrap();
     std::fs::create_dir(state.join("build-dev")).unwrap();
@@ -335,28 +339,34 @@ fn dev_accepts_distinct_paths_with_a_production_name_prefix() {
             _ => None,
         },
         home.path(),
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(cfg.tasks_dir, home.path().join(".build-dev/missing/tasks"));
 }
 
 #[test]
 fn dev_cli_refuses_inherited_production_paths_before_creating_state() {
     let home = tempfile::tempdir().unwrap();
-    for args in [vec!["--version"], vec!["mcp", "--task", "unused"], vec!["backup", "backup.db"]] {
-    let output = Command::new(env!("CARGO_BIN_EXE_build-bridge"))
-        .env_clear()
-        .env("HOME", home.path())
-        .env("PATH", "/usr/bin:/bin")
-        .env("BRIDGE_CHANNEL", "dev")
-        .env("BRIDGE_CONFIG", ".build/config.json")
-        .current_dir(home.path())
-        .args(args)
-        .output().unwrap();
-    assert!(!output.status.success());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("BRIDGE_CONFIG"), "{error}");
-    assert!(error.contains("production state root"), "{error}");
-    assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
+    for args in [
+        vec!["--version"],
+        vec!["mcp", "--task", "unused"],
+        vec!["backup", "backup.db"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_build-bridge"))
+            .env_clear()
+            .env("HOME", home.path())
+            .env("PATH", "/usr/bin:/bin")
+            .env("BRIDGE_CHANNEL", "dev")
+            .env("BRIDGE_CONFIG", ".build/config.json")
+            .current_dir(home.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("BRIDGE_CONFIG"), "{error}");
+        assert!(error.contains("production state root"), "{error}");
+        assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
     }
 }
 

@@ -3,7 +3,8 @@
 //! overridden through `BRIDGE_*` variables (dev stacks and compose set them all
 //! explicitly).
 
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::{Component, Path, PathBuf};
 
 pub const DEFAULT_RELAY_URL: &str = "wss://relay.getbuild.ing";
 pub const DEFAULT_API_URL: &str = "https://getbuild.ing";
@@ -62,7 +63,8 @@ pub struct BridgeConfig {
 }
 
 /// Resolve config from an environment lookup and the user's home directory.
-/// Pure so the default/override matrix is unit-testable.
+/// Dev validates filesystem aliases without creating state. Prod keeps its
+/// original environment-only resolution.
 pub fn resolve(
     lookup: impl Fn(&str) -> Option<String>,
     home: &Path,
@@ -77,13 +79,7 @@ pub fn resolve(
         ),
     };
     let state_root = home.join(root);
-    let expand = |raw: String| -> PathBuf {
-        match raw.strip_prefix("~/") {
-            Some(rest) => home.join(rest),
-            None if raw == "~" => home.to_path_buf(),
-            None => PathBuf::from(raw),
-        }
-    };
+    let expand = |raw: String| expand_home(&raw, home);
     let api_url = lookup("BRIDGE_API_URL").unwrap_or_else(|| api.to_string());
     let worktrees = lookup("BRIDGE_WORKTREES")
         .map(expand)
@@ -99,7 +95,7 @@ pub fn resolve(
             .map(expand)
             .unwrap_or_else(|| state_root.join(leaf))
     };
-    Ok(BridgeConfig {
+    let config = BridgeConfig {
         channel,
         tasks_dir: state_path("BRIDGE_TASKS_DIR", "tasks"),
         config_path: state_path("BRIDGE_CONFIG", "config.json"),
@@ -118,7 +114,118 @@ pub fn resolve(
         mcp_socket,
         home: home.to_path_buf(),
         state_root,
-    })
+    };
+    if channel == Channel::Dev {
+        validate_dev_paths(&config, lookup("BRIDGE_PROJECTS").as_deref())?;
+    }
+    Ok(config)
+}
+
+fn expand_home(raw: &str, home: &Path) -> PathBuf {
+    match raw.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None if raw == "~" => home.to_path_buf(),
+        None => PathBuf::from(raw),
+    }
+}
+
+fn validate_dev_paths(config: &BridgeConfig, projects: Option<&str>) -> Result<(), String> {
+    let prod = canonicalize_state_path(&config.home.join(".build"))
+        .map_err(|error| format!("cannot resolve production state root: {error}"))?;
+    for (name, path) in [
+        ("state_root", &config.state_root),
+        ("BRIDGE_IDENTITY_FILE", &config.identity_file),
+        ("BRIDGE_CONFIG", &config.config_path),
+        ("BRIDGE_TASKS_DIR", &config.tasks_dir),
+        ("BRIDGE_PROJECTS_DIR", &config.projects_dir),
+        ("BRIDGE_WORKTREES", &config.worktrees),
+        ("BRIDGE_MCP_SOCKET", &config.mcp_socket),
+        ("log_dir", &config.log_dir),
+    ] {
+        validate_dev_path(name, path, &prod)?;
+    }
+    if let Some(repo) = &config.repo {
+        validate_dev_path("BRIDGE_REPO", &expand_home(repo, &config.home), &prod)?;
+    }
+    for entry in projects.unwrap_or_default().split(',') {
+        let entry = entry.trim();
+        if !entry.is_empty() {
+            let path = entry.split_once('=').map_or(entry, |(path, _)| path);
+            validate_dev_path("BRIDGE_PROJECTS", &expand_home(path, &config.home), &prod)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_dev_path(name: &str, path: &Path, prod: &Path) -> Result<(), String> {
+    let resolved = canonicalize_state_path(path)
+        .map_err(|error| format!("cannot resolve {name} ({}): {error}", path.display()))?;
+    if resolved.starts_with(prod) {
+        return Err(format!(
+            "BRIDGE_CHANNEL=dev refuses {name} ({}): {} is within the production state root {}",
+            path.display(),
+            resolved.display(),
+            prod.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve existing symlinks in order, retaining missing components for a fresh
+/// installation. Resolving `..` only after symlinks prevents alias/../ escapes.
+fn canonicalize_state_path(path: &Path) -> io::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    resolve_state_components(&absolute, 0)
+}
+
+fn resolve_state_components(path: &Path, symlinks: u32) -> io::Result<PathBuf> {
+    let mut resolved = PathBuf::new();
+    let mut components = path.components();
+    while let Some(component) = components.next() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::RootDir | Component::Prefix(_) => resolved.push(component),
+            Component::Normal(name) => {
+                resolved.push(name);
+                if let Some(target) = symlink_target(&resolved)? {
+                    if symlinks >= 40 {
+                        return Err(io::Error::other("too many state path symlinks"));
+                    }
+                    resolved.pop();
+                    return resolve_state_components(
+                        &resolved.join(target).join(components.as_path()),
+                        symlinks + 1,
+                    );
+                }
+                resolved = canonicalize_existing(&resolved)?;
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+fn canonicalize_existing(path: &Path) -> io::Result<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(resolved) => Ok(resolved),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(error),
+    }
+}
+
+fn symlink_target(path: &Path) -> io::Result<Option<PathBuf>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_symlink() => std::fs::read_link(path).map(Some),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]

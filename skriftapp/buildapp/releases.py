@@ -6,6 +6,7 @@ import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import urlsplit
 
 DEFAULT_RELEASES_REPO = "ZechCodes/build-releases"
 RELEASES_REPO_ENV = "RELEASES_REPO"
@@ -68,7 +69,21 @@ def install_script_url(public_base_url: str, *, desktop: bool = False) -> str:
     return f"{public_base_url.rstrip('/')}{path}"
 
 
-def install_command(public_base_url: str, *, desktop: bool = False) -> str:
+DEV_INSTALLATION_NOTICE = (
+    "Dev installation is not available here. Use a source-built bridge from a reviewed "
+    "commit in a separate dev binary location. Pairing and local service installation "
+    "require separate authorization."
+)
+
+
+def is_dev_origin(public_base_url: str) -> bool:
+    """The hosted dev config pins this origin; never trust the request Host header."""
+    return urlsplit(public_base_url).hostname == "dev.getbuild.ing"
+
+
+def install_command(public_base_url: str, *, desktop: bool = False) -> str | None:
+    if is_dev_origin(public_base_url):
+        return None
     return f'curl -fsSL "{install_script_url(public_base_url, desktop=desktop)}" | sh'
 
 
@@ -84,6 +99,19 @@ def render_install_script(script_text: str) -> str:
 
 
 def downloads_payload(public_base_url: str, releases_url: str | None) -> dict:
+    if is_dev_origin(public_base_url):
+        return {
+            "install_command": None,
+            "install_script_url": None,
+            "releases_url": None,
+            "desktop_install_command": None,
+            "desktop_install_script_url": None,
+            "desktop_releases_url": None,
+            "checksums_url": None,
+            "platforms": [],
+            "installation_notice": DEV_INSTALLATION_NOTICE,
+            "docs_url": "/docs#setup",
+        }
     return {
         "install_command": install_command(public_base_url),
         "install_script_url": install_script_url(public_base_url),

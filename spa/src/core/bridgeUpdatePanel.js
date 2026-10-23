@@ -1,3 +1,4 @@
+import { developmentInstallationHtml, isDevelopmentChannel } from "./developmentInstallation.js";
 import { esc } from "./text.js";
 import {
   bridgeCanInstall, bridgeCanReplaceDevelopmentBuild, bridgeUpdateAvailable, bridgeUpdateStatus,
@@ -86,6 +87,10 @@ function setActionAvailability({ check, now, idle }, status, busy) {
 const INSTALL_NOTES = { now: "Starting installation…", idle: "Scheduling installation…" };
 
 export function mountBridgeUpdatePanel(host, { deviceId, callRpc }) {
+  if (isDevelopmentChannel()) {
+    host.innerHTML = `<div class="panel bridge-update-panel"><h3>Dev bridge updates</h3>${developmentInstallationHtml()}</div>`;
+    return () => {};
+  }
   watchBridgeUpdateDevice(deviceId);
   let active = true;
   let loading = true;

@@ -10,6 +10,7 @@
 // connection gate (views/gate.js) is the caller's job, as is deciding when the
 // served-version watcher has something newer to reload onto.
 
+import { developmentInstallationHtml, isDevelopmentChannel } from "../core/developmentInstallation.js";
 import { esc } from "../core/text.js";
 
 const PANEL_STYLE = "max-width:680px;margin:44px auto 0;padding:0 16px";
@@ -57,7 +58,7 @@ export function renderBridgeBehindAppGate(
 ) {
   const device = esc(String(deviceName || "this device"));
   const command = String(installCommand || "");
-  const commandBlock = command
+  const commandBlock = isDevelopmentChannel() ? developmentInstallationHtml() : command
     ? `<div class="row" style="margin-top:12px"><span class="v mono" style="font-size:11.5px;word-break:break-all">${esc(command)}</span>
        <button class="btn" id="gate-install-copy" style="margin-left:auto">Copy</button></div>`
     : '<div class="dim" style="font-size:12.5px;margin-top:12px">Run the Build installer on that machine again to update its bridge.</div>';

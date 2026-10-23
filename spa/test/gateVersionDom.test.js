@@ -11,6 +11,12 @@ import { resolve } from "node:path";
 
 import { fakeSession } from "./deviceSessionFixture.js";
 
+const { channel } = vi.hoisted(() => ({ channel: { value: "prod" } }));
+vi.mock("../src/config.js", async (original) => ({
+  ...await original(),
+  get BUILD_CHANNEL() { return channel.value; },
+}));
+
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const App = { devices: [], gated: false, updateAvailable: false, viewingContext: {} };
@@ -99,6 +105,7 @@ const greeted = (deviceId, selection) => {
 };
 
 beforeEach(async () => {
+  channel.value = "prod";
   vi.clearAllMocks();
   vi.resetModules();
   App.devices = [{ id: "d1", name: "studio", status: "online" }];
@@ -268,4 +275,13 @@ describe("the version gates", () => {
     expect(startFeed).not.toHaveBeenCalled();
     expect(render).not.toHaveBeenCalled();
   });
+});
+
+it("does not mint an installer when an old bridge meets the dev app", async () => {
+  channel.value = "dev";
+  enterApp();
+  greeted("d1", { unsupported: "bridge", version: "0.9.0" });
+  await flush();
+  expect(document.getElementById("root").textContent).toContain("Build the dev bridge from reviewed source");
+  expect(mintInstallCommand).not.toHaveBeenCalled();
 });

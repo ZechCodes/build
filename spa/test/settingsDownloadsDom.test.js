@@ -9,6 +9,12 @@ import { resolve } from "node:path";
 import { asset, downloadsPayload, mintedCommand } from "./downloadsFixture.js";
 import { wipeCache } from "../src/core/localCache.js";
 
+const { channel } = vi.hoisted(() => ({ channel: { value: "prod" } }));
+vi.mock("../src/config.js", async (original) => ({
+  ...await original(),
+  get BUILD_CHANNEL() { return channel.value; },
+}));
+
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const DOWNLOADS = downloadsPayload({
@@ -62,6 +68,7 @@ vi.mock("../src/sheets/addDevice.js", () => ({ openAddDevice: () => {} }));
 let renderSettings;
 
 beforeEach(async () => {
+  channel.value = "prod";
   await wipeCache();
   vi.clearAllMocks();
   deviceListeners.clear();
@@ -112,4 +119,14 @@ describe("Settings → Downloads", () => {
     });
     expect(document.querySelector("#devlist .revoke")).toBeTruthy();
   });
+});
+
+it("dev settings withholds release installation and does not ask users to install above", async () => {
+  channel.value = "dev";
+  await renderSettings();
+  await vi.waitFor(() => expect(document.getElementById("devlist").textContent).not.toContain("loading"));
+  expect(document.getElementById("root").textContent).toContain("Build the dev bridge from reviewed source");
+  expect(document.getElementById("root").textContent).not.toContain("Install the bridge");
+  expect(document.querySelector("#downloads a[download]")).toBeNull();
+  expect(fetchDownloads).not.toHaveBeenCalled();
 });

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from litestar import Litestar
+from litestar.di import Provide
 from litestar.testing import TestClient
 
 from buildapp.root_controller import RootController
@@ -12,6 +13,9 @@ from buildapp.root_controller import RootController
 @pytest.mark.parametrize("path", ["/install.sh", "/install-desktop.sh"])
 def test_anonymous_installers_ignore_legacy_tokens_and_query_overrides(monkeypatch, path):
     monkeypatch.setenv("RELEASES_REPO", "example/artifacts")
+    monkeypatch.setitem(RootController.dependencies, "public_base_url", Provide(
+        lambda: "https://getbuild.ing", sync_to_thread=False,
+    ))
     with TestClient(Litestar([RootController])) as client:
         response = client.get(path, params={"t": "'; touch /tmp/pwned", "repo": "evil/repo"})
     assert response.status_code == 200

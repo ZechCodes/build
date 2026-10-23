@@ -145,3 +145,16 @@ future hardening, not prerequisites or work in these three tasks.
 Validation follows existing pairing/update/push security-checklist patterns:
 write tests first, record passing evidence, never claim future controls verified.
 This planning revision changes only this document and performs no live actions.
+
+
+## Dev onboarding installation boundary (#791)
+
+The hosted dev app derives its installation policy from the configured public
+origin `https://dev.getbuild.ing`, never an incoming Host header. Dev download
+metadata withholds commands, installer/release URLs and platform assets; both
+installer routes and direct release-asset routes return 404. Dev docs and invite
+email withhold installation pending the separately authorized source-built dev
+binary workflow. The SPA also withholds installation and update controls from
+its build-time dev channel, including when old production metadata is cached.
+Pairing and local service installation remain separate authorized actions.
+Production downloads and installation behavior stay unchanged.

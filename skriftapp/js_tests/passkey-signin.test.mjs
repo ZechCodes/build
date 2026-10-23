@@ -381,3 +381,16 @@ test("the page goes on with the fragment once the passkey is accepted", async ()
   assert.equal(went.length, 1);
   assert.match(went[0], /#\/pair\/ZSAC-ABU6$/);
 });
+
+for (const kind of ["signin", "signup"]) {
+  test(`a ${kind} site verification failure keeps recovery on the original sign-in page`, async () => {
+    const { flow, credentials, server } = page();
+    credentials.modal = "SecurityError";
+
+    const outcome = await (kind === "signin" ? flow.signIn() : flow.signUp({ email: "invitee@example.com" }));
+
+    assert.equal(outcome.error, "Passkeys could not verify this site. Open the original sign-in page and try again.");
+    assert.equal(outcome.redirect, undefined);
+    assert.deepEqual(server.calls, [kind === "signin" ? "options" : "register/options"]);
+  });
+}

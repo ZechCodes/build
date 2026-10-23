@@ -276,8 +276,8 @@ pub fn manager_for(os: &str) -> Option<Box<dyn ServiceManager>> {
 /// This selection never consults process environment.
 pub fn manager_for_channel(os: &str, channel: Channel) -> Option<Box<dyn ServiceManager>> {
     match os {
-        "macos" => Some(Box::new(launchd::LaunchAgent::for_channel(channel))),
-        "linux" => Some(Box::new(systemd::SystemdUnit::for_channel(channel))),
+        "macos" => Some(Box::new(Launchd::for_channel(channel))),
+        "linux" => Some(Box::new(Systemd::for_channel(channel))),
         _ => None,
     }
 }
@@ -673,7 +673,9 @@ mod tests {
             );
             assert_eq!(
                 dev.unit_path(home),
-                manager_for_channel(os, Channel::Dev).unwrap().unit_path(home)
+                manager_for_channel(os, Channel::Dev)
+                    .unwrap()
+                    .unit_path(home)
             );
             assert_ne!(default.unit_path(home), dev.unit_path(home));
         }

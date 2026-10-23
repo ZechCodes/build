@@ -23,47 +23,21 @@ const AGENTS_SLICE_NOT_SET: &str =
 /// One MiB in bytes.
 const MIB: u64 = 1024 * 1024;
 
-pub struct Systemd;
-
-pub(super) struct SystemdUnit {
-    unit_name: &'static str,
+#[derive(Default)]
+pub struct Systemd {
+    channel: Channel,
 }
 
-impl SystemdUnit {
-    pub(super) fn for_channel(channel: Channel) -> Self {
-        Self {
-            unit_name: match channel {
-                Channel::Prod => UNIT_NAME,
-                Channel::Dev => "build-bridge-dev.service",
-            },
+impl Systemd {
+    pub fn for_channel(channel: Channel) -> Self {
+        Self { channel }
+    }
+
+    fn unit_name(&self) -> &'static str {
+        match self.channel {
+            Channel::Prod => UNIT_NAME,
+            Channel::Dev => "build-bridge-dev.service",
         }
-    }
-}
-
-/// Keep the production manager available to callers that do not select a channel.
-impl ServiceManager for Systemd {
-    fn name(&self) -> &'static str {
-        SystemdUnit::for_channel(Channel::Prod).name()
-    }
-
-    fn unit_path(&self, home: &Path) -> PathBuf {
-        SystemdUnit::for_channel(Channel::Prod).unit_path(home)
-    }
-
-    fn render_unit(&self, config: &ServiceConfig) -> String {
-        SystemdUnit::for_channel(Channel::Prod).render_unit(config)
-    }
-
-    fn activate(&self, ctx: &ServiceContext, unit_path: &Path) -> Vec<ShellCommand> {
-        SystemdUnit::for_channel(Channel::Prod).activate(ctx, unit_path)
-    }
-
-    fn deactivate(&self, ctx: &ServiceContext, unit_path: &Path) -> Vec<ShellCommand> {
-        SystemdUnit::for_channel(Channel::Prod).deactivate(ctx, unit_path)
-    }
-
-    fn after_install_hint(&self) -> Option<&'static str> {
-        SystemdUnit::for_channel(Channel::Prod).after_install_hint()
     }
 }
 
@@ -83,13 +57,13 @@ fn systemd_quote(value: &str) -> String {
     )
 }
 
-impl ServiceManager for SystemdUnit {
+impl ServiceManager for Systemd {
     fn name(&self) -> &'static str {
         "systemd user unit"
     }
 
     fn unit_path(&self, home: &Path) -> PathBuf {
-        home.join(".config/systemd/user").join(self.unit_name)
+        home.join(".config/systemd/user").join(self.unit_name())
     }
 
     /// Restart on failure rather than `always`: a bridge that exits 0 was told
@@ -150,7 +124,7 @@ impl ServiceManager for SystemdUnit {
     /// starts, so the first agent it spawns already runs behind the user's
     /// apps; the ceiling is sized from this machine's RAM.
     fn activate(&self, _ctx: &ServiceContext, _unit_path: &Path) -> Vec<ShellCommand> {
-        activation_commands(self.unit_name, crate::priority::physical_memory_bytes())
+        activation_commands(self.unit_name(), crate::priority::physical_memory_bytes())
     }
 
     /// Both tolerated: uninstalling a unit that was never enabled still has to
@@ -158,7 +132,10 @@ impl ServiceManager for SystemdUnit {
     /// bridge's agents run under them again.
     fn deactivate(&self, _ctx: &ServiceContext, _unit_path: &Path) -> Vec<ShellCommand> {
         vec![
-            ShellCommand::tolerated("systemctl", &["--user", "disable", "--now", self.unit_name]),
+            ShellCommand::tolerated(
+                "systemctl",
+                &["--user", "disable", "--now", self.unit_name()],
+            ),
             ShellCommand::tolerated("systemctl", &["--user", "daemon-reload"]),
         ]
     }
@@ -204,14 +181,14 @@ mod tests {
     #[test]
     fn unit_path_is_the_users_systemd_dir() {
         assert_eq!(
-            Systemd.unit_path(Path::new("/home/dev")),
+            Systemd::default().unit_path(Path::new("/home/dev")),
             PathBuf::from("/home/dev/.config/systemd/user/build-bridge.service")
         );
     }
 
     #[test]
     fn unit_runs_serve_restarts_on_failure_and_logs_under_the_state_dir() {
-        let unit = Systemd.render_unit(&sample_config(HOME));
+        let unit = Systemd::default().render_unit(&sample_config(HOME));
         assert!(unit.contains("ExecStart=\"/home/dev/.local/bin/build-bridge\" serve\n"));
         assert!(unit.contains("Restart=on-failure\n"));
         assert!(unit.contains("RestartSec=5\nTimeoutStopSec=30\nCPUWeight=500\n"));
@@ -226,7 +203,7 @@ mod tests {
     /// — see deploy/OPS.md, "Priority".
     #[test]
     fn unit_text_is_pinned() {
-        let unit = Systemd.render_unit(&ServiceConfig {
+        let unit = Systemd::default().render_unit(&ServiceConfig {
             env: vec![],
             ..sample_config(HOME)
         });
@@ -252,7 +229,7 @@ mod tests {
 
     #[test]
     fn unit_carries_each_env_pair_as_its_own_environment_line() {
-        let unit = Systemd.render_unit(&sample_config(HOME));
+        let unit = Systemd::default().render_unit(&sample_config(HOME));
         assert!(unit.contains("Environment=\"BRIDGE_RELAY_URL=wss://relay.getbuild.ing\"\n"));
         assert!(unit.contains("Environment=\"BRIDGE_API_URL=https://getbuild.ing\"\n"));
     }
@@ -264,7 +241,7 @@ mod tests {
     fn the_unit_carries_the_pinned_path() {
         let env = crate::service::with_install_path(vec![], || Some("/home/dev/.local/bin".into()));
 
-        let unit = Systemd.render_unit(&ServiceConfig {
+        let unit = Systemd::default().render_unit(&ServiceConfig {
             env,
             ..sample_config(HOME)
         });
@@ -277,7 +254,7 @@ mod tests {
 
     #[test]
     fn unit_quotes_values_with_spaces_quotes_and_backslashes() {
-        let unit = Systemd.render_unit(&ServiceConfig {
+        let unit = Systemd::default().render_unit(&ServiceConfig {
             env: vec![("BRIDGE_DEVICE_NAME".into(), r#"Ada's "Mac" \ desk"#.into())],
             ..sample_config(HOME)
         });
@@ -289,7 +266,7 @@ mod tests {
 
     #[test]
     fn exec_start_quotes_the_binary_path() {
-        let unit = Systemd.render_unit(&ServiceConfig {
+        let unit = Systemd::default().render_unit(&ServiceConfig {
             binary_path: PathBuf::from("/home/dev/my tools/100% build/build-bridge"),
             ..sample_config(HOME)
         });
@@ -301,7 +278,7 @@ mod tests {
 
     #[test]
     fn unit_escapes_percent_so_systemd_expands_no_specifier() {
-        let unit = Systemd.render_unit(&ServiceConfig {
+        let unit = Systemd::default().render_unit(&ServiceConfig {
             env: vec![("BRIDGE_DEVICE_NAME".into(), "100% mine %H".into())],
             ..sample_config(HOME)
         });
@@ -343,10 +320,10 @@ mod tests {
     #[test]
     fn activate_sizes_the_agents_slice_from_this_machines_memory() {
         let ctx = context(HOME, "1000");
-        let unit = Systemd.unit_path(&ctx.home);
+        let unit = Systemd::default().unit_path(&ctx.home);
 
         assert_eq!(
-            Systemd.activate(&ctx, &unit),
+            Systemd::default().activate(&ctx, &unit),
             activation_commands(UNIT_NAME, crate::priority::physical_memory_bytes())
         );
     }
@@ -405,10 +382,10 @@ mod tests {
     #[test]
     fn deactivation_disables_now_then_reloads_and_tolerates_failure() {
         let ctx = context(HOME, "1000");
-        let unit = Systemd.unit_path(&ctx.home);
+        let unit = Systemd::default().unit_path(&ctx.home);
 
         assert_eq!(
-            Systemd.deactivate(&ctx, &unit),
+            Systemd::default().deactivate(&ctx, &unit),
             vec![
                 ShellCommand::tolerated(
                     "systemctl",
@@ -421,7 +398,9 @@ mod tests {
 
     #[test]
     fn after_install_hint_names_enable_linger() {
-        let hint = Systemd.after_install_hint().expect("systemd has a hint");
+        let hint = Systemd::default()
+            .after_install_hint()
+            .expect("systemd has a hint");
         assert!(hint.contains("enable-linger"));
     }
 }

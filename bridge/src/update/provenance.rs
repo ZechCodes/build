@@ -387,22 +387,22 @@ mod tests {
             env: vec![],
         };
         assert!(unit_runs_binary_for(
-            &Systemd.render_unit(&config),
+            &Systemd::default().render_unit(&config),
             binary,
             "linux"
         ));
         assert!(unit_runs_binary_for(
-            &Launchd.render_unit(&config),
+            &Launchd::default().render_unit(&config),
             binary,
             "macos"
         ));
         assert!(!unit_runs_binary_for(
-            &Systemd.render_unit(&config),
+            &Systemd::default().render_unit(&config),
             Path::new("/tmp/other"),
             "linux"
         ));
         assert!(!unit_runs_binary_for(
-            &Launchd.render_unit(&config),
+            &Launchd::default().render_unit(&config),
             Path::new("/tmp/other"),
             "macos"
         ));

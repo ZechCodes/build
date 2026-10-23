@@ -10,47 +10,21 @@ use crate::config::Channel;
 
 use super::{ServiceConfig, ServiceContext, ServiceManager, ShellCommand, SERVICE_LABEL};
 
-pub struct Launchd;
-
-pub(super) struct LaunchAgent {
-    label: &'static str,
+#[derive(Default)]
+pub struct Launchd {
+    channel: Channel,
 }
 
-impl LaunchAgent {
-    pub(super) fn for_channel(channel: Channel) -> Self {
-        Self {
-            label: match channel {
-                Channel::Prod => SERVICE_LABEL,
-                Channel::Dev => "ing.getbuild.bridge.dev",
-            },
+impl Launchd {
+    pub fn for_channel(channel: Channel) -> Self {
+        Self { channel }
+    }
+
+    fn label(&self) -> &'static str {
+        match self.channel {
+            Channel::Prod => SERVICE_LABEL,
+            Channel::Dev => "ing.getbuild.bridge.dev",
         }
-    }
-}
-
-/// Keep the production manager available to callers that do not select a channel.
-impl ServiceManager for Launchd {
-    fn name(&self) -> &'static str {
-        LaunchAgent::for_channel(Channel::Prod).name()
-    }
-
-    fn unit_path(&self, home: &Path) -> PathBuf {
-        LaunchAgent::for_channel(Channel::Prod).unit_path(home)
-    }
-
-    fn render_unit(&self, config: &ServiceConfig) -> String {
-        LaunchAgent::for_channel(Channel::Prod).render_unit(config)
-    }
-
-    fn activate(&self, ctx: &ServiceContext, unit_path: &Path) -> Vec<ShellCommand> {
-        LaunchAgent::for_channel(Channel::Prod).activate(ctx, unit_path)
-    }
-
-    fn deactivate(&self, ctx: &ServiceContext, unit_path: &Path) -> Vec<ShellCommand> {
-        LaunchAgent::for_channel(Channel::Prod).deactivate(ctx, unit_path)
-    }
-
-    fn after_install_hint(&self) -> Option<&'static str> {
-        LaunchAgent::for_channel(Channel::Prod).after_install_hint()
     }
 }
 
@@ -60,14 +34,14 @@ fn xml_escape(raw: &str) -> String {
         .replace('>', "&gt;")
 }
 
-impl ServiceManager for LaunchAgent {
+impl ServiceManager for Launchd {
     fn name(&self) -> &'static str {
         "launchd LaunchAgent"
     }
 
     fn unit_path(&self, home: &Path) -> PathBuf {
         home.join("Library/LaunchAgents")
-            .join(format!("{}.plist", self.label))
+            .join(format!("{}.plist", self.label()))
     }
 
     /// Run at load, keep alive across crashes, log under the bridge's own state
@@ -122,7 +96,7 @@ impl ServiceManager for LaunchAgent {
   </dict>
 </plist>
 "#,
-            label = self.label,
+            label = self.label(),
         )
     }
 
@@ -130,7 +104,7 @@ impl ServiceManager for LaunchAgent {
     /// was loaded — normal, and tolerated.
     fn activate(&self, ctx: &ServiceContext, unit_path: &Path) -> Vec<ShellCommand> {
         vec![
-            ShellCommand::tolerated("launchctl", &["bootout", &gui_service(ctx, self.label)]),
+            ShellCommand::tolerated("launchctl", &["bootout", &gui_service(ctx, self.label())]),
             ShellCommand::required(
                 "launchctl",
                 &["bootstrap", &gui_domain(ctx), &unit_path.to_string_lossy()],
@@ -141,7 +115,7 @@ impl ServiceManager for LaunchAgent {
     fn deactivate(&self, ctx: &ServiceContext, _unit_path: &Path) -> Vec<ShellCommand> {
         vec![ShellCommand::tolerated(
             "launchctl",
-            &["bootout", &gui_service(ctx, self.label)],
+            &["bootout", &gui_service(ctx, self.label())],
         )]
     }
 
@@ -169,7 +143,7 @@ mod tests {
 
     #[test]
     fn plist_runs_serve_keeps_alive_and_carries_env() {
-        let plist = Launchd.render_unit(&sample_config(HOME));
+        let plist = Launchd::default().render_unit(&sample_config(HOME));
         assert!(plist.contains("<string>ing.getbuild.bridge</string>"));
         assert!(plist.contains("<string>/Users/dev/.local/bin/build-bridge</string>"));
         assert!(plist.contains("<string>serve</string>"));
@@ -190,7 +164,7 @@ mod tests {
     fn the_plist_carries_the_pinned_path() {
         let env = with_install_path(vec![], || Some("/opt/homebrew/bin:/usr/bin".to_string()));
 
-        let plist = Launchd.render_unit(&ServiceConfig {
+        let plist = Launchd::default().render_unit(&ServiceConfig {
             env,
             ..sample_config(HOME)
         });
@@ -203,7 +177,7 @@ mod tests {
     fn plist_escapes_xml_significant_characters() {
         let mut config = sample_config(HOME);
         config.env = vec![("BRIDGE_DEVICE_NAME".into(), "Ada's <Mac> & co".into())];
-        let plist = Launchd.render_unit(&config);
+        let plist = Launchd::default().render_unit(&config);
         assert!(plist.contains("Ada's &lt;Mac&gt; &amp; co"));
         assert!(!plist.contains("<Mac>"));
     }
@@ -211,7 +185,7 @@ mod tests {
     #[test]
     fn plist_path_is_the_user_launch_agent() {
         assert_eq!(
-            Launchd.unit_path(Path::new("/Users/dev")),
+            Launchd::default().unit_path(Path::new("/Users/dev")),
             PathBuf::from("/Users/dev/Library/LaunchAgents/ing.getbuild.bridge.plist")
         );
     }
@@ -219,8 +193,8 @@ mod tests {
     #[test]
     fn activation_boots_out_then_bootstraps_in_the_users_gui_domain() {
         let ctx = context(HOME, "501");
-        let unit = Launchd.unit_path(&ctx.home);
-        let commands = Launchd.activate(&ctx, &unit);
+        let unit = Launchd::default().unit_path(&ctx.home);
+        let commands = Launchd::default().activate(&ctx, &unit);
 
         assert_eq!(
             commands,
@@ -241,10 +215,10 @@ mod tests {
     #[test]
     fn deactivation_only_boots_out() {
         let ctx = context(HOME, "501");
-        let unit = Launchd.unit_path(&ctx.home);
+        let unit = Launchd::default().unit_path(&ctx.home);
 
         assert_eq!(
-            Launchd.deactivate(&ctx, &unit),
+            Launchd::default().deactivate(&ctx, &unit),
             vec![ShellCommand::tolerated(
                 "launchctl",
                 &["bootout", "gui/501/ing.getbuild.bridge"]
@@ -254,6 +228,6 @@ mod tests {
 
     #[test]
     fn launchd_asks_the_operator_for_nothing_after_install() {
-        assert_eq!(Launchd.after_install_hint(), None);
+        assert_eq!(Launchd::default().after_install_hint(), None);
     }
 }

@@ -6,3 +6,6 @@ export const DEV_INSTALLATION_NOTICE = "Release installation is unavailable on t
 
 export const developmentInstallationHtml = () =>
   `<p class="dim">${DEV_INSTALLATION_NOTICE}</p><a href="/docs#setup">Dev setup documentation</a>`;
+
+export const developmentPairingLateText = (name) =>
+  `${name || "Your device"} was approved but has not come online. ${DEV_INSTALLATION_NOTICE}`;

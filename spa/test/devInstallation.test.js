@@ -3,7 +3,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { downloadsHtml, downloadsPlaceholderHtml, mountDownloads } from "../src/core/downloads.js";
 import { renderBridgeBehindAppGate } from "../src/views/versionGate.js";
 import { mountBridgeUpdatePanel } from "../src/core/bridgeUpdatePanel.js";
-import { pairingLateText } from "../src/core/text.js";
+import { openAddDevice } from "../src/sheets/addDevice.js";
+import { developmentPairingLateText } from "../src/core/developmentInstallation.js";
 import { downloadsPayload } from "./downloadsFixture.js";
 
 vi.mock("../src/config.js", async (original) => ({ ...await original(), BUILD_CHANNEL: "dev" }));
@@ -46,6 +47,15 @@ it("withholds release update controls and RPCs on dev", () => {
 });
 
 it("keeps a delayed pairing notice from suggesting the production service", () => {
-  host.textContent = pairingLateText("Dev laptop");
+  host.textContent = developmentPairingLateText("Dev laptop");
   expectSourceGuidance();
+});
+
+it("warns pairing-link arrivals about a separately authorized source-built dev bridge", () => {
+  document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
+  openAddDevice(vi.fn(), { fromLink: true });
+  const warning = document.querySelector("[data-link-warning]").textContent;
+  expect(warning).toContain("separately authorized");
+  expect(warning).toContain("source-built dev bridge");
+  expect(warning).not.toMatch(/installer|build-bridge pair/);
 });

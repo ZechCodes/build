@@ -3,6 +3,7 @@
 // the bridge's approve link, the code arrives filled in and is looked up at
 // once; approving is still the reader's press.
 
+import { isDevelopmentChannel } from "../core/developmentInstallation.js";
 import { $ } from "../dom.js";
 import { lookupDevice, approveDevice } from "../api.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
@@ -17,12 +18,17 @@ const LINK_ARRIVAL = {
   warningHtml: `<div class="addwarn" data-link-warning>Only approve if you just ran the installer or
     <code>build-bridge pair</code> on a machine you own. Approving gives that machine access to your account.</div>`,
 };
+const DEV_LINK_ARRIVAL = {
+  subtitleHtml: "A pairing link opened this.",
+  warningHtml: '<div class="addwarn" data-link-warning>Only approve if you just completed separately authorized pairing with a source-built dev bridge on a machine you own. Approving gives that machine access to your dev account.</div>',
+};
 const TYPED = { subtitleHtml: "Enter the pairing code your bridge printed on startup.", warningHtml: "" };
 
 export function openAddDevice(onDone, { code = "", fromLink = false } = {}) {
   const sheet = $("#sheet");
   const scrim = $("#scrim");
-  const arrival = fromLink ? LINK_ARRIVAL : TYPED;
+  const linkArrival = isDevelopmentChannel() ? DEV_LINK_ARRIVAL : LINK_ARRIVAL;
+  const arrival = fromLink ? linkArrival : TYPED;
   sheet.innerHTML = settingsSheetHtml({
     title: "Add a device",
     subtitleHtml: arrival.subtitleHtml,

@@ -7,7 +7,7 @@
 // has nothing to stand on: the gate takes the app back and says which machines
 // it is waiting for, and hands it straight back when one of them lands.
 
-import { isDevelopmentChannel } from "../core/developmentInstallation.js";
+import { developmentPairingLateText, isDevelopmentChannel } from "../core/developmentInstallation.js";
 import { $ } from "../dom.js";
 import {
   allDevicesOfflineText,
@@ -548,7 +548,7 @@ const WAITING_TEXT = {
   blocked: devicesBlockedText,
   unreached: devicesNotReachedYetText,
   lone: (devices) => deviceUnreachableText(devices[0].name, contextFor(devices[0].id)?.offlineSince || Date.now()),
-  neverSeen: (devices) => pairingLateText(devices[0].name),
+  neverSeen: (devices) => isDevelopmentChannel() ? developmentPairingLateText(devices[0].name) : pairingLateText(devices[0].name),
   all: allDevicesOfflineText,
 };
 

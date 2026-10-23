@@ -360,8 +360,12 @@ fn resolve_runtime_paths(config: BridgeConfig) -> Result<RuntimePaths, String> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
-    let harness_context = HarnessContext::resolved(config.mcp_socket.clone(), state_root.into())
-        .map_err(|error| format!("cannot resolve harness runtime: {error}"))?;
+    let harness_context = HarnessContext::resolved_for_channel(
+        config.mcp_socket.clone(),
+        state_root.into(),
+        config.channel,
+    )
+    .map_err(|error| format!("cannot resolve harness runtime: {error}"))?;
     let ice_policy = IcePolicy::resolve(|key| std::env::var(key).ok())?;
     Ok(RuntimePaths {
         ice_policy,

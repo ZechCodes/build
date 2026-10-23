@@ -83,6 +83,16 @@ few are owned by the module they tune and read there instead. Examples:
 `BRIDGE_ICE_*` policy in `bridge/src/rtc/policy.rs`. To find a variable, grep
 for it.
 
+`config.rs::resolve` selects `BRIDGE_CHANNEL` (`prod` when absent; `dev`;
+anything else errors before command dispatch). Dev defaults API/web to
+`https://dev.getbuild.ing`, relay to `wss://relay-dev.getbuild.ing`, and all
+bridge state to `~/.local/state/build-dev/`: identity, config, tasks/SQLite and
+documents, projects, worktrees, `mcp.sock`, and logs. Individual `BRIDGE_*`
+overrides still win. Backup and service installation use the same resolved
+paths as serve. Service environments pin the channel, URLs and resolved paths;
+MCP launches carry the channel and socket, while private-key stripping remains.
+Dev ignores environment-provisioned device keys and pairs its own identity.
+
 The processes the daemon starts inherit its environment, with two exceptions
 for agent sessions (PTY harnesses, the ADK session, the codex app server) and
 CLI version probes: they drop a parent agent's session markers
@@ -2958,6 +2968,13 @@ nothing else
 
 ### Update and install
 
+`BRIDGE_CHANNEL=dev` disables the updater independently of whether a binary
+has release provenance: no checks, installs (even confirmed replacement),
+schedules, staging, helper dispatch, recovery, probation or heartbeat. Its
+`UpdateService` is an inert status service that reads no updater files and
+calls no backend. This is separate from a production-channel development
+binary, whose explicit release-replacement behavior below is unchanged.
+
 - `bridge/src/update/`: `UpdateService` (`service.rs`) checks the public releases
   repo (`release.rs`) and verifies the signed `SHA256SUMS`. `installer.rs` runs a
   detached helper (via `systemd-run` on Linux) that swaps the binary, watches the
@@ -2989,7 +3006,9 @@ nothing else
   error saved before kinds were kept counts as an install's only on a
   release build with a saved attempt or a helper result on disk.
 - `bridge/src/service/`: `install-service` writes the `build-bridge.service`
-  systemd user unit (`systemd.rs`) or a LaunchAgent (`launchd.rs`).
+  systemd user unit (`systemd.rs`) or a LaunchAgent (`launchd.rs`). Dev selects
+  `build-bridge-dev.service` / `ing.getbuild.bridge.dev`; production keeps
+  `build-bridge.service` / `ing.getbuild.bridge`. Both use their resolved log root.
 - `scripts/install.sh` is the public installer. It verifies and installs the
   binary, then runs `build-bridge pair` and `build-bridge install-service`.
 

@@ -627,6 +627,8 @@ tree after `webrtc-host-candidate-sweep.patch`. It touches
 
 ## #794 TURN diagnostics
 
+`rtc-turn-diagnostics.patch` SHA-256: `80433dc5f781ef8ba79d21a33d452f0045544fa321aaa78ea48fd1e6868d6001`.
+
 `rtc-turn` 0.20.4 is vendored from the registry with only
 `rtc-turn-diagnostics.patch` applied. `rtc-turn` is patched in both manifests
 and is a workspace member for explicit diagnostic unit tests. It is deliberately
@@ -657,13 +659,15 @@ acknowledgment, and queueing does not prove server receipt or peer delivery.
 Server reasons are mapped from numeric codes to fixed labels; arbitrary reason
 strings, credentials, SDP, payloads and endpoint addresses are omitted.
 
-Each allocation emits at most 32 detailed rows per second. Suppressed rows fold
-by generation, peer, method, outcome and code; each summary carries cumulative
-per-peer indication/ChannelData counts in both directions. Timeout-driven flushes
-emit at most 32 folded rows per second, retaining additional rows for later
-flushes. Drop drains every retained folded row so the final per-peer evidence survives
-allocation teardown; this one-off terminal flush is not capped. Error and timeout
-rows take priority during capped periodic flushes. Diagnostic state never changes
+Packet traffic counts silently per peer and direction. Only a direction's first use
+emits an immediate data row; it consumes no control-plane budget. Control-plane
+rows retain their independent limit of 32 detailed rows per second, with excess
+folded by generation, peer, method, outcome and code. Packet storms cannot delay
+control outcomes. Timeout-driven flushes emit at most 32 folded control rows and
+32 dirty-peer count summaries per second, retaining additional rows for later
+flushes. Drop drains every retained folded control row and dirty-peer summary so
+final per-peer evidence survives teardown. Error and timeout rows take priority
+during capped periodic flushes. Diagnostic state never changes
 permissions, binding retries, allocation lifetime or wire traffic. The separate
 retry/fallback task owns those behavior changes.
 

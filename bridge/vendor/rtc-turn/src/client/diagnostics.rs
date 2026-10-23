@@ -38,6 +38,7 @@ struct Peer {
     id: u64,
     ordinal: usize,
     counts: [u64; 4],
+    dirty: bool,
 }
 struct Folded {
     repeats: u64,
@@ -130,12 +131,37 @@ impl AllocationDiagnostics {
                 &outcome,
             );
         }
+        let mut dirty: Vec<_> = self
+            .peers
+            .iter()
+            .filter(|(_, peer)| peer.dirty)
+            .map(|(addr, peer)| (*addr, peer.ordinal))
+            .collect();
+        dirty.sort_by_key(|(_, ordinal)| *ordinal);
+        if !force {
+            dirty.truncate(32);
+        }
+        for (peer, _) in dirty {
+            self.record(
+                "DataSummary",
+                TransactionId::default(),
+                Some(peer),
+                None,
+                "summary",
+                0,
+                self.context.generation.load(Ordering::Relaxed),
+                0,
+                "none",
+            );
+            self.peers.get_mut(&peer).unwrap().dirty = false;
+        }
         self.window = now;
         self.emitted = 0;
         self.suppressed = 0;
     }
     pub(super) fn poll_timeout(&self) -> Option<Instant> {
-        (!self.folded.is_empty()).then(|| self.window + Duration::from_secs(1))
+        (!self.folded.is_empty() || self.peers.values().any(|peer| peer.dirty))
+            .then(|| self.window + Duration::from_secs(1))
     }
     fn admit(&mut self, now: Instant) -> bool {
         self.flush(now, false);
@@ -265,7 +291,14 @@ impl AllocationDiagnostics {
         let index = usize::from(incoming) * 2 + usize::from(channel.is_some());
         let state = self.peers.get_mut(&peer).unwrap();
         state.counts[index] += 1;
-        self.emit(
+        let first_use = state.counts[index] == 1;
+        state.dirty = !first_use;
+        if !first_use {
+            return;
+        }
+        // A direction's first use is evidence; subsequent packets only update counters.
+        // Packet traffic never consumes the control-plane detail budget.
+        self.record(
             if channel.is_some() {
                 "ChannelData"
             } else if incoming {
@@ -283,6 +316,8 @@ impl AllocationDiagnostics {
             },
             0,
             self.context.generation.load(Ordering::Relaxed),
+            1,
+            "none",
         );
     }
 }
@@ -543,12 +578,14 @@ mod local_mock_tests {
     fn diagnostics_close_preserves_more_than_32_folded_peer_outcomes() {
         let (mut client, _) = client();
         for port in 50000..50100 {
-            client.diagnostics.as_mut().unwrap().data(
-                SocketAddr::from(([192, 0, 2, 4], port)),
-                None,
-                false,
-                TransactionId::default(),
-            );
+            for _ in 0..2 {
+                client.diagnostics.as_mut().unwrap().data(
+                    SocketAddr::from(([192, 0, 2, 4], port)),
+                    None,
+                    false,
+                    TransactionId::default(),
+                );
+            }
         }
         drop(client);
         let logs = logs();
@@ -556,7 +593,7 @@ mod local_mock_tests {
             assert!(
                 logs.lines()
                     .any(|line| line.contains(&format!("ordinal={ordinal} "))
-                        && line.contains("outcome=folded")),
+                        && line.contains("outcome=summary")),
                 "missing {ordinal}"
             );
         }
@@ -618,6 +655,43 @@ mod local_mock_tests {
         }
     }
     #[test]
+    fn diagnostics_packet_storm_counts_silently_and_leaves_control_budget_free() {
+        let (mut client, relay) = client();
+        let diag = client.diagnostics.as_mut().unwrap();
+        let peer = "192.0.2.98:50001".parse().unwrap();
+        for _ in 0..1000 {
+            for (channel, incoming) in [
+                (None, false),
+                (Some(16384), false),
+                (None, true),
+                (Some(16384), true),
+            ] {
+                diag.data(peer, channel, incoming, TransactionId::default());
+            }
+        }
+        assert_eq!(
+            logs().lines().count(),
+            4,
+            "only each direction's first use is immediate"
+        );
+        assert_eq!(
+            diag.emitted, 0,
+            "packet counts must leave the control budget untouched"
+        );
+        let mut request = Message::new();
+        request
+            .build(&[
+                Box::new(TransactionId::new()),
+                Box::new(MessageType::new(METHOD_CHANNEL_BIND, CLASS_REQUEST)),
+            ])
+            .unwrap();
+        diag.request(&request, &TransactionType::ChannelBindRequest(relay, peer));
+        diag.timeout(request.transaction_id);
+        assert!(logs().lines().any(|line| line.contains("method=ChannelBind") && line.contains("outcome=timeout")), "control must be immediate after packet traffic");
+        diag.flush(Instant::now(), true);
+        assert!(logs().lines().any(|line| line.contains("outcome=summary") && line.contains("send_indication=1000 send_channel=1000 receive_indication=1000 receive_channel=1000")));
+    }
+    #[test]
     fn diagnostics_send_failure_has_a_peer_and_safe_outcome() {
         let (mut client, relay) = client();
         let peer = "192.0.2.98:50001".parse().unwrap();
@@ -647,9 +721,10 @@ mod local_mock_tests {
         assert!(deadline <= Instant::now() + Duration::from_secs(1));
         client.handle_timeout(deadline).unwrap();
         assert!(
-            logs().lines().any(
-                |line| line.contains("outcome=folded") && line.contains("send_indication=1000")
-            )
+            logs()
+                .lines()
+                .any(|line| line.contains("outcome=summary")
+                    && line.contains("send_indication=1000"))
         );
     }
     #[test]
@@ -663,10 +738,9 @@ mod local_mock_tests {
         drop(client);
         let logs = logs();
         assert!(
-            logs.lines().any(|line| line.contains("outcome=folded")
+            logs.lines().any(|line| line.contains("outcome=summary")
                 && line.contains("ordinal=1")
-                && line.contains("method=Send")
-                && line.contains("repeats=968")
+                && line.contains("method=DataSummary")
                 && line.contains("send_indication=1000")),
             "{logs}"
         );

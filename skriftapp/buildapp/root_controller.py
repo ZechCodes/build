@@ -76,11 +76,11 @@ def render_landing_page() -> str:
     return fill_slots(GENERATED_PAGE.read_text(), render_homepage_slots())
 
 
-def render_docs_page() -> str:
+def render_docs_page(public_base_url: str = "https://getbuild.ing") -> str:
     return render_shell(
         title="Docs — Build",
         description="Set up a Build host and check the current coding harness integrations.",
-        body=render_docs_body(),
+        body=render_docs_body(public_base_url),
         scripts="",
         head=LANDING_HEAD,
         body_class="cinematic-page public-doc-page",
@@ -124,8 +124,8 @@ class RootController(Controller):
         return Response(html, media_type=MediaType.HTML)
 
     @get(DOCS_PATH)
-    async def docs(self) -> Response:
-        html = await asyncio.to_thread(render_docs_page)
+    async def docs(self, public_base_url: str) -> Response:
+        html = await asyncio.to_thread(render_docs_page, public_base_url)
         return Response(html, media_type=MediaType.HTML)
 
     @get(PRIVACY_PATH)
@@ -141,15 +141,17 @@ class RootController(Controller):
         return Response(page.read_text(), media_type=MediaType.HTML, headers=LAB_HEADERS)
 
     @get(releases.INSTALL_SCRIPT_PATH)
-    async def install_script(self) -> Response:
-        return await self._installer(releases.INSTALL_SCRIPT_FILE)
+    async def install_script(self, public_base_url: str) -> Response:
+        return await self._installer(releases.INSTALL_SCRIPT_FILE, public_base_url)
 
     @get(releases.DESKTOP_INSTALL_SCRIPT_PATH)
-    async def desktop_install_script(self) -> Response:
-        return await self._installer(releases.DESKTOP_INSTALL_SCRIPT_FILE)
+    async def desktop_install_script(self, public_base_url: str) -> Response:
+        return await self._installer(releases.DESKTOP_INSTALL_SCRIPT_FILE, public_base_url)
 
     @staticmethod
-    async def _installer(path) -> Response:
+    async def _installer(path, public_base_url: str) -> Response:
+        if releases.is_dev_origin(public_base_url):
+            raise NotFoundException(releases.DEV_INSTALLATION_NOTICE)
         script = await asyncio.to_thread(path.read_text)
         return Response(
             releases.render_install_script(script),

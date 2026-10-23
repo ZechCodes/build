@@ -19,8 +19,7 @@ from buildapp.email_template import (
     EmailSteps,
 )
 
-#: The install command and docs link name the public site, as the docs page does: the
-#: invitee installs from getbuild.ing whichever deployment sent the mail.
+#: Production invite copy stays stable; dev invitations withhold installation.
 PUBLIC_SITE_URL = "https://getbuild.ing"
 DOCS_URL = f"{PUBLIC_SITE_URL}/docs"
 
@@ -59,6 +58,12 @@ def build_invite_email(*, to: str, invite_url: str, public_base_url: str) -> Out
     """Welcome, the app on a laptop, the one button, whose link it is, then how to get
     from an account to a paired machine — the same three steps the app's first-run
     screen walks."""
+    dev = releases.is_dev_origin(public_base_url)
+    getting_started = (
+        EmailSteps(title="Dev setup", steps=(EmailStep(text=releases.DEV_INSTALLATION_NOTICE),))
+        if dev else GETTING_STARTED
+    )
+    closing = INVITE_CLOSING[1:] if dev else INVITE_CLOSING
     return compose_email(
         to=to,
         subject=INVITE_SUBJECT,
@@ -71,8 +76,8 @@ def build_invite_email(*, to: str, invite_url: str, public_base_url: str) -> Out
         action=EmailAction(url=invite_url, label=INVITE_ACTION_LABEL),
         after_action=(
             INVITE_LINK_NOTE.format(email=to),
-            GETTING_STARTED,
-            *INVITE_CLOSING,
+            getting_started,
+            *closing,
         ),
     )
 

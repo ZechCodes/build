@@ -39,7 +39,9 @@ def render_homepage_slots() -> dict[str, str]:
     }
 
 
-def render_docs_body() -> str:
+def render_docs_body(public_base_url: str = "https://getbuild.ing") -> str:
+    if releases.is_dev_origin(public_base_url):
+        return _render_dev_docs_body()
     host_install_command = escape(releases.install_command("https://getbuild.ing"))
     desktop_install_command = escape(
         releases.install_command("https://getbuild.ing", desktop=True)
@@ -75,6 +77,21 @@ def render_docs_body() -> str:
     <h2 id="harnesses-title">Coding harness integrations</h2>
     <p>Harnesses must already be installed and authenticated on the host. Build selects among the integrations the connected bridge reports.</p>
     <ul class="integration-list">{harnesses}</ul>
+  </section>
+</main>"""
+
+
+def _render_dev_docs_body() -> str:
+    return f"""<main class="public-doc content-container">
+  <a class="doc-back" href="/">Build home</a>
+  <h1>Dev documentation</h1>
+  <section id="setup" aria-labelledby="setup-title">
+    <h2 id="setup-title">Dev host setup</h2>
+    <p>{escape(releases.DEV_INSTALLATION_NOTICE)}</p>
+    <p>Ask the dev stack operator for the reviewed source-build workflow before setting
+    up a host. Keep the dev binary separate from your production binary and use the
+    dev channel with its own state. Production installers are unavailable on this site.</p>
+    <a class="primary-action" href="/app/">Open dev app</a>
   </section>
 </main>"""
 

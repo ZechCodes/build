@@ -87,7 +87,9 @@ class BuildController(Controller):
         )
 
     @get("/downloads/{asset:str}")
-    async def download_asset(self, asset: str, asset_source: AssetSource) -> Response:
+    async def download_asset(self, asset: str, asset_source: AssetSource, public_base_url: str) -> Response:
+        if releases.is_dev_origin(public_base_url):
+            raise NotFoundException(releases.DEV_INSTALLATION_NOTICE)
         name = releases.DOWNLOADABLE.get(asset)
         if name is None:
             raise NotFoundException("no such download")

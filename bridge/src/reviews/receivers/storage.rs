@@ -82,6 +82,8 @@ impl<F: Fn(&Path, &Path) -> io::Result<()>> Seed<F> {
             }
         }
         self.packs(&source.join("pack"), &destination.join("pack"))?;
+        let roots = receiver.path.join("packed-refs");
+        self.write_seed_roots(&receiver.path, &roots)?;
         let args: Vec<&OsStr> = [
             "-n",
             "10",
@@ -89,7 +91,7 @@ impl<F: Fn(&Path, &Path) -> io::Result<()>> Seed<F> {
             "-c",
             "core.hooksPath=/dev/null",
             "fsck",
-            "--full",
+            "--connectivity-only",
             "--no-dangling",
             "--no-reflogs",
         ]
@@ -105,7 +107,38 @@ impl<F: Fn(&Path, &Path) -> io::Result<()>> Seed<F> {
         if !output.status.success() {
             return Err(io::Error::other("incomplete seeded object graph"));
         }
+        fs::remove_file(&roots)?;
+        self.files.retain(|path| path != &roots);
         Ok(())
+    }
+
+    /// A receiver has no published refs yet. Make every imported commit an
+    /// explicit root: fsck otherwise skips connectivity of dangling commits.
+    /// The staging-only packed refs are removed before the receiver publishes.
+    fn write_seed_roots(&mut self, receiver: &Path, path: &Path) -> io::Result<()> {
+        let repository = git2::Repository::open_bare(receiver).map_err(io::Error::other)?;
+        let objects = repository.odb().map_err(io::Error::other)?;
+        let mut file = self.create_file(path)?;
+        let mut failure = None;
+        let result = objects.foreach(|oid| {
+            let step = (|| {
+                self.remaining()?;
+                let (_, kind) = objects.read_header(*oid).map_err(io::Error::other)?;
+                if kind == git2::ObjectType::Commit {
+                    writeln!(file, "{oid} refs/build/seed/{oid}")?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = step {
+                failure = Some(error);
+                return false;
+            }
+            true
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        result.map_err(io::Error::other)
     }
 
     fn loose_directory(&mut self, source: &Path, destination: &Path) -> io::Result<()> {

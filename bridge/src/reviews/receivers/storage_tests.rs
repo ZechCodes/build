@@ -31,6 +31,10 @@ fn receiver_links_history_and_survives_gc_source_removal_and_native_push() {
         fs::metadata(&linked).unwrap().ino()
     );
     assert!(linked.with_extension("keep").exists());
+    assert!(
+        !receiver.path.join("packed-refs").exists(),
+        "staging verification refs must not publish"
+    );
     let original_head = git(&source, &["rev-parse", "HEAD"])
         .unwrap()
         .trim()
@@ -134,6 +138,7 @@ fn incomplete_source_graph_falls_back_to_an_empty_receiver() {
     assert!(destination
         .find_commit(repository.head().unwrap().target().unwrap())
         .is_err());
+    assert!(!receiver.path.join("packed-refs").exists());
 }
 
 #[test]

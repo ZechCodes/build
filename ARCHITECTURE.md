@@ -1067,7 +1067,12 @@ idempotency tombstones, retaining hashes and original sequence spans. #835 owns
 payload compaction and the sole incremental-vacuum scheduler.
 
 Schema 19 stores a generation-scoped `conversation_retention` floor and sequence
-high-water mark. Stale resident saves cannot reinsert rows below the floor.
+high-water mark. A bounded timestamp-only summary of pruned recent messages
+preserves the week count when imported timestamps are out of sequence; batches
+and later cycles cannot shrink the target by deleting their own counting evidence.
+The summary holds at most max_messages Julian-day values, expires logically with
+the configured window, and resets with the conversation. Stale resident saves
+cannot reinsert rows below the floor.
 `thread.page`, `thread.activity` and push tips expose optional
 `history_start_sequence`, the inclusive retained creation-sequence floor.
 Absent means no declared trim. The SPA discards the removed prefix and its

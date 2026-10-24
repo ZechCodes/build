@@ -119,6 +119,36 @@ describe("epoch fences and durable acknowledgements", () => {
     rpc.close();
   });
 
+  it("admits only ICE pushes until greeting, retaining established and closed-opening fences", async () => {
+    const wire = fakeCarrier();
+    const epoch = createBridgeEpoch();
+    const rpc = rpcOn(wire, { bridgeEpoch: epoch, timeoutMs: 0 });
+    const pushes = vi.fn();
+    rpc.onPush(pushes);
+    const ice = { type: "rtc.ice", bridge_epoch: "boot-A", candidate: { candidate: "relay candidate" } };
+    const diagnostic = { type: "rtc.diagnostics", bridge_epoch: "boot-A", event: "generation", generation: 1 };
+    wire.deliver(ice, "another-session-key");
+    wire.deliver(ice);
+    wire.deliver(diagnostic);
+    wire.deliver({ type: "rtc.unknown", bridge_epoch: "boot-A" });
+    wire.deliver({ type: "tasks.changed", bridge_epoch: "boot-A" });
+    wire.deliver(ack("unsolicited"));
+    await tick();
+    expect(pushes.mock.calls.map(([push]) => push)).toEqual([ice]);
+    expect(epoch.current()).toBeNull();
+    epoch.acceptGreeting(greeting("boot-B"));
+    wire.deliver(ice);
+    wire.deliver(diagnostic);
+    const current = { ...ice, bridge_epoch: "boot-B" };
+    wire.deliver(current);
+    await tick();
+    expect(pushes.mock.calls.map(([push]) => push)).toEqual([ice, current]);
+    rpc.close();
+    wire.deliver(current);
+    await tick();
+    expect(pushes).toHaveBeenCalledTimes(2);
+  });
+
   it("transports the published write fixtures without changing the acceptance result shape", async () => {
     const fixture = (name) => JSON.parse(readFileSync(new URL(`../../fixtures/api/v1/writes/${name}.json`, import.meta.url), "utf8"));
     const epoch = createBridgeEpoch();

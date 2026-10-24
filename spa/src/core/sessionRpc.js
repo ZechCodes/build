@@ -162,7 +162,9 @@ export function createSessionRpc({
   const acceptEpoch = (payload) => {
     const method = pending.get(payload?.id)?.method;
     if (method === "session.hello") return true;
-    if (!bridgeEpoch.current() && bootstrapMethod(method)) return true;
+    // The peer needs bridge candidates before its channels can open and carry
+    // the first greeting. Session-authenticated ICE pushes establish no epoch.
+    if (!bridgeEpoch.current() && (bootstrapMethod(method) || payload?.type === "rtc.ice")) return true;
     return bridgeEpoch.accepts(payload);
   };
 

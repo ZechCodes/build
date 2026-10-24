@@ -1,0 +1,15 @@
+name: Dev deploy request
+
+# This workflow runs from dev and carries no deployment data or credentials.
+# The privileged workflow on main independently resolves the current dev tip.
+on:
+  push:
+    branches: [dev]
+
+permissions: {}
+
+jobs:
+  request:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Dev branch moved; main will resolve and deploy its latest commit.'

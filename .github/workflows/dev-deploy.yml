@@ -1,15 +1,27 @@
 name: Dev deploy
 
-# Operator-authorized manual deployments only. The workflow ref is NOT the
-# source ref: resolve the dev branch once, then use that commit everywhere.
+# The secret-free dev push signal starts this workflow from the default branch
+# (main). Ignore all signal data when resolving source: read dev once ourselves.
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: [Dev deploy request]
+    types: [completed]
+    branches: [dev]
 
 permissions:
   contents: read
 
 jobs:
   resolve:
+    if: >-
+      ${{ github.ref == 'refs/heads/main' &&
+          (github.event_name == 'workflow_dispatch' ||
+           (github.event_name == 'workflow_run' &&
+            github.event.workflow_run.event == 'push' &&
+            github.event.workflow_run.conclusion == 'success' &&
+            github.event.workflow_run.head_branch == 'dev' &&
+            github.event.workflow_run.head_repository.full_name == github.repository)) }}
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.source.outputs.sha }}
@@ -190,14 +202,32 @@ jobs:
       group: deploy-app-dev
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Skip superseded source before migration or rollout
+        id: freshness
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          tip="$(gh api "repos/$GH_REPO/git/ref/heads/dev" --jq '.object.sha')"
+          [[ "$tip" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$tip" == "$SOURCE_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "superseded by $tip" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - if: ${{ steps.freshness.outputs.current == 'true' }}
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ needs.resolve.outputs.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - if: ${{ steps.freshness.outputs.current == 'true' }}
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           version: "0.13.4"
-      - name: Render exact built digests offline
+      - if: ${{ steps.freshness.outputs.current == 'true' }}
+        name: Render exact built digests offline
         env:
           APP_DIGEST: ${{ needs['build-app'].outputs.digest }}
         run: |
@@ -205,24 +235,27 @@ jobs:
           nice -n 10 uv run --project skriftapp --frozen python deploy/render_dev.py \
             --input /tmp/dev-resources.yaml --output /tmp/dev-deploy \
             --target app --app-image "ghcr.io/zechcodes/build-app-dev@$APP_DIGEST"
-      - name: Configure namespace-scoped dev credential
+      - if: ${{ steps.freshness.outputs.current == 'true' }}
+        name: Configure namespace-scoped dev credential
         env:
           DEV_KUBECONFIG: ${{ secrets.DEV_KUBECONFIG }}
         run: |
           umask 077
           printf '%s' "$DEV_KUBECONFIG" > "$RUNNER_TEMP/dev-kubeconfig"
           echo "KUBECONFIG=$RUNNER_TEMP/dev-kubeconfig" >> "$GITHUB_ENV"
-      - name: Migrate dev database before app rollout
+      - if: ${{ steps.freshness.outputs.current == 'true' }}
+        name: Migrate dev database before app rollout
         run: |
           kubectl --namespace=build-dev delete job build-app-migrate --ignore-not-found --cascade=foreground --wait=true
           kubectl --namespace=build-dev apply -f /tmp/dev-deploy/migrate.yaml
           kubectl --namespace=build-dev wait --for=condition=complete job/build-app-migrate --timeout=600s
-      - name: Roll out dev app
+      - if: ${{ steps.freshness.outputs.current == 'true' }}
+        name: Roll out dev app
         run: |
           kubectl --namespace=build-dev apply -f /tmp/dev-deploy/app.yaml
           kubectl --namespace=build-dev rollout status deployment/build-app --timeout=300s
       - name: Remove temporary kube credential
-        if: always()
+        if: ${{ always() && steps.freshness.outputs.current == 'true' }}
         run: rm -f "$RUNNER_TEMP/dev-kubeconfig"
 
   deploy-relay:
@@ -234,14 +267,32 @@ jobs:
       group: deploy-relay-dev
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Skip superseded source before migration or rollout
+        id: freshness
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          tip="$(gh api "repos/$GH_REPO/git/ref/heads/dev" --jq '.object.sha')"
+          [[ "$tip" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$tip" == "$SOURCE_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "superseded by $tip" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - if: ${{ steps.freshness.outputs.current == 'true' }}
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ needs.resolve.outputs.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - if: ${{ steps.freshness.outputs.current == 'true' }}
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           version: "0.13.4"
-      - name: Render exact built digests offline
+      - if: ${{ steps.freshness.outputs.current == 'true' }}
+        name: Render exact built digests offline
         env:
           RELAY_DIGEST: ${{ needs['build-relay'].outputs.digest }}
         run: |
@@ -249,17 +300,19 @@ jobs:
           nice -n 10 uv run --project skriftapp --frozen python deploy/render_dev.py \
             --input /tmp/dev-resources.yaml --output /tmp/dev-deploy \
             --target relay --relay-image "ghcr.io/zechcodes/build-relay-dev@$RELAY_DIGEST"
-      - name: Configure namespace-scoped dev credential
+      - if: ${{ steps.freshness.outputs.current == 'true' }}
+        name: Configure namespace-scoped dev credential
         env:
           DEV_KUBECONFIG: ${{ secrets.DEV_KUBECONFIG }}
         run: |
           umask 077
           printf '%s' "$DEV_KUBECONFIG" > "$RUNNER_TEMP/dev-kubeconfig"
           echo "KUBECONFIG=$RUNNER_TEMP/dev-kubeconfig" >> "$GITHUB_ENV"
-      - name: Roll out dev relay
+      - if: ${{ steps.freshness.outputs.current == 'true' }}
+        name: Roll out dev relay
         run: |
           kubectl --namespace=build-dev apply -f /tmp/dev-deploy/relay.yaml
           kubectl --namespace=build-dev rollout status deployment/build-relay --timeout=300s
       - name: Remove temporary kube credential
-        if: always()
+        if: ${{ always() && steps.freshness.outputs.current == 'true' }}
         run: rm -f "$RUNNER_TEMP/dev-kubeconfig"

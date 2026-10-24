@@ -3,6 +3,7 @@ from copy import deepcopy
 import importlib.util
 from pathlib import Path
 import runpy
+import subprocess
 
 import pytest
 import yaml
@@ -155,9 +156,14 @@ def test_spa_checks_do_not_inherit_build_environment():
     }
 
 
-def test_workflow_dispatch_pins_dev_sha_and_only_dev_images():
+def test_automatic_and_manual_workflow_pin_dev_sha_and_only_dev_images():
     flow = workflow()
-    assert set(flow.get("on", flow.get(True))) == {"workflow_dispatch"}
+    triggers = flow.get("on", flow.get(True))
+    assert set(triggers) == {"workflow_dispatch", "workflow_run"}
+    assert triggers["workflow_run"] == {
+        "workflows": ["Dev deploy request"], "types": ["completed"], "branches": ["dev"],
+    }
+    assert flow["permissions"] == {"contents": "read"}
     jobs = flow["jobs"]
     resolver = jobs["resolve"]
     assert resolver["steps"][0]["with"]["ref"] == "refs/heads/dev"
@@ -186,8 +192,7 @@ def test_workflow_dispatch_pins_dev_sha_and_only_dev_images():
 def test_deploy_requires_success_protection_digest_and_dev_only_apply(name):
     job = workflow()["jobs"][name]
     assert job["environment"] == "development"
-    assert job["concurrency"]["cancel-in-progress"] is False
-    assert job["concurrency"]["group"] == name + "-dev"
+    assert job["concurrency"] == {"group": name + "-dev", "cancel-in-progress": False}
     image_job = name.replace("deploy", "build")
     assert job["needs"] == ["resolve", "checks", image_job]
     assert job["if"] == f"${{{{ needs.checks.result == 'success' && needs['{image_job}'].result == 'success' }}}}"
@@ -209,6 +214,118 @@ def test_deploy_requires_success_protection_digest_and_dev_only_apply(name):
     if name == "deploy-app":
         assert commands.index("apply -f /tmp/dev-deploy/migrate.yaml") < commands.index("apply -f /tmp/dev-deploy/app.yaml")
         assert "wait --for=condition=complete job/build-app-migrate" in commands
+
+
+def test_new_push_cancels_checks_and_builds_but_never_migration_or_rollout():
+    flow = workflow()
+    # Workflow-level cancellation overrides job-level protection, so forbid it.
+    assert "concurrency" not in flow
+    for name in ("checks", "build-app", "build-relay"):
+        assert flow["jobs"][name]["concurrency"] == {
+            "group": "dev-deploy-" + name, "cancel-in-progress": True,
+        }
+    for name in ("deploy-app", "deploy-relay"):
+        assert flow["jobs"][name]["concurrency"] == {
+            "group": name + "-dev", "cancel-in-progress": False,
+        }
+    migration = next(step for step in flow["jobs"]["deploy-app"]["steps"]
+                     if step.get("name") == "Migrate dev database before app rollout")
+    assert "wait --for=condition=complete" in migration["run"]
+
+
+def test_signal_is_only_a_notification_and_never_supplies_deployment_data():
+    flow = workflow()
+    assert flow["jobs"]["resolve"]["steps"][0]["with"]["ref"] == "refs/heads/dev"
+    for job in flow["jobs"].values():
+        # Only the entry condition may inspect the event's origin/status.
+        body = yaml.safe_dump({key: value for key, value in job.items() if key != "if"})
+        for forbidden in ("github.event", "inputs.", "download-artifact", "actions/cache", "workflow_run"):
+            assert forbidden not in body
+        for step in job["steps"]:
+            if "actions/checkout@" in step.get("uses", ""):
+                assert step["with"]["persist-credentials"] is False
+
+
+def test_dev_push_signal_has_no_checkout_secrets_or_write_token():
+    signal = yaml.safe_load((ROOT / ".github/workflows/dev-deploy-request.yml").read_text())
+    assert signal["name"] == "Dev deploy request"
+    assert signal.get("on", signal.get(True)) == {"push": {"branches": ["dev"]}}
+    assert signal["permissions"] == {}
+    assert set(signal["jobs"]) == {"request"}
+    job = signal["jobs"]["request"]
+    assert "environment" not in job
+    assert job["steps"] == [{"run": "echo 'Dev branch moved; main will resolve and deploy its latest commit.'"}]
+
+
+@pytest.mark.parametrize("event,ref,conclusion,branch,repo,source_event,allowed", [
+    ("workflow_run", "main", "success", "dev", "owner/repo", "push", True),
+    ("workflow_dispatch", "main", "success", "dev", "owner/repo", "push", True),
+    ("workflow_dispatch", "dev", "success", "dev", "owner/repo", "push", False),
+    ("push", "main", "success", "dev", "owner/repo", "push", False),
+    ("workflow_run", "main", "failure", "dev", "owner/repo", "push", False),
+    ("workflow_run", "main", "cancelled", "dev", "owner/repo", "push", False),
+    ("workflow_run", "main", "skipped", "dev", "owner/repo", "push", False),
+    ("workflow_run", "main", "success", "main", "owner/repo", "push", False),
+    ("workflow_run", "main", "success", "dev", "fork/repo", "push", False),
+    ("workflow_run", "main", "success", "dev", "owner/repo", "pull_request", False),
+    ("workflow_run", "dev", "success", "dev", "owner/repo", "push", False),
+])
+def test_deploy_entry_accepts_only_main_dispatch_or_same_repository_dev_push(
+    event, ref, conclusion, branch, repo, source_event, allowed,
+):
+    condition = workflow()["jobs"]["resolve"]["if"][3:-2].strip()
+    evaluate = runpy.run_path(str(ROOT / ".github/test-transport-workflow.py"))["evaluate_condition"]
+    context = {"github": {
+        "event_name": event, "ref": f"refs/heads/{ref}", "repository": "owner/repo",
+        "event": {"workflow_run": {"conclusion": conclusion, "head_branch": branch,
+                                    "head_repository": {"full_name": repo}, "event": source_event}},
+    }}
+    assert evaluate(condition, context) == allowed
+
+
+@pytest.mark.parametrize("name", ["deploy-app", "deploy-relay"])
+@pytest.mark.parametrize("tip,api_exit,current", [
+    ("a" * 40, "0", True), ("b" * 40, "0", False),
+    ("invalid", "0", None), ("", "1", None),
+])
+def test_rollout_rechecks_dev_inside_lock_and_skips_superseded_source(
+    tmp_path, name, tip, api_exit, current,
+):
+    job = workflow()["jobs"][name]
+    assert job["concurrency"]["cancel-in-progress"] is False
+    guard = job["steps"][0]
+    assert guard["id"] == "freshness"
+    assert guard["env"] == {
+        "GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
+        "GH_REPO": "${{ github.repository }}",
+        "SOURCE_SHA": "${{ needs.resolve.outputs.sha }}",
+    }
+    assert 'gh api "repos/$GH_REPO/git/ref/heads/dev"' in guard["run"]
+    for step in job["steps"][1:]:
+        expected = "steps.freshness.outputs.current == 'true'"
+        if step.get("name") == "Remove temporary kube credential":
+            expected = "always() && " + expected
+        assert step["if"] == "${{ " + expected + " }}"
+    # Execute the actual inline guard, replacing only the GitHub API transport.
+    api = tmp_path / "gh"
+    api.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_DEV_TIP"\nexit "$TEST_GH_EXIT"\n')
+    api.chmod(0o700)
+    output, summary = tmp_path / "output", tmp_path / "summary"
+    result = subprocess.run(
+        ["/bin/bash", "-eo", "pipefail", "-c", guard["run"]],
+        env={"PATH": f"{tmp_path}:/usr/bin:/bin", "SOURCE_SHA": "a" * 40,
+             "GH_REPO": "owner/repo", "TEST_DEV_TIP": tip, "TEST_GH_EXIT": api_exit,
+             "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)},
+        capture_output=True, text=True, check=False,
+    )
+    if current is None:
+        assert result.returncode != 0
+        assert not output.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert output.read_text().strip() == f"current={str(current).lower()}"
+        if not current:
+            assert summary.read_text().strip() == f"superseded by {tip}"
 
 
 def renderer():

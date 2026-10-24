@@ -2,6 +2,18 @@ use super::*;
 
 #[cfg(unix)]
 #[test]
+fn recovery_directory_contention_returns_within_lock_budget() {
+    let directory = tempfile::tempdir().unwrap();
+    let held = File::open(directory.path()).unwrap();
+    held.try_lock().unwrap();
+    let other = File::open(directory.path()).unwrap();
+    let started = std::time::Instant::now();
+    assert!(lock_recovery_directory(&other).is_err());
+    assert!(started.elapsed() < std::time::Duration::from_millis(2500));
+}
+
+#[cfg(unix)]
+#[test]
 fn cleanup_removes_durable_authority_before_unlinking_the_backing_inode() {
     let directory = tempfile::tempdir().unwrap();
     let (guard, _file) = acquire_git_lock(directory.path(), Path::new("config.lock")).unwrap();

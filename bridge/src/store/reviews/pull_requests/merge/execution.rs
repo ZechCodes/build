@@ -38,34 +38,7 @@ impl Store {
         &self,
         workspace_id: &str,
     ) -> Result<bool, StoreError> {
-        let conn = self.connection();
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM review_merge_intents AS merge_intent
-             JOIN reviews ON reviews.task_id = merge_intent.task_id
-             WHERE reviews.workspace_id = ?1 AND
-             (merge_intent.state = 'running' OR
-              EXISTS(SELECT 1 FROM json_each(merge_intent.record, '$.request.sources') AS source
-               WHERE json_extract(source.value, '$.push') IS NOT NULL AND EXISTS(
-                SELECT 1 FROM review_actions AS merged_action,
-                json_each(merged_action.record, '$.steps') AS merge_step
-                WHERE merged_action.task_id = merge_intent.task_id
-                AND merged_action.id IN (SELECT value FROM json_each(merge_intent.record, '$.action_ids'))
-                AND json_extract(merged_action.record, '$.directory_id') = json_extract(source.value, '$.directory_id')
-                AND json_extract(merge_step.value, '$.kind') = 'merge'
-                AND json_extract(merge_step.value, '$.status') = 'succeeded'
-               ) AND NOT EXISTS(
-                SELECT 1 FROM review_actions AS action,
-                json_each(action.record, '$.steps') AS step
-                WHERE action.task_id = merge_intent.task_id
-                AND action.id IN (SELECT value FROM json_each(merge_intent.record, '$.action_ids'))
-                AND json_extract(action.record, '$.directory_id') = json_extract(source.value, '$.directory_id')
-                AND json_extract(step.value, '$.kind') = 'push'
-                AND json_extract(step.value, '$.status') = 'succeeded'
-                AND json_extract(step.value, '$.remote') = json_extract(source.value, '$.push.remote')
-                AND json_extract(step.value, '$.branch') = json_extract(source.value, '$.push.branch')
-              ))))",
-            [workspace_id], |row| row.get(0),
-        ).map_err(StoreError::from)
+        publication_pending(&self.connection(), Some(workspace_id), None)
     }
 
     pub(crate) fn start_review_merge_actions(
@@ -178,4 +151,39 @@ pub(super) fn advance(
     saved.updated_at = now_rfc3339();
     write_intent(tx, &saved)?;
     Ok(saved)
+}
+
+/// Shared retention predicate for workspace reclaim and receiver reclamation.
+pub(in crate::store::reviews) fn publication_pending(
+    connection: &Connection,
+    workspace_id: Option<&str>,
+    task_id: Option<&str>,
+) -> Result<bool, StoreError> {
+    connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM review_merge_intents AS merge_intent
+             JOIN reviews ON reviews.task_id = merge_intent.task_id
+             WHERE (reviews.workspace_id = ?1 OR reviews.task_id = ?2) AND
+             (merge_intent.state = 'running' OR
+              EXISTS(SELECT 1 FROM json_each(merge_intent.record, '$.request.sources') AS source
+               WHERE json_extract(source.value, '$.push') IS NOT NULL AND EXISTS(
+                SELECT 1 FROM review_actions AS merged_action,
+                json_each(merged_action.record, '$.steps') AS merge_step
+                WHERE merged_action.task_id = merge_intent.task_id
+                AND merged_action.id IN (SELECT value FROM json_each(merge_intent.record, '$.action_ids'))
+                AND json_extract(merged_action.record, '$.directory_id') = json_extract(source.value, '$.directory_id')
+                AND json_extract(merge_step.value, '$.kind') = 'merge'
+                AND json_extract(merge_step.value, '$.status') = 'succeeded'
+               ) AND NOT EXISTS(
+                SELECT 1 FROM review_actions AS action,
+                json_each(action.record, '$.steps') AS step
+                WHERE action.task_id = merge_intent.task_id
+                AND action.id IN (SELECT value FROM json_each(merge_intent.record, '$.action_ids'))
+                AND json_extract(action.record, '$.directory_id') = json_extract(source.value, '$.directory_id')
+                AND json_extract(step.value, '$.kind') = 'push'
+                AND json_extract(step.value, '$.status') = 'succeeded'
+                AND json_extract(step.value, '$.remote') = json_extract(source.value, '$.push.remote')
+                AND json_extract(step.value, '$.branch') = json_extract(source.value, '$.push.branch')
+              ))))",
+            params![workspace_id, task_id], |row| row.get(0),
+        ).map_err(StoreError::from)
 }

@@ -20,7 +20,7 @@ pub(super) fn lock(request: &OpenReviewRequest) -> Result<File, String> {
         .truncate(false)
         .open(root.join("operations").join("opening.lock"))
         .map_err(|error| error.to_string())?;
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(file),

@@ -1,6 +1,6 @@
 //! Durable PR integration and publication, independent of browser lifetime.
 mod execution;
-mod fence;
+pub(crate) mod fence;
 mod plan;
 pub(crate) mod progress;
 mod recovery;

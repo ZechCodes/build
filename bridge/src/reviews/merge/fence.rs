@@ -109,7 +109,7 @@ fn acquire(
     Ok(guards)
 }
 
-pub(super) struct MergeLease {
+pub(crate) struct MergeLease {
     directory: std::fs::File,
 }
 
@@ -128,7 +128,7 @@ impl Drop for MergeLease {
 
 /// The immutable intent supplies recovery identity; a concurrent retry never
 /// replays a live worker. Explicit guard release also settles inherited FDs.
-pub(super) fn lease(review: &Review) -> Result<MergeLease, String> {
+pub(crate) fn lease(review: &Review) -> Result<MergeLease, String> {
     use sha2::{Digest, Sha256};
     let binding = review
         .bindings

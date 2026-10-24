@@ -216,6 +216,7 @@ pub(super) fn write_intent(tx: &Transaction, intent: &ReviewMergeIntent) -> Resu
 }
 
 mod execution;
+pub(in crate::store::reviews) use execution::publication_pending;
 mod refresh;
 
 impl crate::store::ReadTransaction<'_> {

@@ -696,6 +696,7 @@ async fn run_daemon(
 
     // Publishes committed review branches even while no clients are connected.
     let review_sync = AppState::spawn_review_sync(app.clone()).await;
+    let receiver_maintenance = AppState::spawn_receiver_maintenance(&app);
 
     // Walks a workspace's size on disk when the Workspaces tab asks (#273).
     AppState::spawn_workspace_sizes(app.clone());
@@ -720,6 +721,7 @@ async fn run_daemon(
     // kills every session on the device at once, and nothing but this says so.
     // Cancellation is a held atomic handle: shutdown never waits on the app mutex.
     drop(review_sync);
+    drop(receiver_maintenance);
     reclaim_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     source_sync_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     // It writes from the live roster's newest lists and never waits on the app

@@ -369,16 +369,30 @@ impl RecoveryDirectoryLock {
     }
 }
 
+impl Drop for RecoveryDirectoryLock {
+    fn drop(&mut self) {
+        // An unrelated child may inherit the descriptor: explicitly release
+        // this completed reservation instead of waiting for every copy to close.
+        let _ = self._directory.unlock();
+    }
+}
+
 fn lock_recovery_directory(file: &File) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
                 return Ok(());
             }
             let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::Interrupted {
+            if std::time::Instant::now() >= deadline {
+                return Err("busy: review Git recovery directory".into());
+            }
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            } else if error.kind() != std::io::ErrorKind::Interrupted {
                 return Err(error.to_string());
             }
         }

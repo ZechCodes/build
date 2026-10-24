@@ -328,6 +328,8 @@ impl Store {
         self.in_transaction(|tx| {
             let changed = tx.execute(
                 // Keep legacy spans before releasing their sole payload copy.
+                // Forwarded plan receipts also retain their execution target:
+                // their receipt identity names the original requesting agent.
                 // The compare-and-set protects queued/uncertain payloads from
                 // stale workers trying to complete a different observed state.
                 "UPDATE operations SET status = ?3, execution_error = ?4, updated_at = ?5, \
@@ -340,7 +342,13 @@ impl Store {
                                  ELSE posted_sequence END \
                              ELSE posted_sequence END \
                      ELSE message_start_sequence END, \
-                 delivery = CASE WHEN ?3 = 'delivered' THEN NULL ELSE delivery END \
+                 delivery = CASE WHEN ?3 = 'delivered' THEN \
+                     CASE WHEN json_valid(delivery) THEN \
+                         CASE WHEN json_extract(delivery, '$.owner_id') != entity_id \
+                             OR json_extract(delivery, '$.agent_id') != agent_id \
+                             THEN json_set(delivery, '$.payload', NULL) END \
+                         END \
+                     ELSE delivery END \
                  WHERE operation_id = ?1 AND status = ?2",
                 rusqlite::params![
                     operation_id,

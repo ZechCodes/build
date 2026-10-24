@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn delivered_forwarded_receipt_keeps_its_execution_target_without_a_replayable_payload() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let record = plan_record("task-1");
+    let mut receipt = queued_operation("forwarded", 1);
+    let delivery = receipt.delivery.as_mut().unwrap();
+    delivery.owner_id = "implementation-run".into();
+    delivery.agent_id = "implementation-agent".into();
+    store
+        .accept_thread_post("task-1", &record.agents, &receipt)
+        .unwrap();
+    assert!(store
+        .transition_operation(
+            "forwarded",
+            OperationStatus::Queued,
+            OperationStatus::Delivered,
+            None
+        )
+        .unwrap());
+
+    let delivered = store.operation("forwarded").unwrap().unwrap();
+    let target = delivered.delivery.as_ref().unwrap();
+    assert_eq!(target.owner_id, "implementation-run");
+    assert_eq!(target.agent_id, "implementation-agent");
+    assert!(
+        target.payload.is_none(),
+        "the routing stub cannot replay messages"
+    );
+    assert!(store.recover_operations().unwrap().is_empty());
+    assert_eq!(
+        store
+            .accept_thread_post("task-1", &record.agents, &receipt)
+            .unwrap(),
+        delivered
+    );
+}
+
+#[test]
 fn delivering_a_legacy_receipt_preserves_its_payload_span_before_dropping_it() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();

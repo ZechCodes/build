@@ -1033,6 +1033,11 @@ writer outside the app lock. It clears old delivered payloads with resumable
 rowid-keyset batches of at most 1,000 receipts and reclaims at most 32 free pages
 per step. Cleanup progress is committed with each batch; later steps retain only
 small incremental-vacuum work. Readers continue on their independent WAL pool.
+Shutdown records the restart roster and tears down children before cancelling
+maintenance. Its worker join has a one-second budget; the main Tokio runtime
+also has a one-second shutdown timeout so a blocking batch waiting on the writer
+cannot keep the process alive indefinitely. A detached batch may finish during
+that grace period; its transactions remain atomic and cleanup remains resumable.
 
 #### Durable write foundation (#739)
 

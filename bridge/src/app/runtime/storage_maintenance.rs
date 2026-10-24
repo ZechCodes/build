@@ -10,3 +10,16 @@ impl AppState {
             .map(|store| store.writer().spawn_storage_maintenance())
     }
 }
+
+/// Make the restart roster durable and stop children before maintenance can
+/// wait on a busy writer. The worker's final join has its own short budget.
+pub async fn shut_down_with_storage_maintenance(
+    live: &crate::resume::LiveRoster,
+    maintenance: Option<StorageMaintenanceHandle>,
+    teardown: impl FnOnce(),
+) {
+    crate::resume::shut_down(live, teardown);
+    if let Some(maintenance) = maintenance {
+        maintenance.stop().await;
+    }
+}

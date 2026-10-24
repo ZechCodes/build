@@ -66,7 +66,7 @@ use build_bridge::presence::PresenceReporter;
 use build_bridge::priority::ChildPlacement;
 use build_bridge::reachability::Reachability;
 use build_bridge::relay::{self, DeviceIdentity};
-use build_bridge::resume::{promote_live_roster, shut_down, LiveRoster};
+use build_bridge::resume::{promote_live_roster, LiveRoster};
 use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
 use build_bridge::service::ServiceManager;
 use build_bridge::transport_ledger::{FanOutLedger, StderrLedger, SummaryLedger};
@@ -74,8 +74,22 @@ use build_bridge::transport_report::TransportReporter;
 use build_bridge::update::{UpdateConfig, UpdateService};
 use build_bridge::{identity, pairing, service, transport};
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    run_main_runtime(dispatch());
+}
+
+fn run_main_runtime(work: impl std::future::Future<Output = ()>) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("create main runtime");
+    runtime.block_on(work);
+    // Started blocking closures cannot be aborted. The roster and children
+    // have already been handled; don't wait for those closures until SIGKILL.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+}
+
+async fn dispatch() {
     // Every dev command, including MCP, validates paths before accessing state.
     let dev_config = match config::Channel::resolve(std::env::var("BRIDGE_CHANNEL").ok().as_deref())
     {
@@ -720,30 +734,28 @@ async fn run_daemon(
     drop(review_sync);
     reclaim_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     source_sync_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    stop_storage_maintenance(storage_maintenance).await;
     // It writes from the live roster's newest lists and never waits on the app
     // mutex, so a handler holding that cannot keep it past `TimeoutStopSec`.
-    shut_down(&live_roster, || {
-        // Then the children: in scopes of their own they are no longer in
-        // this unit's cgroup for systemd to end, so they are ended here (and
-        // by the `BindsTo=` each scope carries, should this not run).
-        if let Some(stopped) = build_bridge::priority::stop_children() {
-            eprintln!("{stopped}");
-        }
-        // Then the transport: the socket task first, so the relay sees a
-        // close rather than a silence, then the runtime it ran on — stopped,
-        // not dropped, because this is a task of the main runtime
-        // (`liveness.rs`).
-        relay_socket.abort();
-        liveness.stop();
-        push.stop();
-    });
-}
-
-async fn stop_storage_maintenance(handle: Option<build_bridge::store::StorageMaintenanceHandle>) {
-    if let Some(maintenance) = handle {
-        maintenance.stop().await;
-    }
+    build_bridge::app::shut_down_with_storage_maintenance(
+        &live_roster,
+        storage_maintenance,
+        || {
+            // Then the children: in scopes of their own they are no longer in
+            // this unit's cgroup for systemd to end, so they are ended here (and
+            // by the `BindsTo=` each scope carries, should this not run).
+            if let Some(stopped) = build_bridge::priority::stop_children() {
+                eprintln!("{stopped}");
+            }
+            // Then the transport: the socket task first, so the relay sees a
+            // close rather than a silence, then the runtime it ran on — stopped,
+            // not dropped, because this is a task of the main runtime
+            // (`liveness.rs`).
+            relay_socket.abort();
+            liveness.stop();
+            push.stop();
+        },
+    )
+    .await;
 }
 
 /// Hold a relay socket open, and redial whenever it ends.
@@ -1342,8 +1354,8 @@ fn mcp_stdio(dev_config: Option<&BridgeConfig>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        kept_identity_note, pair_args, pair_device, pair_said, service_environment,
-        valid_release_repo, LoadedIdentity, NotPaired, PairingOutcome,
+        kept_identity_note, pair_args, pair_device, pair_said, run_main_runtime,
+        service_environment, valid_release_repo, LoadedIdentity, NotPaired, PairingOutcome,
         PAIR_STATUS_APPROVED_ELSEWHERE,
     };
     use build_bridge::{config, identity, pairing, relay::DeviceIdentity, transport};
@@ -1418,6 +1430,28 @@ mod tests {
             values["BRIDGE_MCP_SOCKET"],
             "/home/dev/.build/worktrees/build-bridge-mcp.sock"
         );
+    }
+
+    #[test]
+    fn main_runtime_shutdown_is_bounded_with_a_stuck_blocking_task() {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (finished, done) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            run_main_runtime(async move {
+                let (started, admitted) = tokio::sync::oneshot::channel();
+                tokio::task::spawn_blocking(move || {
+                    let _ = started.send(());
+                    let _ = released.recv();
+                });
+                admitted.await.unwrap();
+            });
+            let _ = finished.send(());
+        });
+        let completed = done.recv_timeout(std::time::Duration::from_secs(4)).is_ok();
+        // Unblock even on the red path so the test process can exit.
+        drop(release);
+        thread.join().unwrap();
+        assert!(completed, "runtime teardown waited for stuck blocking work");
     }
 
     /// `service::manager_for` is the crate's one platform branch: it turns

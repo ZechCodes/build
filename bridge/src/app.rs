@@ -151,6 +151,7 @@ pub(in crate::app) use self::runtime::spawning::{
 pub(in crate::app) use self::runtime::spawning::{
     ensure_agent_tab, open_session_lineage, task_session, SettlingHandle, Spawned,
 };
+pub use self::runtime::storage_maintenance::shut_down_with_storage_maintenance;
 pub(in crate::app) use self::runtime::terminals::{
     attach_to_tab, attach_view, no_terminal_here, session_hello, term_ack, term_attach,
     term_create, term_input, term_resize, TabFacts, TermScope,

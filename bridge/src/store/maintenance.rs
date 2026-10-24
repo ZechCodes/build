@@ -213,19 +213,25 @@ fn maintenance_delay(
     }
 }
 
-/// Dropping cancels the next batch; explicit stop also joins any in-flight batch.
+/// Dropping cancels future batches; explicit stop gives the current batch a short grace period.
 pub struct StorageMaintenanceHandle {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl StorageMaintenanceHandle {
-    /// Waits for the current bounded batch, including any existing writer user
-    /// ahead of it, so shutdown releases this worker's final connection handle.
+    /// Cancel future batches and allow one second for current work to finish.
+    /// A blocking batch may still be waiting on the writer; aborting its async
+    /// wrapper detaches that work rather than extending the shutdown budget.
     pub async fn stop(mut self) {
         self.cancel();
-        if let Some(task) = self.task.take() {
-            let _ = task.await;
+        if let Some(mut task) = self.task.take() {
+            if tokio::time::timeout(Duration::from_secs(1), &mut task)
+                .await
+                .is_err()
+            {
+                task.abort();
+            }
         }
     }
 
@@ -597,5 +603,77 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(2), worker.stop())
             .await
             .unwrap();
+    }
+    #[tokio::test]
+    async fn blocked_maintenance_does_not_delay_shutdown_roster_or_children() {
+        use crate::resume::{LiveRoster, ResumeRoster, ResumingAgent};
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::new(directory.path()).unwrap();
+        let live = LiveRoster::start(directory.path(), "test");
+        live.set_entity(
+            "run-1",
+            vec![ResumingAgent {
+                entity_id: "run-1".into(),
+                agent_id: "agent-1".into(),
+                conversation_id: "agent-1".into(),
+                thread_id: None,
+                resume_session_id: Some("session-1".into()),
+                was_working: true,
+            }],
+        );
+        // A separate holder keeps the writer unavailable until observation.
+        let writer = store.writer();
+        let (locked, held) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _guard = writer.connection();
+            let _ = locked.send(());
+            let _ = released.recv();
+        });
+        held.await.unwrap();
+        let batch_writer = store.writer();
+        let (started, batch_started) = tokio::sync::oneshot::channel();
+        let (stop, mut stopped) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = started.send(());
+                batch_writer.maintain_storage_batch()
+            })
+            .await;
+        });
+        batch_started.await.unwrap();
+        let worker = StorageMaintenanceHandle {
+            stop: Some(stop),
+            task: Some(task),
+        };
+        let mut children_stopped = false;
+        let mut children_before_cancel = false;
+        let completed = tokio::time::timeout(
+            Duration::from_secs(4),
+            crate::app::shut_down_with_storage_maintenance(&live, Some(worker), || {
+                children_stopped = ResumeRoster::path(directory.path()).exists();
+                children_before_cancel = matches!(
+                    stopped.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                );
+            }),
+        )
+        .await
+        .is_ok();
+        let recorded = ResumeRoster::take(directory.path());
+        // Release even on the red path so the blocking pool can finish.
+        drop(release);
+        holder.join().unwrap();
+        assert!(
+            children_stopped,
+            "writer contention delayed roster/child teardown"
+        );
+        assert!(
+            children_before_cancel,
+            "maintenance cancellation preceded child teardown"
+        );
+        assert_eq!(recorded.unwrap().agents[0].agent_id, "agent-1");
+        assert!(completed, "maintenance join exceeded the shutdown budget");
     }
 }

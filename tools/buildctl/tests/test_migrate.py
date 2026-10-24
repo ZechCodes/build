@@ -17,9 +17,11 @@ def write_json(path, value):
 
 
 def tree_bytes(root):
+    # SQLite mode=ro may update WAL shared-memory read marks. DB/WAL and all
+    # persistent state bytes must remain unchanged; SHM is transient coordination.
     return {
         str(path.relative_to(root)): path.read_bytes()
-        for path in root.rglob('*') if path.is_file()
+        for path in root.rglob('*') if path.is_file() and path.name != 'build.db-shm'
     }
 
 
@@ -268,3 +270,24 @@ def test_unrecognized_scratch_directory_is_not_imported(state):
     with pytest.raises(BuildctlError, match='scratch|unsupported|invalid|name'):
         migrator.run(prod_stopped=True)
     assert tree_bytes(target) == before
+
+
+def test_literal_home_paths_are_rewritten_only_in_structured_values(state):
+    migrator, _, target, db, _, _ = state
+    record = {
+        'attachment': '~/.build/tasks/attachments/image.bin',
+        'nested': [{'checkout_path': '~/.build/projects'}],
+        'text': {'attachment': '~/.build/tasks/attachments/image.bin'},
+        'body': '~/.build/tasks/attachments/image.bin',
+        'content': 'Historical ~/.build/projects mention',
+        'path': '~/.build-other/unchanged',
+    }
+    db.execute('UPDATE tasks SET record=?', (json.dumps(record),))
+    db.commit()
+    migrator.run(prod_stopped=True)
+    with sqlite3.connect(target / 'tasks/build.db') as copied:
+        result = json.loads(copied.execute('SELECT record FROM tasks').fetchone()[0])
+    assert result['attachment'] == str(target / 'tasks/attachments/image.bin')
+    assert result['nested'][0]['checkout_path'] == str(target / 'projects')
+    for key in ('body', 'content', 'text', 'path'):
+        assert result[key] == record[key]

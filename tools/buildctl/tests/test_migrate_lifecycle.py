@@ -187,3 +187,13 @@ def test_historical_review_directory_source_path_does_not_veto_path_history(tmp_
     result = classify(path)
     assert ('path', '/old/checkout') in result['historical']['closed_tasks']
     assert ('source_path', '/old/checkout') in result['historical']['closed_tasks']
+
+
+def test_review_git_metadata_is_historical_unless_within_live_workspace(tmp_path):
+    path = database(tmp_path, {
+        'tracker_tasks': [{'id': 'task', 'status': 'done'}],
+        'review_snapshots': [{'task_id': 'task', 'common_git_dir': '/old/repo/.git'}],
+    })
+    assert ('common_git_dir', '/old/repo/.git') in classify(path)['historical']['closed_tasks']
+    live = classify(path, [{'id': 'ws', 'root': '/old', 'directories': [{'path': '/old/repo'}]}])
+    assert ('common_git_dir', '/old/repo/.git') in live['required']

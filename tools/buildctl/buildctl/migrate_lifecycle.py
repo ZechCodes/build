@@ -13,7 +13,7 @@ HISTORY_KINDS = ('reclaimed_workspaces', 'finished_runs', 'closed_tasks',
                  'session_lineage', 'archived_worktrees', 'cancelled_deliveries',
                  'undeliverable_stale_operations', 'undeliverable_stale_deliveries')
 CHECKOUT_KEYS = {'worktree_path', 'checkout', 'cwd', 'root', 'path', 'workspace_path', 'working_repository',
-                 'source_path'}
+                 'source_path', 'common_git_dir'}
 TERMINAL_RUNS = {'Merged', 'Abandoned', 'Archived'}
 
 
@@ -161,13 +161,18 @@ def stale_entity_evidence(entries, reclaimed_ids):
     return stale
 
 
+def is_live_path(value, live_paths):
+    return isinstance(value, str) and any(value == root or value.startswith(root + '/')
+                                          for root in live_paths)
+
+
 def stale_operations(entries, stale_entities, live_paths):
     result = []
     for table, raw, _ in entries:
         if table != 'operations' or raw.get('status') not in {'queued', 'uncertain'}:
             continue
         target, root = raw.get('entity_id'), raw.get('_root')
-        if target in stale_entities and root not in live_paths:
+        if target in stale_entities and not is_live_path(root, live_paths):
             result.append({'id': raw.get('operation_id'), 'target': target,
                            'status': raw['status'], 'root': root})
     return result
@@ -219,7 +224,7 @@ def classify(database, live_workspaces=None):
                 kind = 'undeliverable_stale_operations'
             if record.get('id') in stale_delivery_ids and ref[0] in CHECKOUT_KEYS:
                 kind = 'undeliverable_stale_deliveries'
-            if ref[1] in live_paths:
+            if is_live_path(ref[1], live_paths):
                 kind = None
             elif (ref[0] in CHECKOUT_KEYS and ref[1] in reclaimed_paths
                   and kind not in {'undeliverable_stale_operations', 'undeliverable_stale_deliveries'}):

@@ -15,7 +15,7 @@ const options = { background: true, deviceId: "device", entityId: "owner", capab
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 beforeEach(async () => { await cache.wipeCache(); });
 
-it("direct rail and push refreshes make progress before a coalesced trailing read completes", async () => {
+it("background refreshes make progress before a coalesced trailing read completes", async () => {
   const first = deferred(), trailing = deferred();
   const call = vi.fn().mockReturnValueOnce(first.promise).mockReturnValue(trailing.promise);
   const initial = syncProjectAgents({ ...options, call });
@@ -177,4 +177,41 @@ it("background calls starting after an immediate read cannot supersede its admis
   backgroundReply.resolve(roster);
   await Promise.all(background);
   expect(call).toHaveBeenCalledTimes(1);
+});
+
+it("keeps an invalidation arriving during covered-cache reading as a trailing obligation", async () => {
+  const read = cache.readCached;
+  const captured = deferred(), release = deferred();
+  const spy = vi.spyOn(cache, "readCached").mockImplementation(async (address) => {
+    const record = await read(address);
+    captured.resolve();
+    await release.promise;
+    return record;
+  });
+  const call = vi.fn(async () => roster);
+  try {
+    const early = syncProjectAgents({ ...options, call });
+    const immediate = syncProjectAgents({ ...options, background: false, call: async () => roster });
+    await captured.promise;
+    const late = syncProjectAgents({ ...options, call });
+    release.resolve();
+    await Promise.all([early, immediate, late]);
+    expect(call).toHaveBeenCalledTimes(1);
+  } finally { release.resolve(); spy.mockRestore(); }
+});
+
+
+it("unmarked calls stay immediate and keep their existing latest-reader fence", async () => {
+  const first = deferred(), second = deferred();
+  const call = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  const initial = syncProjectAgents({ ...options, background: false, call });
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+  const latest = syncProjectAgents({ ...options, background: false, call });
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(2));
+  first.resolve(roster);
+  await initial;
+  expect((await cache.readCached(address))?.value).toBeFalsy();
+  second.resolve(roster);
+  await latest;
+  expect((await cache.readCached(address))?.value).toEqual(roster);
 });

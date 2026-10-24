@@ -113,9 +113,9 @@ async function readBackgroundRoster(key, group) {
     const token = await settledImmediateRead(key);
     const request = group.requests.findLast(readerActive);
     if (!request) return;
+    group.dispatched = true;
     // A later immediate read already covered these earlier invalidations.
     if (token?.written && request.order < token.order) return (await readCached(projectAgentsAddress(request.deviceId, request.entityId)))?.value;
-    group.dispatched = true;
     const current = () => readerActive(request) && immediateReads.get(key) === token;
     try {
       const roster = await readRoster({ ...request, active: current });

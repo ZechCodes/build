@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+import json
 import re
 import tomllib
 from urllib.parse import urlsplit
@@ -83,7 +84,34 @@ class Environment:
             BRIDGE_WEB_URL=self.web_url,
             BRIDGE_RELAY_URL=self.relay_url,
         )
+        child.update(self.migration_roots())
         return child
+
+    def migration_roots(self):
+        manifest = self.path(self.state_root / "migration-roots.json")
+        if not manifest.exists():
+            return {}
+        try:
+            raw = json.loads(manifest.read_text())
+            if not isinstance(raw, dict) or set(raw) != {"projects_dir", "worktrees"}:
+                raise ValueError("invalid keys")
+            roots = {key: Path(value) for key, value in raw.items()}
+        except (OSError, ValueError, TypeError) as error:
+            raise BuildctlError("invalid migration roots manifest") from error
+        forbidden = (*self.other_roots, self.state_root, self.home / ".build")
+        for root in roots.values():
+            if not root.is_absolute() or root.resolve() != root:
+                raise BuildctlError(
+                    "migration shared roots must be absolute without symlinks"
+                )
+            if any(root.is_relative_to(path.resolve()) for path in forbidden):
+                raise BuildctlError(
+                    "migration shared roots cross an environment state root"
+                )
+        return {
+            "BRIDGE_PROJECTS_DIR": str(roots["projects_dir"]),
+            "BRIDGE_WORKTREES": str(roots["worktrees"]),
+        }
 
 
 def clean_environment(inherited):

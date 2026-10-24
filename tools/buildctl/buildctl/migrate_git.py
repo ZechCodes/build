@@ -84,8 +84,10 @@ def _validate(config, changes, runner, reverse):
         if not re.fullmatch(r'remote\.[A-Za-z0-9-]+\.(url|pushurl)', change['key']):
             raise BuildctlError('invalid review configuration key')
         result = _config_command(runner, config, '--null', '--get-all', change['key'], check=False)
-        expected = change['new'] if reverse else change['old']
-        if result.returncode or result.stdout != expected + '\0':
+        expected = {change['old'] + '\0'}
+        if reverse:
+            expected.add(change['new'] + '\0')
+        if result.returncode or result.stdout not in expected:
             raise BuildctlError('review remote changed from expected migration value')
 
 
@@ -111,7 +113,7 @@ def apply_remotes(changes, runner, *, reverse=False):
     """Atomically update each shared config, refusing stale plans or Git locks.
 
     All destinations are locked and checked before any configuration is changed.
-    Rollback uses the same plan with old/new expectations exchanged.
+    Rollback accepts old or new values so interrupted cutovers are recoverable.
     """
     grouped = {}
     repositories = {}

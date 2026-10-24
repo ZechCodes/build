@@ -178,3 +178,26 @@ def test_later_replace_failure_restores_previously_written_configs(remote, tmp_p
         assert config.read_bytes() == originals[config]
         assert not Path(str(config) + '.lock').exists()
         assert not list(config.parent.glob('config.migrate-*'))
+
+
+@pytest.mark.parametrize('already_old', [1, 2])
+def test_reverse_recovers_mixed_or_already_restored_values(remote, already_old):
+    runner, repository, changes = remote
+    config = repository / '.git/config'
+    original = config.read_bytes()
+    apply_remotes(changes, runner)
+    for change in changes[:already_old]:
+        runner.run(['git', '-C', str(repository), 'config', change['key'], change['old']])
+    apply_remotes(changes, runner, reverse=True)
+    assert config.read_bytes() == original
+
+
+def test_reverse_refuses_unrelated_remote_destination(remote):
+    runner, repository, changes = remote
+    apply_remotes(changes, runner)
+    runner.run(['git', '-C', str(repository), 'config', changes[1]['key'], '/third/destination'])
+    config = repository / '.git/config'
+    original = config.read_bytes()
+    with pytest.raises(BuildctlError, match='expected'):
+        apply_remotes(changes, runner, reverse=True)
+    assert config.read_bytes() == original

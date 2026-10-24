@@ -1017,12 +1017,15 @@ Queued, claimed and unresolved uncertain receipts retain their payload for
 recovery. A delivered receipt later marked uncertain remains payload-free and
 cannot replay. Sent, seen, failure and completion projection readers use receipt metadata and stored
 messages after delivery; boot recovery uses the receipt span even without a
-payload.
+payload. The remaining receipt is an idempotency tombstone; retaining its numeric
+span does not require retaining the referenced transcript rows.
 
 Before publishing its read pool, Store startup converts older databases to
 `auto_vacuum=INCREMENTAL` with SQLite's transactional `VACUUM`; a failed conversion
 fails startup before serving requests. This one-time rewrite needs temporary
-space for the database. The daemon's storage maintenance worker uses the existing
+space for the database. A startup-only WAL checkpoint/truncate returns the
+rewrite log space before reader admission; a pending marker makes an interrupted
+checkpoint retry on the next open. The daemon's storage maintenance worker uses the existing
 writer outside the app lock. It clears old delivered payloads with resumable
 rowid-keyset batches of at most 1,000 receipts and reclaims at most 32 free pages
 per step. Cleanup progress is committed with each batch; later steps retain only

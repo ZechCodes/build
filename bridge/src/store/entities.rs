@@ -641,6 +641,7 @@ impl Store {
                 held.saturating_sub(RESIDENT_CONVERSATION_TAIL as u64),
                 stored_last,
             );
+            agent.thread.advance_sequence_to(stored_last);
             let summary =
                 stored_conversation_summary(&mut last_message, &mut first_attention_after, &id)?;
             let last_attention_sequence =

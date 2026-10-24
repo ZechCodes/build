@@ -205,6 +205,10 @@ fn stale_resident_saves_cannot_resurrect_pruned_history() {
         .in_transaction(|tx| Store::write_agents(tx, "owner", &agents))
         .unwrap();
     assert_eq!(store.thread_item_count(&id).unwrap(), 0);
+    store.in_transaction(|tx| {
+        tx.execute("UPDATE agents SET record = json_set(record, '$.thread.next_sequence', 0) WHERE id = ?1", [&id])?;
+        Ok(())
+    }).unwrap();
     let loaded = Store::read_agents(
         &store.connection(),
         "owner",

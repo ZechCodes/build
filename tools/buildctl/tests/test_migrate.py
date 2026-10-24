@@ -57,14 +57,23 @@ def state(tmp_path):
     db = sqlite3.connect(source / 'tasks/build.db')
     db.execute('PRAGMA journal_mode=WAL')
     db.execute('PRAGMA wal_autocheckpoint=0')
-    for table in ('tasks', 'agents', 'conversations', 'workspaces'):
-        db.execute(f'CREATE TABLE {table} (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+    for table, create_sql, insert_sql in (
+        ('tasks', 'CREATE TABLE tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL)',
+         'INSERT INTO tasks VALUES (?, ?)'),
+        ('agents', 'CREATE TABLE agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)',
+         'INSERT INTO agents VALUES (?, ?)'),
+        ('conversations', 'CREATE TABLE conversations (id TEXT PRIMARY KEY, record TEXT NOT NULL)',
+         'INSERT INTO conversations VALUES (?, ?)'),
+        ('workspaces', 'CREATE TABLE workspaces (id TEXT PRIMARY KEY, record TEXT NOT NULL)',
+         'INSERT INTO workspaces VALUES (?, ?)'),
+    ):
+        db.execute(create_sql)
         record = {'id': table + '-1', 'session_id': 'session-kept',
                   'path': str(workspace), 'attachment': str(attachment),
                   'boundary': str(source) + '-other/file',
                   'body': str(attachment), 'content': str(attachment),
                   'text': 'A historic mention of ' + str(attachment)}
-        db.execute(f'INSERT INTO {table} VALUES (?,?)', (table + '-1', json.dumps(record)))
+        db.execute(insert_sql, (table + '-1', json.dumps(record)))
     db.execute('CREATE TABLE conversation_attachment_uploads (path TEXT PRIMARY KEY)')
     db.execute('INSERT INTO conversation_attachment_uploads VALUES (?)', (str(attachment),))
     db.execute('CREATE TABLE extra_state (id INTEGER PRIMARY KEY, content BLOB)')
@@ -83,12 +92,26 @@ def test_online_backup_preserves_rows_and_rewrites_state(state):
     identity = (target / 'identity.json').read_bytes()
     result = migrator.run(prod_stopped=True)
     with sqlite3.connect(target / 'tasks/build.db') as copied:
-        tables = [row[0] for row in original.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-        for table in tables:
-            assert copied.execute(f'SELECT COUNT(*) FROM {table}').fetchone() == original.execute(f'SELECT COUNT(*) FROM {table}').fetchone()
+        count_queries = {
+            'tasks': 'SELECT COUNT(*) FROM tasks',
+            'agents': 'SELECT COUNT(*) FROM agents',
+            'conversations': 'SELECT COUNT(*) FROM conversations',
+            'workspaces': 'SELECT COUNT(*) FROM workspaces',
+            'conversation_attachment_uploads': 'SELECT COUNT(*) FROM conversation_attachment_uploads',
+            'extra_state': 'SELECT COUNT(*) FROM extra_state',
+        }
+        tables = {row[0] for row in original.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert tables == count_queries.keys()
+        for table, count_sql in count_queries.items():
+            assert copied.execute(count_sql).fetchone() == original.execute(count_sql).fetchone()
             assert result['tables'][table] == 1
-        for table in ('tasks', 'agents', 'conversations', 'workspaces'):
-            record = json.loads(copied.execute(f'SELECT record FROM {table}').fetchone()[0])
+        for table, record_sql in (
+            ('tasks', 'SELECT record FROM tasks'),
+            ('agents', 'SELECT record FROM agents'),
+            ('conversations', 'SELECT record FROM conversations'),
+            ('workspaces', 'SELECT record FROM workspaces'),
+        ):
+            record = json.loads(copied.execute(record_sql).fetchone()[0])
             assert record['id'] == table + '-1'
             assert record['session_id'] == 'session-kept'
             assert record['path'].startswith(str(projects))
@@ -491,14 +514,13 @@ def test_pi_jsonl_session_paths_move_without_rewriting_conversation_text(state):
 
 def test_schema_identifiers_are_quoted_and_values_bound(state):
     migrator, source, target, db, _, _ = state
-    name = 'state"; DROP TABLE agents; --'
-    quoted = '"' + name.replace('"', '""') + '"'
-    db.execute(f'CREATE TABLE {quoted} (id INTEGER PRIMARY KEY, record TEXT)')
-    db.execute(f'INSERT INTO {quoted} VALUES (?, ?)', (1, json.dumps({'path': str(source / 'projects')})))
+    db.execute('CREATE TABLE "state""; DROP TABLE agents; --" (id INTEGER PRIMARY KEY, record TEXT)')
+    db.execute('INSERT INTO "state""; DROP TABLE agents; --" VALUES (?, ?)',
+               (1, json.dumps({'path': str(source / 'projects')})))
     db.commit()
     migrator.run(prod_stopped=True)
     with sqlite3.connect(target / 'tasks/build.db') as copied:
-        assert json.loads(copied.execute(f'SELECT record FROM {quoted}').fetchone()[0])['path'] == str(target / 'projects')
+        assert json.loads(copied.execute('SELECT record FROM "state""; DROP TABLE agents; --"').fetchone()[0])['path'] == str(target / 'projects')
         assert copied.execute('SELECT COUNT(*) FROM agents').fetchone()[0] == 1
 
 

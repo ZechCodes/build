@@ -6,11 +6,36 @@ from buildctl.migrate_lifecycle import classify
 
 
 def database(tmp_path, records):
+    statements = {
+        'agents': ('CREATE TABLE agents (id TEXT, record TEXT)',
+            'INSERT INTO agents VALUES (?, ?)'),
+        'archived_worktrees': ('CREATE TABLE archived_worktrees (id TEXT, record TEXT)',
+            'INSERT INTO archived_worktrees VALUES (?, ?)'),
+        'conversations': ('CREATE TABLE conversations (id TEXT, record TEXT)',
+            'INSERT INTO conversations VALUES (?, ?)'),
+        'implementations': ('CREATE TABLE implementations (id TEXT, record TEXT)',
+            'INSERT INTO implementations VALUES (?, ?)'),
+        'review_branch_bindings': ('CREATE TABLE review_branch_bindings (id TEXT, record TEXT)',
+            'INSERT INTO review_branch_bindings VALUES (?, ?)'),
+        'review_snapshots': ('CREATE TABLE review_snapshots (id TEXT, record TEXT)',
+            'INSERT INTO review_snapshots VALUES (?, ?)'),
+        'reviews': ('CREATE TABLE reviews (id TEXT, record TEXT)',
+            'INSERT INTO reviews VALUES (?, ?)'),
+        'tracker_delivery_intents': ('CREATE TABLE tracker_delivery_intents (id TEXT, record TEXT)',
+            'INSERT INTO tracker_delivery_intents VALUES (?, ?)'),
+        'tracker_events': ('CREATE TABLE tracker_events (id TEXT, record TEXT)',
+            'INSERT INTO tracker_events VALUES (?, ?)'),
+        'tracker_tasks': ('CREATE TABLE tracker_tasks (id TEXT, record TEXT)',
+            'INSERT INTO tracker_tasks VALUES (?, ?)'),
+        'workspaces': ('CREATE TABLE workspaces (id TEXT, record TEXT)',
+            'INSERT INTO workspaces VALUES (?, ?)'),
+    }
     path = tmp_path / 'build.db'
     with sqlite3.connect(path) as db:
         for table, values in records.items():
-            db.execute(f'CREATE TABLE {table} (id TEXT, record TEXT)')
-            db.executemany(f'INSERT INTO {table} VALUES (?, ?)',
+            create_sql, insert_sql = statements[table]
+            db.execute(create_sql)
+            db.executemany(insert_sql,
                            [(str(n), json.dumps(value)) for n, value in enumerate(values)])
     return path
 

@@ -41,7 +41,7 @@ impl AppState {
                     eprintln!("conversation retention: {error}");
                 }
                 // Orphan cleanup is independent of whether history pruning is enabled.
-                if let Err(error) = attachment_cycle(&weak, &store).await {
+                if let Err(error) = attachment_cycle(&weak, &store, config).await {
                     eprintln!("attachment retention: {error}");
                 }
                 tokio::time::sleep(interval).await;
@@ -162,7 +162,11 @@ async fn prune(
     }
 }
 
-async fn attachment_cycle(state: &Weak<Mutex<AppState>>, store: &Store) -> Result<(), StoreError> {
+async fn attachment_cycle(
+    state: &Weak<Mutex<AppState>>,
+    store: &Store,
+    config: RetentionConfig,
+) -> Result<(), StoreError> {
     let Some(state) = state.upgrade() else {
         return Ok(());
     };
@@ -171,8 +175,17 @@ async fn attachment_cycle(state: &Weak<Mutex<AppState>>, store: &Store) -> Resul
     let cutoff = SystemTime::now()
         .checked_sub(ATTACHMENT_GRACE)
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    let removed =
-        off_the_workers(move || sweeping.sweep_unreferenced_attachments(&homes, cutoff)).await?;
+    let removed = off_the_workers(move || {
+        // Expiry is bounded and shares the configured history window. Pending
+        // delivery reservations remain roots until their operation settles.
+        sweeping.cleanup_conversation_attachment_uploads(
+            config.window_days,
+            &crate::store::now_rfc3339(),
+            1000,
+        )?;
+        sweeping.sweep_unreferenced_attachments(&homes, cutoff)
+    })
+    .await?;
     if removed > 0 {
         eprintln!("attachment retention: removed {removed} unreferenced files");
     }
@@ -185,15 +198,19 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
+    fn fixture(root: &std::path::Path) -> AppState {
+        let context =
+            crate::harness::HarnessContext::resolved("unused".into(), root.to_path_buf()).unwrap();
+        AppState::new_unrooted_configured(root.join("worktrees"), "main", true, context)
+    }
+
     #[test]
     fn config_is_preserved_by_settings_persistence_and_invalid_config_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         let policy = json!({"enabled":true,"min_messages":10,"max_messages":25,"window_days":3});
         std::fs::write(&path, json!({"retention":policy}).to_string()).unwrap();
-        let app = AppState::new_unrooted(dir.path(), "main", true, "unused")
-            .with_config(&path)
-            .unwrap();
+        let app = fixture(dir.path()).with_config(&path).unwrap();
         assert!(app.retention.enabled);
         let persisted = app.config_value(&app.projects_dir, app.default_harness, app.isolation);
         assert_eq!(persisted["retention"], policy);
@@ -202,15 +219,13 @@ mod tests {
             json!({"retention":{"enabled":true,"max_messages":0}}).to_string(),
         )
         .unwrap();
-        assert!(AppState::new_unrooted(dir.path(), "main", true, "unused")
-            .with_config(path)
-            .is_err());
+        assert!(fixture(dir.path()).with_config(path).is_err());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn startup_waits_for_app_mutex_off_the_runtime_worker() {
         let dir = tempfile::tempdir().unwrap();
-        let state = AppState::new_unrooted(dir.path(), "main", true, "unused").shared();
+        let state = fixture(dir.path()).shared();
         let (held, held_rx) = tokio::sync::oneshot::channel();
         let (release, released) = std::sync::mpsc::channel();
         let holding = state.clone();
@@ -242,7 +257,7 @@ mod tests {
             .unwrap();
             path
         };
-        let mut app = AppState::new_unrooted(dir.path(), "main", true, "unused");
+        let mut app = fixture(dir.path());
         app.store = Some(store);
         app.retention.enabled = false;
         let state = app.shared();

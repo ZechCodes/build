@@ -51,6 +51,12 @@ checked out from `dev`, so dev writers can change it. Treat dev push access as a
 dev workloads and credentials; namespace-scoped RBAC does not restrict Ingress
 hostnames. This flow does not expand the existing dev credential's permissions.
 
+For the local dev bridge, authorized agents use only
+[`buildctl`](../../../tools/buildctl/README.md) (`scripts/buildctl --env dev …`). See
+[Working against dev](../../../AGENTS.md#working-against-dev) for deploy, pairing,
+verification, status/logs, rollback and pruning. Validate changes on this dev
+stack before production; production bridge authorization is unchanged.
+
 ## Shared database preflight and provisioning
 
 Before creating the role or schema, inspect privileges, capacity and networking

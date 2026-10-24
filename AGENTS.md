@@ -83,6 +83,48 @@ Design rules:
   binding to `transport/js`, whose dependencies resolve from that directory.
   (`landing/` and `desktop/` retain their own committed locks and install policy.)
 
+## Working against dev
+
+Validate changes on `https://dev.getbuild.ing/app/` and
+`wss://relay-dev.getbuild.ing` before touching production. Moving the `dev`
+branch automatically deploys the hosted app and relay (task #808); see
+[`deploy/k8s/dev/README.md`](deploy/k8s/dev/README.md#automatic-deployment-and-branch-ownership)
+for branch ownership and deployment checks. Push only where your task authorizes.
+
+**`buildctl` is the only supported management entry point for authorized agents
+working against non-production environments.** Use `scripts/buildctl --env dev …`
+or `uv run --frozen --project tools/buildctl buildctl --env dev …` from this
+checkout. Every invocation requires an explicit environment. Production bridge
+rolls and production deployments still need Zech's authorization and keep their
+current path; `buildctl --env prod` supports only status and bridge logs.
+
+```bash
+scripts/buildctl --env dev status
+scripts/buildctl --env dev bridge deploy          # origin/dev; fetch first
+scripts/buildctl --env dev bridge deploy <ref>
+scripts/buildctl --env dev bridge status
+scripts/buildctl --env dev bridge logs -f
+scripts/buildctl --env dev bridge pair
+scripts/buildctl --env dev bridge rollback
+scripts/buildctl --env dev bridge prune --keep 3
+scripts/buildctl --env dev app deploy <ref>         # fast-forward dev
+scripts/buildctl --env dev app status
+```
+
+The first bridge deployment stages a binary but an unpaired machine fails the
+bridge's install gate. Run `bridge pair`, approve the printed link on dev, then
+`bridge deploy` again with the same ref. Current/previous records advance only
+after the unit is active, `/proc/<pid>/exe` matches the staged binary's SHA-256,
+and a fresh relay authentication appears after the old process stops and the
+new one starts. An existing unrecorded bridge is reported as unmanaged; the
+first verified deployment takes it over without inventing a rollback target.
+Binaries now stage in `~/.local/state/build-dev/builds/<sha>/`; legacy binaries
+outside that root are left alone. Failed verification leaves records unchanged,
+but may leave a changed unit/process; inspect status/logs and explicitly redeploy
+or rollback. See [`tools/buildctl/README.md`](tools/buildctl/README.md) for recovery,
+configuration, requirements and offline checks. Never bypass `buildctl` by
+setting inherited `BRIDGE_*` variables or running a bridge binary by hand.
+
 ## Code rules
 
 Code must be clean and readable. Names should be descriptive and self

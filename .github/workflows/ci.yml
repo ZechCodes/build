@@ -464,7 +464,28 @@ jobs:
       # shellcheck is preinstalled on ubuntu runners; locally, `brew install
       # shellcheck`.
       - name: shellcheck
-        run: git ls-files '*.sh' | xargs shellcheck
+        run: git ls-files '*.sh' | nice -n 10 xargs shellcheck
+
+  buildctl:
+    name: Build environment CLI
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-buildctl
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.13.4"
+      - name: Install locked test dependencies
+        run: nice -n 10 uv sync --frozen --project tools/buildctl
+      - name: Complexity and correctness
+        run: nice -n 10 uv run --frozen --project tools/buildctl ruff check tools/buildctl
+      - name: Offline command contracts
+        run: nice -n 10 uv run --frozen --project tools/buildctl pytest tools/buildctl/tests -q
+      - name: Wrapper shellcheck
+        run: nice -n 10 shellcheck scripts/buildctl
 
   desktop:
     name: Desktop client (${{ matrix.os }})
@@ -535,7 +556,7 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build-app
       cancel-in-progress: true
-    needs: [changes, spa, landing, skriftapp, scripts, shell, bridge, bridge-macos, interop, transport, secrets]
+    needs: [changes, spa, landing, skriftapp, scripts, shell, buildctl, bridge, bridge-macos, interop, transport, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -552,6 +573,7 @@ jobs:
           && needs.skriftapp.result == 'success'
           && (needs.scripts.result == 'success' || needs.scripts.result == 'skipped')
           && (needs.shell.result == 'success' || needs.shell.result == 'skipped')
+          && needs.buildctl.result == 'success'
           && needs.secrets.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
@@ -587,7 +609,7 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build-relay
       cancel-in-progress: true
-    needs: [changes, bridge, bridge-macos, interop, transport, web, web-e2e, secrets]
+    needs: [changes, bridge, bridge-macos, interop, transport, web, web-e2e, buildctl, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -600,6 +622,7 @@ jobs:
           && needs.interop.result == 'success'
           && needs.web.result == 'success'
           && needs['web-e2e'].result == 'success'
+          && needs.buildctl.result == 'success'
           && needs.secrets.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:

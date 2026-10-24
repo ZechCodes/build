@@ -40,7 +40,7 @@ def records(database):
                 for column, cell in raw.items():
                     if column != 'record':
                         refs.update(classified_references(table, column, raw.get('status'), cell)[0])
-                retained = {key: raw[key] for key in ('id', 'task_id', 'status') if key in raw}
+                retained = {key: raw[key] for key in ('id', 'task_id', 'status', 'workspace_id') if key in raw}
                 retained['_refs'] = refs
                 yield table, retained, value if isinstance(value, dict) else {}
 
@@ -129,6 +129,15 @@ def classified_entry(table, raw, record, reclaimed_ids, closed_tasks, closed_ent
     return classified
 
 
+def reclaimed_review_paths(entries, reclaimed_ids):
+    tasks = {record.get('task_id', raw.get('task_id'))
+             for table, raw, record in entries if table == 'reviews'
+             and record.get('workspace_id', raw.get('workspace_id')) in reclaimed_ids}
+    return {value for table, raw, record in entries if table == 'review_branch_bindings'
+            and record.get('task_id', raw.get('task_id')) in tasks
+            for key, value in references(record) if key == 'working_repository'}
+
+
 def classify(database, live_workspaces=()):
     """Return required refs and historical refs grouped by evidence kind.
 
@@ -140,6 +149,7 @@ def classify(database, live_workspaces=()):
     live_paths = set().union(*(workspace_paths(record) for record in live)) if live else set()
     reclaimed_ids, reclaimed_paths = reclaimed_evidence(entries)
     reclaimed_ids.difference_update(record.get('id') for record in live)
+    reclaimed_paths.update(reclaimed_review_paths(entries, reclaimed_ids))
     closed_tasks, closed_entities = closed_task_evidence(entries)
     owner_kinds = {record.get('id'): record_kind(table, record, reclaimed_ids)
                    for table, _, record in entries if table == 'implementations'}

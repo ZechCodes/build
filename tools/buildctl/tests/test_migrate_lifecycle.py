@@ -113,3 +113,13 @@ def test_agents_inherit_terminal_owner_and_cancelled_deliveries_are_history(tmp_
     result = classify(path)
     assert ('checkout', '/gone') in result['historical']['finished_runs']
     assert ('path', '/cancelled') in result['historical']['cancelled_deliveries']
+
+
+def test_review_binding_joins_reclaimed_workspace_without_path_heuristics(tmp_path):
+    path = database(tmp_path, {
+        'tracker_events': [{'kind': 'workspace_reclaimed', 'payload': {'workspace_id': 'ws'}}],
+        'reviews': [{'task_id': 'task', 'workspace_id': 'ws'}],
+        'review_branch_bindings': [{'task_id': 'task', 'working_repository': '/arbitrary/place'}],
+    })
+    result = classify(path)
+    assert ('working_repository', '/arbitrary/place') in result['historical']['reclaimed_workspaces']

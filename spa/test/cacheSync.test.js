@@ -1951,6 +1951,20 @@ describe("complete project worker roster synchronization", () => {
     await passesSettled(sync, "dev-1");
   });
 
+  it("marks sync-owned project roster refreshes as background work", async () => {
+    projectWorkersSupported = true;
+    const module = await import("../src/core/projectAgentsCache.js");
+    const observe = vi.spyOn(module, "syncProjectAgents");
+    script["project.list"] = () => ({ projects: [projectList] });
+    script["agent.list"] = () => roster([pin]);
+    try {
+      await boot([projectRow({ agents: [pin] })]);
+      await passesSettled(sync, "dev-1");
+      expect(observe).toHaveBeenCalled();
+      expect(observe.mock.calls.every(([options]) => options.background === true)).toBe(true);
+    } finally { observe.mockRestore(); }
+  });
+
   it("never requests complete rosters from an unsupported bridge", async () => {
     script["project.list"] = () => ({ projects: [projectList] });
     await boot([projectRow({ agents: [pin] })]);

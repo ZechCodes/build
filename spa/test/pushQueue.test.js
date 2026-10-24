@@ -140,3 +140,34 @@ it("bounds repeated empty invalidations without implying that their span was del
   expect(applied[1].thread).toHaveLength(1);
   expect(applied[1].thread[0]).toMatchObject({ since_sequence: 0, last_sequence: 100, items: [] });
 });
+
+it("uses two enrichment workers without overlapping the same key", async () => {
+  const first = gate(), second = gate(), started = [];
+  const queue = createPushQueue({ concurrency: 2, apply: async (_, entry) => {
+    started.push(entry.entity_id);
+    if (started.length === 1) await first.done;
+    if (entry.entity_id === "p2") await second.done;
+  } });
+  const done = queue.enqueue(context, [item("p1", 1), item("p2", 1)]);
+  await Promise.resolve();
+  queue.enqueue(context, [item("p1", 2), item("p1", 3), item("p3", 1)]);
+  expect(started).toEqual(["p1", "p2"]);
+  expect(queue.snapshot()).toEqual({ running: 2, pending: 2 });
+  first.release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(started).toEqual(["p1", "p2", "p1", "p3"]);
+  second.release(); await done;
+});
+
+it("keeps a removal barrier exclusive when enrichment has two workers", async () => {
+  const removal = gate(), started = [];
+  const queue = createPushQueue({ concurrency: 2, apply: async (_, entry) => {
+    started.push(entry.entity_id);
+    if (entry.entity_id === "board") await removal.done;
+  } });
+  const done = queue.enqueue(context, [{ entity_id: "board", state: { removed: ["p1"] } }, item("p1", 1)]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(started).toEqual(["board"]);
+  removal.release(); await done;
+  expect(started).toEqual(["board", "p1"]);
+});

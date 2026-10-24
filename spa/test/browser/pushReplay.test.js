@@ -7,7 +7,7 @@ it("bounds push IndexedDB work under concurrent multi-project agents while the o
   expect(result.peakTransactions).toBeLessThanOrEqual(8);
   expect(result.peakWork_running).toBe(1);
   expect(result.peakWork_pending).toBeLessThanOrEqual(6);
-  expect(result.peakWork_backgroundRunning).toBeLessThanOrEqual(1);
+  expect(result.peakWork_backgroundRunning).toBeLessThanOrEqual(2);
   expect(result.peakWork_backgroundPending).toBeLessThanOrEqual(6);
   expect(result.finalWork).toEqual({ running: 0, pending: 0, backgroundRunning: 0, backgroundPending: 0 });
   expect(result.pendingTransactions).toBe(0);

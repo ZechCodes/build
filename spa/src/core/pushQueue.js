@@ -66,15 +66,17 @@ function combineItems(left, right) {
 
 export const combinePushItems = (left, right) => compatible(left, right) ? combineItems(left, right) : null;
 
-export function createPushQueue({ apply, priority = () => false, onError = () => {}, merge = combinePushItems, isBarrier = boundary }) {
-  const segments = [];
-  let running = 0, done = null, promoted = 0;
+export function createPushQueue({ apply, priority = () => false, onError = () => {}, merge = combinePushItems,
+  isBarrier = boundary, concurrency = 1 }) {
+  const segments = [], busy = new Set();
+  let running = 0, done = null, resolveIdle, promoted = 0, barrierRunning = false;
+  const keyOf = (item) => item.project_source ? JSON.stringify(item.project_source) : String(item.entity_id || "");
 
   function append(context, item) {
-    if (isBarrier(item)) { const job = { context, item }; segments.push({ barrier: job }); return job; }
+    if (isBarrier(item)) { const job = { context, item, barrier: true }; segments.push({ barrier: job }); return job; }
     let segment = segments.at(-1);
     if (!segment || segment.barrier) { segment = { entities: new Map() }; segments.push(segment); }
-    const key = item.project_source ? JSON.stringify(item.project_source) : String(item.entity_id || "");
+    const key = keyOf(item);
     const jobs = segment.entities.get(key) || [];
     const last = jobs.at(-1);
     const merged = last?.context.active() && merge(last.item, item);
@@ -86,8 +88,9 @@ export function createPushQueue({ apply, priority = () => false, onError = () =>
 
   function take() {
     const segment = segments[0];
-    if (segment.barrier) { segments.shift(); return segment.barrier; }
-    const entries = [...segment.entities];
+    if (segment.barrier) return running ? null : segments.shift().barrier;
+    const entries = [...segment.entities].filter(([key]) => !busy.has(key));
+    if (!entries.length) return null;
     const preferred = entries.find(([, pending]) => priority(pending[0].item));
     const selected = promoted < 4 && preferred ? preferred : entries[0];
     promoted = selected === preferred ? promoted + 1 : 0;
@@ -99,25 +102,42 @@ export function createPushQueue({ apply, priority = () => false, onError = () =>
     return job;
   }
 
-  async function drain() {
-    running = 1;
-    // Publish the shared drain promise before even an empty/inactive run ends.
-    await Promise.resolve();
+  async function run(job) {
+    let result;
     try {
-      while (segments.length) {
-        const job = take();
-        try {
-          if (job.context.active()) await apply(job.context, job.item);
-        } catch (error) { onError(error); }
-        finally { job.resolve?.(); }
-      }
-    } finally { running = 0; done = null; }
+      if (job.context.active()) result = await apply(job.context, job.item);
+    } catch (error) { onError(error); }
+    finally {
+      job.resolve?.(result);
+      busy.delete(keyOf(job.item));
+      if (job.barrier) barrierRunning = false;
+      running -= 1;
+      pump();
+    }
+  }
+
+  function pump() {
+    while (segments.length && running < concurrency && !barrierRunning) {
+      const job = take();
+      if (!job) break;
+      running += 1;
+      barrierRunning = Boolean(job.barrier);
+      busy.add(keyOf(job.item));
+      void Promise.resolve().then(() => run(job));
+    }
+    if (!segments.length && !running && done) {
+      const resolve = resolveIdle;
+      done = null;
+      resolve();
+    }
   }
 
   function schedule() {
     if (!segments.length) return done || Promise.resolve();
-    if (!done) done = drain();
-    return done;
+    done ||= new Promise((resolve) => { resolveIdle = resolve; });
+    const pending = done;
+    pump();
+    return pending;
   }
 
   return {
@@ -142,6 +162,7 @@ export function createPushQueue({ apply, priority = () => false, onError = () =>
         for (const job of jobs) job.resolve?.();
       }
       segments.length = 0;
+      pump();
     },
   };
 }

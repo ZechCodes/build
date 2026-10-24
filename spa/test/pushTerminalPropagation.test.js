@@ -120,3 +120,26 @@ it("writes source terminal snapshots while an unrelated invalidation RPC is stal
     await applying;
   } finally { release({ tasks: [] }); }
 });
+
+it("admits a user action and its cache write while background work remains queued", async () => {
+  const releases = [];
+  const previous = context.rpc.getMockImplementation();
+  context.rpc.mockImplementation((method, params) => method === "tasks.list"
+    ? new Promise((resolve) => { releases.push(resolve); }) : previous(method, params));
+  const subscriber = watchers.find((entry) => entry.kinds.includes("thread"));
+  subscriber.onChanges(["p1", "p2"].map((entity_id) => ({ entity_id, tasks: { task_ids: ["changed"] } })));
+  await vi.waitFor(() => expect(releases).toHaveLength(2));
+  for (let sequence = 1; sequence <= 100; sequence += 1) subscriber.onChanges(threadItems(sequence));
+  const { projectTerminalRpc } = await import("../src/core/projectTerminalRpc.js");
+  const { writeProjectTerminalRoster } = await import("../src/core/projectTerminalCache.js");
+  const admitted = vi.fn(async () => ({ term_id: "user-created" }));
+  try {
+    expect(sync.pushWorkInFlight("dev-1").running).toBe(1);
+    const result = await projectTerminalRpc(context, "term.create", scope, admitted);
+    expect(admitted).toHaveBeenCalledWith("term.create", scope);
+    expect(releases).toHaveLength(2); // Neither background read has answered.
+    await writeProjectTerminalRoster({ deviceId: "dev-1", active: () => active }, scope, [result]);
+    expect((await cache.readCached(rosterAddress))?.value.tabs).toEqual([{ term_id: "user-created" }]);
+    expect(sync.pushWorkInFlight("dev-1").backgroundRunning).toBe(2);
+  } finally { for (const release of releases) release({ tasks: [] }); }
+});

@@ -543,7 +543,7 @@ async function refreshProjectAgents(context, projects, entityId = null, afterWri
   if (!capabilities.agents?.projectWorkers) return;
   const owners = projects || await heldValue(context, "", "projects") || [];
   await Promise.all(owners.filter((project) => !entityId || (project.entity_id || project.run_id) === entityId)
-    .map((project) => syncProjectAgents({ deviceId: context.deviceId,
+    .map((project) => syncProjectAgents({ deviceId: context.deviceId, background: true,
       entityId: project.entity_id || project.run_id, capabilities: () => bridgeCapabilities(context.deviceId),
       call: (method, params) => callWhileActive(context, method, params, requestPriorityFields("background"),
         addressOf(context, params.entity_id, "project-agents")), active: context.active,
@@ -1514,14 +1514,16 @@ function queuesFor(context) {
   if (held?.scope === context.backgroundStreams) return held;
   held?.body.clear(); held?.background.clear();
   const priority = (item) => item.owner === openPushEntity(context.deviceId) || item.entity_id === openPushEntity(context.deviceId);
-  const background = createPushQueue({ priority, onError: pushError,
+  const background = createPushQueue({ priority, onError: pushError, concurrency: 2,
     isBarrier: () => false,
     merge: (left, right) => left.run && right.run && left.replaceable && right.replaceable ? right : combinePushItems(left, right),
     apply: (scoped, item) => item.run ? item.run() : applyRemainder(scoped, item),
   });
   const body = createPushQueue({ priority, onError: pushError, apply: async (scoped, item) => {
-    const before = await applyItem(scoped, item);
-    if (before) void prunePushedDrafts(scoped, before).catch(() => {});
+    const applying = { ...scoped, pushCompletions: [] };
+    const before = await applyItem(applying, item);
+    if (before) void prunePushedDrafts(applying, before).catch(() => {});
+    return { settled: Promise.all(applying.pushCompletions) };
   } });
   const queues = { scope: context.backgroundStreams, body, background };
   pushQueues.set(context.deviceId, queues);
@@ -1539,15 +1541,17 @@ export function pushWorkInFlight(deviceId) {
 
 function deferPush(context, entityId, key, run, replaceable = true) {
   if (!context.active()) return;
-  void queuesFor(context).background.enqueue(context, [{ entity_id: key, owner: entityId, run, replaceable }]);
+  const settled = queuesFor(context).background.enqueueApplied(context, [{ entity_id: key, owner: entityId, run, replaceable }]);
+  context.pushCompletions?.push(settled);
 }
 
-function applyChanges(items, deviceId) {
+async function applyChanges(items, deviceId) {
   const context = syncContext(contextFor(deviceId));
   if (!context || !holdingLock) return Promise.resolve();
   context.pushing = true;
   const queues = queuesFor(context);
-  return queues.body.enqueue(context, items);
+  const applied = await queues.body.enqueueApplied(context, items);
+  await Promise.all(applied.map((job) => job?.settled));
 }
 
 async function applyRemainder(context, item) {
@@ -1582,7 +1586,9 @@ function enqueuePushRemainder(context, item) {
   const entityId = String(item.entity_id);
   if (item.state || item.thread) deferPush(context, entityId, `roster:${entityId}`, () => refreshProjectAgents(context, null, entityId));
   const remainder = Object.fromEntries(Object.entries(item).filter(([field]) => field !== "state" && field !== "thread" && field !== "terminals"));
-  if (APPLIERS.slice(2).some(([field]) => remainder[field])) void queuesFor(context).background.enqueue(context, [remainder]);
+  if (APPLIERS.slice(2).some(([field]) => remainder[field])) {
+    context.pushCompletions?.push(queuesFor(context).background.enqueueApplied(context, [remainder]));
+  }
 }
 
 /** Source subscriptions are owned by their mounted panes; writes still go

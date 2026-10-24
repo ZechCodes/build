@@ -3683,7 +3683,9 @@ gate attachment display.
   Catch-up coverage and repair rules still belong to `threadSync.js`.
   Finished-state eviction invalidates the entity data lifetime without removing
   its feed row. Deferred reads retain that fence through cache commits; a
-  conversation reset also cancels its queued old-generation catch-up.
+  conversation reset also cancels its queued old-generation catch-up. Final
+  review metadata belongs to the project and still refreshes after workspace
+  eviction; the evicted entity's complete roster stays cold.
   User actions bypass these queues; neither their RPCs nor their cache writes
   acquire a push slot or wait for a batching timer. Awaiting a push still waits
   for its own deferred fields, without holding a body slot during those reads.

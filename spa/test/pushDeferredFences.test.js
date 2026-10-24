@@ -7,9 +7,10 @@ const App = { route: { name: "inbox" }, devices: [{ id: "dev-1" }] };
 vi.mock("../src/appState.js", () => ({ App }));
 vi.mock("../src/app.js", () => ({ App }));
 let watchers = [];
+let projectWorkers = false;
 vi.mock("../src/core/changeEvents.js", () => ({
   bridgeCapabilities: () => ({ changes: { subscriptions: true, projectSources: true,
-    kinds: ["state", "thread", "git", "files", "terminals", "tasks"] }, term: { projectSources: true } }),
+    kinds: ["state", "thread", "git", "files", "terminals", "tasks"] }, agents: { projectWorkers }, term: { projectSources: true } }),
   subscriptionsSettledFor: async () => {}, onSubscriptionHeld: () => () => {},
   watchChanges: (registration) => { watchers.push(registration); return { dispose() {} }; },
 }));
@@ -29,7 +30,7 @@ beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
   delete navigator.locks;
-  watchers = []; active = true;
+  watchers = []; active = true; projectWorkers = false;
   const answers = {
     "board.list": () => ({ items: board }), "project.list": () => ({ projects }), "workspace.list": () => ({ workspaces: [] }),
     "thread.page": (params) => ({ thread_id: params.thread_id, items: [], has_more: false }),
@@ -134,4 +135,34 @@ it("rejects a file-body write stalled before commit when eviction ends its lifet
   try { await finishEntity(); }
   finally { held.release(); await deferred; stalled.mockRestore(); }
   expect(await cache.readCached(target)).toBeUndefined();
+});
+
+it("refreshes project-owned final review metadata after finish without recreating workspace data", async () => {
+  projectWorkers = true;
+  const { rememberReviewSupport } = await import("../src/core/taskReviewSupport.js");
+  await rememberReviewSupport("dev-1", { reviews: { get: true, pullRequests: true } });
+  await cache.writeCached(address("", "projects"), [{ project_id: "p1", entity_id: "run-0" }]);
+  context.rpc.mockClear();
+  const previous = context.rpc.getMockImplementation();
+  context.rpc.mockImplementation((method, params) => method === "tasks.review.get"
+    ? { review: { task_id: "final-task", version: 2, state: "merged" } } : previous(method, params));
+  await push([{ entity_id: "run-0", state: { ...board[0], state: "merged", review_summary: { task_id: "final-task" } } }]);
+  const review = await cache.readCached(address("p1", "task-review", "final-task"));
+  expect(review?.value.review).toEqual({ task_id: "final-task", version: 2, state: "merged" });
+  expect(context.rpc.mock.calls.filter(([method]) => method === "tasks.review.get")).toHaveLength(1);
+  expect(context.rpc.mock.calls.filter(([method]) => method === "agent.list")).toHaveLength(0);
+  expect((await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-0" })).map((key) => key.kind)).toEqual(["row"]);
+});
+
+it("retains the source removal fence for a final project review read", async () => {
+  const { rememberReviewSupport } = await import("../src/core/taskReviewSupport.js");
+  await rememberReviewSupport("dev-1", { reviews: { get: true, pullRequests: true } });
+  const held = gate(), previous = context.rpc.getMockImplementation();
+  context.rpc.mockClear();
+  context.rpc.mockImplementation((method, params) => method === "tasks.review.get" ? held.promise : previous(method, params));
+  const pending = push([{ entity_id: "run-0", state: { ...board[0], state: "merged", review_summary: { task_id: "final-task" } } }]);
+  await called(context.rpc, () => context.rpc.mock.calls.some(([method]) => method === "tasks.review.get"));
+  try { await push([{ entity_id: "board", state: { revision: 2, removed: ["run-0"] } }]); }
+  finally { held.release({ review: { task_id: "final-task", version: 2 } }); await pending; }
+  expect(await cache.readCached(address("p1", "task-review", "final-task"))).toBeUndefined();
 });

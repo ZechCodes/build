@@ -1578,7 +1578,7 @@ async function applyEntityBodies(context, entityId, item) {
   // Publish conversation bodies before state and expensive invalidation reads.
   if (item.thread) await applyThreadItem(scoped, entityId, item.thread);
   if (!scoped.active()) return;
-  if (item.state) await applyState(scoped, entityId, item.state);
+  if (item.state) await applyState(scoped, entityId, item.state, context);
   if (!scoped.active()) return;
   if (item.terminals) await applyTerminals(scoped, entityId, item.terminals);
   enqueuePushRemainder(scoped, item);
@@ -1784,8 +1784,10 @@ const isFeedRow = (state) => typeof state?.kind === "string" && state.kind !== "
 
 /** `state`: the feed row exactly as `board.list` carries it. A row whose work
  *  is over takes the workspace's data with it — nobody is coming back to it. */
-async function applyState(context, entityId, state) {
+async function applyState(context, entityId, state, metadataContext = context) {
   if (!isFeedRow(state)) return;
+  const fence = pushFence();
+  const review = state.review_summary && { projectId: state.project_id, ids: [state.review_summary.task_id] };
   if (!(await reconcileConversationGenerations(context, entityId, state.agents))) return;
   notePush(addressOf(context, entityId, "row"));
   await writeConversationRow(context, entityId, stampRow(state, context.deviceId));
@@ -1793,10 +1795,15 @@ async function applyState(context, entityId, state) {
   await writeSurfaces(context, entityId, state.agents);
   if (!context.active()) return;
   if (isFinishedState(state.state)) await evictWorkspaceData(context.deviceId, entityId, context.active);
-  if (state.review_summary && context.active()) {
-    const ids = [state.review_summary.task_id];
-    deferPush(context, entityId, `reviews:${entityId}`, () => readReviews(context, state.project_id, ids, ids));
-  }
+  deferStateReview(metadataContext, entityId, review, fence);
+}
+
+/** Review metadata belongs to the project and survives workspace-data eviction.
+ * Retain the device and board-removal fences, without recreating its roster. */
+function deferStateReview(context, entityId, review, fence) {
+  if (!review) return;
+  const reading = { ...context, active: () => context.active() && !removedSince(addressOf(context, entityId, "row"), fence) };
+  deferPush(reading, entityId, `reviews:${entityId}`, () => readReviews(reading, review.projectId, review.ids, review.ids));
 }
 
 /** `thread`: one tip per conversation, carrying the items since this

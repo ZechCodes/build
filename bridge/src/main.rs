@@ -581,6 +581,7 @@ async fn run_daemon(
         Ok(push) => push,
         Err(error) => exit_startup(error),
     };
+    let storage_maintenance = app.spawn_storage_maintenance();
     let app = app
         .with_live_roster(live_roster.clone())
         .with_push_runtime(push.handle())
@@ -722,6 +723,9 @@ async fn run_daemon(
     drop(review_sync);
     reclaim_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     source_sync_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(maintenance) = storage_maintenance {
+        maintenance.stop().await;
+    }
     // It writes from the live roster's newest lists and never waits on the app
     // mutex, so a handler holding that cannot keep it past `TimeoutStopSec`.
     shut_down(&live_roster, || {

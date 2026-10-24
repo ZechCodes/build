@@ -200,3 +200,31 @@ def test_deploy_prints_one_line_result(tmp_path, capsys, monkeypatch):
     lines = capsys.readouterr().out.splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["relay"] == "authenticated"
+
+
+@pytest.mark.parametrize(
+    "branch,default_branch", [("main", "main"), ("trunk", "trunk")]
+)
+def test_mutable_registry_refuses_main_and_repository_default(
+    tmp_path, branch, default_branch
+):
+    registry = tmp_path / "registry.toml"
+    content = REGISTRY.read_text().replace('branch = "dev"', f'branch = "{branch}"')
+    if default_branch != "main":
+        content = content.replace(
+            'default_branch = "main"', f'default_branch = "{default_branch}"', 1
+        )
+    registry.write_text(content)
+    with pytest.raises(BuildctlError, match="protected deployment branch"):
+        load_registry(registry, tmp_path)
+
+
+def test_app_deploy_rechecks_protected_branch_before_any_command(tmp_path):
+    from dataclasses import replace
+    from buildctl.app import App
+
+    env = replace(load_registry(REGISTRY, tmp_path)["dev"], branch="main")
+    runner = Mock()
+    with pytest.raises(BuildctlError, match="protected deployment branch"):
+        App(env, runner, tmp_path).deploy("HEAD", force=True)
+    runner.run.assert_not_called()

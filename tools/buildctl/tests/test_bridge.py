@@ -36,7 +36,7 @@ class FakeRunner:
         self.old_auth_on_stop = False
         self.stop_seen = False
 
-    def run(self, args, *, cwd=None, env=None, check=True):
+    def run(self, args, *, cwd=None, env=None, check=True, diagnostics=False):
         self.calls.append((args, cwd, env))
         output, code = "", 0
         if "rev-parse" in args:
@@ -46,6 +46,7 @@ class FakeRunner:
         elif "worktree" in args:
             self.worktree(args)
         elif "cargo" in args:
+            assert diagnostics is True
             code = self.cargo(args, cwd, env)
         elif args[0] == "systemctl":
             output, code = self.systemctl(args)
@@ -397,3 +398,37 @@ def test_deploy_refuses_managed_file_symlinks_into_prod(setup, relative):
         bridge.deploy()
     assert runner.installed is None
     assert sentinel.read_text() == "do-not-read-or-change"
+
+
+def test_cargo_receives_no_inherited_bridge_variables(setup, monkeypatch):
+    bridge, runner, _ = setup
+    monkeypatch.setenv("BRIDGE_CHANNEL", "prod")
+    monkeypatch.setenv("BRIDGE_UNKNOWN_SECRET", "test-build-secret")
+    monkeypatch.setenv("BRIDGE_REPO", "/prod/repo")
+    bridge.deploy()
+    build_env = next(values for args, _, values in runner.calls if "cargo" in args)
+    assert not any(key.startswith("BRIDGE_") for key in build_env)
+    assert build_env["CARGO_TARGET_DIR"]
+    assert os.environ["BRIDGE_CHANNEL"] == "prod"
+
+
+def test_pair_uses_rolled_back_binary_instead_of_stale_candidate(setup):
+    bridge, runner, env = setup
+    bridge.deploy()
+    runner.sha = B
+    bridge.deploy(B)
+    bridge.rollback()
+    bridge.pair()
+    assert runner.pairs[-1] == env.binary_dir / A / "build-bridge"
+
+
+def test_failed_rollback_does_not_leave_stale_pair_candidate(setup):
+    bridge, runner, env = setup
+    bridge.deploy()
+    runner.sha = B
+    bridge.deploy(B)
+    runner.auth = False
+    with pytest.raises(BuildctlError, match="verification"):
+        bridge.rollback()
+    bridge.pair()
+    assert runner.pairs[-1] == env.binary_dir / A / "build-bridge"

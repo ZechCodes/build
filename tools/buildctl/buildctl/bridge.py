@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import time
 
-from .registry import full_sha
+from .registry import clean_environment, full_sha
 from .runtime import BuildctlError, LogRedactor, digest, redact
 from .service import service_manager
 
@@ -179,7 +179,8 @@ class Bridge:
                         sha,
                     ]
                 )
-                child_env = dict(os.environ, CARGO_TARGET_DIR=str(root / "target"))
+                child_env = clean_environment(os.environ)
+                child_env["CARGO_TARGET_DIR"] = str(root / "target")
                 self.runner.run(
                     [
                         "nice",
@@ -194,6 +195,7 @@ class Bridge:
                     ],
                     cwd=source / "bridge",
                     env=child_env,
+                    diagnostics=True,
                 )
                 self.stage(root / "target/release/build-bridge", destination)
             finally:
@@ -275,6 +277,9 @@ class Bridge:
                 raise BuildctlError(
                     "no previous verified build; redeploy the recorded current ref to recover"
                 )
+            atomic_write(
+                self.env, self.env.state_root / "buildctl-candidate", previous + "\n"
+            )
             return self.activate(previous)
 
     def pair(self):

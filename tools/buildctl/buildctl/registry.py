@@ -48,8 +48,10 @@ class Environment:
     allow_mutation: bool
     minimum_bridge_commit: str
     other_roots: tuple[Path, ...] = ()
+    default_branch: str = "main"
 
     def require_mutation(self):
+        validate_branch_policy(self)
         if self.channel == "prod" or self.name == "prod" or not self.allow_mutation:
             raise BuildctlError(
                 "mutation refused: prod bridge rolls and deploys need Zech’s authorization "
@@ -73,11 +75,7 @@ class Environment:
 
     def bridge_env(self, inherited):
         self.require_mutation()
-        child = {
-            key: value
-            for key, value in inherited.items()
-            if not key.startswith("BRIDGE_")
-        }
+        child = clean_environment(inherited)
         child.update(
             HOME=str(self.home),
             BRIDGE_CHANNEL=self.channel,
@@ -88,10 +86,24 @@ class Environment:
         return child
 
 
+def clean_environment(inherited):
+    return {
+        key: value for key, value in inherited.items() if not key.startswith("BRIDGE_")
+    }
+
+
+def validate_branch_policy(env):
+    if env.allow_mutation and env.branch in {"main", env.default_branch}:
+        raise BuildctlError(
+            "protected deployment branch: mutable environments cannot target main or the repository default branch"
+        )
+
+
 def validate_settings(env):
+    validate_branch_policy(env)
     if env.channel not in CHANNELS:
         raise BuildctlError(
-            "unsupported bridge channel; add bridge support before registering it"
+            "unsupported bridge channel; add support in the bridge and registry.py CHANNELS before registering it"
         )
     root, service = CHANNELS[env.channel]
     if env.state_root != env.home / root or env.service != service:

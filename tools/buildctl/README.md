@@ -18,16 +18,21 @@ not implemented yet and unsupported platforms refuse bridge management.
 
 `environments.toml` is the single registry: channel, service name/manager,
 state/log/binary paths, API/web/relay origins, deployment branch and workflow,
-repository, minimum supported bridge commit, and mutation policy. No environment
+repository and its default branch, minimum supported bridge commit, and mutation policy. No environment
 is implicit, even for reads. Both dev and prod are seeded; prod permits only
 status and bridge logs. Prod bridge rolls and prod deployments still need
 Zech's authorization and keep their existing path outside this CLI. No CLI flag
-can override that restriction.
+can override that restriction. Registry loading rejects a mutable environment
+whose deployment branch is `main` or the registered repository `default_branch`
+(default `main`). Keep that metadata in sync when the repository default changes;
+the guard also runs before mutation so `app deploy` cannot target either branch.
 
 Adding an environment requires a registry entry **and matching bridge channel
 support**. Today the bridge accepts only `dev` and `prod`. `registry.py` validates
 those channels' actual state roots, log paths and service names; extend those
-checks alongside bridge support for a future channel. Registry origins must be
+checks alongside bridge support for a future channel. `CHANNELS` is deliberately
+fixed to the channels implemented by the bridge: adding a TOML entry alone does
+not add channel support; update both the bridge and `registry.py`'s table. Registry origins must be
 public HTTPS/WSS URLs without credentials. Environment roots must be disjoint;
 managed paths must remain inside their own root. Symlink aliases and paths into
 another environment are refused. The systemd unit remains in systemd's normal
@@ -37,10 +42,11 @@ Dev state and logs live in `~/.local/state/build-dev/`, with builds under
 `builds/<full-commit>/build-bridge`, verification records in `buildctl.json`,
 a first-run candidate in `buildctl-candidate`, and a management lock in
 `buildctl.lock`. No identity contents are read or printed. Known secret fields
-and inherited credential values are redacted from public output; subprocess
-failure diagnostics are suppressed. Pairing emits only the expected public
+and inherited credential values are redacted from public output. Failed Cargo
+builds expose a sanitized diagnostic tail; other subprocess failure diagnostics
+are suppressed. Pairing emits only the expected public
 approve link while the bridge waits for approval. All inherited `BRIDGE_*`
-variables are removed from bridge invocations, then channel and origins are
+variables are removed from both Cargo build and bridge invocations; channel and origins are
 set from the registry. The parent shell's environment stays unchanged.
 
 ## Bridge commands
@@ -59,8 +65,12 @@ scripts/buildctl --env dev bridge prune --keep 3
 Deploy resolves the ref to a full commit, refuses commits predating the required
 dev isolation fixes, builds in a temporary detached worktree with
 `nice -n 10 cargo build --release --locked --bin build-bridge`, stages the binary
-atomically, and removes the worktree. Staged binaries are immutable and reused
-for the same commit. Installer stdout/stderr are suppressed. After installation,
+atomically, and removes the worktree. Successful builds stay quiet; failed builds
+show the last 40 sanitized stderr lines so compiler errors can be diagnosed.
+Individual lines over 4 KiB are omitted before redaction to keep huge generated
+source lines from stalling diagnostic handling.
+Staged binaries are immutable and reused for the same commit. Installer
+stdout/stderr are suppressed. After installation,
 systemd is reloaded, the dev unit is stopped, log positions are sampled, and the
 unit starts again. Up to 60 seconds are allowed for an active unit, the running
 executable's SHA-256 matching the staged binary, and a new
@@ -84,7 +94,9 @@ or running executable may have changed. Use status/logs to inspect it, then
 redeploy the recorded current ref to recover. `rollback` reinstalls the recorded
 previous build and performs the same verification; it requires a previous
 verified deployment. After a successful rollback, the previous/current records
-swap, allowing rollback to be reversed. There is no automatic rollback. Prune
+swap, allowing rollback to be reversed. Rollback replaces the pairing candidate
+with its target before installation, so even a failed attempt cannot leave pair
+pointing at a stale deployment candidate. There is no automatic rollback. Prune
 keeps current, previous, any running managed build, and N newest build directories
 (default 3); it removes only directories inside the environment's binary root.
 

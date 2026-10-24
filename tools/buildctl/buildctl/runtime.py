@@ -1,6 +1,7 @@
 """Process execution and the public-output boundary."""
 
 import hashlib
+from collections import deque
 import os
 from pathlib import Path
 import re
@@ -35,7 +36,7 @@ def digest(path: Path) -> str:
 
 
 class Runner:
-    def run(self, args, *, cwd=None, env=None, check=True):
+    def run(self, args, *, cwd=None, env=None, check=True, diagnostics=False):
         try:
             result = subprocess.run(
                 args, cwd=cwd, env=env, text=True, capture_output=True
@@ -43,9 +44,13 @@ class Runner:
         except OSError as error:
             raise BuildctlError(f"cannot execute {Path(args[0]).name}") from error
         if check and result.returncode:
-            raise BuildctlError(
-                f"{Path(args[0]).name} failed (exit {result.returncode}); diagnostics suppressed"
+            message = f"{Path(args[0]).name} failed (exit {result.returncode})"
+            detail = (
+                diagnostic_tail(result.stderr)
+                if diagnostics
+                else "diagnostics suppressed"
             )
+            raise BuildctlError(message + "\n" + detail)
         return result
 
     def pair(self, binary, *, env, approve_url):
@@ -96,6 +101,7 @@ class LogRedactor:
 
     def __init__(self):
         self.private_block = False
+        self.pending_value = False
 
     def line(self, text):
         if re.search(r"-----BEGIN .*PRIVATE KEY-----", text):
@@ -105,4 +111,24 @@ class LogRedactor:
             if re.search(r"-----END .*PRIVATE KEY-----", text):
                 self.private_block = False
             return None
+        if self.pending_value:
+            self.pending_value = not bool(text.strip())
+            return "[redacted]"
+        if re.fullmatch(
+            r"(?i)\s*[\w-]*(?:token|secret|password|private[_-]?key|authorization|identity)[\w-]*\s*[:=]\s*",
+            text,
+        ):
+            self.pending_value = True
         return redact(text.rstrip())
+
+
+def diagnostic_tail(stderr, lines=40):
+    redactor = LogRedactor()
+    bounded_lines = (
+        line if len(line) <= 4096 else "[oversized diagnostic line omitted]"
+        for line in stderr.splitlines()
+    )
+    safe_lines = (redactor.line(line) for line in bounded_lines)
+    return "\n".join(
+        deque((line for line in safe_lines if line is not None), maxlen=lines)
+    )

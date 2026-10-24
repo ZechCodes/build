@@ -11,6 +11,7 @@ api_url = "https://dev.getbuild.ing"
 relay_url = "wss://relay-dev.getbuild.ing"
 branch = "dev"
 repository = "ZechCodes/build"
+default_branch = "main"
 deploy_workflow = "dev-deploy.yml"
 allow_mutation = true
 # Includes dev path validation and all validated-path consumers.
@@ -29,6 +30,7 @@ api_url = "https://getbuild.ing"
 relay_url = "wss://relay.getbuild.ing"
 branch = "main"
 repository = "ZechCodes/build"
+default_branch = "main"
 deploy_workflow = "ci.yml"
 allow_mutation = false
 minimum_bridge_commit = "316cf0542e9963d6b8b3581512b95fb053142506"

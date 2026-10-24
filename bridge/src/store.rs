@@ -57,6 +57,9 @@ use std::sync::Mutex;
 pub(crate) use operations::CommittedThreadItems;
 pub(crate) use reviews::TrackingExpectation;
 
+mod attachment_sweep;
+pub(crate) use attachment_sweep::{attachment_admission, refresh_attachment_admission};
+pub use attachment_sweep::AttachmentSweep;
 mod conversation_reset;
 mod conversations;
 mod delivery_intents;

@@ -88,6 +88,7 @@ pub(in crate::app) fn write_attachment(
     stored_name: &str,
     content: &[u8],
 ) -> Result<(), String> {
+    let _admission = crate::store::attachment_admission();
     std::fs::create_dir_all(home)
         .map_err(|e| format!("cannot create the attachments folder: {e}"))?;
     std::fs::write(home.join(stored_name), content)
@@ -456,6 +457,7 @@ impl AppState {
                 "a message carries at most {ATTACHMENTS_PER_MESSAGE_MAX} attachments"
             ));
         }
+        let _admission = crate::store::attachment_admission();
         listed
             .iter()
             .map(|entry| {
@@ -464,6 +466,7 @@ impl AppState {
                     .and_then(Value::as_str)
                     .ok_or("each attachment needs a path")?;
                 let resolved = self.resolve_attachment(entity_id, path)?;
+                refresh_attachment_copies(&self.local_attachments_dir(), &resolved)?;
                 let size = std::fs::metadata(&resolved)
                     .map_err(|e| format!("cannot stat the attachment: {e}"))?
                     .len();
@@ -490,6 +493,24 @@ impl AppState {
                 })
             })
             .collect()
+    }
+}
+
+/// Protect both copies while validation precedes durable message publication.
+/// The caller holds the attachment admission gate.
+fn refresh_attachment_copies(
+    local: &std::path::Path,
+    resolved: &std::path::Path,
+) -> Result<(), String> {
+    crate::store::refresh_attachment_admission(resolved)
+        .map_err(|e| format!("cannot refresh the attachment: {e}"))?;
+    let Some(leaf) = resolved.file_name() else {
+        return Ok(());
+    };
+    match crate::store::refresh_attachment_admission(&local.join(leaf)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("cannot refresh the attachment mirror: {error}")),
     }
 }
 

@@ -3,6 +3,7 @@ from copy import deepcopy
 import importlib.util
 from pathlib import Path
 import runpy
+import subprocess
 
 import pytest
 import yaml
@@ -280,6 +281,51 @@ def test_deploy_entry_accepts_only_main_dispatch_or_same_repository_dev_push(
                                     "head_repository": {"full_name": repo}, "event": source_event}},
     }}
     assert evaluate(condition, context) == allowed
+
+
+@pytest.mark.parametrize("name", ["deploy-app", "deploy-relay"])
+@pytest.mark.parametrize("tip,api_exit,current", [
+    ("a" * 40, "0", True), ("b" * 40, "0", False),
+    ("invalid", "0", None), ("", "1", None),
+])
+def test_rollout_rechecks_dev_inside_lock_and_skips_superseded_source(
+    tmp_path, name, tip, api_exit, current,
+):
+    job = workflow()["jobs"][name]
+    assert job["concurrency"]["cancel-in-progress"] is False
+    guard = job["steps"][0]
+    assert guard["id"] == "freshness"
+    assert guard["env"] == {
+        "GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
+        "GH_REPO": "${{ github.repository }}",
+        "SOURCE_SHA": "${{ needs.resolve.outputs.sha }}",
+    }
+    assert 'gh api "repos/$GH_REPO/git/ref/heads/dev"' in guard["run"]
+    for step in job["steps"][1:]:
+        expected = "steps.freshness.outputs.current == 'true'"
+        if step.get("name") == "Remove temporary kube credential":
+            expected = "always() && " + expected
+        assert step["if"] == "${{ " + expected + " }}"
+    # Execute the actual inline guard, replacing only the GitHub API transport.
+    api = tmp_path / "gh"
+    api.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_DEV_TIP"\nexit "$TEST_GH_EXIT"\n')
+    api.chmod(0o700)
+    output, summary = tmp_path / "output", tmp_path / "summary"
+    result = subprocess.run(
+        ["/bin/bash", "-eo", "pipefail", "-c", guard["run"]],
+        env={"PATH": f"{tmp_path}:/usr/bin:/bin", "SOURCE_SHA": "a" * 40,
+             "GH_REPO": "owner/repo", "TEST_DEV_TIP": tip, "TEST_GH_EXIT": api_exit,
+             "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)},
+        capture_output=True, text=True, check=False,
+    )
+    if current is None:
+        assert result.returncode != 0
+        assert not output.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert output.read_text().strip() == f"current={str(current).lower()}"
+        if not current:
+            assert summary.read_text().strip() == f"superseded by {tip}"
 
 
 def renderer():

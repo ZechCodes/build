@@ -143,11 +143,18 @@ finishes before the next ready job in that group runs. GitHub concurrency keeps
 at most one pending job per group and may replace a pending job; intermediate
 tips can be superseded rather than deployed. App and relay remain independent.
 A partial failure or manual cancellation can still need operator recovery, but a
-new push does not interrupt an active migration or rollout. Concurrency is not
-FIFO: a resolved SHA is a snapshot, and an unusually delayed older run can enter
-a job group after a newer run. Current-tip resolution prevents replaying signal
-SHAs, but does not promise strict deployment ordering across all scheduler races.
-Push the intended tip again or use the main-side retry if a run is superseded.
+new push does not interrupt an active migration or rollout.
+
+At the start of each rollout job, **inside its non-cancelling concurrency group**,
+a read-only GitHub API request re-reads `refs/heads/dev`. If its tip differs from
+the run's resolved SHA, the job reports `superseded by <tip>` in its summary and
+skips every remaining step, including checkout, rendering, credential setup,
+migration and rollout. An API error or malformed SHA fails closed. A delayed old
+job therefore cannot overwrite a newer deployment: it must still match dev when
+it acquires the group. A tip that moves after this check lets the active rollout
+finish; the newer run follows it. This check does not change the selected source
+SHA or consume anything from the signal workflow. GitHub does not guarantee FIFO
+scheduling; superseded snapshots are deliberately skipped.
 `kubectl kustomize deploy/k8s/dev` is an offline render. `deploy/render_dev.py`
 refuses cluster/bootstrap resources, unexpected names/namespaces and source
 images, and writes only the phases selected by that rollout:

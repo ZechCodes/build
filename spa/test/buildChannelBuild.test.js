@@ -16,10 +16,13 @@ it.each(["dev", "prod"])("bakes %s into an output that needs no runtime environm
   const bundle = Array.isArray(output) ? output[0] : output;
   const code = bundle.output.find((file) => file.type === "chunk").code;
   expect(code).not.toContain("import.meta.env");
-  document.body.innerHTML = '<span id="build-channel" hidden>Dev</span>';
+  document.body.innerHTML = '<button class="connection-status"></button>';
   document.title = "Build — review is the product";
   const compiled = await import(/* @vite-ignore */ `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
   compiled.initBuildChannel();
-  expect(document.querySelector("#build-channel").hidden).toBe(channel !== "dev");
+  const button = document.querySelector(".connection-status");
+  compiled.mountBuildChannel(button);
+  expect(Boolean(button.querySelector(".connection-build-channel"))).toBe(channel === "dev");
+  expect(button.getAttribute("aria-description")).toBe(channel === "dev" ? "Dev build" : null);
   expect(document.title).toBe(channel === "dev" ? "Build Dev — review is the product" : "Build — review is the product");
 });

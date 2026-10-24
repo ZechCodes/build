@@ -1,13 +1,10 @@
 name: Dev deploy
 
-# The secret-free dev push signal starts this workflow from the default branch
-# (main). Ignore all signal data when resolving source: read dev once ourselves.
+# Dev is the trusted integration branch; image builds are its deployment gate.
 on:
-  workflow_dispatch:
-  workflow_run:
-    workflows: [Dev deploy request]
-    types: [completed]
+  push:
     branches: [dev]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,20 +12,15 @@ permissions:
 jobs:
   resolve:
     if: >-
-      ${{ github.ref == 'refs/heads/main' &&
-          (github.event_name == 'workflow_dispatch' ||
-           (github.event_name == 'workflow_run' &&
-            github.event.workflow_run.event == 'push' &&
-            github.event.workflow_run.conclusion == 'success' &&
-            github.event.workflow_run.head_branch == 'dev' &&
-            github.event.workflow_run.head_repository.full_name == github.repository)) }}
+      ${{ github.ref == 'refs/heads/dev' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: refs/heads/dev
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Record source commit
         id: source
@@ -38,86 +30,8 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Dev source commit: $sha" >> "$GITHUB_STEP_SUMMARY"
 
-  checks:
-    needs: [resolve]
-    runs-on: ubuntu-latest
-    concurrency:
-      group: dev-deploy-checks
-      cancel-in-progress: true
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ needs.resolve.outputs.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "22.23.4"
-      - name: Match locked npm
-        run: npm install -g npm@12.0.2 --ignore-scripts --no-audit --no-fund
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-        with:
-          version: "0.13.4"
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          components: rustfmt, clippy
-      - name: Install locked JS dependencies
-        run: |
-          nice -n 10 npm ci --prefix transport/js --ignore-scripts
-          nice -n 10 npm ci --prefix spa --legacy-peer-deps
-          nice -n 10 npm ci --prefix web
-          nice -n 10 npm ci --prefix landing --ignore-scripts
-          nice -n 10 npm ci --prefix bridge/tests/fixtures --ignore-scripts
-      - name: Python API and deployment contracts
-        working-directory: skriftapp
-        run: |
-          nice -n 10 uv run --frozen ruff check buildapp ../deploy/render_dev.py
-          nice -n 10 uv run --frozen pytest buildapp -q
-      - name: SPA
-        working-directory: spa
-        # Match ci.yml's baseline test environment. buildChannelBuild,
-        # buildChannelDom and browser/buildChannelLayout explicitly set their
-        # own channel fixtures; the whole suite must not inherit build inputs.
-        run: |
-          nice -n 10 npm run lint
-          nice -n 10 npm test
-      - name: Build dev SPA
-        working-directory: spa
-        env:
-          VITE_BUILD_CHANNEL: dev
-          VITE_RELAY_URL: wss://relay-dev.getbuild.ing
-          VITE_BUILD_VERSION: ${{ needs.resolve.outputs.sha }}
-        run: nice -n 10 npm run build
-      - name: Landing image inputs
-        run: nice -n 10 npm test --prefix landing
-      - name: Relay and bridge regression gates
-        working-directory: bridge
-        run: |
-          nice -n 10 cargo test --locked
-          nice -n 10 cargo clippy --all-targets -- -D warnings
-          nice -n 10 cargo fmt --check
-          nice -n 10 cargo test --locked --manifest-path vendor/Cargo.toml --lib
-      - name: Web and transport interoperability
-        run: |
-          nice -n 10 python3 scripts/transport_import.py check
-          nice -n 10 python3 -m unittest discover -s transport/tests -v
-          nice -n 10 uv run --project transport/python --frozen python -m unittest discover -s transport/python/tests -v
-          nice -n 10 uv run --project transport/python --frozen python -m unittest discover -s transport/compatibility -v
-          nice -n 10 npm test --prefix transport/js
-          nice -n 10 npm test --prefix web
-          CHROMIUM_PATH="$(command -v chromium || command -v google-chrome)" nice -n 10 node --test web/devStackIsolation.browser.mjs
-          nice -n 10 npm run --prefix bridge/tests/fixtures test:compaction
-          nice -n 10 npm run --prefix bridge/tests/fixtures typecheck:compaction
-      - name: Offline dev manifest render
-        run: |
-          nice -n 10 kubectl kustomize deploy/k8s/dev > /tmp/dev-resources.yaml
-          nice -n 10 uv run --project skriftapp --frozen python deploy/render_dev.py \
-            --input /tmp/dev-resources.yaml --output /tmp/dev-render-check \
-            --app-image "ghcr.io/zechcodes/build-app-dev@sha256:$(printf '%064d' 0)" \
-            --relay-image "ghcr.io/zechcodes/build-relay-dev@sha256:$(printf '%064d' 0)"
-
   build-app:
-    needs: [resolve, checks]
-    if: ${{ needs.checks.result == 'success' }}
+    needs: [resolve]
     runs-on: ubuntu-latest
     concurrency:
       group: dev-deploy-build-app
@@ -157,8 +71,7 @@ jobs:
         run: echo "build-app-dev $SOURCE_SHA $IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
   build-relay:
-    needs: [resolve, checks]
-    if: ${{ needs.checks.result == 'success' }}
+    needs: [resolve]
     runs-on: ubuntu-latest
     concurrency:
       group: dev-deploy-build-relay
@@ -194,8 +107,8 @@ jobs:
         run: echo "build-relay-dev $SOURCE_SHA $IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
   deploy-app:
-    needs: [resolve, checks, build-app]
-    if: ${{ needs.checks.result == 'success' && needs['build-app'].result == 'success' }}
+    needs: [resolve, build-app]
+    if: ${{ needs['build-app'].result == 'success' }}
     runs-on: ubuntu-latest
     environment: development
     concurrency:
@@ -259,8 +172,8 @@ jobs:
         run: rm -f "$RUNNER_TEMP/dev-kubeconfig"
 
   deploy-relay:
-    needs: [resolve, checks, build-relay]
-    if: ${{ needs.checks.result == 'success' && needs['build-relay'].result == 'success' }}
+    needs: [resolve, build-relay]
+    if: ${{ needs['build-relay'].result == 'success' }}
     runs-on: ubuntu-latest
     environment: development
     concurrency:

@@ -45,44 +45,42 @@ describe("build channel chrome", () => {
     vi.stubEnv("VITE_BUILD_CHANNEL", "dev");
     const { boot } = await import("../src/views/gate.js");
     boot.mockImplementationOnce(() => {
-      expect(document.querySelector("#build-channel").hidden).toBe(false);
+      expect(document.querySelector("#build-channel")).toBeNull();
       expect(document.title).toBe("Build Dev — review is the product");
     });
     await import("../src/main.js");
     expect(boot).toHaveBeenCalledOnce();
   });
 
-  it("exports the configured channel and shows Dev beside the global controls", async () => {
+  it("adds a compact Dev identity to the connection button", async () => {
     await initialize("dev");
     expect((await import("../src/config.js")).BUILD_CHANNEL).toBe("dev");
-    const badge = document.querySelector("#build-channel");
-    expect(badge.textContent).toBe("Dev");
-    expect(badge.hidden).toBe(false);
-    expect(badge.previousElementSibling.id).toBe("global-controls");
+    const { mountBuildChannel } = await import("../src/core/buildChannel.js");
+    const button = document.createElement("button");
+    mountBuildChannel(button);
+    const badge = button.querySelector(".connection-build-channel");
+    expect(badge.textContent).toBe("D");
+    expect(badge.getAttribute("aria-hidden")).toBe("true");
+    expect(button.getAttribute("aria-description")).toBe("Dev build");
+    expect(document.querySelector("#build-channel")).toBeNull();
     expect(document.title).toBe("Build Dev — review is the product");
   });
 
   it.each([undefined, "", "prod", "preview"])("keeps the original UI/title for %s", async (channel) => {
     await initialize(channel);
-    expect(document.querySelector("#build-channel").hidden).toBe(true);
+    const { mountBuildChannel } = await import("../src/core/buildChannel.js");
+    const button = document.createElement("button");
+    mountBuildChannel(button);
+    expect(button.children).toHaveLength(0);
+    expect(button.hasAttribute("aria-description")).toBe(false);
     expect(document.title).toBe(originalTitle);
   });
 
-  it("keeps the same badge across routes, welcome and disconnected/empty devices", async () => {
+  it("keeps build identity out of the header on welcome and empty devices", async () => {
     await initialize("dev");
-    const badge = document.querySelector("#build-channel");
-    const { App } = await import("../src/appState.js");
-    for (const route of ["inbox", "project", "account"]) {
-      App.route = { name: route };
-      App.devices = [];
-      App.selectedDeviceId = null;
-      App.gated = true;
-      document.body.classList.add("gated");
-      document.querySelector("#root").innerHTML = "<h1>Welcome to Build</h1>";
-      window.dispatchEvent(new Event("hashchange"));
-      expect(document.querySelector("#build-channel")).toBe(badge);
-      expect(badge.hidden).toBe(false);
-      expect(document.title).toBe("Build Dev — review is the product");
-    }
+    document.body.classList.add("gated");
+    document.querySelector("#root").innerHTML = "<h1>Welcome to Build</h1>";
+    expect(document.querySelector("#build-channel")).toBeNull();
+    expect(document.title).toBe("Build Dev — review is the product");
   });
 });

@@ -1,6 +1,7 @@
 """Dev deploy isolation contracts; no cluster access or workflow dispatch."""
 from copy import deepcopy
 import importlib.util
+import json
 from pathlib import Path
 import runpy
 import subprocess
@@ -135,38 +136,82 @@ def workflow():
     return yaml.safe_load((ROOT / ".github/workflows/dev-deploy.yml").read_text())
 
 
-def test_spa_checks_do_not_inherit_build_environment():
+def test_dev_workflow_only_resolves_builds_and_deploys():
     flow = workflow()
-    checks = flow["jobs"]["checks"]
-    spa = next(step for step in checks["steps"] if step.get("name") == "SPA")
-    for scope in (flow, checks, spa):
-        assert not any(key.startswith("VITE_BUILD_") or key == "VITE_RELAY_URL"
-                       for key in scope.get("env", {})), "SPA tests must use the baseline environment"
-    assert spa["working-directory"] == "spa"
-    assert spa["run"].splitlines() == ["nice -n 10 npm run lint", "nice -n 10 npm test"]
+    assert set(flow["jobs"]) == {"resolve", "build-app", "build-relay", "deploy-app", "deploy-relay"}
+    assert not (ROOT / ".github/workflows/dev-deploy-request.yml").exists()
+    for job in flow["jobs"].values():
+        for step in job["steps"]:
+            command = step.get("run", "")
+            for forbidden in ("pytest", "ruff", "npm test", "npm run lint", "cargo test", "cargo clippy"):
+                assert forbidden not in command
+            if "uses" in step:
+                assert len(step["uses"].rsplit("@", 1)[1].split()[0]) == 40
+    assert flow["jobs"]["resolve"].get("permissions", flow["permissions"]) == {"contents": "read"}
+    for name in ("build-app", "build-relay"):
+        assert flow["jobs"][name]["permissions"] == {"contents": "read", "packages": "write"}
 
-    build = next(step for step in checks["steps"] if step.get("name") == "Build dev SPA")
-    assert checks["steps"].index(spa) < checks["steps"].index(build)
-    assert build["working-directory"] == "spa"
-    assert build["run"] == "nice -n 10 npm run build"
-    assert build["env"] == {
-        "VITE_BUILD_CHANNEL": "dev",
-        "VITE_RELAY_URL": "wss://relay-dev.getbuild.ing",
-        "VITE_BUILD_VERSION": "${{ needs.resolve.outputs.sha }}",
-    }
+
+def production_workflow():
+    return yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+
+
+def test_prod_deploys_require_all_test_jobs_and_main_ref():
+    flow = production_workflow()
+    assert flow.get("on", flow.get(True))["push"] == {"branches": ["main"]}
+    jobs = flow["jobs"]
+    non_tests = {"changes", "validation", "build-app", "build-relay", "deploy-app", "deploy-relay"}
+    test_jobs = set(jobs) - non_tests
+    assert {"web-e2e", "desktop", "spa", "bridge", "skriftapp"} <= test_jobs
+    assert set(jobs["validation"]["needs"]) == test_jobs | {"changes"}
+    assert jobs["validation"]["if"] == "${{ always() }}"
+    for name in ("deploy-app", "deploy-relay"):
+        job = jobs[name]
+        assert "validation" in job["needs"]
+        assert "needs.validation.result == 'success'" in job["if"]
+        assert "github.ref == 'refs/heads/main'" in job["if"]
+        assert f"needs['{name.replace('deploy', 'build')}'].result == 'success'" in job["if"]
+
+
+@pytest.mark.parametrize("result,allowed", [
+    ("success", True), ("skipped", True), ("failure", False), ("cancelled", False),
+])
+def test_prod_validation_accepts_filtered_skips_and_rejects_failed_suites(result, allowed):
+    job = production_workflow()["jobs"]["validation"]
+    step, = job["steps"]
+    assert step["env"] == {"JOB_RESULTS": "${{ toJSON(needs) }}"}
+    for name in job["needs"]:
+        outcomes = {key: {"result": "success"} for key in job["needs"]}
+        outcomes[name]["result"] = result
+        run = subprocess.run(
+            ["/bin/bash", "-eo", "pipefail", "-c", step["run"]],
+            env={"PATH": "/usr/bin:/bin", "JOB_RESULTS": json.dumps(outcomes)},
+            capture_output=True, text=True, check=False,
+        )
+        expected = allowed and not (name == "changes" and result == "skipped")
+        assert (run.returncode == 0) == expected, (name, result, run.stderr)
+
+
+def test_relay_image_still_compiles_both_binaries_before_publishing():
+    job = workflow()["jobs"]["build-relay"]
+    build = next(s for s in job["steps"] if "docker/build-push-action@" in s.get("uses", ""))
+    assert build["with"]["context"] == "bridge"
+    assert build["with"]["file"] == "bridge/Containerfile"
+    assert build["with"]["target"] == "relay"
+    source = (ROOT / "bridge/Containerfile").read_text()
+    assert "RUN cargo build --release --bin relay --bin build-bridge" in source
+    assert "COPY --from=build /src/target/release/relay /usr/local/bin/relay" in source
 
 
 def test_automatic_and_manual_workflow_pin_dev_sha_and_only_dev_images():
     flow = workflow()
     triggers = flow.get("on", flow.get(True))
-    assert set(triggers) == {"workflow_dispatch", "workflow_run"}
-    assert triggers["workflow_run"] == {
-        "workflows": ["Dev deploy request"], "types": ["completed"], "branches": ["dev"],
-    }
+    assert set(triggers) == {"workflow_dispatch", "push"}
+    assert triggers["push"] == {"branches": ["dev"]}
     assert flow["permissions"] == {"contents": "read"}
     jobs = flow["jobs"]
     resolver = jobs["resolve"]
-    assert resolver["steps"][0]["with"]["ref"] == "refs/heads/dev"
+    assert resolver["steps"][0]["with"]["ref"] == "${{ github.sha }}"
     assert "git rev-parse HEAD" in resolver["steps"][1]["run"]
     assert "sha" in resolver["outputs"]
     for name, job in jobs.items():
@@ -178,8 +223,8 @@ def test_automatic_and_manual_workflow_pin_dev_sha_and_only_dev_images():
             assert "KUBECONFIG" not in yaml.safe_dump(job)
     for name, image in (("build-app", "build-app-dev"), ("build-relay", "build-relay-dev")):
         job = jobs[name]
-        assert job["needs"] == ["resolve", "checks"]
-        assert job["if"] == "${{ needs.checks.result == 'success' }}"
+        assert job["needs"] == ["resolve"]
+        assert "if" not in job
         build = next(s for s in job["steps"] if "docker/build-push-action@" in s.get("uses", ""))
         assert build["with"]["tags"] == f"ghcr.io/zechcodes/{image}:${{{{ needs.resolve.outputs.sha }}}}"
         assert "digest" in job["outputs"]
@@ -194,8 +239,8 @@ def test_deploy_requires_success_protection_digest_and_dev_only_apply(name):
     assert job["environment"] == "development"
     assert job["concurrency"] == {"group": name + "-dev", "cancel-in-progress": False}
     image_job = name.replace("deploy", "build")
-    assert job["needs"] == ["resolve", "checks", image_job]
-    assert job["if"] == f"${{{{ needs.checks.result == 'success' && needs['{image_job}'].result == 'success' }}}}"
+    assert job["needs"] == ["resolve", image_job]
+    assert job["if"] == f"${{{{ needs['{image_job}'].result == 'success' }}}}"
     source = yaml.safe_dump(job)
     assert "DEV_KUBECONFIG" in source
     assert f"needs['{image_job}'].outputs.digest" in source
@@ -216,11 +261,11 @@ def test_deploy_requires_success_protection_digest_and_dev_only_apply(name):
         assert "wait --for=condition=complete job/build-app-migrate" in commands
 
 
-def test_new_push_cancels_checks_and_builds_but_never_migration_or_rollout():
+def test_new_push_cancels_builds_but_never_migration_or_rollout():
     flow = workflow()
     # Workflow-level cancellation overrides job-level protection, so forbid it.
     assert "concurrency" not in flow
-    for name in ("checks", "build-app", "build-relay"):
+    for name in ("build-app", "build-relay"):
         assert flow["jobs"][name]["concurrency"] == {
             "group": "dev-deploy-" + name, "cancel-in-progress": True,
         }
@@ -233,9 +278,9 @@ def test_new_push_cancels_checks_and_builds_but_never_migration_or_rollout():
     assert "wait --for=condition=complete" in migration["run"]
 
 
-def test_signal_is_only_a_notification_and_never_supplies_deployment_data():
+def test_dev_source_is_pinned_without_external_workflow_data():
     flow = workflow()
-    assert flow["jobs"]["resolve"]["steps"][0]["with"]["ref"] == "refs/heads/dev"
+    assert flow["jobs"]["resolve"]["steps"][0]["with"]["ref"] == "${{ github.sha }}"
     for job in flow["jobs"].values():
         # Only the entry condition may inspect the event's origin/status.
         body = yaml.safe_dump({key: value for key, value in job.items() if key != "if"})
@@ -246,40 +291,15 @@ def test_signal_is_only_a_notification_and_never_supplies_deployment_data():
                 assert step["with"]["persist-credentials"] is False
 
 
-def test_dev_push_signal_has_no_checkout_secrets_or_write_token():
-    signal = yaml.safe_load((ROOT / ".github/workflows/dev-deploy-request.yml").read_text())
-    assert signal["name"] == "Dev deploy request"
-    assert signal.get("on", signal.get(True)) == {"push": {"branches": ["dev"]}}
-    assert signal["permissions"] == {}
-    assert set(signal["jobs"]) == {"request"}
-    job = signal["jobs"]["request"]
-    assert "environment" not in job
-    assert job["steps"] == [{"run": "echo 'Dev branch moved; main will resolve and deploy its latest commit.'"}]
-
-
-@pytest.mark.parametrize("event,ref,conclusion,branch,repo,source_event,allowed", [
-    ("workflow_run", "main", "success", "dev", "owner/repo", "push", True),
-    ("workflow_dispatch", "main", "success", "dev", "owner/repo", "push", True),
-    ("workflow_dispatch", "dev", "success", "dev", "owner/repo", "push", False),
-    ("push", "main", "success", "dev", "owner/repo", "push", False),
-    ("workflow_run", "main", "failure", "dev", "owner/repo", "push", False),
-    ("workflow_run", "main", "cancelled", "dev", "owner/repo", "push", False),
-    ("workflow_run", "main", "skipped", "dev", "owner/repo", "push", False),
-    ("workflow_run", "main", "success", "main", "owner/repo", "push", False),
-    ("workflow_run", "main", "success", "dev", "fork/repo", "push", False),
-    ("workflow_run", "main", "success", "dev", "owner/repo", "pull_request", False),
-    ("workflow_run", "dev", "success", "dev", "owner/repo", "push", False),
+@pytest.mark.parametrize("event,ref,allowed", [
+    ("push", "dev", True), ("workflow_dispatch", "dev", True),
+    ("push", "main", False), ("workflow_dispatch", "main", False),
+    ("workflow_run", "dev", False), ("pull_request", "dev", False),
 ])
-def test_deploy_entry_accepts_only_main_dispatch_or_same_repository_dev_push(
-    event, ref, conclusion, branch, repo, source_event, allowed,
-):
+def test_deploy_entry_accepts_only_dev_push_or_dev_dispatch(event, ref, allowed):
     condition = workflow()["jobs"]["resolve"]["if"][3:-2].strip()
     evaluate = runpy.run_path(str(ROOT / ".github/test-transport-workflow.py"))["evaluate_condition"]
-    context = {"github": {
-        "event_name": event, "ref": f"refs/heads/{ref}", "repository": "owner/repo",
-        "event": {"workflow_run": {"conclusion": conclusion, "head_branch": branch,
-                                    "head_repository": {"full_name": repo}, "event": source_event}},
-    }}
+    context = {"github": {"event_name": event, "ref": f"refs/heads/{ref}"}}
     assert evaluate(condition, context) == allowed
 
 
@@ -379,15 +399,25 @@ def test_renderer_refuses_dev_database_resources(resources):
         renderer().render(docs + resources, APP_IMAGE, RELAY_IMAGE)
 
 
-def test_failed_cancelled_or_skipped_gates_never_publish_or_deploy():
-    # Reuse its interpreter to test actual failure conditions rather than summaries.
+def test_failed_cancelled_or_skipped_images_never_deploy():
     contract = runpy.run_path(str(ROOT / ".github/test-transport-workflow.py"))
     evaluate = contract["evaluate_condition"]
-    for name in ("build-app", "build-relay", "deploy-app", "deploy-relay"):
+    for name in ("deploy-app", "deploy-relay"):
         condition = workflow()["jobs"][name]["if"][3:-2].strip()
         for result in ("failure", "cancelled", "skipped", "success"):
-            context = {"needs": {"checks": {"result": result}, "build-app": {"result": result}, "build-relay": {"result": result}}}
+            context = {"needs": {"build-app": {"result": result}, "build-relay": {"result": result}}}
             assert evaluate(condition, context) == (result == "success")
+
+
+@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", "success"])
+def test_prod_deploy_requires_successful_aggregate(result):
+    evaluate = runpy.run_path(str(ROOT / ".github/test-transport-workflow.py"))["evaluate_condition"]
+    for name in ("deploy-app", "deploy-relay"):
+        condition = production_workflow()["jobs"][name]["if"][3:-2].strip()
+        context = {"github": {"event_name": "push", "ref": "refs/heads/main"},
+                   "needs": {"build-app": {"result": "success"}, "build-relay": {"result": "success"},
+                             "validation": {"result": result}}}
+        assert evaluate(condition, context) == (result == "success")
 
 
 @pytest.mark.parametrize("target", ["app", "relay"])

@@ -2990,6 +2990,40 @@ nothing else
 
 ### Update and install
 
+`buildctl` (`tools/buildctl/`, launched with `scripts/buildctl --env <name> …`)
+is the supported management entry point for authorized agents working against
+non-production environments. Its checked-in registry declares channels,
+services, isolated paths, public origins, hosted deployment branches and mutation
+policy. Production is read-only. The Python/uv CLI provides `bridge` deployment,
+status/logs, pairing, verified rollback and pruning; `app deploy` advances the
+registered hosted branch, while `app status` reads the public version and latest
+deployment workflow. An explicit `--force` uses an exact force-with-lease.
+
+Task branches start from `origin/dev` and enter `dev` through the serial merge
+gate. The dev branch runs its own deploy-only workflow on pushes: resolve the
+triggering SHA, build the app/relay images, then roll out only successful images
+to `build-dev`. Trusted dev pushers control that workflow and dev-only
+credentials; no main-owned signal workflow or CI checks precede dev builds.
+Rollout groups never cancel, and each rechecks the dev tip before applying
+immutable image digests. The `development` environment must allow the `dev` ref.
+After validation on the dev stack, `dev` is promoted to `main` by fast-forward.
+Main's `CI and deploy` retains the full test graph; both production rollouts
+require its validation aggregate, which accepts path-filtered skips but rejects
+failed or cancelled suites. `buildctl app deploy` still fast-forwards `dev`.
+
+Bridge deployment builds a resolved commit (default `origin/dev`) in a temporary
+worktree under `nice -n 10`, stages immutable binaries in
+`~/.local/state/build-dev/builds/<sha>/`, strips inherited `BRIDGE_*` settings,
+and invokes the selected channel and public origins from the registry. It
+installs/reloads/stops/starts only that channel's unit, then checks active state,
+the running executable's SHA-256 and fresh relay authentication before recording
+current/previous commits. First installation needs deploy → pair → deploy after
+approval. An unrecorded legacy executable is reported from `/proc` as unmanaged;
+its first verified replacement creates no previous record and never deletes the
+external binary. [Working against dev](AGENTS.md#working-against-dev) documents
+the policy: validate on `dev.getbuild.ing` / `relay-dev.getbuild.ing` before
+production; moving `dev` auto-deploys the hosted stack. Production rules remain.
+
 `BRIDGE_CHANNEL=dev` disables the updater independently of whether a binary
 has release provenance: no checks, installs (even confirmed replacement),
 schedules, staging, helper dispatch, recovery, probation or heartbeat. Its
@@ -4261,6 +4295,12 @@ in the pinned inbox header or the main toolbar, follows the responsive overlay
 breakpoint, and marks empty headers draggable while excluding interactive
 targets and menus. An absent/inactive overlay (browser, standalone PWA or native
 fullscreen) keeps the ordinary shell layout. Linux/Windows retain native chrome.
+
+Development builds (`VITE_BUILD_CHANNEL=dev`) mark the connection button with a
+compact “D” corner bubble and the accessible description “Dev build”.
+`core/buildChannel.js` sets the tab title before boot and decorates the button
+when `connectionStatus.js` creates it; connection transitions retain that node.
+Production builds have neither the bubble nor its description.
 
 ### Theming
 

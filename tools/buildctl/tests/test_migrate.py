@@ -291,3 +291,61 @@ def test_literal_home_paths_are_rewritten_only_in_structured_values(state):
     assert result['nested'][0]['checkout_path'] == str(target / 'projects')
     for key in ('body', 'content', 'text', 'path'):
         assert result[key] == record[key]
+
+
+def test_root_and_cwd_references_are_mapped_without_changing_prose(state):
+    migrator, source, target, db, _, _ = state
+    location = str(source / 'projects')
+    record = {'root': location, 'session': {'cwd': location},
+              'body': location, 'text': {'root': location, 'cwd': location}}
+    db.execute('UPDATE agents SET record=?', (json.dumps(record),))
+    db.commit()
+    migrator.run(prod_stopped=True)
+    with sqlite3.connect(target / 'tasks/build.db') as copied:
+        actual = json.loads(copied.execute('SELECT record FROM agents').fetchone()[0])
+    assert actual['root'] == str(target / 'projects')
+    assert actual['session']['cwd'] == str(target / 'projects')
+    assert actual['body'] == record['body']
+    assert actual['text'] == record['text']
+
+
+def test_scratch_descendant_reference_does_not_authorize_checkout_copy(state):
+    migrator, source, target, db, _, _ = state
+    scratch = source / 'project-scratch/Build-a1b2c3d4e5f6'
+    descendant = scratch / 'nested'
+    descendant.mkdir(parents=True)
+    (scratch / 'private').write_text('unselected checkout data')
+    db.execute('UPDATE workspaces SET record=?', (json.dumps({'path': str(descendant)}),))
+    db.commit()
+    before = tree_bytes(target)
+    with pytest.raises(BuildctlError, match='scratch|missing|reference'):
+        migrator.run(prod_stopped=True)
+    assert tree_bytes(target) == before
+
+
+def test_unselected_orchestrator_symlink_is_not_traversed(state, tmp_path):
+    migrator, source, target, _, _, _ = state
+    orchestrator = source / 'project-scratch/migrate-rehearsal'
+    orchestrator.mkdir(parents=True)
+    outside = tmp_path / 'orchestrator-private'
+    outside.mkdir()
+    (outside / 'sentinel').write_text('unread and unchanged')
+    (orchestrator / 'external').symlink_to(outside, target_is_directory=True)
+    migrator.run(prod_stopped=True)
+    assert not (target / 'project-scratch/migrate-rehearsal').exists()
+    assert tree_bytes(outside) == {'sentinel': b'unread and unchanged'}
+
+
+@pytest.mark.parametrize('reference', ['record_attachment', 'upload_path'])
+def test_missing_db_attachment_reference_fails_even_if_existing_files_hash_match(state, reference):
+    migrator, source, target, db, _, _ = state
+    missing = str(source / 'tasks/attachments/missing.bin')
+    if reference == 'record_attachment':
+        db.execute('UPDATE conversations SET record=?', (json.dumps({'attachment': missing}),))
+    else:
+        db.execute('INSERT INTO conversation_attachment_uploads VALUES (?)', (missing,))
+    db.commit()
+    before = tree_bytes(target)
+    with pytest.raises(BuildctlError, match='attachment|missing|reference'):
+        migrator.run(prod_stopped=True)
+    assert tree_bytes(target) == before

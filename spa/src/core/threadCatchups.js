@@ -64,11 +64,14 @@ export function createThreadCatchups({ needed, read }) {
   }
 
   function entryFor(key, request) {
+    // Keep the original lifetime even after a round idles or an identical tip
+    // arrives. A retired owner must not lend its exhausted budget to a replica
+    // recreated at the same generation and sequence.
     let entry = entries.get(key);
-    if (!entry || entry.generation !== request.generation
+    if (!entry || entry.generation !== request.generation || !requestActive(entry.owner)
       || entry.current && !requestActive(entry.current.request)) {
       if (entry) abandon(entry);
-      entry = { generation: request.generation, valid: true, current: null, pending: null, exhaustedThrough: -1 };
+      entry = { generation: request.generation, owner: request, valid: true, current: null, pending: null, exhaustedThrough: -1 };
       entries.set(key, entry);
     }
     return entry;

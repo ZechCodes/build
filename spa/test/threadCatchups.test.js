@@ -110,3 +110,16 @@ it("renews an exhausted budget only when the generation changes", async () => {
   await jobs.enqueue("thread", request(1, "two"));
   expect(read).toHaveBeenCalledTimes(4);
 });
+
+it("renews an exhausted idle goal when its former cache lifetime ended", async () => {
+  let oldActive = true;
+  const read = vi.fn(async () => {});
+  const jobs = createThreadCatchups({ needed: () => true, read });
+  await jobs.enqueue("thread", { ...request(4), active: () => oldActive });
+  expect(read).toHaveBeenCalledTimes(2);
+  await jobs.enqueue("thread", request(4));
+  expect(read).toHaveBeenCalledTimes(2);
+  oldActive = false;
+  await jobs.enqueue("thread", request(4));
+  expect(read).toHaveBeenCalledTimes(4);
+});

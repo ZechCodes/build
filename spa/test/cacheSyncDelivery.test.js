@@ -386,6 +386,8 @@ describe("a pass racing the wire", () => {
     sync.startCacheSync();
     await settle();
 
+    await called(bridge.call, () => calls("board.list").length === 1);
+    await passesSettled(sync, "dev-1");
     expect(calls("board.list")).toHaveLength(1);
     expect(await headOf("run-1")).toBe("before");
 
@@ -394,6 +396,8 @@ describe("a pass racing the wire", () => {
     answerSubscribes();
     await settle();
 
+    await called(bridge.call, () => calls("board.list").length >= 2);
+    await passesSettled(sync, "dev-1");
     expect(await headOf("run-1")).toBe("after");
     expect(calls("board.list")).toHaveLength(2);
   });

@@ -5,6 +5,25 @@ use serde::Serialize;
 
 const BATCH_ROWS: usize = 1_000;
 
+/// Replace the pre-release unguarded index once, before applying the schema.
+/// The transaction restores the old index if rebuilding fails. Guarded opens
+/// leave SQLite's schema unchanged instead of rebuilding lifetime receipts.
+pub(super) fn upgrade_pending_delivery_index(conn: &Connection) -> Result<(), StoreError> {
+    let existing: Option<String> = conn.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'operations_pending_delivery_target'",
+        [], |row| row.get(0),
+    ).optional()?;
+    if existing.is_some_and(|sql| !sql.to_ascii_lowercase().contains("json_valid(delivery)")) {
+        let transaction = conn.unchecked_transaction()?;
+        transaction.execute_batch("DROP INDEX operations_pending_delivery_target;
+            CREATE INDEX operations_pending_delivery_target
+            ON operations(CASE WHEN json_valid(delivery) THEN json_extract(delivery, '$.agent_id') END)
+            WHERE status IN ('queued','claimed','uncertain');")?;
+        transaction.commit()?;
+    }
+    Ok(())
+}
+
 /// Legacy reservations have no creation clock. Give them one migration-wide
 /// grace period without rewriting every reservation during store startup.
 pub(super) fn ensure_upload_retention_columns(conn: &Connection) -> Result<(), StoreError> {
@@ -107,18 +126,19 @@ pub(super) fn read_boundary(
 
 const PENDING_START_SQL: &str = "WITH conversation_ids(id) AS (SELECT ?1 UNION SELECT id FROM agents WHERE json_extract(record, '$.conversation_id') = ?1)
          SELECT MIN(start_sequence) FROM (
-             SELECT MIN(CASE WHEN message_start_sequence > 0 AND posted_sequence >= message_start_sequence
+             SELECT MIN(CASE WHEN delivery IS NOT NULL AND NOT json_valid(delivery) THEN 0
+                 WHEN message_start_sequence > 0 AND posted_sequence >= message_start_sequence
                  THEN message_start_sequence ELSE 0 END) AS start_sequence
              FROM operations WHERE status IN ('queued','claimed','uncertain')
                  AND conversation_id IN (SELECT id FROM conversation_ids)
              UNION ALL
-             SELECT MIN(CASE WHEN json_type(delivery, '$.payload.start_sequence') = 'integer'
-                 AND json_type(delivery, '$.payload.end_sequence') = 'integer'
-                 AND json_extract(delivery, '$.payload.start_sequence') > 0
-                 AND json_extract(delivery, '$.payload.end_sequence') >= json_extract(delivery, '$.payload.start_sequence')
-                 THEN json_extract(delivery, '$.payload.start_sequence') ELSE 0 END)
+             SELECT MIN(CASE WHEN json_type(CASE WHEN json_valid(delivery) THEN delivery END, '$.payload.start_sequence') = 'integer'
+                 AND json_type(CASE WHEN json_valid(delivery) THEN delivery END, '$.payload.end_sequence') = 'integer'
+                 AND json_extract(CASE WHEN json_valid(delivery) THEN delivery END, '$.payload.start_sequence') > 0
+                 AND json_extract(CASE WHEN json_valid(delivery) THEN delivery END, '$.payload.end_sequence') >= json_extract(CASE WHEN json_valid(delivery) THEN delivery END, '$.payload.start_sequence')
+                 THEN json_extract(CASE WHEN json_valid(delivery) THEN delivery END, '$.payload.start_sequence') ELSE 0 END)
              FROM operations INDEXED BY operations_pending_delivery_target WHERE status IN ('queued','claimed','uncertain')
-                 AND json_extract(delivery, '$.agent_id') IN (SELECT id FROM conversation_ids)
+                 AND (CASE WHEN json_valid(delivery) THEN json_extract(delivery, '$.agent_id') END) IN (SELECT id FROM conversation_ids)
                  AND conversation_id NOT IN (SELECT id FROM conversation_ids)
              UNION ALL
              SELECT MIN(sequence) FROM thread_items INDEXED BY thread_items_pending_delivery WHERE agent_id = ?1 AND message = 1
@@ -305,7 +325,7 @@ impl Store {
                 WHERE julianday(CASE WHEN uploaded_at = '' THEN (SELECT value FROM meta WHERE key = 'retention_uploads_registered_at') ELSE uploaded_at END) < julianday(?1)
                 AND NOT EXISTS (SELECT 1 FROM operations WHERE conversation_id = conversation_attachment_uploads.conversation_id AND status IN ('queued','claimed','uncertain'))
                 AND NOT EXISTS (SELECT 1 FROM operations WHERE status IN ('queued','claimed','uncertain')
-                    AND json_extract(delivery, '$.agent_id') IN (SELECT conversation_attachment_uploads.conversation_id UNION SELECT id FROM agents WHERE json_extract(record, '$.conversation_id') = conversation_attachment_uploads.conversation_id))
+                    AND (CASE WHEN json_valid(delivery) THEN json_extract(delivery, '$.agent_id') END) IN (SELECT conversation_attachment_uploads.conversation_id UNION SELECT id FROM agents WHERE json_extract(record, '$.conversation_id') = conversation_attachment_uploads.conversation_id))
                 AND NOT EXISTS (SELECT 1 FROM thread_items WHERE agent_id = conversation_attachment_uploads.conversation_id AND message = 1
                     AND json_extract(item, '$.data.role') = 'user' AND json_extract(item, '$.data.operation_id') IS NULL
                     AND json_extract(item, '$.data.seen_at') IS NULL

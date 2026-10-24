@@ -898,3 +898,80 @@ fn pending_span_planner_seeks_pending_rows_instead_of_lifetime_history() {
     );
     assert!(details.iter().any(|detail| detail.contains("SEARCH operations USING INDEX operations_pending_delivery_target") && detail.contains("<expr>=?")),"routed lookup must seek the canonical target, skipping unrelated pending operations: {details:#?}");
 }
+
+#[test]
+fn malformed_legacy_deliveries_survive_schema_migration_writes_and_retention_queries() {
+    let (dir, store) = fixture(150);
+    store.in_transaction(|tx| {
+        tx.execute_batch("DROP INDEX operations_pending_delivery_target;")?;
+        tx.execute("INSERT INTO operations(operation_id,method,entity_id,agent_id,conversation_id,choice_revision,request_hash,posted_sequence,message_start_sequence,status,delivery,created_at,updated_at) VALUES ('legacy','thread.post','owner','a','a',0,'hash',40,31,'queued','not JSON','now','now')", [])?;
+        tx.execute("UPDATE meta SET value = '18' WHERE key = 'schema_version'", [])?;
+        Ok(())
+    }).unwrap();
+    drop(store);
+    let store = Store::new(dir.path())
+        .expect("non-JSON pending delivery must not break schema19 migration");
+    store.in_transaction(|tx| {
+        tx.execute("UPDATE operations SET delivery = 'another non-JSON value' WHERE operation_id = 'legacy'", [])?;
+        tx.execute("INSERT INTO operations(operation_id,method,entity_id,agent_id,conversation_id,choice_revision,request_hash,posted_sequence,message_start_sequence,status,delivery,created_at,updated_at) VALUES ('after-open','thread.post','owner','unknown','unknown',0,'hash',0,0,'uncertain','also not JSON','now','now')", [])?;
+        tx.execute("INSERT INTO conversation_attachment_uploads VALUES ('unrelated','t','old.png','2026-10-01T00:00:00Z')", [])?;
+        Ok(())
+    }).expect("guarded index must accept malformed legacy delivery writes");
+    let report = store
+        .retention_report_conversation("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+        .unwrap();
+    assert!(report.protected);
+    assert_eq!(
+        report.items_to_prune, 0,
+        "malformed pending origin must stay conservative"
+    );
+    assert_eq!(
+        store
+            .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+            .unwrap()
+            .items_deleted,
+        0
+    );
+    assert_eq!(
+        store
+            .cleanup_conversation_attachment_uploads(7, "2026-10-24T12:00:00Z", 1000)
+            .unwrap(),
+        1,
+        "malformed unrelated target must not break draft expiry"
+    );
+}
+
+#[test]
+fn intermediate_unguarded_target_index_is_upgraded_once_before_new_writes() {
+    let (dir, store) = fixture(150);
+    store.in_transaction(|tx| {
+        tx.execute_batch("DROP INDEX operations_pending_delivery_target; CREATE INDEX operations_pending_delivery_target ON operations(json_extract(delivery, '$.agent_id')) WHERE status IN ('queued','claimed','uncertain');")?;
+        tx.execute("INSERT INTO operations(operation_id,method,entity_id,agent_id,conversation_id,choice_revision,request_hash,posted_sequence,message_start_sequence,status,delivery,created_at,updated_at) VALUES ('old-settled','thread.post','owner','a','a',0,'hash',40,31,'delivered','not JSON','now','now')", [])?;
+        Ok(())
+    }).unwrap();
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    store
+        .in_transaction(|tx| {
+            tx.execute(
+                "UPDATE operations SET status = 'uncertain' WHERE operation_id = 'old-settled'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("intermediate schema19 index must be upgraded before later status transitions");
+    let first_schema_version: i64 = store
+        .connection()
+        .pragma_query_value(None, "schema_version", |row| row.get(0))
+        .unwrap();
+    drop(store);
+    let reopened = Store::new(dir.path()).unwrap();
+    let second_schema_version: i64 = reopened
+        .connection()
+        .pragma_query_value(None, "schema_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        first_schema_version, second_schema_version,
+        "guarded index must not be rebuilt on every startup"
+    );
+}

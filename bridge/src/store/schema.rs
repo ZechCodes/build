@@ -206,7 +206,7 @@ CREATE INDEX IF NOT EXISTS operations_by_status ON operations(status, created_at
 CREATE INDEX IF NOT EXISTS operations_by_conversation_status
     ON operations(conversation_id, status);
 CREATE INDEX IF NOT EXISTS operations_pending_delivery_target
-    ON operations(json_extract(delivery, '$.agent_id'))
+    ON operations(CASE WHEN json_valid(delivery) THEN json_extract(delivery, '$.agent_id') END)
     WHERE status IN ('queued','claimed','uncertain');
 
 -- The per-project task tracker (spec: Tasks). NOT the `tasks` table above:

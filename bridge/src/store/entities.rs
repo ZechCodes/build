@@ -539,10 +539,6 @@ impl Store {
                 if previous == Some(updated) {
                     continue;
                 }
-                if previous.is_none() && matches!(item, ThreadItem::Message(_)) {
-                    tx.execute("DELETE FROM conversation_attachment_uploads WHERE conversation_id = ?1 AND thread_id = ?2 AND path IN (SELECT json_extract(value, '$.path') FROM json_each(?3, '$.data.attachments'))",
-                        rusqlite::params![agent.id, agent.thread.id, serde_json::to_string(item).expect("thread item serializes")])?;
-                }
                 upsert_item.execute(rusqlite::params![
                     agent.id,
                     sequence,

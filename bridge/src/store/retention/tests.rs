@@ -361,7 +361,7 @@ fn upload_expiry_is_bounded_and_preserves_recent_and_pending_drafts() {
 }
 
 #[test]
-fn message_commit_consumes_its_reservation_but_later_save_preserves_new_draft() {
+fn shared_draft_reservation_survives_another_messages_commit_and_pruning() {
     let dir = TempDir::new().unwrap();
     let store = Store::new(dir.path()).unwrap();
     let mut agents = crate::agent::AgentRoster::with_first(
@@ -376,6 +376,29 @@ fn message_commit_consumes_its_reservation_but_later_save_preserves_new_draft() 
     let path = ".build/attachments/shared.png";
     store
         .register_conversation_attachment(&id, &thread_id, path)
+        .unwrap();
+    // A and B upload identical bytes before A commits. Their content path is
+    // identical, so A cannot consume the row that also protects B's draft.
+    store
+        .register_conversation_attachment(&id, &thread_id, path)
+        .unwrap();
+    store
+        .in_transaction(|tx| {
+            tx.execute(
+                "UPDATE conversation_attachment_uploads SET uploaded_at = '2026-10-24T13:00:00Z'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let home = store.attachments_dir();
+    std::fs::create_dir_all(&home).unwrap();
+    let file = home.join("shared.png");
+    std::fs::write(&file, b"same").unwrap();
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
+    std::fs::File::open(&file)
+        .unwrap()
+        .set_modified(old)
         .unwrap();
     agents[0]
         .thread
@@ -400,11 +423,8 @@ fn message_commit_consumes_its_reservation_but_later_save_preserves_new_draft() 
                 |row| row.get::<_, i64>(0)
             )
             .unwrap(),
-        0
+        1
     );
-    store
-        .register_conversation_attachment(&id, &thread_id, path)
-        .unwrap();
     store
         .in_transaction(|tx| Store::write_agents(tx, "owner", &agents))
         .unwrap();
@@ -419,6 +439,55 @@ fn message_commit_consumes_its_reservation_but_later_save_preserves_new_draft() 
             .unwrap(),
         1
     );
+    for _ in 0..150 {
+        agents[0]
+            .thread
+            .post_agent("later", None, "2026-10-24T14:00:00Z");
+    }
+    store
+        .in_transaction(|tx| Store::write_agents(tx, "owner", &agents))
+        .unwrap();
+    store
+        .prune_conversation_batch(&id, RetentionPolicy::default(), "2026-10-24T15:00:00Z")
+        .unwrap();
+    assert!(store
+        .thread_items(&id)
+        .unwrap()
+        .iter()
+        .all(|item| match item {
+            crate::thread::ThreadItem::Message(message) => message.attachments.is_empty(),
+            _ => true,
+        }));
+    assert_eq!(
+        store
+            .cleanup_conversation_attachment_uploads(7, "2026-10-25T12:00:00Z", 1000)
+            .unwrap(),
+        0
+    );
+    let sweep_cutoff = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(200);
+    assert_eq!(
+        store
+            .sweep_unreferenced_attachments(std::slice::from_ref(&home), sweep_cutoff)
+            .unwrap(),
+        0
+    );
+    assert!(
+        file.exists(),
+        "B's uncommitted draft must survive A's pruning and GC"
+    );
+    assert_eq!(
+        store
+            .cleanup_conversation_attachment_uploads(7, "2026-11-02T12:00:00Z", 1000)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .sweep_unreferenced_attachments(&[home], sweep_cutoff)
+            .unwrap(),
+        1
+    );
+    assert!(!file.exists());
 }
 #[test]
 fn recent_count_includes_timestamps_outside_newest_maximum() {

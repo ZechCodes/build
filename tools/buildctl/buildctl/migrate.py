@@ -10,11 +10,13 @@ import sqlite3
 import tempfile
 import uuid
 
+from .migrate_fs import copy_open, open_directory, open_relative, verify_copied
+from .migrate_sqlite import backup_database_fd, preview_input
 from .migrate_lifecycle import classify
 from .migrate_git import apply_remotes, plan_remotes
 from .migrate_paths import Paths, references, scratch_directory
-from .migrate_store import backup_database, rewrite_database, scan_database, verify_database
-from .runtime import BuildctlError, Runner, digest
+from .migrate_store import rewrite_database, scan_database, verify_database
+from .runtime import BuildctlError, Runner
 
 IMPORTED = ('config.json', 'projects', 'provider-recovery', 'review-receivers', 'harness', 'tasks')
 OPERATIONAL = {'identity.json', 'log', 'builds', 'buildctl.json', 'buildctl-candidate', 'buildctl.lock'}
@@ -36,13 +38,6 @@ def remove(path):
     elif path.exists():
         path.unlink()
 
-
-def copy_entry(source, target):
-    if source.is_dir():
-        shutil.copytree(source, target)
-    else:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
 
 
 @contextmanager
@@ -92,8 +87,10 @@ class Migrator:
         if not (self.source / 'tasks/build.db').is_file():
             raise BuildctlError('source tasks database is missing')
 
-    def inventory(self):
-        expected = scan_database(self.source / 'tasks/build.db', self.paths)
+    def inventory(self, database=None):
+        database = database or self.source / 'tasks/build.db'
+        expected = scan_database(database, self.paths)
+        expected['database'] = database
         self.lifecycle(expected)
         scratch = set()
         historical = []
@@ -121,7 +118,7 @@ class Migrator:
 
     def lifecycle(self, expected):
         workspaces = live_workspaces(self.worktrees)
-        lifecycle = classify(self.source / 'tasks/build.db', live_workspaces=workspaces)
+        lifecycle = classify(expected['database'], live_workspaces=workspaces)
         historical = {}
         missing_paths = set()
         for kind, refs in lifecycle['historical'].items():
@@ -174,8 +171,14 @@ class Migrator:
             if not prod_stopped:
                 raise BuildctlError('apply requires --prod-stopped assertion')
             self.stopped(states)
-        expected, entries = self.inventory()
+        live = dry_run and any(states.get(unit) not in {'inactive', 'failed'} for unit in ('prod', 'dev'))
+        with preview_input(self.source / 'tasks/build.db', live=live) as database:
+            return self.run_database(database, states, dry_run=dry_run, force=force, live=live)
+
+    def run_database(self, database, states, *, dry_run, force, live):
+        expected, entries = self.inventory(database)
         result = self.report(expected, entries, states)
+        result['preview'] = 'source was live' if live else False
         result.update(self.disk_space(entries))
         expected['git_changes'] = self.plan_git(expected, result)
         if dry_run:
@@ -187,7 +190,7 @@ class Migrator:
             return self.stage(expected, entries, result)
 
     def plan_git(self, expected, result):
-        changes = plan_remotes(self.source / 'tasks/build.db', self.source_prefix,
+        changes = plan_remotes(expected['database'], self.source_prefix,
                                self.target, self.runner)
         current, historical = [], []
         for change in changes:
@@ -216,8 +219,10 @@ class Migrator:
         stage = Path(tempfile.mkdtemp(prefix='.' + self.target.name + '.stage-', dir=self.target.parent))
         try:
             if self.target.exists():
-                shutil.copytree(self.target, stage, dirs_exist_ok=True)
-            self.copy_state(stage, entries)
+                with open_directory(self.target) as descriptor:
+                    verify_copied(stage, copy_open(descriptor, stage))
+            copied_hashes = self.copy_state(stage, entries)
+            verify_copied(stage, copied_hashes)
             rewrite_database(stage / 'tasks/build.db', self.paths)
             rewrite_files(stage, entries, self.paths)
             roots = {'projects_dir': str(self.projects_dir), 'worktrees': str(self.worktrees)}
@@ -229,7 +234,7 @@ class Migrator:
                 config_path.write_text(json.dumps(config))
             verify_database(stage / 'tasks/build.db', expected)
             result['worktrees'] = self.verify_paths(stage, expected)
-            verify_attachments(self.source, stage)
+            verify_copied(stage, copied_hashes, attachments_only=True)
             changes = expected['git_changes']
             result['shared_git_edits'] = len(changes)
             result['verified'] = True
@@ -239,14 +244,17 @@ class Migrator:
             remove(stage)
 
     def copy_state(self, stage, entries):
-        for relative in entries:
-            target = stage / relative
-            remove(target)
-            if relative == Path('tasks'):
-                copy_tasks(self.source / relative, target)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                copy_entry(self.source / relative, target)
+        hashes = {}
+        with open_directory(self.source) as source_fd:
+            for relative in entries:
+                target = stage / relative
+                remove(target)
+                with open_relative(source_fd, relative) as descriptor:
+                    excluded = {'build.db', 'build.db-wal', 'build.db-shm', 'build.db-journal'} if relative == Path('tasks') else set()
+                    hashes.update(copy_open(descriptor, target, relative=relative, exclude=excluded))
+                    if relative == Path('tasks'):
+                        backup_database_fd(descriptor, target / 'build.db')
+        return hashes
 
     def verify_paths(self, stage, expected):
         checked = set()
@@ -346,14 +354,6 @@ def files(root):
     return (p for p in root.rglob('*') if p.is_file())
 
 
-def copy_tasks(source, target):
-    target.mkdir(parents=True)
-    for path in source.iterdir():
-        if path.name not in {'build.db', 'build.db-wal', 'build.db-shm'}:
-            copy_entry(path, target / path.name)
-    backup_database(source / 'build.db', target / 'build.db')
-
-
 def rewrite_files(stage, entries, paths):
     for entry in entries:
         for path in files(stage / entry):
@@ -394,14 +394,6 @@ def rewrite_git_file(path, paths):
                 line = key + '= ' + new + '\n'
         lines.append(line)
     path.write_text(''.join(lines))
-
-
-def verify_attachments(source, target):
-    original = source / 'tasks/attachments'
-    for path in files(original):
-        copied = target / 'tasks/attachments' / path.relative_to(original)
-        if not copied.is_file() or digest(path) != digest(copied):
-            raise BuildctlError('attachment hash verification failed')
 
 
 def write_manifest(path, value):

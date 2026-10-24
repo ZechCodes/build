@@ -557,3 +557,23 @@ def test_missing_git_remote_does_not_prevent_state_rollback(state):
     backup = next(path for path in target.parent.glob(target.name + '.backup-*') if path.is_dir())
     migrator.rollback(backup)
     assert tree_bytes(target) == before
+
+
+def test_live_preview_cannot_authorize_or_supply_a_real_cutover(state):
+    migrator, _, target, db, _, _ = state
+    migrator.states = lambda: {'prod': 'active', 'dev': 'inactive'}
+    before = tree_bytes(target)
+    preview = migrator.run(dry_run=True)
+    assert preview['preview'] == 'source was live'
+    assert preview['verified'] is False
+    assert 'backup' not in preview
+    with pytest.raises(BuildctlError, match='stopped'):
+        migrator.run(prod_stopped=True)
+    assert tree_bytes(target) == before
+    db.execute('INSERT INTO extra_state VALUES (2, ?)', (b'written after preview',))
+    db.commit()
+    migrator.states = lambda: {'prod': 'inactive', 'dev': 'inactive'}
+    actual = migrator.run(prod_stopped=True)
+    assert actual['preview'] is False
+    assert actual['tables']['extra_state'] == 2
+    assert preview['tables']['extra_state'] == 1

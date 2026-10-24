@@ -1,11 +1,13 @@
 """Online SQLite snapshots, structured rewrites and complete row verification."""
 
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
 import sqlite3
 
 from .migrate_paths import JSON_COLUMNS, references
+from .migrate_sqlite import connect_path
 from .runtime import BuildctlError
 
 
@@ -14,11 +16,11 @@ def identifier(name):
 
 
 def connect(path):
-    return sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+    return connect_path(path)
 
 
 def backup_database(source, target):
-    with connect(source) as original, sqlite3.connect(target) as copied:
+    with connect(source) as original, closing(sqlite3.connect(target)) as copied, copied:
         original.backup(copied)
 
 
@@ -91,7 +93,7 @@ def cell_references(value, column):
 
 
 def rewrite_database(path, paths):
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         for table in table_names(db):
             # Separate read cursor and updates; rowid order remains unchanged.
             for columns, rowid, row in rows(db, table):

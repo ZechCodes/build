@@ -5,17 +5,17 @@ import json
 import os
 from pathlib import Path
 import re
-import sqlite3
 import tempfile
 
 from .migrate_paths import Paths
+from .migrate_store import connect
 from .runtime import BuildctlError
 
 
 def plan_remotes(database: Path, source_prefix: Path, target_prefix: Path, runner):
     """Read bindings only; shared repositories are opened exclusively at apply time."""
     changes = {}
-    with sqlite3.connect(f'{database.as_uri()}?mode=ro', uri=True) as connection:
+    with connect(database) as connection:
         exists = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='review_branch_bindings'"
         ).fetchone()

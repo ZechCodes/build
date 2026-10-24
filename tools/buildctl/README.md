@@ -123,6 +123,14 @@ it never edits shared repository configuration. Review receiver Git URLs in shar
 the reversible migration update. Source repositories and worktrees under
 `~/Projects` and `~/Projects/.build-worktrees` stay in place.
 
+Real migration reads only stopped state: database, WAL and shared-memory files
+are copied through nofollow descriptors into a private 0700 directory, then
+stdlib SQLite performs online backup and integrity checks there. A dry-run with
+active units instead takes a stdlib online snapshot after nofollow/type checks
+and reports `preview: source was live`. It never writes dev state, and its
+snapshot and output are never accepted as cutover input; a real run always
+checks stopped units and reads the source again.
+
 The migration writes `migration-roots.json` in dev state. Subsequent buildctl
 bridge installation reads it to set `BRIDGE_PROJECTS_DIR` and `BRIDGE_WORKTREES`.
 Shared roots must be absolute paths without symlink aliases and outside either
@@ -138,9 +146,10 @@ At the selected window, from a checkout containing this command:
    scripts/buildctl migrate --from prod --to dev --dry-run
    ```
 
-2. The operator stops both bridges and confirms both report `inactive`.
-   `systemctl is-active` returns exit 3 for inactive units; any other state needs
-   investigation before continuing. Neither bridge may manage the shared roots
+2. The operator stops both bridges and confirms both report `inactive` or
+   `failed`, the two states accepted by the tool. `systemctl is-active` returns
+   exit 3 for these stopped states; any other state needs investigation before
+   continuing. Neither bridge may manage the shared roots
    during the final copy:
 
    ```bash
@@ -197,7 +206,7 @@ listed as undeliverable stale records with IDs and targets, without changing
 statuses. Missing roots for live or unknown targets fail verification.
 
 To roll back, first have the operator stop dev and confirm both bridges are
-inactive. Restore using the exact backup path printed by migration, then have
+`inactive` or `failed`. Restore using the exact backup path printed by migration, then have
 the operator restart prod:
 
 ```bash

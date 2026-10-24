@@ -198,3 +198,73 @@ def test_missing_worktree_refuses_strict_apply(state):
     with pytest.raises(BuildctlError, match='worktree|workspace|missing'):
         migrator.run(prod_stopped=True)
     assert tree_bytes(target) == before
+
+
+def scratch_fixture(source, db):
+    """Only a structured DB reference authorizes importing a scratch checkout."""
+    scratch = source / 'project-scratch/Build-a1b2c3d4e5f6'
+    scratch.mkdir(parents=True)
+    (scratch / 'tracked.txt').write_bytes(b'checkout content')
+    write_json(scratch / '.build/session.json', {
+        'checkout': str(scratch), 'session_id': 'scratch-session',
+        'body': str(scratch),
+    })
+    record = {
+        'id': 'workspaces-1', 'path': str(scratch),
+        'threads': [{'sessions': [{'checkout': str(scratch), 'id': 'provider-session'}]}],
+    }
+    db.execute('UPDATE workspaces SET record=?', (json.dumps(record),))
+    db.commit()
+    return scratch
+
+
+def test_imports_only_db_referenced_scratch_checkouts(state):
+    migrator, source, target, db, _, _ = state
+    scratch = scratch_fixture(source, db)
+    unrelated = source / 'project-scratch/Build-000000000000'
+    unrelated.mkdir()
+    (unrelated / 'unrelated').write_text('not imported')
+    orchestrator = source / 'project-scratch/migrate-rehearsal'
+    orchestrator.mkdir()
+    (orchestrator / 'private').write_text('not imported')
+    # Even an exact scratch pathname inside historical prose grants no copy.
+    db.execute('UPDATE conversations SET record=?', (json.dumps({'body': str(unrelated)}),))
+    db.commit()
+    migrator.run(prod_stopped=True)
+    copied = target / 'project-scratch' / scratch.name
+    assert (copied / 'tracked.txt').read_bytes() == b'checkout content'
+    assert sorted(path.name for path in (target / 'project-scratch').iterdir()) == [scratch.name]
+    sidecar = json.loads((copied / '.build/session.json').read_text())
+    assert sidecar['checkout'] == str(copied)
+    assert sidecar['session_id'] == 'scratch-session'
+    assert sidecar['body'] == str(scratch)
+    with sqlite3.connect(target / 'tasks/build.db') as migrated:
+        record = json.loads(migrated.execute('SELECT record FROM workspaces').fetchone()[0])
+        assert record['path'] == str(copied)
+        assert record['threads'][0]['sessions'][0] == {'checkout': str(copied), 'id': 'provider-session'}
+        prose = json.loads(migrated.execute('SELECT record FROM conversations').fetchone()[0])
+        assert prose['body'] == str(unrelated)
+
+
+def test_missing_referenced_scratch_is_a_hard_failure_even_in_rehearsal(state):
+    migrator, source, target, db, _, _ = state
+    scratch = source / 'project-scratch/Build-a1b2c3d4e5f6'
+    db.execute('UPDATE workspaces SET record=?', (json.dumps({'path': str(scratch)}),))
+    db.commit()
+    before = tree_bytes(target)
+    with pytest.raises(BuildctlError, match='scratch|missing'):
+        migrator.run(prod_stopped=True)
+    assert tree_bytes(target) == before
+
+
+def test_unrecognized_scratch_directory_is_not_imported(state):
+    migrator, source, target, db, _, _ = state
+    scratch = source / 'project-scratch/orchestrator'
+    scratch.mkdir(parents=True)
+    (scratch / 'private').write_text('not imported')
+    db.execute('UPDATE workspaces SET record=?', (json.dumps({'path': str(scratch)}),))
+    db.commit()
+    before = tree_bytes(target)
+    with pytest.raises(BuildctlError, match='scratch|unsupported|invalid|name'):
+        migrator.run(prod_stopped=True)
+    assert tree_bytes(target) == before

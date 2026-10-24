@@ -146,10 +146,11 @@ async fn prune(
             if let (Some(boundary), Some(state)) = (batch.boundary, state.upgrade()) {
                 let conversation_id = id.to_owned();
                 off_the_workers(move || {
-                    state
-                        .lock()
-                        .unwrap()
-                        .publish_retention_boundary(&conversation_id, boundary)
+                    state.lock().unwrap().publish_retention_boundary(
+                        &conversation_id,
+                        boundary,
+                        batch.items_deleted,
+                    )
                 })
                 .await;
             }
@@ -188,7 +189,7 @@ mod tests {
     fn config_is_preserved_by_settings_persistence_and_invalid_config_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        let policy = json!({"enabled":true,"min_messages":10,"max_messages":25,"max_age_days":3});
+        let policy = json!({"enabled":true,"min_messages":10,"max_messages":25,"window_days":3});
         std::fs::write(&path, json!({"retention":policy}).to_string()).unwrap();
         let app = AppState::new_unrooted(dir.path(), "main", true, "unused")
             .with_config(&path)

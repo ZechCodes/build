@@ -7,7 +7,7 @@ fn config_defaults_to_age_window_with_fifty_message_floor_and_validates_explicit
     assert!(defaults.enabled);
     assert_eq!(defaults.min_messages, 50);
     assert_eq!(defaults.max_messages, 100);
-    assert_eq!(defaults.max_age_days, 7);
+    assert_eq!(defaults.window_days, 7);
     let enabled = RetentionConfig::from_config(&json!({"retention":{"enabled":true}})).unwrap();
     assert!(enabled.enabled);
     for invalid in [
@@ -19,9 +19,9 @@ fn config_defaults_to_age_window_with_fifty_message_floor_and_validates_explicit
         json!({"min_messages":101}),
         json!({"max_messages":49}),
         json!({"max_messages":-1}),
-        json!({"max_age_days":0}),
-        json!({"max_age_days":1.5}),
-        json!({"max_age_days":u64::MAX}),
+        json!({"window_days":0}),
+        json!({"window_days":1.5}),
+        json!({"window_days":u64::MAX}),
         json!({"enable":true}),
     ] {
         assert!(

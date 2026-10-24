@@ -8,7 +8,7 @@ pub struct RetentionConfig {
     pub enabled: bool,
     pub min_messages: usize,
     pub max_messages: usize,
-    pub max_age_days: u64,
+    pub window_days: u64,
 }
 
 impl Default for RetentionConfig {
@@ -17,7 +17,7 @@ impl Default for RetentionConfig {
             enabled: true,
             min_messages: 50,
             max_messages: 100,
-            max_age_days: 7,
+            window_days: 7,
         }
     }
 }
@@ -36,18 +36,17 @@ impl RetentionConfig {
         if policy.min_messages == 0 || policy.min_messages > policy.max_messages {
             return Err("retention.min_messages must be positive and at most max_messages".into());
         }
-        let duration = i64::try_from(policy.max_age_days)
+        let duration = i64::try_from(policy.window_days)
             .ok()
             .and_then(|days| days.checked_mul(86400))
             .map(time::Duration::seconds);
-        if policy.max_age_days == 0
+        if policy.window_days == 0
             || duration
                 .and_then(|days| time::OffsetDateTime::now_utc().checked_sub(days))
                 .is_none()
         {
             return Err(
-                "retention.max_age_days must be positive and within the supported date range"
-                    .into(),
+                "retention.window_days must be positive and within the supported date range".into(),
             );
         }
         Ok(policy)
@@ -57,7 +56,7 @@ impl RetentionConfig {
         crate::store::RetentionPolicy {
             min_messages: self.min_messages,
             max_messages: self.max_messages,
-            max_age_days: self.max_age_days,
+            max_age_days: self.window_days,
         }
     }
 }

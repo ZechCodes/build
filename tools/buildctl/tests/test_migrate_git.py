@@ -146,3 +146,35 @@ def test_database_without_review_bindings_has_empty_plan(tmp_path):
     runner = Mock()
     assert plan_remotes(database, tmp_path / 'prod', tmp_path / 'dev', runner) == []
     runner.run.assert_not_called()
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_later_replace_failure_restores_previously_written_configs(remote, tmp_path, monkeypatch, reverse):
+    import os
+
+    runner, repository, changes = remote
+    other = tmp_path / 'other'
+    runner.run(['git', 'clone', '--bare', str(repository), str(other)])
+    for change in changes:
+        runner.run(['git', '--git-dir', str(other), 'config', change['key'], change['old']])
+    others = [dict(change, repository=str(other)) for change in changes]
+    configs = [repository / '.git/config', other / 'config']
+    if reverse:
+        apply_remotes(changes + others, runner)
+    originals = {config: config.read_bytes() for config in configs}
+    original_replace = os.replace
+    writes = []
+
+    def fail_second_replace(source, destination):
+        writes.append(destination)
+        if len(writes) == 2:
+            raise OSError('injected replacement failure')
+        original_replace(source, destination)
+
+    monkeypatch.setattr('buildctl.migrate_git.os.replace', fail_second_replace)
+    with pytest.raises(BuildctlError, match='restored'):
+        apply_remotes(changes + others, runner, reverse=reverse)
+    for config in configs:
+        assert config.read_bytes() == originals[config]
+        assert not Path(str(config) + '.lock').exists()
+        assert not list(config.parent.glob('config.migrate-*'))

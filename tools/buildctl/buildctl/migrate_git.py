@@ -125,8 +125,30 @@ def apply_remotes(changes, runner, *, reverse=False):
         for config in sorted(grouped):
             stack.enter_context(_locked(config))
             _validate(config, grouped[config].values(), runner, reverse)
-        staged = [(config, stack.enter_context(_staged(
-            config, records.values(), runner, reverse)))
-            for config, records in grouped.items()]
-        for config, temporary in staged:
+        staged = [
+            (config,
+             stack.enter_context(_staged(config, records.values(), runner, reverse)),
+             stack.enter_context(_staged(config, [], runner, reverse)))
+            for config, records in grouped.items()
+        ]
+        _replace_configurations(staged)
+
+
+def _replace_configurations(staged):
+    applied = []
+    try:
+        for config, temporary, original in staged:
             os.replace(temporary, config)
+            applied.append((config, original))
+    except OSError as error:
+        try:
+            for config, original in reversed(applied):
+                os.replace(original, config)
+        except OSError as recovery_error:
+            raise BuildctlError(
+                'review configuration cutover failed; restoration incomplete; '
+                'retain migration manifest for recovery'
+            ) from recovery_error
+        raise BuildctlError(
+            'review configuration cutover failed; original configurations restored'
+        ) from error

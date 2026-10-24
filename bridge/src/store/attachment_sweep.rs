@@ -284,13 +284,13 @@ mod tests {
         let cutoff = SystemTime::UNIX_EPOCH + Duration::from_secs(200);
         assert_eq!(
             store
-                .sweep_unreferenced_attachments(&[home.clone()], cutoff)
+                .sweep_unreferenced_attachments(std::slice::from_ref(&home), cutoff)
                 .unwrap(),
             128
         );
         assert_eq!(
             store
-                .sweep_unreferenced_attachments(&[home.clone()], cutoff)
+                .sweep_unreferenced_attachments(std::slice::from_ref(&home), cutoff)
                 .unwrap(),
             12
         );
@@ -343,7 +343,7 @@ mod tests {
         let outside = dir.path().join("outside");
         let external = old_file(&outside, "same.png");
         let plan = store
-            .prepare_attachment_sweep(&[home.clone()], SystemTime::now())
+            .prepare_attachment_sweep(std::slice::from_ref(&home), SystemTime::now())
             .unwrap();
         let moved = dir.path().join("old-attachments");
         std::fs::rename(&home, &moved).unwrap();

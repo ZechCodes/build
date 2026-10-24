@@ -577,10 +577,7 @@ async fn run_daemon(
     // terminal's paint — is serialized and encrypted per client, and runs on a
     // runtime of its own, apart from the one that answers their requests
     // (task #131).
-    let push = match DedicatedRuntime::push() {
-        Ok(push) => push,
-        Err(error) => exit_startup(error),
-    };
+    let push = DedicatedRuntime::push().unwrap_or_else(|error| exit_startup(error));
     let storage_maintenance = app.spawn_storage_maintenance();
     let app = app
         .with_live_roster(live_roster.clone())

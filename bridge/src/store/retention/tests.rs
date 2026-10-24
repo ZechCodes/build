@@ -433,3 +433,41 @@ fn recent_count_includes_timestamps_outside_newest_maximum() {
     assert_eq!(store.thread_item_count("a").unwrap(), 80);
     assert_eq!(batch.boundary.unwrap().history_start_sequence, 71);
 }
+
+#[test]
+fn legacy_upload_reservations_get_a_migration_grace_period() {
+    let dir = TempDir::new().unwrap();
+    let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
+    conn.execute_batch("CREATE TABLE conversation_attachment_uploads (conversation_id TEXT NOT NULL, thread_id TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY (conversation_id,thread_id,path)); INSERT INTO conversation_attachment_uploads VALUES ('a','t','draft.png');").unwrap();
+    drop(conn);
+    let store = Store::new(dir.path()).unwrap();
+    let baseline: String = store
+        .connection()
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'retention_uploads_registered_at'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let migrated: jiff::Timestamp = baseline.parse().unwrap();
+    let before_expiry = migrated
+        .checked_add(jiff::SignedDuration::from_secs(6 * 86_400))
+        .unwrap()
+        .to_string();
+    let after_expiry = migrated
+        .checked_add(jiff::SignedDuration::from_secs(8 * 86_400))
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        store
+            .cleanup_conversation_attachment_uploads(7, &before_expiry, 1000)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .cleanup_conversation_attachment_uploads(7, &after_expiry, 1000)
+            .unwrap(),
+        1
+    );
+}

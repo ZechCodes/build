@@ -32,7 +32,7 @@ import {
   windowFromThreadPayload,
 } from "./thread.js";
 import { digestCovering, mergeActivityDigests } from "./activityDigest.js";
-import { trimThreadHistory } from "./threadRetention.js";
+import { threadHistoryStart, trimThreadHistory } from "./threadRetention.js";
 
 const ALWAYS_ACTIVE = () => true;
 const threadSub = (request) => request.conversationId || request.agentId || "";
@@ -102,7 +102,7 @@ function owingRepair(current, next, owed) {
  * a window that was never held has nothing to repair.
  */
 function changedUnderCursor(page, after, lean) {
-  if (!after || pageSkipsWindow(page, lean)) return false;
+  if (!after || after < threadHistoryStart(page) || pageSkipsWindow(page, lean)) return false;
   const omitted = lean ? omittedNewActivity(page, after) : 0;
   return Number(page.thread_last_sequence || 0) - after > valuesWornPast(page.items, after).size + omitted;
 }

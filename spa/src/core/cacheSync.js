@@ -42,7 +42,7 @@ import { projectRosterRows } from "./projectRosterFeed.js";
 import { projectsWithAgentRosters, syncProjectAgents } from "./projectAgentsCache.js";
 import { trailingRead } from "./trailingRead.js";
 import { combinePushItems, createPushQueue } from "./pushQueue.js";
-import { visibleSyncThread } from "./syncVisibleScopes.js";
+import { subscribeThreadReaders, visibleSyncThread } from "./syncVisibleScopes.js";
 import { createSyncPhases } from "./syncPhases.js";
 import { createBackgroundStreams } from "./syncBackgroundStreams.js";
 import { createTaskPhases, taskReadScope } from "./syncTaskPhases.js";
@@ -59,6 +59,7 @@ import { FEED_COLLECTIONS, liveFeedSnapshot, stampProject, stampRow, stampWorksp
 import { THREAD_RECORD_KIND } from "./thread.js";
 import { reconcileConversationGeneration, reconcileConversationGenerations, resetAliasesInRow } from "./conversationReset.js";
 import { writeConversationFeed } from "./conversationFeedReset.js";
+import { createThreadCatchups } from "./threadCatchups.js";
 import { syncThreadWindow, threadWindow } from "./threadSync.js";
 import { replaceSessionList, sessionListObservation, updateSessionSummary } from "./sessionListCache.js";
 import {
@@ -161,6 +162,7 @@ let lockWait = null; // the bounded queue for the lock, while it is running
 let visibilityWired = false;
 let stopDeviceWatch = null;
 let stopLandingWatch = null;
+let stopThreadWatch = null;
 // Counts the times the sync layer stood down. Every read and push applier
 // belongs to the one it started under, and stops writing when that ends —
 // including across a restart on the same device and session, which would
@@ -228,10 +230,23 @@ const beforeBackgroundRead = (context, scope) => context.syncTurn?.phases?.befor
  * to finish that record inherit its scope, including a thread's repairs. */
 const callWhileActive = (context, method, params, envelope, scope = context.readScope) => context.backgroundStreams.read({
   active: context.active,
-  priority: () => foregroundPlanner(context)?.priorityForRead(scope, envelope) || envelope,
+  priority: () => threadReadIsVisible(context, scope) ? {}
+    : foregroundPlanner(context)?.priorityForRead(scope, envelope) || envelope,
   before: () => beforeBackgroundRead(context, scope),
   load: (priority) => context.call(method, params, priority),
 });
+
+/** A mounted conversation keeps foreground admission between sync passes too. */
+function threadReadIsVisible(context, scope) {
+  const visible = visibleSyncThread(context.deviceId);
+  return scope?.kind === THREAD_RECORD_KIND && scope.entityId === visible?.entityId
+    && (scope.sub === visible.conversationId || scope.sub === visible.agentId);
+}
+
+function wakeThreadReads() {
+  for (const queues of pushQueues.values()) queues.scope.wake();
+  for (const pass of passes.values()) void pass.foreground?.();
+}
 
 /** One read, written through by the caller. A failure is a cold record: the
  *  machine is offline, the checkout moved under the read, or this bridge does
@@ -1471,6 +1486,7 @@ function followRoutedEntity(deviceId, entityId) {
  *  when it does, and again when it ends. */
 export function routeChanged() {
   if (!holdingLock) return;
+  wakeThreadReads();
   for (const deviceId of [...subscriptions.keys()]) {
     void passes.get(deviceId)?.foreground?.();
     void refollowRoute(deviceId);
@@ -1514,7 +1530,7 @@ const openPushEntity = (deviceId) => visibleSyncThread(deviceId)?.entityId || su
 function queuesFor(context) {
   const held = pushQueues.get(context.deviceId);
   if (held?.scope === context.backgroundStreams) return held;
-  held?.body.clear(); held?.background.clear();
+  held?.body.clear(); held?.background.clear(); held?.catchups.clear();
   const priority = (item) => item.owner === openPushEntity(context.deviceId) || item.entity_id === openPushEntity(context.deviceId);
   const background = createPushQueue({ priority, onError: pushError, concurrency: 2,
     isBarrier: () => false,
@@ -1527,7 +1543,15 @@ function queuesFor(context) {
     if (before) void prunePushedDrafts(applying, before).catch(() => {});
     return { settled: Promise.all(applying.pushCompletions) };
   } });
-  const queues = { scope: context.backgroundStreams, body, background };
+  const catchups = createThreadCatchups({
+    needed: async (request) => {
+      const held = (await readCached(request.address))?.value;
+      return threadGenerationKey(held) === request.generation
+        && (Number(held?.deliveredSequence || 0) < request.sequence || Boolean(held?.repairThrough));
+    },
+    read: (request, active) => syncThread({ ...request.context, active }, request.entityId, request.agent, "background"),
+  });
+  const queues = { scope: context.backgroundStreams, body, background, catchups };
   pushQueues.set(context.deviceId, queues);
   return queues;
 }
@@ -1540,6 +1564,11 @@ export function pushWorkInFlight(deviceId) {
     backgroundRunning: queues?.background.snapshot().running || 0,
     backgroundPending: queues?.background.snapshot().pending || 0 };
 }
+
+export const threadCatchupsInFlight = (deviceId) =>
+  pushQueues.get(deviceId)?.catchups.snapshot() || { running: 0, pending: 0 };
+
+const threadGenerationKey = (window) => JSON.stringify([window?.thread_id || "", Number(window?.thread_generation_revision || 0)]);
 
 function deferPush(context, entityId, key, run, replaceable = true) {
   if (!context.active()) return;
@@ -1830,7 +1859,8 @@ const tipKey = (tip) => tip.conversation_id || tip.agent_id || "";
 
 /** Whether a tip says anything the record does not already hold. A
  *  conversation this cache has never held is always news. */
-const tipIsNews = (tip, held) => !held || Number(tip.last_sequence || 0) > Number(held.deliveredSequence || 0);
+const tipIsNews = (tip, held) => !held || Boolean(held.repairThrough)
+  || Number(tip.last_sequence || 0) > Number(held.deliveredSequence || 0);
 
 /** Whether a tip's items carry on from where the record stands. `since_sequence`
  *  is the sequence they run from, exclusive — the cursor the subscription had
@@ -1874,28 +1904,33 @@ async function writeThreadTipBody(context, entityId, tip, sub) {
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub);
   const held = (await readCached(address))?.value;
   if (!context.active() || !tipIsNews(tip, held)) return;
+  if (tip.thread_id && held?.thread_id && tip.thread_id !== held.thread_id) return;
   // A burst past the push cap arrives as a tip with no items, a conversation
   // nothing is held for has nothing to append to, and a tip that starts past
   // the cursor would append over a gap. All three are one cursored page, which
   // is the read this layer would have made anyway.
   const items = held && tipRunsOnFromRecord(tip, held) ? (tip.items || []) : [];
   if (!items.length) {
-    await deferThreadCatchup(context, entityId, tip, sub);
+    await deferThreadCatchup(context, entityId, tip, sub, held);
     return;
   }
   await mergeCachedAtomically(address, (current) => context.active() ? threadWindow(current, {
-    items, thread_total: tip.thread_total, ...(tip.thread_id ? { thread_id: tip.thread_id } : {}),
+    items, thread_total: tip.thread_total, thread_generation_revision: tip.thread_generation_revision,
+    ...(tip.thread_id ? { thread_id: tip.thread_id } : {}),
   }) : null);
 }
 
-async function deferThreadCatchup(context, entityId, tip, sub) {
+async function deferThreadCatchup(context, entityId, tip, sub, held) {
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub), fence = pushFence();
   const reading = { ...context, active: () => context.active() && !pushedSince(address, fence) };
-  const read = () => reading.active() && syncThread(reading, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: tip.thread_id }, "background");
-  // The catch-up/repair contract is unchanged. Its RPC cannot hold the lane
-  // that writes carried deltas for other conversations.
-  if (context.pushing) deferPush(context, entityId, `thread:${entityId}:${sub}`, read, false);
-  else await read();
+  if (!reading.active()) return;
+  const settled = queuesFor(context).catchups.enqueue(JSON.stringify([entityId, sub]), {
+    context: reading, active: reading.active, address, entityId, generation: threadGenerationKey(held),
+    sequence: Math.max(Number(tip.last_sequence || 0), Number(held?.repairThrough || 0)),
+    agent: { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: held?.thread_id || tip.thread_id },
+  });
+  if (context.pushing) context.pushCompletions?.push(settled);
+  else await settled;
 }
 
 /** `git`: the shapes ride the push, so nothing is asked for them. Two things
@@ -2238,6 +2273,7 @@ export function startCacheSync() {
   stopCacheSync();
   stopDeviceWatch = onDeviceStateChanged(considerDevices);
   stopLandingWatch = onSubscriptionHeld(subscriptionLanded);
+  stopThreadWatch = subscribeThreadReaders(wakeThreadReads);
   if (typeof document !== "undefined" && !visibilityWired) {
     document.addEventListener("visibilitychange", onVisibilityChange);
     visibilityWired = true;
@@ -2257,13 +2293,15 @@ export function stopCacheSync() {
   stopDeviceWatch = null;
   if (stopLandingWatch) stopLandingWatch();
   stopLandingWatch = null;
+  stopThreadWatch?.();
+  stopThreadWatch = null;
   for (const held of subscriptions.values()) {
     held.inbox.dispose();
     held.background.dispose();
     held.active?.dispose();
   }
   subscriptions.clear();
-  for (const queues of pushQueues.values()) { queues.body.clear(); queues.background.clear(); }
+  for (const queues of pushQueues.values()) { queues.body.clear(); queues.background.clear(); queues.catchups.clear(); }
   pushQueues.clear();
   disposeProjectTerminalSubscriptions();
   syncedSessions.clear();

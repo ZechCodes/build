@@ -176,3 +176,14 @@ def test_failed_materialized_delivery_needs_authoritative_deleted_workspace_evid
     live = classify(path, [{'id': 'removed', 'root': '/removed'}])
     assert ('root', '/removed') in live['required']
     assert not live['undeliverable_stale_deliveries']
+
+
+def test_historical_review_directory_source_path_does_not_veto_path_history(tmp_path):
+    path = database(tmp_path, {
+        'tracker_tasks': [{'id': 'task', 'status': 'done'}],
+        'review_snapshots': [{'task_id': 'task', 'directories': [
+            {'path': '/old/checkout', 'source_path': '/old/checkout'}]}],
+    })
+    result = classify(path)
+    assert ('path', '/old/checkout') in result['historical']['closed_tasks']
+    assert ('source_path', '/old/checkout') in result['historical']['closed_tasks']

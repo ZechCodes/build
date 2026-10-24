@@ -12,7 +12,8 @@ from .migrate_store import classified_references, connect, rows, table_names
 HISTORY_KINDS = ('reclaimed_workspaces', 'finished_runs', 'closed_tasks',
                  'session_lineage', 'archived_worktrees', 'cancelled_deliveries',
                  'undeliverable_stale_operations', 'undeliverable_stale_deliveries')
-CHECKOUT_KEYS = {'worktree_path', 'checkout', 'cwd', 'root', 'path', 'workspace_path', 'working_repository'}
+CHECKOUT_KEYS = {'worktree_path', 'checkout', 'cwd', 'root', 'path', 'workspace_path', 'working_repository',
+                 'source_path'}
 TERMINAL_RUNS = {'Merged', 'Abandoned', 'Archived'}
 
 

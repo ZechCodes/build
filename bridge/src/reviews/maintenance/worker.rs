@@ -22,7 +22,7 @@ enum Work {
 
 enum Retirement {
     Retained,
-    Released(leases::ReviewLeases),
+    Released(Box<leases::ReviewLeases>),
 }
 
 impl Worker {
@@ -197,7 +197,7 @@ impl Worker {
         if refs::cleanup(receiver, &current, &self.root)? {
             self.collected.remove(receiver);
         }
-        Ok(Retirement::Released(held))
+        Ok(Retirement::Released(Box::new(held)))
     }
 
     fn collect(&mut self, receiver: &Path, report: &mut Report) -> Result<(), String> {

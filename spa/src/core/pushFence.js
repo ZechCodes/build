@@ -19,6 +19,7 @@
 
 let pushes = 0;
 const marks = new Map(); // record address → the latest push that touched it
+const invalidations = new Map(); // entity data lifetime, independent of board membership
 const removals = new Map(); // entity → the latest push that took it away
 
 const markKey = ({ deviceId, entityId, kind, sub = "" }) => JSON.stringify([deviceId, entityId, kind, sub]);
@@ -33,6 +34,14 @@ export function notePush(address, { removed = false } = {}) {
   marks.set(markKey(address), { at: pushes, removed });
   if (removed) removals.set(entityKey(address), pushes);
 }
+
+/** Eviction ends outstanding readers without removing the retained feed row. */
+export function invalidateEntityData(address) {
+  invalidations.set(entityKey(address), ++pushes);
+}
+
+export const entityDataInvalidatedSince = (address, fence) =>
+  (invalidations.get(entityKey(address)) || 0) > fence;
 
 /** Whether a push took this record's entity off the board after the fence. */
 export const removedSince = (address, fence) => (removals.get(entityKey(address)) || 0) > fence;
@@ -49,4 +58,5 @@ export function pushedSince(address, fence) {
 export function forgetPushes() {
   marks.clear();
   removals.clear();
+  invalidations.clear();
 }

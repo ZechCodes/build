@@ -698,7 +698,8 @@ describe("bounded background streams", () => {
     });
     start();
     try {
-      await vi.waitFor(() => expect(calls("git.status").filter(([, params]) => params.run_id !== "run-10")).toHaveLength(2));
+      await called(rpc, () => calls("git.status").filter(([, params]) => params.run_id !== "run-10").length >= 2);
+      expect(calls("git.status").filter(([, params]) => params.run_id !== "run-10")).toHaveLength(2);
       expect(inFlight).toBe(2);
       expect(peak).toBe(2);
     } finally {
@@ -760,7 +761,8 @@ describe("bounded background streams", () => {
     start();
     const pass = sync.passInFlight("dev-1");
     try {
-      await vi.waitFor(() => expect(calls("git.status").filter(([, params]) => params.run_id !== "run-10")).toHaveLength(2));
+      await called(rpc, () => calls("git.status").filter(([, params]) => params.run_id !== "run-10").length >= 2);
+      expect(calls("git.status").filter(([, params]) => params.run_id !== "run-10")).toHaveLength(2);
       const followUp = sync.syncDevice("dev-1");
       const before = rpc.mock.calls.length;
       sync.stopCacheSync();

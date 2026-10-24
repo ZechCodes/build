@@ -591,3 +591,25 @@ fn completion_fence_preserves_running_generation_until_reassigned_turn_is_consum
         .handle(req("tasks.get", json!({"task_id":task.task_id})));
     assert_eq!(after["result"]["task"]["status"], "in_review", "{after}");
 }
+
+#[test]
+fn delivered_receipt_reconstructs_completion_authority_without_payload() {
+    let mut task = DispatchedTask::new();
+    let operation = task.operation_id();
+    task.app
+        .store
+        .as_ref()
+        .unwrap()
+        .writer_for_test()
+        .execute(
+            "UPDATE operations SET status = 'delivered', delivery = NULL WHERE operation_id = ?1",
+            [&operation],
+        )
+        .unwrap();
+    task.app.task_completion_authority.clear();
+    task.app.pending_task_completion_authority.clear();
+    task.app.dispatched_task.clear();
+    task.app
+        .consume_task_completion_operation(&task.entity_id, &task.agent_id, &operation);
+    task.assert_complete_reviews_task();
+}

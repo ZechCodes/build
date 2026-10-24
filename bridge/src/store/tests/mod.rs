@@ -17,6 +17,7 @@ mod delivery_intents;
 mod documents;
 mod entities;
 mod legacy;
+mod maintenance_timing;
 mod migrations;
 mod operations;
 mod pull_requests;

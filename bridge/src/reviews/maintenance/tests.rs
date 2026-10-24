@@ -209,11 +209,14 @@ fn owned_orphans_are_deleted_but_foreign_repositories_and_refs_are_preserved() {
     worker.turn().unwrap();
     assert!(receiver.is_dir());
     assert!(repository.find_reference("refs/heads/user-work").is_ok());
-    repository
-        .find_reference("refs/heads/user-work")
+    // GC may have packed refs since this handle was opened. Use a fresh
+    // native writer rather than deleting through libgit2's older ref cache.
+    drop(repository);
+    crate::git_fixture::git_in(&receiver, &["update-ref", "-d", "refs/heads/user-work"]);
+    assert!(git2::Repository::open_bare(&receiver)
         .unwrap()
-        .delete()
-        .unwrap();
+        .find_reference("refs/heads/user-work")
+        .is_err());
     worker.turn().unwrap();
     assert!(!receiver.exists());
     let foreign = f.request.receiver_root.join("foreign.git");
@@ -284,18 +287,24 @@ fn gc_keeps_recent_unpublished_objects_and_retries_after_git_lock_contention() {
     let unpublished = repository
         .blob(b"native push object not referenced yet")
         .unwrap();
-    let lock = receiver.join("packed-refs.lock");
-    std::fs::write(&lock, "native git pack-refs\n").unwrap();
+    // A live GC lease makes Git fail the whole job. A packed-refs lock only
+    // makes its optional pack-refs subprocess fail; gc itself can still exit 0.
+    let hostname = std::process::Command::new("hostname").output().unwrap();
+    assert!(hostname.status.success());
+    let hostname = String::from_utf8(hostname.stdout).unwrap();
+    let owner = format!("{} {}\n", std::process::id(), hostname.trim());
+    let lock = receiver.join("gc.pid");
+    std::fs::write(&lock, &owner).unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
     assert!(worker.turn().is_err());
-    assert_eq!(
-        std::fs::read_to_string(&lock).unwrap(),
-        "native git pack-refs\n"
-    );
+    assert_eq!(std::fs::read_to_string(&lock).unwrap(), owner);
     std::fs::remove_file(lock).unwrap();
     assert_eq!(worker.turn().unwrap().collected, 1);
     assert_eq!(worker.turn().unwrap().collected, 0);
-    assert!(repository.find_blob(unpublished).is_ok());
+    assert!(git2::Repository::open_bare(&receiver)
+        .unwrap()
+        .find_blob(unpublished)
+        .is_ok());
 }
 
 #[test]

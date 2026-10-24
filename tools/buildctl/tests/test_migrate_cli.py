@@ -126,3 +126,12 @@ def test_migrated_roots_reject_cross_environment_paths(tmp_path, invalid):
         manifest.write_text("[]")
     with pytest.raises(BuildctlError):
         env.bridge_env({})
+
+
+def test_migration_respects_read_only_target_policy(tmp_path, monkeypatch):
+    registry = tmp_path / 'registry.toml'
+    registry.write_text(REGISTRY.read_text().replace('allow_mutation = true', 'allow_mutation = false'))
+    factory = Mock()
+    monkeypatch.setattr('buildctl.cli.Migrator', factory)
+    assert main(['migrate', '--from', 'prod', '--to', 'dev', '--prod-stopped'], home=tmp_path, runner=Mock(), registry_path=registry) == 1
+    factory.assert_not_called()

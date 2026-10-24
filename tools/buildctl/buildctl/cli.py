@@ -117,6 +117,8 @@ def dispatch(args, env, runner, repo, fetch):
 
 def migrate_command(args, envs, runner):
     source, target = envs[args.source], envs[args.target]
+    if not args.dry_run:
+        target.require_mutation()
     migrator = Migrator(
         source.state_root,
         target.state_root,

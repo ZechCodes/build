@@ -10,8 +10,9 @@ import sqlite3
 import tempfile
 import uuid
 
+from .migrate_lifecycle import classify
 from .migrate_git import apply_remotes, plan_remotes
-from .migrate_paths import Paths, scratch_directory
+from .migrate_paths import Paths, references, scratch_directory
 from .migrate_store import backup_database, rewrite_database, scan_database, verify_database
 from .runtime import BuildctlError, Runner, digest
 
@@ -93,6 +94,7 @@ class Migrator:
 
     def inventory(self):
         expected = scan_database(self.source / 'tasks/build.db', self.paths)
+        self.lifecycle(expected)
         scratch = set()
         historical = []
         for value in expected['terminal_operation_roots']:
@@ -117,6 +119,31 @@ class Migrator:
                 raise BuildctlError('referenced project-scratch directory is missing')
         return expected, entries
 
+    def lifecycle(self, expected):
+        workspaces = live_workspaces(self.worktrees)
+        lifecycle = classify(self.source / 'tasks/build.db', live_workspaces=workspaces)
+        historical = {}
+        missing_paths = set()
+        for kind, refs in lifecycle['historical'].items():
+            missing = {value for _, value in refs if not self.original_path(value).exists()}
+            historical[kind] = {'count': len(missing), 'sample': sorted(missing)[:10]}
+            missing_paths.update(self.paths.path(value) for value in missing)
+            expected['references'].difference_update(ref for ref in refs if ref[1] in missing)
+        for workspace in workspaces:
+            expected['references'].update((key, value) for key, value in references(workspace)
+                                          if key in {'root', 'path'})
+        expected['undeliverable_stale_operations'] = lifecycle.get('undeliverable_stale_operations', [])
+        expected['undeliverable_stale_deliveries'] = lifecycle.get('undeliverable_stale_deliveries', [])
+        expected['historical_missing_paths'] = missing_paths
+        expected['historical_worktrees'] = historical
+        expected['live_workspaces'] = len(workspaces)
+
+    def original_path(self, value):
+        mapped = Path(self.paths.path(value))
+        if mapped.is_relative_to(self.target):
+            return self.source / mapped.relative_to(self.target)
+        return mapped
+
     def report(self, expected, entries, states):
         attachments = self.source / 'tasks/attachments'
         count = sum(1 for p in attachments.rglob('*') if p.is_file())
@@ -126,7 +153,13 @@ class Migrator:
                 'attachments': count, 'units': states,
                 'entries': [str(p) for p in entries], 'verified': False,
                 'rehearsal': self.rehearsal,
-                'historical_operation_roots': expected['historical_operation_roots']}
+                'historical_operation_roots': {
+                    'count': len(expected['historical_operation_roots']),
+                    'sample': expected['historical_operation_roots'][:10]},
+                'historical_worktrees': expected['historical_worktrees'],
+                'live_workspaces': expected['live_workspaces'],
+                'undeliverable_stale_operations': expected['undeliverable_stale_operations'],
+                'undeliverable_stale_deliveries': expected['undeliverable_stale_deliveries']}
 
     def run(self, *, dry_run=False, force=False, prod_stopped=False):
         try:
@@ -144,14 +177,28 @@ class Migrator:
         expected, entries = self.inventory()
         result = self.report(expected, entries, states)
         result.update(self.disk_space(entries))
-        result['shared_git_edits'] = len(plan_remotes(
-            self.source / 'tasks/build.db', self.source_prefix, self.target, self.runner))
+        expected['git_changes'] = self.plan_git(expected, result)
         if dry_run:
+            result['worktrees'] = self.verify_paths(self.source, expected)
             return result
         with migration_lock(self.target):
             self.preflight(force)
             self.stopped(self.states())
             return self.stage(expected, entries, result)
+
+    def plan_git(self, expected, result):
+        changes = plan_remotes(self.source / 'tasks/build.db', self.source_prefix,
+                               self.target, self.runner)
+        current, historical = [], []
+        for change in changes:
+            change['repository'] = self.paths.path(change['repository'])
+            if change['repository'] in expected['historical_missing_paths']:
+                historical.append(change)
+            else:
+                current.append(change)
+        result['shared_git_edits'] = len(current)
+        result['historical_git_edits'] = {'count': len(historical), 'sample': historical[:10]}
+        return current
 
     def disk_space(self, entries):
         size = sum(p.stat().st_size for entry in entries for p in files(self.source / entry))
@@ -183,10 +230,7 @@ class Migrator:
             verify_database(stage / 'tasks/build.db', expected)
             result['worktrees'] = self.verify_paths(stage, expected)
             verify_attachments(self.source, stage)
-            changes = plan_remotes(self.source / 'tasks/build.db', self.source_prefix,
-                                   self.target, self.runner)
-            for change in changes:
-                change['repository'] = self.paths.path(change['repository'])
+            changes = expected['git_changes']
             result['shared_git_edits'] = len(changes)
             result['verified'] = True
             self.stopped(self.states())
@@ -223,7 +267,8 @@ class Migrator:
         backup = self.target.with_name(self.target.name + '.backup-' + uuid.uuid4().hex)
         manifest = {'target': str(self.target), 'source': str(self.source_prefix),
                     'git': changes, 'rehearsal': self.rehearsal, 'status': 'prepared',
-                    'target_existed': self.target.exists(), 'stage': str(stage)}
+                    'target_existed': self.target.exists(), 'stage': str(stage),
+                    'git_status': 'untouched'}
         metadata = Path(str(backup) + '.json')
         write_manifest(metadata, manifest)
         if self.target.exists():
@@ -235,7 +280,7 @@ class Migrator:
             manifest['status'] = 'published'
             write_manifest(metadata, manifest)
             if not self.rehearsal:
-                apply_remotes(changes, self.runner)
+                apply_remotes(changes, self.runner, before_commit=lambda: git_started(metadata, manifest))
             manifest['status'] = 'applied'
             write_manifest(metadata, manifest)
         except Exception as error:
@@ -268,7 +313,7 @@ class Migrator:
             raise BuildctlError('rollback state backup is missing')
         retired = self.target.with_name(self.target.name + '.retired-' + uuid.uuid4().hex)
         if self.target.exists():
-            if not manifest['rehearsal']:
+            if not manifest['rehearsal'] and manifest.get('git_status') != 'untouched':
                 apply_remotes(manifest['git'], self.runner, reverse=True)
             self.target.rename(retired)
         backup.rename(self.target)
@@ -277,6 +322,22 @@ class Migrator:
         manifest['status'] = 'rolled_back'
         write_manifest(metadata, manifest)
         return {'restored': str(self.target), 'retired': str(retired)}
+
+
+def live_workspaces(worktrees):
+    if not worktrees.is_dir():
+        raise BuildctlError('shared worktree registry root is missing')
+    workspaces = []
+    for manifest in sorted((worktrees / 'workspaces').glob('*/*/.build-workspace.json')):
+        no_symlinks(manifest)
+        try:
+            record = json.loads(manifest.read_text())
+            if not isinstance(record, dict):
+                raise ValueError('workspace is not an object')
+        except (OSError, ValueError) as error:
+            raise BuildctlError('cannot read a shared workspace manifest') from error
+        workspaces.append(record)
+    return workspaces
 
 
 def files(root):
@@ -359,3 +420,8 @@ def write_manifest(path, value):
                 os.close(descriptor)
         finally:
             temporary.unlink(missing_ok=True)
+
+
+def git_started(metadata, manifest):
+    manifest['git_status'] = 'started'
+    write_manifest(metadata, manifest)

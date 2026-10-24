@@ -500,3 +500,60 @@ def test_schema_identifiers_are_quoted_and_values_bound(state):
     with sqlite3.connect(target / 'tasks/build.db') as copied:
         assert json.loads(copied.execute(f'SELECT record FROM {quoted}').fetchone()[0])['path'] == str(target / 'projects')
         assert copied.execute('SELECT COUNT(*) FROM agents').fetchone()[0] == 1
+
+
+def test_finished_run_missing_checkout_is_reported_by_lifecycle(state):
+    migrator, _, _, db, _, worktrees = state
+    missing = str(worktrees / 'removed-workspace')
+    db.execute('CREATE TABLE implementations (id TEXT PRIMARY KEY, record TEXT)')
+    db.execute('INSERT INTO implementations VALUES (?, ?)', ('old', json.dumps({'id': 'old', 'state': 'Archived', 'worktree_path': missing})))
+    db.commit()
+    result = migrator.run(prod_stopped=True)
+    assert result['historical_worktrees']['finished_runs']['count'] == 1
+    assert missing in result['historical_worktrees']['finished_runs']['sample']
+
+
+def test_live_workspace_manifest_keeps_a_missing_finished_path_mandatory(state):
+    migrator, _, target, db, _, worktrees = state
+    missing = str(worktrees / 'removed-workspace')
+    db.execute('CREATE TABLE implementations (id TEXT PRIMARY KEY, record TEXT)')
+    db.execute('INSERT INTO implementations VALUES (?, ?)', ('old', json.dumps({'id': 'old', 'state': 'Archived', 'worktree_path': missing})))
+    db.commit()
+    write_json(worktrees / 'workspaces/proj-1/live/.build-workspace.json', {'id': 'live', 'root': missing, 'directories': [], 'status': 'ready'})
+    before = tree_bytes(target)
+    with pytest.raises(BuildctlError, match='worktree|missing'):
+        migrator.run(prod_stopped=True)
+    assert tree_bytes(target) == before
+
+
+def test_historical_missing_review_repository_does_not_schedule_git_writes(state):
+    migrator, source, _, db, _, worktrees = state
+    missing = str(worktrees / 'removed-review')
+    db.execute('CREATE TABLE tracker_tasks (id TEXT PRIMARY KEY, record TEXT)')
+    db.execute('INSERT INTO tracker_tasks VALUES (?, ?)', ('done', json.dumps({'id': 'done', 'state': 'closed'})))
+    db.execute('CREATE TABLE review_branch_bindings (id TEXT PRIMARY KEY, task_id TEXT, record TEXT)')
+    binding = {'task_id': 'done', 'working_repository': missing, 'receiving_repository': str(source / 'review-receivers/one.git'), 'remote_name': 'build-review'}
+    db.execute('INSERT INTO review_branch_bindings VALUES (?, ?, ?)', ('binding', 'done', json.dumps(binding)))
+    db.commit()
+    result = migrator.run(prod_stopped=True)
+    assert result['shared_git_edits'] == 0
+    assert result['historical_git_edits']['count'] == 2
+
+
+def test_missing_git_remote_does_not_prevent_state_rollback(state):
+    import subprocess
+
+    migrator, source, target, db, projects, _ = state
+    migrator.rehearsal = False
+    repository = projects / 'review-repository'
+    subprocess.run(['git', 'init', str(repository)], check=True, capture_output=True)
+    db.execute('CREATE TABLE review_branch_bindings (id TEXT PRIMARY KEY, record TEXT)')
+    binding = {'working_repository': str(repository), 'receiving_repository': str(source / 'review-receivers/one.git'), 'remote_name': 'build-review'}
+    db.execute('INSERT INTO review_branch_bindings VALUES (?, ?)', ('binding', json.dumps(binding)))
+    db.commit()
+    before = tree_bytes(target)
+    with pytest.raises(BuildctlError, match='rollback'):
+        migrator.run(prod_stopped=True)
+    backup = next(path for path in target.parent.glob(target.name + '.backup-*') if path.is_dir())
+    migrator.rollback(backup)
+    assert tree_bytes(target) == before

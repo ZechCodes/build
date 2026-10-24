@@ -177,10 +177,21 @@ At the selected window, from a checkout containing this command:
 
 If publishing fails, the error reports the retained backup path. Keep that
 backup and its sibling JSON manifest; the same rollback command recovers a
-partially published migration and mixed old/new review remote values.
+partially published migration and mixed old/new review remote values. A durable
+marker distinguishes Git validation failures with no edits, so those cannot
+prevent restoring dev state. After a killed process, Git may retain `config.lock`
+files: inspect the affected repositories and confirm no Git process owns a lock
+before the operator removes it and retries rollback. The tool never removes
+another process’s Git locks.
 
-Missing roots referenced only by known terminal operations are listed in
-`historical_operation_roots`; queued or uncertain operation roots are required.
+The report separates missing roots of terminal operations, finished runs, closed
+tasks, reclaimed workspaces, archived worktrees, historical session lineage and
+cancelled deliveries, with counts and samples. Workspace manifests and persisted
+run/task/reclaim evidence determine lifecycle; reclaim eligibility alone is not
+deletion. Live workspace paths always remain mandatory. Queued/uncertain
+operations and retryable failed intents whose target workspace has gone are
+listed as undeliverable stale records with IDs and targets, without changing
+statuses. Missing roots for live or unknown targets fail verification.
 
 To roll back, first have the operator stop dev and confirm both bridges are
 inactive. Restore using the exact backup path printed by migration, then have

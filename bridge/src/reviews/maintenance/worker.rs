@@ -247,10 +247,9 @@ fn has_foreign_refs(receiver: &Path) -> Result<bool, String> {
     let repository = git2::Repository::open_bare(receiver).map_err(|error| error.to_string())?;
     for reference in repository.references().map_err(|error| error.to_string())? {
         let reference = reference.map_err(|error| error.to_string())?;
-        if reference
-            .name()
-            .is_none_or(|name| !name.starts_with("refs/build/reviews/"))
-        {
+        if reference.name().is_none_or(|name| {
+            !name.starts_with("refs/build/reviews/") && !name.starts_with("refs/heads/review/")
+        }) {
             return Ok(true);
         }
     }

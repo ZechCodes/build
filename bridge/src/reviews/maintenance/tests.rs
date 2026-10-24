@@ -242,6 +242,20 @@ fn receiver_without_any_review_or_pending_opening_is_removed() {
     let root = home.path().join("receivers");
     let receiver = crate::reviews::receivers::plan_receiver(&source, &root).unwrap();
     crate::reviews::receivers::ensure_receiver(&receiver).unwrap();
+    let repository = git2::Repository::open_bare(&receiver.path).unwrap();
+    let tree_id = repository.treebuilder(None).unwrap().write().unwrap();
+    let tree = repository.find_tree(tree_id).unwrap();
+    let author = git2::Signature::now("Build test", "test@example.com").unwrap();
+    repository
+        .commit(
+            Some("refs/heads/review/839-abandoned"),
+            &author,
+            &author,
+            "Abandoned review",
+            &tree,
+            &[],
+        )
+        .unwrap();
     let store = Store::new(home.path().join("db")).unwrap();
     let mut worker = Worker::new(store, root);
     worker.turn().unwrap();

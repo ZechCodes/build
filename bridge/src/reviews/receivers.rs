@@ -13,6 +13,7 @@ use std::time::Duration;
 mod initialization;
 pub(crate) mod locks;
 pub(crate) mod refs;
+pub(crate) mod storage;
 
 const OWNERSHIP_FILE: &str = ".build-review-receiver.json";
 
@@ -286,3 +287,7 @@ mod tests;
 #[cfg(test)]
 #[path = "receivers/initialization_tests.rs"]
 mod initialization_tests;
+
+#[cfg(test)]
+#[path = "receivers/storage_tests.rs"]
+mod storage_tests;

@@ -117,9 +117,9 @@ table counts/record IDs, worktree references and attachment hashes, and retains
 a backup for rollback. Logs, builds, deployments, rollouts, backups and project
 scratch are excluded, except exact database-referenced project scratch directories
 whose names match `<Project>-<12hex>`; those referenced directories are copied.
-Missing migrated worktrees are a hard verification failure. Snapshot-only
-rehearsal defers external shared-worktree existence checks to live cutover; it
-does not claim to verify paths outside the authorized snapshot. Review receiver Git URLs in shared repositories also need
+Missing referenced worktrees are a hard verification failure. Rehearsal reads
+the supplied snapshot and checks existence of shared worktree directories;
+it never edits shared repository configuration. Review receiver Git URLs in shared repositories also need
 the reversible migration update. Source repositories and worktrees under
 `~/Projects` and `~/Projects/.build-worktrees` stay in place.
 
@@ -131,7 +131,8 @@ state root. An existing installed unit does not acquire these settings until
 
 At the selected window, from a checkout containing this command:
 
-1. Inspect the dry-run counts and refusals. Dry-run changes no state:
+1. Inspect the dry-run counts and refusals. Dry-run changes no persistent state
+   (SQLite may update transient WAL shared-memory reader marks):
 
    ```bash
    scripts/buildctl migrate --from prod --to dev --dry-run
@@ -173,6 +174,13 @@ At the selected window, from a checkout containing this command:
    the state root are copied; external Claude/Codex session stores are never
    copied or rewritten. Historical session IDs alone do not guarantee that a
    provider can resume a session; confirm important in-flight agents manually.
+
+If publishing fails, the error reports the retained backup path. Keep that
+backup and its sibling JSON manifest; the same rollback command recovers a
+partially published migration and mixed old/new review remote values.
+
+Missing roots referenced only by known terminal operations are listed in
+`historical_operation_roots`; queued or uncertain operation roots are required.
 
 To roll back, first have the operator stop dev and confirm both bridges are
 inactive. Restore using the exact backup path printed by migration, then have

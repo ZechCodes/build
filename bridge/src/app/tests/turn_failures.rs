@@ -490,3 +490,47 @@ async fn the_failure_pump_consumes_its_receipt_and_delivers_without_a_client() {
         "EOF cannot add another terminal failure after the report"
     );
 }
+
+#[test]
+fn delivered_receipt_retains_consumed_failure_identity_without_payload() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_home, mut state, project) = tracked(temp.path());
+    let ws = workspace(&mut state, &project, "trimmed-failure");
+    let (owner, agent) = workspace_agent(&mut state, &ws);
+    let posted = state.handle(req(
+        "thread.post",
+        json!({
+            "entity_id": owner, "agent_id": agent, "conversation_id": agent,
+            "operation_id": "trimmed-failure-operation", "body": "do work",
+        }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted}");
+    state
+        .store
+        .as_ref()
+        .unwrap()
+        .writer_for_test()
+        .execute(
+            "UPDATE operations SET status = 'delivered', delivery = NULL WHERE operation_id = ?1",
+            ["trimmed-failure-operation"],
+        )
+        .unwrap();
+    state.record_consumed_failure_operation(&owner, &agent, "trimmed-failure-operation");
+    let thread = state
+        .agent_conversation(&owner, Some(&agent))
+        .unwrap()
+        .id
+        .clone();
+    let operation = state
+        .failure_operation(&owner, &agent, &thread, None)
+        .expect("consumed identity survives payload removal");
+    assert_eq!(operation.operation_id, "trimmed-failure-operation");
+    assert!(state
+        .failure_operation(
+            &owner,
+            "foreign-agent",
+            &thread,
+            Some("trimmed-failure-operation")
+        )
+        .is_none());
+}

@@ -1011,6 +1011,34 @@ and its controls are
   (`MANIFEST_FILE` in `bridge/src/workspace.rs`), and update status and job files
   (`bridge/src/update/`).
 
+Delivered operation receipts retain their request hash, owner/agent identity and
+message sequence span, but discard their delivery prompt in the status update.
+Ordinary receipts clear `delivery` to NULL; historical Task-to-implementation
+forwarding retains a small target intent with no payload when its execution
+owner differs from the original receipt address.
+Queued, claimed and unresolved uncertain receipts retain their payload for
+recovery. A delivered receipt later marked uncertain remains payload-free and
+cannot replay. Sent, seen, failure and completion projection readers use receipt metadata and stored
+messages after delivery; boot recovery uses the receipt span even without a
+payload. The remaining receipt is an idempotency tombstone; retaining its numeric
+span does not require retaining the referenced transcript rows.
+
+Before publishing its read pool, Store startup converts older databases to
+`auto_vacuum=INCREMENTAL` with SQLite's transactional `VACUUM`; a failed conversion
+fails startup before serving requests. This one-time rewrite needs temporary
+space for the database. A startup-only WAL checkpoint/truncate returns the
+rewrite log space before reader admission; a pending marker makes an interrupted
+checkpoint retry on the next open. The daemon's storage maintenance worker uses the existing
+writer outside the app lock. It clears old delivered payloads with resumable
+rowid-keyset batches of at most 1,000 receipts and reclaims at most 32 free pages
+per step. Cleanup progress is committed with each batch; later steps retain only
+small incremental-vacuum work. Readers continue on their independent WAL pool.
+Shutdown records the restart roster and tears down children before cancelling
+maintenance. Its worker join has a one-second budget; the main Tokio runtime
+also has a one-second shutdown timeout so a blocking batch waiting on the writer
+cannot keep the process alive indefinitely. A detached batch may finish during
+that grace period; its transactions remain atomic and cleanup remains resumable.
+
 #### Durable write foundation (#739)
 
 Schema 18 adds `mutation_commands`, per-owner ordering, dependency edges,

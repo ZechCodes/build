@@ -489,3 +489,178 @@ fn restart_hydrates_delivery_recovery_before_restoring_threads() {
         "restoration must retain the sequence minted by recovery"
     );
 }
+
+#[test]
+fn delivered_receipt_updates_status_and_seen_without_payload() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let owner = adopted_run(&mut state, &repo, dir.path(), "trimmed-native-receipt");
+    let agent = primary_agent_id(&state, &owner);
+    post_operation(
+        &mut state,
+        &owner,
+        &agent,
+        "trimmed-operation",
+        "delivered message",
+    );
+    post_operation(
+        &mut state,
+        &owner,
+        &agent,
+        "queued-operation",
+        "next message",
+    );
+    state
+        .store
+        .as_ref()
+        .unwrap()
+        .writer_for_test()
+        .execute(
+            "UPDATE operations SET status = 'delivered', delivery = NULL WHERE operation_id = ?1",
+            ["trimmed-operation"],
+        )
+        .unwrap();
+    state
+        .record_operation_delivery_status("trimmed-operation", MessageDeliveryStatus::Sent)
+        .unwrap();
+    assert_eq!(
+        operation_message(&state, &owner, &agent, "trimmed-operation").delivery_status,
+        Some(MessageDeliveryStatus::Sent)
+    );
+    assert!(state
+        .record_native_operation_seen(&owner, "foreign-agent", "trimmed-operation")
+        .is_err());
+    state
+        .record_native_delivery_receipt(
+            &owner,
+            &agent,
+            "trimmed-operation",
+            MessageDeliveryStatus::Uncertain,
+        )
+        .unwrap();
+    assert_eq!(
+        operation_message(&state, &owner, &agent, "trimmed-operation").delivery_status,
+        Some(MessageDeliveryStatus::Sent),
+        "a late uncertain observation preserves an established handoff"
+    );
+    assert_eq!(
+        state
+            .operation_receipt("trimmed-operation")
+            .unwrap()
+            .unwrap()
+            .status,
+        crate::operation::OperationStatus::Uncertain,
+        "the later Seen receipt must handle a compacted uncertain operation"
+    );
+    assert!(
+        PendingAgentTurn::for_delivery_operation(
+            &state
+                .operation_receipt("trimmed-operation")
+                .unwrap()
+                .unwrap()
+        )
+        .is_none(),
+        "a trimmed uncertain operation has no replay payload"
+    );
+    state
+        .record_native_operation_seen(&owner, &agent, "trimmed-operation")
+        .unwrap();
+    let seen = operation_message(&state, &owner, &agent, "trimmed-operation");
+    assert_eq!(seen.delivery_status, Some(MessageDeliveryStatus::Seen));
+    assert!(seen.seen_at.is_some());
+    let sequence = seen.updated_sequence;
+    state
+        .record_native_operation_seen(&owner, &agent, "trimmed-operation")
+        .unwrap();
+    state
+        .record_native_delivery_receipt(
+            &owner,
+            &agent,
+            "trimmed-operation",
+            MessageDeliveryStatus::Uncertain,
+        )
+        .unwrap();
+    assert_eq!(
+        operation_message(&state, &owner, &agent, "trimmed-operation").updated_sequence,
+        sequence
+    );
+    assert_eq!(
+        operation_message(&state, &owner, &agent, "queued-operation").delivery_status,
+        Some(MessageDeliveryStatus::Queued)
+    );
+}
+
+#[test]
+fn delivered_forwarded_receipt_preserves_the_execution_target_without_payload() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (plan, owner) = planned_run_in_review(&mut state, "historical forwarded receipt");
+    let agent = primary_agent_id(&state, &owner);
+    let plan_agent = state.plans[&plan].agents.sole().id.clone();
+    post_operation(
+        &mut state,
+        &owner,
+        &agent,
+        "forwarded-operation",
+        "forwarded message",
+    );
+    // The retired Task post route accepted an operation at the plan address
+    // while delivering it to the implementation sharing its conversation.
+    state
+        .store
+        .as_ref()
+        .unwrap()
+        .writer_for_test()
+        .execute(
+            "UPDATE operations SET entity_id = ?1, agent_id = ?2 WHERE operation_id = ?3",
+            rusqlite::params![plan, plan_agent, "forwarded-operation"],
+        )
+        .unwrap();
+    state
+        .record_operation_delivery_status("forwarded-operation", MessageDeliveryStatus::Sent)
+        .unwrap();
+    state
+        .transition_delivery_operation(
+            "forwarded-operation",
+            crate::operation::OperationStatus::Queued,
+            crate::operation::OperationStatus::Delivered,
+            None,
+        )
+        .unwrap();
+    let receipt = state
+        .operation_receipt("forwarded-operation")
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.delivery_target(), (owner.as_str(), agent.as_str()));
+    assert!(receipt.delivery.as_ref().unwrap().payload.is_none());
+    assert!(PendingAgentTurn::for_delivery_operation(&receipt).is_none());
+    assert!(state
+        .record_native_operation_seen(&plan, &plan_agent, "forwarded-operation")
+        .is_err());
+    state
+        .record_native_delivery_receipt(
+            &owner,
+            &agent,
+            "forwarded-operation",
+            MessageDeliveryStatus::Uncertain,
+        )
+        .unwrap();
+    state
+        .record_native_operation_seen(&owner, &agent, "forwarded-operation")
+        .unwrap();
+    let message = operation_message(&state, &owner, &agent, "forwarded-operation");
+    assert_eq!(message.delivery_status, Some(MessageDeliveryStatus::Seen));
+    assert!(message.seen_at.is_some());
+    let thread = state
+        .agent_conversation(&owner, Some(&agent))
+        .unwrap()
+        .id
+        .clone();
+    assert_eq!(
+        state
+            .failure_operation(&owner, &agent, &thread, None)
+            .unwrap()
+            .operation_id,
+        "forwarded-operation"
+    );
+}

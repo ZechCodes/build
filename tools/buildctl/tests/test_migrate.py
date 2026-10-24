@@ -59,7 +59,9 @@ def state(tmp_path):
         db.execute(f'CREATE TABLE {table} (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
         record = {'id': table + '-1', 'session_id': 'session-kept',
                   'path': str(workspace), 'attachment': str(attachment),
-                  'boundary': str(source) + '-other/file'}
+                  'boundary': str(source) + '-other/file',
+                  'body': str(attachment), 'content': str(attachment),
+                  'text': 'A historic mention of ' + str(attachment)}
         db.execute(f'INSERT INTO {table} VALUES (?,?)', (table + '-1', json.dumps(record)))
     db.execute('CREATE TABLE conversation_attachment_uploads (path TEXT PRIMARY KEY)')
     db.execute('INSERT INTO conversation_attachment_uploads VALUES (?)', (str(attachment),))
@@ -90,6 +92,9 @@ def test_online_backup_preserves_rows_and_rewrites_state(state):
             assert record['path'].startswith(str(projects))
             assert record['attachment'] == str(target / 'tasks/attachments/image.bin')
             assert record['boundary'] == str(source) + '-other/file'
+            assert record['body'] == str(source / 'tasks/attachments/image.bin')
+            assert record['content'] == str(source / 'tasks/attachments/image.bin')
+            assert record['text'] == 'A historic mention of ' + str(source / 'tasks/attachments/image.bin')
         assert copied.execute('SELECT content FROM extra_state').fetchone()[0] == b'opaque\x00bytes'
         assert copied.execute('SELECT path FROM conversation_attachment_uploads').fetchone()[0] == str(target / 'tasks/attachments/image.bin')
     config = json.loads((target / 'config.json').read_text())
@@ -113,6 +118,8 @@ def test_dry_run_is_read_only_even_with_active_prod(state):
     result = migrator.run(dry_run=True)
     assert result['tables']['tasks'] == 1
     assert result['attachments'] == 1
+    assert result['rewrites']['tasks']['record'] > 0
+    assert result['rewrites']['conversation_attachment_uploads']['path'] == 1
     assert tree_bytes(source) == before_source
     assert tree_bytes(target) == before_target
     assert not list(target.parent.glob(target.name + '*backup*'))
@@ -181,3 +188,13 @@ def test_source_identity_is_never_imported_into_unpaired_target(state):
     (target / 'identity.json').unlink()
     migrator.run(prod_stopped=True)
     assert not (target / 'identity.json').exists()
+
+
+def test_missing_worktree_refuses_strict_apply(state):
+    migrator, _, target, _, _, worktrees = state
+    (worktrees / 'workspaces/one').rmdir()
+    migrator.rehearsal = False
+    before = tree_bytes(target)
+    with pytest.raises(BuildctlError, match='worktree|workspace|missing'):
+        migrator.run(prod_stopped=True)
+    assert tree_bytes(target) == before

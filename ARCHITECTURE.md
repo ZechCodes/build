@@ -2990,6 +2990,28 @@ nothing else
 
 ### Update and install
 
+`buildctl` (`tools/buildctl/`, launched with `scripts/buildctl --env <name> …`)
+is the supported management entry point for authorized agents working against
+non-production environments. Its checked-in registry declares channels,
+services, isolated paths, public origins, hosted deployment branches and mutation
+policy. Production is read-only. The Python/uv CLI provides `bridge` deployment,
+status/logs, pairing, verified rollback and pruning; `app deploy` advances the
+registered hosted branch, while `app status` reads the public version and latest
+deployment workflow. An explicit `--force` uses an exact force-with-lease.
+
+Bridge deployment builds a resolved commit (default `origin/dev`) in a temporary
+worktree under `nice -n 10`, stages immutable binaries in
+`~/.local/state/build-dev/builds/<sha>/`, strips inherited `BRIDGE_*` settings,
+and invokes the selected channel and public origins from the registry. It
+installs/reloads/stops/starts only that channel's unit, then checks active state,
+the running executable's SHA-256 and fresh relay authentication before recording
+current/previous commits. First installation needs deploy → pair → deploy after
+approval. An unrecorded legacy executable is reported from `/proc` as unmanaged;
+its first verified replacement creates no previous record and never deletes the
+external binary. [Working against dev](AGENTS.md#working-against-dev) documents
+the policy: validate on `dev.getbuild.ing` / `relay-dev.getbuild.ing` before
+production; moving `dev` auto-deploys the hosted stack. Production rules remain.
+
 `BRIDGE_CHANNEL=dev` disables the updater independently of whether a binary
 has release provenance: no checks, installs (even confirmed replacement),
 schedules, staging, helper dispatch, recovery, probation or heartbeat. Its

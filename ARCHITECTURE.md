@@ -1005,11 +1005,17 @@ and its controls are
   their tables: `migrate_agents_to_v6` in `bridge/src/store/entities.rs` and
   `ensure_operation_receipt_columns` in `bridge/src/store/operations.rs`. The
   store refuses to open a newer schema.
+- **JSON files**: projects and settings in `~/.build/config.json`
+  (`bridge/src/app/config/`), the device identity in `~/.build/identity.json`
+  (`bridge/src/identity.rs`), workspace manifests `.build-workspace.json`
+  (`MANIFEST_FILE` in `bridge/src/workspace.rs`), and update status and job files
+  (`bridge/src/update/`).
+
 Delivered operation receipts retain their request hash, owner/agent identity and
 message sequence span, but discard their delivery prompt in the status update.
-Queued, claimed and unresolved uncertain receipts retain their payload for recovery.
-A delivered receipt later marked uncertain remains payload-free and cannot replay. Sent,
-seen, failure and completion projection readers use receipt metadata and stored
+Queued, claimed and unresolved uncertain receipts retain their payload for
+recovery. A delivered receipt later marked uncertain remains payload-free and
+cannot replay. Sent, seen, failure and completion projection readers use receipt metadata and stored
 messages after delivery; boot recovery uses the receipt span even without a
 payload.
 
@@ -1021,12 +1027,6 @@ writer outside the app lock. It clears old delivered payloads with resumable
 rowid-keyset batches of at most 1,000 receipts and reclaims at most 32 free pages
 per step. Cleanup progress is committed with each batch; later steps retain only
 small incremental-vacuum work. Readers continue on their independent WAL pool.
-
-- **JSON files**: projects and settings in `~/.build/config.json`
-  (`bridge/src/app/config/`), the device identity in `~/.build/identity.json`
-  (`bridge/src/identity.rs`), workspace manifests `.build-workspace.json`
-  (`MANIFEST_FILE` in `bridge/src/workspace.rs`), and update status and job files
-  (`bridge/src/update/`).
 
 #### Durable write foundation (#739)
 

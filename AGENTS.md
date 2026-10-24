@@ -98,7 +98,8 @@ for branch ownership and rollout safety. Push only where your task authorizes.
 **`buildctl` is the only supported management entry point for authorized agents
 working against non-production environments.** Use `scripts/buildctl --env dev …`
 or `uv run --frozen --project tools/buildctl buildctl --env dev …` from this
-checkout. Every invocation requires an explicit environment. Production bridge
+checkout. Every invocation requires an explicit environment; the offline cutover
+command instead names both with `migrate --from prod --to dev`. Production bridge
 rolls and production deployments still need Zech's authorization and keep their
 current path; `buildctl --env prod` supports only status and bridge logs.
 
@@ -127,7 +128,12 @@ outside that root are left alone. Failed verification leaves records unchanged,
 but may leave a changed unit/process; inspect status/logs and explicitly redeploy
 or rollback. See [`tools/buildctl/README.md`](tools/buildctl/README.md) for recovery,
 configuration, requirements and offline checks. Never bypass `buildctl` by
-setting inherited `BRIDGE_*` variables or running a bridge binary by hand.
+setting inherited `BRIDGE_*` variables or running a bridge binary by hand. The
+[prod-to-dev migration runbook](tools/buildctl/README.md#prod-to-dev-state-cutover)
+requires a Zech-picked window and operator-stopped bridges. Building/testing the
+tool does not authorize a live cutover. After migration, use `bridge deploy` to
+install shared-root settings before dev starts; migration never starts/stops
+services.
 
 ## Code rules
 

@@ -19,7 +19,8 @@ not implemented yet and unsupported platforms refuse bridge management.
 `environments.toml` is the single registry: channel, service name/manager,
 state/log/binary paths, API/web/relay origins, deployment branch and workflow,
 repository and its default branch, minimum supported bridge commit, and mutation policy. No environment
-is implicit, even for reads. Both dev and prod are seeded; prod permits only
+is implicit, even for reads. The cutover command below names both environments
+with `--from prod --to dev` instead of `--env`. Both dev and prod are seeded; prod permits only
 status and bridge logs. Prod bridge rolls and prod deployments still need
 Zech's authorization and keep their existing path outside this CLI. No CLI flag
 can override that restriction. Registry loading rejects a mutable environment
@@ -99,6 +100,99 @@ with its target before installation, so even a failed attempt cannot leave pair
 pointing at a stale deployment candidate. There is no automatic rollback. Prune
 keeps current, previous, any running managed build, and N newest build directories
 (default 3); it removes only directories inside the environment's binary root.
+
+## Prod to dev state cutover
+
+`buildctl migrate --from prod --to dev` is a reversible state migration. It
+never starts or stops a unit. **Run the live cutover only in a window Zech picks.**
+These commands are an operator runbook, not authorization for an agent to access
+live state or services. Do not test against live roots; pytest uses temporary
+homes and the separately authorized snapshot is for offline rehearsal only.
+
+The source is `~/.build`; the target is `~/.local/state/build-dev`. Dev keeps its
+own identity and pairing. Migration copies config, projects, provider recovery,
+review receivers, task state and attachments, resume rosters and local harness
+sessions. It uses SQLite's online backup API, rewrites prod state paths, verifies
+table counts/record IDs, worktree references and attachment hashes, and retains
+a backup for rollback. Logs, builds, deployments, rollouts, backups and project
+scratch are excluded, except exact database-referenced project scratch directories
+whose names match `<Project>-<12hex>`; those referenced directories are copied.
+Missing migrated worktrees are a hard verification failure. Snapshot-only
+rehearsal defers external shared-worktree existence checks to live cutover; it
+does not claim to verify paths outside the authorized snapshot. Review receiver Git URLs in shared repositories also need
+the reversible migration update. Source repositories and worktrees under
+`~/Projects` and `~/Projects/.build-worktrees` stay in place.
+
+The migration writes `migration-roots.json` in dev state. Subsequent buildctl
+bridge installation reads it to set `BRIDGE_PROJECTS_DIR` and `BRIDGE_WORKTREES`.
+Shared roots must be absolute paths without symlink aliases and outside either
+state root. An existing installed unit does not acquire these settings until
+`bridge deploy` installs it again.
+
+At the selected window, from a checkout containing this command:
+
+1. Inspect the dry-run counts and refusals. Dry-run changes no state:
+
+   ```bash
+   scripts/buildctl migrate --from prod --to dev --dry-run
+   ```
+
+2. The operator stops both bridges and confirms both report `inactive`.
+   `systemctl is-active` returns exit 3 for inactive units; any other state needs
+   investigation before continuing. Neither bridge may manage the shared roots
+   during the final copy:
+
+   ```bash
+   systemctl --user stop build-bridge.service build-bridge-dev.service
+   systemctl --user is-active build-bridge.service
+   systemctl --user is-active build-bridge-dev.service
+   ```
+
+3. Apply and save the printed backup path and verification report. Keep the
+   sibling `<backup-path>.json` rollback manifest with the backup directory. A non-fresh
+   target is refused unless its replacement is intentional; add `--force` only
+   after reviewing what will be replaced. `--prod-stopped` is an assertion in
+   addition to the checked service states:
+
+   ```bash
+   scripts/buildctl migrate --from prod --to dev --prod-stopped
+   ```
+
+4. Keep prod stopped. Deploy the reviewed dev ref through buildctl, which installs
+   the shared roots in the unit before starting dev. Replace `<validated-ref>`
+   with the selected commit. Do not directly start the old dev unit:
+
+   ```bash
+   scripts/buildctl --env dev bridge deploy <validated-ref>
+   scripts/buildctl --env dev bridge status
+   scripts/buildctl --env dev bridge logs
+   ```
+
+   Open dev and check projects, tasks, attachments, workspaces and resumed agents.
+   Harness session IDs and the resume roster are preserved. Pi sessions under
+   the state root are copied; external Claude/Codex session stores are never
+   copied or rewritten. Historical session IDs alone do not guarantee that a
+   provider can resume a session; confirm important in-flight agents manually.
+
+To roll back, first have the operator stop dev and confirm both bridges are
+inactive. Restore using the exact backup path printed by migration, then have
+the operator restart prod:
+
+```bash
+systemctl --user stop build-bridge-dev.service
+systemctl --user is-active build-bridge-dev.service
+systemctl --user is-active build-bridge.service
+scripts/buildctl migrate --from prod --to dev --rollback <backup-path>
+systemctl --user start build-bridge.service
+```
+
+Rollback restores the previous dev state and shared Git URL changes; it keeps
+the migrated state in the reported `.retired-…` directory and marks the backup
+manifest `rolled_back`. It does not
+merge work created after cutover back into prod. Inspect/export such work before
+rollback. Leave dev stopped; before using restored dev state again, deploy its
+intended ref through buildctl to refresh its unit environment. Never run both
+bridges against the adopted repositories and worktrees at once.
 
 ## Hosted app and relay
 

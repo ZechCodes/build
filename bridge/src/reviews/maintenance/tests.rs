@@ -101,6 +101,7 @@ fn live_sync_lease_fences_terminal_receiver_cleanup() {
 fn interrupted_directory_removal_resumes_after_ownership_marker_is_gone() {
     let f = Fixture::new();
     let receiver = f.review().bindings[0].receiving_repository.clone();
+    assert!(!admission::ready(&receiver, 0).unwrap());
     let job = deletion::prepare(&f.request.receiver_root, &receiver).unwrap();
     drop(job);
     let tombstone = std::fs::read_dir(&f.request.receiver_root)

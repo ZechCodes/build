@@ -1965,7 +1965,10 @@ foreground opening and recovery retain their existing wait semantics. Contended
 maintenance lock destruction records exact released ownership for a later reaper,
 so a live daemon PID does not strand its completed reservations.
 Unused receivers first close native Git admission with owned
-`reference-transaction` (prepared-state) and `pre-receive` hooks. A durable close
+`reference-transaction` (prepared-state) and `pre-receive` hooks in the gitdir's
+own `hooks/` directory, with `core.hooksPath` unset so discovery follows a
+quarantine rename. Foreign hook overrides are preserved. The marker and active
+hook configuration are rechecked inside quarantine before the final inventory. A durable close
 marker starts a one-hour admission drain; later turns require both that drain
 and an empty gitdir/ref lock tree before quarantine. Git's normal pruning grace
 remains independent and applies to GC of retained receivers. A new bridge

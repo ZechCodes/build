@@ -103,6 +103,7 @@ pub(super) fn prepare_with_checkpoint(
     fs::rename(receiver, &trash).map_err(|error| error.to_string())?;
     sync_parent(&trash)?;
     checkpoint(DeletionStep::Quarantined, &trash, &trash)?;
+    admission::verify_closed(&trash)?;
     if receiver.exists() || foreign_state(&trash, &references, &objects).unwrap_or(true) {
         return Err(format!(
             "preserved foreign or late receiver state in {} and {}",

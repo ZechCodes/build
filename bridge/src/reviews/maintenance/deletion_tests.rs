@@ -350,6 +350,7 @@ fn cached_absolute_git_after_deletion_is_preserved_on_next_attempt() {
 #[test]
 fn approved_deletion_uses_a_stable_lease_across_journal_replacement() {
     let fixture = Fixture::new();
+    assert!(!admission::ready(&fixture.receiver.path, 0).unwrap());
     let job = deletion::prepare(&fixture.root, &fixture.receiver.path).unwrap();
     assert!(
         deletion::resume(&fixture.root, None).unwrap().is_none(),
@@ -419,4 +420,104 @@ fn closed_receiver_hooks_reject_fresh_native_update_from_ref_subdirectory() {
             .count(),
         0
     );
+}
+
+#[test]
+fn after_marker_cwd_root_writer_is_rejected_after_quarantine_inventory() {
+    let fixture = Fixture::new();
+    assert!(!admission::ready(&fixture.receiver.path, 0).unwrap());
+    assert!(admission::ready(&fixture.receiver.path, admission::ADMISSION_DRAIN_SECS).unwrap());
+    // Git starts after admission closes, caches a relative gitdir, then pauses
+    // before creating its ref lock. Keep it paused through the final inventory.
+    let mut git = GatedGit::start(&fixture, false, false);
+    let job = deletion::prepare(&fixture.root, &fixture.receiver.path).unwrap();
+    let output = git.release();
+    assert!(
+        !output.status.success(),
+        "post-marker cwd-root Git bypassed admission after quarantine: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("closed for reclamation"));
+    assert!(!find_file(
+        &fixture.root,
+        "user-race",
+        format!("{}\n", fixture.head).as_bytes()
+    ));
+    job.finish().unwrap();
+}
+
+#[test]
+fn quarantine_requires_the_close_marker_and_active_hooks() {
+    for changed in [admission::MARKER, "hooks/reference-transaction", "config"] {
+        let fixture = Fixture::new();
+        assert!(!admission::ready(&fixture.receiver.path, 0).unwrap());
+        let result = deletion::prepare_with_checkpoint(
+            &fixture.root,
+            &fixture.receiver.path,
+            |step, quarantine, _| {
+                if matches!(step, DeletionStep::Quarantined) {
+                    if changed == "config" {
+                        git_in(quarantine, &["config", "core.hooksPath", "/dev/null"]);
+                    } else {
+                        let path = quarantine.join(changed);
+                        fs::remove_file(path).unwrap();
+                    }
+                }
+                Ok(())
+            },
+        );
+        assert!(result.is_err(), "quarantine accepted changed {changed}");
+        assert!(has_quarantined_commit(&fixture));
+        assert!(deletion::resume(&fixture.root, None).unwrap().is_none());
+    }
+}
+
+#[test]
+fn owned_legacy_absolute_hooks_migrate_without_resetting_the_drain() {
+    let fixture = Fixture::new();
+    assert!(!admission::ready(&fixture.receiver.path, 0).unwrap());
+    let marker = fs::read(fixture.receiver.path.join(admission::MARKER)).unwrap();
+    let hooks = fixture.receiver.path.join("hooks");
+    let legacy = fixture.receiver.path.join(".build-review-hooks");
+    fs::create_dir_all(&legacy).unwrap();
+    for name in ["reference-transaction", "pre-receive"] {
+        let hook = hooks.join(name);
+        if hook.exists() {
+            fs::copy(hook, legacy.join(name)).unwrap();
+        }
+    }
+    git_in(
+        &fixture.receiver.path,
+        &["config", "core.hooksPath", legacy.to_str().unwrap()],
+    );
+    assert!(admission::ready(&fixture.receiver.path, admission::ADMISSION_DRAIN_SECS).unwrap());
+    assert_eq!(
+        fs::read(fixture.receiver.path.join(admission::MARKER)).unwrap(),
+        marker
+    );
+    let configured = git_command(
+        &fixture.receiver.path,
+        &["config", "--get", "core.hooksPath"],
+    )
+    .output()
+    .unwrap();
+    assert!(
+        !configured.status.success(),
+        "legacy absolute hooksPath remains"
+    );
+    assert!(hooks.join("reference-transaction").is_file());
+}
+
+#[test]
+fn inherited_hooks_override_preserves_receiver_before_admission_closes() {
+    let fixture = Fixture::new();
+    let included = fixture._temporary.path().join("included-git-config");
+    fs::write(&included, "[core]\n\thooksPath = /dev/null\n").unwrap();
+    git_in(
+        &fixture.receiver.path,
+        &["config", "include.path", included.to_str().unwrap()],
+    );
+    assert!(admission::ready(&fixture.receiver.path, 0).is_err());
+    assert!(!fixture.receiver.path.join(admission::MARKER).exists());
+    assert!(fixture.receiver.path.is_dir());
 }

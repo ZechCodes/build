@@ -8,7 +8,7 @@ use std::path::Path;
 
 pub(crate) const ADMISSION_DRAIN_SECS: u64 = 60 * 60;
 pub(crate) const MARKER: &str = ".build-review-closed.json";
-const HOOKS: &str = ".build-review-hooks";
+const HOOKS: &str = "hooks";
 const REFERENCE_HOOK: &[u8] = b"#!/bin/sh\nif [ \"$1\" = prepared ] && [ -f \"${0%/*}/../.build-review-closed.json\" ]; then\n echo 'Build receiver is closed for reclamation' >&2\n exit 1\nfi\nexit 0\n";
 const RECEIVE_HOOK: &[u8] = b"#!/bin/sh\nif [ -f \"${0%/*}/../.build-review-closed.json\" ]; then\n echo 'Build receiver is closed for reclamation' >&2\n exit 1\nfi\nexit 0\n";
 
@@ -111,33 +111,67 @@ fn install_hooks(receiver: &Path) -> Result<(), String> {
     {
         return Err("receiver admission hook directory changed".into());
     }
-    let hooks_path = hooks.to_str().ok_or("receiver hook path is not UTF-8")?;
     install_hook(&hooks.join("reference-transaction"), REFERENCE_HOOK)?;
     install_hook(&hooks.join("pre-receive"), RECEIVE_HOOK)?;
     super::with_local_config_locked_with_recovery_wait(
         receiver,
         RecoveryWait::TryOnly,
         |current, staged| {
-            let configured = current.get_string("core.hooksPath").ok();
-            if configured.as_deref() == Some(hooks_path) {
-                return Ok(());
+            if let Some(configured) = hooks_path(current)? {
+                if Path::new(&configured) == receiver.join(".build-review-hooks") {
+                    verify_hooks(&receiver.join(".build-review-hooks"))?;
+                } else if configured != "/dev/null" {
+                    return Err("preserved receiver with foreign Git hooks".into());
+                }
             }
-            if configured
-                .as_deref()
-                .is_some_and(|path| path != "/dev/null")
-            {
-                return Err("preserved receiver with foreign Git hooks".into());
+            match staged.remove_multivar("core.hooksPath", ".*") {
+                Ok(()) => Ok(()),
+                Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(()),
+                Err(error) => Err(error.to_string()),
             }
-            staged
-                .set_str("core.hooksPath", hooks_path)
-                .map_err(|error| error.to_string())
         },
-    )
+    )?;
+    // Removing the local setting can expose a global or included override.
+    verify_default_hooks(receiver)
+}
+
+fn hooks_path(config: &git2::Config) -> Result<Option<String>, String> {
+    match config.get_string("core.hooksPath") {
+        Ok(path) => Ok(Some(path)),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn verify_default_hooks(receiver: &Path) -> Result<(), String> {
+    let repository = git2::Repository::open_bare(receiver).map_err(|error| error.to_string())?;
+    if hooks_path(&repository.config().map_err(|error| error.to_string())?)?.is_some() {
+        return Err("preserved receiver with overridden admission hooks".into());
+    }
+    verify_hooks(&receiver.join(HOOKS))
+}
+
+/// Read-only recheck after quarantine, before taking the final inventory.
+pub(crate) fn verify_closed(receiver: &Path) -> Result<(), String> {
+    read(receiver)?.ok_or("preserved receiver without admission close marker")?;
+    verify_default_hooks(receiver)?;
+    check_closed_state(receiver)
+}
+
+fn verify_hooks(hooks: &Path) -> Result<(), String> {
+    if !fs::symlink_metadata(hooks)
+        .map_err(|error| error.to_string())?
+        .is_dir()
+    {
+        return Err("receiver admission hook directory changed".into());
+    }
+    verify_hook(&hooks.join("reference-transaction"), REFERENCE_HOOK)?;
+    verify_hook(&hooks.join("pre-receive"), RECEIVE_HOOK)
 }
 
 fn install_hook(path: &Path, bytes: &[u8]) -> Result<(), String> {
     #[cfg(unix)]
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -152,16 +186,24 @@ fn install_hook(path: &Path, bytes: &[u8]) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-            if !metadata.is_file() || fs::read(path).map_err(|error| error.to_string())? != bytes {
-                return Err("preserved receiver with foreign admission hook".into());
-            }
-            #[cfg(unix)]
-            if metadata.permissions().mode() & 0o111 == 0 {
-                return Err("receiver admission hook is not executable".into());
-            }
+            verify_hook(path, bytes)?;
         }
         Err(error) => return Err(error.to_string()),
+    }
+    Ok(())
+}
+
+fn verify_hook(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || fs::read(path).map_err(|error| error.to_string())? != bytes {
+        return Err("preserved receiver with foreign admission hook".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err("receiver admission hook is not executable".into());
+        }
     }
     Ok(())
 }

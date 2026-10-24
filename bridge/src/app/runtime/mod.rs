@@ -5,6 +5,7 @@ pub(in crate::app) mod lifecycle;
 pub(in crate::app) mod off_the_workers;
 pub(in crate::app) mod provider_recovery;
 pub(in crate::app) mod pumps;
+mod receiver_maintenance;
 pub(in crate::app) mod recovery;
 pub(in crate::app) mod resume;
 pub(in crate::app) mod review_sync;

@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 mod actions;
 pub(crate) mod lifecycle;
+mod maintenance;
 mod pull_requests;
 pub(super) use pull_requests::clear_tracking_expectations;
 pub(crate) use pull_requests::TrackingExpectation;

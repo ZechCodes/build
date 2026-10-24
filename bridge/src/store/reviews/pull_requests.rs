@@ -8,6 +8,7 @@ use crate::store::{Store, StoreError};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 mod merge;
+pub(super) use merge::publication_pending;
 mod opening;
 mod sync;
 mod tracking;

@@ -8,6 +8,45 @@ const PERSISTENCE_CHILD: &str =
     "reviews::git_actions::pr::fence_owner::tests::persistence_failure_child";
 
 #[test]
+#[cfg(target_os = "linux")]
+fn registry_lease_ends_when_parent_releases_its_guard_with_an_inherited_child() {
+    let (_home, repository) = init_repo();
+    let repository = git2::Repository::open(repository).unwrap();
+    let common = files::directory(repository.commondir()).unwrap();
+    let registry = registry(&common, true).unwrap().unwrap();
+    let held = registry_lease(&registry).unwrap();
+    crate::git_fixture::inherited_fd::assert_cloexec(&held);
+    let probe = File::open(files::at(&registry, "")).unwrap();
+    let child = crate::git_fixture::inherited_fd::InheritedFdChild::hold();
+    drop(held);
+    let released = probe.try_lock();
+    drop(child);
+    assert!(
+        released.is_ok(),
+        "completed registry lease survived in an inherited descriptor: {released:?}"
+    );
+    probe.unlock().unwrap();
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn unsealed_fence_directory_lease_ends_with_parent_guard_despite_an_inherited_child() {
+    let (_home, repository) = init_repo();
+    let fence = OwnedFence::create(&repository).unwrap();
+    crate::git_fixture::inherited_fd::assert_cloexec(&fence.directory);
+    let probe = File::open(fence.path()).unwrap();
+    let child = crate::git_fixture::inherited_fd::InheritedFdChild::hold();
+    drop(fence);
+    let released = probe.try_lock();
+    drop(child);
+    assert!(
+        released.is_ok(),
+        "completed fence directory lease survived in an inherited descriptor: {released:?}"
+    );
+    probe.unlock().unwrap();
+}
+
+#[test]
 fn persistence_failure_child() {
     let Ok(repository) = std::env::var("FENCE_TEST_PERSISTENCE_FAILURE_REPOSITORY") else {
         return;

@@ -282,7 +282,7 @@ pub(crate) fn pin_prefix(
 
 /// Workspace directory IDs contain `:`; ref components cannot. Escape every
 /// non-alphanumeric byte, including `%`, so distinct IDs stay distinct.
-fn encode_pin_component(component: &str) -> String {
+pub(crate) fn encode_pin_component(component: &str) -> String {
     let mut encoded = String::with_capacity(component.len());
     for byte in component.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') {

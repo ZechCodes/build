@@ -377,7 +377,18 @@ async fn sql_operation_reads_preserve_explicit_agent_binding_checks() {
 async fn retained_thread_reads_publish_the_same_boundary_on_catch_up_and_activity() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let record = stored_read_run(&mut state, "run-retention", 4);
+    let mut record = stored_read_run(&mut state, "run-retention", 4);
+    // These are delivered messages; pending legacy inputs intentionally protect history.
+    record.agents[0].thread.set_legacy_delivery_status(
+        1,
+        6,
+        crate::thread::MessageDeliveryStatus::Seen,
+    );
+    state.store.as_ref().unwrap().save_run(&record).unwrap();
+    state.runs.insert(
+        record.id.clone(),
+        crate::orchestrator::ActiveRun::reattach(&record, ".build/plan.md".into()),
+    );
     let store = state.store.as_ref().unwrap();
     store
         .prune_conversation_batch(

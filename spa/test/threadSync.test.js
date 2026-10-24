@@ -152,7 +152,7 @@ describe("a conversation that changed under the cursor while the device was away
     const window = await saved();
     expect(window.items.map((item) => item.data.sequence)).toEqual([4, 5, 6]);
     expect(statusOf(window, 5)).toBe("sent");
-    expect(window.deliveredSequence).toBe(6);
+    expect(window.deliveredSequence).toBe(7);
   });
 
   // The forward read moves the cursor past the evidence that a repair is
@@ -240,5 +240,67 @@ describe("an item arriving older than the copy held", () => {
     const older = { type: "message", data: { sequence: 3, updated_sequence: 4, delivery_status: "sent" } };
     expect(mergeThreadItems([newer], [older])).toEqual([newer]);
     expect(mergeThreadItems([older], [newer])).toEqual([newer]);
+  });
+});
+
+describe("forward coverage and repair cursors", () => {
+  const saved = async () => (await cache.readCached(address)).value;
+  const sync = (call) => syncThreadWindow({ ...address, conversationId: address.sub, call });
+
+  it("records an in-place-only forward watermark once and does not repair unchanged reads again", async () => {
+    await cache.writeCached(address, windowAt(message(1, "old")));
+    const updated = { ...message(1, "edited"), data: { ...message(1, "edited").data, updated_sequence: 4 } };
+    const call = vi.fn(async (_method, params) => ({
+      items: params.after_sequence === 0 ? [updated] : [],
+      has_more: false, thread_last_sequence: 4,
+    }));
+    await sync(call);
+    expect((await saved()).deliveredSequence).toBe(4);
+    expect((await saved()).items).toEqual([updated]);
+    expect((await saved()).repairThrough).toBeUndefined();
+    await sync(call);
+    await sync(call);
+    expect(call.mock.calls.map(([, params]) => params.after_sequence)).toEqual([1, 0, 4, 4]);
+  });
+
+  it("retains debt after a failed repair while remembering the covered forward watermark", async () => {
+    await cache.writeCached(address, windowAt(message(1, "old")));
+    const call = vi.fn(async (_method, params) => {
+      if (params.after_sequence === 0) throw new Error("repair unavailable");
+      return { items: [], has_more: false, thread_last_sequence: 4 };
+    });
+    await sync(call);
+    expect(await saved()).toMatchObject({ deliveredSequence: 4, repairThrough: 4 });
+    await sync(call);
+    expect(call.mock.calls.map(([, params]) => params.after_sequence)).toEqual([1, 0, 4, 0]);
+  });
+
+  it("never borrows the repair response watermark to cover a message not read forward", async () => {
+    await cache.writeCached(address, windowAt(message(1, "old")));
+    const call = vi.fn(async (_method, params) => params.newest
+      ? { items: [], has_more: false, thread_last_sequence: 3 }
+      : { items: [message(1, "old"), message(4, "not forward")], has_more: false, thread_last_sequence: 4 });
+    await sync(call);
+    expect((await saved()).deliveredSequence).toBe(3);
+    expect((await saved()).items.map((item) => item.data.sequence)).toEqual([1]);
+  });
+
+  it("preserves the generation revision when the first inline append omits it", async () => {
+    const { threadWindow } = await import("../src/core/threadSync.js");
+    const held = { ...windowAt(), thread_id: "thread-1", thread_generation_revision: 7, retired_thread_ids: ["retired"] };
+    const next = threadWindow(held, { thread_id: "thread-1", items: [message(1, "first")] });
+    expect(next.thread_generation_revision).toBe(7);
+    expect(next.retired_thread_ids).toEqual(["retired"]);
+    expect(next.items).toEqual([message(1, "first")]);
+  });
+
+  it("rejects a stale generation page arriving after a reset", async () => {
+    await cache.writeCached(address, { ...windowAt(message(1, "old")), thread_id: "old", thread_generation_revision: 1 });
+    const call = vi.fn(async () => {
+      await cache.writeCached(address, { ...windowAt(), thread_id: "new", thread_generation_revision: 2 });
+      return { thread_id: "old", items: [message(2, "stale")], has_more: false, thread_last_sequence: 3 };
+    });
+    await sync(call);
+    expect(await saved()).toMatchObject({ thread_id: "new", thread_generation_revision: 2, deliveredSequence: 0, items: [] });
   });
 });

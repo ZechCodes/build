@@ -1013,6 +1013,9 @@ and its controls are
 
 Delivered operation receipts retain their request hash, owner/agent identity and
 message sequence span, but discard their delivery prompt in the status update.
+Ordinary receipts clear `delivery` to NULL; historical Task-to-implementation
+forwarding retains a small target intent with no payload when its execution
+owner differs from the original receipt address.
 Queued, claimed and unresolved uncertain receipts retain their payload for
 recovery. A delivered receipt later marked uncertain remains payload-free and
 cannot replay. Sent, seen, failure and completion projection readers use receipt metadata and stored

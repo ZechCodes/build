@@ -128,7 +128,7 @@ fn maintenance_reclaims_offline_database_copy() {
     assert_eq!(items_before, items_after);
     let remaining: i64 = connection
         .query_row(
-            "SELECT count(*) FROM operations WHERE status = 'delivered' AND delivery IS NOT NULL",
+            "SELECT count(*) FROM operations WHERE status = 'delivered' AND delivery IS NOT NULL AND json_extract(delivery, '$.payload') IS NOT NULL",
             [],
             |r| r.get(0),
         )

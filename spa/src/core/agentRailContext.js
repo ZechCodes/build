@@ -12,6 +12,7 @@ import { mergeActivityDigests } from "./activityDigest.js";
 import { deviceKey } from "./deviceKey.js";
 import { differentThreadGeneration, threadActivityParam, threadGenerationParam } from "./threadSync.js";
 import { mergeThreadItems, threadPageFloor } from "./thread.js";
+import { trimThreadHistory } from "./threadRetention.js";
 
 /**
  * Widen the conversation's record with the page above it.
@@ -33,15 +34,15 @@ export function widenCachedThread(address, page, beforeSequence) {
   return mergeCachedAtomically(address, (held) => {
     if (differentThreadGeneration(held, page)) return null;
     const items = held?.items || [];
-    if (!items.length || threadPageFloor(items, held.activityDigests) !== beforeSequence) return null;
-    return {
+    if (!items.length || threadPageFloor(items, held.activityDigests) !== beforeSequence) return trimThreadHistory(held, page);
+    return trimThreadHistory({
       ...held,
       items: mergeThreadItems(items, page.items || []),
       // What the page says about the far end replaces what the last one said:
       // it is the answer about the floor this window now has.
       olderItemsRemain: page.has_more === true,
       activityDigests: mergeActivityDigests(held.activityDigests || [], page),
-    };
+    }, page);
   });
 }
 

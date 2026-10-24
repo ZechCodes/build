@@ -325,6 +325,11 @@ pub(crate) fn announce_isolation_downgrade(reason: &str) -> String {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    #[error("parse retention config {}: {reason}", path.display())]
+    Retention {
+        path: std::path::PathBuf,
+        reason: String,
+    },
     #[error("parse compaction config {}: {reason}", path.display())]
     Compaction {
         path: std::path::PathBuf,
@@ -402,6 +407,13 @@ impl AppState {
             self.compaction_policies =
                 CompactionPolicies::from_config(&config).map_err(|reason| {
                     ConfigError::Compaction {
+                        path: path.clone(),
+                        reason,
+                    }
+                })?;
+            self.retention =
+                crate::retention::RetentionConfig::from_config(&config).map_err(|reason| {
+                    ConfigError::Retention {
                         path: path.clone(),
                         reason,
                     }

@@ -35,6 +35,7 @@
 // read it followed, so a read never writes over a record a push wrote after it
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
+import { threadHistoryStart, trimThreadHistory } from "./threadRetention.js";
 import { projectTerminalRpc } from "./projectTerminalRpc.js";
 import { projectTerminalScopes, writeProjectTerminalRoster } from "./projectTerminalCache.js";
 import { directoryCacheId } from "./directoryScope.js";
@@ -1752,7 +1753,8 @@ const tipKey = (tip) => tip.conversation_id || tip.agent_id || "";
 
 /** Whether a tip says anything the record does not already hold. A
  *  conversation this cache has never held is always news. */
-const tipIsNews = (tip, held) => !held || Number(tip.last_sequence || 0) > Number(held.deliveredSequence || 0);
+const tipIsNews = (tip, held) => !held || Number(tip.last_sequence || 0) > Number(held.deliveredSequence || 0)
+  || threadHistoryStart(tip) > Number(held.historyStartSequence || 0);
 
 /** Whether a tip's items carry on from where the record stands. `since_sequence`
  *  is the sequence they run from, exclusive — the cursor the subscription had
@@ -1792,19 +1794,35 @@ async function applyThreadTip(context, entityId, tip) {
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub);
   const held = (await readCached(address))?.value;
   if (!context.active() || !tipIsNews(tip, held)) return;
+  if (await applyThreadHistoryTrim(context, address, tip, held)) return;
   // A burst past the push cap arrives as a tip with no items, a conversation
   // nothing is held for has nothing to append to, and a tip that starts past
   // the cursor would append over a gap. All three are one cursored page, which
   // is the read this layer would have made anyway.
-  const items = held && tipRunsOnFromRecord(tip, held) ? (tip.items || []) : [];
+  const items = contiguousTipItems(tip, held);
   if (!items.length) {
     await syncThread(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: tip.thread_id }, "background");
     return;
   }
-  await mergeCachedAtomically(address, (current) => context.active() ? threadWindow(current, {
-    items, thread_total: tip.thread_total, ...(tip.thread_id ? { thread_id: tip.thread_id } : {}),
-  }) : null);
+  await mergeCachedAtomically(address, (current) => context.active() ? threadWindow(current, threadTipPage(tip, items)) : null);
 }
+
+// A trim can advance independently of the item counter. Publish it even when
+// there is no new row to fetch; the cache announcement clears open timelines.
+async function applyThreadHistoryTrim(context, address, tip, held) {
+  if (!threadHistoryStart(tip)) return false;
+  await mergeCachedAtomically(address, (current) => context.active() ? trimThreadHistory(current, tip) : null);
+  return Number(tip.last_sequence || 0) <= Number(held?.deliveredSequence || 0);
+}
+
+const contiguousTipItems = (tip, held) =>
+  held && tipRunsOnFromRecord(tip, held) ? (tip.items || []) : [];
+
+const threadTipPage = (tip, items) => ({
+  items, thread_total: tip.thread_total,
+  ...(tip.thread_id ? { thread_id: tip.thread_id } : {}),
+  ...(threadHistoryStart(tip) ? { history_start_sequence: threadHistoryStart(tip) } : {}),
+});
 
 /** `git`: the shapes ride the push, so nothing is asked for them. Two things
  *  never ride one — the patch behind a commit, and a working-tree diff too big

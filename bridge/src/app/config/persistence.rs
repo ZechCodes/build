@@ -44,6 +44,7 @@ impl AppState {
             "agent_modes": self.agent_modes,
             "isolation": isolation,
             "router_model": self.router_choice,
+            "retention": self.retention,
             "projects": self.projects.iter().chain(prospective_project).map(|p| {
                 let mut entry = json!({
                     "id": p.id,

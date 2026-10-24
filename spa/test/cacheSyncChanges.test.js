@@ -731,6 +731,22 @@ describe("applying one item", () => {
     expect(record.value.items.map((one) => one.id)).toEqual(["m-1", "m-8"]);
   });
 
+  it("trims cached history from a tip even when its counter did not advance", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" };
+    await cache.writeCached(address, {
+      items: [{ data: { sequence: 1 } }, { data: { sequence: 7 } }],
+      deliveredSequence: 7, olderItemsRemain: true,
+    });
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+    bridge.call.mockClear();
+    await deliver([{ entity_id: "run-1", thread: [{ agent_id: "ag-1", last_sequence: 7, history_start_sequence: 7 }] }]);
+    const held = (await read("run-1", "thread", "ag-1")).value;
+    expect(held.items.map((item) => item.data.sequence)).toEqual([7]);
+    expect(held.historyStartSequence).toBe(7);
+    expect(held.olderItemsRemain).toBe(false);
+    expect(calls("thread.page")).toHaveLength(0);
+  });
+
   it("asks for nothing on a tip the record has already heard", async () => {
     await cache.writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },

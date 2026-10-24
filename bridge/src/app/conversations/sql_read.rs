@@ -177,12 +177,20 @@ impl ThreadReadContext {
         if let Some(transaction) = transaction {
             restore_read_counters(transaction, thread.to_mut(), method)?;
         }
-        let value = match method {
+        let mut value = match method {
             "thread.page" => page(transaction, &thread, params),
             "thread.activity" => activity(transaction, &thread, params),
             "thread.operation" => self.operation(transaction, &owner, params),
             _ => Err(format!("unknown method: {method}")),
         }?;
+        if matches!(method, "thread.page" | "thread.activity") {
+            if let Some(transaction) = transaction {
+                let boundary = transaction
+                    .thread_retention_boundary(&thread.agent.id)
+                    .map_err(conversation_error)?;
+                attach_retention_boundary(&mut value, &thread.id, boundary.as_ref());
+            }
+        }
         Ok((value, fence))
     }
 
@@ -387,4 +395,15 @@ fn guard_binding_values(
         }
     }
     Ok(())
+}
+
+/// A floor belongs to a generation, so a reset cannot inherit the old trim.
+pub(super) fn attach_retention_boundary(
+    value: &mut Value,
+    thread_id: &str,
+    boundary: Option<&crate::store::RetentionBoundary>,
+) {
+    if let Some(boundary) = boundary.filter(|boundary| boundary.thread_id == thread_id) {
+        value["history_start_sequence"] = boundary.history_start_sequence.into();
+    }
 }

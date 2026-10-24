@@ -316,6 +316,7 @@ pub struct AppState {
     isolation: Isolation,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
+    retention: crate::retention::RetentionConfig,
     #[cfg(test)]
     config_persist_failure: Option<ConfigPersistStep>,
     agent: Agent,
@@ -692,6 +693,7 @@ impl AppState {
             agent_modes: AgentModes::from_legacy_default(DEFAULT_HARNESS),
             isolation: Isolation::default(),
             config_path: None,
+            retention: crate::retention::RetentionConfig::default(),
             #[cfg(test)]
             config_persist_failure: None,
             agent,

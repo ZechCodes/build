@@ -32,6 +32,7 @@ import {
   windowFromThreadPayload,
 } from "./thread.js";
 import { digestCovering, mergeActivityDigests } from "./activityDigest.js";
+import { trimThreadHistory } from "./threadRetention.js";
 
 const ALWAYS_ACTIVE = () => true;
 const threadSub = (request) => request.conversationId || request.agentId || "";
@@ -202,16 +203,17 @@ const recentHeldItems = (held) => (held?.items || [])
  *  debt paid where the page was read at or past it — or null where neither. */
 export function repairedThreadWindow(held, page) {
   if (!holdsAWindow(held) || differentThreadGeneration(held, page)) return null;
-  const newer = newerCopies(held.items, page?.items);
+  const trimmed = trimThreadHistory(held, page);
+  const newer = newerCopies(trimmed.items, page?.items);
   const paid = repaidBy(held, page);
-  if (!newer.length && !paid) return null;
-  const { repairThrough, ...window } = held;
-  return {
+  if (!newer.length && !paid) return trimmed === held ? null : trimmed;
+  const { repairThrough, ...window } = trimmed;
+  return trimThreadHistory({
     ...window,
     ...(paid || !repairThrough ? {} : { repairThrough }),
-    items: newer.length ? mergeThreadItems(held.items, newer) : held.items,
-    ...repairedDigests(held, page),
-  };
+    items: newer.length ? mergeThreadItems(trimmed.items, newer) : trimmed.items,
+    ...repairedDigests(trimmed, page),
+  }, page);
 }
 
 const repairedDigests = (held, page) => page.activity_digests?.length
@@ -254,10 +256,11 @@ const holdsAWindow = (held) => Number(held?.deliveredSequence || 0) > 0;
 export function threadWindow(held, page, { newest = false, lean = false } = {}) {
   if (differentThreadGeneration(held, page)) return null;
   const arrived = windowFromThreadPayload(page);
-  if (!held) return arrived;
-  if (!arrived) return null; // nothing new: the record stands
-  if (newest && pageSkipsWindow(page, lean)) return newestThreadWindow(held, arrived, page);
-  return appendedThreadWindow(held, arrived, page);
+  if (!held) return trimThreadHistory(arrived, page);
+  if (!arrived) return trimThreadHistory(held, page);
+  const next = newest && pageSkipsWindow(page, lean)
+    ? newestThreadWindow(held, arrived, page) : appendedThreadWindow(held, arrived, page);
+  return trimThreadHistory({ ...next, ...(held.historyStartSequence ? { historyStartSequence: held.historyStartSequence } : {}) }, page);
 }
 
 /** A newest message-budget cut starts at a message. A leading folded run

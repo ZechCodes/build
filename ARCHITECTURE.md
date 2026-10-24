@@ -3645,6 +3645,12 @@ gate attachment display.
   changed in place. The record then owes a repair (`repairThrough`, written
   with the cursor) until the newest `REPAIRED_THREAD_ITEMS` (50) held items
   have been read again at or past that counter.
+  Only the forward page's snapshot counter advances delivery coverage; a
+  later repair or exact-copy read cannot advance it over unseen creations.
+  Empty in-place-only forward pages commit that coverage together with repair
+  debt. Capped sparse repairs fetch omitted held representatives through exact
+  one-item, unprojected pages (at most 50); failed or mismatched copies leave
+  debt for the next bounded attempt or recovery pass.
   Sync and load-older pages request `activity: "newest"` only when the device
   advertises `threads.leanActivity`. Cold sync and conversation-open reads
   then request 23 messages, measured to fill the phone conversation even at
@@ -3680,7 +3686,17 @@ gate attachment display.
   conversation's entity has priority, with an ordinary turn after four promoted
   jobs. Within an entity, its mounted conversation's carried tips land first. Roster/review reads run behind bodies with one pending refresh per key;
   a key never has two enrichment appliers running together.
-  Catch-up coverage and repair rules still belong to `threadSync.js`.
+  `threadCatchups.js` separately coordinates pushed catch-up/repair reads:
+  one active round and one coalesced trailing high-water per conversation and
+  generation. It rechecks canonical coverage before dispatch, skips already
+  covered goals, and allows two attempts per goal and cache lifetime. Repeated
+  unchanged tips do not renew that budget; new evidence, eviction, reset or a
+  new session can. Ordinary recovery passes can retry retained repair debt.
+  Catch-up work does not acquire a roster/review enrichment worker. A mounted
+  conversation's page and activity reads bypass background wire admission even
+  between passes; mounting it or changing routes wakes queued readers. Stop
+  and generation replacement settle abandoned round waiters immediately.
+  `threadCatchupsInFlight()` reports these active/trailing rounds separately.
   Finished-state eviction invalidates the entity data lifetime without removing
   its feed row. Deferred reads retain that fence through cache commits; a
   conversation reset also cancels its queued old-generation catch-up. Final

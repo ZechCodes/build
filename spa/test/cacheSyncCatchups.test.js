@@ -103,3 +103,68 @@ it("coalesces disjoint cap/gap requests while a read stalls and skips covered tr
   await push([tip(199, 200)]);
   expect(calls("thread.page")).toHaveLength(1);
 });
+
+it("carries a queued legacy goal through the first page introducing a thread identity", async () => {
+  await cache.deleteCached([address("run-0", "thread", "c0")]);
+  const held = gate(), previous = context.rpc.getMockImplementation();
+  context.rpc.mockClear();
+  context.rpc.mockImplementation((method, params) => method === "thread.page"
+    ? (calls("thread.page").length === 1 ? held.promise : page(10)) : previous(method, params));
+  const legacyTip = (last) => { const event = tip(0, last); delete event.thread[0].thread_id; return event; };
+  const first = push([legacyTip(2)]);
+  await called(context.rpc, () => calls("thread.page").length === 1);
+  const second = push([legacyTip(10)]);
+  await vi.waitFor(() => expect(sync.threadCatchupsInFlight("dev-1").pending).toBe(1));
+  held.release(page(2));
+  await Promise.all([first, second]);
+  expect(calls("thread.page")).toHaveLength(2);
+  expect((await cache.readCached(address("run-0", "thread", "c0"))).value.deliveredSequence).toBe(10);
+});
+
+it("does not adopt a reset generation for a pending legacy goal from another cache writer", async () => {
+  const target = address("run-0", "thread", "c0");
+  await cache.deleteCached([target]);
+  const held = gate(), previous = context.rpc.getMockImplementation();
+  context.rpc.mockClear();
+  context.rpc.mockImplementation((method, params) => method === "thread.page" ? held.promise : previous(method, params));
+  const legacy = (last) => { const event = tip(0, last); delete event.thread[0].thread_id; return event; };
+  const first = push([legacy(2)]);
+  await called(context.rpc, () => calls("thread.page").length === 1);
+  const second = push([legacy(10)]);
+  await vi.waitFor(() => expect(sync.threadCatchupsInFlight("dev-1").pending).toBe(1));
+  await cache.writeCached(target, { thread_id: "replacement", thread_generation_revision: 2,
+    retired_thread_ids: ["thread:c0"], items: [], deliveredSequence: 0 });
+  held.release(page(2)); await Promise.all([first, second]);
+  expect(calls("thread.page")).toHaveLength(1);
+  expect((await cache.readCached(target)).value).toMatchObject({ thread_id: "replacement", deliveredSequence: 0, items: [] });
+});
+
+it("bounds repeated failed goals and renews their budget after same-generation eviction", async () => {
+  const previous = context.rpc.getMockImplementation();
+  context.rpc.mockClear();
+  context.rpc.mockImplementation((method, params) => {
+    if (method === "thread.page") throw new Error("offline");
+    return previous(method, params);
+  });
+  await push([tip(5, 10)]);
+  expect(calls("thread.page")).toHaveLength(2);
+  await Promise.all(Array.from({ length: 30 }, () => push([tip(5, 10)])));
+  expect(calls("thread.page")).toHaveLength(2);
+  const { evictWorkspaceData } = await import("../src/core/cacheLifetime.js");
+  await evictWorkspaceData("dev-1", "run-0");
+  context.rpc.mockImplementation((method, params) => method === "thread.page" ? page(10) : previous(method, params));
+  await push([tip(5, 10)]);
+  expect(calls("thread.page")).toHaveLength(3);
+  expect((await cache.readCached(address("run-0", "thread", "c0"))).value.deliveredSequence).toBe(10);
+});
+
+it("appends a legacy carried tip to its known generation without losing reset metadata", async () => {
+  const target = address("run-0", "thread", "c0");
+  await cache.writeCached(target, { thread_id: "thread:c0", thread_generation_revision: 3,
+    retired_thread_ids: ["old"], deliveredSequence: 2, items: page(2).items });
+  const event = tip(2, 3); delete event.thread[0].thread_id;
+  event.thread[0].items = [{ type: "message", data: { id: "m3", sequence: 3 } }];
+  await push([event]);
+  expect((await cache.readCached(target)).value).toMatchObject({ deliveredSequence: 3,
+    thread_id: "thread:c0", thread_generation_revision: 3, retired_thread_ids: ["old"] });
+});

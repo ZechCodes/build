@@ -1546,7 +1546,7 @@ function queuesFor(context) {
   const catchups = createThreadCatchups({
     needed: async (request) => {
       const held = (await readCached(request.address))?.value;
-      return threadGenerationKey(held) === request.generation
+      return catchupGenerationMatches(request, held)
         && (Number(held?.deliveredSequence || 0) < request.sequence || Boolean(held?.repairThrough));
     },
     read: (request, active) => syncThread({ ...request.context, active }, request.entityId, request.agent, "background"),
@@ -1569,6 +1569,13 @@ export const threadCatchupsInFlight = (deviceId) =>
   pushQueues.get(deviceId)?.catchups.snapshot() || { running: 0, pending: 0 };
 
 const threadGenerationKey = (window) => JSON.stringify([window?.thread_id || "", Number(window?.thread_generation_revision || 0)]);
+
+/** Legacy tips may learn their first identity from the read itself. A reset
+ * leaves retired identities, so that adoption cannot authorize a new lifetime. */
+function catchupGenerationMatches(request, held) {
+  return threadGenerationKey(held) === request.generation
+    || !request.agent.thread_id && !held?.retired_thread_ids?.length;
+}
 
 function deferPush(context, entityId, key, run, replaceable = true) {
   if (!context.active()) return;
@@ -1900,11 +1907,14 @@ async function applyThreadTip(context, entityId, tip) {
   if (context.active()) await applySessionTip(context, entityId, tip);
 }
 
+const tipGenerationMismatch = (tip, held) =>
+  Boolean(tip.thread_id && held?.thread_id && tip.thread_id !== held.thread_id);
+
 async function writeThreadTipBody(context, entityId, tip, sub) {
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub);
   const held = (await readCached(address))?.value;
   if (!context.active() || !tipIsNews(tip, held)) return;
-  if (tip.thread_id && held?.thread_id && tip.thread_id !== held.thread_id) return;
+  if (tipGenerationMismatch(tip, held)) return;
   // A burst past the push cap arrives as a tip with no items, a conversation
   // nothing is held for has nothing to append to, and a tip that starts past
   // the cursor would append over a gap. All three are one cursored page, which
@@ -1914,11 +1924,14 @@ async function writeThreadTipBody(context, entityId, tip, sub) {
     await deferThreadCatchup(context, entityId, tip, sub, held);
     return;
   }
-  await mergeCachedAtomically(address, (current) => context.active() ? threadWindow(current, {
-    items, thread_total: tip.thread_total, thread_generation_revision: tip.thread_generation_revision,
-    ...(tip.thread_id ? { thread_id: tip.thread_id } : {}),
-  }) : null);
+  const page = carriedThreadPage(tip, held, items);
+  await mergeCachedAtomically(address, (current) => context.active() ? threadWindow(current, page) : null);
 }
+
+const carriedThreadPage = (tip, held, items) => ({
+  items, thread_total: tip.thread_total, thread_generation_revision: tip.thread_generation_revision,
+  thread_id: tip.thread_id || held?.thread_id,
+});
 
 async function deferThreadCatchup(context, entityId, tip, sub, held) {
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub), fence = pushFence();
@@ -2288,13 +2301,17 @@ function disposeProjectTerminalSubscriptions() {
   projectTerminalSubscriptions.clear();
 }
 
+function disposeThreadWatch() {
+  stopThreadWatch?.();
+  stopThreadWatch = null;
+}
+
 export function stopCacheSync() {
   if (stopDeviceWatch) stopDeviceWatch();
   stopDeviceWatch = null;
   if (stopLandingWatch) stopLandingWatch();
   stopLandingWatch = null;
-  stopThreadWatch?.();
-  stopThreadWatch = null;
+  disposeThreadWatch();
   for (const held of subscriptions.values()) {
     held.inbox.dispose();
     held.background.dispose();

@@ -172,7 +172,10 @@ At the selected window, from a checkout containing this command:
    Open dev and check projects, tasks, attachments, workspaces and resumed agents.
    Harness session IDs and the resume roster are preserved. Pi sessions under
    the state root are copied; external Claude/Codex session stores are never
-   copied or rewritten. Historical session IDs alone do not guarantee that a
+   copied or rewritten. Project conversations use their shared source repository
+   as the process CWD even though their scratch checkout address moves. Keeping
+   those source repositories in place preserves directory-scoped session lookup.
+   Historical session IDs alone do not guarantee that a
    provider can resume a session; confirm important in-flight agents manually.
 
 If publishing fails, the error reports the retained backup path. Keep that

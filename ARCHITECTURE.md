@@ -4240,6 +4240,12 @@ breakpoint, and marks empty headers draggable while excluding interactive
 targets and menus. An absent/inactive overlay (browser, standalone PWA or native
 fullscreen) keeps the ordinary shell layout. Linux/Windows retain native chrome.
 
+Development builds (`VITE_BUILD_CHANNEL=dev`) mark the connection button with a
+compact “D” corner bubble and the accessible description “Dev build”.
+`core/buildChannel.js` sets the tab title before boot and decorates the button
+when `connectionStatus.js` creates it; connection transitions retain that node.
+Production builds have neither the bubble nor its description.
+
 ### Theming
 
 Tokens are CSS custom properties in `spa/src/styles.css`: `:root` holds the light

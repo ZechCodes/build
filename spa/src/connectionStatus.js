@@ -18,6 +18,7 @@
 // between states is a CSS transition rather than a redraw (spa/src/styles.css).
 
 import { App } from "./app.js";
+import { mountBuildChannel } from "./core/buildChannel.js";
 import { esc } from "./core/text.js";
 import { deviceRecoverySnapshot, onDeviceRecoveryChanged } from "./connection.js";
 import { liveContexts, onDeviceStateChanged } from "./core/deviceContexts.js";
@@ -74,6 +75,7 @@ function partsOf(host) {
       ><span class="connection-radiate" aria-hidden="true"></span><span class="connection-centre" aria-hidden="true"></span></button>
       <div class="connection-menu" role="menu" aria-label="Devices" hidden></div>`;
     button = host.querySelector(".connection-status");
+    mountBuildChannel(button);
     wirePress(host, button);
   }
   return {

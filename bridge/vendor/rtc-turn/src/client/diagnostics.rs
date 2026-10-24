@@ -605,6 +605,97 @@ mod local_mock_tests {
         }
     }
     #[test]
+    fn diagnostics_eleventh_refused_bind_uses_indications_across_ice_ticks() {
+        let (mut client, relay) = client();
+        let refused_peer = SocketAddr::from(([192, 0, 2, 1], 50011));
+        let mut refused_bind_requests = 0;
+        for port in 50001..50012 {
+            let peer = SocketAddr::from(([192, 0, 2, 1], port));
+            client
+                .relay(relay)
+                .unwrap()
+                .create_permission(peer)
+                .unwrap();
+            let request = next_request(&mut client);
+            respond(&mut client, request, false);
+            client.relay(relay).unwrap().send_to(b"test", peer).unwrap();
+            let request = next_request(&mut client);
+            assert_eq!(request.typ.method, METHOD_CHANNEL_BIND);
+            if peer == refused_peer {
+                refused_bind_requests += 1;
+            }
+            respond(&mut client, request, peer == refused_peer);
+            // Drain the indication sent while this bind was pending.
+            while client.poll_write().is_some() {}
+        }
+        let start = Instant::now();
+        let mut indications = 0;
+        for tick in 1..=5 {
+            client
+                .handle_timeout(start + Duration::from_millis(tick * 200))
+                .unwrap();
+            client
+                .relay(relay)
+                .unwrap()
+                .send_to(b"test", refused_peer)
+                .unwrap();
+            while let Some(packet) = client.poll_write() {
+                let mut message = Message::new();
+                message.raw = packet.message.to_vec();
+                message.decode().unwrap();
+                if message.typ.method == METHOD_CHANNEL_BIND {
+                    refused_bind_requests += 1;
+                } else {
+                    assert_eq!(message.typ, MessageType::new(METHOD_SEND, CLASS_INDICATION));
+                    indications += 1;
+                }
+            }
+        }
+        assert_eq!(refused_bind_requests, 1);
+        assert_eq!(indications, 5);
+    }
+
+    #[test]
+    fn diagnostics_authentication_channel_bind_errors_can_retry() {
+        for code in [401, 438] {
+            let (mut client, relay) = client();
+            let peer = SocketAddr::from(([192, 0, 2, 1], 50001));
+            client
+                .relay(relay)
+                .unwrap()
+                .create_permission(peer)
+                .unwrap();
+            let request = next_request(&mut client);
+            respond(&mut client, request, false);
+            client.relay(relay).unwrap().send_to(b"test", peer).unwrap();
+            let request = next_request(&mut client);
+            let mut response = Message::new();
+            response
+                .build(&[
+                    Box::new(request.transaction_id),
+                    Box::new(MessageType::new(METHOD_CHANNEL_BIND, CLASS_ERROR_RESPONSE)),
+                    Box::new(ErrorCodeAttribute {
+                        code: ErrorCode(code),
+                        reason: vec![],
+                    }),
+                    Box::new(Nonce::new(ATTR_NONCE, "replacement-nonce".into())),
+                ])
+                .unwrap();
+            client.handle_stun_message(&response.raw).unwrap();
+            while client.poll_write().is_some() {}
+            client.relay(relay).unwrap().send_to(b"test", peer).unwrap();
+            let retry = next_request(&mut client);
+            assert_eq!(retry.typ.method, METHOD_CHANNEL_BIND);
+            if code == 438 {
+                assert_eq!(
+                    Nonce::get_from_as(&retry, ATTR_NONCE).unwrap().text,
+                    "replacement-nonce"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn diagnostics_local_mock_rejects_eleventh_channel_bind_without_secrets() {
         let (mut client, relay) = client();
         for port in 50001..50012 {

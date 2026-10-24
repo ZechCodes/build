@@ -1,4 +1,4 @@
-# Vendored crates: webrtc, rtc, rtc-ice and rtc-turn 0.20.4, patched (#166, #179, #298, #372, #374, #375, #376, #674, #794)
+# Vendored crates: webrtc, rtc, rtc-ice and rtc-turn 0.20.4, patched (#166, #179, #298, #372, #374, #375, #376, #674, #794, #803)
 
 The bridge builds `webrtc`, `rtc`, `rtc-ice` and `rtc-turn` from here instead of crates.io, through
 the `[patch.crates-io]` entries at the end of `bridge/Cargo.toml`:
@@ -7,7 +7,7 @@ the `[patch.crates-io]` entries at the end of `bridge/Cargo.toml`:
 | --- | --- | --- | --- |
 | `webrtc/` | [webrtc 0.20.4](https://crates.io/crates/webrtc/0.20.4) (github.com/webrtc-rs/webrtc) | `3daa8f2f6366331ae3275a6c02a855c6fb3faa1d16960498d7daaf61c96e76bd` | `webrtc-driver-drain.patch`, then `webrtc-negotiated-first-message-test.patch`, `webrtc-late-direct-tests.patch`, `webrtc-host-candidate-sweep.patch`, `webrtc-gso-batch-cap.patch` |
 | `rtc/` | [rtc 0.20.4](https://crates.io/crates/rtc/0.20.4) (github.com/webrtc-rs/rtc) | `c9005c36795ad076abd36db3ea9ae0275a60395944647d58c1f2bc3e118dddba` | `rtc-dtls-client-hello.patch`, `rtc-negotiated-first-message.patch`, `rtc-late-direct-stats.patch`, `rtc-host-candidate-sweep.patch` |
-| `rtc-turn/` | [rtc-turn 0.20.4](https://crates.io/crates/rtc-turn/0.20.4) | `ebf0b5fbb94085c86be7277c38ae8f1c21ec75ab47ba975be0984409732020dd` | `rtc-turn-diagnostics.patch` (#794) |
+| `rtc-turn/` | [rtc-turn 0.20.4](https://crates.io/crates/rtc-turn/0.20.4) | `ebf0b5fbb94085c86be7277c38ae8f1c21ec75ab47ba975be0984409732020dd` | `rtc-turn-diagnostics.patch` (#794), then `rtc-turn-refused-bind.patch` (#803) |
 | `rtc-ice/` | [rtc-ice 0.20.4](https://crates.io/crates/rtc-ice/0.20.4) (github.com/webrtc-rs/rtc) | `2c06eeabd250a7693e1e8b28222b78c4a81a7c6ca7fe3cb99bbdff2f6c0ff0ab` | `rtc-ice-late-direct-checks.patch`, then `rtc-ice-host-candidate-sweep.patch` |
 
 `webrtc` is the async driver. `rtc` is the sans-I/O peer connection it drives
@@ -629,8 +629,9 @@ tree after `webrtc-host-candidate-sweep.patch`. It touches
 
 `rtc-turn-diagnostics.patch` SHA-256: `a71b7e49314c8356bd863594f7b0113b80c43989c6131b915e9f0ba4031bf009`.
 
-`rtc-turn` 0.20.4 is vendored from the registry with only
-`rtc-turn-diagnostics.patch` applied. `rtc-turn` is patched in both manifests
+`rtc-turn` 0.20.4 is vendored from the registry with
+`rtc-turn-diagnostics.patch` applied, followed by the #803 refused-bind patch
+below. `rtc-turn` is patched in both manifests
 and is a workspace member for explicit diagnostic unit tests. It is deliberately
 **not a default member**: upstream client tests contact public STUN services.
 Never run its unfiltered tests for this task. Run only the local diagnostic
@@ -682,8 +683,8 @@ cannot starve later peers. Only timeout and close paths flush summaries; an
 incoming control event never synchronously drains packet summaries ahead of itself. Drop drains every retained folded control row and dirty-peer summary so
 final per-peer evidence survives teardown. Error and timeout rows take priority
 during capped periodic flushes. Diagnostic state never changes
-permissions, binding retries, allocation lifetime or wire traffic. The separate
-retry/fallback task owns those behavior changes.
+permissions, binding retries, allocation lifetime or wire traffic. The layered
+#803 patch below changes binding retry/fallback behavior independently.
 
 The plumbing is layered after the existing patches, in
 `rtc-turn-diagnostic-context.patch` (rtc SettingEngine) and
@@ -691,7 +692,7 @@ The plumbing is layered after the existing patches, in
 all earlier patches as above, copy pristine `rtc-turn-0.20.4` from the registry
 using `pristine rtc-turn $V/rtc-turn`, then apply:
 
-    for p in rtc-turn-diagnostics rtc-turn-diagnostic-context webrtc-turn-diagnostics; do
+    for p in rtc-turn-diagnostics rtc-turn-diagnostic-context webrtc-turn-diagnostics rtc-turn-refused-bind; do
       (cd $V && patch -p1 < "$OLDPWD/bridge/vendor/$p.patch")
     done
     diff -r -x target $V/rtc-turn bridge/vendor/rtc-turn
@@ -703,3 +704,35 @@ The new patch file lists are exact: `rtc-turn/src/client/{mod.rs,proto.rs,relay.
 `webrtc/src/peer_connection/{mod.rs,driver.rs,transports/turn_relayer.rs}`.
 Regenerate each diff against its tree immediately before these three patches,
 using the `a/<crate>/` and `b/<crate>/` paths described above.
+
+## Refused ChannelBind fallback (#803)
+
+`rtc-turn-refused-bind.patch` SHA-256: `4679974a22c7ef3a90dace6c6653b689537b47d05d762be05f1701ec6986037c`.
+
+After reconstructing the #794 trees with the loop above, apply the additional
+patch and compare the final tree:
+
+```sh
+(cd $V && patch -p1 < "$OLDPWD/bridge/vendor/rtc-turn-refused-bind.patch")
+diff -r -x target $V/rtc-turn bridge/vendor/rtc-turn
+```
+
+The reconstructed `rtc-turn` tree must match `bridge/vendor/rtc-turn` exactly.
+The additional patch paths are `rtc-turn/src/client/{relay.rs,diagnostics.rs}`.
+
+`rtc-turn-refused-bind.patch` keeps a channel binding in `Failed` after a
+400 Bad Request response. Subsequent packets use Send indications through the
+existing permission instead of recreating the binding and retrying a refused
+request on every ICE check. This fallback lasts for the allocation. Other error
+handling, including authentication and stale-nonce retries, is unchanged.
+
+The local sans-I/O mock regression grants ten bindings, refuses the eleventh,
+then advances five 200 ms ICE ticks through the client's timeout handler and
+sends another packet on each tick. It requires exactly one ChannelBind for the
+refused peer and five Send indications; a separate test preserves 401/438 retries and
+checks that the retry carries a replacement nonce after 438. Run them without
+public STUN servers using:
+
+```sh
+nice -n 10 cargo test --locked --manifest-path vendor/Cargo.toml -p rtc-turn --lib diagnostics
+```

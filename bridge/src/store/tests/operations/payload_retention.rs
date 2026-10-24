@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn delivering_a_legacy_receipt_preserves_its_payload_span_before_dropping_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let record = plan_record("task-1");
+    let mut receipt = queued_operation("legacy-span", 2);
+    receipt.message_start_sequence = 0;
+    receipt
+        .delivery
+        .as_mut()
+        .unwrap()
+        .payload
+        .as_mut()
+        .unwrap()
+        .start_sequence = 1;
+    store
+        .accept_thread_post("task-1", &record.agents, &receipt)
+        .unwrap();
+    assert!(store
+        .transition_operation(
+            "legacy-span",
+            OperationStatus::Queued,
+            OperationStatus::Delivered,
+            None
+        )
+        .unwrap());
+    let delivered = store.operation("legacy-span").unwrap().unwrap();
+    assert_eq!(delivered.message_start_sequence, 1);
+    assert_eq!(delivered.posted_sequence, 2);
+    assert!(delivered.delivery.is_none());
+}
+
+#[test]
 fn delivered_payload_is_null_and_retry_and_conflict_need_only_the_receipt() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
@@ -134,7 +166,7 @@ fn recovery_repairs_a_delivered_span_without_a_payload_and_keeps_other_messages(
         vec![
             Some(MessageDeliveryStatus::Uncertain),
             Some(MessageDeliveryStatus::Uncertain),
-            Some(MessageDeliveryStatus::Queued)
+            None
         ]
     );
 }

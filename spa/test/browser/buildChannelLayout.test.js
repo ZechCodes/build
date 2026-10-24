@@ -32,6 +32,22 @@ afterAll(async () => session?.close());
 const overlaps = (a, b) => Math.min(a.x + a.width, b.x + b.width) > Math.max(a.x, b.x)
   && Math.min(a.y + a.height, b.y + b.height) > Math.max(a.y, b.y);
 
+
+async function assertBubbleGeometry(page, width) {
+  const geometry = await page.evaluate(() => {
+    const box = (node) => node.getBoundingClientRect().toJSON();
+    const controls = [...document.querySelectorAll("button, input, textarea, .connection-centre")]
+      .filter((node) => node.checkVisibility() && !node.matches(".connection-status"))
+      .map((node) => ({ name: node.className, box: box(node) }));
+    return { ring: box(document.querySelector(".connection-status")),
+      bubble: box(document.querySelector(".connection-build-channel")), controls };
+  });
+  expect(overlaps(geometry.ring, geometry.bubble), "overlaps the ring corner").toBe(true);
+  expect(geometry.bubble.x + geometry.bubble.width).toBeLessThanOrEqual(width);
+  expect(geometry.bubble.y).toBeGreaterThanOrEqual(0);
+  for (const control of geometry.controls) expect(overlaps(geometry.bubble, control.box), control.name).toBe(false);
+}
+
 for (const width of [375, 1280]) {
   for (const theme of ["light", "dark"]) {
     it(`anchors the Dev bubble without moving controls at ${width}px in ${theme}`, async () => {
@@ -73,15 +89,7 @@ for (const width of [375, 1280]) {
               expect(await badge.isVisible(), state).toBe(true);
               expect(await badge.evaluate((node) => node === window.__badge)).toBe(true);
               expect(await page.locator(".connection-status").getAttribute("aria-description")).toBe("Dev build");
-              const ring = await page.locator(".connection-status").boundingBox();
-              const bubble = await badge.boundingBox();
-              expect(overlaps(ring, bubble), "overlaps the ring corner").toBe(true);
-              expect(bubble.x + bubble.width).toBeLessThanOrEqual(width);
-              expect(bubble.y).toBeGreaterThanOrEqual(0);
-              for (const control of await page.locator("button, input, textarea, .connection-centre").all()) {
-                if (!await control.isVisible() || await control.evaluate((node) => node.matches(".connection-status"))) continue;
-                expect(overlaps(bubble, await control.boundingBox()), await control.getAttribute("class")).toBe(false);
-              }
+              await assertBubbleGeometry(page, width);
             }
           }
         }

@@ -167,27 +167,45 @@ async fn attachment_cycle(
     store: &Store,
     config: RetentionConfig,
 ) -> Result<(), StoreError> {
-    let Some(state) = state.upgrade() else {
+    let Some(snapshot_state) = state.upgrade() else {
         return Ok(());
     };
-    let homes = off_the_workers(move || state.lock().unwrap().retention_attachment_homes()).await;
+    let homes =
+        off_the_workers(move || snapshot_state.lock().unwrap().retention_attachment_homes()).await;
     let sweeping = store.clone();
     let cutoff = SystemTime::now()
         .checked_sub(ATTACHMENT_GRACE)
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    let removed = off_the_workers(move || {
+    off_the_workers(move || {
         // Expiry is bounded and shares the configured history window. Pending
         // delivery reservations remain roots until their operation settles.
         sweeping.cleanup_conversation_attachment_uploads(
             config.window_days,
             &crate::store::now_rfc3339(),
             1000,
-        )?;
-        sweeping.sweep_unreferenced_attachments(&homes, cutoff)
+        )
     })
     .await?;
-    if removed > 0 {
-        eprintln!("attachment retention: removed {removed} unreferenced files");
+    let mut total_removed = 0;
+    loop {
+        if state.strong_count() == 0 {
+            break;
+        }
+        let sweeping = store.clone();
+        let batch_homes = homes.clone();
+        let removed =
+            off_the_workers(move || sweeping.sweep_unreferenced_attachments(&batch_homes, cutoff))
+                .await?;
+        if removed == 0 {
+            break;
+        }
+        total_removed += removed;
+        // Each storage call bounds its writer/admission guard. Yield between
+        // calls so a large orphan backlog does not monopolize maintenance.
+        tokio::task::yield_now().await;
+    }
+    if total_removed > 0 {
+        eprintln!("attachment retention: removed {total_removed} unreferenced files");
     }
     Ok(())
 }
@@ -278,5 +296,33 @@ mod tests {
         let periodic = old_file("periodic.png");
         wait_for_sweep(&periodic).await;
         drop(service);
+    }
+    #[tokio::test]
+    async fn startup_drains_more_than_one_bounded_sweep_before_the_next_interval() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::new(dir.path()).unwrap();
+        let home = store.attachments_dir();
+        std::fs::create_dir_all(&home).unwrap();
+        for n in 0..140 {
+            let file = std::fs::File::create(home.join(format!("orphan-{n}.png"))).unwrap();
+            file.set_times(
+                std::fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH),
+            )
+            .unwrap();
+        }
+        let mut app = fixture(dir.path());
+        app.store = Some(store);
+        app.retention.enabled = false;
+        let state = app.shared();
+        let _service = AppState::spawn_retention(state.clone(), Duration::from_secs(3600))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while std::fs::read_dir(&home).unwrap().next().is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("all startup orphans should drain without waiting one hour");
     }
 }

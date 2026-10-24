@@ -90,6 +90,19 @@ fn committed_local_merge_completes_without_browser_and_retains_locked_workspace(
 }
 
 #[test]
+fn successful_merge_retry_returns_saved_result_after_receiver_reclamation() {
+    let f = Fixture::new();
+    let mut job = job(&f);
+    let merged = merge(&f.store, &job, || {}).unwrap();
+    std::fs::remove_dir_all(&merged.bindings[0].receiving_repository).unwrap();
+    assert_eq!(merge(&f.store, &job, || {}).unwrap(), merged);
+    job.request.expected_version += 1;
+    assert!(merge(&f.store, &job, || {})
+        .unwrap_err()
+        .contains("conflict"));
+}
+
+#[test]
 fn admission_reconciles_terminal_push_and_rejects_stale_selected_snapshot() {
     let f = Fixture::new();
     let stale = job(&f);
@@ -166,6 +179,13 @@ fn merged_base_push_failure_retries_recorded_tip_without_merging_again() {
     );
     let source = git2::Repository::open(&f.source).unwrap();
     let tip = source.refname_to_id("refs/heads/main").unwrap();
+    let receiver = merged.bindings[0].receiving_repository.clone();
+    crate::reviews::maintenance::turn_for_test(f.store.clone(), f.request.receiver_root.clone())
+        .unwrap();
+    assert!(
+        receiver.is_dir(),
+        "saved publication retry still needs its receiver"
+    );
     std::fs::remove_file(hook).unwrap();
     let retried = merge(&f.store, &job, || {}).unwrap();
     assert_eq!(source.refname_to_id("refs/heads/main").unwrap(), tip);
@@ -185,6 +205,9 @@ fn merged_base_push_failure_retries_recorded_tip_without_merging_again() {
             .count(),
         1
     );
+    crate::reviews::maintenance::turn_for_test(f.store.clone(), f.request.receiver_root.clone())
+        .unwrap();
+    assert!(!receiver.exists(), "settled merge releases its receiver");
 }
 
 #[test]

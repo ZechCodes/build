@@ -55,7 +55,7 @@ Design rules:
 - Run gitleaks before every push and semgrep before you post ready (commands below). The roll gate runs both again on every merge.
 - Security checklists must be 100/100. The feature checklists live in
   `planning/v2/*Security Checklist.md`.
-- One task per branch, branched from `main`. Nothing merges without a review.
+- One task per branch, branched from `dev`. Nothing merges without a review.
 - **SPA rendering draws from the cache, never from connection state.** Every
   view renders from the local cache and assumes it is up to date. Nothing
   draws based on the status of a connection or is aware of the connection
@@ -85,11 +85,15 @@ Design rules:
 
 ## Working against dev
 
-Validate changes on `https://dev.getbuild.ing/app/` and
-`wss://relay-dev.getbuild.ing` before touching production. Moving the `dev`
-branch automatically deploys the hosted app and relay (task #808); see
-[`deploy/k8s/dev/README.md`](deploy/k8s/dev/README.md#automatic-deployment-and-branch-ownership)
-for branch ownership and deployment checks. Push only where your task authorizes.
+Task branches start from `origin/dev` and pass through the serial merge gate
+into `dev`, the integration branch. A push to `dev` runs its own deploy-only
+workflow: image builds gate the dev rollout, with no CI tests or lint. Validate
+changes on `https://dev.getbuild.ing/app/` and `wss://relay-dev.getbuild.ing`
+before promotion. Once validated there, promote `dev` to `main` by fast-forward;
+main's `CI and deploy` runs the full validation graph, and both production
+rollouts require every test job to succeed or skip through its path filter.
+See [`deploy/k8s/dev/README.md`](deploy/k8s/dev/README.md#automatic-deployment-and-branch-ownership)
+for branch ownership and rollout safety. Push only where your task authorizes.
 
 **`buildctl` is the only supported management entry point for authorized agents
 working against non-production environments.** Use `scripts/buildctl --env dev …`
@@ -197,8 +201,8 @@ The scans (gitleaks before each push, semgrep before you post ready):
 
 ```bash
 nice -n 10 semgrep --config auto --error <changed js/mjs/css files>
-nice -n 10 gitleaks git --no-banner --redact --log-opts='main..HEAD' .
-git diff --check main..HEAD
+nice -n 10 gitleaks git --no-banner --redact --log-opts='origin/dev..HEAD' .
+git diff --check origin/dev..HEAD
 ```
 
 semgrep only scans files git tracks; `git add` a new file before scanning it.

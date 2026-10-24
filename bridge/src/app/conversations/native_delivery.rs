@@ -21,7 +21,8 @@ impl AppState {
         let receipt = self
             .operation_receipt(token)?
             .ok_or("unknown native receipt")?;
-        if receipt.entity_id != entity_id || receipt.agent_id != agent_id {
+        let (delivery_owner, delivery_agent) = receipt.delivery_target();
+        if delivery_owner != entity_id || delivery_agent != agent_id {
             return Err("native receipt does not belong to this agent".into());
         }
         let address = self.resolve_conversation_address(entity_id, Some(agent_id))?;
@@ -62,8 +63,8 @@ impl AppState {
         let (start_sequence, end_sequence) = receipt
             .delivery_message_span()
             .ok_or("operation has no bounded message span")?;
-        let address =
-            self.resolve_conversation_address(&receipt.entity_id, Some(&receipt.agent_id))?;
+        let (delivery_owner, delivery_agent) = receipt.delivery_target();
+        let address = self.resolve_conversation_address(delivery_owner, Some(delivery_agent))?;
         if address.conversation_id != receipt.conversation_id {
             return Err("operation conversation binding changed".into());
         }
@@ -85,7 +86,7 @@ impl AppState {
         if let Some(committed) = &sequence {
             self.apply_committed_thread_items(committed);
         }
-        self.edit_agent_conversation(&receipt.entity_id, &receipt.agent_id, |thread, _| {
+        self.edit_agent_conversation(delivery_owner, delivery_agent, |thread, _| {
             thread.set_operation_delivery_status(
                 &receipt.operation_id,
                 start_sequence,
@@ -111,10 +112,11 @@ impl AppState {
         let receipt = self
             .operation_receipt(operation_id)?
             .ok_or_else(|| format!("unknown operation_id: {operation_id}"))?;
+        let (delivery_owner, delivery_agent) = receipt.delivery_target();
         let address = self.resolve_conversation_address(entity_id, Some(agent_id))?;
         if receipt.method != crate::operation::THREAD_POST_METHOD
-            || receipt.entity_id != entity_id
-            || receipt.agent_id != agent_id
+            || delivery_owner != entity_id
+            || delivery_agent != agent_id
             || receipt.conversation_id != address.conversation_id
         {
             return Err("native receipt does not belong to this agent".into());

@@ -42,14 +42,15 @@ impl AppState {
         let Some(receipt) = self.operation_receipt(operation_id).ok().flatten() else {
             return;
         };
+        let (delivery_owner, delivery_agent) = receipt.delivery_target();
         if receipt.delivery_message_span().is_none() {
             return;
         }
         let Ok(address) = self.resolve_conversation_address(owner, Some(agent_id)) else {
             return;
         };
-        if receipt.entity_id != owner
-            || receipt.agent_id != agent_id
+        if delivery_owner != owner
+            || delivery_agent != agent_id
             || receipt.conversation_id != address.conversation_id
         {
             return;
@@ -151,11 +152,12 @@ impl AppState {
             })?;
         let receipt = self.operation_receipt(operation_id).ok()??;
         receipt.delivery_message_span()?;
+        let (delivery_owner, delivery_agent) = receipt.delivery_target();
         let address = self
             .resolve_conversation_address(owner, Some(agent_id))
             .ok()?;
-        (receipt.entity_id == owner
-            && receipt.agent_id == agent_id
+        (delivery_owner == owner
+            && delivery_agent == agent_id
             && receipt.conversation_id == address.conversation_id)
             .then_some(receipt)
     }

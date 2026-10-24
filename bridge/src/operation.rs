@@ -363,31 +363,46 @@ pub struct OperationReceipt {
 }
 
 impl OperationReceipt {
-    /// Immutable messages owned by this operation, even after its provider
-    /// payload has been discarded. A late native receipt may move a delivered
-    /// operation to uncertain; it still has a span but no replayable payload.
-    /// Legacy intents that lack a bounded payload remain ambiguous.
+    /// Provider target can differ from the original address for historical
+    /// Task posts forwarded to an implementation sharing its conversation.
+    pub(crate) fn delivery_target(&self) -> (&str, &str) {
+        self.delivery.as_ref().map_or(
+            (self.entity_id.as_str(), self.agent_id.as_str()),
+            |delivery| (delivery.owner_id.as_str(), delivery.agent_id.as_str()),
+        )
+    }
+
+    /// Immutable messages owned by this operation after its provider payload
+    /// has been discarded. Forwarded deliveries retain a target-only intent.
+    /// A late native receipt can make either form uncertain without restoring
+    /// a replayable payload. Queued/claimed unbounded legacy intents remain
+    /// ambiguous.
     pub(crate) fn delivery_message_span(&self) -> Option<(u64, u64)> {
         if self.method != THREAD_POST_METHOD {
             return None;
         }
-        let (start, end) = match self.delivery.as_ref() {
-            Some(delivery) => {
-                if delivery.owner_id != self.entity_id || delivery.agent_id != self.agent_id {
-                    return None;
+        let span = match self.delivery.as_ref() {
+            Some(delivery) => match delivery.payload.as_ref() {
+                Some(payload) => Some((payload.start_sequence, payload.end_sequence)),
+                None if matches!(
+                    self.status,
+                    OperationStatus::Delivered | OperationStatus::Uncertain
+                ) =>
+                {
+                    None
                 }
-                let payload = delivery.payload.as_ref()?;
-                (payload.start_sequence, payload.end_sequence)
-            }
-            None => (
-                if self.message_start_sequence == 0 {
-                    self.posted_sequence
-                } else {
-                    self.message_start_sequence
-                },
-                self.posted_sequence,
-            ),
+                None => return None,
+            },
+            None => None,
         };
+        let (start, end) = span.unwrap_or((
+            if self.message_start_sequence == 0 {
+                self.posted_sequence
+            } else {
+                self.message_start_sequence
+            },
+            self.posted_sequence,
+        ));
         (start > 0 && start <= end).then_some((start, end))
     }
 

@@ -917,6 +917,7 @@ describe("the lifetime rules a pass applies", () => {
       branchItem(),
       branchItem({ branch: "b2", run_id: "run-2", worktree_id: "wt-2", state: "merged" }),
     ]);
+    await passesSettled(sync, "dev-1");
     expect(await read("run-2", "status")).toBeUndefined();
     expect(await read("run-2", "thread", "ag-1")).toBeUndefined();
     // The row stays: the board is what lists it, and it still does.

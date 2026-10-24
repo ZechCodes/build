@@ -51,7 +51,7 @@ const gate = () => {
   return { promise, release };
 };
 const push = (items) => watchers.find((entry) => entry.kinds.includes("thread")).onChanges(items);
-const finishEntity = () => push([{ entity_id: "run-0", state: { ...board[0], state: "done" } }]);
+const finishEntity = () => push([{ entity_id: "run-0", state: { ...board[0], state: "merged" } }]);
 const heldTip = () => ({ entity_id: "run-0", thread: [{ agent_id: "agent-0", conversation_id: "c0",
   thread_id: "thread:c0", since_sequence: 0, last_sequence: 10, items: [] }] });
 
@@ -69,7 +69,7 @@ it.each(["files", "thread"])("does not resurrect %s when a deferred read answers
     await deferred;
   }
   expect(await cache.readCached(address("run-0", kind === "files" ? "tree" : "thread", kind === "files" ? "" : "c0"))).toBeUndefined();
-  expect((await cache.readCached(address("run-0", "row"))).value.state).toBe("done");
+  expect((await cache.readCached(address("run-0", "row"))).value.state).toBe("merged");
 });
 
 it("drops a queued old-generation catch-up after reset without reading the new generation", async () => {
@@ -104,4 +104,34 @@ it("does not enqueue enrichment for a terminals-only push", async () => {
     expect(enqueued).not.toHaveBeenCalled();
     expect((await cache.readCached(address("run-0", "terminals"))).value.tabs).toEqual([{ term_id: "user" }]);
   } finally { spy.mockRestore(); }
+});
+
+it("discards a queued files job when its owner finishes before admission", async () => {
+  const held = gate(), previous = context.rpc.getMockImplementation();
+  context.rpc.mockClear();
+  context.rpc.mockImplementation((method, params) => method === "tasks.list" ? held.promise : previous(method, params));
+  const blockers = push(["p1", "p2"].map((entity_id) => ({ entity_id, tasks: { task_ids: ["held"] } })));
+  await called(context.rpc, () => context.rpc.mock.calls.filter(([method]) => method === "tasks.list").length === 2);
+  const deferred = push([{ entity_id: "run-0", files: { root: { path: "", entries: [{ name: "stale" }] }, paths: [] } }]);
+  await vi.waitFor(() => expect(sync.pushWorkInFlight("dev-1").backgroundPending).toBeGreaterThan(0));
+  try { await finishEntity(); }
+  finally { held.release({ tasks: [] }); await blockers; await deferred; }
+  expect(await cache.readCached(address("run-0", "tree"))).toBeUndefined();
+});
+
+it("rejects a file-body write stalled before commit when eviction ends its lifetime", async () => {
+  const target = address("run-0", "file", "held.txt");
+  await cache.writeCached(target, { file: { path: "held.txt", size: 3, mime: "text/plain", content_b64: "b2xk" } });
+  const lifetime = await import("../src/core/cacheLifetime.js"), queued = gate(), held = gate();
+  const store = lifetime.cacheFileBody, previous = context.rpc.getMockImplementation();
+  context.rpc.mockImplementation((method, params) => method === "fs.read"
+    ? { path: "held.txt", size: 3, mime: "text/plain", content_b64: "bmV3" } : previous(method, params));
+  const stalled = vi.spyOn(lifetime, "cacheFileBody").mockImplementation(async (options) => {
+    queued.release(); await held.promise; return store(options);
+  });
+  const deferred = push([{ entity_id: "run-0", files: { paths: ["held.txt"] } }]);
+  await queued.promise;
+  try { await finishEntity(); }
+  finally { held.release(); await deferred; stalled.mockRestore(); }
+  expect(await cache.readCached(target)).toBeUndefined();
 });

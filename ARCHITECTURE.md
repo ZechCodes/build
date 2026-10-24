@@ -3681,6 +3681,9 @@ gate attachment display.
   jobs. Within an entity, its mounted conversation's carried tips land first. Roster/review reads run behind bodies with one pending refresh per key;
   a key never has two enrichment appliers running together.
   Catch-up coverage and repair rules still belong to `threadSync.js`.
+  Finished-state eviction invalidates the entity data lifetime without removing
+  its feed row. Deferred reads retain that fence through cache commits; a
+  conversation reset also cancels its queued old-generation catch-up.
   User actions bypass these queues; neither their RPCs nor their cache writes
   acquire a push slot or wait for a batching timer. Awaiting a push still waits
   for its own deferred fields, without holding a body slot during those reads.

@@ -51,7 +51,7 @@ import { readSyncLists } from "./syncLists.js";
 import { App } from "../appState.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
 import { bridgeCapabilities, onSubscriptionHeld, subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
-import { forgetPushes, notePush, pushFence, pushedSince, removedSince } from "./pushFence.js";
+import { entityDataInvalidatedSince, forgetPushes, notePush, pushFence, pushedSince, removedSince } from "./pushFence.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { cachedRouteEntityId } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
@@ -251,7 +251,8 @@ async function readWhole(context, address, request, shape = (answer) => answer) 
   const fence = pushFence();
   const answer = await ask(context, request.method, request.params, request.priority, address);
   if (!answer || answer.unchanged || !context.active()) return answer;
-  if (!pushedSince(address, fence)) await writeCached(address, shape(answer));
+  await mergeCachedAtomically(address, () =>
+    context.active() && !pushedSince(address, fence) ? shape(answer) : null);
   return answer;
 }
 
@@ -496,13 +497,14 @@ function settledWithin(promise, waitMs) {
   ]).finally(() => clearTimeout(timer));
 }
 
-/** The context for one entity's records, stood down as well once a push takes
+/** The context for one entity's records, stood down as well once eviction or a push takes
  *  the entity off the board after the fence: a read already out when it went
  *  writes nothing back under it, and nothing after that read is asked. Every
  *  write here is behind `active()`, which is what makes this reach them all. */
 const whileOnBoard = (context, entityId, fence) => ({
   ...context,
-  active: () => context.active() && !removedSince(addressOf(context, entityId, "row"), fence),
+  active: () => context.active() && !removedSince(addressOf(context, entityId, "row"), fence)
+    && !entityDataInvalidatedSince(addressOf(context, entityId, "row"), fence),
 });
 
 /** Step 1: the three lists, written as they land so the inbox paints before
@@ -1586,10 +1588,11 @@ function enqueuePushRemainder(context, item) {
   if (!context.active()) return;
   const entityId = String(item.entity_id);
   if (item.state || item.thread) deferPush(context, entityId, `roster:${entityId}`, () => refreshProjectAgents(context, null, entityId));
-  const remainder = Object.fromEntries(Object.entries(item).filter(([field]) => field !== "state" && field !== "thread" && field !== "terminals"));
-  if (APPLIERS.slice(2).some(([field]) => remainder[field])) {
-    context.pushCompletions?.push(queuesFor(context).background.enqueueApplied(context, [remainder]));
-  }
+  const remainder = Object.fromEntries(APPLIERS.slice(2).filter(([field]) => field !== "terminals" && item[field])
+    .map(([field]) => [field, item[field]]));
+  if (!Object.keys(remainder).length) return;
+  remainder.entity_id = item.entity_id;
+  context.pushCompletions?.push(queuesFor(context).background.enqueueApplied(context, [remainder]));
 }
 
 /** Source subscriptions are owned by their mounted panes; writes still go
@@ -1879,7 +1882,9 @@ async function writeThreadTipBody(context, entityId, tip, sub) {
 }
 
 async function deferThreadCatchup(context, entityId, tip, sub) {
-  const read = () => syncThread(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: tip.thread_id }, "background");
+  const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub), fence = pushFence();
+  const reading = { ...context, active: () => context.active() && !pushedSince(address, fence) };
+  const read = () => reading.active() && syncThread(reading, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: tip.thread_id }, "background");
   // The catch-up/repair contract is unchanged. Its RPC cannot hold the lane
   // that writes carried deltas for other conversations.
   if (context.pushing) deferPush(context, entityId, `thread:${entityId}:${sub}`, read, false);
@@ -2047,7 +2052,8 @@ const missingFile = (error) => error?.code === "not_found" || error?.error_code 
  *  reader may write; a different file's refresh cannot supersede this one. */
 async function readFileBody(context, entityId, scope, path) {
   context = { ...context, readScope: addressOf(context, entityId, FILE_RECORD_KIND, path) };
-  const held = (await readCached(addressOf(context, entityId, FILE_RECORD_KIND, path)))?.value;
+  const record = await readCached(addressOf(context, entityId, FILE_RECORD_KIND, path));
+  const held = record?.value;
   if (!context.active()) return "cancelled";
   const readPage = backgroundPageReader(context, scope, path);
   const file = await freshFileAnswer(context, scope, path, held?.file, readPage);
@@ -2060,7 +2066,7 @@ async function readFileBody(context, entityId, scope, path) {
   // kept: a record left over from before the change would hand the reader
   // that body on their next open, with no round trip and nothing saying so.
   await cacheFileBody({ deviceId: context.deviceId, entityId, path, file, openedAt: held?.openedAt,
-    readPage: backgroundPageReader(context, scope, path, file.mime) });
+    readPage: backgroundPageReader(context, scope, path, file.mime), still: context.active, written: recordWriteOf(record) });
   return context.active() ? "settled" : "cancelled";
 }
 

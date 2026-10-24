@@ -4,6 +4,33 @@ use crate::reviews::sync::reconcile::tests::Fixture;
 use crate::tracker::Actor;
 
 #[test]
+fn interrupted_capture_keeps_terminal_receiver_until_recovery_finishes() {
+    use crate::reviews::sync::reconcile::recovery::CaptureJournal;
+    let fixture = Fixture::new();
+    let review = fixture.review();
+    let receiver = review.bindings[0].receiving_repository.clone();
+    let mut capture = CaptureJournal::acquire(fixture.task_id(), &review.bindings).unwrap();
+    capture
+        .begin(&fixture.store, &uuid::Uuid::new_v4().to_string())
+        .unwrap();
+    drop(capture);
+    fixture
+        .store
+        .complete_review(fixture.task_id(), review.version, &Actor::User, "Closed")
+        .unwrap();
+    std::fs::remove_dir_all(&fixture.request.workspace.root).unwrap();
+    let mut worker = Worker::new(fixture.store.clone(), fixture.request.receiver_root.clone());
+    worker.turn().unwrap();
+    assert!(receiver.exists(), "durable recovery must keep its receiver");
+
+    let recovery = CaptureJournal::acquire(fixture.task_id(), &review.bindings).unwrap();
+    recovery.recover(&fixture.store, &review.bindings).unwrap();
+    drop(recovery);
+    worker.turn().unwrap();
+    assert!(!receiver.exists());
+}
+
+#[test]
 fn pushed_review_survives_source_gc_then_closes_and_reclaims_its_receiver() {
     let fixture = Fixture::new();
     let head = fixture.commit("workflow.txt");

@@ -10,8 +10,8 @@ credentials, schema, accounts and public origins are separate from production.
 `namespace.yaml` is **operator bootstrap only** and is intentionally absent
 from `kustomization.yaml`. An authorized operator provisions the database role
 and schema, namespace, namespace-scoped RBAC, the `development` GitHub
-environment with Zech as required reviewer and these secrets before the first
-manual deployment. Zech handles DNS; do not change it in this procedure.
+environment restricted to `main` (no required reviewers), and these secrets
+before the first deployment. Zech handles DNS; do not change it in this procedure.
 
 - `build-app`: fresh `SECRET_KEY`, `INTERNAL_API_SECRET`, and `DATABASE_URL`
   pointing to `build-postgres.8ly.svc.cluster.local:5432/build` with the
@@ -37,8 +37,8 @@ permissions, pod-exec permission or production namespace permissions. However,
 Job/Deployment create plus pods/log is equivalent to reading the dev secrets:
 a workload can mount them and print them. This is accepted because only
 dev-scoped credentials live in `build-dev` and the `development` environment is
-protected (Zech as required reviewer, `main` only). The operator-only `ci-rbac.yaml`
-defines this ServiceAccount, Role and RoleBinding; it is excluded from the CI
+restricted to workflow refs on `main`, with no required reviewers. The
+operator-only `ci-rbac.yaml` defines this ServiceAccount, Role and RoleBinding; it is excluded from the CI
 render. Create its token separately, store the kubeconfig only in the protected
 environment, and verify permissions with that actual credential, including
 denial of pod exec and access to `8ly`. CI never bootstraps these permissions or
@@ -46,8 +46,10 @@ secrets. Repository package permissions must allow publishing `build-app-dev`
 and `build-relay-dev`. Build/check jobs receive no kube credential.
 
 CI's Ingress create/update/patch verbs could claim any Traefik host, including a
-production host. Only the protected environment and the pinned, reviewed render
-prevent that; namespace-scoped RBAC does not restrict Ingress hostnames.
+production host. The reviewed renderer rejects unexpected hosts, but it is
+checked out from `dev`, so dev writers can change it. Treat dev push access as authority over the
+dev workloads and credentials; namespace-scoped RBAC does not restrict Ingress
+hostnames. This flow does not expand the existing dev credential's permissions.
 
 ## Shared database preflight and provisioning
 
@@ -86,7 +88,42 @@ command below. Its checked connection and Alembic version table are confined
 to `build_dev`; do not run the generic `skrift db upgrade` command against this
 shared database. The app's explicit `db.schema` also scopes ORM queries.
 
-The manual `dev-deploy.yml` workflow resolves the `dev` branch once, records its
+## Automatic deployment and branch ownership
+
+A push (including a force-push) to `refs/heads/dev` starts the secret-free
+`dev-deploy-request.yml` workflow, named `Dev deploy request`. It has an empty
+permission set, no checkout, no environment, no inputs and no artifacts. Its
+successful completion starts `dev-deploy.yml` through `workflow_run` on the
+repository's default branch, which must remain `main`.
+[GitHub's workflow_run contract](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
+uses the default branch's workflow definition and allows it to access its own
+secrets. The main-side entry gate additionally requires `refs/heads/main`, a
+successful `push` event on `dev`, and the same head repository. A manual dispatch
+on `main` remains available for retries; it is not part of the normal dev flow.
+No development environment approval is required; its `main`-only branch policy
+stays in place. Production workflows, environments and manifests are unchanged.
+
+Agents and the orchestrator with repository write access may move `dev`, just as
+they push task branches. Force-push is intentionally allowed for testing a task
+branch; prefer `--force-with-lease` to avoid overwriting another writer's update.
+Keep the signal workflow in commits pushed to `dev`: deleting, renaming or
+breaking it can stop notifications, but cannot replace the workflow definition
+executed on `main`. Use a normal authenticated git credential (a user token or
+GitHub App token), not a workflow's `GITHUB_TOKEN`, whose pushes do not trigger
+other workflows ([GitHub token behavior](https://docs.github.com/en/actions/concepts/security/github_token)). Neither branch protection nor credentials are changed by this
+implementation. Rollout requires merging these workflow changes to `main` and
+including the signal file in the next dev tip; no dispatch is needed afterward.
+
+The signal carries no deployment instructions. Main ignores its SHA, outputs,
+artifacts, display names and inputs: it independently resolves the current dev
+branch. Delayed or reordered signals therefore deploy the current tip at resolution rather
+than a stale signal SHA. Changing the dev copy of `dev-deploy.yml` cannot change
+the main-side workflow. Dev source code, dependency hooks, Containerfiles,
+manifests and the renderer still execute in that reviewed pipeline; dev pushers
+are trusted with dev-only credentials and images. This is not a sandbox for
+hostile commits. Do not add production secrets to this workflow or environment.
+
+The `dev-deploy.yml` workflow resolves the `dev` branch once, records its
 full SHA, and checks out that SHA for all checks, image builds and deployment
 rendering. It publishes only `build-app-dev:<SHA>` and `build-relay-dev:<SHA>`;
 rollouts use the returned immutable digests, never a mutable tag. Re-dispatching
@@ -96,8 +133,21 @@ The Containerfile defaults remain production (`APP_CONFIG=app.yaml`,
 `APP_CONFIG=app.channel-dev.yaml`, `VITE_BUILD_CHANNEL=dev`, the dev relay URL
 and the resolved source SHA.
 
-Both build jobs require the checks to succeed. Each protected rollout waits only
-for its own successful image and has its own non-cancelling concurrency group.
+Both build jobs require the checks to succeed; failed, skipped or cancelled
+checks prevent publishing and deployment. New runs cancel older checks and image
+builds through their respective concurrency groups. There is deliberately no
+workflow-level cancellation: it would override rollout protection. Each rollout
+waits only for its own successful image and has its own non-cancelling concurrency
+group (`deploy-app-dev` or `deploy-relay-dev`). Once migration/rollout starts, it
+finishes before the next ready job in that group runs. GitHub concurrency keeps
+at most one pending job per group and may replace a pending job; intermediate
+tips can be superseded rather than deployed. App and relay remain independent.
+A partial failure or manual cancellation can still need operator recovery, but a
+new push does not interrupt an active migration or rollout. Concurrency is not
+FIFO: a resolved SHA is a snapshot, and an unusually delayed older run can enter
+a job group after a newer run. Current-tip resolution prevents replaying signal
+SHAs, but does not promise strict deployment ordering across all scheduler races.
+Push the intended tip again or use the main-side retry if a run is superseded.
 `kubectl kustomize deploy/k8s/dev` is an offline render. `deploy/render_dev.py`
 refuses cluster/bootstrap resources, unexpected names/namespaces and source
 images, and writes only the phases selected by that rollout:
@@ -112,7 +162,7 @@ images, and writes only the phases selected by that rollout:
    readiness. `Recreate` preserves the single in-memory broker topology.
 
 First deployment may require retrying the relay after the app becomes available.
-Failures leave production untouched; fix forward by dispatching an approved dev
+Failures leave production untouched; fix forward by pushing a corrected dev
 commit. An operator-directed rollback must select a previously reviewed dev
 commit/digest and account for schema compatibility; no automatic database
 rollback is attempted. Complete the first-boot procedure below before the app
@@ -127,11 +177,13 @@ validates all three implementation slices before any deployment is authorized.
 
 ## First boot: operator bootstrap before public app exposure
 
-This is an operator procedure, **never a CI step**. Keep both first-run rollout
-approvals pending until it finishes. The `development` environment must require
-reviewers and restrict workflow refs to `main`. Prepare the namespace, RBAC,
+This is an operator procedure, **never a CI step**. Complete it before pushing
+the first deployable dev tip; automatic dev rollouts have no approval pause.
+The `development` environment restricts workflow refs to `main` and has no
+required reviewers. Prepare the namespace, RBAC,
 secrets, database role/schema and DNS/TLS from the provisioning checklist first.
-Do not apply the app or relay phases, or create their public Ingresses, during bootstrap.
+Do not apply the app phase or create its public Ingress during bootstrap.
+The relay is independent and can roll out before app bootstrap completes.
 There must be no existing app Deployment/Ingress for a fresh database. If an old
 dev stack points at a replacement empty database, withdraw its public exposure
 and stop the old app before beginning; the new migration gate cannot protect an
@@ -139,11 +191,11 @@ already-running app.
 
 Use one operator, one fresh dev schema and the reviewed source commit that will
 be deployed. Obtain an immutable `ghcr.io/zechcodes/build-app-dev@sha256:…` image
-built with `APP_CONFIG=app.channel-dev.yaml` from that commit. The first manual
-workflow's successful `build-app` output can supply this digest **while both
-protected deploy jobs remain unapproved**. Do not approve a deployment merely
-to obtain the image. The operator credential needs dev-only pod create/exec/delete
-for the bootstrap pod; CI's credential must not gain exec access.
+built with `APP_CONFIG=app.channel-dev.yaml` from that commit. A first
+workflow's successful `build-app` output can supply this digest: on a fresh database the app migration/bootstrap check fails closed before any public
+app exposure. There is no approval pause; the relay can roll out independently.
+Do not bypass the app's bootstrap check merely to obtain the image. The operator
+credential needs dev-only pod create/exec/delete for the bootstrap pod; CI's credential must not gain exec access.
 The bootstrap pod receives only the namespace-local `build-app` secret, inherits
 the migration pod's non-root restrictions and pull secret, and serves no HTTP.
 
@@ -224,9 +276,9 @@ options (which could override the connection target). It checks the effective
 role, schema ownership and search path before migration or bootstrap. SQLite is
 permitted only for disposable offline proof, without a configured schema.
 
-Check every command's exit status. On failure keep the app unexposed and leave
-the approvals pending. Do not blindly rerun bootstrap or delete the pod/private
-file: invite creation commits before file delivery and setup completion. If DB
+Check every command's exit status. On failure keep the app unexposed and do not
+push another deployable tip. Do not blindly rerun bootstrap or delete the
+pod/private file: invite creation commits before file delivery and setup completion. If DB
 or file persistence fails, setup remains closed and a retry refuses the existing
 invite. An operator must inspect the private file/state and either recover it or
 recreate the **dev schema only** through a separately approved recovery, after
@@ -238,9 +290,10 @@ operator control; never reset setup on a running stack. A failed first workflow
 migration check can be rerun only after this procedure is complete.
 
 After successful private delivery and pod cleanup, report only the local invite
-file's path. Leave both approvals pending for **Zech** to approve the reviewed
-app/relay rollouts. CI repeats migrations and the bootstrap check before applying
-the app Service/Deployment/Ingress. Verify `/healthz` and `/readyz` return 200,
+file's path. Then push the intended dev tip (or manually retry the main-side
+deploy workflow after bootstrap if the first run failed its bootstrap check).
+CI repeats migrations and the bootstrap check before applying the app
+Service/Deployment/Ingress. Verify `/healthz` and `/readyz` return 200,
 `/auth/login` renders and `/setup` and `/setup/welcome` return 404. Deliver the link
 from the private file directly to the intended tester using an approved private
 channel. Open it at `https://dev.getbuild.ing/invite/<token>`, create a separate dev

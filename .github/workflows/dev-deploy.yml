@@ -1,15 +1,27 @@
 name: Dev deploy
 
-# Operator-authorized manual deployments only. The workflow ref is NOT the
-# source ref: resolve the dev branch once, then use that commit everywhere.
+# The secret-free dev push signal starts this workflow from the default branch
+# (main). Ignore all signal data when resolving source: read dev once ourselves.
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: [Dev deploy request]
+    types: [completed]
+    branches: [dev]
 
 permissions:
   contents: read
 
 jobs:
   resolve:
+    if: >-
+      ${{ github.ref == 'refs/heads/main' &&
+          (github.event_name == 'workflow_dispatch' ||
+           (github.event_name == 'workflow_run' &&
+            github.event.workflow_run.event == 'push' &&
+            github.event.workflow_run.conclusion == 'success' &&
+            github.event.workflow_run.head_branch == 'dev' &&
+            github.event.workflow_run.head_repository.full_name == github.repository)) }}
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.source.outputs.sha }}

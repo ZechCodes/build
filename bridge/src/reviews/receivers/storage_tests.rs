@@ -252,3 +252,33 @@ fn unsupported_object_links_fall_back_to_normal_self_contained_publication() {
     git_in(&receiver.path, &["fsck", "--full"]);
     assert!(destination.find_commit(head).is_ok());
 }
+
+#[test]
+fn missing_source_blob_or_ancestor_rolls_back_seeded_head() {
+    for missing_ancestor in [false, true] {
+        let (temporary, source) = init_repo();
+        fs::write(source.join("README.md"), "descendant content\n").unwrap();
+        git_in(&source, &["add", "."]);
+        git_in(&source, &["commit", "-m", "descendant"]);
+        let repository = git2::Repository::open(&source).unwrap();
+        let head = repository.head().unwrap().peel_to_commit().unwrap();
+        let missing = if missing_ancestor {
+            head.parent_id(0).unwrap()
+        } else {
+            head.tree().unwrap().get_name("README.md").unwrap().id()
+        }
+        .to_string();
+        fs::remove_file(
+            source
+                .join(".git/objects")
+                .join(&missing[..2])
+                .join(&missing[2..]),
+        )
+        .unwrap();
+        let receiver = plan_receiver(&source, &temporary.path().join("receivers")).unwrap();
+        ensure_receiver(&receiver).unwrap();
+        let destination = git2::Repository::open_bare(&receiver.path).unwrap();
+        assert!(destination.find_commit(head.id()).is_err());
+        assert!(!receiver.path.join("packed-refs").exists());
+    }
+}

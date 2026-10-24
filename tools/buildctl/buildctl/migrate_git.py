@@ -8,6 +8,7 @@ import re
 import sqlite3
 import tempfile
 
+from .migrate_paths import Paths
 from .runtime import BuildctlError
 
 
@@ -30,15 +31,16 @@ def plan_remotes(database: Path, source_prefix: Path, target_prefix: Path, runne
 
 
 def _binding_changes(binding, source, target):
-    receiver = Path(binding['receiving_repository'])
-    if not receiver.is_relative_to(source):
+    receiver = binding['receiving_repository']
+    destination = Paths(source, target).path(receiver)
+    if destination == receiver:
         return []
     name = binding['remote_name']
     if not re.fullmatch(r'[A-Za-z0-9-]+', name):
         raise BuildctlError('invalid review remote name')
     return [
         {'repository': binding['working_repository'], 'key': f'remote.{name}.{suffix}',
-         'old': str(receiver), 'new': str(target / receiver.relative_to(source))}
+         'old': receiver, 'new': destination}
         for suffix in ('url', 'pushurl')
     ]
 

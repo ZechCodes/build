@@ -201,3 +201,17 @@ def test_reverse_refuses_unrelated_remote_destination(remote):
     with pytest.raises(BuildctlError, match='expected'):
         apply_remotes(changes, runner, reverse=True)
     assert config.read_bytes() == original
+
+
+def test_plan_maps_literal_prod_alias_with_exact_boundary(tmp_path):
+    source, target = tmp_path / 'prod', tmp_path / 'dev'
+    record = {'working_repository': '/never/access/shared',
+              'receiving_repository': '~/.build/review-receivers/a.git',
+              'remote_name': 'build-review-123'}
+    other = dict(record, receiving_repository='~/.build-other/review-receivers/a.git')
+    runner = Mock()
+    changes = plan_remotes(bindings(tmp_path, [record, other]), source, target, runner)
+    assert len(changes) == 2
+    assert all(change['old'] == record['receiving_repository'] for change in changes)
+    assert all(change['new'] == str(target / 'review-receivers/a.git') for change in changes)
+    runner.run.assert_not_called()

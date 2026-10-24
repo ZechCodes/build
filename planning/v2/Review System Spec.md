@@ -55,7 +55,8 @@ Receiver retention (#839): merged PRs release their receiver data in background
 maintenance. Closed, unmerged PRs keep it only while the original managed workspace
 remains ready; removing that workspace allows cleanup and prevents reopen. Review
 metadata and comments remain, while Git content can become unavailable after
-reclamation. Unused owned receivers and their operation journals are deleted.
+reclamation. Running or unsettled merge publication retains its receiver until
+saved retry work settles. Unused owned receivers and their operation journals are deleted.
 Retained receivers receive startup GC with Git's normal pruning grace period,
 because immediate pruning can race native pushes. New receivers hardlink immutable
 source object files where supported, keeping independent entries that survive

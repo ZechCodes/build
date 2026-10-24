@@ -1866,8 +1866,9 @@ delivery runs after publication, with a durable status and explicit retry.
 New receivers share immutable source object files through hardlinks when the
 filesystem supports them (#839). They have their own directory entries, so
 source ref deletion, garbage collection and source removal cannot invalidate
-published reviews. Linked packs have receiver-local `.keep` markers to avoid
-repacking another physical copy. Receivers never use object alternates: native
+published reviews. Index files have independent inodes; linked packs have
+receiver-local `.keep` markers to avoid repacking another physical copy.
+Receivers never use object alternates: native
 Git pushes cannot atomically install protecting refs in the source repository.
 Unsupported links fall back to importing the selected commits and their reachable
 history. Garbage collection at creation would not remove that reachable history.
@@ -1949,6 +1950,8 @@ unmerged reviews retain their receiving setup while the original workspace stays
 ready, so reopen still requires that workspace. Metadata and comments survive
 receiver reclamation; historical Git content can become unavailable. Startup
 also collects retained receivers once, with failures retried by later turns.
+Running or unsettled merge publication retains its receiver until saved retry
+work settles, even when local integration already marked the PR Merged.
 Active receivers use Git's normal pruning grace period: `--prune=now` could race
 native pushes before ref publication. Maintenance reports reclaimed bytes and
 preserves receivers whose ownership or in-flight operation cannot be established.

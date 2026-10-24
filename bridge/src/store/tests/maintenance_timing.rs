@@ -98,7 +98,9 @@ fn maintenance_reclaims_offline_database_copy() {
     let path = dir.path().join(DB_FILE);
     std::fs::copy(source, &path).unwrap();
     let before = std::fs::metadata(&path).unwrap().len();
+    let startup_started = Instant::now();
     let store = Store::new(dir.path()).unwrap();
+    let startup_elapsed = startup_started.elapsed();
     let retained_before = unsettled_payloads(&store);
     let items_before: i64 = store
         .connection()
@@ -115,7 +117,10 @@ fn maintenance_reclaims_offline_database_copy() {
             break;
         }
     }
-    assert_eq!(unsettled_payloads(&store), retained_before);
+    assert!(
+        unsettled_payloads(&store) == retained_before,
+        "unsettled payloads must remain byte-identical"
+    );
     let connection = store.connection();
     let items_after: i64 = connection
         .query_row("SELECT count(*) FROM thread_items", [], |r| r.get(0))
@@ -134,9 +139,18 @@ fn maintenance_reclaims_offline_database_copy() {
         .unwrap();
     assert_eq!(integrity, "ok");
     drop(connection);
+    let active_main = std::fs::metadata(&path).unwrap().len();
+    let active_wal = std::fs::metadata(dir.path().join("build.db-wal"))
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let active_total = active_main + active_wal;
+    assert!(
+        active_total < before,
+        "live main+WAL must return disk space"
+    );
     drop(store);
     let after = std::fs::metadata(&path).unwrap().len();
-    eprintln!("offline copy: before={before} after={after} saved={} cleared={cleared} batches={batches} elapsed={:?}; integrity=ok; thread_items={items_after}; unsettled payloads unchanged", before.saturating_sub(after), started.elapsed());
+    eprintln!("offline copy: before={before} active_main={active_main} active_wal={active_wal} active_total={active_total} after={after} saved={} cleared={cleared} batches={batches} startup={startup_elapsed:?} cleanup={:?}; integrity=ok; thread_items={items_after}; unsettled payloads unchanged", before.saturating_sub(after), started.elapsed());
     assert!(after < before);
 }
 

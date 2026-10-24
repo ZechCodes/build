@@ -1870,8 +1870,11 @@ published reviews. Index files have independent inodes; linked packs have
 receiver-local `.keep` markers to avoid repacking another physical copy.
 Receivers never use object alternates: native
 Git pushes cannot atomically install protecting refs in the source repository.
-Unsupported links fall back to importing the selected commits and their reachable
-history. Garbage collection at creation would not remove that reachable history.
+Optional seeding runs on a dedicated niced thread with a five-second budget and
+verifies the imported graph before publication. Unsupported links, incomplete
+graphs and budget exhaustion fall back to importing the selected commits and
+their reachable history. Garbage collection at creation would not remove that
+reachable history.
 
 The daemon registers `reviews/sync.rs` independently of client subscriptions.
 Its blocking worker discovers active PRs in pages, watches canonical worktree
@@ -1949,7 +1952,9 @@ snapshot pins and opening journals; an unused owned receiver is removed. Closed,
 unmerged reviews retain their receiving setup while the original workspace stays
 ready, so reopen still requires that workspace. Metadata and comments survive
 receiver reclamation; historical Git content can become unavailable. Startup
-also collects retained receivers once, with failures retried by later turns.
+also collects retained receivers, with failures retried by later turns and
+successful collections throttled to once an hour. Build-owned pack keep markers
+are released when the source no longer shares their inode.
 Running or unsettled merge publication retains its receiver until saved retry
 work settles, even when local integration already marked the PR Merged.
 Active receivers use Git's normal pruning grace period: `--prune=now` could race

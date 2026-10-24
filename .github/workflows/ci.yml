@@ -649,31 +649,35 @@ jobs:
             ${{ env.REGISTRY }}/build-relay:latest
             ${{ env.REGISTRY }}/build-relay:${{ github.sha }}
 
-  # One rollout job per tier, not one job holding both. A single deploy job has
-  # to wait for BOTH image jobs before it starts, so the app — whose image is
-  # ready in ~3 min — sat waiting on a relay build it shares nothing with. Split,
-  # the web client ships as soon as its own image exists.
-  #
-  # Each still applies its manifest ONLY when its image job actually succeeded.
-  # Applying a manifest whose image was never built pins the Deployment to a
-  # :SHA tag that is not in the registry — an ImagePullBackOff in production,
-  # and for the relay a Recreate that never comes back. The gate is the image
-  # job's own result, NOT "did this tier change": `changes.outputs.app` only says
-  # the tier moved, and the image job can still be SKIPPED by a red check above
-  # it. On 2026-07-29 those two facts took getbuild.ing down — web-e2e went red,
-  # build-app was skipped, the roll applied `:<sha>` anyway, and the rollout
-  # replaced a serving pod with one that could not pull.
+  # Wait for the full validation graph, including unrelated tiers. Path-filtered
+  # suites may skip; any failed or cancelled prerequisite blocks both rollouts.
+  validation:
+    name: All production validation
+    needs: [changes, bridge, bridge-macos, interop, transport, web, web-e2e, spa, landing, scripts, skriftapp, shell, buildctl, desktop, secrets]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful validation or filtered skips
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          jq -e '.changes.result == "success" and all(.[]; .result == "success" or .result == "skipped")' <<< "$JOB_RESULTS"
+
+  # Each tier rolls out only after its own image and the full validation graph
+  # succeed. Never apply a SHA whose image was not published: a skipped build
+  # must not replace a serving pod with an image that cannot be pulled.
   deploy-app:
     name: Deploy the app (ns 8ly)
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-deploy-app
       cancel-in-progress: false
-    needs: [changes, build-app]
+    needs: [changes, build-app, validation]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
           && github.ref == 'refs/heads/main'
-          && needs['build-app'].result == 'success' }}
+          && needs['build-app'].result == 'success'
+          && needs.validation.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -735,12 +739,13 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-deploy-relay
       cancel-in-progress: false
-    needs: [changes, build-relay]
+    needs: [changes, build-relay, validation]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
           && github.ref == 'refs/heads/main'
-          && needs['build-relay'].result == 'success' }}
+          && needs['build-relay'].result == 'success'
+          && needs.validation.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

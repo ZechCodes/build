@@ -114,12 +114,11 @@ and pushes that commit to the branch. A non-fast-forward is refused unless
 `--force` is explicit; that path uses an exact `--force-with-lease` against the
 fetched tip. Concurrent branch changes refuse the forced push. No tags,
 workflow dispatches or other branches are touched. The target ref must include
-the dev signal workflow; moving `dev` triggers the hosted deploy through #808
+the dev deployment workflow; moving `dev` triggers its deploy-only hosted flow
 ([dev deployment contract](../../deploy/k8s/dev/README.md#automatic-deployment-and-branch-ownership)).
 
 App status reads `/app/static/version.json` and the latest deployment workflow
-run with `gh`. Dev's deploy workflow runs on main, so its latest run is not
-filtered by branch `dev`. The reported public version and workflow run can differ
+run with `gh` by workflow name. Dev's deploy workflow runs from `dev`. The reported public version and workflow run can differ
 while a deployment is pending, failed, or superseded; status reports both rather
 than asserting they are the same revision. Endpoint and workflow failures are
 reported independently, preserving whichever status is available. The combined

@@ -37,13 +37,13 @@ permissions, pod-exec permission or production namespace permissions. However,
 Job/Deployment create plus pods/log is equivalent to reading the dev secrets:
 a workload can mount them and print them. This is accepted because only
 dev-scoped credentials live in `build-dev` and the `development` environment is
-restricted to workflow refs on `main`, with no required reviewers. The
+restricted to workflow refs on `dev`, with no required reviewers. The
 operator-only `ci-rbac.yaml` defines this ServiceAccount, Role and RoleBinding; it is excluded from the CI
 render. Create its token separately, store the kubeconfig only in the protected
 environment, and verify permissions with that actual credential, including
 denial of pod exec and access to `8ly`. CI never bootstraps these permissions or
 secrets. Repository package permissions must allow publishing `build-app-dev`
-and `build-relay-dev`. Build/check jobs receive no kube credential.
+and `build-relay-dev`. Build jobs receive no kube credential.
 
 CI's Ingress create/update/patch verbs could claim any Traefik host, including a
 production host. The reviewed renderer rejects unexpected hosts, but it is
@@ -101,60 +101,50 @@ database privileges and the guarded preflight enforce the isolation boundary.
 
 ## Automatic deployment and branch ownership
 
-A push (including a force-push) to `refs/heads/dev` starts the secret-free
-`dev-deploy-request.yml` workflow, named `Dev deploy request`. It has an empty
-permission set, no checkout, no environment, no inputs and no artifacts. Its
-successful completion starts `dev-deploy.yml` through `workflow_run` on the
-repository's default branch, which must remain `main`.
-[GitHub's workflow_run contract](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
-uses the default branch's workflow definition and allows it to access its own
-secrets. The main-side entry gate additionally requires `refs/heads/main`, a
-successful `push` event on `dev`, and the same head repository. A manual dispatch
-on `main` remains available for retries; it is not part of the normal dev flow.
-No development environment approval is required; its `main`-only branch policy
-stays in place. Production workflows, environments and manifests are unchanged.
+Task branches pass through the serial merge gate into `dev`, the integration
+branch. A push (including a force-push) to `refs/heads/dev` runs
+`dev-deploy.yml` from that dev commit and automatically deploys the dev stack.
+There is no checks job, lint or test step, signal workflow, or `workflow_run`
+trust split. The app and relay image builds are the deployment gates; the app
+image builds the SPA and landing page, and the relay image compiles its binaries.
+Full validation runs in the serial merge gate and in main's `CI and deploy`.
+After live dev validation, promotion fast-forwards `main` to the validated dev
+commit. Both production rollouts wait for every test job through the production
+validation aggregate, including web-e2e and desktop. Path-filtered skipped suites
+are accepted; failed or cancelled suites block production rollouts.
 
-Agents and the orchestrator with repository write access may move `dev`, just as
-they push task branches. Force-push is intentionally allowed for testing a task
-branch; prefer `--force-with-lease` to avoid overwriting another writer's update.
-Keep the signal workflow in commits pushed to `dev`: deleting, renaming or
-breaking it can stop notifications, but cannot replace the workflow definition
-executed on `main`. Use a normal authenticated git credential (a user token or
-GitHub App token), not a workflow's `GITHUB_TOKEN`, whose pushes do not trigger
-other workflows ([GitHub token behavior](https://docs.github.com/en/actions/concepts/security/github_token)). Neither branch protection nor credentials are changed by this
-implementation. Rollout requires merging these workflow changes to `main` and
-including the signal file in the next dev tip; no dispatch is needed afterward.
+Only trusted pushers may move `dev`: its workflow, Containerfiles, manifests and
+renderer run from `dev` with dev-only credentials. This gives dev writers
+authority over dev workloads and credentials. Do not add production secrets to
+this workflow or its environment. The protected `development` environment must
+allow workflow refs on `dev`, with no required reviewers. When adopting this
+workflow, the coordinator must change its former `main`-only branch policy to
+`dev`; this is a separate live setting, not changed by this commit.
 
-The signal carries no deployment instructions. Main ignores its SHA, outputs,
-artifacts, display names and inputs: it independently resolves the current dev
-branch. Delayed or reordered signals therefore deploy the current tip at resolution rather
-than a stale signal SHA. Changing the dev copy of `dev-deploy.yml` cannot change
-the main-side workflow. Dev source code, dependency hooks, Containerfiles,
-manifests and the renderer still execute in that reviewed pipeline; dev pushers
-are trusted with dev-only credentials and images. This is not a sandbox for
-hostile commits. Do not add production secrets to this workflow or environment.
+Agents may move `dev` only when their task authorizes it. Prefer
+`--force-with-lease` when a force-push is explicitly authorized.
+`buildctl --env dev app deploy <ref>` normally fast-forwards `dev`. Use a normal
+authenticated git credential (user or GitHub App token); pushes with a workflow's
+`GITHUB_TOKEN` do not trigger another workflow. Manual dispatch on the `dev` ref
+remains available for retries. Dispatch on another ref cannot deploy.
 
-The `dev-deploy.yml` workflow resolves the `dev` branch once, records its
-full SHA, and checks out that SHA for all checks, image builds and deployment
-rendering. It publishes only `build-app-dev:<SHA>` and `build-relay-dev:<SHA>`;
-rollouts use the returned immutable digests, never a mutable tag. Re-dispatching
-can rebuild the same SHA; the new run still deploys only its own build's digest.
+The workflow resolves its triggering commit (`github.sha`) once and records the
+full SHA. Every image build and deployment render checks out that SHA. It
+publishes only `build-app-dev:<SHA>` and `build-relay-dev:<SHA>`; rollouts use the
+returned immutable digests. A retry rebuilds that SHA and uses its own digests.
 The Containerfile defaults remain production (`APP_CONFIG=app.yaml`,
 `VITE_BUILD_CHANNEL=prod`); the dev workflow explicitly supplies
 `APP_CONFIG=app.channel-dev.yaml`, `VITE_BUILD_CHANNEL=dev`, the dev relay URL
 and the resolved source SHA.
 
-Both build jobs require the checks to succeed; failed, skipped or cancelled
-checks prevent publishing and deployment. New runs cancel older checks and image
-builds through their respective concurrency groups. There is deliberately no
-workflow-level cancellation: it would override rollout protection. Each rollout
-waits only for its own successful image and has its own non-cancelling concurrency
-group (`deploy-app-dev` or `deploy-relay-dev`). Once migration/rollout starts, it
-finishes before the next ready job in that group runs. GitHub concurrency keeps
-at most one pending job per group and may replace a pending job; intermediate
-tips can be superseded rather than deployed. App and relay remain independent.
-A partial failure or manual cancellation can still need operator recovery, but a
-new push does not interrupt an active migration or rollout.
+A failed, skipped or cancelled image build prevents its rollout. New runs cancel
+older image builds through their respective concurrency groups. There is no
+workflow-level cancellation: each rollout waits for its own successful image in
+its own non-cancelling group (`deploy-app-dev` or `deploy-relay-dev`). Once
+migration/rollout starts, it finishes before the next ready job in that group
+runs. GitHub keeps at most one pending job per group and may replace a pending
+job; intermediate tips may be superseded. App and relay remain independent.
+A partial failure or manual cancellation can still need operator recovery.
 
 At the start of each rollout job, **inside its non-cancelling concurrency group**,
 a read-only GitHub API request re-reads `refs/heads/dev`. If its tip differs from
@@ -164,7 +154,7 @@ migration and rollout. An API error or malformed SHA fails closed. A delayed old
 job therefore cannot overwrite a newer deployment: it must still match dev when
 it acquires the group. A tip that moves after this check lets the active rollout
 finish; the newer run follows it. This check does not change the selected source
-SHA or consume anything from the signal workflow. GitHub does not guarantee FIFO
+SHA or accept a different source commit. GitHub does not guarantee FIFO
 scheduling; superseded snapshots are deliberately skipped.
 `kubectl kustomize deploy/k8s/dev` is an offline render. `deploy/render_dev.py`
 refuses cluster/bootstrap resources, unexpected names/namespaces and source
@@ -197,7 +187,7 @@ validates all three implementation slices before any deployment is authorized.
 
 This is an operator procedure, **never a CI step**. Complete it before pushing
 the first deployable dev tip; automatic dev rollouts have no approval pause.
-The `development` environment restricts workflow refs to `main` and has no
+The `development` environment restricts workflow refs to `dev` and has no
 required reviewers. Prepare the namespace, RBAC,
 secrets, database role/schema and DNS/TLS from the provisioning checklist first.
 Do not apply the app phase or create its public Ingress during bootstrap.
@@ -308,7 +298,7 @@ operator control; never reset setup on a running stack. A failed first workflow
 migration check can be rerun only after this procedure is complete.
 
 After successful private delivery and pod cleanup, report only the local invite
-file's path. Then push the intended dev tip (or manually retry the main-side
+file's path. Then push the intended dev tip (or manually retry the dev
 deploy workflow after bootstrap if the first run failed its bootstrap check).
 CI repeats migrations and the bootstrap check before applying the app
 Service/Deployment/Ingress. Verify `/healthz` and `/readyz` return 200,

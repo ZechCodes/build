@@ -2999,6 +2999,18 @@ status/logs, pairing, verified rollback and pruning; `app deploy` advances the
 registered hosted branch, while `app status` reads the public version and latest
 deployment workflow. An explicit `--force` uses an exact force-with-lease.
 
+Task branches start from `origin/dev` and enter `dev` through the serial merge
+gate. The dev branch runs its own deploy-only workflow on pushes: resolve the
+triggering SHA, build the app/relay images, then roll out only successful images
+to `build-dev`. Trusted dev pushers control that workflow and dev-only
+credentials; no main-owned signal workflow or CI checks precede dev builds.
+Rollout groups never cancel, and each rechecks the dev tip before applying
+immutable image digests. The `development` environment must allow the `dev` ref.
+After validation on the dev stack, `dev` is promoted to `main` by fast-forward.
+Main's `CI and deploy` retains the full test graph; both production rollouts
+require its validation aggregate, which accepts path-filtered skips but rejects
+failed or cancelled suites. `buildctl app deploy` still fast-forwards `dev`.
+
 Bridge deployment builds a resolved commit (default `origin/dev`) in a temporary
 worktree under `nice -n 10`, stages immutable binaries in
 `~/.local/state/build-dev/builds/<sha>/`, strips inherited `BRIDGE_*` settings,

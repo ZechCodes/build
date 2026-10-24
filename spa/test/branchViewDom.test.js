@@ -341,7 +341,7 @@ describe("the branch surface", () => {
     expect(document.querySelector("#next-view")).toBeTruthy();
   });
 
-  it("detects Git initialized by another client and replaces the folder prompt", async () => {
+  it.each(["row", "project"])("detects Git initialized by another client and replaces the folder prompt (%s first)", async (first) => {
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" };
     bridge.call = vi.fn(async (method) => {
       if (method === "git.status") return { files: [], head: "abc" };
@@ -352,14 +352,34 @@ describe("the branch surface", () => {
     await openBranch();
     expect(document.querySelector("#init-git")).toBeTruthy();
 
-    // Another client initialized it, and the pass that heard so rewrote the
-    // project list. The surface hears that write, not a poll.
-    await cacheBoard({
-      items: [{ ...row, branch: "main", primary: true, worktree_id: null, run_id: "run-main" }],
-      projects: [{ project_id: "p1", name: "notes", is_git: true }],
+    const { writeCached } = await import("../src/core/localCache.js");
+    const { deviceFeedNow } = await import("../src/core/feedRows.js");
+    const { liveFeedSnapshot } = await import("../src/core/feedMerge.js");
+    const initialized = liveFeedSnapshot({
+      items: [{ ...row, branch: "main", primary: true, worktree_id: null, run_id: "run-main" }], runs: [],
+    }, { projects: [{ project_id: "p1", name: "notes", is_git: true }] }, { workspaces: [] }, "dev-1");
+    // These records commit separately. Wait for the first delivery so the
+    // project-only update must be heard even when the row is unchanged.
+    const publishRow = async () => {
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, initialized);
+      await vi.waitFor(() => expect(deviceFeedNow("dev-1").items[0]?.run_id).toBe("run-main"));
+    };
+    const publishProject = async () => {
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, initialized.projects);
+      await vi.waitFor(() => expect(deviceFeedNow("dev-1").projects[0]?.is_git).toBe(true));
+    };
+    if (first === "row") {
+      await publishRow();
+      expect(document.querySelector("#init-git")).toBeTruthy();
+      await publishProject();
+    } else {
+      await publishProject();
+      await publishRow();
+    }
+    await vi.waitFor(() => {
+      expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
+      expect(document.querySelector("#init-git")).toBeNull();
     });
-
-    expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
     await stopReaders();
   });
 

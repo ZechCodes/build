@@ -150,23 +150,48 @@ async function recentRepairPage(request, held, floor) {
     limit: REPAIRED_THREAD_ITEMS,
   });
   if (!response || !requestIsActive(request)) return null;
-  return response.lean ? repairedActivityCopies(request, held, response.page) : response.page;
+  return repairedHeldCopies(request, held, response.page, response.lean);
 }
 
-/** A lean repair can omit a held call that changed beneath its newest row.
- * Refresh only omitted recent representatives, over exact one-item spans;
- * failed reads leave the repair debt in place rather than blessing stale rows. */
-async function repairedActivityCopies(request, held, page) {
+/** Repair only recent held representatives omitted by a cap or projection.
+ * At most REPAIRED_THREAD_ITEMS exact reads can follow one repair page. A
+ * sparse window therefore makes progress without walking all omitted history;
+ * failed reads leave debt in place rather than blessing stale rows. */
+async function repairedHeldCopies(request, held, page, lean) {
   const shipped = new Set((page.items || []).map(threadItemKey));
   const missing = recentHeldItems(held).filter((item) =>
-    !shipped.has(threadItemKey(item)) && !!digestCovering(page.activity_digests, item.data?.sequence));
+    !shipped.has(threadItemKey(item)) && (page.has_more === true
+      || (lean && !!digestCovering(page.activity_digests, item.data?.sequence))));
   const copies = [];
   for (const item of missing) {
-    const copy = await readActivityCopy(request, held, item);
+    const projected = lean && digestCovering(page.activity_digests, item.data?.sequence);
+    const copy = await (projected ? readActivityCopy(request, held, item) : readExactCopy(request, held, item));
     if (!copy) return null;
     copies.push(copy);
   }
   return { ...page, items: mergeThreadItems(page.items, copies) };
+}
+
+/** An unprojected one-item forward read reaches exactly the known creation.
+ * Its snapshot counter is intentionally ignored: this read repairs a held
+ * copy and cannot certify newly created messages beyond the forward page. */
+async function readExactCopy(request, held, item) {
+  if (!requestIsActive(request)) return null;
+  const sequence = Number(item.data.sequence);
+  try {
+    const page = await request.call("thread.page", {
+      entity_id: request.entityId,
+      ...(request.agentId ? { agent_id: request.agentId } : {}),
+      ...threadGenerationParam(threadIdFor(request, held)),
+      after_sequence: sequence - 1,
+      limit: 1,
+    }, requestPriorityFields(requestPriority(request)));
+    const threadId = threadIdFor(request, held);
+    if (threadId && page.thread_id !== threadId) return null;
+    return (page.items || []).find((copy) => copy.data?.sequence === sequence) || null;
+  } catch {
+    return null;
+  }
 }
 
 async function readActivityCopy(request, held, item) {

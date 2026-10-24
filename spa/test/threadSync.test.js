@@ -348,3 +348,84 @@ describe("capped repair coverage", () => {
     expect(complete.deliveredSequence).toBe(100);
   });
 });
+
+describe("sparse cached windows needing capped repair", () => {
+  it("refreshes missing held representatives with bounded exact pages instead of repeating the same capped repair", async () => {
+    const first = message(1, "start");
+    const last = message(100, "old reply");
+    await cache.writeCached(address, windowAt(first, last));
+    const updated = { ...message(100, "edited reply"), data: { ...last.data, body: "edited reply", updated_sequence: 103 } };
+    const items = [first, ...Array.from({ length: 98 }, (_, index) => ({
+      type: "event", data: { sequence: index + 2, event: "tool_use", summary: "activity omitted from held window" },
+    })), updated];
+    const call = vi.fn(async (_method, params) => {
+      const after = items.filter((item) => item.data.sequence > params.after_sequence);
+      return { items: after.slice(0, params.limit), has_more: after.length > params.limit, thread_last_sequence: 103 };
+    });
+    const request = { ...address, conversationId: address.sub, call };
+    await syncThreadWindow(request);
+    const held = (await cache.readCached(address)).value;
+    expect(held.items).toEqual([first, updated]);
+    expect(held.deliveredSequence).toBe(103);
+    expect(held.repairThrough).toBeUndefined();
+    expect(call.mock.calls.map(([method, params]) => [method, params.after_sequence, params.limit])).toEqual([
+      ["thread.page", 100, 100], ["thread.page", 0, 50], ["thread.page", 99, 1],
+    ]);
+    await syncThreadWindow(request);
+    expect(call).toHaveBeenCalledTimes(4);
+    expect(call.mock.calls.at(-1)[1].after_sequence).toBe(103);
+  });
+});
+
+describe("bounded exact repair reads", () => {
+  it.each(["unavailable", "wrong-generation", "wrong-sequence"])("retains debt after an %s exact copy and recovers on a later read", async (failure) => {
+    const first = message(1, "start");
+    const last = message(100, "old");
+    const updated = { type: "message", data: { ...last.data, body: "edited", updated_sequence: 103 } };
+    await cache.writeCached(address, { ...windowAt(first, last), thread_id: "thread-1", thread_generation_revision: 1 });
+    let refuse = true;
+    const call = vi.fn(async (_method, params) => {
+      if (params.limit === 1) {
+        expect(params.activity).toBeUndefined();
+        expect(params.thread_id).toBe("thread-1");
+        if (refuse && failure === "unavailable") throw new Error("offline");
+        return { thread_id: refuse && failure === "wrong-generation" ? "thread-other" : "thread-1",
+          items: [refuse && failure === "wrong-sequence" ? message(101, "unseen") : updated], thread_last_sequence: 110 };
+      }
+      return { thread_id: "thread-1", items: params.after_sequence === 0 ? [first] : [],
+        has_more: params.after_sequence === 0, thread_last_sequence: 103 };
+    });
+    const request = { ...address, conversationId: address.sub, threadId: "thread-1", call };
+    await syncThreadWindow(request);
+    expect((await cache.readCached(address)).value).toMatchObject({ items: [first, last], deliveredSequence: 103, repairThrough: 103 });
+    refuse = false;
+    await syncThreadWindow(request);
+    const held = (await cache.readCached(address)).value;
+    expect(held.items).toEqual([first, updated]);
+    expect(held.repairThrough).toBeUndefined();
+    expect(held.deliveredSequence).toBe(103);
+    expect(call.mock.calls.filter(([, params]) => params.limit === 1)).toHaveLength(2);
+  });
+
+  it("limits exact work to the fifty recent held representatives across a very sparse history", async () => {
+    const heldItems = Array.from({ length: REPAIRED_THREAD_ITEMS + 10 }, (_, index) => message((index + 1) * 1000, "held"));
+    await cache.writeCached(address, windowAt(...heldItems));
+    const counter = heldItems.at(-1).data.sequence + 3;
+    const call = vi.fn(async (_method, params) => {
+      const remaining = Math.max(0, counter - 3 - params.after_sequence);
+      const items = Array.from({ length: Math.min(params.limit, remaining) }, (_, index) => {
+        const sequence = params.after_sequence + index + 1;
+        return sequence % 1000 === 0 ? message(sequence, "held")
+          : { type: "event", data: { sequence, event: "tool_use" } };
+      });
+      return { items, has_more: remaining > params.limit, thread_last_sequence: counter };
+    });
+    await syncThreadWindow({ ...address, conversationId: address.sub, call });
+    const held = (await cache.readCached(address)).value;
+    expect(held.items).toEqual(heldItems);
+    expect(held.repairThrough).toBeUndefined();
+    expect(held.deliveredSequence).toBe(counter);
+    expect(call).toHaveBeenCalledTimes(REPAIRED_THREAD_ITEMS + 1);
+    expect(call.mock.calls.filter(([, params]) => params.limit === 1)).toHaveLength(REPAIRED_THREAD_ITEMS - 1);
+  });
+});

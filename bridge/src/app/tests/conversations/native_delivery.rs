@@ -540,7 +540,17 @@ fn delivered_receipt_updates_status_and_seen_without_payload() {
         .unwrap();
     assert_eq!(
         operation_message(&state, &owner, &agent, "trimmed-operation").delivery_status,
-        Some(MessageDeliveryStatus::Uncertain)
+        Some(MessageDeliveryStatus::Sent),
+        "a late uncertain observation preserves an established handoff"
+    );
+    assert_eq!(
+        state
+            .operation_receipt("trimmed-operation")
+            .unwrap()
+            .unwrap()
+            .status,
+        crate::operation::OperationStatus::Uncertain,
+        "the later Seen receipt must handle a compacted uncertain operation"
     );
     assert!(
         PendingAgentTurn::for_delivery_operation(

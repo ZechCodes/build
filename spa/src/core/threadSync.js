@@ -165,7 +165,7 @@ async function repairedActivityCopies(request, held, page) {
   for (const item of missing) {
     const copy = await readActivityCopy(request, held, item);
     if (!copy) return null;
-    copies.push(copy);
+    if (copy.item) copies.push(copy.item);
   }
   return { ...page, items: mergeThreadItems(page.items, copies) };
 }
@@ -182,10 +182,20 @@ async function readActivityCopy(request, held, item) {
       through_sequence: sequence,
       limit: 1,
     }, requestPriorityFields(requestPriority(request)));
-    return (page.items || []).find((copy) => copy.data?.sequence === sequence) || null;
+    await publishActivityFloor(request, held, page);
+    const item = (page.items || []).find((copy) => copy.data?.sequence === sequence);
+    return (item || sequence < threadHistoryStart(page)) ? { item } : null;
   } catch {
     return null;
   }
+}
+
+async function publishActivityFloor(request, held, page) {
+  if (!threadHistoryStart(page) || !requestIsActive(request)) return;
+  const scoped = { ...page, ...threadGenerationParam(threadIdFor(request, held)) };
+  await mergeCachedAtomically(threadTarget(request), (current) =>
+    requestIsActive(request) && !differentThreadGeneration(current, scoped)
+      ? trimThreadHistory(current, scoped) : null);
 }
 
 /** The sequence just under the newest items the record holds from the wire,

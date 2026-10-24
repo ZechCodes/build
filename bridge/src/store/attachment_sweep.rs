@@ -1,6 +1,10 @@
 //! Garbage collection for the bridge's content-addressed attachment copies.
 
+#[path = "attachment_sweep/files.rs"]
+mod files;
+
 use super::{Store, StoreError, DB_FILE};
+use files::{collect_candidates, Candidate};
 use rusqlite::{Connection, OpenFlags};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -26,7 +30,7 @@ pub(crate) fn refresh_attachment_admission(path: &Path) -> std::io::Result<()> {
 pub struct AttachmentSweep {
     observed_changes: u64,
     observed_data_version: i64,
-    candidates: Vec<PathBuf>,
+    candidates: Vec<Candidate>,
     older_than: SystemTime,
 }
 
@@ -53,7 +57,13 @@ impl Store {
         let referenced = referenced_leaves(&snapshot)?;
         let mut candidates = Vec::new();
         for home in homes {
-            collect_candidates(home, &referenced, older_than, &mut candidates)?;
+            collect_candidates(
+                home,
+                &referenced,
+                older_than,
+                &mut candidates,
+                SWEEP_BATCH_SIZE,
+            )?;
             if candidates.len() == SWEEP_BATCH_SIZE {
                 break;
             }
@@ -80,15 +90,8 @@ impl Store {
             }
             let _admission = attachment_admission();
             let mut deleted = 0;
-            for path in sweep.candidates {
-                if !old_regular_file(&path, sweep.older_than)? {
-                    continue;
-                }
-                match std::fs::remove_file(path) {
-                    Ok(()) => deleted += 1,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                    Err(error) => return Err(error.into()),
-                }
+            for candidate in sweep.candidates {
+                deleted += usize::from(candidate.remove_if_unchanged(sweep.older_than)?);
             }
             Ok(deleted)
         })
@@ -145,43 +148,6 @@ fn retain_leaf(retained: &mut HashSet<String>, path: &str) {
     }
 }
 
-fn collect_candidates(
-    home: &Path,
-    retained: &HashSet<String>,
-    older_than: SystemTime,
-    candidates: &mut Vec<PathBuf>,
-) -> Result<(), StoreError> {
-    let metadata = match home.symlink_metadata() {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    // Never descend into symlinked roots or subdirectories.
-    if !metadata.file_type().is_dir() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(home)? {
-        let entry = entry?;
-        if !retained.contains(&entry.file_name().to_string_lossy().into_owned())
-            && old_regular_file(&entry.path(), older_than)?
-        {
-            candidates.push(entry.path());
-            if candidates.len() == SWEEP_BATCH_SIZE {
-                break;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn old_regular_file(path: &Path, older_than: SystemTime) -> Result<bool, StoreError> {
-    match path.symlink_metadata() {
-        Ok(metadata) => Ok(metadata.file_type().is_file() && metadata.modified()? < older_than),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::Store;
@@ -189,6 +155,12 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
+
+    // macOS exposes the temporary directory through /var or /tmp symlinks.
+    // Test actual directory capabilities independently of those system aliases.
+    fn sweep_dir() -> tempfile::TempDir {
+        tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
+    }
 
     fn old_file(home: &std::path::Path, leaf: &str) -> PathBuf {
         std::fs::create_dir_all(home).unwrap();
@@ -205,7 +177,7 @@ mod tests {
 
     #[test]
     fn sweep_preserves_exact_references_across_durable_documents_and_uploads() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = sweep_dir();
         let store = Store::new(dir.path()).unwrap();
         let local = store.attachments_dir();
         let worktree = dir.path().join("checkout/.build/attachments");
@@ -251,7 +223,7 @@ mod tests {
 
     #[test]
     fn sweep_ignores_substrings_new_uploads_directories_and_symlinks() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = sweep_dir();
         let store = Store::new(dir.path()).unwrap();
         let home = store.attachments_dir();
         let orphan = old_file(&home, "orphan.png");
@@ -289,7 +261,7 @@ mod tests {
     }
     #[test]
     fn apply_retries_if_a_reference_was_committed_after_the_snapshot() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = sweep_dir();
         let store = Store::new(dir.path()).unwrap();
         let home = store.attachments_dir();
         let file = old_file(&home, "late.png");
@@ -303,7 +275,7 @@ mod tests {
 
     #[test]
     fn sweep_is_bounded_and_rechecks_file_age_at_apply() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = sweep_dir();
         let store = Store::new(dir.path()).unwrap();
         let home = store.attachments_dir();
         for index in 0..140 {
@@ -336,7 +308,7 @@ mod tests {
 
     #[test]
     fn apply_detects_references_committed_by_another_connection() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = sweep_dir();
         let store = Store::new(dir.path()).unwrap();
         let home = store.attachments_dir();
         let file = old_file(&home, "external.png");
@@ -351,7 +323,7 @@ mod tests {
 
     #[test]
     fn corrupt_reference_documents_abort_before_any_deletion() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = sweep_dir();
         let store = Store::new(dir.path()).unwrap();
         let home = store.attachments_dir();
         let file = old_file(&home, "keep.png");
@@ -360,5 +332,48 @@ mod tests {
             .sweep_unreferenced_attachments(&[home], SystemTime::now())
             .is_err());
         assert!(file.exists());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn swapping_attachment_home_for_symlink_cannot_delete_external_files() {
+        let dir = sweep_dir();
+        let store = Store::new(dir.path()).unwrap();
+        let home = store.attachments_dir();
+        old_file(&home, "same.png");
+        let outside = dir.path().join("outside");
+        let external = old_file(&outside, "same.png");
+        let plan = store
+            .prepare_attachment_sweep(&[home.clone()], SystemTime::now())
+            .unwrap();
+        let moved = dir.path().join("old-attachments");
+        std::fs::rename(&home, &moved).unwrap();
+        std::os::unix::fs::symlink(&outside, &home).unwrap();
+        store.apply_attachment_sweep(plan).unwrap();
+        assert!(
+            external.exists(),
+            "a replaced root must never redirect deletion"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_home_with_symlinked_ancestor_is_not_swept() {
+        let dir = sweep_dir();
+        let store = Store::new(dir.path()).unwrap();
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let outside = dir.path().join("outside");
+        let external = old_file(&outside.join("attachments"), "same.png");
+        std::os::unix::fs::symlink(&outside, checkout.join(".build")).unwrap();
+        assert_eq!(
+            store
+                .sweep_unreferenced_attachments(
+                    &[checkout.join(".build/attachments")],
+                    SystemTime::now()
+                )
+                .unwrap(),
+            0
+        );
+        assert!(external.exists());
     }
 }

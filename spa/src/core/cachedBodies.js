@@ -179,15 +179,15 @@ export function createCachedBodies({
   };
 
   const writeAddresses = (addresses) => guard ? [...addresses, guard.address] : addresses;
-  const writeAllowed = (records, startedFrom, guardIndex) =>
-    !disposed && recordWriteOf(records[0]) === startedFrom && (!guard || guard.accepts(records[guardIndex]?.value));
+  const writeAllowed = (records, startedFrom, guardIndex, value = records[0]?.value) =>
+    !disposed && recordWriteOf(records[0]) === startedFrom && (!guard || guard.accepts(records[guardIndex]?.value, value));
 
   /** Admit the answer and all its pages together, checking this reader's
    * lifetime and owning generation inside the transaction. */
   const keepFetched = (at, value, startedFrom, bodyPages = []) => {
     const puts = [{ address: at, value }, ...bodyPages.map((page) => bodyPagePut(at, page))];
     return mergeCachedRecordsTogether(writeAddresses(puts.map((put) => put.address)), (records) =>
-      writeAllowed(records, startedFrom, puts.length)
+      writeAllowed(records, startedFrom, puts.length, value)
         ? records.map((_record, index) => puts[index]?.value ?? null)
         : records.map(() => null));
   };

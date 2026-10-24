@@ -358,14 +358,11 @@ impl AppState {
     }
 
     fn thread_read_boundary(&self, params: &Value, mut value: Value) -> Result<Value, String> {
-        if let Some(store) = &self.store {
-            let owner = conversation_owner_param(params)?;
-            let address = self.resolve_conversation_params(&owner, params)?;
-            let thread = self.conversation_at(&address)?;
-            let boundary = store
-                .thread_retention_boundary(&thread.agent.id)
-                .map_err(|error| format!("conversation store: {error}"))?;
-            super::sql_read::attach_retention_boundary(&mut value, &thread.id, boundary.as_ref());
+        let owner = conversation_owner_param(params)?;
+        let address = self.resolve_conversation_params(&owner, params)?;
+        let thread = self.conversation_at(&address)?;
+        if let Some(floor) = thread.history_start_sequence {
+            value["history_start_sequence"] = floor.into();
         }
         Ok(value)
     }

@@ -82,3 +82,12 @@ it("does not repair the deliberately removed prefix when catch-up crosses the re
   expect((await cache.readCached(address)).value.items).toEqual([message(8)]);
   expect(call).toHaveBeenCalledTimes(1);
 });
+
+it("keeps a real gap above the retention floor available for older paging", async () => {
+  const { threadWindow } = await import("../src/core/threadSync.js");
+  const held = { ...windowAt(message(8)), historyStartSequence: 8 };
+  const fresh = threadWindow(held, { items: [message(11)], history_start_sequence: 8, has_more: true, thread_last_sequence: 11 }, { newest: true });
+  expect(fresh.items).toEqual([message(11)]);
+  expect(fresh.olderItemsRemain).toBe(true);
+  expect(fresh.historyStartSequence).toBe(8);
+});

@@ -111,3 +111,19 @@ describe("lean thread page requests", () => {
     expect(held.repairThrough).toBe(refusal ? 4 : undefined);
   });
 });
+
+it("publishes the floor from an exact activity repair even when its held copy was pruned", async () => {
+  await greet(["threads.leanActivity"]);
+  const thought = { type: "event", data: { sequence: 3, event: "reasoning" } };
+  await cache.writeCached(address, { items: [message(1), activity(2), thought], deliveredSequence: 3 });
+  const call = vi.fn(async (method, params) => {
+    if (method === "thread.activity") return { items: [], history_start_sequence: 5, has_more: false };
+    return params.newest
+      ? { items: [], thread_last_sequence: 4, has_more: false }
+      : { items: [thought], thread_last_sequence: 4, activity_digests: [{ from_sequence: 2, through_sequence: 3, rows: 2 }], has_more: false };
+  });
+  await read(call);
+  const held = (await cache.readCached(address)).value;
+  expect(held.historyStartSequence).toBe(5);
+  expect(held.items).toEqual([]);
+});

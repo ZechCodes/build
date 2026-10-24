@@ -1082,8 +1082,9 @@ An empty history can report high-water mark + 1 without reissuing counters.
 
 Attachment sweeping runs independently of the pruning toggle. Exact parsed
 path references across durable documents and draft upload reservations protect
-both local and checkout copies. Stale reservations expire after the configured
-window; newly migrated reservations receive a full grace window. File scans run
+both local and checkout copies. Message commits do not consume shared-path
+reservations: another client may still hold that file in a draft. Stale
+reservations expire after the configured window; newly migrated reservations receive a full grace window. File scans run
 without the writer or app lock. A bounded final unlink rechecks the unchanged
 DB snapshot and shares an admission gate with file validation, which refreshes
 mtime. Files newer than one hour, symlinks and directories are left alone.

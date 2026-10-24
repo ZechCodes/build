@@ -1685,7 +1685,7 @@ describe("a pass that is still out when the next session lands", () => {
     script["run.diff"] = () => new Promise((resolve) => { release = () => resolve({ diff_key: "old", patch: "old" }); });
     board = [branchItem()];
     sync.startCacheSync();
-    await settle();
+    await called(bridge.call, () => calls("run.diff").length > 0);
     expect(calls("run.diff")).toHaveLength(1);
 
     script = {};

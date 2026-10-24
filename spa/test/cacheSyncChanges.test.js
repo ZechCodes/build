@@ -726,9 +726,14 @@ describe("applying one item", () => {
       entity_id: "run-1",
       thread: [{ agent_id: "ag-1", last_sequence: 30, since_sequence: 25, items: [{ id: "m-30", data: { sequence: 30 } }] }],
     }]);
-    expect(calls("thread.page").map(([, params]) => params.after_sequence)).toEqual([7]);
+    // An incomplete answer gets one bounded retry, without borrowing the tip's
+    // higher cursor or appending its message across the unresolved gap.
+    expect(calls("thread.page").map(([, params]) => params.after_sequence)).toEqual([7, 8]);
     const record = await read("run-1", "thread", "ag-1");
     expect(record.value.items.map((one) => one.id)).toEqual(["m-1", "m-8"]);
+    expect(record.value.deliveredSequence).toBe(8);
+    await deliver([{ entity_id: "run-1", thread: [{ agent_id: "ag-1", last_sequence: 30, since_sequence: 25, items: [] }] }]);
+    expect(calls("thread.page").map(([, params]) => params.after_sequence)).toEqual([7, 8]);
   });
 
   it("trims cached history from a tip even when its counter did not advance", async () => {

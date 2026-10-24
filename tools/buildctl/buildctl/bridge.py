@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import time
 
+from .migrate import migration_lock
 from .registry import clean_environment, full_sha
 from .runtime import BuildctlError, LogRedactor, digest, redact
 from .service import service_manager
@@ -19,6 +20,13 @@ from .service import service_manager
 def management_lock(env):
     env.require_mutation()
     root = env.path(env.state_root)
+    with migration_lock(root):
+        with environment_lock(env, root):
+            yield
+
+
+@contextmanager
+def environment_lock(env, root):
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = env.path(root / "buildctl.lock")
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)

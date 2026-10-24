@@ -151,23 +151,48 @@ async function recentRepairPage(request, held, floor) {
     limit: REPAIRED_THREAD_ITEMS,
   });
   if (!response || !requestIsActive(request)) return null;
-  return response.lean ? repairedActivityCopies(request, held, response.page) : response.page;
+  return repairedHeldCopies(request, held, response.page, response.lean);
 }
 
-/** A lean repair can omit a held call that changed beneath its newest row.
- * Refresh only omitted recent representatives, over exact one-item spans;
- * failed reads leave the repair debt in place rather than blessing stale rows. */
-async function repairedActivityCopies(request, held, page) {
+/** Repair only recent held representatives omitted by a cap or projection.
+ * At most REPAIRED_THREAD_ITEMS exact reads can follow one repair page. A
+ * sparse window therefore makes progress without walking all omitted history;
+ * failed reads leave debt in place rather than blessing stale rows. */
+async function repairedHeldCopies(request, held, page, lean) {
   const shipped = new Set((page.items || []).map(threadItemKey));
   const missing = recentHeldItems(held).filter((item) =>
-    !shipped.has(threadItemKey(item)) && !!digestCovering(page.activity_digests, item.data?.sequence));
+    !shipped.has(threadItemKey(item)) && (page.has_more === true
+      || (lean && !!digestCovering(page.activity_digests, item.data?.sequence))));
   const copies = [];
   for (const item of missing) {
-    const copy = await readActivityCopy(request, held, item);
+    const projected = lean && digestCovering(page.activity_digests, item.data?.sequence);
+    const copy = await (projected ? readActivityCopy(request, held, item) : readExactCopy(request, held, item));
     if (!copy) return null;
     if (copy.item) copies.push(copy.item);
   }
   return { ...page, items: mergeThreadItems(page.items, copies) };
+}
+
+/** An unprojected one-item forward read reaches exactly the known creation.
+ * Its snapshot counter is intentionally ignored: this read repairs a held
+ * copy and cannot certify newly created messages beyond the forward page. */
+async function readExactCopy(request, held, item) {
+  if (!requestIsActive(request)) return null;
+  const sequence = Number(item.data.sequence);
+  try {
+    const page = await request.call("thread.page", {
+      entity_id: request.entityId,
+      ...(request.agentId ? { agent_id: request.agentId } : {}),
+      ...threadGenerationParam(threadIdFor(request, held)),
+      after_sequence: sequence - 1,
+      limit: 1,
+    }, requestPriorityFields(requestPriority(request)));
+    const threadId = threadIdFor(request, held);
+    if (threadId && page.thread_id !== threadId) return null;
+    return (page.items || []).find((copy) => copy.data?.sequence === sequence) || null;
+  } catch {
+    return null;
+  }
 }
 
 async function readActivityCopy(request, held, item) {
@@ -232,7 +257,17 @@ const repairedDigests = (held, page) => page.activity_digests?.length
 /** Whether this page was read at or past the counter the record owes a
  *  repair through. */
 const repaidBy = (held, page) =>
-  Boolean(held.repairThrough) && Number(page?.thread_last_sequence || 0) >= Number(held.repairThrough);
+  Boolean(held.repairThrough) && Number(page?.thread_last_sequence || 0) >= Number(held.repairThrough)
+  && repairCoversHeld(held, page);
+
+/** A capped repair can spend its page on omitted activity before reaching
+ * a recent held representative. Its global counter alone cannot pay that
+ * representative's debt. Lean exact-copy reads join page.items beforehand. */
+function repairCoversHeld(held, page) {
+  if (page.has_more !== true) return true;
+  const shipped = new Set((page.items || []).map(threadItemKey));
+  return recentHeldItems(held).every((item) => shipped.has(threadItemKey(item)));
+}
 
 /** The arrivals that are newer copies of items held. */
 function newerCopies(heldItems, arrived) {
@@ -284,10 +319,19 @@ const appendedThreadWindow = (held, arrived, page) => ({
   ...(holdsAWindow(held) ? held : arrived),
   // Merged rather than appended: the record may hold this tab's own message
   // waiting for the wire to carry it, and the arrival takes that stand-in away.
+  ...heldGenerationMetadata(held, arrived),
   items: mergeThreadItems(held.items, arrived.items),
   deliveredSequence: Math.max(Number(held.deliveredSequence || 0), arrived.deliveredSequence),
   knownTotalItems: arrived.knownTotalItems ?? held.knownTotalItems ?? null,
   activityDigests: mergeActivityDigests(held.activityDigests || [], page),
+});
+
+/** Reset authority belongs to the standing record even before its first
+ * wire item arrives; a lean push may omit its generation revision. */
+const heldGenerationMetadata = (held, arrived) => ({
+  ...(held.thread_id ? { thread_id: held.thread_id,
+    thread_generation_revision: Math.max(Number(held.thread_generation_revision || 0), Number(arrived.thread_generation_revision || 0)) } : {}),
+  ...(held.retired_thread_ids ? { retired_thread_ids: held.retired_thread_ids } : {}),
 });
 
 /** Replace a stale window with a newest-forward page that skipped a gap.
@@ -303,6 +347,7 @@ const newestThreadWindow = (held, arrived, page) => {
   const items = mergeThreadItems(mergeThreadItems(provisional, arrived.items), newer);
   return {
     ...arrived,
+    ...heldGenerationMetadata(held, arrived),
     items,
     deliveredSequence: Math.max(Number(held.deliveredSequence || 0), arrived.deliveredSequence),
     knownTotalItems: Math.max(Number(held.knownTotalItems || 0), Number(arrived.knownTotalItems || 0)) || null,
@@ -318,5 +363,18 @@ export const differentThreadGeneration = (held, page) => Boolean(held?.thread_id
 const threadIdFor = (request, held) => request.threadId || held?.thread_id;
 function mergedThreadPage(request, current, page, after, owed, lean) {
   if (!requestIsActive(request) || differentThreadGeneration(current, page)) return null;
-  return owingRepair(current, threadWindow(current, page, { newest: after > 0, lean }), owed);
+  const next = threadWindow(current, page, { newest: after > 0, lean });
+  return owingRepair(current, forwardCoveredWindow(current, next, page), owed);
+}
+
+/** Only the forward RPC owns creation coverage. Its newest window reaches
+ * the snapshot's tail (replacing an omitted message span where necessary),
+ * so its counter also covers in-place changes with no newly created row.
+ * A later repair response must never supply this cursor: it may already see
+ * new messages that the forward request did not read. */
+function forwardCoveredWindow(current, next, page) {
+  const window = next || current;
+  const through = Number(page.thread_last_sequence || 0);
+  if (!holdsAWindow(window) || through <= Number(window.deliveredSequence || 0)) return next;
+  return { ...window, deliveredSequence: through };
 }

@@ -13,6 +13,8 @@ it("bounds push IndexedDB work under concurrent multi-project agents while the o
   expect(result.pendingTransactions).toBe(0);
   expect(result.pendingAppliers).toBe(0);
   expect(result.sequences).toEqual(Array.from({ length: 6 }, () => Array.from({ length: 10 }, (_, index) => index + 1)));
+  expect(result.exactFinalMessages, JSON.stringify(result.messageMismatch)).toBe(true);
+  expect(result.exactFinalStates).toBe(true);
   expect(result.finalFrames).toEqual([54, 55, 56, 57, 58, 59]);
   expect(result.renderProgressDuringReplay).toBe(true);
   expect(result.seedRecords).toBe(818);

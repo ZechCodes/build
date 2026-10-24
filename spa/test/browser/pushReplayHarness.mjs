@@ -127,6 +127,7 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250 }
         fixture.started = performance.now();
         const inbox = fixture.watchers.find((watcher) => watcher.id === "s-inbox");
         fixture.deliveries = [];
+        fixture.expectedMessages = Array.from({ length: 6 }, () => []);
         const sampleWork = () => {
           const work = sync.pushWorkInFlight?.("replay-device");
           if (!work) return;
@@ -141,6 +142,7 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250 }
           const agent = row.agents[0];
           const sequence = Math.floor(frame / 6) + 1;
           const item = { type: "message", data: { id: `message-${frame}`, sequence, role: "agent", body: `frame ${frame}`, created_at: "2026-10-24T16:00:00Z" } };
+          fixture.expectedMessages[frame % 6].push(item);
           const tip = { agent_id: agent.id, conversation_id: agent.id, thread_id: agent.thread_id, thread_generation_revision: 1,
             since_sequence: sequence - 1, last_sequence: sequence, thread_total: sequence, items: [item] };
           if (frame % 6 === 0) fixture.emitted.set(sequence, performance.now());
@@ -167,6 +169,12 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250 }
           fixture.finalThreads.push((await cache.readCached(address(row.run_id, "thread", row.agents[0].id)))?.value);
           fixture.finalRows.push((await cache.readCached(address(row.run_id, "row")))?.value);
         }
+        fixture.exactFinalMessages = fixture.finalThreads.every((thread, index) =>
+          thread.thread_id === rows[index].agents[0].thread_id
+          && thread.deliveredSequence === 10 && JSON.stringify(thread.items) === JSON.stringify(fixture.expectedMessages[index]));
+        fixture.messageMismatch = fixture.exactFinalMessages ? null : { actual: fixture.finalThreads[0], expected: fixture.expectedMessages[0] };
+        fixture.exactFinalStates = fixture.finalRows.every((row, index) =>
+          Object.entries({ ...rows[index], replay_frame: 54 + index }).every(([key, value]) => JSON.stringify(row?.[key]) === JSON.stringify(value)));
         fixture.rendered = document.querySelector("#open-conversation").textContent;
         fixture.renderedText = document.querySelector("#conversation").textContent;
         stopFeedListener();
@@ -175,11 +183,11 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250 }
         db.close();
       }, { basePath, intervalMs, stallMs });
       return page.evaluate(() => {
-        const { stats, elapsedMs, finalThreads, finalRows, rendered, renderedText } = window.__pushReplay;
+        const { stats, elapsedMs, finalThreads, finalRows, rendered, renderedText, exactFinalMessages, exactFinalStates, messageMismatch } = window.__pushReplay;
         const percentile = (values, fraction) => [...values].sort((a, b) => a - b)[Math.floor((values.length - 1) * fraction)] ?? null;
         return { ...stats, elapsedMs, getsPerSecond: stats.gets / (elapsedMs / 1000),
           cacheP95Ms: percentile(stats.cacheLatencies, .95), cacheMaxMs: Math.max(...stats.cacheLatencies),
-          renderP95Ms: percentile(stats.renderLatencies, .95), rendered, renderedText,
+          renderP95Ms: percentile(stats.renderLatencies, .95), rendered, renderedText, exactFinalMessages, exactFinalStates, messageMismatch,
           sequences: finalThreads.map((thread) => thread?.items.map((item) => item.data.sequence)),
           finalFrames: finalRows.map((row) => row?.replay_frame) };
       });

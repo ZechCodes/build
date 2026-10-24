@@ -80,6 +80,12 @@ def test_real_postgres_schema_migrations_bootstrap_and_app(tmp_path, monkeypatch
             await engine.dispose()
     try:
         asyncio.run(prove())
+        # Bootstrap imports every model early. Exercise each runtime write in a
+        # fresh interpreter, matching a new app Pod's actual config/import order.
+        from buildapp.dev_runtime_test_support import run_runtime_probe
+        probes = [run_runtime_probe(mode) for mode in ('device', 'signup')]
+        assert all(probe.returncode == 0 for probe in probes), '\n'.join(
+            probe.stdout + probe.stderr for probe in probes if probe.returncode)
         from litestar.testing import TestClient
         from skrift.asgi import create_dispatcher
         with TestClient(create_dispatcher(), base_url='https://dev.getbuild.ing') as client:

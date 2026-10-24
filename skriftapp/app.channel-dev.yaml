@@ -36,7 +36,9 @@ models:
 db:
   # Env-driven (Skrift interpolates $VARS at config load, failing fast if unset).
   url: $DATABASE_URL
-  schema: build_dev
+  # Keep framework and Build model metadata unqualified. The restricted
+  # build_dev role's verified search_path scopes every runtime query; setting
+  # db.schema mutates metadata after Skrift has already imported its User model.
   # Keep two app slots; the dedicated dev role has a ten-connection limit.
   pool_size: 2
   pool_overflow: 0

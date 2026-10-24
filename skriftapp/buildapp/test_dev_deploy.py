@@ -33,7 +33,7 @@ def test_channel_config_is_production_with_dev_endpoints_and_database_isolation(
     expected["security_headers"]["content_security_policy"] = prod["security_headers"]["content_security_policy"].replace(
         "wss://relay.getbuild.ing", "wss://relay-dev.getbuild.ing"
     )
-    expected["db"].update(schema="build_dev", pool_size=2, pool_overflow=0)
+    expected["db"].update(pool_size=2, pool_overflow=0)
     assert dev == expected
     assert prod["auth"]["redirect_base_url"] == "https://getbuild.ing"
 
@@ -300,7 +300,6 @@ def test_actual_hosted_cookie_headers_csrf_and_passkey_rp(tmp_path, monkeypatch,
     database = tmp_path / "hosted.db"
     asyncio.run(create_skrift_schema_in(database))
     hosted_config = config(config_name)
-    hosted_config["db"].pop("schema", None)  # SQLite fixture has no schema support.
     (tmp_path / "app.yaml").write_text(yaml.safe_dump(hosted_config))
     (tmp_path / "templates").symlink_to(ROOT / "skriftapp/templates")
     monkeypatch.chdir(tmp_path)

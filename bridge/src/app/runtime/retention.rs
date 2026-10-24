@@ -188,7 +188,7 @@ mod tests {
     fn config_is_preserved_by_settings_persistence_and_invalid_config_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        let policy = json!({"enabled":true,"max_messages":25,"max_age_days":3});
+        let policy = json!({"enabled":true,"min_messages":10,"max_messages":25,"max_age_days":3});
         std::fs::write(&path, json!({"retention":policy}).to_string()).unwrap();
         let app = AppState::new_unrooted(dir.path(), "main", true, "unused")
             .with_config(&path)
@@ -243,6 +243,7 @@ mod tests {
         };
         let mut app = AppState::new_unrooted(dir.path(), "main", true, "unused");
         app.store = Some(store);
+        app.retention.enabled = false;
         let state = app.shared();
         let startup = old_file("startup.png");
         let service = AppState::spawn_retention(state.clone(), Duration::from_millis(30))

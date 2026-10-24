@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecoveryWait {
+    Wait,
+    TryOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct GitLockOwner {
     token: String,
@@ -23,6 +29,7 @@ pub(crate) struct OwnedGitFileLock {
     marker: PathBuf,
     owner: GitLockOwner,
     inode_pin: File,
+    recovery_wait: RecoveryWait,
 }
 
 impl OwnedGitFileLock {
@@ -72,7 +79,14 @@ impl OwnedGitFileLock {
 
 impl Drop for OwnedGitFileLock {
     fn drop(&mut self) {
-        let Ok(_recovery_lock) = RecoveryDirectoryLock::acquire(&self.owner.git_directory) else {
+        let recovery =
+            RecoveryDirectoryLock::acquire_with_wait(&self.owner.git_directory, self.recovery_wait);
+        let Ok(_recovery_lock) = recovery else {
+            if self.recovery_wait == RecoveryWait::TryOnly {
+                if let Err(error) = self.defer_cleanup() {
+                    eprintln!("review maintenance: retain Git lock until restart; could not record released ownership: {error}");
+                }
+            }
             return;
         };
         if file_has_identity(&self.inode_pin, &self.owner) {
@@ -84,6 +98,53 @@ impl Drop for OwnedGitFileLock {
                 || {},
             );
         }
+    }
+}
+
+impl OwnedGitFileLock {
+    /// A contended maintenance destructor cannot wait. Keep the backing inode
+    /// linked and publish immutable authority for a later reaper, even while
+    /// this daemon PID remains alive. Process death remains the fallback if
+    /// filesystem errors prevent writing this release record.
+    fn defer_cleanup(&self) -> Result<(), String> {
+        if !file_has_identity(&self.inode_pin, &self.owner)
+            || !same_lock_file(&self.backing, &self.owner)
+        {
+            return Ok(());
+        }
+        let path = release_marker(&self.owner);
+        write_owned_json(&path, &self.owner)?;
+        if !owner_released(&self.owner)? {
+            return Err("Git lock release marker changed".into());
+        }
+        Ok(())
+    }
+}
+
+fn release_marker(owner: &GitLockOwner) -> PathBuf {
+    owner
+        .git_directory
+        .join(format!(".build-review-git-lock-{}.released", owner.token))
+}
+
+fn owner_released(owner: &GitLockOwner) -> Result<bool, String> {
+    let path = release_marker(owner);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    }
+    Ok(fs::read(path).map_err(|error| error.to_string())?
+        == serde_json::to_vec(owner).map_err(|error| error.to_string())?)
+}
+
+fn remove_release_marker(owner: &GitLockOwner) -> Result<(), String> {
+    let path = release_marker(owner);
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+        Ok(_) => remove_owned_marker(&path, owner),
     }
 }
 
@@ -141,6 +202,7 @@ fn cleanup_registered_files(
     remove_owned_file(&publication_path(lock, owner)?, owner)?;
     // Keep the backing inode linked until the authority to unlink it has been
     // durably removed. Otherwise a stale marker could match a reused inode.
+    remove_release_marker(owner)?;
     remove_owned_marker(marker, owner)?;
     marker_removed();
     remove_owned_file(backing, owner)
@@ -266,10 +328,17 @@ fn valid_lock_path(relative_path: &Path) -> bool {
 
 /// Recover only registered Git lock files with the dead holder's exact inode.
 pub(crate) fn recover_git_locks(directory: &Path) -> Result<(), String> {
+    recover_git_locks_with_wait(directory, RecoveryWait::Wait)
+}
+
+pub(crate) fn recover_git_locks_with_wait(
+    directory: &Path,
+    wait: RecoveryWait,
+) -> Result<(), String> {
     let directory = directory
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    let _recovery_lock = RecoveryDirectoryLock::acquire(&directory)?;
+    let _recovery_lock = RecoveryDirectoryLock::acquire_with_wait(&directory, wait)?;
     for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let Some(owner) = dead_owner(&directory, &entry)? else {
@@ -318,7 +387,7 @@ fn dead_owner(directory: &Path, entry: &fs::DirEntry) -> Result<Option<GitLockOw
     if owner.token != token
         || owner.git_directory != directory
         || !valid_lock_path(&owner.relative_path)
-        || !owner_dead(&owner)
+        || (!owner_dead(&owner) && !owner_released(&owner)?)
     {
         return Ok(None);
     }
@@ -367,13 +436,14 @@ impl RecoveryDirectoryLock {
         lock_recovery_directory(&file)?;
         Ok(Self { _directory: file })
     }
-}
 
-impl Drop for RecoveryDirectoryLock {
-    fn drop(&mut self) {
-        // An unrelated child may inherit the descriptor: explicitly release
-        // this completed reservation instead of waiting for every copy to close.
-        let _ = self._directory.unlock();
+    fn acquire_with_wait(directory: &Path, wait: RecoveryWait) -> Result<Self, String> {
+        if wait == RecoveryWait::Wait {
+            return Self::acquire(directory);
+        }
+        let file = File::open(directory).map_err(|error| error.to_string())?;
+        try_lock_recovery_directory(&file)?;
+        Ok(Self { _directory: file })
     }
 }
 
@@ -381,21 +451,34 @@ fn lock_recovery_directory(file: &File) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
                 return Ok(());
             }
             let error = std::io::Error::last_os_error();
-            if std::time::Instant::now() >= deadline {
-                return Err("busy: review Git recovery directory".into());
-            }
-            if error.kind() == std::io::ErrorKind::WouldBlock {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            } else if error.kind() != std::io::ErrorKind::Interrupted {
+            if error.kind() != std::io::ErrorKind::Interrupted {
                 return Err(error.to_string());
             }
         }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        Err("owned Git locks require directory locking on this platform".into())
+    }
+}
+
+fn try_lock_recovery_directory(file: &File) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(());
+        }
+        Err(format!(
+            "busy: review maintenance Git recovery directory: {}",
+            std::io::Error::last_os_error()
+        ))
     }
     #[cfg(not(unix))]
     {
@@ -410,13 +493,21 @@ pub(crate) fn acquire_git_lock(
     directory: &Path,
     relative_path: &Path,
 ) -> Result<(OwnedGitFileLock, File), String> {
+    acquire_git_lock_with_wait(directory, relative_path, RecoveryWait::Wait)
+}
+
+pub(crate) fn acquire_git_lock_with_wait(
+    directory: &Path,
+    relative_path: &Path,
+    wait: RecoveryWait,
+) -> Result<(OwnedGitFileLock, File), String> {
     if !valid_lock_path(relative_path) {
         return Err("invalid owned Git lock path".into());
     }
     let directory = directory
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    recover_git_locks(&directory)?;
+    recover_git_locks_with_wait(&directory, wait)?;
     validate_lock_parent(&directory, relative_path)?;
     let token = uuid::Uuid::new_v4().to_string();
     let backing = directory.join(format!(".build-review-git-lock-{token}.tmp"));
@@ -450,6 +541,7 @@ pub(crate) fn acquire_git_lock(
         marker: directory.join(format!(".build-review-git-lock-{token}.json")),
         owner,
         inode_pin: file.try_clone().map_err(|error| error.to_string())?,
+        recovery_wait: wait,
     };
     write_owned_json(&guard.marker, &guard.owner)?;
     fs::hard_link(&guard.backing, &guard.path).map_err(|error| {

@@ -1,6 +1,6 @@
 use super::*;
 use crate::reviews::receivers::{
-    locks::{acquire_git_lock, OwnedGitFileLock},
+    locks::{acquire_git_lock_with_wait, OwnedGitFileLock, RecoveryWait},
     storage,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,6 +12,8 @@ pub(super) struct Worker {
     after: Option<PathBuf>,
     after_deletion: Option<PathBuf>,
     collected: BTreeMap<PathBuf, std::time::Instant>,
+    #[cfg(test)]
+    pub(super) now: u64,
 }
 
 enum Work {
@@ -33,6 +35,8 @@ impl Worker {
             after: None,
             after_deletion: None,
             collected: BTreeMap::new(),
+            #[cfg(test)]
+            now: 0,
         }
     }
 
@@ -122,7 +126,11 @@ impl Worker {
     }
 
     fn prepare(&mut self, receiver: &Path) -> Result<Work, String> {
-        crate::reviews::receivers::validate_recorded_receiver(receiver)?;
+        crate::reviews::receivers::validate_recorded_receiver_with_recovery_wait(
+            receiver,
+            RecoveryWait::TryOnly,
+        )?;
+        admission::check_closed_state(receiver)?;
         let reader = self
             .store
             .receiver_maintenance_reader()
@@ -146,6 +154,9 @@ impl Worker {
         }
         if retained || has_foreign_refs(receiver)? {
             return Ok(Work::Collect(receiver.into()));
+        }
+        if !admission::ready(receiver, self.now_seconds()?)? {
+            return Ok(Work::None);
         }
         // Native writers cannot update any existing or registered received ref
         // between the final metadata check and the canonical directory rename.
@@ -226,6 +237,42 @@ impl Worker {
         report.removed += 1;
         Ok(())
     }
+
+    fn now_seconds(&self) -> Result<u64, String> {
+        #[cfg(test)]
+        return Ok(self.now);
+        #[cfg(not(test))]
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .map_err(|error| error.to_string())
+    }
+
+    #[cfg(test)]
+    pub(super) fn turn_after_grace(&mut self) -> Result<Report, String> {
+        let mut report = self.retry_turn()?;
+        self.now += admission::ADMISSION_DRAIN_SECS;
+        let next = self.retry_turn()?;
+        report.freed_bytes += next.freed_bytes;
+        report.removed += next.removed;
+        report.collected += next.collected;
+        Ok(report)
+    }
+
+    #[cfg(test)]
+    pub(super) fn retry_turn(&mut self) -> Result<Report, String> {
+        // Model later service turns after transient native recovery contention.
+        // Direct turn() tests still verify immediate nonblocking admission.
+        for _ in 0..100 {
+            match self.turn() {
+                Err(error) if error.starts_with("busy:") => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+        self.turn()
+    }
 }
 
 fn collect_git(receiver: &Path) -> Result<(), String> {
@@ -243,7 +290,7 @@ fn collect_git(receiver: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn has_foreign_refs(receiver: &Path) -> Result<bool, String> {
+pub(super) fn has_foreign_refs(receiver: &Path) -> Result<bool, String> {
     let repository = git2::Repository::open_bare(receiver).map_err(|error| error.to_string())?;
     for reference in repository.references().map_err(|error| error.to_string())? {
         let reference = reference.map_err(|error| error.to_string())?;
@@ -279,7 +326,12 @@ fn fence_receiver(receiver: &Path, reviews: &[Review]) -> Result<Vec<OwnedGitFil
     names
         .iter()
         .map(|name| {
-            acquire_git_lock(receiver, Path::new(&format!("{name}.lock"))).map(|(guard, _)| guard)
+            acquire_git_lock_with_wait(
+                receiver,
+                Path::new(&format!("{name}.lock")),
+                RecoveryWait::TryOnly,
+            )
+            .map(|(guard, _)| guard)
         })
         .collect()
 }

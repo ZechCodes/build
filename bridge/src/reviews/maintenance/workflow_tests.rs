@@ -20,13 +20,13 @@ fn interrupted_capture_keeps_terminal_receiver_until_recovery_finishes() {
         .unwrap();
     std::fs::remove_dir_all(&fixture.request.workspace.root).unwrap();
     let mut worker = Worker::new(fixture.store.clone(), fixture.request.receiver_root.clone());
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(receiver.exists(), "durable recovery must keep its receiver");
 
     let recovery = CaptureJournal::acquire(fixture.task_id(), &review.bindings).unwrap();
     recovery.recover(&fixture.store, &review.bindings).unwrap();
     drop(recovery);
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(!receiver.exists());
 }
 
@@ -81,6 +81,6 @@ fn pushed_review_survives_source_gc_then_closes_and_reclaims_its_receiver() {
         .complete_review(fixture.task_id(), review.version, &Actor::User, "Abandoned")
         .unwrap();
     let mut worker = Worker::new(fixture.store.clone(), fixture.request.receiver_root.clone());
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(!receiver.exists());
 }

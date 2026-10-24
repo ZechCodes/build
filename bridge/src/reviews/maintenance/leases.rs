@@ -1,4 +1,5 @@
 use super::*;
+use crate::reviews::receivers::locks::RecoveryWait;
 use crate::reviews::sync::reconcile::recovery::CaptureJournal;
 use std::fs::File;
 
@@ -35,13 +36,18 @@ pub(super) fn review(candidate_pending: bool, review: &Review) -> Result<ReviewL
         .filter(|binding| binding.receiving_repository.exists())
         .cloned()
         .collect();
-    let capture = CaptureJournal::acquire(&review.task_id, &bindings)?;
+    let capture = CaptureJournal::acquire_with_recovery_wait(
+        &review.task_id,
+        &bindings,
+        RecoveryWait::TryOnly,
+    )?;
     if candidate_pending {
         return Err("pending review capture must recover before reclamation".into());
     }
     let mut remaining = review.clone();
     remaining.bindings = bindings;
-    let merge = crate::reviews::merge::fence::lease(&remaining)?;
+    let merge =
+        crate::reviews::merge::fence::lease_with_recovery_wait(&remaining, RecoveryWait::TryOnly)?;
     Ok(ReviewLeases {
         _capture: capture,
         _merge: merge,

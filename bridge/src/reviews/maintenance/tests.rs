@@ -3,6 +3,53 @@ use crate::reviews::sync::reconcile::tests::Fixture;
 use crate::tracker::Actor;
 
 #[test]
+fn terminal_receiver_waits_one_hour_across_worker_turns() {
+    let f = Fixture::new();
+    let review = f.review();
+    let receiver = review.bindings[0].receiving_repository.clone();
+    f.store
+        .complete_review(f.task_id(), review.version, &Actor::User, "Closed")
+        .unwrap();
+    std::fs::remove_dir_all(&f.request.workspace.root).unwrap();
+    let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
+    assert_eq!(worker.retry_turn().unwrap().removed, 0);
+    assert!(receiver.join(admission::MARKER).is_file());
+    worker.now = admission::ADMISSION_DRAIN_SECS - 1;
+    assert_eq!(worker.retry_turn().unwrap().removed, 0);
+    assert!(receiver.is_dir());
+    worker.now = admission::ADMISSION_DRAIN_SECS;
+    assert_eq!(worker.retry_turn().unwrap().removed, 1);
+    assert!(!receiver.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn maintenance_yields_recovery_contention_without_blocking_opening() {
+    let f = Fixture::new();
+    let receiver = f.review().bindings[0].receiving_repository.clone();
+    let recovery = std::fs::File::open(&receiver).unwrap();
+    recovery.try_lock().unwrap();
+    let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
+    let started = std::time::Instant::now();
+    match worker.turn() {
+        // Another Git child may briefly retain the opening lease before exec;
+        // yielding at either admission fence is the intended behavior.
+        Ok(report) => assert_eq!(report.removed + report.collected, 0),
+        Err(error) => assert!(error.starts_with("busy:")),
+    }
+    assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    drop(recovery);
+    let opened = crate::reviews::opening::open(
+        &f.store,
+        &f.request,
+        &crate::reviews::sync::reconcile::tests::Hooks,
+    )
+    .unwrap();
+    assert_eq!(opened.review.task_id, f.task_id());
+    worker.retry_turn().unwrap();
+}
+
+#[test]
 fn closed_receiver_is_retained_until_original_workspace_is_removed() {
     let f = Fixture::new();
     let review = f.review();
@@ -11,12 +58,12 @@ fn closed_receiver_is_retained_until_original_workspace_is_removed() {
         .unwrap();
     let receiver = review.bindings[0].receiving_repository.clone();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(receiver.is_dir(), "original workspace allows reopening");
     std::fs::remove_dir_all(&f.request.workspace.root).unwrap();
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(!receiver.exists(), "abandoned review releases the receiver");
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
 }
 
 #[test]
@@ -25,7 +72,7 @@ fn open_review_and_pending_capture_prevent_deletion() {
     let receiver = f.review().bindings[0].receiving_repository.clone();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
     std::fs::remove_dir_all(&f.request.workspace.root).unwrap();
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(receiver.is_dir(), "open review outlives its workspace");
 }
 
@@ -43,10 +90,10 @@ fn live_sync_lease_fences_terminal_receiver_cleanup() {
     )
     .unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(review.bindings[0].receiving_repository.is_dir());
     drop(held);
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(!review.bindings[0].receiving_repository.exists());
 }
 
@@ -68,7 +115,7 @@ fn interrupted_directory_removal_resumes_after_ownership_marker_is_gone() {
         .unwrap();
     std::fs::remove_file(tombstone.join(".build-review-receiver.json")).unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(!tombstone.exists());
     assert!(
         !std::fs::read_dir(f.request.receiver_root.join("operations"))
@@ -103,14 +150,14 @@ fn terminal_cleanup_refuses_native_receiving_ref_lock() {
         .join(format!("{}.lock", binding.receiving_ref));
     std::fs::write(&lock, "native receiving writer\n").unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
-    let _ = worker.turn();
+    let _ = worker.turn_after_grace();
     assert!(binding.receiving_repository.is_dir());
     assert_eq!(
         std::fs::read_to_string(&lock).unwrap(),
         "native receiving writer\n"
     );
     std::fs::remove_file(lock).unwrap();
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(!binding.receiving_repository.exists());
 }
 
@@ -162,7 +209,7 @@ fn shared_receiver_releases_only_abandoned_reviews_refs_and_journals() {
         .unwrap();
     std::fs::remove_dir_all(&f.request.workspace.root).unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     let repository =
         git2::Repository::open_bare(&original.bindings[0].receiving_repository).unwrap();
     assert!(repository
@@ -206,7 +253,7 @@ fn owned_orphans_are_deleted_but_foreign_repositories_and_refs_are_preserved() {
         .unwrap();
     std::fs::remove_dir_all(&f.request.workspace.root).unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(receiver.is_dir());
     assert!(repository.find_reference("refs/heads/user-work").is_ok());
     // GC may have packed refs since this handle was opened. Use a fresh
@@ -217,11 +264,11 @@ fn owned_orphans_are_deleted_but_foreign_repositories_and_refs_are_preserved() {
         .unwrap()
         .find_reference("refs/heads/user-work")
         .is_err());
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(!receiver.exists());
     let foreign = f.request.receiver_root.join("foreign.git");
     git2::Repository::init_bare(&foreign).unwrap();
-    assert!(worker.turn().is_err());
+    assert!(worker.turn_after_grace().is_err());
     assert!(foreign.is_dir());
 }
 
@@ -261,7 +308,7 @@ fn receiver_without_any_review_or_pending_opening_is_removed() {
         .unwrap();
     let store = Store::new(home.path().join("db")).unwrap();
     let mut worker = Worker::new(store, root);
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(!receiver.path.exists());
 }
 
@@ -275,7 +322,7 @@ fn operations_symlink_is_rejected_before_any_deletion() {
     std::fs::rename(&operations, &moved).unwrap();
     std::os::unix::fs::symlink(&moved, &operations).unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
-    assert!(worker.turn().is_err());
+    assert!(worker.turn_after_grace().is_err());
     assert!(receiver.is_dir());
 }
 
@@ -296,11 +343,11 @@ fn gc_keeps_recent_unpublished_objects_and_retries_after_git_lock_contention() {
     let lock = receiver.join("gc.pid");
     std::fs::write(&lock, &owner).unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
-    assert!(worker.turn().is_err());
+    assert!(worker.turn_after_grace().is_err());
     assert_eq!(std::fs::read_to_string(&lock).unwrap(), owner);
     std::fs::remove_file(lock).unwrap();
-    assert_eq!(worker.turn().unwrap().collected, 1);
-    assert_eq!(worker.turn().unwrap().collected, 0);
+    assert_eq!(worker.turn_after_grace().unwrap().collected, 1);
+    assert_eq!(worker.turn_after_grace().unwrap().collected, 0);
     assert!(git2::Repository::open_bare(&receiver)
         .unwrap()
         .find_blob(unpublished)
@@ -338,6 +385,6 @@ fn unfinished_opening_protects_receiver_before_any_review_is_published() {
         crate::reviews::receivers::plan_receiver(&source, &request.receiver_root).unwrap();
     assert!(receiver.path.is_dir());
     let mut worker = Worker::new(store, request.receiver_root);
-    worker.turn().unwrap();
+    worker.turn_after_grace().unwrap();
     assert!(receiver.path.is_dir(), "failed opening remains resumable");
 }

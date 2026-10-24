@@ -1960,6 +1960,24 @@ work settles, even when local integration already marked the PR Merged.
 Active receivers use Git's normal pruning grace period: `--prune=now` could race
 native pushes before ref publication. Maintenance reports reclaimed bytes and
 preserves receivers whose ownership or in-flight operation cannot be established.
+Its Git-lock recovery uses a maintenance-only try-lock policy and retries contention;
+foreground opening and recovery retain their existing wait semantics. Contended
+maintenance lock destruction records exact released ownership for a later reaper,
+so a live daemon PID does not strand its completed reservations.
+Unused receivers first close native Git admission with owned
+`reference-transaction` (prepared-state) and `pre-receive` hooks. A durable close
+marker starts a one-hour admission drain; later turns require both that drain
+and an empty gitdir/ref lock tree before quarantine. Git's normal pruning grace
+remains independent and applies to GC of retained receivers. A new bridge
+opening removes that marker. Complete ref and object inventories are checked
+after quarantine; late or foreign state and unapproved interrupted quarantines
+are preserved. Only the private quarantined path is deleted. A reappeared
+canonical path is reported and retained. Deletion journals use a separate stable
+lease inode so atomic journal replacement cannot admit another cleaner.
+Accepted residual risk (#839): a Git process started before the close marker
+can retain a cached absolute gitdir, outlive the grace period and lock drain,
+and write afterwards. Receivers are bridge-internal; deletion is limited to
+terminal reviews with no retained reopenable workspace or unsettled work.
 
 `reviews/merge.rs` owns durable PR merge intents, independent of a browser.
 Admission reconciles receiving refs, checks the selected latest snapshot and

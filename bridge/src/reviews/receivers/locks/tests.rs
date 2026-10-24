@@ -2,14 +2,150 @@ use super::*;
 
 #[cfg(unix)]
 #[test]
-fn recovery_directory_contention_returns_within_lock_budget() {
+fn maintenance_recovery_contention_is_immediate_and_retries() {
     let directory = tempfile::tempdir().unwrap();
     let held = File::open(directory.path()).unwrap();
     held.try_lock().unwrap();
-    let other = File::open(directory.path()).unwrap();
     let started = std::time::Instant::now();
-    assert!(lock_recovery_directory(&other).is_err());
-    assert!(started.elapsed() < std::time::Duration::from_millis(2500));
+    assert!(recover_git_locks_with_wait(directory.path(), RecoveryWait::TryOnly).is_err());
+    assert!(started.elapsed() < std::time::Duration::from_millis(100));
+    held.unlock().unwrap();
+    recover_git_locks_with_wait(directory.path(), RecoveryWait::TryOnly).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn foreground_recovery_preserves_its_original_wait_semantics() {
+    let directory = tempfile::tempdir().unwrap();
+    let held = File::open(directory.path()).unwrap();
+    held.try_lock().unwrap();
+    let path = directory.path().to_owned();
+    let (started, starting) = std::sync::mpsc::channel();
+    let (finished, completion) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        finished.send(recover_git_locks(&path)).unwrap();
+    });
+    starting.recv().unwrap();
+    let waited = completion.recv_timeout(std::time::Duration::from_millis(2200));
+    held.unlock().unwrap();
+    assert!(
+        waited.is_err(),
+        "foreground recovery must keep waiting rather than return busy"
+    );
+    completion
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    worker.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn maintenance_guard_drop_is_deferred_and_reaped_while_owner_is_alive() {
+    let directory = tempfile::tempdir().unwrap();
+    let (guard, _file) = acquire_git_lock_with_wait(
+        directory.path(),
+        Path::new("HEAD.lock"),
+        RecoveryWait::TryOnly,
+    )
+    .unwrap();
+    let path = guard.path.clone();
+    let marker = guard.marker.clone();
+    let backing = guard.backing.clone();
+    let held = File::open(directory.path()).unwrap();
+    held.try_lock().unwrap();
+    let started = std::time::Instant::now();
+    drop(guard);
+    let elapsed = started.elapsed();
+    held.unlock().unwrap();
+    assert!(
+        elapsed < std::time::Duration::from_millis(100),
+        "maintenance drop waited {elapsed:?}"
+    );
+    assert!(
+        path.exists(),
+        "contended cleanup retains its reservation until recovery"
+    );
+    recover_git_locks_with_wait(directory.path(), RecoveryWait::TryOnly).unwrap();
+    assert!(!path.exists());
+    assert!(!marker.exists());
+    assert!(!backing.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn maintenance_release_authority_is_removed_before_its_backing_inode() {
+    let directory = tempfile::tempdir().unwrap();
+    let (guard, _file) = acquire_git_lock_with_wait(
+        directory.path(),
+        Path::new("HEAD.lock"),
+        RecoveryWait::TryOnly,
+    )
+    .unwrap();
+    let released = release_marker(&guard.owner);
+    write_owned_json(&released, &guard.owner).unwrap();
+    cleanup_registered_files(
+        &guard.path,
+        &guard.backing,
+        &guard.marker,
+        &guard.owner,
+        || {
+            assert!(!guard.marker.exists());
+            assert!(!released.exists());
+            assert!(same_lock_file(&guard.backing, &guard.owner));
+        },
+    )
+    .unwrap();
+    assert!(!released.exists());
+    assert!(!guard.backing.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn changed_release_authority_cannot_reap_a_live_maintenance_lock() {
+    let directory = tempfile::tempdir().unwrap();
+    let (guard, _file) = acquire_git_lock_with_wait(
+        directory.path(),
+        Path::new("HEAD.lock"),
+        RecoveryWait::TryOnly,
+    )
+    .unwrap();
+    let mut replacement = guard.owner.clone();
+    replacement.inode = replacement.inode.map(|inode| inode.wrapping_add(1));
+    let released = release_marker(&guard.owner);
+    write_owned_json(&released, &replacement).unwrap();
+    let path = guard.path.clone();
+    let backing = guard.backing.clone();
+    let held = File::open(directory.path()).unwrap();
+    held.try_lock().unwrap();
+    drop(guard);
+    held.unlock().unwrap();
+    recover_git_locks_with_wait(directory.path(), RecoveryWait::TryOnly).unwrap();
+    assert!(path.exists());
+    assert!(backing.exists());
+    assert_eq!(
+        fs::read(&released).unwrap(),
+        serde_json::to_vec(&replacement).unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn maintenance_drop_does_not_publish_released_ownership_into_a_recreated_receiver() {
+    let directory = tempfile::tempdir().unwrap();
+    let receiver = directory.path().join("receiver");
+    fs::create_dir(&receiver).unwrap();
+    let (guard, _file) =
+        acquire_git_lock_with_wait(&receiver, Path::new("HEAD.lock"), RecoveryWait::TryOnly)
+            .unwrap();
+    fs::rename(&receiver, directory.path().join("quarantine")).unwrap();
+    fs::create_dir(&receiver).unwrap();
+    let held = File::open(&receiver).unwrap();
+    held.try_lock().unwrap();
+    drop(guard);
+    held.unlock().unwrap();
+    assert_eq!(fs::read_dir(&receiver).unwrap().count(), 0);
 }
 
 #[cfg(unix)]

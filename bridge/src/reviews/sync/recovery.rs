@@ -3,7 +3,9 @@
 //! receiver markers or retained snapshot history.
 use crate::reviews::model::ReviewBranchBinding;
 use crate::reviews::publication;
-use crate::reviews::receivers::{validate_registered_receiver, write_owned_json};
+use crate::reviews::receivers::{
+    locks::RecoveryWait, validate_registered_receiver_with_recovery_wait, write_owned_json,
+};
 use crate::store::Store;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -40,11 +42,28 @@ impl CaptureJournal {
         bindings: &[ReviewBranchBinding],
         wait: Duration,
     ) -> Result<Self, String> {
+        Self::acquire_with_policy(task_id, bindings, wait, RecoveryWait::Wait)
+    }
+
+    pub(crate) fn acquire_with_recovery_wait(
+        task_id: &str,
+        bindings: &[ReviewBranchBinding],
+        recovery_wait: RecoveryWait,
+    ) -> Result<Self, String> {
+        Self::acquire_with_policy(task_id, bindings, Duration::ZERO, recovery_wait)
+    }
+
+    fn acquire_with_policy(
+        task_id: &str,
+        bindings: &[ReviewBranchBinding],
+        wait: Duration,
+        recovery_wait: RecoveryWait,
+    ) -> Result<Self, String> {
         let binding = bindings
             .iter()
             .min_by_key(|binding| &binding.receiving_repository)
             .ok_or("review sync requires a registered receiver")?;
-        validate_registered_receiver(binding)?;
+        validate_registered_receiver_with_recovery_wait(binding, recovery_wait)?;
         let root = ensure_child(&binding.receiving_repository, "build-review-sync")?;
         let identity = format!("{:x}", Sha256::digest(task_id.as_bytes()));
         let path = ensure_child(&root, &identity)?;

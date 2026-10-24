@@ -1,5 +1,6 @@
 //! Terminal task refs are removed under the same native locks as publication.
 use super::*;
+use crate::reviews::receivers::locks::RecoveryWait;
 use sha2::{Digest, Sha256};
 use std::fs;
 
@@ -29,10 +30,11 @@ pub(super) fn cleanup(receiver: &Path, review: &Review, root: &Path) -> Result<b
         let oid = reference
             .target()
             .ok_or("review reference became symbolic")?;
-        crate::reviews::receivers::refs::remove_expected_reference_checked(
+        crate::reviews::receivers::refs::remove_expected_reference_checked_with_recovery_wait(
             &repository,
             name,
             oid,
+            RecoveryWait::TryOnly,
             || Ok(()),
         )?;
         changed = true;

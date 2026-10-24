@@ -1863,6 +1863,15 @@ live reclaim/placement
 checks, manifest installation and idempotent reviewer dispatch. Reviewer
 delivery runs after publication, with a durable status and explicit retry.
 
+New receivers share immutable source object files through hardlinks when the
+filesystem supports them (#839). They have their own directory entries, so
+source ref deletion, garbage collection and source removal cannot invalidate
+published reviews. Linked packs have receiver-local `.keep` markers to avoid
+repacking another physical copy. Receivers never use object alternates: native
+Git pushes cannot atomically install protecting refs in the source repository.
+Unsupported links fall back to importing the selected commits and their reachable
+history. Garbage collection at creation would not remove that reachable history.
+
 The daemon registers `reviews/sync.rs` independently of client subscriptions.
 Its blocking worker discovers active PRs in pages, watches canonical worktree
 Git directories, shared common directories and bare receivers, and reconciles
@@ -1931,6 +1940,18 @@ review. Explicit reconciliation of a terminal PR updates bounded observations
 of later received work or unavailable receivers without changing its status,
 version or snapshots; ordinary worker discovery still visits active reviews
 and pending captures rather than polling retained terminal history.
+
+Receiver maintenance (#839) runs independently on a niced background thread,
+without the app mutex or an RPC caller. It releases merged reviews and Closed
+reviews whose original managed workspace is no longer retained, including their
+snapshot pins and opening journals; an unused owned receiver is removed. Closed,
+unmerged reviews retain their receiving setup while the original workspace stays
+ready, so reopen still requires that workspace. Metadata and comments survive
+receiver reclamation; historical Git content can become unavailable. Startup
+also collects retained receivers once, with failures retried by later turns.
+Active receivers use Git's normal pruning grace period: `--prune=now` could race
+native pushes before ref publication. Maintenance reports reclaimed bytes and
+preserves receivers whose ownership or in-flight operation cannot be established.
 
 `reviews/merge.rs` owns durable PR merge intents, independent of a browser.
 Admission reconciles receiving refs, checks the selected latest snapshot and
@@ -2068,9 +2089,9 @@ separate. Ordinary moves to Done complete an open review through the same writer
 with “Marked done”; for PR mode this records Closed. Snapshot-mode captures
 change only review metadata. Agent Complete reports and merged
 workspace Finish skip their old task-movement/closure hooks for review tasks.
-Closing/completing and removing workspaces or projects retain review history
-and refs; replacing its workspace or explicitly deleting task history releases
-the previous pins. MCP exposes
+Closing/completing and removing workspaces or projects retain review metadata.
+Snapshot-mode refs remain until workspace replacement or explicit task history
+deletion; PR receiver refs follow the maintenance retention rules above. MCP exposes
 `snapshot_review`, `get_review`, `read_review`, `act_review`, `complete_review` to coding and
 project agents, authenticated and restricted to their own project.
 

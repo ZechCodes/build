@@ -51,6 +51,18 @@ workspace; ordinary lifecycle and explicit removal remain separate. Explicit
 refresh on a retained terminal PR records observations without reopening or
 changing history.
 
+Receiver retention (#839): merged PRs release their receiver data in background
+maintenance. Closed, unmerged PRs keep it only while the original managed workspace
+remains ready; removing that workspace allows cleanup and prevents reopen. Review
+metadata and comments remain, while Git content can become unavailable after
+reclamation. Unused owned receivers and their operation journals are deleted.
+Retained receivers receive startup GC with Git's normal pruning grace period,
+because immediate pruning can race native pushes. New receivers hardlink immutable
+source object files where supported, keeping independent entries that survive
+source GC and removal; cross-filesystem receivers fetch reachable history instead.
+Object alternates are rejected because native pushes cannot safely maintain source
+protection refs through publication. GC at creation cannot eliminate live history.
+
 Review reads preserve `{review}` and optionally include per-directory `sync`
 observations with their own revisions and durable `merge_intents`. Push replies
 also include per-directory outcomes. Task get/list and watched-task feed rows

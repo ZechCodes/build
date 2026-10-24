@@ -7,7 +7,7 @@ Unknown records remain required, and any live use wins over historical uses.
 import json
 
 from .migrate_paths import PROSE_KEYS, references
-from .migrate_store import cell_references, connect, rows, table_names
+from .migrate_store import classified_references, connect, rows, table_names
 
 HISTORY_KINDS = ('reclaimed_workspaces', 'finished_runs', 'closed_tasks',
                  'session_lineage', 'archived_worktrees')
@@ -35,7 +35,14 @@ def records(database):
                 value = raw.get('record')
                 if isinstance(value, str):
                     value = json.loads(value)
-                yield table, raw, value if isinstance(value, dict) else {}
+                # Keep path provenance, not full transcript bodies, in the index.
+                refs = set()
+                for column, cell in raw.items():
+                    if column != 'record':
+                        refs.update(classified_references(table, column, raw.get('status'), cell)[0])
+                retained = {key: raw[key] for key in ('id', 'task_id', 'status') if key in raw}
+                retained['_refs'] = refs
+                yield table, retained, value if isinstance(value, dict) else {}
 
 
 def workspace_paths(workspace):
@@ -109,13 +116,12 @@ def classified_entry(table, raw, record, reclaimed_ids, closed_tasks, closed_ent
     kind = record_kind(table, record, reclaimed_ids)
     if table == 'implementations' and record.get('id') in closed_entities:
         kind = 'closed_tasks'
-    if table == 'review_branch_bindings' and record.get('task_id', raw.get('task_id')) in closed_tasks:
+    if table.startswith('review') and record.get('task_id', raw.get('task_id')) in closed_tasks:
         kind = 'closed_tasks'
     classified = list(structured_refs(record, kind, reclaimed_ids, closed_entities))
     known = {ref for ref, _ in classified}
-    for column, value in raw.items():
-        classified.extend((ref, kind if ref[0] in CHECKOUT_KEYS else None)
-                          for ref in cell_references(value, column) if ref not in known)
+    classified.extend((ref, kind if ref[0] in CHECKOUT_KEYS else None)
+                      for ref in raw['_refs'] if ref not in known)
     return classified
 
 

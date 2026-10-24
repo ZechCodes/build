@@ -85,3 +85,20 @@ def test_only_finished_tasks_make_conversation_worktree_historical(tmp_path):
     assert ('checkout', '/old') in result['historical']['closed_tasks']
     assert ('working_repository', '/old') in result['historical']['closed_tasks']
     assert ('worktree_path', '/shared') in result['required']
+
+
+def test_terminal_operations_do_not_veto_history_and_review_records_join_tasks(tmp_path):
+    path = database(tmp_path, {
+        'tracker_tasks': [{'id': 'done', 'status': 'done'}],
+        'reviews': [{'task_id': 'done', 'workspace_id': 'ws', 'working_repository': '/gone'}],
+        'review_snapshots': [{'task_id': 'done', 'working_repository': '/gone'}],
+        'conversations': [{'sessions': [{'checkout': '/gone', 'ended_at': 'then'}]}],
+    })
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE operations (status TEXT, delivery TEXT)')
+        db.execute('INSERT INTO operations VALUES (?, ?)',
+                   ('delivered', json.dumps({'root': '/gone'})))
+    result = classify(path)
+    assert ('checkout', '/gone') in result['historical']['session_lineage']
+    assert ('working_repository', '/gone') in result['historical']['closed_tasks']
+    assert ('root', '/gone') not in result['required']

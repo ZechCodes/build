@@ -304,3 +304,47 @@ describe("forward coverage and repair cursors", () => {
     expect(await saved()).toMatchObject({ thread_id: "new", thread_generation_revision: 2, deliveredSequence: 0, items: [] });
   });
 });
+
+describe("lean forward coverage", () => {
+  it("repairs an in-place activity update once, then asks after its covered counter", async () => {
+    const { greetBridge } = await import("../src/core/changeEvents.js");
+    await greetBridge(async () => ({ api_version: "3.24.0", capabilities: ["threads.leanActivity"], push_events: false }), { deviceId: address.deviceId });
+    const activity = (updated) => ({ type: "event", data: { sequence: 2, updated_sequence: updated, event: "tool_use", summary: "Read a.js" } });
+    await cache.writeCached(address, windowAt(message(1, "start"), activity(2)));
+    const call = vi.fn(async (_method, params) => ({
+      items: params.after_sequence === 0 ? [message(1, "start"), activity(5)] : [],
+      has_more: false, thread_last_sequence: 5,
+    }));
+    const request = { ...address, conversationId: address.sub, call };
+    await syncThreadWindow(request);
+    await syncThreadWindow(request);
+    expect(call.mock.calls.map(([, params]) => params.after_sequence)).toEqual([2, 0, 5]);
+    const held = (await cache.readCached(address)).value;
+    expect(held.items.at(-1).data.updated_sequence).toBe(5);
+    expect(held.repairThrough).toBeUndefined();
+  });
+
+  it("represents a real newest-page gap as older history rather than a falsely joined window", async () => {
+    await cache.writeCached(address, { ...windowAt(message(1, "old context")), thread_id: "thread-1", thread_generation_revision: 3, retired_thread_ids: ["old-thread"] });
+    const call = vi.fn(async () => ({ items: [message(10, "new context")], thread_id: "thread-1", has_more: true, thread_last_sequence: 12 }));
+    await syncThreadWindow({ ...address, conversationId: address.sub, call });
+    const held = (await cache.readCached(address)).value;
+    expect(held).toMatchObject({ deliveredSequence: 12, olderItemsRemain: true, thread_generation_revision: 3, retired_thread_ids: ["old-thread"] });
+    expect(held.items.map((item) => item.data.sequence)).toEqual([10]);
+    expect(held.repairThrough).toBeUndefined();
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("capped repair coverage", () => {
+  it("keeps debt when a repair cap omits a held item even though its snapshot counter is current", async () => {
+    const { repairedThreadWindow } = await import("../src/core/threadSync.js");
+    const held = { ...windowAt(message(1, "held"), message(100, "awaiting edit")), repairThrough: 103 };
+    const partial = { items: [message(1, "held")], has_more: true, thread_last_sequence: 103 };
+    const repaired = repairedThreadWindow(held, partial);
+    expect((repaired || held).repairThrough).toBe(103);
+    const complete = repairedThreadWindow(repaired || held, { ...partial, items: held.items });
+    expect(complete.repairThrough).toBeUndefined();
+    expect(complete.deliveredSequence).toBe(100);
+  });
+});

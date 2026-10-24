@@ -220,7 +220,17 @@ const repairedDigests = (held, page) => page.activity_digests?.length
 /** Whether this page was read at or past the counter the record owes a
  *  repair through. */
 const repaidBy = (held, page) =>
-  Boolean(held.repairThrough) && Number(page?.thread_last_sequence || 0) >= Number(held.repairThrough);
+  Boolean(held.repairThrough) && Number(page?.thread_last_sequence || 0) >= Number(held.repairThrough)
+  && repairCoversHeld(held, page);
+
+/** A capped repair can spend its page on omitted activity before reaching
+ * a recent held representative. Its global counter alone cannot pay that
+ * representative's debt. Lean exact-copy reads join page.items beforehand. */
+function repairCoversHeld(held, page) {
+  if (page.has_more !== true) return true;
+  const shipped = new Set((page.items || []).map(threadItemKey));
+  return recentHeldItems(held).every((item) => shipped.has(threadItemKey(item)));
+}
 
 /** The arrivals that are newer copies of items held. */
 function newerCopies(heldItems, arrived) {

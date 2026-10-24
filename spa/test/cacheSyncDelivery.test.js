@@ -766,13 +766,15 @@ describe("a pass racing the wire", () => {
     const answerSubscribe = wire.hold("changes.subscribe", ({ subscription_id }) => subscription_id === "s-background");
     const answerDiff = pending ? wire.hold("run.diff") : () => {};
     sync.startCacheSync();
-    await settle();
+    await called(bridge.call, () => calls("fs.read").length > 0);
+    if (pending) await called(bridge.call, () => calls("run.diff").length > 0);
+    else await passesSettled(sync, "dev-1");
     expect(calls("fs.read")).toHaveLength(1);
     body = "bmV3";
     answerSubscribe();
     await settle();
     answerDiff();
-    await settle();
+    await passesSettled(sync, "dev-1");
     expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("bmV3");
     const recovered = calls("fs.read").length;
     await sync.syncDevice("dev-1");

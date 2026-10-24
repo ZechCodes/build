@@ -2007,3 +2007,18 @@ describe("push queue lifetime ownership", () => {
     }
   });
 });
+
+it("writes the mounted conversation before sibling tips in the same entity", async () => {
+  await boot([branchItem()]);
+  for (const sub of ["cold", "open"]) await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread", sub },
+    { items: [], deliveredSequence: 0, activityDigests: [] });
+  const visible = await import("../src/core/syncVisibleScopes.js");
+  const stop = visible.registerSyncThread(() => ({ deviceId: "dev-1", entityId: "run-1", agentId: "open", conversationId: "open" }));
+  const writes = vi.spyOn(cache, "mergeCachedAtomically");
+  const tip = (agent_id) => ({ agent_id, conversation_id: agent_id, since_sequence: 0, last_sequence: 1,
+    items: [{ type: "message", data: { id: `${agent_id}-1`, sequence: 1, role: "agent", body: agent_id } }] });
+  try {
+    await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([{ entity_id: "run-1", thread: [tip("cold"), tip("open")] }]);
+    expect(writes.mock.calls.filter(([address]) => address.kind === "thread").map(([address]) => address.sub)).toEqual(["open", "cold"]);
+  } finally { stop(); writes.mockRestore(); }
+});

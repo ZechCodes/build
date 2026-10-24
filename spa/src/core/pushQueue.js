@@ -9,21 +9,24 @@ const generations = (item) => new Map([
   ...(item.state?.agents || []).map((agent) => [agent.conversation_id || agent.id, agent.thread_id || ""]),
   ...(item.thread || []).map((tip) => [tip.conversation_id || tip.agent_id, tip.thread_id || ""]),
 ]);
-const rosterKey = (item) => item.state && JSON.stringify((item.state.agents || []).map((agent) =>
-  [agent.id, agent.conversation_id, agent.thread_id, agent.thread_generation_revision]));
+const rosterKey = (item) => item.state && JSON.stringify([item.state.kind, (item.state.agents || []).map((agent) =>
+  [agent.id, agent.conversation_id, agent.thread_id, agent.thread_generation_revision])]);
 const terminalSource = (item) => item.project_source && item.terminals
   && Object.keys(item).every((key) => ["entity_id", "project_source", "terminals"].includes(key));
 const boundary = (item) => item.entity_id === "board" || (item.project_source && !terminalSource(item))
   || isFinishedState(item.state?.state) || item.thread?.some((tip) => tip.reset);
 const FOLDABLE = new Set(["entity_id", "state", "thread", "terminals", "tasks", "files"]);
+const stateCanFold = (state) => !state || typeof state.kind === "string" && state.kind !== ""
+  && Array.isArray(state.agents || []);
+const itemCanFold = (item) => !boundary(item) && stateCanFold(item.state)
+  && Object.keys(item).every((key) => FOLDABLE.has(key));
 
 const sameTerminalSource = (left, right) => Boolean(terminalSource(left) && terminalSource(right))
   && JSON.stringify(left.project_source) === JSON.stringify(right.project_source);
 
 function compatible(left, right) {
   if (left.project_source || right.project_source) return sameTerminalSource(left, right);
-  if (boundary(left) || boundary(right)) return false;
-  if (![...Object.keys(left), ...Object.keys(right)].every((key) => FOLDABLE.has(key))) return false;
+  if (!itemCanFold(left) || !itemCanFold(right)) return false;
   if (left.state && right.state && rosterKey(left) !== rosterKey(right)) return false;
   const held = generations(left);
   return [...generations(right)].every(([id, generation]) => !held.has(id) || held.get(id) === generation);

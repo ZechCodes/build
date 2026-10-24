@@ -171,3 +171,16 @@ it("keeps a removal barrier exclusive when enrichment has two workers", async ()
   removal.release(); await done;
   expect(started).toEqual(["board", "p1"]);
 });
+
+it("preserves full state before legacy count-only digests without folding unsupported shapes", async () => {
+  const stalled = gate(), applied = [];
+  const queue = createPushQueue({ apply: async (_, entry) => { applied.push(entry); if (applied.length === 1) await stalled.done; } });
+  const done = queue.enqueue(context, [item("other", 1)]); await Promise.resolve();
+  const state = { kind: "branch", state: "building", agents: [] };
+  try {
+    queue.enqueue(context, [{ entity_id: "a", state }, { entity_id: "a", state: { state: "building", agents: 2 } },
+      { entity_id: "a", state: { state: "building", agents: 0 } }]);
+  } finally { stalled.release(); }
+  await done;
+  expect(applied.slice(1).map((entry) => entry.state)).toEqual([state, { state: "building", agents: 2 }, { state: "building", agents: 0 }]);
+});

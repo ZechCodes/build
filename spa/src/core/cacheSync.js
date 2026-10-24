@@ -1799,10 +1799,20 @@ async function applyState(context, entityId, state) {
 /** `thread`: one tip per conversation, carrying the items since this
  *  subscription's last flush. */
 async function applyThreadItem(context, entityId, tips) {
-  for (const tip of tips || []) {
+  for (const tip of orderedThreadTips(context, entityId, tips || [])) {
     if (!context.active()) return;
     await applyThreadTip(context, entityId, tip);
   }
+}
+
+/** Promote carried data for the mounted conversation, retaining the order of
+ * every generation/reset tip within each conversation. */
+function orderedThreadTips(context, entityId, tips) {
+  const visible = visibleSyncThread(context.deviceId);
+  if (visible?.entityId !== entityId) return tips;
+  const selected = (tip) => Boolean(visible.conversationId) && tipKey(tip) === visible.conversationId
+    || tip.agent_id === visible.agentId;
+  return [...tips.filter(selected), ...tips.filter((tip) => !selected(tip))];
 }
 
 /** Which conversation a tip is about, addressed the way the record is. */

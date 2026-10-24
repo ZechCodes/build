@@ -3678,7 +3678,7 @@ gate attachment display.
   The body lane writes conversations before state and session summaries, and
   also writes terminal rosters without waiting for enrichment RPCs. The shown
   conversation's entity has priority, with an ordinary turn after four promoted
-  jobs. Roster/review reads run behind bodies with one pending refresh per key;
+  jobs. Within an entity, its mounted conversation's carried tips land first. Roster/review reads run behind bodies with one pending refresh per key;
   a key never has two enrichment appliers running together.
   Catch-up coverage and repair rules still belong to `threadSync.js`.
   User actions bypass these queues; neither their RPCs nor their cache writes

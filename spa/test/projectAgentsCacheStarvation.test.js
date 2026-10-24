@@ -80,3 +80,46 @@ it("keeps removal and epoch fences even when another reader is queued", async ()
   await syncProjectAgents({ ...options, call: async () => { notePush(address, { removed: true }); return roster; } });
   expect((await cache.readCached(address))?.value).toBeFalsy();
 });
+
+it("a navigation-cancelled trailing rail read does not discard active push discovery", async () => {
+  let standing = true;
+  const first = deferred();
+  const call = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(roster);
+  const initial = syncProjectAgents({ ...options, call, active: () => standing });
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+  const afterWrite = vi.fn();
+  const push = syncProjectAgents({ ...options, call, afterWrite });
+  const rail = syncProjectAgents({ ...options, call, active: () => standing });
+  standing = false;
+  first.resolve(roster);
+  await Promise.all([initial, push, rail]);
+  expect((await cache.readCached(address))?.value).toEqual(roster);
+  expect(afterWrite).toHaveBeenCalledExactlyOnceWith(roster);
+  expect(call).toHaveBeenCalledTimes(2);
+});
+
+it("a queued read retains the entity removal fence from its invocation", async () => {
+  const first = deferred();
+  const call = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(roster);
+  const initial = syncProjectAgents({ ...options, call });
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+  const queued = syncProjectAgents({ ...options, call });
+  notePush(address, { removed: true });
+  await cache.deleteCached([address]);
+  first.resolve(roster);
+  await Promise.all([initial, queued]);
+  expect((await cache.readCached(address))?.value).toBeFalsy();
+});
+
+it("releases the lane after an RPC failure and keeps its trailing refresh", async () => {
+  const first = deferred();
+  const call = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(roster);
+  const initial = syncProjectAgents({ ...options, call });
+  const rejected = expect(initial).rejects.toThrow("offline");
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+  const queued = syncProjectAgents({ ...options, call });
+  first.reject(new Error("offline"));
+  await rejected;
+  await queued;
+  expect((await cache.readCached(address))?.value).toEqual(roster);
+});

@@ -99,7 +99,7 @@ async function mountWorkers(page, basePath) {
   await loadChatOverviewModules(page, basePath, {
     contexts: "src/core/deviceContexts.js", events: "src/core/changeEvents.js",
     scope: "src/core/cacheScope.js", shell: "src/core/shell.js", viewing: "src/core/viewingContext.js",
-    router: "src/core/router.js",
+    router: "src/core/router.js", rosterCache: "src/core/projectAgentsCache.js",
   });
   await page.evaluate(seedProjectWorkers);
   await page.locator(WORKER).waitFor();
@@ -486,3 +486,97 @@ it("dismisses the default mobile panel when native navigation leaves the canonic
     }, { width: 390, height: 844 });
   }
 }, 40_000);
+
+// Both pages own a browser context/IndexedDB cache. Only RPC is mocked; rail
+// and overview discover workers by rereading the production roster replica.
+it("discovers a created worker in two independent caches during streaming, including navigation away", async () => {
+  await session.withPage(async ({ page: creator, basePath }) => {
+    await session.withPage(async ({ page: observer }) => {
+      for (const page of [creator, observer]) {
+        await mountWorkers(page, basePath);
+        await page.evaluate(async () => {
+          const original = window.__workerCall;
+          window.__listReleases = [];
+          window.__workerCall = async (method, params) => {
+            if (method === "agent.list") return new Promise((resolve) => window.__listReleases.push(resolve));
+            if (method === "agent.add") {
+              window.__creating = true;
+              await new Promise((resolve) => { window.__finishCreation = resolve; });
+            }
+            return original(method, params);
+          };
+          window.__standing = true;
+          const { rosterCache } = window.__layoutModules;
+          window.__refresh = (rail = false) => rosterCache.syncProjectAgents({
+            deviceId: "workers-device", entityId: "project-owner", capabilities: { agents: { projectWorkers: true } },
+            call: window.__workerCall, active: () => !rail || window.__standing,
+          });
+          window.__initialRoster = window.__refresh(true);
+          let sequence = 1;
+          window.__stream = setInterval(() => {
+            void window.__layoutModules.cache.writeCached({ deviceId: "workers-device", entityId: "project-owner",
+              kind: "thread", sub: "conversation-project-worker" }, {
+              thread_id: "worker-thread", thread_generation_revision: 1,
+              items: [{ type: "message", data: { sequence: ++sequence, role: "agent", body: `Streaming ${sequence}` } }],
+            });
+          }, 15);
+        });
+        await page.waitForFunction(() => window.__listReleases.length === 1);
+        await page.evaluate(() => {
+          window.__pushRosters = Array.from({ length: 20 }, () => window.__refresh());
+        });
+      }
+      await creator.evaluate(() => window.__greetWorkers());
+      await selectWithKeyboard(creator, '[data-bubble="add"]');
+      await creator.locator('.rail-harness-picker [data-provider="codex"]').click();
+      await creator.locator("[data-new-agent-name]").fill("Streaming discovery");
+      await creator.locator(INPUT).fill("Create while navigating");
+      await creator.locator(".composer-send").click();
+      await creator.waitForFunction(() => window.__creating);
+      await creator.evaluate(() => {
+        window.__standing = false;
+        window.__workerRail.dispose();
+        window.__layoutModules.app.App.route = { name: "inbox" };
+        window.__finishCreation();
+      });
+      await creator.waitForFunction(() => window.__workerRoster.agents.some((agent) => agent.id === "created-worker"));
+      const authoritative = await creator.evaluate(() => ({ ...window.__workerRoster,
+        agents: window.__workerRoster.agents.map((agent) => agent.id === "project-worker"
+          ? { ...agent, thread_id: "worker-thread", thread_generation_revision: 1 } : agent) }));
+      for (const page of [creator, observer]) {
+        await page.evaluate(async (roster) => {
+          window.__workerRoster = roster;
+          window.__listReleases.shift()(roster);
+          await window.__initialRoster;
+        }, authoritative);
+        await page.waitForFunction(() => window.__listReleases.length === 1);
+        await page.evaluate(async (roster) => {
+          window.__listReleases.shift()(roster);
+          await Promise.all(window.__pushRosters);
+        }, authoritative);
+        if (page === creator) await page.evaluate(() => {
+          const { app, rail, contexts, scope } = window.__layoutModules;
+          app.App.route = { name: "project", deviceId: "workers-device", projectId: "workers-project", tab: "changes" };
+          window.__workerRail = rail.mountAgentRail(document.querySelector("#agent-rail"), {
+            kind: "project", deviceId: "workers-device", projectId: "workers-project", entityId: "project-owner",
+            cacheScope: scope.scopeFor("workers-device"), chatRepository: contexts.knownDeviceContext("workers-device").chatRepository,
+          });
+        });
+        await page.locator('[data-bubble="agent"][data-agent="created-worker"]').waitFor();
+        await selectWithKeyboard(page, '[data-bubble="overview"]');
+        await page.locator('[data-overview-agent="created-worker"]').waitFor();
+        const facts = await page.evaluate(async () => {
+          const { cache, rosterCache } = window.__layoutModules;
+          return { roster: await rosterCache.readProjectAgents("workers-device", "project-owner"),
+            sequence: (await cache.readCached({ deviceId: "workers-device", entityId: "project-owner",
+              kind: "thread", sub: "conversation-project-worker" })).value.items[0].data.sequence,
+            queued: window.__listReleases.length };
+        });
+        expect(facts.roster.agents.some((agent) => agent.id === "created-worker")).toBe(true);
+        expect(facts.sequence).toBeGreaterThan(2);
+        expect(facts.queued).toBe(0);
+        await page.evaluate(() => { clearInterval(window.__stream); window.__workerRail.dispose(); });
+      }
+    }, { width: 390, height: 844 });
+  }, { width: 1280, height: 900 });
+}, 60_000);

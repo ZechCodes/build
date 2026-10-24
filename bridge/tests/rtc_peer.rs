@@ -2,9 +2,9 @@
 //! browser, upgrades a session it minted over the relay, and works the device
 //! over both wires.
 //!
-//! Nothing leaves the machine. The browser gathers on loopback and the device
-//! is offered no ICE server, so only host candidates pair and no TURN and no
-//! STUN server is ever reached.
+//! Nothing leaves the machine. Ordinary tests gather on loopback without ICE
+//! servers. The relay-trickle characterization uses a loopback-only mock TURN
+//! allocator; it verifies signaling without claiming a working TURN data path.
 //!
 //! One part of rule 8 is not provable here: the bridge resolves a browser's
 //! mDNS (`<uuid>.local`) host candidates, and the in-process browser offers
@@ -32,6 +32,8 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 mod common;
+#[path = "support/gathering_turn.rs"]
+mod gathering_turn;
 
 /// The browser's end of one E2EE session over the relay: what it sends, and
 /// the two things that come back — replies to its own requests, and the
@@ -340,6 +342,103 @@ async fn every_trickled_candidate_names_the_section_it_belongs_to() {
         );
         assert_eq!(candidate["sdpMLineIndex"], 0, "{candidate}");
     }
+}
+
+struct RelayOnlyGathering {
+    gathered: mpsc::UnboundedSender<Value>,
+}
+
+#[async_trait::async_trait]
+impl webrtc::peer_connection::PeerConnectionEventHandler for RelayOnlyGathering {
+    async fn on_ice_candidate(&self, event: webrtc::peer_connection::RTCPeerConnectionIceEvent) {
+        let _ = self
+            .gathered
+            .send(serde_json::to_value(event.candidate.to_json().unwrap()).unwrap());
+    }
+}
+
+/// A relay-only offerer receives the bridge's genuine gathered relay candidate
+/// through the encrypted session push stream before any session.hello. This
+/// characterizes bridge signaling independently of the SPA's pre-hello filter.
+/// The local TURN fixture allocates only: no real data path is claimed here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_only_offer_receives_bridge_relay_trickle_before_hello() {
+    use webrtc::peer_connection::{
+        PeerConnection, PeerConnectionBuilder, RTCConfigurationBuilder, RTCIceCandidateInit,
+        RTCIceServer, RTCIceTransportPolicy, RTCSessionDescription,
+    };
+
+    let turn = gathering_turn::GatheringTurn::start().await;
+    let state_dir = tempfile::tempdir().unwrap();
+    let (intake, _reports) = peer_bridge(state_dir.path());
+    let (session, demux) = browser_session("sess-relay-trickle", intake).await;
+    let servers = vec![json!({
+        "urls": [turn.url], "username": "test-user", "credential": "test-only-password",
+    })];
+    let (gathered, mut candidates) = mpsc::unbounded_channel();
+    let browser = PeerConnectionBuilder::new()
+        .with_handler(Arc::new(RelayOnlyGathering { gathered }))
+        .with_configuration(
+            RTCConfigurationBuilder::new()
+                .with_ice_transport_policy(RTCIceTransportPolicy::Relay)
+                .with_ice_servers(vec![RTCIceServer {
+                    urls: vec![turn.url.clone()],
+                    username: "test-user".into(),
+                    credential: "test-only-password".into(),
+                }])
+                .build(),
+        )
+        .with_udp_addrs(vec!["127.0.0.1:0"])
+        .build()
+        .await
+        .unwrap();
+    let _channel = browser.create_data_channel("app", None).await.unwrap();
+    let offer = browser.create_offer(None).await.unwrap();
+    browser.set_local_description(offer.clone()).await.unwrap();
+    let answer = session.offer(offer.sdp, &servers).await;
+    browser
+        .set_remote_description(RTCSessionDescription::answer(answer).unwrap())
+        .await
+        .unwrap();
+
+    let local_relay = within_patience(candidates.recv()).await;
+    assert!(local_relay["candidate"]
+        .as_str()
+        .unwrap()
+        .contains(" typ relay "));
+    session.trickle(local_relay).await;
+
+    let relay = within_patience(async {
+        loop {
+            let candidate = session.device_candidate().await;
+            if candidate["candidate"]
+                .as_str()
+                .unwrap()
+                .contains(" typ relay ")
+            {
+                return Some(candidate);
+            }
+        }
+    })
+    .await;
+    assert_eq!(candidate_address(&relay), turn.relay_addr.ip());
+    assert_eq!(
+        relay["candidate"]
+            .as_str()
+            .unwrap()
+            .split_whitespace()
+            .nth(5),
+        Some(turn.relay_addr.port().to_string().as_str()),
+    );
+    assert_eq!(relay["sdpMid"], "0");
+    assert_eq!(relay["sdpMLineIndex"], 0);
+    browser
+        .add_ice_candidate(serde_json::from_value::<RTCIceCandidateInit>(relay).unwrap())
+        .await
+        .expect("the offerer accepts the bridge's gathered relay candidate");
+    assert_eq!(session.call("rtc.close", json!({})).await["ok"], true);
+    browser.close().await.unwrap();
+    demux.abort();
 }
 
 /// Rule 8 says the bridge gathers over UDP4 **and UDP6**, and the crate honours

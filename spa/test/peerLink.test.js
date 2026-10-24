@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, it, expect, onTestFinished, vi } from 
 import { openPeerLink } from "../src/core/peerLink.js";
 import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory, connectionDiagnosticReport } from "../src/core/connectionDiagnostics.js";
 import { diagnosticsJson } from "../src/core/connectionDiagnosticsModel.js";
+import { createSessionRpc } from "../src/core/sessionRpc.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -222,6 +223,51 @@ const diagnosticsOf = (event) =>
   connectionDiagnosticHistory().filter((entry) => entry.event === event).map((entry) => entry.state);
 
 describe("openPeerLink", () => {
+  it("adds relay-only bridge trickle through the encrypted session before any greeting", async () => {
+    clearConnectionDiagnosticHistory();
+    let receive;
+    const wire = {
+      onEnvelope: (listener) => { receive = listener; },
+      onClose: () => {},
+      send: async ({ payload }) => {
+        if (payload.method === "rtc.offer") {
+          receive({ payload: { id: payload.id, ok: true, bridge_epoch: "boot-A", result: { sdp: "v=0 answer" } } });
+        }
+      },
+    };
+    const rpc = createSessionRpc({
+      sessionId: "relay-only", sessionKeyB64: "test-key", deviceId: "test-device",
+      transport: { encryptFrame: async ({ frameFields }) => frameFields, decryptEnvelope: async ({ envelope }) => envelope },
+    });
+    rpc.rideOn(wire);
+    const stood = stand({ signalImpl: (method, params) => rpc.call(method, params), onPush: rpc.onPush });
+    let resolved;
+    try {
+      await tick();
+      const peer = stood.peer();
+      peer.localCandidateType = "relay";
+      peer.remoteCandidateType = "relay";
+      const candidate = { candidate: "candidate:1 1 udp 1 203.0.113.1 5000 typ relay", sdpMid: "0", sdpMLineIndex: 0 };
+      await receive({ payload: { type: "rtc.ice", bridge_epoch: "boot-A", candidate } });
+      await tick();
+      expect(rpc.bridgeEpoch.current()).toBeNull();
+      expect(peer.remoteDescriptions).toEqual([{ type: "answer", sdp: "v=0 answer" }]);
+      expect(peer.remoteCandidates).toEqual([candidate]);
+      expect(connectionDiagnosticHistory().filter(({ event }) => event === "remote-candidate"))
+        .toMatchObject([{ type: "relay", outcome: "accepted", generation: 0 }]);
+      peer.channels.get("app").open();
+      peer.channels.get("term").open();
+      peer.connectionState = "connected";
+      peer.emit("connectionstatechange");
+      resolved = await stood.link;
+    } finally {
+      resolved?.close();
+      stood.peer()?.channels.get("app").close();
+      await stood.link.catch(() => {});
+      rpc.close();
+    }
+  });
+
   it("records answer receipt and successful application without SDP or credentials", async () => {
     clearConnectionDiagnosticHistory();
     const { resolved } = await upgrade();

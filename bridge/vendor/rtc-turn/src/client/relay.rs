@@ -496,6 +496,7 @@ impl Relay<'_> {
         bind_addr: SocketAddr,
     ) -> Result<()> {
         if let Some(relay) = self.client.relays.get_mut(&self.relayed_addr) {
+            let mut refused = false;
             let result = if res.typ.class == CLASS_ERROR_RESPONSE {
                 let mut code = ErrorCodeAttribute::default();
                 let result = code.get_from(&res);
@@ -505,6 +506,7 @@ impl Relay<'_> {
                     relay.set_nonce_from_msg(&res);
                     Err(Error::ErrTryAgain)
                 } else {
+                    refused = code.code == CODE_BAD_REQUEST;
                     Err(Error::Other(format!("{} (error {})", res.typ, code)))
                 }
             } else if res.typ != MessageType::new(METHOD_CHANNEL_BIND, CLASS_SUCCESS_RESPONSE) {
@@ -514,9 +516,11 @@ impl Relay<'_> {
             };
 
             if let Err(err) = result {
-                if Error::ErrUnexpectedResponse != err {
+                if Error::ErrUnexpectedResponse != err && !refused {
                     self.client.binding_mgr.delete_by_addr(&bind_addr);
                 } else if let Some(b) = self.client.binding_mgr.get_by_addr(&bind_addr) {
+                    // A refused bind stays on Send indications for this allocation.
+                    // Deleting it would retry the same refusal on every ICE check.
                     b.set_state(BindingState::Failed);
                 }
 

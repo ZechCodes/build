@@ -3930,8 +3930,12 @@ errors; late replies cannot release replacement credits. Cache rendering and
 read coordination remain independent of these admission waits.
 
 `bridgeEpoch.js` accepts epoch/incarnation authority only from a current
-greeting. Application calls await that greeting, and every later app/terminal
-frame is fenced before correlation or push delivery. An unexpected UUID asks
+greeting. Before the first greeting, authenticated `rtc.ice` pushes and
+correlated bootstrap replies can reach the peer negotiation: its channels must
+open before `session.hello` can run. Other pushes, including `rtc.diagnostics`,
+retain the epoch guard. Once a greeting establishes authority, signaling also
+uses that guard. Application calls await the greeting, and every later
+app/terminal frame is fenced before correlation or push delivery. An unexpected UUID asks
 for a fresh greeting; it does not establish a newer epoch. Replacing an epoch
 settles unsent calls as `scope_ended` and handed-off calls as
 `uncertain_delivery`, releases reservations once, and never replays terminal

@@ -182,3 +182,21 @@ def test_direct_prod_mutators_refuse(tmp_path):
             mutate()
     runner.run.assert_not_called()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_deploy_prints_one_line_result(tmp_path, capsys, monkeypatch):
+    bridge = Mock()
+    bridge.deploy.return_value = {"current": "a" * 40, "relay": "authenticated"}
+    monkeypatch.setattr("buildctl.cli.Bridge", Mock(return_value=bridge))
+    assert (
+        main(
+            ["--env", "dev", "bridge", "deploy"],
+            runner=Mock(),
+            home=tmp_path,
+            registry_path=REGISTRY,
+        )
+        == 0
+    )
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["relay"] == "authenticated"

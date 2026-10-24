@@ -117,7 +117,8 @@ def main(
             fetch,
         )
         if result is not None:
-            print(json.dumps(public_data(result), indent=2))
+            mutation = getattr(args, "command", None) in MUTATIONS
+            print(json.dumps(public_data(result), indent=None if mutation else 2))
         return 0
     except (BuildctlError, OSError) as error:
         message = (

@@ -1895,8 +1895,9 @@ describe("every project's tasks", () => {
     script["tasks.list"] = () => new Promise((resolve) => answers.push(resolve));
     const inbox = registeredWatchers.find((watcher) => watcher.id === "s-inbox");
     const pushed = { entity_id: "p1", tasks: { task_ids: ["task-1"], truncated: false } };
-    for (let n = 0; n < 4; n += 1) inbox.onChanges([pushed]);
+    inbox.onChanges([pushed]);
     await vi.waitFor(() => expect(answers).toHaveLength(1));
+    for (let n = 0; n < 3; n += 1) inbox.onChanges([pushed]);
     expect(calls("tasks.list")).toHaveLength(before + 1);
 
     answers[0]({ tasks: [{ id: "task-1", number: 12, status: "done" }] });

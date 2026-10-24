@@ -104,3 +104,19 @@ it("fences source terminal rosters when the captured session ends", async () => 
   finally { reading.mockRestore(); }
   expect((await cache.readCached(rosterAddress))?.value.tabs).toEqual([{ term_id: "held-terminal" }]);
 });
+
+
+it("writes source terminal snapshots while an unrelated invalidation RPC is stalled", async () => {
+  let release;
+  const stalled = new Promise((resolve) => { release = resolve; });
+  const previous = context.rpc.getMockImplementation();
+  context.rpc.mockImplementation((method, params) => method === "tasks.list" ? stalled : previous(method, params));
+  const subscriber = watchers.find((entry) => entry.kinds.includes("thread"));
+  subscriber.onChanges([{ entity_id: "p1", tasks: { task_ids: ["changed"] } }]);
+  await vi.waitFor(() => expect(context.rpc.mock.calls.filter(([method]) => method === "tasks.list").length).toBeGreaterThan(2));
+  try {
+    const applying = sync.applyProjectSourceChanges([sourceFact("during-read")], "dev-1");
+    await vi.waitFor(async () => expect((await cache.readCached(rosterAddress))?.value.tabs).toEqual([{ term_id: "during-read" }]), { timeout: 1000 });
+    await applying;
+  } finally { release({ tasks: [] }); }
+});

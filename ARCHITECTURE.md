@@ -3671,6 +3671,19 @@ gate attachment display.
   `spa/src/core/cacheSync.js`). Most fields carry bodies that are written
   straight into the cache: `state`, `thread`, git `status`/`log`/`unpushed`/
   `diff`, the files root listing, and `terminals`.
+  `pushQueue.js` bounds each device/session/path to one body applier and one
+  deferred enrichment applier. Compatible pending entity snapshots and thread
+  spans coalesce; board removals, roster generation changes and resets retain
+  their order. Unknown empty spans never become delivered coverage when folded.
+  The body lane writes conversations before state and session summaries, and
+  also writes terminal rosters without waiting for enrichment RPCs. The shown
+  conversation's entity has priority, with an ordinary turn after four promoted
+  jobs. Roster/review reads run behind bodies with one pending refresh per key.
+  Catch-up coverage and repair rules still belong to `threadSync.js`.
+  `pushWorkInFlight()` counts pending applier jobs before IndexedDB admission.
+  Feed consumers retain an address index (`feedCacheReader.js`): announcements
+  reread only named records, in batches of at most 64; prefix evictions rebuild
+  the index. Reads still include pending-write overlays and cross-tab changes.
 - **Chat read marks** (#473) report the viewport sequence and window floor
   only while the reader is present. A known cursor can establish read progress
   even if the cached unread count is zero. `chatReadReporter.js` confirms

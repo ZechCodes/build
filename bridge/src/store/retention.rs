@@ -61,6 +61,7 @@ pub struct ConversationRetentionReport {
     pub items_to_prune: u64,
     pub items_bytes_to_prune: u64,
     pub operations_to_prune: u64,
+    /// An unresolved delivery fences its span; the older prefix can still be pruned.
     pub protected: bool,
 }
 
@@ -104,19 +105,35 @@ pub(super) fn read_boundary(
     ).optional().map_err(StoreError::from)
 }
 
-// A pending delivery can still read old context or mutate old message rows.
-// Protect the entire conversation until it has settled, including legacy sends.
-fn protected(conn: &Connection, id: &str) -> Result<bool, StoreError> {
-    Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM operations WHERE conversation_id = ?1 AND status IN ('queued','claimed','uncertain'))
-         OR EXISTS(SELECT 1 FROM operations WHERE status IN ('queued','claimed','uncertain')
-             AND json_extract(delivery, '$.agent_id') IN (SELECT ?1 UNION SELECT id FROM agents WHERE json_extract(record, '$.conversation_id') = ?1))
-         OR EXISTS(SELECT 1 FROM thread_items WHERE agent_id = ?1 AND message = 1
-             AND json_extract(item, '$.data.role') = 'user'
-             AND json_extract(item, '$.data.operation_id') IS NULL
-             AND json_extract(item, '$.data.seen_at') IS NULL
-             AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted'))",
-        [id], |row| row.get(0))?)
+const PENDING_START_SQL: &str = "WITH conversation_ids(id) AS (SELECT ?1 UNION SELECT id FROM agents WHERE json_extract(record, '$.conversation_id') = ?1)
+         SELECT MIN(start_sequence) FROM (
+             SELECT MIN(CASE WHEN message_start_sequence > 0 AND posted_sequence >= message_start_sequence
+                 THEN message_start_sequence ELSE 0 END) AS start_sequence
+             FROM operations WHERE status IN ('queued','claimed','uncertain')
+                 AND conversation_id IN (SELECT id FROM conversation_ids)
+             UNION ALL
+             SELECT MIN(CASE WHEN json_type(delivery, '$.payload.start_sequence') = 'integer'
+                 AND json_type(delivery, '$.payload.end_sequence') = 'integer'
+                 AND json_extract(delivery, '$.payload.start_sequence') > 0
+                 AND json_extract(delivery, '$.payload.end_sequence') >= json_extract(delivery, '$.payload.start_sequence')
+                 THEN json_extract(delivery, '$.payload.start_sequence') ELSE 0 END)
+             FROM operations INDEXED BY operations_pending_delivery_target WHERE status IN ('queued','claimed','uncertain')
+                 AND json_extract(delivery, '$.agent_id') IN (SELECT id FROM conversation_ids)
+                 AND conversation_id NOT IN (SELECT id FROM conversation_ids)
+             UNION ALL
+             SELECT MIN(sequence) FROM thread_items INDEXED BY thread_items_pending_delivery WHERE agent_id = ?1 AND message = 1
+                 AND json_extract(item, '$.data.role') = 'user'
+                 AND json_extract(item, '$.data.operation_id') IS NULL
+                 AND json_extract(item, '$.data.seen_at') IS NULL
+                 AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted')
+         )";
+
+// Pending work protects its own sequence space from the earliest span start.
+// A compacted same-conversation receipt still knows its origin span; a routed
+// target must have its own valid payload span, otherwise its floor is unknown.
+fn pending_start_sequence(conn: &Connection, id: &str) -> Result<Option<u64>, StoreError> {
+    let start: Option<i64> = conn.query_row(PENDING_START_SQL, [id], |row| row.get(0))?;
+    Ok(start.map(|value| value.max(0) as u64))
 }
 
 struct RetentionPlan {
@@ -165,11 +182,13 @@ fn plan(
         "SELECT MIN(sequence) FROM (SELECT sequence FROM thread_items WHERE agent_id = ?1 AND message = 1 ORDER BY sequence DESC LIMIT ?2)",
         rusqlite::params![id, i64::try_from(keep).unwrap_or(i64::MAX)], |row| row.get::<_, Option<i64>>(0))?.map(|value| value as u64);
     let floor = floor.unwrap_or(high_watermark.saturating_add(1));
+    let pending_start = pending_start_sequence(conn, id)?;
+    let floor = pending_start.map_or(floor, |pending| floor.min(pending));
     Ok(RetentionPlan {
         thread_id,
         history_start_sequence: floor,
         high_watermark,
-        protected: protected(conn, id)?,
+        protected: pending_start.is_some(),
     })
 }
 
@@ -349,9 +368,6 @@ impl Store {
         let cutoff = cutoff_time(policy, now)?;
         self.in_transaction(|tx| {
             let plan = plan(tx, id, policy, &cutoff)?;
-            if plan.protected {
-                return Ok(RetentionBatch {conversation_id: id.into(), items_deleted: 0, operations_deleted: 0, boundary: read_boundary(tx, id)?, has_more: false});
-            }
             let floor = plan.history_start_sequence;
             let backups_deleted = if has_old_items(tx,id,floor)? {
                 tx.execute("DELETE FROM agent_migration_backups WHERE rowid IN (SELECT rowid FROM agent_migration_backups WHERE agent_id = ?1 LIMIT ?2)", rusqlite::params![id, BATCH_ROWS as i64])?

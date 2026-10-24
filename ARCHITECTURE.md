@@ -1061,10 +1061,18 @@ Changes to this config take effect after restart.
 
 The daemon runs an immediate startup cycle and repeats hourly. Discovery uses
 keyset pages; the store commits at most 1,000 deletions per batch outside the
-app lock. Queued, claimed or uncertain operations and pending legacy deliveries
-protect their entire conversation. Settled operation receipts remain as small
-idempotency tombstones, retaining hashes and original sequence spans. #835 owns
-payload compaction and the sole incremental-vacuum scheduler.
+app lock. The earliest span start of queued, claimed or uncertain operations
+caps the prune floor: older items remain prunable, while the unresolved span
+and every newer item survive, even when that exceeds the configured maximum.
+Origin and canonical forwarded conversations are
+protected. Pending legacy messages cap the floor at their creation sequence;
+missing operation span information requires conservative protection.
+Settled operation rows remain as small payload-free idempotency tombstones,
+retaining identity, request hash, original numeric sequence spans, status and
+outcome metadata. Retaining these receipts instead of deleting them preserves
+retry deduplication and late-status readers without pinning transcript history.
+Forwarded receipts may retain a payload-free routing stub. #835 owns payload
+compaction and the sole incremental-vacuum scheduler.
 
 Schema 19 stores a generation-scoped `conversation_retention` floor and sequence
 high-water mark. A bounded timestamp-only summary of pruned recent messages

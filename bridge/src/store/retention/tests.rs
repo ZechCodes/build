@@ -684,3 +684,217 @@ fn existing_retention_boundaries_gain_timestamp_summary_without_resetting_cursor
         .unwrap();
     assert_eq!(summary, "[]");
 }
+
+#[test]
+fn old_uncertain_span_allows_bounded_pruning_of_its_older_prefix() {
+    let (_dir, store) = fixture(2500);
+    store.in_transaction(|tx| {
+        tx.execute("INSERT INTO operations(operation_id,method,entity_id,agent_id,conversation_id,choice_revision,request_hash,posted_sequence,message_start_sequence,status,created_at,updated_at) VALUES ('old','thread.post','owner','a','a',0,'hash',1510,1501,'uncertain','now','now')", [])?;
+        tx.execute("INSERT INTO operations(operation_id,method,entity_id,agent_id,conversation_id,choice_revision,request_hash,posted_sequence,message_start_sequence,status,created_at,updated_at) VALUES ('later','thread.post','owner','a','a',0,'hash',2010,2001,'queued','now','now'), ('settled','thread.post','owner','a','a',0,'hash',10,1,'delivered','now','now')", [])?;
+        Ok(())
+    }).unwrap();
+    let report = store
+        .retention_report_conversation("a", RetentionPolicy::default(), "2026-11-24T12:00:00Z")
+        .unwrap();
+    assert!(
+        report.protected,
+        "the unresolved span remains an informational fence"
+    );
+    assert_eq!(report.history_start_sequence, 1501);
+    assert_eq!(
+        report.items_to_prune, 1500,
+        "only the span and newer items require protection"
+    );
+    let first = store
+        .prune_conversation_batch("a", RetentionPolicy::default(), "2026-11-24T12:00:00Z")
+        .unwrap();
+    assert_eq!(first.items_deleted, 1000);
+    assert!(first.has_more);
+    let last = store
+        .prune_conversation_batch("a", RetentionPolicy::default(), "2026-11-24T12:00:00Z")
+        .unwrap();
+    assert_eq!(last.items_deleted, 500);
+    assert!(!last.has_more);
+    assert_eq!(store.thread_item_count("a").unwrap(), 1000);
+    assert_eq!(last.boundary.unwrap().history_start_sequence, 1501);
+    store
+        .in_transaction(|tx| {
+            tx.execute("UPDATE operations SET status = 'delivered'", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let settled = store
+        .prune_conversation_batch("a", RetentionPolicy::default(), "2026-11-24T12:00:00Z")
+        .unwrap();
+    assert_eq!(
+        settled.items_deleted, 950,
+        "settling all spans releases their retention fence"
+    );
+    assert_eq!(store.thread_item_count("a").unwrap(), 50);
+}
+
+#[test]
+fn forwarded_target_uses_its_payload_span_and_origin_uses_its_receipt_span() {
+    let (_dir, store) = fixture(200);
+    store.in_transaction(|tx| {
+        tx.execute("INSERT INTO agents VALUES ('origin','owner',2,'{\"thread\":{\"id\":\"source\"}}')", [])?;
+        tx.execute("INSERT INTO agents VALUES ('alias','owner',3,'{\"conversation_id\":\"a\",\"thread\":{\"id\":\"alias\"}}')", [])?;
+        tx.execute("INSERT INTO agents VALUES ('origin-alias','owner',4,'{\"conversation_id\":\"origin\",\"thread\":{\"id\":\"source-alias\"}}')", [])?;
+        tx.execute("INSERT INTO thread_items(agent_id,sequence,updated_sequence,message,item) SELECT 'origin',sequence,updated_sequence,message,item FROM thread_items WHERE agent_id = 'a'", [])?;
+        tx.execute("INSERT INTO operations(operation_id,method,entity_id,agent_id,conversation_id,choice_revision,request_hash,posted_sequence,message_start_sequence,status,delivery,created_at,updated_at) VALUES ('forward','thread.post','owner','origin-alias','origin-alias',0,'hash',10,5,'queued','{\"agent_id\":\"alias\",\"payload\":{\"start_sequence\":61,\"end_sequence\":70}}','now','now')", [])?;
+        Ok(())
+    }).unwrap();
+    let target = store
+        .retention_report_conversation("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+        .unwrap();
+    assert_eq!(
+        target.history_start_sequence, 61,
+        "target and origin have independent sequence spaces"
+    );
+    assert_eq!(target.items_to_prune, 60);
+    let origin = store
+        .retention_report_conversation("origin", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+        .unwrap();
+    assert_eq!(origin.history_start_sequence, 5);
+    assert_eq!(origin.items_to_prune, 4);
+    assert_eq!(
+        store
+            .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+            .unwrap()
+            .items_deleted,
+        60
+    );
+    assert_eq!(
+        store
+            .prune_conversation_batch("origin", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+            .unwrap()
+            .items_deleted,
+        4
+    );
+}
+
+#[test]
+fn unknown_pending_spans_stay_conservative_and_legacy_pending_uses_its_item_sequence() {
+    let (_dir, store) = fixture(200);
+    store.in_transaction(|tx| {
+        tx.execute("INSERT INTO operations(operation_id,method,entity_id,agent_id,conversation_id,choice_revision,request_hash,posted_sequence,message_start_sequence,status,created_at,updated_at) VALUES ('unknown','thread.post','owner','a','a',0,'hash',70,0,'claimed','now','now')", [])?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(
+        store
+            .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+            .unwrap()
+            .items_deleted,
+        0,
+        "zero start cannot prove an older prefix is safe"
+    );
+    store.in_transaction(|tx| {
+        tx.execute("DELETE FROM operations", [])?;
+        tx.execute("UPDATE thread_items SET item = json_set(item, '$.data.role','user','$.data.delivery_status','queued') WHERE agent_id = 'a' AND sequence = 61", [])?;
+        Ok(())
+    }).unwrap();
+    let legacy = store
+        .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+        .unwrap();
+    assert_eq!(legacy.items_deleted, 60);
+    assert_eq!(legacy.boundary.unwrap().history_start_sequence, 61);
+}
+
+#[test]
+fn same_conversation_compacted_stubs_use_the_earliest_receipt_span() {
+    let (_dir, store) = fixture(200);
+    store.in_transaction(|tx| {
+        tx.execute("INSERT INTO agents VALUES ('alias','owner',2,'{\"conversation_id\":\"a\",\"thread\":{\"id\":\"alias\"}}')", [])?;
+        tx.execute("UPDATE thread_items SET message = 0, activity = 1, item = '{}' WHERE sequence IN (30,32)", [])?;
+        for (operation,status,start) in [("one","queued",91),("two","claimed",61),("three","uncertain",31)] {
+            tx.execute("INSERT INTO operations(operation_id,method,entity_id,agent_id,conversation_id,choice_revision,request_hash,posted_sequence,message_start_sequence,status,delivery,created_at,updated_at) VALUES (?1,'thread.post','owner','a','a',0,'hash',100,?3,?2,'{\"agent_id\":\"alias\",\"payload\":null}','now','now')", rusqlite::params![operation,status,start])?;
+        }
+        Ok(())
+    }).unwrap();
+    let report = store
+        .retention_report_conversation("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+        .unwrap();
+    assert!(report.protected);
+    assert_eq!(report.history_start_sequence, 31);
+    assert_eq!(report.items_to_prune, 30);
+    let batch = store
+        .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+        .unwrap();
+    assert_eq!(batch.items_deleted, 30);
+    assert_eq!(
+        store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM thread_items WHERE agent_id = 'a' AND activity = 1",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1,
+        "activity before S is removed and activity after S is retained"
+    );
+}
+
+#[test]
+fn routed_missing_zero_reversed_or_structured_spans_protect_the_whole_target() {
+    let (_dir, store) = fixture(200);
+    store.in_transaction(|tx| {
+        tx.execute("INSERT INTO operations(operation_id,method,entity_id,agent_id,conversation_id,choice_revision,request_hash,posted_sequence,message_start_sequence,status,created_at,updated_at) VALUES ('routed','thread.post','owner','origin','origin',0,'hash',10,5,'uncertain','now','now')", [])?;
+        Ok(())
+    }).unwrap();
+    for payload in [
+        serde_json::Value::Null,
+        serde_json::json!({"start_sequence":0,"end_sequence":70}),
+        serde_json::json!({"start_sequence":61,"end_sequence":0}),
+        serde_json::json!({"start_sequence":71,"end_sequence":70}),
+        serde_json::json!({"start_sequence":{"value":61},"end_sequence":70}),
+        serde_json::json!({"start_sequence":"61","end_sequence":70}),
+    ] {
+        store
+            .in_transaction(|tx| {
+                tx.execute(
+                    "UPDATE operations SET delivery = ?1",
+                    [serde_json::json!({"agent_id":"a","payload":payload}).to_string()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let report = store
+            .retention_report_conversation("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+            .unwrap();
+        assert!(report.protected);
+        assert_eq!(
+            report.items_to_prune, 0,
+            "unknown routed sequence space must remain conservative"
+        );
+        assert_eq!(
+            store
+                .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+                .unwrap()
+                .items_deleted,
+            0
+        );
+    }
+}
+
+#[test]
+fn pending_span_planner_seeks_pending_rows_instead_of_lifetime_history() {
+    let (_dir, store) = fixture(150);
+    let conn = store.connection();
+    let mut statement = conn
+        .prepare(&format!("EXPLAIN QUERY PLAN {PENDING_START_SQL}"))
+        .unwrap();
+    let details = statement
+        .query_map(["a"], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    eprintln!("retention pending span query plan: {details:#?}");
+    assert!(
+        details.iter().any(|detail| detail
+            .contains("SEARCH thread_items USING INDEX thread_items_pending_delivery")
+            && detail.contains("agent_id=?")),
+        "legacy pending lookup must seek only pending rows: {details:#?}"
+    );
+    assert!(details.iter().any(|detail| detail.contains("SEARCH operations USING INDEX operations_pending_delivery_target") && detail.contains("<expr>=?")),"routed lookup must seek the canonical target, skipping unrelated pending operations: {details:#?}");
+}

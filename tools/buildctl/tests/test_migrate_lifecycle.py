@@ -123,3 +123,56 @@ def test_review_binding_joins_reclaimed_workspace_without_path_heuristics(tmp_pa
     })
     result = classify(path)
     assert ('working_repository', '/arbitrary/place') in result['historical']['reclaimed_workspaces']
+
+
+def add_operations(path, values):
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE operations (operation_id TEXT, status TEXT, entity_id TEXT, delivery TEXT)')
+        db.executemany('INSERT INTO operations VALUES (?, ?, ?, ?)',
+                       [(identity, status, target, json.dumps({'root': root}))
+                        for identity, status, target, root in values])
+
+
+def test_stale_operations_use_target_lifecycle_and_keep_unknown_targets_required(tmp_path):
+    path = database(tmp_path, {
+        'implementations': [{'id': 'finished', 'state': 'Merged', 'worktree_path': '/finished'},
+                            {'id': 'live', 'state': 'Review', 'worktree_path': '/live'}],
+    })
+    add_operations(path, [('old', 'uncertain', 'finished', '/finished'),
+                          ('current', 'queued', 'live', '/live'),
+                          ('unknown', 'queued', 'absent', '/unknown')])
+    result = classify(path)
+    assert result['undeliverable_stale_operations'] == [
+        {'id': 'old', 'target': 'finished', 'status': 'uncertain', 'root': '/finished'}]
+    assert ('root', '/finished') in result['historical']['undeliverable_stale_operations']
+    assert ('root', '/live') in result['required']
+    assert ('root', '/unknown') in result['required']
+
+
+def test_reclaimed_workspace_links_prove_stale_target_but_live_run_wins(tmp_path):
+    path = database(tmp_path, {
+        'tracker_events': [{'kind': 'workspace_reclaimed', 'payload': {'workspace_id': 'ws'}}],
+        'tracker_tasks': [{'status': 'done', 'links': {'workspace_ids': ['ws'],
+                                                    'conversation_ids': ['gone', 'live']}}],
+        'implementations': [{'id': 'live', 'state': 'Review', 'worktree_path': '/live'}],
+    })
+    add_operations(path, [('stale', 'queued', 'gone', '/arbitrary'),
+                          ('current', 'uncertain', 'live', '/live')])
+    result = classify(path)
+    assert [r['id'] for r in result['undeliverable_stale_operations']] == ['stale']
+    assert ('root', '/live') in result['required']
+
+
+def test_failed_materialized_delivery_needs_authoritative_deleted_workspace_evidence(tmp_path):
+    path = database(tmp_path, {'tracker_delivery_intents': [
+        {'id': 'failed', 'state': 'failed', 'reservation': {'materialized': True,
+         'workspace': {'id': 'removed', 'root': '/removed', 'directories': [{'path': '/removed/repo'}]}}},
+    ]})
+    assert ('root', '/removed') in classify(path)['required']
+    result = classify(path, [])
+    assert result['undeliverable_stale_deliveries'] == [
+        {'id': 'failed', 'target': 'removed', 'status': 'failed', 'root': '/removed'}]
+    assert ('path', '/removed/repo') in result['historical']['undeliverable_stale_deliveries']
+    live = classify(path, [{'id': 'removed', 'root': '/removed'}])
+    assert ('root', '/removed') in live['required']
+    assert not live['undeliverable_stale_deliveries']

@@ -10,7 +10,8 @@ from .migrate_paths import PROSE_KEYS, references
 from .migrate_store import classified_references, connect, rows, table_names
 
 HISTORY_KINDS = ('reclaimed_workspaces', 'finished_runs', 'closed_tasks',
-                 'session_lineage', 'archived_worktrees', 'cancelled_deliveries')
+                 'session_lineage', 'archived_worktrees', 'cancelled_deliveries',
+                 'undeliverable_stale_operations', 'undeliverable_stale_deliveries')
 CHECKOUT_KEYS = {'worktree_path', 'checkout', 'cwd', 'root', 'path', 'workspace_path', 'working_repository'}
 TERMINAL_RUNS = {'Merged', 'Abandoned', 'Archived'}
 
@@ -40,8 +41,11 @@ def records(database):
                 for column, cell in raw.items():
                     if column != 'record':
                         refs.update(classified_references(table, column, raw.get('status'), cell)[0])
-                retained = {key: raw[key] for key in ('id', 'task_id', 'status', 'workspace_id') if key in raw}
+                retained = {key: raw[key] for key in ('id', 'task_id', 'status', 'workspace_id', 'operation_id', 'entity_id', 'agent_id') if key in raw}
                 retained['_refs'] = refs
+                if table == 'operations':
+                    delivery = json.loads(raw.get('delivery') or '{}')
+                    retained['_root'] = delivery.get('root')
                 yield table, retained, value if isinstance(value, dict) else {}
 
 
@@ -138,14 +142,59 @@ def reclaimed_review_paths(entries, reclaimed_ids):
             for key, value in references(record) if key == 'working_repository'}
 
 
-def classify(database, live_workspaces=()):
+def stale_entity_evidence(entries, reclaimed_ids):
+    stale = set(reclaimed_ids)
+    live_runs = set()
+    for table, _, record in entries:
+        if table == 'implementations':
+            (stale if record.get('state') in TERMINAL_RUNS else live_runs).add(record.get('id'))
+        if table == 'tracker_tasks':
+            links = record.get('links', {})
+            workspaces = set(links.get('workspace_ids', []))
+            if workspaces and workspaces <= reclaimed_ids:
+                stale.update(links.get('conversation_ids', []))
+    stale.difference_update(live_runs)
+    for table, _, record in entries:
+        if table == 'agents' and record.get('owner_id') in stale:
+            stale.add(record.get('id'))
+    return stale
+
+
+def stale_operations(entries, stale_entities, live_paths):
+    result = []
+    for table, raw, _ in entries:
+        if table != 'operations' or raw.get('status') not in {'queued', 'uncertain'}:
+            continue
+        target, root = raw.get('entity_id'), raw.get('_root')
+        if target in stale_entities and root not in live_paths:
+            result.append({'id': raw.get('operation_id'), 'target': target,
+                           'status': raw['status'], 'root': root})
+    return result
+
+
+def stale_deliveries(entries, reclaimed_ids, live_ids, registry_known):
+    result = []
+    for table, _, record in entries:
+        if table != 'tracker_delivery_intents' or record.get('state') != 'failed':
+            continue
+        reservation = record.get('reservation') or {}
+        workspace = reservation.get('workspace') or {}
+        target = workspace.get('id')
+        deleted = target in reclaimed_ids or (registry_known and reservation.get('materialized') is True)
+        if target and target not in live_ids and deleted:
+            result.append({'id': record.get('id'), 'target': target,
+                           'status': record['state'], 'root': workspace.get('root')})
+    return result
+
+
+def classify(database, live_workspaces=None):
     """Return required refs and historical refs grouped by evidence kind.
 
     Sets contain ``(field_name, original_path)`` pairs compatible with the
     migration store scanner. No filesystem path is tested by this module.
     """
     entries = list(records(database))
-    live = list(live_workspaces) + [record for table, _, record in entries if table == 'workspaces']
+    live = list(live_workspaces or ()) + [record for table, _, record in entries if table == 'workspaces']
     live_paths = set().union(*(workspace_paths(record) for record in live)) if live else set()
     reclaimed_ids, reclaimed_paths = reclaimed_evidence(entries)
     reclaimed_ids.difference_update(record.get('id') for record in live)
@@ -154,17 +203,30 @@ def classify(database, live_workspaces=()):
     owner_kinds = {record.get('id'): record_kind(table, record, reclaimed_ids)
                    for table, _, record in entries if table == 'implementations'}
     owner_kinds.update({identity: 'closed_tasks' for identity in closed_entities})
+    stale_entities = stale_entity_evidence(entries, reclaimed_ids)
+    operations = stale_operations(entries, stale_entities, live_paths)
+    deliveries = stale_deliveries(entries, reclaimed_ids, {r.get('id') for r in live},
+                                  live_workspaces is not None)
+    stale_operation_ids = {record['id'] for record in operations}
+    stale_delivery_ids = {record['id'] for record in deliveries}
     history = {kind: set() for kind in HISTORY_KINDS}
     required = set()
     for table, raw, record in entries:
         classified = classified_entry(table, raw, record, reclaimed_ids, closed_tasks, closed_entities, owner_kinds)
         for ref, kind in classified:
+            if raw.get('operation_id') in stale_operation_ids and ref[0] == 'root':
+                kind = 'undeliverable_stale_operations'
+            if record.get('id') in stale_delivery_ids and ref[0] in CHECKOUT_KEYS:
+                kind = 'undeliverable_stale_deliveries'
             if ref[1] in live_paths:
                 kind = None
-            elif ref[0] in CHECKOUT_KEYS and ref[1] in reclaimed_paths:
+            elif (ref[0] in CHECKOUT_KEYS and ref[1] in reclaimed_paths
+                  and kind not in {'undeliverable_stale_operations', 'undeliverable_stale_deliveries'}):
                 kind = 'reclaimed_workspaces'
             (history[kind] if kind else required).add(ref)
     required_paths = {value for _, value in required}
     for kind in history:
         history[kind] = {ref for ref in history[kind] if ref[1] not in required_paths}
-    return {'required': required, 'historical': history}
+    return {'required': required, 'historical': history,
+            'undeliverable_stale_operations': operations,
+            'undeliverable_stale_deliveries': deliveries}

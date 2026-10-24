@@ -349,3 +349,128 @@ def test_missing_db_attachment_reference_fails_even_if_existing_files_hash_match
     with pytest.raises(BuildctlError, match='attachment|missing|reference'):
         migrator.run(prod_stopped=True)
     assert tree_bytes(target) == before
+
+
+def test_failed_git_publish_retains_recoverable_backup(state, monkeypatch):
+    migrator, _, target, _, _, _ = state
+    migrator.rehearsal = False
+    before = tree_bytes(target)
+    with monkeypatch.context() as patch:
+        def fail(*args, **kwargs):
+            raise BuildctlError('injected shared config failure')
+        patch.setattr('buildctl.migrate.apply_remotes', fail)
+        with pytest.raises(BuildctlError, match='backup|recover'):
+            migrator.run(prod_stopped=True)
+    backups = list(target.parent.glob(target.name + '.backup-*'))
+    backup = next(path for path in backups if path.is_dir())
+    assert tree_bytes(backup) == before
+    migrator.rollback(backup)
+    assert tree_bytes(target) == before
+
+
+def test_bridge_operations_share_migration_lock(tmp_path):
+    from buildctl.bridge import management_lock
+    from buildctl.migrate import migration_lock
+    from buildctl.registry import load_registry
+    registry = Path(__file__).parents[1] / 'environments.toml'
+    env = load_registry(registry, tmp_path)['dev']
+    with migration_lock(env.state_root):
+        with pytest.raises(BuildctlError, match='migration'):
+            with management_lock(env):
+                pass
+
+
+def add_operation(db, status, delivery):
+    db.execute('CREATE TABLE operations (operation_id TEXT PRIMARY KEY, status TEXT, delivery TEXT)')
+    db.execute('INSERT INTO operations VALUES (?, ?, ?)', ('operation-1', status, json.dumps(delivery)))
+    db.commit()
+
+
+@pytest.mark.parametrize('status', ['claimed', 'delivered'])
+def test_terminal_delivery_roots_are_separate_from_other_references(state, status):
+    from buildctl.migrate_store import scan_database
+
+    migrator, source, _, db, _, _ = state
+    root = str(source / 'project-scratch/Build-012345abcdef')
+    attachment = str(source / 'tasks/attachments/image.bin')
+    add_operation(db, status, {'root': root, 'attachment': attachment})
+    # A regular row referencing the same path must retain its independent ref.
+    db.execute('UPDATE agents SET record=?', (json.dumps({'cwd': root}),))
+    db.commit()
+    scanned = scan_database(source / 'tasks/build.db', migrator.paths)
+    assert scanned['terminal_operation_roots'] == {root}
+    assert ('root', root) not in scanned['references']
+    assert ('cwd', root) in scanned['references']
+    assert ('attachment', attachment) in scanned['references']
+    assert scanned['tables']['operations'] == 1
+    assert scanned['rewrites']['operations']['delivery'] == 1
+
+
+@pytest.mark.parametrize('status', ['queued', 'uncertain', 'unknown', None, '', 'future-status'])
+def test_nonterminal_or_unknown_operation_roots_remain_required(state, status):
+    from buildctl.migrate_store import scan_database
+
+    migrator, source, _, db, _, _ = state
+    root = str(source / 'project-scratch/Build-012345abcdef')
+    add_operation(db, status, {'root': root})
+    scanned = scan_database(source / 'tasks/build.db', migrator.paths)
+    assert scanned['terminal_operation_roots'] == set()
+    assert ('root', root) in scanned['references']
+    with pytest.raises(BuildctlError, match='scratch|missing'):
+        migrator.run(prod_stopped=True)
+
+
+def test_missing_terminal_delivery_root_warns_without_dropping_the_receipt(state):
+    migrator, source, target, db, _, _ = state
+    root = str(source / 'project-scratch/Build-012345abcdef')
+    add_operation(db, 'delivered', {'root': root, 'owner_id': 'project-1'})
+    result = migrator.run(prod_stopped=True)
+    assert root in str(result['historical_operation_roots'])
+    assert not (target / 'project-scratch/Build-012345abcdef').exists()
+    with sqlite3.connect(target / 'tasks/build.db') as copied:
+        operation = copied.execute('SELECT operation_id,status,delivery FROM operations').fetchone()
+    assert operation[:2] == ('operation-1', 'delivered')
+    assert json.loads(operation[2]) == {'root': str(target / 'project-scratch/Build-012345abcdef'), 'owner_id': 'project-1'}
+
+
+def test_existing_terminal_delivery_root_is_imported_and_verified(state):
+    migrator, source, target, db, _, _ = state
+    root = source / 'project-scratch/Build-012345abcdef'
+    root.mkdir(parents=True)
+    (root / 'checkout-data').write_bytes(b'imported referenced checkout')
+    add_operation(db, 'delivered', {'root': str(root)})
+    result = migrator.run(prod_stopped=True)
+    assert (target / 'project-scratch/Build-012345abcdef/checkout-data').read_bytes() == b'imported referenced checkout'
+    assert str(root) not in str(result['historical_operation_roots'])
+
+
+def test_json_looking_operation_error_remains_opaque(state):
+    from buildctl.migrate_store import scan_database
+
+    migrator, source, target, db, _, _ = state
+    add_operation(db, 'delivered', {'owner_id': 'project-1'})
+    db.execute('ALTER TABLE operations ADD COLUMN execution_error TEXT')
+    prose = json.dumps({'root': str(source / 'project-scratch/Build-012345abcdef')})
+    db.execute('UPDATE operations SET execution_error=?', (prose,))
+    db.commit()
+    scanned = scan_database(source / 'tasks/build.db', migrator.paths)
+    assert ('root', json.loads(prose)['root']) not in scanned['references']
+    assert not scanned['terminal_operation_roots']
+    migrator.run(prod_stopped=True)
+    with sqlite3.connect(target / 'tasks/build.db') as copied:
+        assert copied.execute('SELECT execution_error FROM operations').fetchone()[0] == prose
+
+
+def test_terminal_classification_does_not_drop_same_root_from_regular_rows(state):
+    from buildctl.migrate_store import scan_database
+
+    migrator, source, _, db, _, _ = state
+    root = str(source / 'project-scratch/Build-012345abcdef')
+    add_operation(db, 'delivered', {'root': root})
+    db.execute('UPDATE agents SET record=?', (json.dumps({'root': root}),))
+    db.commit()
+    scanned = scan_database(source / 'tasks/build.db', migrator.paths)
+    assert scanned['terminal_operation_roots'] == {root}
+    assert ('root', root) in scanned['references']
+    with pytest.raises(BuildctlError, match='scratch|missing'):
+        migrator.run(prod_stopped=True)

@@ -536,3 +536,82 @@ fn routed_pending_delivery_protects_the_canonical_target_but_delivered_does_not(
         1
     );
 }
+
+#[test]
+fn recent_pruned_timestamps_keep_the_rule_stable_across_batches_and_cycles() {
+    for (messages, recent, kept) in [(150, 80, 80), (150, 100, 100), (2000, 100, 100)] {
+        let (dir, store) = fixture(messages);
+        store.in_transaction(|tx| {
+            tx.execute("UPDATE thread_items SET item = json_set(item, '$.data.created_at', '2026-10-01T00:00:00Z') WHERE sequence > ?1", [recent])?;
+            Ok(())
+        }).unwrap();
+        while store
+            .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+            .unwrap()
+            .has_more
+        {}
+        assert_eq!(
+            store.thread_item_count("a").unwrap(),
+            kept,
+            "first complete cycle must keep{kept} for {messages} messages"
+        );
+        drop(store);
+        let store = Store::new(dir.path()).unwrap();
+        let next = store
+            .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+            .unwrap();
+        assert_eq!(
+            next.items_deleted, 0,
+            "a restart and another sweep must not shrink the retained count"
+        );
+        assert_eq!(store.thread_item_count("a").unwrap(), kept);
+        let summary_count: i64 = store.connection().query_row("SELECT json_array_length(pruned_message_times) FROM conversation_retention WHERE agent_id = 'a'", [], |row| row.get(0)).unwrap();
+        assert!(summary_count <= 100);
+        drop(store);
+        let copied = TempDir::new().unwrap();
+        std::fs::copy(dir.path().join("build.db"), copied.path().join("build.db")).unwrap();
+        let store = Store::new(copied.path()).unwrap();
+        assert_eq!(
+            store
+                .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+                .unwrap()
+                .items_deleted,
+            0
+        );
+        assert_eq!(
+            store.thread_item_count("a").unwrap(),
+            kept,
+            "a database copy must preserve timestamp provenance"
+        );
+        let expired = store
+            .prune_conversation_batch("a", RetentionPolicy::default(), "2026-11-24T12:00:00Z")
+            .unwrap();
+        assert_eq!(
+            expired.items_deleted as u64,
+            kept - 50,
+            "expired timestamp summaries must stop contributing to the count"
+        );
+        assert_eq!(store.thread_item_count("a").unwrap(), 50);
+    }
+}
+
+#[test]
+fn existing_retention_boundaries_gain_timestamp_summary_without_resetting_cursors() {
+    let dir = TempDir::new().unwrap();
+    let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
+    conn.execute_batch("CREATE TABLE conversation_retention (agent_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, history_start_sequence INTEGER NOT NULL, high_watermark INTEGER NOT NULL); INSERT INTO conversation_retention VALUES ('a','t',51,150);").unwrap();
+    drop(conn);
+    let store = Store::new(dir.path()).unwrap();
+    let boundary = store.thread_retention_boundary("a").unwrap().unwrap();
+    assert_eq!(boundary.history_start_sequence, 51);
+    assert_eq!(boundary.high_watermark, 150);
+    let summary: String = store
+        .connection()
+        .query_row(
+            "SELECT pruned_message_times FROM conversation_retention WHERE agent_id = 'a'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(summary, "[]");
+}

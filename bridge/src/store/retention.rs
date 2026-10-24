@@ -17,6 +17,14 @@ pub(super) fn ensure_upload_retention_columns(conn: &Connection) -> Result<(), S
         conn.execute("ALTER TABLE conversation_attachment_uploads ADD COLUMN uploaded_at TEXT NOT NULL DEFAULT ''", [])?;
     }
     conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES ('retention_uploads_registered_at', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", [])?;
+    let mut columns = conn.prepare("PRAGMA table_info(conversation_retention)")?;
+    let names = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(columns);
+    if !names.iter().any(|name| name == "pruned_message_times") {
+        conn.execute("ALTER TABLE conversation_retention ADD COLUMN pruned_message_times TEXT NOT NULL DEFAULT '[]'", [])?;
+    }
     Ok(())
 }
 
@@ -144,7 +152,15 @@ fn plan(
         ],
         |row| row.get::<_, i64>(0),
     )? as usize;
-    let keep = recent.clamp(policy.min_messages, policy.max_messages);
+    let pruned_recent: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM conversation_retention r, json_each(r.pruned_message_times) t
+         WHERE r.agent_id = ?1 AND CAST(t.value AS REAL) >= julianday(?2)",
+        rusqlite::params![id, cutoff],
+        |row| row.get(0),
+    )?;
+    let keep = recent
+        .saturating_add(pruned_recent as usize)
+        .clamp(policy.min_messages, policy.max_messages);
     let floor: Option<u64> = conn.query_row(
         "SELECT MIN(sequence) FROM (SELECT sequence FROM thread_items WHERE agent_id = ?1 AND message = 1 ORDER BY sequence DESC LIMIT ?2)",
         rusqlite::params![id, i64::try_from(keep).unwrap_or(i64::MAX)], |row| row.get::<_, Option<i64>>(0))?.map(|value| value as u64);
@@ -185,6 +201,35 @@ fn has_old_items(conn: &Connection, id: &str, floor: u64) -> Result<bool, StoreE
         rusqlite::params![id, floor as i64],
         |row| row.get(0),
     )?)
+}
+
+/// Preserve only the timestamp evidence needed to count a future window. The
+/// selected item span is exactly the deletion batch, never all old history.
+fn batch_message_times(
+    conn: &Connection,
+    id: &str,
+    floor: u64,
+    limit: usize,
+    policy: RetentionPolicy,
+    cutoff: &str,
+) -> Result<String, StoreError> {
+    let mut prior = conn.prepare("SELECT CAST(t.value AS REAL) FROM conversation_retention r, json_each(r.pruned_message_times) t
+        WHERE r.agent_id = ?1 AND CAST(t.value AS REAL) >= julianday(?2)")?;
+    let mut times = prior
+        .query_map(rusqlite::params![id, cutoff], |row| row.get::<_, f64>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut selected = conn.prepare("SELECT julianday(json_extract(item, '$.data.created_at')) FROM
+        (SELECT message, item FROM thread_items WHERE agent_id = ?1 AND sequence < ?2 ORDER BY sequence LIMIT ?3)
+        WHERE message = 1 AND julianday(json_extract(item, '$.data.created_at')) >= julianday(?4)")?;
+    for timestamp in selected.query_map(
+        rusqlite::params![id, floor as i64, limit as i64, cutoff],
+        |row| row.get::<_, f64>(0),
+    )? {
+        times.push(timestamp?);
+    }
+    times.sort_unstable_by(|left, right| right.total_cmp(left));
+    times.truncate(policy.max_messages);
+    Ok(serde_json::to_string(&times).expect("SQLite Julian days are finite numbers"))
 }
 
 impl ReadTransaction<'_> {
@@ -312,14 +357,16 @@ impl Store {
                 tx.execute("DELETE FROM agent_migration_backups WHERE rowid IN (SELECT rowid FROM agent_migration_backups WHERE agent_id = ?1 LIMIT ?2)", rusqlite::params![id, BATCH_ROWS as i64])?
             } else { 0 };
             let operations_deleted = 0;
+            let batch_limit = BATCH_ROWS - backups_deleted;
+            let message_times = batch_message_times(tx,id,floor,batch_limit,policy,&cutoff)?;
             let items_deleted = tx.execute(
                 "DELETE FROM thread_items WHERE agent_id = ?1 AND sequence IN (SELECT sequence FROM thread_items WHERE agent_id = ?1 AND sequence < ?2 ORDER BY sequence LIMIT ?3)",
-                rusqlite::params![id, floor as i64, (BATCH_ROWS - operations_deleted - backups_deleted) as i64])?;
+                rusqlite::params![id, floor as i64, batch_limit as i64])?;
             if items_deleted > 0 {
                 let actual_floor: u64 = tx.query_row("SELECT COALESCE(MIN(sequence), ?2) FROM thread_items WHERE agent_id = ?1", rusqlite::params![id, floor as i64], |row| row.get::<_, i64>(0))? as u64;
-                tx.execute("INSERT INTO conversation_retention(agent_id,thread_id,history_start_sequence,high_watermark) VALUES (?1,?2,?3,?4)
-                    ON CONFLICT(agent_id) DO UPDATE SET thread_id = excluded.thread_id, history_start_sequence = MAX(history_start_sequence, excluded.history_start_sequence), high_watermark = MAX(high_watermark, excluded.high_watermark)",
-                    rusqlite::params![id, plan.thread_id, actual_floor as i64, plan.high_watermark as i64])?;
+                tx.execute("INSERT INTO conversation_retention(agent_id,thread_id,history_start_sequence,high_watermark,pruned_message_times) VALUES (?1,?2,?3,?4,?5)
+                    ON CONFLICT(agent_id) DO UPDATE SET thread_id = excluded.thread_id, history_start_sequence = MAX(history_start_sequence, excluded.history_start_sequence), high_watermark = MAX(high_watermark, excluded.high_watermark), pruned_message_times = excluded.pruned_message_times",
+                    rusqlite::params![id, plan.thread_id, actual_floor as i64, plan.high_watermark as i64, message_times])?;
             }
             Ok(RetentionBatch {conversation_id: id.into(), items_deleted, operations_deleted, boundary: read_boundary(tx, id)?, has_more: has_old_items(tx,id,floor)?})
         })

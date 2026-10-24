@@ -159,7 +159,10 @@ CREATE TABLE IF NOT EXISTS conversation_retention (
     agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
     thread_id TEXT NOT NULL,
     history_start_sequence INTEGER NOT NULL,
-    high_watermark INTEGER NOT NULL
+    high_watermark INTEGER NOT NULL,
+    -- Julian-day values for pruned messages; capped at the policy maximum.
+    -- Counts survive out-of-order timestamp pruning without keeping bodies.
+    pruned_message_times TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS captures (

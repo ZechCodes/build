@@ -215,3 +215,22 @@ def test_plan_maps_literal_prod_alias_with_exact_boundary(tmp_path):
     assert all(change['old'] == record['receiving_repository'] for change in changes)
     assert all(change['new'] == str(target / 'review-receivers/a.git') for change in changes)
     runner.run.assert_not_called()
+
+
+def test_before_commit_runs_after_validation_before_any_change(remote):
+    runner, repository, changes = remote
+    config = repository / '.git/config'
+    original = config.read_bytes()
+    callback = Mock(side_effect=lambda: config.read_bytes() == original or pytest.fail('configuration changed before journal'))
+    apply_remotes(changes, runner, before_commit=callback)
+    callback.assert_called_once_with()
+    assert config.read_bytes() != original
+
+
+def test_before_commit_is_not_called_on_missing_remote(remote):
+    runner, repository, changes = remote
+    runner.run(['git', '-C', str(repository), 'config', '--unset', changes[0]['key']])
+    callback = Mock()
+    with pytest.raises(BuildctlError, match='expected'):
+        apply_remotes(changes, runner, before_commit=callback)
+    callback.assert_not_called()

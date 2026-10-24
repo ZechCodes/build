@@ -111,11 +111,12 @@ def _staged(config, changes, runner, reverse):
         staged.unlink(missing_ok=True)
 
 
-def apply_remotes(changes, runner, *, reverse=False):
+def apply_remotes(changes, runner, *, reverse=False, before_commit=None):
     """Atomically update each shared config, refusing stale plans or Git locks.
 
     All destinations are locked and checked before any configuration is changed.
     Rollback accepts old or new values so interrupted cutovers are recoverable.
+    before_commit can persist recovery state after staging and before any write.
     """
     grouped = {}
     repositories = {}
@@ -135,6 +136,8 @@ def apply_remotes(changes, runner, *, reverse=False):
              stack.enter_context(_staged(config, [], runner, reverse)))
             for config, records in grouped.items()
         ]
+        if before_commit is not None:
+            before_commit()
         _replace_configurations(staged)
 
 

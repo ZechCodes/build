@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { threadWindow, syncThreadWindow } from "../src/core/threadSync.js";
 import { widenCachedThread } from "../src/core/agentRailContext.js";
 import { createChatRepository } from "../src/core/chatRepository.js";
 import { applyConversationReset, reconcileConversationGeneration } from "../src/core/conversationReset.js";
 import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
+import * as cache from "../src/core/localCache.js";
 import { createCompactionChoice } from "../src/core/conversationCompaction.js";
 import { createWatchToggle } from "../src/core/watchToggle.js";
 import { insertRecord } from "../src/core/optimistic.js";
@@ -15,6 +16,41 @@ const address = { deviceId: "reset-device", entityId: "run-1", kind: "thread", s
 const item = (sequence, body) => ({ type: "message", data: { sequence, id: `m${sequence}`, role: "user", body } });
 const held = { thread_id: "new-thread", items: [item(4, "fresh words")], deliveredSequence: 4, activityDigests: [] };
 beforeEach(async () => { await wipeCache(); });
+
+it("checks repeated current generations without taking the cache write lane", async () => {
+  await writeCached(address, held);
+  const transaction = vi.spyOn(IDBDatabase.prototype, "transaction");
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      await reconcileConversationGeneration({ ...address,
+        agent: { id: "agent-1", conversation_id: address.sub, thread_id: held.thread_id } });
+    }
+    expect(transaction.mock.calls.filter(([, mode]) => mode === "readwrite")).toHaveLength(0);
+  } finally {
+    transaction.mockRestore();
+  }
+});
+
+it("an unchanged preflight cannot admit an append after another tab resets the thread", async () => {
+  const agent = { id: "agent-1", conversation_id: address.sub, thread_id: held.thread_id };
+  await writeCached(address, held);
+  const readCanonical = cache.readCanonicalCached;
+  const preflight = vi.spyOn(cache, "readCanonicalCached").mockImplementationOnce(async (key) => {
+    const observed = await readCanonical(key);
+    await writeCached(address, { thread_id: "reset-elsewhere", thread_generation_revision: 1,
+      retired_thread_ids: [held.thread_id], items: [], deliveredSequence: 0 });
+    return observed;
+  });
+  try {
+    await reconcileConversationGeneration({ ...address, agent });
+  } finally {
+    preflight.mockRestore();
+  }
+  expect((await readCached(address)).value.thread_id).toBe("reset-elsewhere");
+  await syncThreadWindow({ ...address, agentId: agent.id, conversationId: address.sub,
+    call: async () => ({ thread_id: held.thread_id, items: [item(5, "retired words")] }) });
+  expect((await readCached(address)).value.items).toEqual([]);
+});
 
 describe("a cleared conversation's generation", () => {
   it("rejects a page from the previous thread even when its sequence is larger", () => {

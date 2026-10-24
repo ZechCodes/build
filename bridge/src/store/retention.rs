@@ -234,20 +234,18 @@ impl Store {
             now,
         )?;
         self.in_transaction(|tx| {
-            let mut statement = tx.prepare("SELECT rowid, conversation_id FROM conversation_attachment_uploads
+            let mut statement = tx.prepare("SELECT rowid FROM conversation_attachment_uploads
                 WHERE julianday(CASE WHEN uploaded_at = '' THEN (SELECT value FROM meta WHERE key = 'retention_uploads_registered_at') ELSE uploaded_at END) < julianday(?1)
                 AND NOT EXISTS (SELECT 1 FROM operations WHERE conversation_id = conversation_attachment_uploads.conversation_id AND status IN ('queued','claimed','uncertain'))
                 AND NOT EXISTS (SELECT 1 FROM thread_items WHERE agent_id = conversation_attachment_uploads.conversation_id AND message = 1
                     AND json_extract(item, '$.data.role') = 'user' AND json_extract(item, '$.data.seen_at') IS NULL
                     AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted'))
                 ORDER BY rowid LIMIT ?2")?;
-            let candidates = statement.query_map(rusqlite::params![cutoff, limit.min(BATCH_ROWS) as i64], |row| Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+            let candidates = statement.query_map(rusqlite::params![cutoff, limit.min(BATCH_ROWS) as i64], |row| row.get::<_,i64>(0))?.collect::<Result<Vec<_>,_>>()?;
             drop(statement);
             let mut removed = 0;
-            for (rowid, id) in candidates {
-                if !protected(tx, &id)? {
-                    removed += tx.execute("DELETE FROM conversation_attachment_uploads WHERE rowid = ?1", [rowid])?;
-                }
+            for rowid in candidates {
+                removed += tx.execute("DELETE FROM conversation_attachment_uploads WHERE rowid = ?1", [rowid])?;
             }
             Ok(removed)
         })

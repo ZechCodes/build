@@ -1,6 +1,5 @@
 //! Regression and opt-in measurements for off-lock storage maintenance.
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 #[tokio::test]
@@ -36,8 +35,6 @@ async fn maintenance_batches_preserve_independent_read_p99() {
     for _ in 0..1_000 {
         baseline.push(measure_read(&mut reader));
     }
-    let running = Arc::new(AtomicBool::new(true));
-    let worker_running = running.clone();
     let writer = store.writer();
     let worker = std::thread::spawn(move || {
         let mut cleared = 0;
@@ -51,11 +48,15 @@ async fn maintenance_batches_preserve_independent_read_p99() {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        worker_running.store(false, Ordering::Release);
         cleared
     });
     let mut during = Vec::new();
-    while running.load(Ordering::Acquire) || during.len() < 1_000 {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !worker.is_finished() || during.len() < 1_000 {
+        assert!(
+            Instant::now() < deadline,
+            "maintenance must finish promptly"
+        );
         during.push(measure_read(&mut reader));
         // Avoid a hot reader hiding realistic writer scheduling on loaded hosts.
         std::thread::sleep(Duration::from_micros(100));

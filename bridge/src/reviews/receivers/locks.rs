@@ -11,6 +11,38 @@ pub(crate) enum RecoveryWait {
     TryOnly,
 }
 
+/// Closing a CLOEXEC descriptor does not unlock copies in forked children.
+/// End logical ownership explicitly, including error returns before exec.
+pub(crate) struct FileLock(File);
+
+impl FileLock {
+    pub(crate) fn from_locked(file: File) -> Self {
+        Self(file)
+    }
+}
+
+impl std::ops::Deref for FileLock {
+    type Target = File;
+    fn deref(&self) -> &File {
+        &self.0
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        unlock(&self.0);
+    }
+}
+
+fn unlock(file: &File) {
+    loop {
+        match file.unlock() {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            _ => break,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct GitLockOwner {
     token: String,
@@ -428,6 +460,12 @@ fn validate_lock_parent(directory: &Path, relative_path: &Path) -> Result<(), St
 /// The kernel releases this directory-FD lock even after abrupt process death.
 struct RecoveryDirectoryLock {
     _directory: File,
+}
+
+impl Drop for RecoveryDirectoryLock {
+    fn drop(&mut self) {
+        unlock(&self._directory);
+    }
 }
 
 impl RecoveryDirectoryLock {

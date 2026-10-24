@@ -250,28 +250,13 @@ impl Worker {
 
     #[cfg(test)]
     pub(super) fn turn_after_grace(&mut self) -> Result<Report, String> {
-        let mut report = self.retry_turn()?;
+        let mut report = self.turn()?;
         self.now += admission::ADMISSION_DRAIN_SECS;
-        let next = self.retry_turn()?;
+        let next = self.turn()?;
         report.freed_bytes += next.freed_bytes;
         report.removed += next.removed;
         report.collected += next.collected;
         Ok(report)
-    }
-
-    #[cfg(test)]
-    pub(super) fn retry_turn(&mut self) -> Result<Report, String> {
-        // Model later service turns after transient native recovery contention.
-        // Direct turn() tests still verify immediate nonblocking admission.
-        for _ in 0..100 {
-            match self.turn() {
-                Err(error) if error.starts_with("busy:") => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                result => return result,
-            }
-        }
-        self.turn()
     }
 }
 

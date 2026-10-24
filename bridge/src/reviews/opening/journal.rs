@@ -1,4 +1,5 @@
 use super::{OpenReviewRequest, ReviewerDispatch};
+use crate::reviews::receivers::locks::FileLock;
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
@@ -6,7 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub(super) fn lock(request: &OpenReviewRequest) -> Result<File, String> {
+pub(super) fn lock(request: &OpenReviewRequest) -> Result<FileLock, String> {
     let root = crate::worktree::canonical_planned_path(&request.receiver_root);
     let workspace = crate::worktree::canonical_planned_path(&request.workspace.root);
     if root.starts_with(&workspace) {
@@ -23,7 +24,7 @@ pub(super) fn lock(request: &OpenReviewRequest) -> Result<File, String> {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         match file.try_lock() {
-            Ok(()) => return Ok(file),
+            Ok(()) => return Ok(FileLock::from_locked(file)),
             Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }

@@ -12,13 +12,13 @@ fn terminal_receiver_waits_one_hour_across_worker_turns() {
         .unwrap();
     std::fs::remove_dir_all(&f.request.workspace.root).unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
-    assert_eq!(worker.retry_turn().unwrap().removed, 0);
+    assert_eq!(worker.turn().unwrap().removed, 0);
     assert!(receiver.join(admission::MARKER).is_file());
     worker.now = admission::ADMISSION_DRAIN_SECS - 1;
-    assert_eq!(worker.retry_turn().unwrap().removed, 0);
+    assert_eq!(worker.turn().unwrap().removed, 0);
     assert!(receiver.is_dir());
     worker.now = admission::ADMISSION_DRAIN_SECS;
-    assert_eq!(worker.retry_turn().unwrap().removed, 1);
+    assert_eq!(worker.turn().unwrap().removed, 1);
     assert!(!receiver.exists());
 }
 
@@ -31,13 +31,9 @@ fn maintenance_yields_recovery_contention_without_blocking_opening() {
     recovery.try_lock().unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
     let started = std::time::Instant::now();
-    match worker.turn() {
-        // Another Git child may briefly retain the opening lease before exec;
-        // yielding at either admission fence is the intended behavior.
-        Ok(report) => assert_eq!(report.removed + report.collected, 0),
-        Err(error) => assert!(error.starts_with("busy:")),
-    }
+    assert!(worker.turn().err().unwrap().starts_with("busy:"));
     assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    recovery.unlock().unwrap();
     drop(recovery);
     let opened = crate::reviews::opening::open(
         &f.store,
@@ -46,7 +42,7 @@ fn maintenance_yields_recovery_contention_without_blocking_opening() {
     )
     .unwrap();
     assert_eq!(opened.review.task_id, f.task_id());
-    worker.retry_turn().unwrap();
+    worker.turn().unwrap();
 }
 
 #[test]

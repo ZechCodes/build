@@ -117,22 +117,57 @@ fn install_hooks(receiver: &Path) -> Result<(), String> {
         receiver,
         RecoveryWait::TryOnly,
         |current, staged| {
-            if let Some(configured) = hooks_path(current)? {
-                if Path::new(&configured) == receiver.join(".build-review-hooks") {
+            let migrating = match hooks_path(current)? {
+                Some(configured)
+                    if Path::new(&configured) == receiver.join(".build-review-hooks") =>
+                {
                     verify_hooks(&receiver.join(".build-review-hooks"))?;
-                } else if configured != "/dev/null" {
+                    true
+                }
+                Some(configured) if configured != "/dev/null" => {
                     return Err("preserved receiver with foreign Git hooks".into());
                 }
-            }
+                _ => false,
+            };
             match staged.remove_multivar("core.hooksPath", ".*") {
-                Ok(()) => Ok(()),
-                Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(()),
-                Err(error) => Err(error.to_string()),
+                Ok(()) => {}
+                Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+                Err(error) => return Err(error.to_string()),
             }
+            verify_staged_default_hooks(current, staged)?;
+            if migrating {
+                check_closed_state(receiver)?;
+                // Retire the old deadline durably BEFORE publishing effective
+                // default hooks. A crash on either side forces a fresh drain.
+                reopen(receiver)?;
+            }
+            Ok(())
         },
     )?;
     // Removing the local setting can expose a global or included override.
     verify_default_hooks(receiver)
+}
+
+/// Validate the candidate before config.lock replaces the original bytes.
+/// Included local values need their repository-context include metadata too:
+/// opening the staged file alone cannot resolve every conditional include.
+fn verify_staged_default_hooks(
+    current: &git2::Config,
+    staged: &git2::Config,
+) -> Result<(), String> {
+    if hooks_path(staged)?.is_some() {
+        return Err("preserved receiver with overridden admission hooks".into());
+    }
+    let mut entries = current
+        .entries(Some(r"^core\.hookspath$"))
+        .map_err(|error| error.to_string())?;
+    while let Some(entry) = entries.next() {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if entry.level() != git2::ConfigLevel::Local || entry.include_depth() != 0 {
+            return Err("preserved receiver with overridden admission hooks".into());
+        }
+    }
+    Ok(())
 }
 
 fn hooks_path(config: &git2::Config) -> Result<Option<String>, String> {

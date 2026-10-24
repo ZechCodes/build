@@ -1961,14 +1961,20 @@ Active receivers use Git's normal pruning grace period: `--prune=now` could race
 native pushes before ref publication. Maintenance reports reclaimed bytes and
 preserves receivers whose ownership or in-flight operation cannot be established.
 Its Git-lock recovery uses a maintenance-only try-lock policy and retries contention;
-foreground opening and recovery retain their existing wait semantics. Contended
+foreground opening and recovery retain their existing wait semantics. Recovery,
+opening and PR fence lock guards explicitly unlock on scope exit, including
+errors: CLOEXEC alone cannot release a flock inherited by a child before exec.
+The recovery guard Drop, previously reverted for #845 scope, is required by
+this production concurrency fix; no lock wait deadline changes. Contended
 maintenance lock destruction records exact released ownership for a later reaper,
 so a live daemon PID does not strand its completed reservations.
 Unused receivers first close native Git admission with owned
 `reference-transaction` (prepared-state) and `pre-receive` hooks in the gitdir's
 own `hooks/` directory, with `core.hooksPath` unset so discovery follows a
 quarantine rename. Foreign hook overrides are preserved. The marker and active
-hook configuration are rechecked inside quarantine before the final inventory. A durable close
+hook configuration are rechecked inside quarantine before the final inventory.
+Migrating legacy absolute hooks restarts the full one-hour drain; inherited-hook
+refusals preserve the original config bytes. A durable close
 marker starts a one-hour admission drain; later turns require both that drain
 and an empty gitdir/ref lock tree before quarantine. Git's normal pruning grace
 remains independent and applies to GC of retained receivers. A new bridge

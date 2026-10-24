@@ -302,3 +302,20 @@ fn published_file_keeps_its_real_git_lock_until_guard_release() {
     assert!(!directory.path().join("config.lock").exists());
     assert_eq!(fs::read_to_string(target).unwrap(), "published config\n");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn recovery_directory_drop_unlocks_while_a_forked_child_retains_the_fd() {
+    use crate::git_fixture::inherited_fd::{assert_cloexec, InheritedFdChild};
+    let directory = tempfile::tempdir().unwrap();
+    let held = RecoveryDirectoryLock::acquire(directory.path()).unwrap();
+    assert_cloexec(&held._directory);
+    let _child = InheritedFdChild::hold();
+    drop(held);
+    let replacement =
+        RecoveryDirectoryLock::acquire_with_wait(directory.path(), RecoveryWait::TryOnly);
+    assert!(
+        replacement.is_ok(),
+        "completed recovery lease survived in a forked child"
+    );
+}

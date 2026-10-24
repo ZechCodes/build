@@ -154,3 +154,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(target_os = "linux")]
+pub mod inherited_fd;

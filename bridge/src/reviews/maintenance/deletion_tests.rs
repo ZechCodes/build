@@ -473,7 +473,7 @@ fn quarantine_requires_the_close_marker_and_active_hooks() {
 }
 
 #[test]
-fn owned_legacy_absolute_hooks_migrate_without_resetting_the_drain() {
+fn owned_legacy_absolute_hook_migration_restarts_the_full_admission_drain() {
     let fixture = Fixture::new();
     assert!(!admission::ready(&fixture.receiver.path, 0).unwrap());
     let marker = fs::read(fixture.receiver.path.join(admission::MARKER)).unwrap();
@@ -490,11 +490,25 @@ fn owned_legacy_absolute_hooks_migrate_without_resetting_the_drain() {
         &fixture.receiver.path,
         &["config", "core.hooksPath", legacy.to_str().unwrap()],
     );
-    assert!(admission::ready(&fixture.receiver.path, admission::ADMISSION_DRAIN_SECS).unwrap());
-    assert_eq!(
-        fs::read(fixture.receiver.path.join(admission::MARKER)).unwrap(),
-        marker
+    let migrated_at = admission::ADMISSION_DRAIN_SECS;
+    assert!(
+        !admission::ready(&fixture.receiver.path, migrated_at).unwrap(),
+        "previously ineffective absolute hooks cannot count toward the new admission drain"
     );
+    let migrated = fs::read(fixture.receiver.path.join(admission::MARKER)).unwrap();
+    assert_ne!(migrated, marker);
+    let migrated: serde_json::Value = serde_json::from_slice(&migrated).unwrap();
+    assert_eq!(migrated["closed_at"].as_u64(), Some(migrated_at));
+    assert!(!admission::ready(
+        &fixture.receiver.path,
+        migrated_at + admission::ADMISSION_DRAIN_SECS - 1
+    )
+    .unwrap());
+    assert!(admission::ready(
+        &fixture.receiver.path,
+        migrated_at + admission::ADMISSION_DRAIN_SECS
+    )
+    .unwrap());
     let configured = git_command(
         &fixture.receiver.path,
         &["config", "--get", "core.hooksPath"],
@@ -517,7 +531,13 @@ fn inherited_hooks_override_preserves_receiver_before_admission_closes() {
         &fixture.receiver.path,
         &["config", "include.path", included.to_str().unwrap()],
     );
+    let original_config = fs::read(fixture.receiver.path.join("config")).unwrap();
     assert!(admission::ready(&fixture.receiver.path, 0).is_err());
+    assert_eq!(
+        fs::read(fixture.receiver.path.join("config")).unwrap(),
+        original_config,
+        "refusing an inherited hook override must preserve the original config byte-for-byte"
+    );
     assert!(!fixture.receiver.path.join(admission::MARKER).exists());
     assert!(fixture.receiver.path.is_dir());
 }

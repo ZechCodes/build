@@ -21,17 +21,16 @@ impl AppState {
         let receipt = self
             .operation_receipt(token)?
             .ok_or("unknown native receipt")?;
-        let delivery = receipt
-            .delivery
-            .as_ref()
-            .ok_or("operation has no delivery")?;
-        if delivery.owner_id != entity_id || delivery.agent_id != agent_id {
+        if receipt.entity_id != entity_id || receipt.agent_id != agent_id {
             return Err("native receipt does not belong to this agent".into());
         }
         let address = self.resolve_conversation_address(entity_id, Some(agent_id))?;
         if receipt.conversation_id != address.conversation_id {
             return Err("native receipt conversation binding changed".into());
         }
+        receipt
+            .delivery_message_span()
+            .ok_or("operation has no bounded message span")?;
         if status == MessageDeliveryStatus::Uncertain {
             self.transition_delivery_operation(
                 token,
@@ -60,16 +59,11 @@ impl AppState {
         receipt: &OperationReceipt,
         status: MessageDeliveryStatus,
     ) -> Result<(), String> {
-        let delivery = receipt
-            .delivery
-            .as_ref()
-            .ok_or("operation has no delivery")?;
-        let payload = delivery
-            .payload
-            .as_ref()
-            .ok_or("operation has no payload")?;
+        let (start_sequence, end_sequence) = receipt
+            .delivery_message_span()
+            .ok_or("operation has no bounded message span")?;
         let address =
-            self.resolve_conversation_address(&delivery.owner_id, Some(&delivery.agent_id))?;
+            self.resolve_conversation_address(&receipt.entity_id, Some(&receipt.agent_id))?;
         if address.conversation_id != receipt.conversation_id {
             return Err("operation conversation binding changed".into());
         }
@@ -81,8 +75,8 @@ impl AppState {
                     .set_delivery_status(
                         &receipt.conversation_id,
                         Some(&receipt.operation_id),
-                        payload.start_sequence,
-                        payload.end_sequence,
+                        start_sequence,
+                        end_sequence,
                         status,
                     )
                     .map_err(|error| format!("operation message store: {error}"))
@@ -91,11 +85,11 @@ impl AppState {
         if let Some(committed) = &sequence {
             self.apply_committed_thread_items(committed);
         }
-        self.edit_agent_conversation(&delivery.owner_id, &delivery.agent_id, |thread, _| {
+        self.edit_agent_conversation(&receipt.entity_id, &receipt.agent_id, |thread, _| {
             thread.set_operation_delivery_status(
                 &receipt.operation_id,
-                payload.start_sequence,
-                payload.end_sequence,
+                start_sequence,
+                end_sequence,
                 status,
             );
             if let Some(sequence) = sequence {
@@ -117,22 +111,17 @@ impl AppState {
         let receipt = self
             .operation_receipt(operation_id)?
             .ok_or_else(|| format!("unknown operation_id: {operation_id}"))?;
-        let delivery = receipt
-            .delivery
-            .as_ref()
-            .ok_or("operation has no delivery")?;
         let address = self.resolve_conversation_address(entity_id, Some(agent_id))?;
         if receipt.method != crate::operation::THREAD_POST_METHOD
-            || delivery.owner_id != entity_id
-            || delivery.agent_id != agent_id
+            || receipt.entity_id != entity_id
+            || receipt.agent_id != agent_id
             || receipt.conversation_id != address.conversation_id
         {
             return Err("native receipt does not belong to this agent".into());
         }
-        let payload = delivery
-            .payload
-            .as_ref()
-            .ok_or("operation has no payload")?;
+        let (start_sequence, end_sequence) = receipt
+            .delivery_message_span()
+            .ok_or("operation has no bounded message span")?;
         let now = crate::store::now_rfc3339();
         let sequence = self
             .store
@@ -142,8 +131,8 @@ impl AppState {
                     .acknowledge_messages(
                         &receipt.conversation_id,
                         Some(operation_id),
-                        payload.start_sequence,
-                        payload.end_sequence,
+                        start_sequence,
+                        end_sequence,
                         &now,
                     )
                     .map_err(|error| format!("operation message store: {error}"))
@@ -153,12 +142,7 @@ impl AppState {
             self.apply_committed_thread_items(committed);
         }
         self.edit_agent_conversation(entity_id, agent_id, |thread, _| {
-            thread.read_native_operation_messages(
-                operation_id,
-                payload.start_sequence,
-                payload.end_sequence,
-                &now,
-            );
+            thread.read_native_operation_messages(operation_id, start_sequence, end_sequence, &now);
             if let Some(sequence) = sequence {
                 thread.advance_sequence_to(sequence.sequence);
             }

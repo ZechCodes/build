@@ -489,3 +489,93 @@ fn restart_hydrates_delivery_recovery_before_restoring_threads() {
         "restoration must retain the sequence minted by recovery"
     );
 }
+
+#[test]
+fn delivered_receipt_updates_status_and_seen_without_payload() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let owner = adopted_run(&mut state, &repo, dir.path(), "trimmed-native-receipt");
+    let agent = primary_agent_id(&state, &owner);
+    post_operation(
+        &mut state,
+        &owner,
+        &agent,
+        "trimmed-operation",
+        "delivered message",
+    );
+    post_operation(
+        &mut state,
+        &owner,
+        &agent,
+        "queued-operation",
+        "next message",
+    );
+    state
+        .store
+        .as_ref()
+        .unwrap()
+        .writer_for_test()
+        .execute(
+            "UPDATE operations SET status = 'delivered', delivery = NULL WHERE operation_id = ?1",
+            ["trimmed-operation"],
+        )
+        .unwrap();
+    state
+        .record_operation_delivery_status("trimmed-operation", MessageDeliveryStatus::Sent)
+        .unwrap();
+    assert_eq!(
+        operation_message(&state, &owner, &agent, "trimmed-operation").delivery_status,
+        Some(MessageDeliveryStatus::Sent)
+    );
+    assert!(state
+        .record_native_operation_seen(&owner, "foreign-agent", "trimmed-operation")
+        .is_err());
+    state
+        .record_native_delivery_receipt(
+            &owner,
+            &agent,
+            "trimmed-operation",
+            MessageDeliveryStatus::Uncertain,
+        )
+        .unwrap();
+    assert_eq!(
+        operation_message(&state, &owner, &agent, "trimmed-operation").delivery_status,
+        Some(MessageDeliveryStatus::Uncertain)
+    );
+    assert!(
+        PendingAgentTurn::for_delivery_operation(
+            &state
+                .operation_receipt("trimmed-operation")
+                .unwrap()
+                .unwrap()
+        )
+        .is_none(),
+        "a trimmed uncertain operation has no replay payload"
+    );
+    state
+        .record_native_operation_seen(&owner, &agent, "trimmed-operation")
+        .unwrap();
+    let seen = operation_message(&state, &owner, &agent, "trimmed-operation");
+    assert_eq!(seen.delivery_status, Some(MessageDeliveryStatus::Seen));
+    assert!(seen.seen_at.is_some());
+    let sequence = seen.updated_sequence;
+    state
+        .record_native_operation_seen(&owner, &agent, "trimmed-operation")
+        .unwrap();
+    state
+        .record_native_delivery_receipt(
+            &owner,
+            &agent,
+            "trimmed-operation",
+            MessageDeliveryStatus::Uncertain,
+        )
+        .unwrap();
+    assert_eq!(
+        operation_message(&state, &owner, &agent, "trimmed-operation").updated_sequence,
+        sequence
+    );
+    assert_eq!(
+        operation_message(&state, &owner, &agent, "queued-operation").delivery_status,
+        Some(MessageDeliveryStatus::Queued)
+    );
+}

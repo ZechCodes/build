@@ -363,6 +363,34 @@ pub struct OperationReceipt {
 }
 
 impl OperationReceipt {
+    /// Immutable messages owned by this operation, even after its provider
+    /// payload has been discarded. A late native receipt may move a delivered
+    /// operation to uncertain; it still has a span but no replayable payload.
+    /// Legacy intents that lack a bounded payload remain ambiguous.
+    pub(crate) fn delivery_message_span(&self) -> Option<(u64, u64)> {
+        if self.method != THREAD_POST_METHOD {
+            return None;
+        }
+        let (start, end) = match self.delivery.as_ref() {
+            Some(delivery) => {
+                if delivery.owner_id != self.entity_id || delivery.agent_id != self.agent_id {
+                    return None;
+                }
+                let payload = delivery.payload.as_ref()?;
+                (payload.start_sequence, payload.end_sequence)
+            }
+            None => (
+                if self.message_start_sequence == 0 {
+                    self.posted_sequence
+                } else {
+                    self.message_start_sequence
+                },
+                self.posted_sequence,
+            ),
+        };
+        (start > 0 && start <= end).then_some((start, end))
+    }
+
     pub fn wire_value(&self) -> Value {
         serde_json::json!({
             "operation_id": self.operation_id,

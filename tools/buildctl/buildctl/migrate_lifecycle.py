@@ -51,7 +51,13 @@ def records(database):
 
 
 def workspace_paths(workspace):
-    return {value for key, value in references(workspace) if key in CHECKOUT_KEYS}
+    return {value for key, value in references(workspace) if key in CHECKOUT_KEYS and value}
+
+
+def live_workspace_paths(workspace):
+    paths = {workspace.get('root'), workspace.get('path')}
+    paths.update(directory.get('path') for directory in workspace.get('directories', []))
+    return {path for path in paths if isinstance(path, str) and path}
 
 
 def reclaimed_evidence(entries):
@@ -162,7 +168,7 @@ def stale_entity_evidence(entries, reclaimed_ids):
 
 
 def is_live_path(value, live_paths):
-    return isinstance(value, str) and any(value == root or value.startswith(root + '/')
+    return isinstance(value, str) and any(root and (value == root or value.startswith(root + '/'))
                                           for root in live_paths)
 
 
@@ -201,7 +207,7 @@ def classify(database, live_workspaces=None):
     """
     entries = list(records(database))
     live = list(live_workspaces or ()) + [record for table, _, record in entries if table == 'workspaces']
-    live_paths = set().union(*(workspace_paths(record) for record in live)) if live else set()
+    live_paths = set().union(*(live_workspace_paths(record) for record in live)) if live else set()
     reclaimed_ids, reclaimed_paths = reclaimed_evidence(entries)
     reclaimed_ids.difference_update(record.get('id') for record in live)
     reclaimed_paths.update(reclaimed_review_paths(entries, reclaimed_ids))

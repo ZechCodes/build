@@ -197,3 +197,14 @@ def test_review_git_metadata_is_historical_unless_within_live_workspace(tmp_path
     assert ('common_git_dir', '/old/repo/.git') in classify(path)['historical']['closed_tasks']
     live = classify(path, [{'id': 'ws', 'root': '/old', 'directories': [{'path': '/old/repo'}]}])
     assert ('common_git_dir', '/old/repo/.git') in live['required']
+
+
+def test_empty_manifest_source_path_never_marks_all_absolute_paths_live(tmp_path):
+    path = database(tmp_path, {
+        'tracker_tasks': [{'id': 'task', 'status': 'done'}],
+        'review_snapshots': [{'task_id': 'task', 'path': '/gone', 'common_git_dir': '/gone/.git'}],
+    })
+    result = classify(path, [{'id': 'ws', 'root': '/live',
+                              'directories': [{'path': '/live/repo', 'source_path': ''}]}])
+    assert ('path', '/gone') in result['historical']['closed_tasks']
+    assert ('common_git_dir', '/gone/.git') in result['historical']['closed_tasks']

@@ -45,7 +45,7 @@ export function pushReplayPlugin({ revision } = {}) {
   };
 }
 
-export async function runPushReplay({ revision, intervalMs = 4, stallMs = 250 } = {}) {
+export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250 } = {}) {
   const session = await openLayoutSession({ plugins: [pushReplayPlugin({ revision })] });
   try {
     return await session.withPage(async ({ page, basePath }) => {
@@ -98,6 +98,9 @@ export async function runPushReplay({ revision, intervalMs = 4, stallMs = 250 } 
             stats.renderLatencies.push(performance.now() - fixture.emitted.get(sequence));
           }
         });
+        stats.seedRecords = (await cache.cachedAddresses({ deviceId: "replay-device" })).length;
+        stats.seedFeedBytes = JSON.stringify((await cache.readCached(address("", "feed")))?.value).length;
+        stats.seedWorkspaceBytes = JSON.stringify((await cache.readCached(address("", "workspaces")))?.value).length;
         await sync.startPushReplay();
         await feed.startFeed();
         const stopFeedListener = feed.subscribeFeed(() => { stats.feedPaints = (stats.feedPaints || 0) + 1; });
@@ -119,7 +122,7 @@ export async function runPushReplay({ revision, intervalMs = 4, stallMs = 250 } 
         const db = await new Promise((resolve) => { const request = indexedDB.open("build-cache"); request.onsuccess = () => resolve(request.result); });
         const stall = originalTransaction.call(db, "records", "readwrite");
         const until = performance.now() + stallMs;
-        const keepAlive = () => { const request = stall.objectStore("records").get("stall"); request.onsuccess = () => { if (performance.now() < until) keepAlive(); }; };
+        const keepAlive = () => { const request = originalGet.call(stall.objectStore("records"), "stall"); request.onsuccess = () => { if (performance.now() < until) keepAlive(); }; };
         keepAlive();
         fixture.started = performance.now();
         const inbox = fixture.watchers.find((watcher) => watcher.id === "s-inbox");
@@ -139,13 +142,14 @@ export async function runPushReplay({ revision, intervalMs = 4, stallMs = 250 } 
           const sequence = Math.floor(frame / 6) + 1;
           const item = { type: "message", data: { id: `message-${frame}`, sequence, role: "agent", body: `frame ${frame}`, created_at: "2026-10-24T16:00:00Z" } };
           const tip = { agent_id: agent.id, conversation_id: agent.id, thread_id: agent.thread_id, thread_generation_revision: 1,
-            first_sequence: sequence, last_sequence: sequence, thread_total: sequence, items: [item] };
+            since_sequence: sequence - 1, last_sequence: sequence, thread_total: sequence, items: [item] };
           if (frame % 6 === 0) fixture.emitted.set(sequence, performance.now());
           // Empty, already-covered tips are duplicated by multiple active
           // subscriptions; include them without inventing cursor holes.
-          const duplicate = { ...tip, first_sequence: Math.max(0, sequence - 1), last_sequence: Math.max(0, sequence - 1), items: [] };
+          const duplicate = { ...tip, since_sequence: Math.max(0, sequence - 1), last_sequence: Math.max(0, sequence - 1), items: [] };
           fixture.deliveries.push(Promise.resolve(inbox.onChanges([{ entity_id: row.run_id, state: { ...row, replay_frame: frame }, thread: [tip, duplicate] }])));
           await sleep(intervalMs);
+          if (frame < 59 && fixture.seen?.size) stats.renderProgressDuringReplay = true;
         }
         await Promise.all(fixture.deliveries);
         const deadline = performance.now() + 20000;
@@ -155,6 +159,8 @@ export async function runPushReplay({ revision, intervalMs = 4, stallMs = 250 } 
         sampleWork();
         stats.finalWork = fixture.work || null;
         fixture.elapsedMs = performance.now() - fixture.started;
+        IDBObjectStore.prototype.get = originalGet;
+        IDBDatabase.prototype.transaction = originalTransaction;
         fixture.finalThreads = [];
         fixture.finalRows = [];
         for (const row of rows) {

@@ -41,6 +41,8 @@ class Paths:
     def cell(self, value, column):
         if not isinstance(value, str) or column in PROSE_KEYS:
             return value
+        if self.source not in value and '~/.build' not in value:
+            return value
         if column in JSON_COLUMNS and value.lstrip().startswith(('{', '[')):
             try:
                 parsed = json.loads(value)

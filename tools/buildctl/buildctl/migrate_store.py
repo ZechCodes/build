@@ -30,6 +30,8 @@ def table_names(db):
 def rows(db, table):
     # All current bridge tables are rowid tables. Explicitly refuse unsupported
     # future schemas rather than guessing an update key or silently losing rows.
+    # SQLite identifiers cannot be bound: identifier() quotes schema names, never values.
+    # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query, python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
     cursor = db.execute(f'SELECT rowid, * FROM {identifier(table)} ORDER BY rowid')
     columns = [col[0] for col in cursor.description][1:]
     for row in cursor:
@@ -93,10 +95,12 @@ def rewrite_database(path, paths):
         for table in table_names(db):
             # Separate read cursor and updates; rowid order remains unchanged.
             for columns, rowid, row in rows(db, table):
-                updates = {col: paths.cell(value, col) for col, value in zip(columns, row)
-                           if paths.cell(value, col) != value}
+                mapped = [paths.cell(value, col) for col, value in zip(columns, row)]
+                updates = {col: new for col, old, new in zip(columns, row, mapped) if old != new}
                 if updates:
                     assignments = ', '.join(identifier(col) + '=?' for col in updates)
+                    # Only quoted schema identifiers are formatted; all data is bound.
+                    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
                     db.execute(f'UPDATE {identifier(table)} SET {assignments} WHERE rowid=?',
                                (*updates.values(), rowid))
         if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
@@ -104,10 +108,15 @@ def rewrite_database(path, paths):
 
 
 def verify_database(path, expected):
-    class Unchanged:
-        @staticmethod
-        def cell(value, column):
-            return value
-    actual = scan_database(Path(path), Unchanged())
-    if actual['tables'] != expected['tables'] or actual['fingerprints'] != expected['fingerprints']:
+    tables, fingerprints = {}, {}
+    with connect(Path(path)) as db:
+        for table in table_names(db):
+            count = 0
+            signature = hashlib.sha256()
+            for _, rowid, row in rows(db, table):
+                signature.update(repr((rowid, row)).encode())
+                count += 1
+            tables[table] = count
+            fingerprints[table] = signature.hexdigest()
+    if tables != expected['tables'] or fingerprints != expected['fingerprints']:
         raise BuildctlError('SQLite row or record verification failed')

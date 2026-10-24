@@ -298,13 +298,27 @@ def rewrite_files(stage, entries, paths):
         for path in files(stage / entry):
             if 'attachments' in path.relative_to(stage).parts:
                 continue
-            if path.suffix == '.json':
-                value = json.loads(path.read_text())
-                rewritten = paths.structured(value)
-                if rewritten != value:
-                    path.write_text(json.dumps(rewritten, ensure_ascii=False))
+            if path.suffix in {'.json', '.jsonl'}:
+                rewrite_json_file(path, paths)
             elif path.name == 'config' and 'review-receivers' in path.parts:
                 rewrite_git_file(path, paths)
+
+
+def rewrite_json_file(path, paths):
+    original = path.read_text()
+    try:
+        if path.suffix == '.jsonl':
+            lines = [json.loads(line) for line in original.splitlines()]
+            changed = [paths.structured(line) for line in lines]
+            output = ''.join(json.dumps(line, ensure_ascii=False) + '\n' for line in changed)
+        else:
+            lines = json.loads(original)
+            changed = paths.structured(lines)
+            output = json.dumps(changed, ensure_ascii=False)
+    except ValueError as error:
+        raise BuildctlError('invalid structured migration sidecar; source left unchanged') from error
+    if changed != lines:
+        path.write_text(output)
 
 
 def rewrite_git_file(path, paths):

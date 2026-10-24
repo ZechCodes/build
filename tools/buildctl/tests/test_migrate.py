@@ -474,3 +474,29 @@ def test_terminal_classification_does_not_drop_same_root_from_regular_rows(state
     assert ('root', root) in scanned['references']
     with pytest.raises(BuildctlError, match='scratch|missing'):
         migrator.run(prod_stopped=True)
+
+
+def test_pi_jsonl_session_paths_move_without_rewriting_conversation_text(state):
+    migrator, source, target, _, _, _ = state
+    session = source / 'harness/pi/sessions/agent-one/session.jsonl'
+    session.parent.mkdir(parents=True)
+    header = {'type': 'session', 'cwd': str(source / 'projects'), 'id': 'provider-session'}
+    message = {'type': 'message', 'content': [{'text': str(source / 'projects')}]}
+    session.write_text(json.dumps(header) + '\n' + json.dumps(message) + '\n')
+    migrator.run(prod_stopped=True)
+    lines = (target / session.relative_to(source)).read_text().splitlines()
+    assert json.loads(lines[0]) == dict(header, cwd=str(target / 'projects'))
+    assert json.loads(lines[1]) == message
+
+
+def test_schema_identifiers_are_quoted_and_values_bound(state):
+    migrator, source, target, db, _, _ = state
+    name = 'state"; DROP TABLE agents; --'
+    quoted = '"' + name.replace('"', '""') + '"'
+    db.execute(f'CREATE TABLE {quoted} (id INTEGER PRIMARY KEY, record TEXT)')
+    db.execute(f'INSERT INTO {quoted} VALUES (?, ?)', (1, json.dumps({'path': str(source / 'projects')})))
+    db.commit()
+    migrator.run(prod_stopped=True)
+    with sqlite3.connect(target / 'tasks/build.db') as copied:
+        assert json.loads(copied.execute(f'SELECT record FROM {quoted}').fetchone()[0])['path'] == str(target / 'projects')
+        assert copied.execute('SELECT COUNT(*) FROM agents').fetchone()[0] == 1

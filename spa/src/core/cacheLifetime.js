@@ -26,6 +26,7 @@ import {
   readBodyPages,
   writeBodyPageIfStill,
 } from "./bodyPages.js";
+import { invalidateEntityData } from "./pushFence.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { fileBodyReading } from "./fileViewer.js";
 
@@ -89,6 +90,7 @@ export async function expireWorkspaceData(deviceId, entityId, now = Date.now(), 
 export async function evictWorkspaceData(deviceId, entityId, active = () => true) {
   const addresses = await cachedAddresses({ deviceId, entityId });
   if (!active()) return [];
+  invalidateEntityData({ deviceId, entityId });
   return drop(workspaceData(addresses));
 }
 

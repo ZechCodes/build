@@ -8,7 +8,7 @@
 // one reader of the wire — and the pass's writes come back as announcements.
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange, IDBDatabase, IDBObjectStore } from "fake-indexeddb";
 import { projectAgentEntries } from "../src/core/inboxProjectAgent.js";
 import { watchedWorkspaceEntries } from "../src/core/inbox.js";
 
@@ -43,6 +43,7 @@ afterEach(() => {
   resetDeviceContexts();
   App.devices = [];
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 /** A device the account knows and a live session on it whose bridge has
@@ -263,6 +264,111 @@ describe("the feed as a cache view", () => {
     expect(last.items.map((item) => item.branch)).toEqual(["build/x"]);
     expect(last.projects.map((project) => project.id)).toEqual(["proj-1"]);
     expect(call.mock.calls.filter(([method]) => method === "board.list")).toHaveLength(0);
+  });
+
+  it("reads only announced rows after boot, without scanning unrelated device records", async () => {
+    await writeDevice("dev-1", { items: [branchRow(), branchRow({ entity_id: "run-2" })] });
+    device("dev-1");
+    let snapshot;
+    subscribeFeed((next) => { snapshot = next; });
+    await startFeed();
+    await settle();
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction");
+    const getAllKeys = vi.spyOn(IDBObjectStore.prototype, "getAllKeys");
+    const get = vi.spyOn(IDBObjectStore.prototype, "get");
+    await writeRow("dev-1", branchRow({ state: "review" }));
+    await vi.waitFor(() => expect(snapshot.items.find((row) => row.entity_id === "run-1").state).toBe("review"));
+    expect(getAllKeys).not.toHaveBeenCalled();
+    expect(get.mock.calls.flat().filter((key) => typeof key === "string" && key.includes("run-2"))).toEqual([]);
+    expect(transaction.mock.calls.filter(([, mode]) => mode === "readonly").length).toBeLessThanOrEqual(2);
+    vi.restoreAllMocks();
+  });
+
+  it("coalesces dirty rows behind one active cache read into bounded batches", async () => {
+    const cache = await import("../src/core/localCache.js");
+    await writeDevice("dev-1", { items: [] });
+    device("dev-1");
+    let snapshot;
+    subscribeFeed((next) => { snapshot = next; });
+    await startFeed();
+    const readMany = cache.readCachedMany;
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    const reads = vi.spyOn(cache, "readCachedMany").mockImplementationOnce(async (addresses) => {
+      await blocked;
+      return readMany(addresses);
+    });
+    await writeRow("dev-1", branchRow({ entity_id: "initial" }));
+    await Promise.all(Array.from({ length: 130 }, (_, index) =>
+      writeRow("dev-1", branchRow({ entity_id: `run-${index}`, project_id: `proj-${index % 5}` }))));
+    await writeRow("dev-1", branchRow({ entity_id: "run-1", state: "newest" }));
+    expect(reads).toHaveBeenCalledTimes(1);
+    release();
+    await vi.waitFor(() => expect(snapshot.items).toHaveLength(131));
+    expect(snapshot.items.find((row) => row.entity_id === "run-1").state).toBe("newest");
+    expect(reads.mock.calls.map(([addresses]) => addresses.length)).toEqual([1, 64, 64, 2]);
+    reads.mockRestore();
+  });
+
+  it("reads an announced record written by another tab without a device scan", async () => {
+    await writeDevice("dev-1", { items: [] });
+    device("dev-1");
+    let snapshot;
+    subscribeFeed((next) => { snapshot = next; });
+    await startFeed();
+    const scans = vi.spyOn(IDBObjectStore.prototype, "getAllKeys");
+    const opened = indexedDB.open("build-cache");
+    const db = await new Promise((resolve) => { opened.onsuccess = () => resolve(opened.result); });
+    const transaction = db.transaction("records", "readwrite");
+    transaction.objectStore("records").put({ at: Date.now(), value: branchRow({ state: "remote" }) }, "dev-1|run-1|row|");
+    await new Promise((resolve) => { transaction.oncomplete = resolve; });
+    const otherTab = new BroadcastChannel("build-cache");
+    try {
+      otherTab.postMessage({ key: "dev-1|run-1|row|" });
+      await vi.waitFor(() => expect(snapshot.items[0]?.state).toBe("remote"));
+      expect(scans).not.toHaveBeenCalled();
+    } finally {
+      otherTab.close();
+      db.close();
+      scans.mockRestore();
+    }
+  });
+
+  it("rebuilds after a prefix eviction and still accepts later row records", async () => {
+    const cache = await import("../src/core/localCache.js");
+    await writeDevice("dev-1", { items: [] });
+    await writeRow("dev-1", branchRow());
+    device("dev-1");
+    let snapshot;
+    subscribeFeed((next) => { snapshot = next; });
+    await startFeed();
+    await vi.waitFor(() => expect(snapshot?.items).toHaveLength(1));
+    await cache.evictEntity("dev-1", "run-1");
+    await vi.waitFor(() => expect(snapshot.items).toEqual([]));
+    await writeRow("dev-1", branchRow({ state: "review" }));
+    await vi.waitFor(() => expect(snapshot.items[0]?.state).toBe("review"));
+  });
+
+  it("recomposes pending row layers when canonical writes and operation announcements arrive", async () => {
+    const { createWriteOperationCache } = await import("../src/core/writeOperationCache.js");
+    const operations = createWriteOperationCache({ accountId: "account", deviceId: "dev-1", principalId: "user" });
+    operations.activateProjection();
+    await writeDevice("dev-1", { items: [] });
+    await writeRow("dev-1", branchRow({ state: "building" }));
+    device("dev-1");
+    let snapshot;
+    subscribeFeed((next) => { snapshot = next; });
+    await startFeed();
+    await operations.put({ operationId: "pending", revision: 0, request: { method: "tasks.update", params: {} } });
+    await operations.accept("pending", { ack: {}, revision: 1,
+      overlay: [{ address: { deviceId: "dev-1", entityId: "run-1", kind: "row" }, kind: "merge", value: { state: "review" } }] });
+    await vi.waitFor(() => expect(snapshot.items[0]?.state).toBe("review"));
+    await writeRow("dev-1", branchRow({ state: "building", branch: "new-canonical" }));
+    await vi.waitFor(() => expect(snapshot.items[0]?.branch).toBe("new-canonical"));
+    expect(snapshot.items[0].state).toBe("review");
+    await operations.confirm("pending", { revision: 2, confirmation: { state: "failed", effect: "unapplied" } });
+    await vi.waitFor(() => expect(snapshot.items[0]?.state).toBe("building"));
+    operations.deactivateProjection();
   });
 
   it("takes a row that rode in on its own push, with no pass behind it", async () => {

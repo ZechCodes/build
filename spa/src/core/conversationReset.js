@@ -1,6 +1,6 @@
 // Reset is a new transcript generation under the conversation's stable address.
 // Write an authoritative empty window before publishing its replacement agent.
-import { cachedRecords, deleteCached, mergeCachedAtomically, mergeCachedTogether, readCached } from "./localCache.js";
+import { cachedRecords, deleteCached, mergeCachedAtomically, mergeCachedTogether, readCached, readCanonicalCached } from "./localCache.js";
 import { purgeConversationUiRecords } from "./localUiState.js";
 import { forgetConversationRevisionBodies } from "./revisionBodies.js";
 import { closeConversationAttachmentLightboxes } from "./threadAttachmentLightbox.js";
@@ -20,6 +20,19 @@ export async function reconcileConversationGeneration({ deviceId, entityId, agen
   if (!agent?.thread_id || !active()) return false;
   const conversationId = agent.conversation_id || agent.id;
   const address = { deviceId, entityId, kind: "thread", sub: conversationId };
+  // Most tips name the current generation. Keep that check off the write
+  // lane; a replacement still rechecks canonical state atomically below.
+  // Never retain this verdict: another tab can reset or evict the record.
+  if (await unchangedCanonicalGeneration(address, agent, active)) return false;
+  return replaceConversationGeneration({ deviceId, entityId, agent, active, forceReset, previousGenerationId, conversationId, address });
+}
+
+async function unchangedCanonicalGeneration(address, agent, active) {
+  const observed = await readCanonicalCached(address);
+  return !active() || unchangedGeneration(observed?.value, agent);
+}
+
+async function replaceConversationGeneration({ deviceId, entityId, agent, active, forceReset, previousGenerationId, conversationId, address }) {
   let previousThreadId;
   await mergeCachedAtomically(address, (held) => {
     if (!active() || unchangedGeneration(held, agent)) return null;

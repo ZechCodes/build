@@ -3705,6 +3705,28 @@ gate attachment display.
   `spa/src/core/cacheSync.js`). Most fields carry bodies that are written
   straight into the cache: `state`, `thread`, git `status`/`log`/`unpushed`/
   `diff`, the files root listing, and `terminals`.
+  `pushQueue.js` bounds each device/session/path to one body applier and two
+  deferred enrichment appliers. Compatible pending entity snapshots and thread
+  spans coalesce; board removals, roster generation changes and resets retain
+  their order. Unknown empty spans never become delivered coverage when folded.
+  The body lane writes conversations before state and session summaries, and
+  also writes terminal rosters without waiting for enrichment RPCs. The shown
+  conversation's entity has priority, with an ordinary turn after four promoted
+  jobs. Within an entity, its mounted conversation's carried tips land first. Roster/review reads run behind bodies with one pending refresh per key;
+  a key never has two enrichment appliers running together.
+  Catch-up coverage and repair rules still belong to `threadSync.js`.
+  Finished-state eviction invalidates the entity data lifetime without removing
+  its feed row. Deferred reads retain that fence through cache commits; a
+  conversation reset also cancels its queued old-generation catch-up. Final
+  review metadata belongs to the project and still refreshes after workspace
+  eviction; the evicted entity's complete roster stays cold.
+  User actions bypass these queues; neither their RPCs nor their cache writes
+  acquire a push slot or wait for a batching timer. Awaiting a push still waits
+  for its own deferred fields, without holding a body slot during those reads.
+  `pushWorkInFlight()` counts pending applier jobs before IndexedDB admission.
+  Feed consumers retain an address index (`feedCacheReader.js`): announcements
+  reread only named records, in batches of at most 64; prefix evictions rebuild
+  the index. Reads still include pending-write overlays and cross-tab changes.
 - **Chat read marks** (#473) report the viewport sequence and window floor
   only while the reader is present. A known cursor can establish read progress
   even if the cached unread count is zero. `chatReadReporter.js` confirms

@@ -23,14 +23,14 @@
 
 import { App } from "../appState.js";
 import { liveContexts } from "./deviceContexts.js";
-import { cachedFeedView } from "./cachedRows.js";
+import { createFeedCacheReader } from "./feedCacheReader.js";
 import { entityIdOf } from "./entityId.js";
 import { mergeFeeds, withoutProject } from "./feedMerge.js";
 import { syncDevice } from "./cacheSync.js";
 import { DEVICES_ADDRESS, readCached, subscribeCache } from "./localCache.js";
 import { isAtLeastAsFresh, withCacheFreshness } from "./cacheFreshness.js";
 import { feedReferenceIndex } from "./referenceIndexFeed.js";
-import { AGENT_LINEAGE_SUPPORT_KIND, readAgentLineageSupport } from "./agentLineageSupport.js";
+import { AGENT_LINEAGE_SUPPORT_KIND } from "./agentLineageSupport.js";
 import { withFeedAgentRollups } from "./agentLineageFeedModel.js";
 import { snapshotThreadReaders, subscribeThreadReaders } from "./syncVisibleScopes.js";
 
@@ -47,6 +47,7 @@ let unwatchReaders = null;
  *  device — a status, a diff, a conversation — moves several times a second
  *  while an agent works and says nothing about the rail, so an announcement
  *  naming one of those is not a re-read. */
+const FEED_READ_BATCH_SIZE = 64;
 const FEED_KINDS = new Set(["project-agents", "project-agents-support", "feed", "projects", "workspaces", "row", AGENT_LINEAGE_SUPPORT_KIND]);
 
 /** Subscribe to feed snapshots ({items, plans, runs, externalWorktrees,
@@ -128,45 +129,41 @@ function rowsOverBoard(listed, rows) {
   return [...items, ...rows.filter((row) => !named.has(entityIdOf(row)))];
 }
 
-async function readDeviceOnce(deviceId, live) {
-  const [record, view, namesMakers] = await Promise.all([
-    readCached({ deviceId, entityId: "", kind: "feed" }),
-    cachedFeedView(deviceId),
-    readAgentLineageSupport(deviceId),
-  ]);
-  if (!watchers.has(deviceId)) return;
-  const snapshot = feedSnapshot(record, view, live);
+async function readDeviceOnce(deviceId, state) {
+  const changed = state.full ? null : [...state.changed.values()].slice(0, FEED_READ_BATCH_SIZE);
+  state.full = false;
+  if (changed) changed.forEach((address) => state.changed.delete(JSON.stringify(address)));
+  else state.changed.clear();
+  const { record, view, namesMakers } = await state.cache.refresh(changed);
+  if (readers.get(deviceId) !== state) return;
+  const snapshot = feedSnapshot(record, view, state.live);
   if (!snapshot) return;
   byDevice.set(deviceId, snapshot);
   lineageSupport.set(deviceId, namesMakers);
   deliverFeed();
 }
 
-/** A read per device, one at a time, with the announcements that arrive while
- *  one is running collapsed into the read that follows it. A pass writes the
- *  two lists, the feed and a row per work item; without this the rail would
- *  walk the device's records once per write. */
+/** One read per device with a trailing set of dirty addresses. Repeated writes
+ * to a row replace its queued address, rather than queueing device scans. */
 async function drainReads(deviceId, state) {
   state.busy = true;
   try {
     do {
-      state.again = false;
-      await readDeviceOnce(deviceId, state.live);
-    } while (state.again && watchers.has(deviceId));
+      await readDeviceOnce(deviceId, state);
+    } while ((state.full || state.changed.size) && readers.get(deviceId) === state);
   } finally {
     state.busy = false;
   }
 }
 
-function readDevice(deviceId, live) {
-  const state = readers.get(deviceId) || { busy: false, again: false, live: false, done: null };
+function readDevice(deviceId, live, address = null) {
+  const state = readers.get(deviceId) || { busy: false, full: true, changed: new Map(),
+    live: false, done: null, cache: createFeedCacheReader(deviceId) };
   readers.set(deviceId, state);
   state.live = state.live || live;
-  if (state.busy) {
-    state.again = true;
-    return state.done;
-  }
-  state.done = drainReads(deviceId, state);
+  if (address?.kind) state.changed.set(JSON.stringify(address), address);
+  else state.full = true;
+  if (!state.busy) state.done = drainReads(deviceId, state);
   return state.done;
 }
 
@@ -190,7 +187,7 @@ function watchDevice(deviceId) {
   watchers.set(
     deviceId,
     subscribeCache({ deviceId }, (address) => {
-      if (movesTheFeed(address)) void readDevice(deviceId, true);
+      if (movesTheFeed(address)) void readDevice(deviceId, true, address);
     }),
   );
   return readDevice(deviceId, false);

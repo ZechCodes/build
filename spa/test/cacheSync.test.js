@@ -917,6 +917,7 @@ describe("the lifetime rules a pass applies", () => {
       branchItem(),
       branchItem({ branch: "b2", run_id: "run-2", worktree_id: "wt-2", state: "merged" }),
     ]);
+    await passesSettled(sync, "dev-1");
     expect(await read("run-2", "status")).toBeUndefined();
     expect(await read("run-2", "thread", "ag-1")).toBeUndefined();
     // The row stays: the board is what lists it, and it still does.
@@ -1685,7 +1686,7 @@ describe("a pass that is still out when the next session lands", () => {
     script["run.diff"] = () => new Promise((resolve) => { release = () => resolve({ diff_key: "old", patch: "old" }); });
     board = [branchItem()];
     sync.startCacheSync();
-    await settle();
+    await called(bridge.call, () => calls("run.diff").length > 0);
     expect(calls("run.diff")).toHaveLength(1);
 
     script = {};
@@ -1895,8 +1896,9 @@ describe("every project's tasks", () => {
     script["tasks.list"] = () => new Promise((resolve) => answers.push(resolve));
     const inbox = registeredWatchers.find((watcher) => watcher.id === "s-inbox");
     const pushed = { entity_id: "p1", tasks: { task_ids: ["task-1"], truncated: false } };
-    for (let n = 0; n < 4; n += 1) inbox.onChanges([pushed]);
+    inbox.onChanges([pushed]);
     await vi.waitFor(() => expect(answers).toHaveLength(1));
+    for (let n = 0; n < 3; n += 1) inbox.onChanges([pushed]);
     expect(calls("tasks.list")).toHaveLength(before + 1);
 
     answers[0]({ tasks: [{ id: "task-1", number: 12, status: "done" }] });
@@ -1950,10 +1952,74 @@ describe("complete project worker roster synchronization", () => {
     await passesSettled(sync, "dev-1");
   });
 
+  it("marks sync-owned project roster refreshes as background work", async () => {
+    projectWorkersSupported = true;
+    const module = await import("../src/core/projectAgentsCache.js");
+    const observe = vi.spyOn(module, "syncProjectAgents");
+    script["project.list"] = () => ({ projects: [projectList] });
+    script["agent.list"] = () => roster([pin]);
+    try {
+      await boot([projectRow({ agents: [pin] })]);
+      await passesSettled(sync, "dev-1");
+      expect(observe).toHaveBeenCalled();
+      expect(observe.mock.calls.every(([options]) => options.background === true)).toBe(true);
+    } finally { observe.mockRestore(); }
+  });
+
   it("never requests complete rosters from an unsupported bridge", async () => {
     script["project.list"] = () => ({ projects: [projectList] });
     await boot([projectRow({ agents: [pin] })]);
     await passesSettled(sync, "dev-1");
     expect(calls("agent.list")).toHaveLength(0);
   });
+});
+
+describe("push queue lifetime ownership", () => {
+  it("does not let an old terminal completion discard the new session's queued frames", async () => {
+    await boot([branchItem(), branchItem({ run_id: "run-2", worktree_id: "wt-2", branch: "build/two" })]);
+    const original = cache.writeCached;
+    const releases = {}, started = new Set();
+    const terminal = (term_id) => ({ tabs: [{ term_id }] });
+    const writing = vi.spyOn(cache, "writeCached").mockImplementation(async (address, value) => {
+      const term = value?.tabs?.[0]?.term_id;
+      if (address.kind === "terminals" && ["old", "current"].includes(term)) {
+        started.add(term);
+        await new Promise((resolve) => { releases[term] = resolve; });
+      }
+      return original(address, value);
+    });
+    const inbox = registeredWatchers.find((watcher) => watcher.id === "s-inbox");
+    let old, current, latest;
+    try {
+      old = inbox.onChanges([{ entity_id: "run-1", terminals: terminal("old"), files: { paths: ["changed.js"] } }]);
+      await vi.waitFor(() => expect(started.has("old")).toBe(true));
+      contexts.get("dev-1").session = { replacement: true };
+      current = inbox.onChanges([{ entity_id: "run-2", terminals: terminal("current") }]);
+      await vi.waitFor(() => expect(started.has("current")).toBe(true));
+      latest = inbox.onChanges([{ entity_id: "run-2", terminals: terminal("latest") }]);
+      expect(sync.pushWorkInFlight("dev-1").pending).toBe(1);
+      releases.old(); await old;
+      expect(sync.pushWorkInFlight("dev-1").pending).toBe(1);
+      releases.current(); await Promise.all([current, latest]);
+      expect((await read("run-2", "terminals")).value).toEqual(terminal("latest"));
+    } finally {
+      releases.old?.(); releases.current?.();
+      await Promise.all([old, current, latest]); writing.mockRestore();
+    }
+  });
+});
+
+it("writes the mounted conversation before sibling tips in the same entity", async () => {
+  await boot([branchItem()]);
+  for (const sub of ["cold", "open"]) await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread", sub },
+    { items: [], deliveredSequence: 0, activityDigests: [] });
+  const visible = await import("../src/core/syncVisibleScopes.js");
+  const stop = visible.registerSyncThread(() => ({ deviceId: "dev-1", entityId: "run-1", agentId: "open", conversationId: "open" }));
+  const writes = vi.spyOn(cache, "mergeCachedAtomically");
+  const tip = (agent_id) => ({ agent_id, conversation_id: agent_id, since_sequence: 0, last_sequence: 1,
+    items: [{ type: "message", data: { id: `${agent_id}-1`, sequence: 1, role: "agent", body: agent_id } }] });
+  try {
+    await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([{ entity_id: "run-1", thread: [tip("cold"), tip("open")] }]);
+    expect(writes.mock.calls.filter(([address]) => address.kind === "thread").map(([address]) => address.sub)).toEqual(["open", "cold"]);
+  } finally { stop(); writes.mockRestore(); }
 });

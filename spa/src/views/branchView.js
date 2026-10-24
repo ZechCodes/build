@@ -459,8 +459,11 @@ export async function renderBranch() {
    *  The row alone is not enough. A machine with no records answers no row and
    *  so does a machine that has answered and carries no such branch — and the
    *  step between those two IS the empty state, the one paint a cold mount is
-   *  otherwise never given. */
-  const deliverySignature = (answer) => JSON.stringify([answer.held, answer.row]);
+   *  otherwise never given. Project Git state can arrive after its branch row;
+   *  that separate cache delivery must also release the folder stand-in. */
+  const deliverySignature = (answer) => JSON.stringify([
+    answer.held, answer.row, projectGitState(deviceId, projectId),
+  ]);
 
   const refresh = (force = false) => {
     if (disposed) return;

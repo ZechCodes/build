@@ -1,4 +1,4 @@
-import { mergeCachedAtomically, mergeCachedTogether, readCached } from "./localCache.js";
+import { mergeCachedAtomically, mergeCachedTogether, readCached, readCanonicalCached } from "./localCache.js";
 import { preserveReviewSummary } from "./trackerCache.js";
 
 // A list request observes PR state beside reset revisions. The reserved key
@@ -151,8 +151,13 @@ const tipIsCurrent = (thread, options) => (!options.active || options.active())
 /** A thread tip updates an existing list row, without adding a partial row.
  * A new canonical generation carries the recomputed summary, including no
  * messages; older generation tips cannot restore the erased timestamps. */
-export function updateSessionSummary(address, kind, id, session, options = {}) {
-  if (!validSession(session) && !revisionOf(options)) return Promise.resolve(false);
+export async function updateSessionSummary(address, kind, id, session, options = {}) {
+  if (!validSession(session) && !revisionOf(options)) return false;
+  // Unchanged summaries do not need the write lane. Read canonical state on
+  // every call so overlays, cross-tab resets and eviction cannot seed a
+  // persistent no-change verdict. Real updates recheck their thread below.
+  const observed = await readCanonicalCached(address);
+  if ((options.active && !options.active()) || !tipSessionRows(observed?.value, kind, id, session, options)) return false;
   if (!options.threadAddress) return mergeCachedAtomically(address, (held) =>
     tipIsCurrent(null, options) ? tipSessionRows(held, kind, id, session, options) : null);
   return mergeCachedTogether([options.threadAddress, address], ([thread, held]) =>

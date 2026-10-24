@@ -10,7 +10,7 @@ from .migrate_paths import PROSE_KEYS, references
 from .migrate_store import classified_references, connect, rows, table_names
 
 HISTORY_KINDS = ('reclaimed_workspaces', 'finished_runs', 'closed_tasks',
-                 'session_lineage', 'archived_worktrees')
+                 'session_lineage', 'archived_worktrees', 'cancelled_deliveries')
 CHECKOUT_KEYS = {'worktree_path', 'checkout', 'cwd', 'root', 'path', 'workspace_path', 'working_repository'}
 TERMINAL_RUNS = {'Merged', 'Abandoned', 'Archived'}
 
@@ -112,8 +112,12 @@ def closed_task_evidence(entries):
     return closed_tasks, {identity for identity, states in linked.items() if all(states)}
 
 
-def classified_entry(table, raw, record, reclaimed_ids, closed_tasks, closed_entities):
+def classified_entry(table, raw, record, reclaimed_ids, closed_tasks, closed_entities, owner_kinds):
     kind = record_kind(table, record, reclaimed_ids)
+    if table == 'agents':
+        kind = owner_kinds.get(record.get('owner_id'))
+    if table == 'tracker_delivery_intents' and record.get('state') == 'cancelled':
+        kind = 'cancelled_deliveries'
     if table == 'implementations' and record.get('id') in closed_entities:
         kind = 'closed_tasks'
     if table.startswith('review') and record.get('task_id', raw.get('task_id')) in closed_tasks:
@@ -137,10 +141,13 @@ def classify(database, live_workspaces=()):
     reclaimed_ids, reclaimed_paths = reclaimed_evidence(entries)
     reclaimed_ids.difference_update(record.get('id') for record in live)
     closed_tasks, closed_entities = closed_task_evidence(entries)
+    owner_kinds = {record.get('id'): record_kind(table, record, reclaimed_ids)
+                   for table, _, record in entries if table == 'implementations'}
+    owner_kinds.update({identity: 'closed_tasks' for identity in closed_entities})
     history = {kind: set() for kind in HISTORY_KINDS}
     required = set()
     for table, raw, record in entries:
-        classified = classified_entry(table, raw, record, reclaimed_ids, closed_tasks, closed_entities)
+        classified = classified_entry(table, raw, record, reclaimed_ids, closed_tasks, closed_entities, owner_kinds)
         for ref, kind in classified:
             if ref[1] in live_paths:
                 kind = None

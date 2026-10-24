@@ -102,3 +102,14 @@ def test_terminal_operations_do_not_veto_history_and_review_records_join_tasks(t
     assert ('checkout', '/gone') in result['historical']['session_lineage']
     assert ('working_repository', '/gone') in result['historical']['closed_tasks']
     assert ('root', '/gone') not in result['required']
+
+
+def test_agents_inherit_terminal_owner_and_cancelled_deliveries_are_history(tmp_path):
+    path = database(tmp_path, {
+        'implementations': [{'id': 'run', 'state': 'Archived', 'worktree_path': '/gone'}],
+        'agents': [{'owner_id': 'run', 'thread': {'sessions': [{'checkout': '/gone'}]}}],
+        'tracker_delivery_intents': [{'state': 'cancelled', 'admitted': {'path': '/cancelled'}}],
+    })
+    result = classify(path)
+    assert ('checkout', '/gone') in result['historical']['finished_runs']
+    assert ('path', '/cancelled') in result['historical']['cancelled_deliveries']

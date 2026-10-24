@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS conversation_attachment_uploads (
     conversation_id TEXT NOT NULL,
     thread_id TEXT NOT NULL,
     path TEXT NOT NULL,
+    uploaded_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (conversation_id, thread_id, path)
 );
 
@@ -120,6 +121,15 @@ CREATE INDEX IF NOT EXISTS thread_items_conversation
 -- between them.
 CREATE INDEX IF NOT EXISTS thread_items_messages
     ON thread_items(agent_id, sequence) WHERE message = 1;
+CREATE INDEX IF NOT EXISTS thread_items_message_time
+    ON thread_items(agent_id, julianday(json_extract(item, '$.data.created_at'))) WHERE message = 1;
+-- Retention must not scan old message bodies on every bounded batch just to
+-- discover a delivery that is still pending.
+CREATE INDEX IF NOT EXISTS thread_items_pending_delivery
+    ON thread_items(agent_id) WHERE message = 1
+    AND json_extract(item, '$.data.role') = 'user'
+    AND json_extract(item, '$.data.seen_at') IS NULL
+    AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted');
 -- The dismissal line, indexed: what a row was cleared against is the newest
 -- message the conversation's own two parties spoke, so the seek that finds it
 -- walks past the hand-offs between them without reading one.
@@ -140,6 +150,14 @@ CREATE INDEX IF NOT EXISTS thread_items_activity
 -- existing databases gain the index without rewriting stored items.
 CREATE INDEX IF NOT EXISTS thread_items_structure
     ON thread_items(agent_id, sequence) WHERE activity = 0;
+
+-- Retention survives empty histories, preserving counter monotonicity.
+CREATE TABLE IF NOT EXISTS conversation_retention (
+    agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+    thread_id TEXT NOT NULL,
+    history_start_sequence INTEGER NOT NULL,
+    high_watermark INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS captures (
     id     TEXT PRIMARY KEY,
@@ -179,6 +197,8 @@ CREATE TABLE IF NOT EXISTS operations (
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS operations_by_status ON operations(status, created_at);
+CREATE INDEX IF NOT EXISTS operations_by_conversation_status
+    ON operations(conversation_id, status);
 
 -- The per-project task tracker (spec: Tasks). NOT the `tasks` table above:
 -- that one is the retired plan-and-stages flow, which shares the English word
@@ -556,7 +576,8 @@ pub(super) const THREAD_CURSOR_SQL: &str = "SELECT item FROM thread_items \
 /// process before it stopped. This is how far a cursor has to have travelled
 /// for the tail to be the whole answer to it.
 pub(super) const THREAD_LAST_SEQUENCE_SQL: &str =
-    "SELECT COALESCE(MAX(updated_sequence), 0) FROM thread_items WHERE agent_id = ?1";
+    "SELECT MAX(COALESCE((SELECT MAX(updated_sequence) FROM thread_items WHERE agent_id = ?1), 0),
+     COALESCE((SELECT high_watermark FROM conversation_retention WHERE agent_id = ?1), 0))";
 
 /// Durable inbox summary inputs. Both are single indexed seeks; boot never
 /// deserializes the activity that may separate the last message from the tail.

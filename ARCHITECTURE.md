@@ -3690,7 +3690,8 @@ gate attachment display.
   one active round and one coalesced trailing high-water per conversation and
   generation. It rechecks canonical coverage before dispatch, skips already
   covered goals, and allows two attempts per goal and cache lifetime. Repeated
-  unchanged tips do not renew that budget; new evidence, eviction, reset or a
+  unchanged tips do not renew that budget. An untagged post-reset hint probes
+  held coverage without borrowing its ambiguous counter. New evidence, eviction, reset or a
   new session can. Ordinary recovery passes can retry retained repair debt.
   Catch-up work does not acquire a roster/review enrichment worker. A mounted
   conversation's page and activity reads bypass background wire admission even

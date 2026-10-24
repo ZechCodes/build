@@ -158,13 +158,33 @@ it("bounds repeated failed goals and renews their budget after same-generation e
   expect((await cache.readCached(address("run-0", "thread", "c0"))).value.deliveredSequence).toBe(10);
 });
 
-it("appends a legacy carried tip to its known generation without losing reset metadata", async () => {
+it("appends a legacy carried tip to its known initial generation", async () => {
   const target = address("run-0", "thread", "c0");
-  await cache.writeCached(target, { thread_id: "thread:c0", thread_generation_revision: 3,
-    retired_thread_ids: ["old"], deliveredSequence: 2, items: page(2).items });
+  await cache.writeCached(target, { thread_id: "thread:c0", thread_generation_revision: 1,
+    retired_thread_ids: [], deliveredSequence: 2, items: page(2).items });
   const event = tip(2, 3); delete event.thread[0].thread_id;
   event.thread[0].items = [{ type: "message", data: { id: "m3", sequence: 3 } }];
   await push([event]);
   expect((await cache.readCached(target)).value).toMatchObject({ deliveredSequence: 3,
-    thread_id: "thread:c0", thread_generation_revision: 3, retired_thread_ids: ["old"] });
+    thread_id: "thread:c0", thread_generation_revision: 1, retired_thread_ids: [] });
+});
+
+it("uses canonical catch-up rather than assigning an untagged old tip to a reset generation", async () => {
+  const target = address("run-0", "thread", "c0");
+  await cache.writeCached(target, { thread_id: "replacement", thread_generation_revision: 3,
+    retired_thread_ids: ["old"], items: [], deliveredSequence: 0 });
+  const previous = context.rpc.getMockImplementation(); context.rpc.mockClear();
+  context.rpc.mockImplementation((method, params) => method === "thread.page"
+    ? { thread_id: "replacement", thread_last_sequence: 0, items: [], has_more: false } : previous(method, params));
+  const event = tip(0, 100); delete event.thread[0].thread_id;
+  event.thread[0].items = [{ type: "message", data: { id: "old-message", sequence: 1, body: "old generation" } }];
+  await push([event]);
+  expect((await cache.readCached(target)).value).toMatchObject({ thread_id: "replacement", deliveredSequence: 0, items: [] });
+  expect(calls("thread.page")).toHaveLength(2);
+  context.rpc.mockImplementation((method, params) => method === "thread.page"
+    ? { ...page(5), thread_id: "replacement" } : previous(method, params));
+  const current = tip(0, 5); current.thread[0].thread_id = "replacement";
+  await push([current]);
+  expect(calls("thread.page")).toHaveLength(3);
+  expect((await cache.readCached(target)).value.deliveredSequence).toBe(5);
 });

@@ -1547,7 +1547,7 @@ function queuesFor(context) {
     needed: async (request) => {
       const held = (await readCached(request.address))?.value;
       return catchupGenerationMatches(request, held)
-        && (Number(held?.deliveredSequence || 0) < request.sequence || Boolean(held?.repairThrough));
+        && catchupStillNeeded(request, held);
     },
     read: (request, active) => syncThread({ ...request.context, active }, request.entityId, request.agent, "background"),
   });
@@ -1571,10 +1571,16 @@ export const threadCatchupsInFlight = (deviceId) =>
 const threadGenerationKey = (window) => JSON.stringify([window?.thread_id || "", Number(window?.thread_generation_revision || 0)]);
 
 /** Legacy tips may learn their first identity from the read itself. A reset
- * leaves retired identities, so that adoption cannot authorize a new lifetime. */
+ * leaves retired identities and a revision, preventing adoption after reset. */
 function catchupGenerationMatches(request, held) {
   return threadGenerationKey(held) === request.generation
-    || !request.agent.thread_id && !held?.retired_thread_ids?.length;
+    || !request.agent.thread_id && legacyGenerationCanAdopt(held);
+}
+
+function catchupStillNeeded(request, held) {
+  const through = Number(held?.deliveredSequence || 0);
+  return through < request.sequence || Boolean(held?.repairThrough)
+    || request.probeFrom !== undefined && through <= request.probeFrom;
 }
 
 function deferPush(context, entityId, key, run, replaceable = true) {
@@ -1907,6 +1913,12 @@ async function applyThreadTip(context, entityId, tip) {
   if (context.active()) await applySessionTip(context, entityId, tip);
 }
 
+const legacyGenerationCanAdopt = (held) => !held?.retired_thread_ids?.length
+  && Number(held?.thread_generation_revision || 0) <= 1;
+
+const canAppendThreadTip = (tip, held) => Boolean(held && tipRunsOnFromRecord(tip, held)
+  && (tip.thread_id || legacyGenerationCanAdopt(held)));
+
 const tipGenerationMismatch = (tip, held) =>
   Boolean(tip.thread_id && held?.thread_id && tip.thread_id !== held.thread_id);
 
@@ -1919,7 +1931,7 @@ async function writeThreadTipBody(context, entityId, tip, sub) {
   // nothing is held for has nothing to append to, and a tip that starts past
   // the cursor would append over a gap. All three are one cursored page, which
   // is the read this layer would have made anyway.
-  const items = held && tipRunsOnFromRecord(tip, held) ? (tip.items || []) : [];
+  const items = canAppendThreadTip(tip, held) ? (tip.items || []) : [];
   if (!items.length) {
     await deferThreadCatchup(context, entityId, tip, sub, held);
     return;
@@ -1933,13 +1945,22 @@ const carriedThreadPage = (tip, held, items) => ({
   thread_id: tip.thread_id || held?.thread_id,
 });
 
+/** An untagged post-reset counter is not coverage evidence. Probe from the
+ * held cursor instead, so it cannot exhaust a newer tagged goal's budget. */
+function catchupGoal(tip, held) {
+  const debt = Number(held?.repairThrough || 0);
+  if (tip.thread_id || legacyGenerationCanAdopt(held)) return { sequence: Math.max(Number(tip.last_sequence || 0), debt) };
+  const probeFrom = Number(held?.deliveredSequence || 0);
+  return { sequence: Math.max(probeFrom, debt), probeFrom };
+}
+
 async function deferThreadCatchup(context, entityId, tip, sub, held) {
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub), fence = pushFence();
   const reading = { ...context, active: () => context.active() && !pushedSince(address, fence) };
   if (!reading.active()) return;
   const settled = queuesFor(context).catchups.enqueue(JSON.stringify([entityId, sub]), {
     context: reading, active: reading.active, address, entityId, generation: threadGenerationKey(held),
-    sequence: Math.max(Number(tip.last_sequence || 0), Number(held?.repairThrough || 0)),
+    ...catchupGoal(tip, held),
     agent: { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: held?.thread_id || tip.thread_id },
   });
   if (context.pushing) context.pushCompletions?.push(settled);

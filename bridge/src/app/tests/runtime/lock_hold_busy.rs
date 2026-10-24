@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+mod activity;
 mod mcp_lists;
 mod mcp_reads;
 
@@ -198,7 +199,9 @@ impl Busy {
                 &path,
                 owner,
                 agent,
-                DictatedSession::reporting(AgentStatus::Working).recording_into(&log),
+                DictatedSession::reporting(AgentStatus::Working)
+                    .named(&format!("busy-provider-{agent}"))
+                    .recording_into(&log),
             );
             let choice = app.runs[owner].agents.by_id(agent).unwrap().choice.clone();
             let instance =

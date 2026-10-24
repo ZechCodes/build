@@ -60,6 +60,9 @@ impl AppState {
         state: &str,
         now: &str,
     ) -> (ActivePlan, Option<SnapshotDelta>) {
+        let publication_clock = std::sync::Arc::clone(&self.frame_clock);
+        let _publication =
+            publication_clock.publication_phase(crate::timing::PublicationPhase::Prepare);
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("finisher.snapshot");
         if !self.snapshot_projection_initialized() {
@@ -86,6 +89,9 @@ impl AppState {
         state: &str,
         now: &str,
     ) -> (ActiveRun, Option<SnapshotDelta>) {
+        let publication_clock = std::sync::Arc::clone(&self.frame_clock);
+        let _publication =
+            publication_clock.publication_phase(crate::timing::PublicationPhase::Prepare);
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("finisher.snapshot");
         if !self.snapshot_projection_initialized() {

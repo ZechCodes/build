@@ -13,6 +13,8 @@ use tokio::sync::broadcast;
 pub(in crate::app) mod status_publication_probe;
 #[cfg(test)]
 pub(in crate::app) mod status_timing;
+#[cfg(test)]
+pub(in crate::app) mod activity_probe;
 
 /// Start whichever pump this tab's session needs: the byte pump for a terminal,
 /// the activity pump for a session that reports its own work.

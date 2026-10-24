@@ -9,42 +9,6 @@
 @import "./styles/interactions.css";
 @import "./styles/window-controls.css";
 
-/* Build identity stays outside the route and the controls hidden by a gate.
-   Reserve a small slot before the inbox control rather than covering a target. */
-#build-channel {
-  position:absolute; z-index:48; pointer-events:none;
-  top:calc(var(--region-gap) + (var(--toolbar-h) - 20px) / 2);
-  left:calc(var(--global-controls-left) - 38px + var(--build-channel-inset));
-  width:32px; height:20px; display:grid; place-items:center;
-  border:1px solid var(--line); border-radius:5px;
-  background:var(--panel); color:var(--ink2); font-size:10px; font-weight:600;
-}
-#build-channel[hidden] { display:none; }
-body #shell:has(> #build-channel:not([hidden])) {
-  --global-controls-left:calc(var(--region-gap) + env(safe-area-inset-left, 0px) + 38px);
-  --inbox-open-clear:calc(86px + env(safe-area-inset-left, 0px));
-  --build-channel-inset:var(--window-controls-inset, 0px);
-}
-body.inbox-collapsed #shell:has(#dir-rail:not(:empty)):has(> #build-channel:not([hidden])) {
-  --global-controls-left:calc(var(--region-gap) + 38px);
-}
-body:has(> #verbar:not([hidden])) #shell:has(> #build-channel:not([hidden])) {
-  --build-channel-inset:0px;
-}
-@media (min-width:901px) {
-  body:not(.inbox-collapsed) #shell:has(> #build-channel:not([hidden])) .inbox-head {
-    padding-left:calc(48px + env(safe-area-inset-left, 0px) + var(--build-channel-inset));
-  }
-}
-@media (max-width:900px) {
-  #shell:has(> #build-channel:not([hidden])) .toolbar {
-    padding-left:calc(var(--inbox-open-clear) + var(--build-channel-inset));
-  }
-}
-:root[data-window-controls-overlay] body:not(:has(> #verbar:not([hidden]))) #build-channel {
-  top:calc((var(--toolbar-h) - 20px) / 2);
-}
-
 /* ---- the connection icon ----------------------------------------------------
    How many machines are connected, and what is being done about one that is
    not. It stands at the foot of the conversation rail — inside the bubble
@@ -67,6 +31,15 @@ body:has(> #verbar:not([hidden])) #shell:has(> #build-channel:not([hidden])) {
 .connection-status {
   position:relative; width:30px; height:30px; padding:0; display:grid; place-items:center;
   border:0; border-radius:50%; background:none; cursor:pointer;
+}
+/* The build's small identity bubble stays attached to the ring, clear of its
+   count and menu. It is part of the button's hit area, never another action. */
+.connection-build-channel {
+  position:absolute; z-index:1; top:-3px; right:-3px;
+  width:13px; height:13px; display:grid; place-items:center;
+  border:1px solid var(--panel); border-radius:50%;
+  background:var(--accent-fill); color:var(--accent-ink);
+  font:700 8px/1 var(--mono); pointer-events:none;
 }
 .connection-status:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .connection-status::before {

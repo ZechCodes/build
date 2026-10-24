@@ -87,6 +87,7 @@ async fn the_status_pump_waits_for_the_app_mutex_off_the_workers() {
     let session: Arc<dyn AgentSession> =
         Arc::new(DictatedSession::reporting(AgentStatus::Waiting).watching_status(watched));
 
+    let frame_clock = Arc::clone(&state.lock().unwrap().frame_clock);
     the_worker_progresses_while_the_lock_is_held(&state, || {
         crate::app::spawn_status_pump(
             &state,
@@ -94,6 +95,7 @@ async fn the_status_pump_waits_for_the_app_mutex_off_the_workers() {
             Arc::clone(&session),
             Some(instance_of("run-status")),
             session.status_changed(),
+            frame_clock,
         );
     })
     .await;
@@ -126,6 +128,7 @@ async fn the_activity_pump_waits_for_the_app_mutex_off_the_workers() {
     let state = unrooted_state(dir.path());
     let session: Arc<dyn AgentSession> = Arc::new(DictatedSession::reporting(AgentStatus::Working));
     let (activity, subscribed) = broadcast::channel(16);
+    let frame_clock = Arc::clone(&state.lock().unwrap().frame_clock);
     crate::app::spawn_activity_pump(
         &state,
         derived_agent_key(dir.path(), "run-activity"),
@@ -133,6 +136,7 @@ async fn the_activity_pump_waits_for_the_app_mutex_off_the_workers() {
         Some(instance_of("run-activity")),
         Some(subscribed),
         None,
+        frame_clock,
     );
 
     the_worker_progresses_while_the_lock_is_held(&state, || {
@@ -489,7 +493,8 @@ async fn the_flusher_and_a_terminals_paint_run_on_the_push_runtime() {
         .unwrap()
         .session_registry
         .insert_shell(key.clone(), tab, output);
-    crate::app::spawn_tab_pumps(&state, key, pumps);
+    let frame_clock = Arc::clone(&state.lock().unwrap().frame_clock);
+    crate::app::spawn_tab_pumps(&state, key, pumps, frame_clock);
 
     assert_eq!(
         pushing(),

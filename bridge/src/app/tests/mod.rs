@@ -45,14 +45,14 @@ mod untimed {
         key: TabKey,
         output: SessionOutput,
     ) {
-        let pumps = state
-            .lock()
-            .unwrap()
-            .session_registry
-            .test_tab(&key)
-            .unwrap()
-            .pumps(output);
-        super::super::spawn_tab_pumps(state, key, pumps)
+        let (pumps, frame_clock) = {
+            let app = state.lock().unwrap();
+            (
+                app.session_registry.test_tab(&key).unwrap().pumps(output),
+                Arc::clone(&app.frame_clock),
+            )
+        };
+        super::super::spawn_tab_pumps(state, key, pumps, frame_clock)
     }
 
     pub(super) fn spawn_activity_pump(
@@ -60,22 +60,40 @@ mod untimed {
         key: TabKey,
         rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
     ) {
-        let Some((session, instance, surfaces_changed)) = state
-            .lock()
-            .unwrap()
-            .session_registry
-            .test_tab(&key)
-            .map(|tab| {
+        let captured = {
+            let app = state.lock().unwrap();
+            app.session_registry.test_tab(&key).map(|tab| {
                 (
                     Arc::clone(&tab.session),
                     tab.session_instance.clone(),
                     tab.session.surfaces_changed(),
+                    Arc::clone(&app.frame_clock),
                 )
             })
-        else {
+        };
+        let Some((session, instance, surfaces_changed, frame_clock)) = captured else {
             return;
         };
-        super::super::spawn_activity_pump(state, key, session, instance, rx, surfaces_changed)
+        super::super::spawn_activity_pump(
+            state,
+            key,
+            session,
+            instance,
+            rx,
+            surfaces_changed,
+            frame_clock,
+        )
+    }
+
+    pub(super) fn spawn_status_pump(
+        state: &Arc<Mutex<AppState>>,
+        key: TabKey,
+        session: Arc<dyn AgentSession>,
+        instance: Option<SessionInstance>,
+        changed: Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>>,
+    ) {
+        let frame_clock = Arc::clone(&state.lock().unwrap().frame_clock);
+        super::super::spawn_status_pump(state, key, session, instance, changed, frame_clock)
     }
 
     pub(super) fn ensure_agent_tab(
@@ -166,7 +184,7 @@ mod untimed {
 }
 use untimed::{
     a_frame, deliver, deliver_pending_agent_turns, ensure_agent_tab, spawn_activity_pump,
-    spawn_tab_pumps,
+    spawn_status_pump, spawn_tab_pumps,
 };
 
 fn test_build_agent(mcp_socket: impl Into<std::path::PathBuf>) -> Agent {

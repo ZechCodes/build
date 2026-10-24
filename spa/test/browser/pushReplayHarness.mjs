@@ -34,6 +34,7 @@ export function pushReplayPlugin({ revision } = {}) {
         async function applyItem(...args) {
           const stats=window.__pushReplay.stats;
           stats.peakAppliers=Math.max(stats.peakAppliers,++stats.pendingAppliers);
+          stats.applierStarts=(stats.applierStarts||0)+1;
           try { return await replayOriginalApplyItem(...args); } finally { stats.pendingAppliers--; }
         }
         export async function startPushReplay() {
@@ -53,8 +54,8 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250 }
       await page.evaluate(async ({ intervalMs, stallMs }) => {
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const stats = { gets: 0, transactions: 0, pendingTransactions: 0, peakTransactions: 0,
-          pendingAppliers: 0, peakAppliers: 0, cacheLatencies: [], renderLatencies: [], rpcCalls: 0 };
-        const fixture = window.__pushReplay = { stats, watchers: [], emitted: new Map(), server: new Map() };
+          pendingAppliers: 0, peakAppliers: 0, cacheLatencies: [], cacheApplyTurns: [], renderLatencies: [], rpcCalls: 0 };
+        const fixture = window.__pushReplay = { stats, watchers: [], emitted: new Map(), emittedTurns: new Map(), server: new Map() };
         const { cache, sync, renderer, feed, app: { App } } = window.__layoutModules;
         App.devices = [{ id: "replay-device" }];
         App.route = { name: "project", deviceId: "replay-device", projectId: "p0", agent: "agent-0" };
@@ -87,12 +88,14 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250 }
         const openAddress = address("run-0", "thread", "agent-0");
         cache.subscribeCache(openAddress, async () => {
           const held = (await cache.readCached(openAddress))?.value;
+          const appliedAtRead = stats.applierStarts || 0;
           document.querySelector("#conversation").innerHTML = renderer.threadHtml(held);
           for (const item of held?.items || []) {
             const sequence = item.data.sequence;
             if (!fixture.emitted.has(sequence) || fixture.seen?.has(sequence)) continue;
             (fixture.seen ||= new Set()).add(sequence);
             stats.cacheLatencies.push(performance.now() - fixture.emitted.get(sequence));
+            stats.cacheApplyTurns.push(appliedAtRead - fixture.emittedTurns.get(sequence));
             document.querySelector("#open-conversation").textContent = String(sequence);
             await new Promise(requestAnimationFrame);
             stats.renderLatencies.push(performance.now() - fixture.emitted.get(sequence));
@@ -145,7 +148,10 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250 }
           fixture.expectedMessages[frame % 6].push(item);
           const tip = { agent_id: agent.id, conversation_id: agent.id, thread_id: agent.thread_id, thread_generation_revision: 1,
             since_sequence: sequence - 1, last_sequence: sequence, thread_total: sequence, items: [item] };
-          if (frame % 6 === 0) fixture.emitted.set(sequence, performance.now());
+          if (frame % 6 === 0) {
+            fixture.emitted.set(sequence, performance.now());
+            fixture.emittedTurns.set(sequence, stats.applierStarts || 0);
+          }
           // Empty, already-covered tips are duplicated by multiple active
           // subscriptions; include them without inventing cursor holes.
           const duplicate = { ...tip, since_sequence: Math.max(0, sequence - 1), last_sequence: Math.max(0, sequence - 1), items: [] };

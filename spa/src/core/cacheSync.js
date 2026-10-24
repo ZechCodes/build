@@ -1583,6 +1583,7 @@ async function applyEntityBodies(context, entityId, item) {
 }
 
 function enqueuePushRemainder(context, item) {
+  if (!context.active()) return;
   const entityId = String(item.entity_id);
   if (item.state || item.thread) deferPush(context, entityId, `roster:${entityId}`, () => refreshProjectAgents(context, null, entityId));
   const remainder = Object.fromEntries(Object.entries(item).filter(([field]) => field !== "state" && field !== "thread" && field !== "terminals"));

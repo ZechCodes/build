@@ -1972,3 +1972,38 @@ describe("complete project worker roster synchronization", () => {
     expect(calls("agent.list")).toHaveLength(0);
   });
 });
+
+describe("push queue lifetime ownership", () => {
+  it("does not let an old terminal completion discard the new session's queued frames", async () => {
+    await boot([branchItem(), branchItem({ run_id: "run-2", worktree_id: "wt-2", branch: "build/two" })]);
+    const original = cache.writeCached;
+    const releases = {}, started = new Set();
+    const terminal = (term_id) => ({ tabs: [{ term_id }] });
+    const writing = vi.spyOn(cache, "writeCached").mockImplementation(async (address, value) => {
+      const term = value?.tabs?.[0]?.term_id;
+      if (address.kind === "terminals" && ["old", "current"].includes(term)) {
+        started.add(term);
+        await new Promise((resolve) => { releases[term] = resolve; });
+      }
+      return original(address, value);
+    });
+    const inbox = registeredWatchers.find((watcher) => watcher.id === "s-inbox");
+    let old, current, latest;
+    try {
+      old = inbox.onChanges([{ entity_id: "run-1", terminals: terminal("old"), files: { paths: ["changed.js"] } }]);
+      await vi.waitFor(() => expect(started.has("old")).toBe(true));
+      contexts.get("dev-1").session = { replacement: true };
+      current = inbox.onChanges([{ entity_id: "run-2", terminals: terminal("current") }]);
+      await vi.waitFor(() => expect(started.has("current")).toBe(true));
+      latest = inbox.onChanges([{ entity_id: "run-2", terminals: terminal("latest") }]);
+      expect(sync.pushWorkInFlight("dev-1").pending).toBe(1);
+      releases.old(); await old;
+      expect(sync.pushWorkInFlight("dev-1").pending).toBe(1);
+      releases.current(); await Promise.all([current, latest]);
+      expect((await read("run-2", "terminals")).value).toEqual(terminal("latest"));
+    } finally {
+      releases.old?.(); releases.current?.();
+      await Promise.all([old, current, latest]); writing.mockRestore();
+    }
+  });
+});

@@ -135,6 +135,7 @@ it("admits a user action and its cache write while background work remains queue
   const admitted = vi.fn(async () => ({ term_id: "user-created" }));
   try {
     expect(sync.pushWorkInFlight("dev-1").running).toBe(1);
+    expect(sync.pushWorkInFlight("dev-1").pending).toBeGreaterThan(0);
     const result = await projectTerminalRpc(context, "term.create", scope, admitted);
     expect(admitted).toHaveBeenCalledWith("term.create", scope);
     expect(releases).toHaveLength(2); // Neither background read has answered.

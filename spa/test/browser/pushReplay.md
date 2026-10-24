@@ -28,7 +28,8 @@ the production feed is subscribed concurrently.
 Reports count production IndexedDB transactions and gets (excluding the stall
 fixture's keep-alive requests), peak unfinished transactions and active item
 appliers, scheduler work where available, RPC count, event-to-cache and
-cache-subscribed render latency, and exact final sequence/state checks. Cache
+cache-subscribed render latency, foreground applier-turn delay, and exact final
+sequence/state checks. Cache
 latency includes the deliberate stall. `renderProgressDuringReplay` proves
 visible cache-driven progress before incoming traffic ends. Verification reads
 are outside the measurement window.
@@ -38,3 +39,9 @@ frames or a claim to reproduce the original live rates. The observed #816
 baseline used different event mix, real RPC timings and other browser activity.
 In particular, this fixture deliberately avoids cursor holes: catch-up cursor
 and repair behavior belongs to #819.
+
+The regression requires the open conversation to reach cache within three
+applier starts after arrival, while unrelated projects continue to update.
+This scheduling bound is independent of CPU scheduling on the shared host;
+the separate 10-second wall ceiling detects a hang. Profile reports retain
+raw wall latency, including the deliberately stalled transaction.

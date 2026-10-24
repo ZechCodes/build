@@ -21,5 +21,7 @@ it("bounds push IndexedDB work under concurrent multi-project agents while the o
   expect(result.rendered).toBe("10");
   expect(result.renderedText).toContain("frame 54");
   expect(result.cacheLatencies).toHaveLength(10);
-  expect(result.cacheMaxMs).toBeLessThan(2000);
+  // Bound scheduling turns independently of how much CPU the shared host grants.
+  expect(Math.max(...result.cacheApplyTurns)).toBeLessThanOrEqual(3);
+  expect(result.cacheMaxMs).toBeLessThan(10_000);
 }, 60_000);

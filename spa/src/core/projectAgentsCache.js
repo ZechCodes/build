@@ -39,22 +39,29 @@ export function projectRosterProjection(projects, support, rosterOf) {
   });
 }
 
-// Direct rail reads and push enrichment share one lane per owner. Overlap marks
-// one trailing read dirty instead of invalidating a read that can make progress.
+// Only explicit background refreshes share a lane per owner. User refreshes
+// dispatch immediately and fence older background reads without waiting.
 const reads = new Map();
+const immediateReads = new Map();
+let requestOrder = 0;
 const SYNC_DEFAULTS = { active: () => true, afterWrite: async () => {} };
 const workerRosterAvailable = (capabilities) => (typeof capabilities === "function" ? capabilities() : capabilities)?.agents?.projectWorkers === true;
 const readerActive = (options) => options.active() && workerRosterAvailable(options.capabilities);
 
 export async function syncProjectAgents(options) {
-  const request = { ...SYNC_DEFAULTS, ...options, fence: pushFence() };
+  const request = { ...SYNC_DEFAULTS, ...options, fence: pushFence(), order: ++requestOrder };
   if (!request.entityId || !readerActive(request)) return;
   const key = JSON.stringify([request.deviceId, request.entityId]);
+  if (!request.background) return readImmediateRoster(key, request);
   const running = reads.get(key);
   if (!running) {
     const group = rosterReadGroup(request);
     void runRosterRead(key, group);
     return group.promise;
+  }
+  if (!running.dispatched) {
+    running.requests.push(request);
+    return running.promise;
   }
   if (!running.trailing) running.trailing = rosterReadGroup(request);
   else running.trailing.requests.push(request);
@@ -70,20 +77,54 @@ function rosterReadGroup(request) {
 async function runRosterRead(key, group) {
   reads.set(key, group);
   try {
-    // A rail may have unmounted while device-level enrichment is still active.
-    const request = group.requests.findLast(readerActive);
-    const roster = request && await readRoster(request);
-    if (roster) {
-      for (const subscriber of group.requests) {
-        if (readerActive(subscriber)) await subscriber.afterWrite(roster);
-      }
-    }
+    const roster = await readBackgroundRoster(key, group);
+    if (roster) await Promise.all(group.requests.filter(readerActive).map((subscriber) => subscriber.afterWrite(roster)));
     group.resolve();
   } catch (error) {
     group.reject(error);
   } finally {
     reads.delete(key);
     if (group.trailing) void runRosterRead(key, group.trailing);
+  }
+}
+
+async function readImmediateRoster(key, request) {
+  const token = { order: request.order };
+  immediateReads.set(key, token);
+  token.promise = (async () => {
+    const roster = await readRoster({ ...request, active: () => readerActive(request) && immediateReads.get(key) === token });
+    token.written = Boolean(roster);
+    if (roster && readerActive(request)) await request.afterWrite(roster);
+  })();
+  return token.promise;
+}
+
+async function settledImmediateRead(key) {
+  let token;
+  do {
+    token = immediateReads.get(key);
+    await token?.promise?.catch(() => {});
+  } while (token !== immediateReads.get(key));
+  return token;
+}
+
+async function readBackgroundRoster(key, group) {
+  while (group.requests.some(readerActive)) {
+    const token = await settledImmediateRead(key);
+    const request = group.requests.findLast(readerActive);
+    if (!request) return;
+    // A later immediate read already covered these earlier invalidations.
+    if (token?.written && request.order < token.order) return (await readCached(projectAgentsAddress(request.deviceId, request.entityId)))?.value;
+    group.dispatched = true;
+    const current = () => readerActive(request) && immediateReads.get(key) === token;
+    try {
+      const roster = await readRoster({ ...request, active: current });
+      if (current()) return roster;
+    } catch (error) {
+      if (current()) throw error;
+    }
+    // Never admit a retired caller's reply for another subscriber. Retry from
+    // a live caller after any immediate read; each invocation keeps its fence.
   }
 }
 

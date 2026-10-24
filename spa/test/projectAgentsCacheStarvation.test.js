@@ -11,7 +11,7 @@ const worker = { id: "worker", conversation_id: "chat", thread_id: "thread", thr
 const roster = { entity_id: "owner", pinned_agent_id: "pin", agents: [pin, worker] };
 const address = projectAgentsAddress("device", "owner");
 const threadAddress = { deviceId: "device", entityId: "owner", kind: "thread", sub: "chat" };
-const options = { deviceId: "device", entityId: "owner", capabilities: { agents: { projectWorkers: true } } };
+const options = { background: true, deviceId: "device", entityId: "owner", capabilities: { agents: { projectWorkers: true } } };
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 beforeEach(async () => { await cache.wipeCache(); });
 
@@ -67,7 +67,7 @@ it.each([
   expect((await cache.readCached(address))?.value).toBeFalsy();
 });
 
-it("keeps removal and epoch fences even when another reader is queued", async () => {
+it("keeps removal and epoch fences", async () => {
   let active = true;
   const answer = deferred();
   const call = vi.fn(() => answer.promise);
@@ -122,4 +122,59 @@ it("releases the lane after an RPC failure and keeps its trailing refresh", asyn
   await rejected;
   await queued;
   expect((await cache.readCached(address))?.value).toEqual(roster);
+});
+
+
+it("an immediate user refresh admits its roster while background RPCs remain held", async () => {
+  const background = deferred();
+  const call = vi.fn(() => background.promise);
+  const initial = syncProjectAgents({ ...options, call });
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+  const queued = syncProjectAgents({ ...options, call });
+  const foregroundCall = vi.fn(async () => roster);
+  const immediate = syncProjectAgents({ ...options, background: false, call: foregroundCall });
+  try {
+    await vi.waitFor(() => expect(foregroundCall).toHaveBeenCalledTimes(1));
+    await immediate;
+    expect((await cache.readCached(address))?.value).toEqual(roster);
+  } finally {
+    background.resolve({ ...roster, agents: [pin] });
+    await Promise.all([initial, queued, immediate]);
+  }
+  expect((await cache.readCached(address))?.value).toEqual(roster);
+});
+
+it("retries discovery with a live push subscriber when the selected rail unmounts after dispatch", async () => {
+  const first = deferred(), railReply = deferred();
+  let standing = true;
+  const call = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(roster);
+  const initial = syncProjectAgents({ ...options, call });
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+  const push = syncProjectAgents({ ...options, call });
+  const railCall = vi.fn(() => railReply.promise);
+  const rail = syncProjectAgents({ ...options, call: railCall, active: () => standing });
+  first.resolve({ ...roster, agents: [pin] });
+  await initial;
+  await vi.waitFor(() => expect(railCall).toHaveBeenCalledTimes(1));
+  standing = false;
+  railReply.resolve(roster);
+  await Promise.all([push, rail]);
+  expect((await cache.readCached(address))?.value).toEqual(roster);
+  expect(call).toHaveBeenCalledTimes(2);
+});
+
+
+it("background calls starting after an immediate read cannot supersede its admission", async () => {
+  const reply = deferred(), backgroundReply = deferred();
+  const foregroundCall = vi.fn(() => reply.promise);
+  const immediate = syncProjectAgents({ ...options, background: false, call: foregroundCall });
+  await vi.waitFor(() => expect(foregroundCall).toHaveBeenCalledTimes(1));
+  const call = vi.fn(() => backgroundReply.promise);
+  const background = Array.from({ length: 20 }, () => syncProjectAgents({ ...options, call }));
+  reply.resolve(roster);
+  await immediate;
+  expect((await cache.readCached(address))?.value).toEqual(roster);
+  backgroundReply.resolve(roster);
+  await Promise.all(background);
+  expect(call).toHaveBeenCalledTimes(1);
 });

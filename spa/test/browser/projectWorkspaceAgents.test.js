@@ -509,7 +509,7 @@ it("discovers a created worker in two independent caches during streaming, inclu
           const { rosterCache } = window.__layoutModules;
           window.__refresh = (rail = false) => rosterCache.syncProjectAgents({
             deviceId: "workers-device", entityId: "project-owner", capabilities: { agents: { projectWorkers: true } },
-            call: window.__workerCall, active: () => !rail || window.__standing,
+            call: window.__workerCall, active: () => !rail || window.__standing, background: !rail,
           });
           window.__initialRoster = window.__refresh(true);
           let sequence = 1;

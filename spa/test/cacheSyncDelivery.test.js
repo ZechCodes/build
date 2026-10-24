@@ -921,6 +921,8 @@ describe("a pass racing the wire", () => {
     sync.startCacheSync();
     await settle();
 
+    await announced((heard) => cache.subscribeCache({ deviceId: "dev-1", entityId: "", kind: "projects" }, heard), async () =>
+      (await read("", "projects"))?.value?.[0]?.id === "p2");
     expect((await read("", "projects")).value.map((project) => project.id)).toEqual(["p2"]);
   });
 
@@ -935,6 +937,8 @@ describe("a pass racing the wire", () => {
     sync.startCacheSync();
     await settle();
 
+    await announced((heard) => cache.subscribeCache({ deviceId: "dev-1", entityId: "run-2", kind: "row" }, heard), async () =>
+      (await read("run-2", "row"))?.value?.branch === "build/signup");
     expect((await read("run-2", "row"))?.value.branch).toBe("build/signup");
   });
 });

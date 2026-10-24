@@ -50,19 +50,19 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250 }
   const session = await openLayoutSession({ plugins: [pushReplayPlugin({ revision })] });
   try {
     return await session.withPage(async ({ page, basePath }) => {
-      await loadBrowserModules(page, { cache: "src/core/localCache.js", app: "src/appState.js", sync: "src/core/cacheSync.js", renderer: "src/core/thread.js", feed: "src/core/taskFeed.js" }, basePath);
+      await loadBrowserModules(page, { cache: "src/core/localCache.js", app: "src/appState.js", sync: "src/core/cacheSync.js", renderer: "src/core/thread.js", feed: "src/core/taskFeed.js", visible: "src/core/syncVisibleScopes.js" }, basePath);
       await page.evaluate(async ({ intervalMs, stallMs }) => {
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const stats = { gets: 0, transactions: 0, pendingTransactions: 0, peakTransactions: 0,
           pendingAppliers: 0, peakAppliers: 0, cacheLatencies: [], cacheApplyTurns: [], renderLatencies: [], rpcCalls: 0 };
         const fixture = window.__pushReplay = { stats, watchers: [], emitted: new Map(), emittedTurns: new Map(), server: new Map() };
-        const { cache, sync, renderer, feed, app: { App } } = window.__layoutModules;
+        const { cache, sync, renderer, feed, visible, app: { App } } = window.__layoutModules;
         App.devices = [{ id: "replay-device" }];
         App.route = { name: "project", deviceId: "replay-device", projectId: "p0", agent: "agent-0" };
         const address = (entityId, kind, sub = "") => ({ deviceId: "replay-device", entityId, kind, sub });
-        const projects = Array.from({ length: 6 }, (_, index) => ({ project_id: `p${index}`, name: `Project ${index}`, entity_id: `run-${index}` }));
+        const projects = Array.from({ length: 6 }, (_, index) => ({ project_id: `p${index}`, name: `Project ${index}`, entity_id: `run-${index}`, deviceId: "replay-device" }));
         const agents = Array.from({ length: 82 }, (_, index) => ({ id: `agent-${index}`, conversation_id: `agent-${index}`, thread_id: `thread-${index}`, thread_generation_revision: 1 }));
-        const rows = projects.map((project, index) => ({ kind: "branch", project_id: project.project_id, run_id: project.entity_id,
+        const rows = projects.map((project, index) => ({ kind: "branch", deviceId: "replay-device", project_id: project.project_id, run_id: project.entity_id,
           worktree_id: `wt-${index}`, branch: `build/${index}`, state: "building", agents: agents.filter((_, number) => number % 6 === index),
           last_activity: "2026-10-24T16:00:00Z" }));
         fixture.context = { deviceId: "replay-device", session: {}, active: () => true,
@@ -86,6 +86,8 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250 }
         for (let index = 0; index < 727; index++) await cache.writeCached(address(`padding-${index}`, "status"), { head: "seed" });
         document.body.innerHTML = '<output id="open-conversation">0</output><main id="conversation"></main>';
         const openAddress = address("run-0", "thread", "agent-0");
+        const stopThread = visible.registerSyncThread(() => ({ deviceId: "replay-device", entityId: "run-0",
+          agentId: "agent-0", conversationId: "agent-0", threadId: "thread-0" }));
         cache.subscribeCache(openAddress, async () => {
           const held = (await cache.readCached(openAddress))?.value;
           const appliedAtRead = stats.applierStarts || 0;
@@ -185,6 +187,7 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250 }
         fixture.renderedText = document.querySelector("#conversation").textContent;
         stopFeedListener();
         feed.stopFeed();
+        stopThread();
         sync.stopCacheSync();
         db.close();
       }, { basePath, intervalMs, stallMs });

@@ -561,6 +561,7 @@ impl AppState {
                     thread_generation_revision: Some(thread.generation_revision),
                     choice_revision: Some(agent.choice_revision),
                     last_sequence: self.snapshot_thread_sequence(thread),
+                    history_start_sequence: thread.history_start_sequence,
                     workspace_session,
                     project_session,
                     workspace_id: workspace_id.clone(),

@@ -383,6 +383,7 @@ async fn retained_thread_reads_publish_the_same_boundary_on_catch_up_and_activit
         .prune_conversation_batch(
             &record.agents[0].id,
             crate::store::RetentionPolicy {
+                min_messages: 1,
                 max_messages: 1,
                 max_age_days: 7,
             },
@@ -410,10 +411,7 @@ async fn retained_thread_reads_publish_the_same_boundary_on_catch_up_and_activit
             .read(|tx| context.read(Some(tx), method, &params))
             .unwrap()
             .unwrap();
-        assert_eq!(
-            actual["history_start_sequence"], 6,
-            "{method}: {actual}"
-        );
+        assert_eq!(actual["history_start_sequence"], 6, "{method}: {actual}");
         assert!(actual["items"]
             .as_array()
             .unwrap()

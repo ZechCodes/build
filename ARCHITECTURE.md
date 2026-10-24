@@ -1048,6 +1048,47 @@ client hints and session IDs do not grant identity. Reads additionally validate
 the original owner scope against current published authority. MCP agent
 principals and semantic method enablement belong to Step 6b.
 
+#### Conversation retention (#836)
+
+`retention` in the persisted device config defaults to
+`{"enabled":true,"min_messages":50,"max_messages":100,"window_days":7}`.
+For each conversation, keep the newest N messages, where N is the number
+from the last seven days clamped to 50–100. Fewer than 50 total messages all
+survive. Activity survives at and after the oldest kept message's creation
+sequence. Tasks, task comments and reviews are independent and never pruned.
+Invalid explicit config refuses startup rather than enabling a guessed policy.
+Changes to this config take effect after restart.
+
+The daemon runs an immediate startup cycle and repeats hourly. Discovery uses
+keyset pages; the store commits at most 1,000 deletions per batch outside the
+app lock. Queued, claimed or uncertain operations and pending legacy deliveries
+protect their entire conversation. Settled operation receipts remain as small
+idempotency tombstones, retaining hashes and original sequence spans. #835 owns
+payload compaction and the sole incremental-vacuum scheduler.
+
+Schema 19 stores a generation-scoped `conversation_retention` floor and sequence
+high-water mark. Stale resident saves cannot reinsert rows below the floor.
+`thread.page`, `thread.activity` and push tips expose optional
+`history_start_sequence`, the inclusive retained creation-sequence floor.
+Absent means no declared trim. The SPA discards the removed prefix and its
+repair targets, preserves the maximum floor only within one generation, and
+continues repairing any gaps above the floor. Reset discards the previous floor.
+An empty history can report high-water mark + 1 without reissuing counters.
+
+Attachment sweeping runs independently of the pruning toggle. Exact parsed
+path references across durable documents and draft upload reservations protect
+both local and checkout copies. Stale reservations expire after the configured
+window; newly migrated reservations receive a full grace window. File scans run
+without the writer or app lock. A bounded final unlink rechecks the unchanged
+DB snapshot and shares an admission gate with file validation, which refreshes
+mtime. Files newer than one hour, symlinks and directories are left alone.
+Concurrent DB changes defer that sweep batch to a later cycle.
+
+Set `retention.enabled=false` for hourly count-only history reports while leaving
+orphan cleanup active. For an offline detailed report, copy the tasks directory
+first, then run `cargo run --example retention_report -- <copied-tasks-directory>`.
+Opening that copy initializes its schema; it never starts the daemon or prunes.
+
 #### Compaction policy configuration
 
 `bridge/src/compaction.rs` defines sparse per-harness token maps, and

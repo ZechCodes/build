@@ -160,17 +160,25 @@ async function recentRepairPage(request, held, floor) {
  * failed reads leave debt in place rather than blessing stale rows. */
 async function repairedHeldCopies(request, held, page, lean) {
   const shipped = new Set((page.items || []).map(threadItemKey));
-  const missing = recentHeldItems(held).filter((item) =>
+  const trimmed = trimThreadHistory(held, page);
+  const missing = recentHeldItems(trimmed).filter((item) =>
     !shipped.has(threadItemKey(item)) && (page.has_more === true
       || (lean && !!digestCovering(page.activity_digests, item.data?.sequence))));
   const copies = [];
+  let floor = Number(trimmed.historyStartSequence || 0);
   for (const item of missing) {
-    const projected = lean && digestCovering(page.activity_digests, item.data?.sequence);
-    const copy = await (projected ? readActivityCopy(request, held, item) : readExactCopy(request, held, item));
+    if (item.data.sequence < floor) continue;
+    const copy = await readHeldCopy(request, held, item, page, lean);
     if (!copy) return null;
+    floor = Math.max(floor, copy.historyStartSequence);
     if (copy.item) copies.push(copy.item);
   }
-  return { ...page, items: mergeThreadItems(page.items, copies) };
+  return { ...page, ...(floor ? { history_start_sequence: floor } : {}), items: mergeThreadItems(page.items, copies) };
+}
+
+function readHeldCopy(request, held, item, page, lean) {
+  const projected = lean && digestCovering(page.activity_digests, item.data?.sequence);
+  return projected ? readActivityCopy(request, held, item) : readExactCopy(request, held, item);
 }
 
 /** An unprojected one-item forward read reaches exactly the known creation.
@@ -189,7 +197,7 @@ async function readExactCopy(request, held, item) {
     }, requestPriorityFields(requestPriority(request)));
     const threadId = threadIdFor(request, held);
     if (threadId && page.thread_id !== threadId) return null;
-    return (page.items || []).find((copy) => copy.data?.sequence === sequence) || null;
+    return repairCopyResult(request, held, page, sequence);
   } catch {
     return null;
   }
@@ -207,15 +215,29 @@ async function readActivityCopy(request, held, item) {
       through_sequence: sequence,
       limit: 1,
     }, requestPriorityFields(requestPriority(request)));
-    await publishActivityFloor(request, held, page);
-    const item = (page.items || []).find((copy) => copy.data?.sequence === sequence);
-    return (item || sequence < threadHistoryStart(page)) ? { item } : null;
+    return repairCopyResult(request, held, page, sequence);
   } catch {
     return null;
   }
 }
 
-async function publishActivityFloor(request, held, page) {
+async function repairCopyResult(request, held, page, sequence) {
+  if (!repairGenerationMatches(request, held, page)) return null;
+  await publishRepairFloor(request, held, page);
+  const current = (await readCached(threadTarget(request)))?.value;
+  const scoped = { ...page, ...threadGenerationParam(threadIdFor(request, held)) };
+  if (!requestIsActive(request) || differentThreadGeneration(current, scoped)) return null;
+  const floor = Math.max(Number(current?.historyStartSequence || 0), threadHistoryStart(page));
+  const item = (page.items || []).find((copy) => copy.data?.sequence === sequence);
+  return (item || sequence < floor) ? { item, historyStartSequence: floor } : null;
+}
+
+function repairGenerationMatches(request, held, page) {
+  const expected = threadIdFor(request, held);
+  return !expected || !page.thread_id || page.thread_id === expected;
+}
+
+async function publishRepairFloor(request, held, page) {
   if (!threadHistoryStart(page) || !requestIsActive(request)) return;
   const scoped = { ...page, ...threadGenerationParam(threadIdFor(request, held)) };
   await mergeCachedAtomically(threadTarget(request), (current) =>
@@ -240,7 +262,7 @@ export function repairedThreadWindow(held, page) {
   if (!holdsAWindow(held) || differentThreadGeneration(held, page)) return null;
   const trimmed = trimThreadHistory(held, page);
   const newer = newerCopies(trimmed.items, page?.items);
-  const paid = repaidBy(held, page);
+  const paid = repaidBy(trimmed, page);
   if (!newer.length && !paid) return trimmed === held ? null : trimmed;
   const { repairThrough, ...window } = trimmed;
   return trimThreadHistory({

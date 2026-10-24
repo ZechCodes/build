@@ -177,6 +177,7 @@ it("uses canonical catch-up rather than assigning an untagged old tip to a reset
   context.rpc.mockImplementation((method, params) => method === "thread.page"
     ? { thread_id: "replacement", thread_last_sequence: 0, items: [], has_more: false } : previous(method, params));
   const event = tip(0, 100); delete event.thread[0].thread_id;
+  event.thread[0].history_start_sequence = 900;
   event.thread[0].items = [{ type: "message", data: { id: "old-message", sequence: 1, body: "old generation" } }];
   await push([event]);
   expect((await cache.readCached(target)).value).toMatchObject({ thread_id: "replacement", deliveredSequence: 0, items: [] });
@@ -187,4 +188,26 @@ it("uses canonical catch-up rather than assigning an untagged old tip to a reset
   await push([current]);
   expect(calls("thread.page")).toHaveLength(3);
   expect((await cache.readCached(target)).value.deliveredSequence).toBe(5);
+});
+
+it("coalesces same-counter floor tips while retaining a real repair obligation", async () => {
+  const target = address("run-0", "thread", "c0");
+  const row = { type: "message", data: { sequence: 8, body: "old" } };
+  await cache.writeCached(target, { thread_id: "thread:c0", items: [row], deliveredSequence: 10, repairThrough: 10 });
+  const stalled = gate(), previous = context.rpc.getMockImplementation();
+  context.rpc.mockClear();
+  context.rpc.mockImplementation((method, params) => method === "thread.page"
+    ? (params.newest ? stalled.promise : { thread_id: "thread:c0", items: [{ ...row, data: { ...row.data, updated_sequence: 10, body: "fresh" } }], thread_last_sequence: 10 })
+    : previous(method, params));
+  const event = tip(10, 10); event.thread[0].history_start_sequence = 8;
+  const first = push([event]);
+  await called(context.rpc, () => calls("thread.page").length === 1);
+  const second = push([event]);
+  stalled.release({ thread_id: "thread:c0", items: [], history_start_sequence: 8, thread_last_sequence: 10 });
+  await Promise.all([first, second]);
+  const held = (await cache.readCached(target)).value;
+  expect(held.historyStartSequence).toBe(8);
+  expect(held.items[0].data.body).toBe("fresh");
+  expect(held.repairThrough).toBeUndefined();
+  expect(calls("thread.page")).toHaveLength(2);
 });

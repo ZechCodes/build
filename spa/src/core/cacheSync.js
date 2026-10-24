@@ -1945,15 +1945,20 @@ async function writeThreadTipBody(context, entityId, tip, sub) {
 
 // A trim can advance independently of the item counter.
 async function applyThreadHistoryTrim(context, address, tip, held) {
-  if (!threadHistoryStart(tip)) return false;
-  await mergeCachedAtomically(address, (current) => context.active() ? trimThreadHistory(current, tip) : null);
-  return Number(tip.last_sequence || 0) <= Number(held?.deliveredSequence || 0);
+  if (!authoritativeTipFloor(tip, held)) return false;
+  await mergeCachedAtomically(address, (current) => context.active() ? trimmedThreadTip(current, tip) : null);
+  const trimmed = trimmedThreadTip(held, tip);
+  return !trimmed?.repairThrough && Number(tip.last_sequence || 0) <= Number(trimmed?.deliveredSequence || 0);
 }
+
+const authoritativeTipFloor = (tip, held) =>
+  !held?.thread_id || held.thread_id === tip.thread_id ? threadHistoryStart(tip) : 0;
+const trimmedThreadTip = (held, tip) => authoritativeTipFloor(tip, held) ? trimThreadHistory(held, tip) : held;
 
 const carriedThreadPage = (tip, held, items) => ({
   items, thread_total: tip.thread_total, thread_generation_revision: tip.thread_generation_revision,
   thread_id: tip.thread_id || held?.thread_id,
-  ...(threadHistoryStart(tip) ? { history_start_sequence: threadHistoryStart(tip) } : {}),
+  ...(authoritativeTipFloor(tip, held) ? { history_start_sequence: authoritativeTipFloor(tip, held) } : {}),
 });
 
 /** An untagged post-reset counter is not coverage evidence. Probe from the

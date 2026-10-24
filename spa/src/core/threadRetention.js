@@ -18,8 +18,10 @@ export function trimThreadHistory(window, page) {
   if (!floor) return window;
   const items = (window.items || []).filter((item) => retainedItem(item, floor));
   const first = items.find((item) => item.data?.provisional !== true);
+  const { repairThrough, ...retained } = window;
   return {
-    ...window,
+    ...retained,
+    ...(first && repairThrough ? { repairThrough } : {}),
     items,
     historyStartSequence: floor,
     activityDigests: (window.activityDigests || []).filter((digest) => digest.from_sequence >= floor),

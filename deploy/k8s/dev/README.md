@@ -84,7 +84,12 @@ Only the new role, its own settings and grants, and the new schema are required
 on the shared server. Run migrations exclusively through the guarded dev
 command below. Its checked connection and Alembic version table are confined
 to `build_dev`; do not run the generic `skrift db upgrade` command against this
-shared database. The app's explicit `db.schema` also scopes ORM queries.
+shared database. Runtime ORM models remain unqualified and resolve through the
+restricted role's verified `search_path = build_dev`. Keep `db.schema` unset:
+Skrift imports its framework tables before applying that metadata default, which
+otherwise leaves Build's foreign keys pointing at a missing `build_dev.users`
+metadata entry. The operator engine retains its explicit schema translation;
+database privileges and the guarded preflight enforce the isolation boundary.
 
 The manual `dev-deploy.yml` workflow resolves the `dev` branch once, records its
 full SHA, and checks out that SHA for all checks, image builds and deployment
@@ -219,7 +224,7 @@ stores only the token hash. After the file is flushed to storage, it writes
 that marker plus evidence of an invite; it never seeds or prints credentials.
 `SKRIFT_ENV` remains `production`; the command rejects the production origin and
 any Postgres target except `build-postgres.8ly.svc.cluster.local/build`
-with user `build_dev`, configured schema `build_dev`, port 5432 and no query
+with user `build_dev`, no configured metadata schema, port 5432 and no query
 options (which could override the connection target). It checks the effective
 role, schema ownership and search path before migration or bootstrap. SQLite is
 permitted only for disposable offline proof, without a configured schema.

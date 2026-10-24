@@ -47,7 +47,7 @@ def dev_database_url() -> str:
 def is_hosted_dev_url(url, schema: str | None) -> bool:
     return (url.drivername == 'postgresql+asyncpg' and url.host == DEV_DATABASE_HOST
             and url.database == 'build' and url.username == DEV_DATABASE_ROLE
-            and schema == DEV_DATABASE_SCHEMA
+            and schema is None
             and url.port in (None, 5432) and not url.query)
 
 

@@ -287,7 +287,12 @@ complexity cap (CLAUDE.md “Complexity gates”).
 The normal Python gate skips `test_dev_schema_postgres.py` unless
 `TEST_DEV_POSTGRES_URL` is set. This additional proof runs both real migration
 heads twice, bootstrap and rollout checks, and the real ASGI dispatcher against
-a restricted role. It verifies that dev tables, foreign keys, and migration
+a restricted role. Fresh subprocesses load the unchanged hosted-dev config before
+any Build models, flush a user-owned Device, and complete the real passkey signup
+and invite-redemption HTTP path (only authenticator verification is mocked).
+They assert persisted user/passkey, invite claim and email consent records; the
+ordinary Python gate also resolves every FK with cold dev and production imports.
+The proof verifies that dev tables, foreign keys, and migration
 version records stay in `build_dev`; production canary reads/writes, public DDL,
 and assuming the production role must fail. With the separate local-admin URL
 below, it also grants and revokes each column privilege and CREATE on several

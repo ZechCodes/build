@@ -36,6 +36,11 @@ export async function cachedFeedView(deviceId, { projectRosters = true } = {}) {
   const addresses = (await cachedAddresses({ deviceId })).filter((address) => address.kind === ROW_RECORD_KIND || address.kind === PROJECT_AGENTS_KIND);
   const records = await readCachedMany([...addresses, { deviceId, entityId: "", kind: "projects" },
     { deviceId, entityId: "", kind: "workspaces" }, projectAgentsSupportAddress(deviceId)]);
+  return feedViewFromRecords(addresses, records);
+}
+
+/** Project one snapshot of named records, shared with the incremental feed. */
+export function feedViewFromRecords(addresses, records) {
   const [projects, workspaces, support] = records.slice(addresses.length);
   const rows = records.slice(0, addresses.length).filter((_, index) => addresses[index].kind === ROW_RECORD_KIND);
   const rosters = new Map(addresses.map((address, index) => [address.kind === PROJECT_AGENTS_KIND ? address.entityId : null, records[index]?.value]));

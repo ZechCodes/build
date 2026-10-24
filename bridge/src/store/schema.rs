@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS agents (
     record   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS agents_by_owner ON agents(owner_id, ordinal);
+CREATE INDEX IF NOT EXISTS agents_by_conversation
+    ON agents(json_extract(record, '$.conversation_id'));
 
 -- Draft uploads belong to the generation that accepted them, even before
 -- a message references them. Content-addressed bytes may be shared.
@@ -128,6 +130,7 @@ CREATE INDEX IF NOT EXISTS thread_items_message_time
 CREATE INDEX IF NOT EXISTS thread_items_pending_delivery
     ON thread_items(agent_id) WHERE message = 1
     AND json_extract(item, '$.data.role') = 'user'
+    AND json_extract(item, '$.data.operation_id') IS NULL
     AND json_extract(item, '$.data.seen_at') IS NULL
     AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted');
 -- The dismissal line, indexed: what a row was cleared against is the newest
@@ -199,6 +202,9 @@ CREATE TABLE IF NOT EXISTS operations (
 CREATE INDEX IF NOT EXISTS operations_by_status ON operations(status, created_at);
 CREATE INDEX IF NOT EXISTS operations_by_conversation_status
     ON operations(conversation_id, status);
+CREATE INDEX IF NOT EXISTS operations_pending_delivery_target
+    ON operations(json_extract(delivery, '$.agent_id'))
+    WHERE status IN ('queued','claimed','uncertain');
 
 -- The per-project task tracker (spec: Tasks). NOT the `tasks` table above:
 -- that one is the retired plan-and-stages flow, which shares the English word

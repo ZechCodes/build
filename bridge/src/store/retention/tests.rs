@@ -471,3 +471,68 @@ fn legacy_upload_reservations_get_a_migration_grace_period() {
         1
     );
 }
+
+#[test]
+fn routed_pending_delivery_protects_the_canonical_target_but_delivered_does_not() {
+    let (_dir, store) = fixture(150);
+    store.in_transaction(|tx| {
+        tx.execute("INSERT INTO agents VALUES ('alias', 'owner', 2, '{\"conversation_id\":\"a\",\"thread\":{\"id\":\"alias-thread\"}}')", [])?;
+        tx.execute("INSERT INTO operations(operation_id,method,entity_id,agent_id,conversation_id,choice_revision,request_hash,posted_sequence,message_start_sequence,status,delivery,created_at,updated_at) VALUES ('routed','thread.post','owner','origin','origin',0,'hash',1,1,'queued','{\"agent_id\":\"alias\"}','now','now')", [])?;
+        tx.execute("INSERT INTO conversation_attachment_uploads VALUES ('a','t','draft.png','2026-10-01T00:00:00Z')", [])?;
+        Ok(())
+    }).unwrap();
+    for status in ["queued", "claimed", "uncertain"] {
+        store
+            .in_transaction(|tx| {
+                tx.execute("UPDATE operations SET status = ?1", [status])?;
+                Ok(())
+            })
+            .unwrap();
+        let report = store
+            .retention_report_conversation("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+            .unwrap();
+        assert!(
+            report.protected,
+            "routed {status} operation must protect its canonical delivery target"
+        );
+        assert_eq!(
+            store
+                .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+                .unwrap()
+                .items_deleted,
+            0
+        );
+        assert_eq!(
+            store
+                .cleanup_conversation_attachment_uploads(7, "2026-10-24T12:00:00Z", 1000)
+                .unwrap(),
+            0
+        );
+    }
+    store
+        .in_transaction(|tx| {
+            tx.execute("UPDATE thread_items SET item = json_set(item, '$.data.role', 'user', '$.data.delivery_status', 'submitted', '$.data.operation_id', 'routed') WHERE agent_id = 'a' AND sequence = 1", [])?;
+            tx.execute("UPDATE operations SET status = 'delivered'", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        !store
+            .retention_report_conversation("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+            .unwrap()
+            .protected
+    );
+    assert_eq!(
+        store
+            .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+            .unwrap()
+            .items_deleted,
+        50
+    );
+    assert_eq!(
+        store
+            .cleanup_conversation_attachment_uploads(7, "2026-10-24T12:00:00Z", 1000)
+            .unwrap(),
+        1
+    );
+}

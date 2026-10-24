@@ -1,5 +1,5 @@
 import { pushFence, pushedSince } from "./pushFence.js";
-import { cachedWriteOf, captureCachedRecord, isCachedWrite, mergeCachedAtomically, mergeCachedRecordsTogether, readCached, readCachedMany, recordWriteOf } from "./localCache.js";
+import { cachedWriteOf, captureCachedRecord, isCachedWrite, mergeCachedAtomically, mergeCachedRecordsTogether, readCached, readCachedMany } from "./localCache.js";
 
 export const PROJECT_AGENTS_KIND = "project-agents";
 export const PROJECT_AGENTS_SUPPORT_KIND = "project-agents-support";
@@ -39,18 +39,97 @@ export function projectRosterProjection(projects, support, rosterOf) {
   });
 }
 
-// A new invalidation supersedes a list already in flight, even before it writes.
+// Only explicit background refreshes share a lane per owner. User refreshes
+// dispatch immediately and fence older background reads without waiting.
 const reads = new Map();
+const immediateReads = new Map();
+let requestOrder = 0;
 const SYNC_DEFAULTS = { active: () => true, afterWrite: async () => {} };
 const workerRosterAvailable = (capabilities) => (typeof capabilities === "function" ? capabilities() : capabilities)?.agents?.projectWorkers === true;
+const readerActive = (options) => options.active() && workerRosterAvailable(options.capabilities);
+
 export async function syncProjectAgents(options) {
-  const { deviceId, entityId, capabilities, call, active, afterWrite } = { ...SYNC_DEFAULTS, ...options };
-  if (!entityId || !active() || !workerRosterAvailable(capabilities)) return;
+  const request = { ...SYNC_DEFAULTS, ...options, fence: pushFence(), order: ++requestOrder };
+  if (!request.entityId || !readerActive(request)) return;
+  const key = JSON.stringify([request.deviceId, request.entityId]);
+  if (!request.background) return readImmediateRoster(key, request);
+  const running = reads.get(key);
+  if (!running) {
+    const group = rosterReadGroup(request);
+    void runRosterRead(key, group);
+    return group.promise;
+  }
+  if (!running.dispatched) {
+    running.requests.push(request);
+    return running.promise;
+  }
+  if (!running.trailing) running.trailing = rosterReadGroup(request);
+  else running.trailing.requests.push(request);
+  return running.trailing.promise;
+}
+
+function rosterReadGroup(request) {
+  const group = { requests: [request] };
+  group.promise = new Promise((resolve, reject) => { group.resolve = resolve; group.reject = reject; });
+  return group;
+}
+
+async function runRosterRead(key, group) {
+  reads.set(key, group);
+  try {
+    const roster = await readBackgroundRoster(key, group);
+    if (roster) await Promise.all(group.requests.filter(readerActive).map((subscriber) => subscriber.afterWrite(roster)));
+    group.resolve();
+  } catch (error) {
+    group.reject(error);
+  } finally {
+    reads.delete(key);
+    if (group.trailing) void runRosterRead(key, group.trailing);
+  }
+}
+
+async function readImmediateRoster(key, request) {
+  const token = { order: request.order };
+  immediateReads.set(key, token);
+  token.promise = (async () => {
+    const roster = await readRoster({ ...request, active: () => readerActive(request) && immediateReads.get(key) === token });
+    token.written = Boolean(roster);
+    if (roster && readerActive(request)) await request.afterWrite(roster);
+  })();
+  return token.promise;
+}
+
+async function settledImmediateRead(key) {
+  let token;
+  do {
+    token = immediateReads.get(key);
+    await token?.promise?.catch(() => {});
+  } while (token !== immediateReads.get(key));
+  return token;
+}
+
+async function readBackgroundRoster(key, group) {
+  while (group.requests.some(readerActive)) {
+    const token = await settledImmediateRead(key);
+    const request = group.requests.findLast(readerActive);
+    if (!request) return;
+    group.dispatched = true;
+    // A later immediate read already covered these earlier invalidations.
+    if (token?.written && request.order < token.order) return (await readCached(projectAgentsAddress(request.deviceId, request.entityId)))?.value;
+    const current = () => readerActive(request) && immediateReads.get(key) === token;
+    try {
+      const roster = await readRoster({ ...request, active: current });
+      if (current()) return roster;
+    } catch (error) {
+      if (current()) throw error;
+    }
+    // Never admit a retired caller's reply for another subscriber. Retry from
+    // a live caller after any immediate read; each invocation keeps its fence.
+  }
+}
+
+async function readRoster({ deviceId, entityId, capabilities, call, active, fence }) {
   const address = projectAgentsAddress(deviceId, entityId);
-  const key = JSON.stringify([deviceId, entityId]);
-  const token = {};
-  reads.set(key, token);
-  const fence = pushFence();
   const seen = await captureCachedRecord(address);
   if (!active() || !workerRosterAvailable(capabilities)) return;
   const roster = await call("agent.list", { entity_id: entityId, include_project_workers: true });
@@ -58,15 +137,18 @@ export async function syncProjectAgents(options) {
   const generations = await captureRosterGenerations(deviceId, entityId, roster);
   if (!generations.current) return;
   // A reset can replace a thread without touching an as-yet empty roster.
-  // Admit the roster only while every generation record is still the one read,
-  // and no invalidation has superseded this request before its reply lands.
+  // Check generation identity atomically with admission. Message appends may
+  // change thread write stamps without changing reset or retirement evidence.
   const written = await mergeCachedRecordsTogether([address, ...generations.addresses], ([held, ...threads]) =>
-    active() && reads.get(key) === token && !pushedSince(address, fence) && isCachedWrite(held, cachedWriteOf(seen))
+    active() && workerRosterAvailable(capabilities) && !pushedSince(address, fence) && isCachedWrite(held, cachedWriteOf(seen))
       && generationsUnchanged(threads, generations.records) ? [roster] : null);
-  if (written) await afterWrite(roster);
+  return written ? roster : null;
 }
 
-const generationsUnchanged = (held, seen) => held.every((record, index) => recordWriteOf(record) === recordWriteOf(seen[index]));
+const threadGeneration = (record) => record ? JSON.stringify([
+  record.value?.thread_id || "", Number(record.value?.thread_generation_revision || 0), record.value?.retired_thread_ids || [],
+]) : null;
+const generationsUnchanged = (held, seen) => held.every((record, index) => threadGeneration(record) === threadGeneration(seen[index]));
 
 const digestNotRetired = (agent, thread) => !thread?.retired_thread_ids?.includes(agent.thread_id)
   && Number(thread?.thread_generation_revision || 0) <= Number(agent.thread_generation_revision || 0);

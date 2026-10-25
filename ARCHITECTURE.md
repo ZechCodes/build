@@ -1115,6 +1115,10 @@ Absent means no declared trim. The SPA discards the removed prefix and its
 repair targets, preserves the maximum floor only within one generation, and
 continues repairing any gaps above the floor. Reset discards the previous floor.
 An empty history can report high-water mark + 1 without reissuing counters.
+Validated repair floors survive a later failed exact read. Retry exhaustion is
+bounded by counter and monotonic floor: a higher floor renews the same-counter
+budget, while identical or lower floors do not. Coalesced floor advances retain
+the largest queued suffix counter and never certify gaps in retained history.
 
 Attachment sweeping runs independently of the pruning toggle. Exact parsed
 path references across durable documents and draft upload reservations protect

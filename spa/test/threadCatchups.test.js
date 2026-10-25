@@ -123,3 +123,29 @@ it("renews an exhausted idle goal when its former cache lifetime ended", async (
   await jobs.enqueue("thread", request(4));
   expect(read).toHaveBeenCalledTimes(4);
 });
+
+it("renews an exhausted counter only for a strictly advancing retention floor", async () => {
+  const read = vi.fn(async () => {});
+  const jobs = createThreadCatchups({ needed: () => true, read });
+  const goal = (historyStartSequence) => ({ ...request(10), historyStartSequence });
+  await jobs.enqueue("thread", goal(1));
+  await jobs.enqueue("thread", goal(1));
+  expect(read).toHaveBeenCalledTimes(2);
+  await jobs.enqueue("thread", goal(8));
+  expect(read).toHaveBeenCalledTimes(4);
+  await jobs.enqueue("thread", goal(8));
+  await jobs.enqueue("thread", goal(7));
+  expect(read).toHaveBeenCalledTimes(4);
+});
+
+it("keeps the larger retained suffix goal when a same-generation floor advances during a read", async () => {
+  const stalled = gate();
+  const read = vi.fn((goal) => goal.historyStartSequence === 1 ? stalled.promise : Promise.resolve());
+  const jobs = createThreadCatchups({ needed: () => true, read });
+  const first = jobs.enqueue("thread", { ...request(100), historyStartSequence: 1 });
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  const next = jobs.enqueue("thread", { ...request(10), historyStartSequence: 8 });
+  expect(jobs.snapshot()).toEqual({ running: 1, pending: 1 });
+  stalled.resolve(); await Promise.all([first, next]);
+  expect(read.mock.calls.map(([goal]) => [goal.sequence, goal.historyStartSequence])).toEqual([[100, 1], [100, 8], [100, 8]]);
+});

@@ -31,6 +31,50 @@ it("shares the initial row snapshot between concurrent route and feed readers", 
   expect(rowReads(gets)).toBe(128);
 });
 
+it("resolves a cold route while unrelated feed roots remain held", async () => {
+  await cache.writeCached(rowAddress("r4"), row("r4", { deviceId, projectKey: `${deviceId}/p1` }));
+  const read = cache.readCached;
+  let release;
+  vi.spyOn(cache, "readCached").mockImplementation(async (address) => {
+    const record = await read(address);
+    if (address.kind === "feed") await new Promise((resolve) => { release = resolve; });
+    return record;
+  });
+  let route, feed;
+  const feeding = createFeedCacheReader(deviceId).refresh().then((value) => { feed = value; });
+  const routing = rows.cachedRouteEntry(deviceId, { name: "branch", deviceId, projectId: "p1", branch: "r4" })
+    .then((value) => { route = value; });
+  try {
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"), { timeout: 10000 });
+    await vi.waitFor(() => expect(route?.entityId).toBe("r4"), { timeout: 10000 });
+    expect(feed).toBeUndefined();
+  } finally {
+    release?.();
+    await Promise.all([feeding, routing]);
+  }
+  expect(feed.view.items).toHaveLength(128);
+});
+
+it("does not combine an old owner snapshot with auxiliary roots read across a reset", async () => {
+  const read = cache.readCached;
+  let release;
+  vi.spyOn(cache, "readCached").mockImplementation(async (address) => {
+    const record = await read(address);
+    if (address.kind === "feed" && !release) await new Promise((resolve) => { release = resolve; });
+    return record;
+  });
+  const feeding = createFeedCacheReader(deviceId).refresh();
+  await rows.cachedFeedView(deviceId, { projectRosters: false });
+  try {
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"), { timeout: 10000 });
+    await cache.wipeCache();
+    await cache.writeCached(rowAddress("replacement"), row("replacement"));
+  } finally {
+    release?.();
+  }
+  expect((await feeding).view.items.map((item) => item.entity_id)).toEqual(["replacement"]);
+});
+
 it("rereads only changed addresses across repeated route and feed lookups", async () => {
   const reader = createFeedCacheReader(deviceId);
   await reader.refresh();

@@ -51,6 +51,14 @@ pub struct SessionLineage {
 }
 
 impl SessionLineage {
+    fn matches_instance(&self, instance: &SessionInstance) -> bool {
+        self.id == instance.id
+            && self.entity_id == instance.entity_id
+            && self.agent_id == instance.agent_id
+            && self.conversation_id == instance.conversation_id
+            && self.checkout.as_deref().unwrap_or_default() == instance.checkout
+    }
+
     /// The directory this process stood in.
     pub fn stood_in(&self) -> Option<&str> {
         self.cwd.as_deref().or(self.checkout.as_deref())
@@ -123,6 +131,9 @@ pub struct Thread {
     pub sessions: Vec<SessionLineage>,
     #[serde(default)]
     pub items: Vec<ThreadItem>,
+    /// Inclusive retained creation-sequence floor, scoped to this generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_start_sequence: Option<u64>,
     #[serde(default)]
     pub revisions: Vec<ArtifactRevision>,
     /// The structured report the last `done` carried, on threads written
@@ -1334,19 +1345,29 @@ impl Thread {
                 checkout: session.checkout.clone().unwrap_or_default(),
             })
     }
+    /// Whether the exact process already carries this provider resume id.
+    pub fn session_instance_is_named(
+        &self,
+        instance: &SessionInstance,
+        resume_session_id: &str,
+    ) -> bool {
+        self.sessions.iter().any(|session| {
+            session.matches_instance(instance)
+                && session.resume_session_id.as_deref() == Some(resume_session_id)
+        })
+    }
+
     /// Attach the provider's resume id to the exact process that announced it.
     pub fn name_session_instance(
         &mut self,
         instance: &SessionInstance,
         resume_session_id: &str,
     ) -> bool {
-        let Some(session) = self.sessions.iter_mut().find(|session| {
-            session.id == instance.id
-                && session.entity_id == instance.entity_id
-                && session.agent_id == instance.agent_id
-                && session.conversation_id == instance.conversation_id
-                && session.checkout.as_deref().unwrap_or_default() == instance.checkout
-        }) else {
+        let Some(session) = self
+            .sessions
+            .iter_mut()
+            .find(|session| session.matches_instance(instance))
+        else {
             return false;
         };
         session.resume_session_id = Some(resume_session_id.to_string());
@@ -1438,6 +1459,23 @@ impl Thread {
             .unwrap_or(0)
             .max(self.stored_last_sequence)
     }
+    /// Apply a committed store trim to the resident tail without reissuing counters.
+    pub fn apply_retention_boundary(&mut self, floor: u64, high_watermark: u64, deleted: usize) {
+        let floor = self.history_start_sequence.unwrap_or(1).max(floor);
+        let resident_before = self.items.len();
+        self.items.retain(|item| item.sequence() >= floor);
+        let resident_deleted = resident_before - self.items.len();
+        self.earlier_item_count = self
+            .earlier_item_count
+            .saturating_sub(deleted.saturating_sub(resident_deleted) as u64);
+        if self.earlier_item_count == 0 {
+            self.resident_from_sequence = 0;
+        }
+        self.history_start_sequence = Some(floor);
+        self.stored_last_sequence = self.stored_last_sequence.max(high_watermark);
+        self.advance_sequence_to(high_watermark);
+    }
+
     /// Producer ordering includes withdrawn drafts: deleting the newest item
     /// can lower the wire tip while the allocator remains monotonic.
     pub(crate) fn publication_sequence(&self) -> u64 {

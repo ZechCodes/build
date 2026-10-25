@@ -657,14 +657,7 @@ async fn run_daemon(
     // agent can create work in state that might be discarded. The local health
     // beat still proves the daemon initialized and its app lock is responsive.
     wait_for_update_probation(&runtime.config).await;
-    let cleaning = app.clone();
-    let removed =
-        tokio::task::spawn_blocking(move || cleaning.lock().unwrap().sweep_stale_uploads())
-            .await
-            .expect("startup upload cleanup completed");
-    if removed > 0 {
-        eprintln!("Removed {removed} orphaned upload staging files");
-    }
+    sweep_startup_uploads(app.clone()).await;
     // The relay socket, redialled for as long as the daemon runs, on the
     // liveness runtime. The main thread waits for the signal that ends the
     // daemon; the socket task is aborted then, which is the socket generation
@@ -708,6 +701,7 @@ async fn run_daemon(
 
     // Publishes committed review branches even while no clients are connected.
     let review_sync = AppState::spawn_review_sync(app.clone()).await;
+    let retention = AppState::spawn_retention(app.clone(), Duration::from_secs(3600)).await;
     let receiver_maintenance = AppState::spawn_receiver_maintenance(&app);
 
     // Walks a workspace's size on disk when the Workspaces tab asks (#273).
@@ -733,6 +727,7 @@ async fn run_daemon(
     // kills every session on the device at once, and nothing but this says so.
     // Cancellation is a held atomic handle: shutdown never waits on the app mutex.
     drop(review_sync);
+    drop(retention);
     drop(receiver_maintenance);
     reclaim_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     source_sync_stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -879,6 +874,16 @@ fn spawn_resume_after_restart(
             eprintln!("resume: startup task failed: {joined}");
         }
     });
+}
+
+/// Stage cleanup is startup I/O and runs outside runtime workers.
+async fn sweep_startup_uploads(app: Arc<std::sync::Mutex<AppState>>) {
+    let removed = tokio::task::spawn_blocking(move || app.lock().unwrap().sweep_stale_uploads())
+        .await
+        .expect("startup upload cleanup completed");
+    if removed > 0 {
+        eprintln!("Removed {removed} orphaned upload staging files");
+    }
 }
 
 async fn wait_for_update_probation(config: &BridgeConfig) {

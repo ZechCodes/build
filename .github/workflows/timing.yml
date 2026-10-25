@@ -6,6 +6,7 @@ name: Bridge timing tests
 # (tests/concurrency_load.rs), busy_writers_keep_app_lock_holds_below_budget,
 # busy_term_create_keeps_app_lock_hold_below_50ms
 # (src/app/tests/runtime/lock_hold_busy.rs), busy_mcp_lists_finish_within_100ms,
+# busy_activity_publication_finishes_within_budget (lock_hold_busy/activity.rs),
 # and the three focused six_mcp_reads comparisons in lock_hold_busy/mcp_reads.rs.
 # They compare wall-clock times against
 # fixed ceilings, which a machine running other suites breaks with nothing wrong in
@@ -104,6 +105,7 @@ jobs:
           --test-threads=1
           busy_writers_keep_app_lock_holds_below_budget
           busy_term_create_keeps_app_lock_hold_below_50ms
+          busy_activity_publication_finishes_within_budget
           busy_mcp_lists_finish_within_100ms
           six_mcp_reads_without_writers
           six_mcp_reads_with_busy_writers

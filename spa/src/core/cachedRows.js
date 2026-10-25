@@ -34,7 +34,7 @@ const listKnowledgeOf = (record) => ({
 export async function cachedFeedView(deviceId, { projectRosters = true } = {}) {
   if (!deviceId) return { items: [], projects: [], workspaces: [],
     listKnowledge: { projects: listKnowledgeOf(), workspaces: listKnowledgeOf() } };
-  const snapshot = await readFeedCacheRecords(deviceId);
+  const snapshot = await readFeedCacheRecords(deviceId, { routeOnly: !projectRosters });
   return cachedFeedSnapshotView(snapshot, projectRosters);
 }
 

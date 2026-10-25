@@ -42,6 +42,8 @@ impl Store {
             "DROP INDEX IF EXISTS thread_items_attention;
              DROP INDEX IF EXISTS thread_items_conversation;
              DROP INDEX IF EXISTS thread_items_messages;
+             DROP INDEX IF EXISTS thread_items_message_time;
+             DROP INDEX IF EXISTS thread_items_pending_delivery;
              DROP INDEX IF EXISTS thread_items_own_messages;
              DROP INDEX IF EXISTS thread_items_tool_calls;
              DROP INDEX IF EXISTS thread_items_activity;
@@ -62,6 +64,8 @@ impl Store {
         conn.execute_batch(
             "DROP INDEX IF EXISTS thread_items_conversation;
              DROP INDEX IF EXISTS thread_items_messages;
+             DROP INDEX IF EXISTS thread_items_message_time;
+             DROP INDEX IF EXISTS thread_items_pending_delivery;
              DROP INDEX IF EXISTS thread_items_own_messages;
              DROP INDEX IF EXISTS thread_items_tool_calls;
              DROP INDEX IF EXISTS thread_items_activity;

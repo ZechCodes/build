@@ -432,13 +432,44 @@ work dropped before a handler starts remain outside the served counts.
 Registered v1/legacy/QA methods and fixed internal work labels have bounded
 records; unknown names share `other`. Histograms use fixed buckets, so
 percentiles are estimates; sums/max retain microsecond resolution. Existing
-total/hold keys and slow-frame log formatting remain. SQLite time is not
-separately measured. The priority queues' `p95_ms` fields still describe total
+total/hold keys and slow-frame log formatting remain. Per-acquisition
+`lock_acquisition_wait` and `lock_hold` histograms distinguish individual mutex
+waits and holds from those frame sums; `lock_holder` and `lock_holder_age_ms`
+identify the observed named holder and its age when a waiter arrives. They do
+not attribute the entire wait to one holder. The priority queues' `p95_ms` fields still describe total
 frame duration, and their depth counts dispatch waiting, not wire admission.
 Total duration, per-queue p95, slow-frame `total=`/`queued=` and the 200 ms
 slow-frame threshold now measure from intake, including decrypt and admission;
 compare them only against this change's baseline, not older logs.
 `bridge.stats` answers at intake without an app lock or dispatch worker.
+
+Activity observations begin an `agent.activity` frame before blocking-pool
+scheduling, with pool wait reported separately. Self-report discovery runs
+outside the app mutex; `ActivityPump::reported` then takes a timed lock. Its
+frame ends after snapshot publication, before any required failure-delivery
+drain. Status, surface-change and stream-close pumps have separate fixed labels;
+their frames cover processing rather than pool scheduling. Broadcast overflow
+increments `activity_lagged_reports` and consumption continues with the retained
+tail; it does not reconstruct lost events.
+
+The fixed `publication` histograms measure candidate `prepare` (including
+`owner_prepare`), save attempts (`persist`), snapshot installation attempts
+(`install`, including rejected stale deltas), and nonempty push flushes through
+encrypted carrier submission (`push`). `push_pending` measures the oldest
+pending batch through successful submission, including coalescing time. These
+are batch/stage diagnostics, not per-event browser receipt timestamps. Prepare
+spans nest, attempts may fail, and global totals include unrelated producers;
+their sums cannot be added as an exclusive event breakdown. Production records
+histogram atomics without request-phase observer locks.
+
+An unchanged provider resume name skips its conversation edit only after the
+canonical binding, reset reservation and all five session-instance identity
+fields match the named lineage. Roster/model updates retain their own mutation
+boundaries. A successful canonical activity save carries that owner's snapshot,
+so the activity pump does not project it again. Shared conversation owners,
+failed saves and complex turn-failure handling retain the explicit owner
+projection fallback. This reduces repeated publication without changing commit
+atomicity, stale-generation rejection or existing lock-held SQLite paths.
 
 Fine-grained request-phase tracing is test-only: `timing/requests.rs`, its
 observer fields and its call sites compile under `cfg(test)`. The non-test
@@ -1075,6 +1106,65 @@ paired device account, represented by a server-owned database-local principal;
 client hints and session IDs do not grant identity. Reads additionally validate
 the original owner scope against current published authority. MCP agent
 principals and semantic method enablement belong to Step 6b.
+
+#### Conversation retention (#836)
+
+`retention` in the persisted device config defaults to
+`{"enabled":true,"min_messages":50,"max_messages":100,"window_days":7}`.
+For each conversation, keep the newest N messages, where N is the number
+from the last seven days clamped to 50–100. Fewer than 50 total messages all
+survive. Activity survives at and after the oldest kept message's creation
+sequence. Tasks, task comments and reviews are independent and never pruned.
+Invalid explicit config refuses startup rather than enabling a guessed policy.
+Changes to this config take effect after restart.
+
+The daemon runs an immediate startup cycle and repeats hourly. Discovery uses
+keyset pages; the store commits at most 1,000 deletions per batch outside the
+app lock. The earliest span start of queued, claimed or uncertain operations
+caps the prune floor: older items remain prunable, while the unresolved span
+and every newer item survive, even when that exceeds the configured maximum.
+Origin and canonical forwarded conversations are
+protected. Pending legacy messages cap the floor at their creation sequence;
+missing operation span information requires conservative protection.
+Settled operation rows remain as small payload-free idempotency tombstones,
+retaining identity, request hash, original numeric sequence spans, status and
+outcome metadata. Retaining these receipts instead of deleting them preserves
+retry deduplication and late-status readers without pinning transcript history.
+Forwarded receipts may retain a payload-free routing stub. #835 owns payload
+compaction and the sole incremental-vacuum scheduler.
+
+Schema 19 stores a generation-scoped `conversation_retention` floor and sequence
+high-water mark. A bounded timestamp-only summary of pruned recent messages
+preserves the week count when imported timestamps are out of sequence; batches
+and later cycles cannot shrink the target by deleting their own counting evidence.
+The summary holds at most max_messages Julian-day values, expires logically with
+the configured window, and resets with the conversation. Stale resident saves
+cannot reinsert rows below the floor.
+`thread.page`, `thread.activity` and push tips expose optional
+`history_start_sequence`, the inclusive retained creation-sequence floor.
+Absent means no declared trim. The SPA discards the removed prefix and its
+repair targets, preserves the maximum floor only within one generation, and
+continues repairing any gaps above the floor. Reset discards the previous floor.
+An empty history can report high-water mark + 1 without reissuing counters.
+Validated repair floors survive a later failed exact read. Retry exhaustion is
+bounded by counter and monotonic floor: a higher floor renews the same-counter
+budget, while identical or lower floors do not. Coalesced floor advances retain
+the largest queued suffix counter and never certify gaps in retained history.
+
+Attachment sweeping runs independently of the pruning toggle. Exact parsed
+path references across durable documents and draft upload reservations protect
+both local and checkout copies. Message commits do not consume shared-path
+reservations: another client may still hold that file in a draft. Stale
+reservations expire after the configured window; newly migrated reservations receive a full grace window. File scans run
+without the writer or app lock. A bounded final unlink rechecks the unchanged
+DB snapshot and shares an admission gate with file validation, which refreshes
+mtime. Files newer than one hour, symlinks and directories are left alone.
+Concurrent DB changes defer that sweep batch to a later cycle.
+
+Set `retention.enabled=false` for hourly count-only history reports while leaving
+orphan cleanup active. For an offline detailed report, copy the tasks directory
+first, then run `cargo run --example retention_report -- <copied-tasks-directory>`.
+Opening that copy initializes its schema; it never starts the daemon or prunes.
 
 #### Compaction policy configuration
 
@@ -3833,10 +3923,12 @@ gate attachment display.
   `pushWorkInFlight()` counts pending applier jobs before IndexedDB admission.
   Feed and route consumers share an address index (`feedCacheRecords.js`) and
   stable projections (`feedCacheReader.js`, `cachedRows.js`). Concurrent readers
-  share the initial read; later announcements reread only named records, in
-  batches of at most 64. Unrelated writes reuse the held snapshot. Prefix
-  evictions rebuild the index. Reads still include pending-write overlays and
-  cross-tab changes; a failed read leaves the projection invalid for retry.
+  share the initial row/owner read; auxiliary feed and support roots refresh
+  independently, so route discovery never waits for those background reads.
+  Later announcements reread only named records, in batches of at most 64.
+  Unrelated writes reuse the held snapshot. Prefix evictions rebuild the index
+  and fence combined owner/auxiliary snapshots across the reset. Reads still
+  include pending-write overlays and cross-tab changes; a failed read leaves the projection invalid for retry.
 - **Chat read marks** (#473) report the viewport sequence and window floor
   only while the reader is present. A known cursor can establish read progress
   even if the cached unread count is zero. `chatReadReporter.js` confirms

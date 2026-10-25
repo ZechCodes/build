@@ -30,7 +30,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -688,6 +688,9 @@ pub struct ThreadTip {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub choice_revision: Option<u64>,
     pub last_sequence: u64,
+    /// Nothing below this creation sequence exists in this thread generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_start_sequence: Option<u64>,
     /// The inbox row this conversation belongs to, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
@@ -1278,6 +1281,8 @@ impl Subscription {
 
 /// One subscription's frame, ready to encrypt.
 struct DueFrame {
+    /// Oldest pending subscription batch at capture, before stamp clears it.
+    pending_since: Option<Instant>,
     session: SessionSender,
     subscription_id: String,
     priority: Priority,
@@ -1577,6 +1582,7 @@ impl Due {
 /// Every browser session that asked for push invalidation, and the changes
 /// waiting to reach them.
 pub struct ChangeBus {
+    publication_clock: OnceLock<Arc<crate::timing::FrameClock>>,
     /// Every live subscription, in the order it was made — the flush order
     /// within one priority. A session whose push fails loses all of its
     /// subscriptions: a sender that cannot send has no connection left.
@@ -1630,6 +1636,7 @@ impl ChangeBus {
         #[cfg(test)]
         let (completed_test_cycles, _) = tokio::sync::watch::channel((0, true));
         Arc::new(ChangeBus {
+            publication_clock: OnceLock::new(),
             subscriptions: Mutex::new(Vec::new()),
             wake: tokio::sync::Notify::new(),
             window,
@@ -1642,6 +1649,14 @@ impl ChangeBus {
             #[cfg(test)]
             delivered_test_threads: Mutex::new(None),
         })
+    }
+
+    /// Bind this bus to its app clock once, before the flusher starts.
+    pub(crate) fn set_publication_clock(&self, clock: Arc<crate::timing::FrameClock>) {
+        assert!(
+            self.publication_clock.set(clock).is_ok(),
+            "a bus has one publication clock"
+        );
     }
 
     /// Wait for a flusher cycle that starts after this call. Two completions
@@ -1933,6 +1948,10 @@ impl ChangeBus {
         if due.is_empty() {
             return 0;
         }
+        let _publication = self
+            .publication_clock
+            .get()
+            .map(|clock| clock.publication_phase(crate::timing::PublicationPhase::Push));
         let facts = self.look_up(&due.requests);
         self.deliver(due, facts)
     }
@@ -1966,6 +1985,7 @@ impl ChangeBus {
         let covered: BTreeSet<String> = (self.board_entities)().into_iter().collect();
         let mut subscriptions = self.subscriptions.lock().unwrap();
         for sub in subscriptions.iter_mut() {
+            let pending_since = sub.first_pending_at;
             let Some(items) = sub.take_due(self.window, now) else {
                 continue;
             };
@@ -1973,6 +1993,7 @@ impl ChangeBus {
             let lists = sub.take_board_lists(&items);
             let thread_after = sub.thread_cursors(&items);
             due.frames.push(DueFrame {
+                pending_since,
                 session: sub.session.clone(),
                 subscription_id: sub.spec.id.clone(),
                 priority: sub.spec.priority,
@@ -2020,6 +2041,11 @@ impl ChangeBus {
                 .map(|sealed| self.send_if_current(frame, sealed));
             match sent {
                 Some(Sent::Delivered) => {
+                    if let (Some(clock), Some(since)) =
+                        (self.publication_clock.get(), frame.pending_since)
+                    {
+                        clock.record_push_pending(since.elapsed());
+                    }
                     frames += 1;
                     #[cfg(test)]
                     if let Some(observe) = self.delivered_test_threads.lock().unwrap().as_ref() {
@@ -2171,6 +2197,10 @@ impl ChangeBus {
         if due.is_empty() {
             return 0;
         }
+        let _publication = bus
+            .publication_clock
+            .get()
+            .map(|clock| clock.publication_phase(crate::timing::PublicationPhase::Push));
         let facts = bus.gather(due.requests.clone()).await;
         // A row's stat is a fact of the checkout: an entity whose git moved has
         // a row that moved with it, so the subscriptions that carry rows hear
@@ -2297,6 +2327,76 @@ fn fact_requests(frames: &[DueFrame]) -> Vec<FactsRequest> {
 #[cfg(test)]
 mod subscriptions {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn publication_push_pending_includes_coalescing_until_delivery() {
+        let bus = ChangeBus::new(Duration::from_millis(250));
+        let (clock, _) = crate::timing::recording_clock();
+        bus.set_publication_clock(Arc::clone(&clock));
+        let (sender, _rx, _key) = SessionSender::observable("publication-pending");
+        bus.subscribe(
+            &sender,
+            spec("s", Scope::All, Mode::Realtime, Priority::Foreground),
+        );
+        bus.note_entity("owner");
+        assert_eq!(bus.flush(), 1);
+        bus.note_entity("owner");
+        tokio::time::advance(Duration::from_millis(249)).await;
+        assert_eq!(bus.flush(), 0);
+        assert_eq!(clock.stats()["publication"]["push_pending"]["count"], 1);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert_eq!(bus.flush(), 1);
+        let stats = clock.stats();
+        assert_eq!(stats["publication"]["push_pending"]["count"], 2);
+        assert_eq!(stats["publication"]["push_pending"]["max_ms"], 250.0);
+        assert_eq!(stats["publication"]["push_pending"]["sum_ms"], 250.0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn publication_push_pending_ignores_gone_and_requeued_frames() {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let (clock, _) = crate::timing::recording_clock();
+        bus.set_publication_clock(Arc::clone(&clock));
+        let (sender, rx, _key) = SessionSender::observable("publication-requeue");
+        bus.subscribe(
+            &sender,
+            spec("s", Scope::All, Mode::Realtime, Priority::Foreground),
+        );
+        bus.note_entity("owner");
+        let due = bus.take_due();
+        bus.subscriptions.lock().unwrap()[0].scope_epoch += 1;
+        tokio::time::advance(Duration::from_millis(40)).await;
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        assert!(!bus.subscriptions.lock().unwrap()[0].pending.is_empty());
+        assert_eq!(clock.stats()["publication"]["push_pending"]["count"], 0);
+        drop(rx);
+        assert_eq!(bus.flush(), 0);
+        assert_eq!(clock.stats()["publication"]["push_pending"]["count"], 0);
+    }
+
+    #[test]
+    fn publication_push_records_only_nonempty_flushes() {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let (clock, _) = crate::timing::recording_clock();
+        bus.set_publication_clock(Arc::clone(&clock));
+        assert_eq!(bus.flush(), 0);
+        assert_eq!(clock.stats()["publication"]["push"]["count"], 0);
+        let (sender, _rx, _key) = SessionSender::observable("publication-push");
+        bus.subscribe(
+            &sender,
+            spec(
+                "publication-push",
+                Scope::All,
+                Mode::Realtime,
+                Priority::Foreground,
+            ),
+        );
+        bus.note_entity("publication-owner");
+        assert_eq!(bus.flush(), 1);
+        assert_eq!(clock.stats()["publication"]["push"]["count"], 1);
+        assert_eq!(bus.flush(), 0);
+        assert_eq!(clock.stats()["publication"]["push"]["count"], 1);
+    }
 
     #[test]
     fn review_550_source_to_all_drops_source_items() {

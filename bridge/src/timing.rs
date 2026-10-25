@@ -29,6 +29,10 @@ use crate::logline::Throttle;
 #[cfg(test)]
 pub(crate) mod phase_samples;
 
+mod publication;
+pub(crate) use publication::PublicationPhase;
+use publication::PublicationTiming;
+
 /// A frame that takes longer than this, end to end and queue wait included, is
 /// worth one line of stderr on its own. Below it the histograms are the record;
 /// above it a human is already waiting and wants to know which wait or hold
@@ -48,7 +52,9 @@ const INTERNAL_METHODS: &[&str] = &[
     "close",
     "mcp.control",
     "agent.deliver",
-    #[cfg(test)]
+    "agent.activity",
+    "agent.activity_surfaces",
+    "agent.activity_closed",
     "agent.poll_status",
     "agent.settle_wake",
     "agent.usage_limit_wake",
@@ -174,8 +180,10 @@ mod requests;
 pub(crate) use requests::RequestObserver;
 
 pub struct FrameClock {
+    publication: PublicationTiming,
+    activity_lagged_reports: AtomicU64,
     methods: RwLock<HashMap<String, Arc<MethodRecord>>>,
-    holder: Mutex<Option<Arc<MethodRecord>>>,
+    holder: Mutex<Option<(Arc<MethodRecord>, Instant)>>,
     /// The two queues, indexed by [`Priority::slot`].
     queues: [QueueRecord; 2],
     served: AtomicU64,
@@ -218,6 +226,8 @@ impl FrameClock {
 
     fn build(sink: SlowFrameSink, throttle: Option<Duration>) -> Arc<FrameClock> {
         Arc::new(FrameClock {
+            publication: PublicationTiming::new(),
+            activity_lagged_reports: AtomicU64::new(0),
             methods: RwLock::new(HashMap::new()),
             holder: Mutex::new(None),
             queues: [QueueRecord::new(), QueueRecord::new()],
@@ -289,6 +299,12 @@ impl FrameClock {
         &self.clients
     }
 
+    /// Count reports the activity receiver lost to its bounded broadcast buffer.
+    pub(crate) fn record_activity_lag(&self, lost: u64) {
+        self.activity_lagged_reports
+            .fetch_add(lost, Ordering::Relaxed);
+    }
+
     /// The counters `bridge.stats` answers with.
     pub fn stats(&self) -> Value {
         let methods = self.methods.read().unwrap();
@@ -298,7 +314,16 @@ impl FrameClock {
             .iter()
             .map(|(name, record)| (name.clone(), record.stats()))
             .collect();
+        let (holder, holder_age) = match self.holder.lock().unwrap().as_ref() {
+            Some((record, since)) => (
+                json!(record.method),
+                json!(as_millis(micros(since.elapsed()))),
+            ),
+            None => (Value::Null, Value::Null),
+        };
         json!({
+            "publication": self.publication.stats(),
+            "activity_lagged_reports": self.activity_lagged_reports.load(Ordering::Relaxed),
             "frames_served": self.served.load(Ordering::Relaxed),
             "slow_frames": self.slow.load(Ordering::Relaxed),
             "queue_depth": self.queue_depth(),
@@ -306,10 +331,8 @@ impl FrameClock {
                 Priority::Foreground.label(): self.queues[Priority::Foreground.slot()].stats(),
                 Priority::Background.label(): self.queues[Priority::Background.slot()].stats(),
             },
-            "lock_holder": match self.holder.lock().unwrap().as_ref() {
-                Some(record) => Value::String(record.method.clone()),
-                None => Value::Null,
-            },
+            "lock_holder": holder,
+            "lock_holder_age_ms": holder_age,
             "methods": per_method,
             "clients": self.clients.counts(),
         })
@@ -328,8 +351,8 @@ impl FrameClock {
         )
     }
 
-    fn hold_began(&self, method: &Arc<MethodRecord>) {
-        *self.holder.lock().unwrap() = Some(Arc::clone(method));
+    fn hold_began(&self, method: &Arc<MethodRecord>, acquired_at: Instant) {
+        *self.holder.lock().unwrap() = Some((Arc::clone(method), acquired_at));
     }
 
     fn hold_ended(&self) {
@@ -536,17 +559,20 @@ impl FrameTimer {
         self.mark_request("app_wait_start");
         let asked_at = Instant::now();
         let guard = state.lock().unwrap();
+        let acquired_at = Instant::now();
+        let waited = acquired_at.duration_since(asked_at);
+        self.lock_wait_micros
+            .fetch_add(micros(waited), Ordering::Relaxed);
+        self.method.lock_acquisition_wait.record(waited);
+        self.clock.hold_began(&self.method, acquired_at);
         #[cfg(test)]
         self.mark_request("app_wait_end");
         #[cfg(test)]
         self.mark_request("app_hold_start");
-        self.lock_wait_micros
-            .fetch_add(micros(asked_at.elapsed()), Ordering::Relaxed);
-        self.clock.hold_began(&self.method);
         LockedFor {
             guard: Some(guard),
             timer: self,
-            acquired_at: Instant::now(),
+            acquired_at,
             #[cfg(test)]
             phase_sample: phase_samples::LockSample::begin(self),
         }
@@ -595,8 +621,8 @@ impl Drop for FrameTimer {
 ///
 /// The guard sits in an `Option` so [`Drop`] can release it in the right order:
 /// clear the holder slot while the mutex is still held (or the next frame's
-/// claim would be wiped by this one's release), drop the guard, and only then
-/// write the hold time down.
+/// claim would be wiped by this one's release), capture the hold duration,
+/// drop the guard, and only then write the cached hold time down.
 pub struct LockedFor<'a, T> {
     guard: Option<MutexGuard<'a, T>>,
     timer: &'a FrameTimer,
@@ -619,28 +645,46 @@ impl<'a, T> LockedFor<'a, T> {
         timeout: Duration,
         mut ready: impl FnMut(&mut T) -> bool,
     ) -> LockedFor<'a, T> {
+        let started = Instant::now();
+        while !ready(&mut self) {
+            let (guard, timed_out) =
+                self.wait_once(condvar, timeout.saturating_sub(started.elapsed()));
+            self = guard;
+            if timed_out {
+                break;
+            }
+        }
+        self
+    }
+
+    fn wait_once(mut self, condvar: &Condvar, timeout: Duration) -> (Self, bool) {
         #[cfg(test)]
         self.phase_sample.take();
         let guard = self.guard.take().expect("held until drop");
         self.timer.clock.hold_ended();
+        let held = self.acquired_at.elapsed();
         self.timer
             .held_micros
-            .fetch_add(micros(self.acquired_at.elapsed()), Ordering::Relaxed);
+            .fetch_add(micros(held), Ordering::Relaxed);
+        self.timer.method.lock_hold.record(held);
         let asked_at = Instant::now();
-        let (guard, _) = condvar
-            .wait_timeout_while(guard, timeout, |state| !ready(state))
+        let (guard, result) = condvar
+            .wait_timeout(guard, timeout)
             .expect("the app mutex is never poisoned by a waiter");
+        let acquired_at = Instant::now();
+        let waited = acquired_at.duration_since(asked_at);
         self.timer
             .lock_wait_micros
-            .fetch_add(micros(asked_at.elapsed()), Ordering::Relaxed);
-        self.timer.clock.hold_began(&self.timer.method);
-        self.acquired_at = Instant::now();
+            .fetch_add(micros(waited), Ordering::Relaxed);
+        self.timer.method.lock_acquisition_wait.record(waited);
+        self.timer.clock.hold_began(&self.timer.method, acquired_at);
+        self.acquired_at = acquired_at;
         self.guard = Some(guard);
         #[cfg(test)]
         {
             self.phase_sample = phase_samples::LockSample::begin(self.timer);
         }
-        self
+        (self, result.timed_out())
     }
 }
 
@@ -663,12 +707,14 @@ impl<T> Drop for LockedFor<'_, T> {
         #[cfg(test)]
         self.phase_sample.take();
         self.timer.clock.hold_ended();
+        let held = self.acquired_at.elapsed();
         self.guard.take();
         #[cfg(test)]
         self.timer.mark_request("app_hold_end");
         self.timer
             .held_micros
-            .fetch_add(micros(self.acquired_at.elapsed()), Ordering::Relaxed);
+            .fetch_add(micros(held), Ordering::Relaxed);
+        self.timer.method.lock_hold.record(held);
     }
 }
 
@@ -752,6 +798,8 @@ struct MethodRecord {
     queued: Histogram,
     lock_wait: Histogram,
     held: Histogram,
+    lock_acquisition_wait: Histogram,
+    lock_hold: Histogram,
 }
 
 impl MethodRecord {
@@ -762,6 +810,8 @@ impl MethodRecord {
             queued: Histogram::new(),
             lock_wait: Histogram::new(),
             held: Histogram::new(),
+            lock_acquisition_wait: Histogram::new(),
+            lock_hold: Histogram::new(),
         }
     }
 
@@ -783,6 +833,8 @@ impl MethodRecord {
             "queued": self.queued.stats(),
             "lock_wait": self.lock_wait.stats(),
             "held": self.held.stats(),
+            "lock_acquisition_wait": self.lock_acquisition_wait.stats(),
+            "lock_hold": self.lock_hold.stats(),
         })
     }
 }
@@ -992,6 +1044,146 @@ mod tests {
         drop(timer);
     }
 
+    fn observed_lock_timer(clock: &Arc<FrameClock>) -> FrameTimer {
+        let mut timer = clock.frame("agent.deliver");
+        timer.bind_request(&crate::transport::Frame {
+            session_id: "timing-session".into(),
+            message_id: "timing-request".into(),
+            frame_type: "data".into(),
+            sender: "client".into(),
+            created_at: String::new(),
+            payload: json!({"method": "agent.deliver"}),
+        });
+        timer
+    }
+
+    #[test]
+    fn acquisition_boundary_precedes_the_acquired_observer() {
+        let (clock, _) = recording_clock();
+        let observed = Arc::new(Mutex::new(None));
+        let callback = Arc::clone(&observed);
+        clock.observe_requests(Arc::new(move |_, phase, at| {
+            if phase == "app_wait_end" {
+                *callback.lock().unwrap() = Some(at);
+            }
+        }));
+        let state = Arc::new(Mutex::new(()));
+        let timer = observed_lock_timer(&clock);
+        let held = timer.lock(&state);
+        let observed = observed.lock().unwrap().expect("the acquired observer ran");
+        assert!(
+            held.acquired_at <= observed,
+            "the hold starts at native acquisition, before any acquired observer"
+        );
+    }
+
+    #[test]
+    fn released_observer_time_is_excluded_from_both_hold_counters() {
+        let (clock, _) = recording_clock();
+        let released_at = Arc::new(Mutex::new(None));
+        let callback = Arc::clone(&released_at);
+        clock.observe_requests(Arc::new(move |_, phase, at| {
+            if phase == "app_hold_end" {
+                *callback.lock().unwrap() = Some(at);
+                // This is deliberately after unlock. Compare causal boundaries,
+                // not a scheduling-sensitive absolute duration ceiling.
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }));
+        let state = Arc::new(Mutex::new(()));
+        let timer = observed_lock_timer(&clock);
+        let held = timer.lock(&state);
+        let acquired_at = held.acquired_at;
+        drop(held);
+        let observer_at = released_at
+            .lock()
+            .unwrap()
+            .expect("the released observer ran");
+        assert!(
+            timer.spent().held <= observer_at.duration_since(acquired_at),
+            "a hold must stop before the post-unlock observer starts"
+        );
+        drop(timer);
+        let stats = clock.stats();
+        let method = &stats["methods"]["agent.deliver"];
+        assert_eq!(method["held"]["sum_ms"], method["lock_hold"]["sum_ms"]);
+    }
+
+    #[test]
+    fn each_lock_acquisition_and_hold_is_counted_before_frame_completion() {
+        let (clock, _) = recording_clock();
+        let state = Arc::new(Mutex::new(false));
+        let timer = clock.frame("agent.deliver");
+        drop(timer.lock(&state));
+        let held = timer.lock(&state);
+        let live = clock.stats();
+        assert_eq!(
+            live["methods"]["agent.deliver"]["lock_acquisition_wait"]["count"],
+            2
+        );
+        assert_eq!(live["methods"]["agent.deliver"]["lock_hold"]["count"], 1);
+        assert_eq!(live["methods"]["agent.deliver"]["served"], 0);
+        assert_eq!(live["lock_holder"], "agent.deliver");
+        assert!(live["lock_holder_age_ms"].as_f64().unwrap() >= 0.0);
+        drop(held);
+        drop(timer);
+        let done = clock.stats();
+        let method = &done["methods"]["agent.deliver"];
+        assert_eq!(method["lock_hold"]["count"], 2);
+        assert_eq!(method["lock_wait"]["count"], 1);
+        assert_eq!(method["held"]["count"], 1);
+        assert_eq!(
+            method["lock_wait"]["sum_ms"],
+            method["lock_acquisition_wait"]["sum_ms"]
+        );
+        assert_eq!(method["held"]["sum_ms"], method["lock_hold"]["sum_ms"]);
+        assert_eq!(done["lock_holder_age_ms"], Value::Null);
+    }
+
+    #[test]
+    fn condvar_release_splits_lock_holds_and_wait_samples() {
+        let (clock, _) = recording_clock();
+        let state = Arc::new(Mutex::new(false));
+        let timer = clock.frame("agent.deliver");
+        let held = timer
+            .lock(&state)
+            .wait_until(&Condvar::new(), Duration::ZERO, |ready| *ready);
+        let live = clock.stats();
+        assert_eq!(
+            live["methods"]["agent.deliver"]["lock_acquisition_wait"]["count"],
+            2
+        );
+        assert_eq!(live["methods"]["agent.deliver"]["lock_hold"]["count"], 1);
+        drop(held);
+        assert_eq!(
+            clock.stats()["methods"]["agent.deliver"]["lock_hold"]["count"],
+            2
+        );
+    }
+
+    #[test]
+    fn ready_condvar_keeps_one_continuous_lock_hold() {
+        let (clock, _) = recording_clock();
+        let state = Arc::new(Mutex::new(true));
+        let timer = clock.frame("agent.deliver");
+        let held = timer
+            .lock(&state)
+            .wait_until(&Condvar::new(), Duration::ZERO, |ready| *ready);
+        assert_eq!(
+            clock.stats()["methods"]["agent.deliver"]["lock_acquisition_wait"]["count"],
+            1
+        );
+        assert_eq!(
+            clock.stats()["methods"]["agent.deliver"]["lock_hold"]["count"],
+            0
+        );
+        drop(held);
+        assert_eq!(
+            clock.stats()["methods"]["agent.deliver"]["lock_hold"]["count"],
+            1
+        );
+    }
+
     #[test]
     fn a_frames_lock_time_is_summed_across_its_acquisitions() {
         let (clock, _) = recording_clock();
@@ -1122,6 +1314,60 @@ mod tests {
         let stats = clock.stats();
         assert_eq!(stats["frames_served"], 0);
         assert_eq!(stats["lock_holder"], Value::Null);
+        assert!(stats["methods"].as_object().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    #[test]
+    fn publication_phases_are_fixed_and_record_only_completed_spans() {
+        let (clock, _) = recording_clock();
+        let span = clock.publication_phase(PublicationPhase::Prepare);
+        assert_eq!(clock.stats()["publication"]["prepare"]["count"], 0);
+        drop(span);
+        let stats = clock.stats();
+        let phases = stats["publication"].as_object().unwrap();
+        assert_eq!(phases.len(), 6);
+        assert_eq!(phases["prepare"]["count"], 1);
+        for name in [
+            "owner_prepare",
+            "persist",
+            "install",
+            "push",
+            "push_pending",
+        ] {
+            assert_eq!(phases[name]["count"], 0);
+        }
+        for name in ["count", "sum_ms", "p50_ms", "p95_ms", "max_ms"] {
+            assert!(phases["prepare"].get(name).is_some());
+        }
+    }
+
+    #[test]
+    fn activity_lag_counts_reports_without_creating_frame_records() {
+        let (clock, _) = recording_clock();
+        assert_eq!(clock.stats()["activity_lagged_reports"], 0);
+        clock.record_activity_lag(3);
+        clock.record_activity_lag(5);
+        let stats = clock.stats();
+        assert_eq!(stats["activity_lagged_reports"], 8);
+        assert_eq!(stats["frames_served"], 0);
+    }
+
+    #[test]
+    fn nested_publication_phases_record_independently_without_frame_records() {
+        let (clock, _) = recording_clock();
+        let outer = clock.publication_phase(PublicationPhase::Push);
+        let inner = clock.publication_phase(PublicationPhase::Install);
+        drop(inner);
+        drop(outer);
+        let stats = clock.stats();
+        assert_eq!(stats["publication"]["push"]["count"], 1);
+        assert_eq!(stats["publication"]["install"]["count"], 1);
+        assert_eq!(stats["frames_served"], 0);
         assert!(stats["methods"].as_object().unwrap().is_empty());
     }
 }

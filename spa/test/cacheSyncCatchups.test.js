@@ -177,6 +177,7 @@ it("uses canonical catch-up rather than assigning an untagged old tip to a reset
   context.rpc.mockImplementation((method, params) => method === "thread.page"
     ? { thread_id: "replacement", thread_last_sequence: 0, items: [], has_more: false } : previous(method, params));
   const event = tip(0, 100); delete event.thread[0].thread_id;
+  event.thread[0].history_start_sequence = 900;
   event.thread[0].items = [{ type: "message", data: { id: "old-message", sequence: 1, body: "old generation" } }];
   await push([event]);
   expect((await cache.readCached(target)).value).toMatchObject({ thread_id: "replacement", deliveredSequence: 0, items: [] });
@@ -187,4 +188,54 @@ it("uses canonical catch-up rather than assigning an untagged old tip to a reset
   await push([current]);
   expect(calls("thread.page")).toHaveLength(3);
   expect((await cache.readCached(target)).value.deliveredSequence).toBe(5);
+});
+
+it("coalesces same-counter floor tips while retaining a real repair obligation", async () => {
+  const target = address("run-0", "thread", "c0");
+  const row = { type: "message", data: { sequence: 8, body: "old" } };
+  await cache.writeCached(target, { thread_id: "thread:c0", items: [row], deliveredSequence: 10, repairThrough: 10 });
+  const stalled = gate(), previous = context.rpc.getMockImplementation();
+  context.rpc.mockClear();
+  context.rpc.mockImplementation((method, params) => method === "thread.page"
+    ? (params.newest ? stalled.promise : { thread_id: "thread:c0", items: [{ ...row, data: { ...row.data, updated_sequence: 10, body: "fresh" } }], thread_last_sequence: 10 })
+    : previous(method, params));
+  const event = tip(10, 10); event.thread[0].history_start_sequence = 8;
+  const first = push([event]);
+  await called(context.rpc, () => calls("thread.page").length === 1);
+  const second = push([event]);
+  stalled.release({ thread_id: "thread:c0", items: [], history_start_sequence: 8, thread_last_sequence: 10 });
+  await Promise.all([first, second]);
+  const held = (await cache.readCached(target)).value;
+  expect(held.historyStartSequence).toBe(8);
+  expect(held.items[0].data.body).toBe("fresh");
+  expect(held.repairThrough).toBeUndefined();
+  expect(calls("thread.page")).toHaveLength(2);
+});
+
+it("retries an exhausted same-counter suffix when a higher floor removes its failed representative", async () => {
+  const target = address("run-0", "thread", "c0");
+  const old = { type: "message", data: { sequence: 5, body: "removed" } };
+  const retained = { type: "message", data: { sequence: 8, body: "old" } };
+  await cache.writeCached(target, { thread_id: "thread:c0", historyStartSequence: 1, items: [old, retained], deliveredSequence: 10, repairThrough: 10 });
+  const previous = context.rpc.getMockImplementation(); context.rpc.mockClear();
+  context.rpc.mockImplementation((method, params) => {
+    if (method !== "thread.page") return previous(method, params);
+    if (params.newest) return { thread_id: "thread:c0", items: [], thread_last_sequence: 10 };
+    if (params.limit === 1) throw new Error("removed representative unavailable");
+    return { thread_id: "thread:c0", items: [{ ...retained, data: { ...retained.data, body: "fresh", updated_sequence: 10 } }], has_more: true, thread_last_sequence: 10 };
+  });
+  await push([tip(10, 10)]);
+  expect(calls("thread.page")).toHaveLength(6);
+  await push([tip(10, 10)]);
+  expect(calls("thread.page")).toHaveLength(6);
+  const advanced = tip(10, 10); advanced.thread[0].history_start_sequence = 8;
+  await push([advanced]);
+  const held = (await cache.readCached(target)).value;
+  expect(held.historyStartSequence).toBe(8);
+  expect(held.items).toEqual([{ ...retained, data: { ...retained.data, body: "fresh", updated_sequence: 10 } }]);
+  expect(held.repairThrough).toBeUndefined();
+  expect(calls("thread.page")).toHaveLength(8);
+  const lower = tip(10, 10); lower.thread[0].history_start_sequence = 7;
+  await push([lower]); await push([advanced]);
+  expect(calls("thread.page")).toHaveLength(8);
 });

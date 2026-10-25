@@ -32,6 +32,7 @@ import {
   windowFromThreadPayload,
 } from "./thread.js";
 import { digestCovering, mergeActivityDigests } from "./activityDigest.js";
+import { threadHistoryStart, trimThreadHistory } from "./threadRetention.js";
 
 const ALWAYS_ACTIVE = () => true;
 const threadSub = (request) => request.conversationId || request.agentId || "";
@@ -101,7 +102,7 @@ function owingRepair(current, next, owed) {
  * a window that was never held has nothing to repair.
  */
 function changedUnderCursor(page, after, lean) {
-  if (!after || pageSkipsWindow(page, lean)) return false;
+  if (!after || after < threadHistoryStart(page) || pageSkipsWindow(page, lean)) return false;
   const omitted = lean ? omittedNewActivity(page, after) : 0;
   return Number(page.thread_last_sequence || 0) - after > valuesWornPast(page.items, after).size + omitted;
 }
@@ -150,6 +151,8 @@ async function recentRepairPage(request, held, floor) {
     limit: REPAIRED_THREAD_ITEMS,
   });
   if (!response || !requestIsActive(request)) return null;
+  if (!repairGenerationMatches(request, held, response.page)) return null;
+  await publishRepairFloor(request, held, response.page);
   return repairedHeldCopies(request, held, response.page, response.lean);
 }
 
@@ -159,17 +162,25 @@ async function recentRepairPage(request, held, floor) {
  * failed reads leave debt in place rather than blessing stale rows. */
 async function repairedHeldCopies(request, held, page, lean) {
   const shipped = new Set((page.items || []).map(threadItemKey));
-  const missing = recentHeldItems(held).filter((item) =>
+  const trimmed = trimThreadHistory(held, page);
+  const missing = recentHeldItems(trimmed).filter((item) =>
     !shipped.has(threadItemKey(item)) && (page.has_more === true
       || (lean && !!digestCovering(page.activity_digests, item.data?.sequence))));
   const copies = [];
+  let floor = Number(trimmed.historyStartSequence || 0);
   for (const item of missing) {
-    const projected = lean && digestCovering(page.activity_digests, item.data?.sequence);
-    const copy = await (projected ? readActivityCopy(request, held, item) : readExactCopy(request, held, item));
+    if (item.data.sequence < floor) continue;
+    const copy = await readHeldCopy(request, held, item, page, lean);
     if (!copy) return null;
-    copies.push(copy);
+    floor = Math.max(floor, copy.historyStartSequence);
+    if (copy.item) copies.push(copy.item);
   }
-  return { ...page, items: mergeThreadItems(page.items, copies) };
+  return { ...page, ...(floor ? { history_start_sequence: floor } : {}), items: mergeThreadItems(page.items, copies) };
+}
+
+function readHeldCopy(request, held, item, page, lean) {
+  const projected = lean && digestCovering(page.activity_digests, item.data?.sequence);
+  return projected ? readActivityCopy(request, held, item) : readExactCopy(request, held, item);
 }
 
 /** An unprojected one-item forward read reaches exactly the known creation.
@@ -188,7 +199,7 @@ async function readExactCopy(request, held, item) {
     }, requestPriorityFields(requestPriority(request)));
     const threadId = threadIdFor(request, held);
     if (threadId && page.thread_id !== threadId) return null;
-    return (page.items || []).find((copy) => copy.data?.sequence === sequence) || null;
+    return repairCopyResult(request, held, page, sequence);
   } catch {
     return null;
   }
@@ -206,10 +217,34 @@ async function readActivityCopy(request, held, item) {
       through_sequence: sequence,
       limit: 1,
     }, requestPriorityFields(requestPriority(request)));
-    return (page.items || []).find((copy) => copy.data?.sequence === sequence) || null;
+    return repairCopyResult(request, held, page, sequence);
   } catch {
     return null;
   }
+}
+
+async function repairCopyResult(request, held, page, sequence) {
+  if (!repairGenerationMatches(request, held, page)) return null;
+  await publishRepairFloor(request, held, page);
+  const current = (await readCached(threadTarget(request)))?.value;
+  const scoped = { ...page, ...threadGenerationParam(threadIdFor(request, held)) };
+  if (!requestIsActive(request) || differentThreadGeneration(current, scoped)) return null;
+  const floor = Math.max(Number(current?.historyStartSequence || 0), threadHistoryStart(page));
+  const item = (page.items || []).find((copy) => copy.data?.sequence === sequence);
+  return (item || sequence < floor) ? { item, historyStartSequence: floor } : null;
+}
+
+function repairGenerationMatches(request, held, page) {
+  const expected = threadIdFor(request, held);
+  return !expected || !page.thread_id || page.thread_id === expected;
+}
+
+async function publishRepairFloor(request, held, page) {
+  if (!threadHistoryStart(page) || !requestIsActive(request)) return;
+  const scoped = { ...page, ...threadGenerationParam(threadIdFor(request, held)) };
+  await mergeCachedAtomically(threadTarget(request), (current) =>
+    requestIsActive(request) && !differentThreadGeneration(current, scoped)
+      ? trimThreadHistory(current, scoped) : null);
 }
 
 /** The sequence just under the newest items the record holds from the wire,
@@ -227,16 +262,17 @@ const recentHeldItems = (held) => (held?.items || [])
  *  debt paid where the page was read at or past it — or null where neither. */
 export function repairedThreadWindow(held, page) {
   if (!holdsAWindow(held) || differentThreadGeneration(held, page)) return null;
-  const newer = newerCopies(held.items, page?.items);
-  const paid = repaidBy(held, page);
-  if (!newer.length && !paid) return null;
-  const { repairThrough, ...window } = held;
-  return {
+  const trimmed = trimThreadHistory(held, page);
+  const newer = newerCopies(trimmed.items, page?.items);
+  const paid = repaidBy(trimmed, page);
+  if (!newer.length && !paid) return trimmed === held ? null : trimmed;
+  const { repairThrough, ...window } = trimmed;
+  return trimThreadHistory({
     ...window,
     ...(paid || !repairThrough ? {} : { repairThrough }),
-    items: newer.length ? mergeThreadItems(held.items, newer) : held.items,
-    ...repairedDigests(held, page),
-  };
+    items: newer.length ? mergeThreadItems(trimmed.items, newer) : trimmed.items,
+    ...repairedDigests(trimmed, page),
+  }, page);
 }
 
 const repairedDigests = (held, page) => page.activity_digests?.length
@@ -289,10 +325,11 @@ const holdsAWindow = (held) => Number(held?.deliveredSequence || 0) > 0;
 export function threadWindow(held, page, { newest = false, lean = false } = {}) {
   if (differentThreadGeneration(held, page)) return null;
   const arrived = windowFromThreadPayload(page);
-  if (!held) return arrived;
-  if (!arrived) return null; // nothing new: the record stands
-  if (newest && pageSkipsWindow(page, lean)) return newestThreadWindow(held, arrived, page);
-  return appendedThreadWindow(held, arrived, page);
+  if (!held) return trimThreadHistory(arrived, page);
+  if (!arrived) return trimThreadHistory(held, page);
+  const next = newest && pageSkipsWindow(page, lean)
+    ? newestThreadWindow(held, arrived, page) : appendedThreadWindow(held, arrived, page);
+  return trimThreadHistory({ ...next, ...(held.historyStartSequence ? { historyStartSequence: held.historyStartSequence } : {}) }, page);
 }
 
 /** A newest message-budget cut starts at a message. A leading folded run

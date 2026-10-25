@@ -99,7 +99,12 @@ pub(super) fn create(
     if let Some(save) = attention_save {
         save.spawn();
     }
-    spawn_tab_pumps(state, reserved.key.clone(), pumps);
+    spawn_tab_pumps(
+        state,
+        reserved.key.clone(),
+        pumps,
+        Arc::clone(timer.clock()),
+    );
     Ok(json!({"term_id":reserved.key.tab_id,"kind":SHELL_TAB_KIND,"cols":cols,"rows":rows}))
 }
 

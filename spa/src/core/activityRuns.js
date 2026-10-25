@@ -13,6 +13,8 @@
 // land.
 
 import { createCachedBodies } from "./cachedBodies.js";
+import { mergeCachedRecordsTogether } from "./localCache.js";
+import { createThreadHistoryGuard, historyGenerationMatches, retainedActivityItems } from "./threadHistoryGuard.js";
 import { threadGenerationParam } from "./threadSync.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 
@@ -26,6 +28,8 @@ export const ACTIVITY_PAGE_LIMIT = 200;
 /** Every conversation numbers its own items from one, so the run a record
  *  belongs to is named by the agent as well as by where the run starts. */
 const runRecordSub = (agentId, fromSequence) => `${agentId || ""}:${fromSequence}`;
+const activityThreadAddress = ({ deviceId, entityId, conversationId, agentId }) =>
+  deviceId && entityId ? { deviceId, entityId, kind: "thread", sub: conversationId || agentId } : null;
 
 /**
  * The open runs of one conversation.
@@ -62,6 +66,27 @@ export function createActivityRuns({ deviceId, entityId, agentId, conversationId
   // while the first answer is still on its way is one ask, not two.
   const asking = new Set();
   const failures = new Map();
+  const threadAddress = activityThreadAddress({ deviceId, entityId, conversationId, agentId });
+  const bodyAddress = (key) => deviceId && entityId
+    ? { deviceId, entityId, kind: ACTIVITY_RECORD_KIND, sub: runRecordSub(threadId ? `${agentId}:${threadId}` : agentId, key) } : null;
+  const history = createThreadHistoryGuard({ address: threadAddress, threadId, onChange: () => {
+    void trimKnownBodies();
+    onChange();
+  } });
+
+  async function trimKnownBodies() {
+    if (!threadAddress || !history.floor()) return;
+    for (const from of spans.keys()) {
+      await mergeCachedRecordsTogether([bodyAddress(from), threadAddress], (records) => {
+        const parent = records[1]?.value;
+        const body = records[0]?.value;
+        if (!body || !historyGenerationMatches(parent, threadId)) return [null, null];
+        const items = retainedActivityItems(body.items, Number(parent.historyStartSequence || 0));
+        return items.length === body.items.length ? [null, null] : [{ ...body, items }, null];
+      });
+    }
+  }
+
 
   const activityPage = (fromSequence, beforeSequence) =>
     call("thread.activity", {
@@ -83,22 +108,21 @@ export function createActivityRuns({ deviceId, entityId, agentId, conversationId
     let before = null;
     for (;;) {
       const page = await activityPage(fromSequence, before);
-      const arrived = page.items || [];
+      if (!history.acceptsPage(page)) throw new Error("Conversation changed while loading activity");
+      await history.observe(page);
+      const arrived = history.filter(page.items);
       items.unshift(...arrived);
-      if (!arrived.length || page.has_more !== true) return { fromSequence, items };
+      if (!arrived.length || page.has_more !== true) return { fromSequence, items: history.filter(items) };
       before = page.oldest_sequence;
     }
   }
 
   const bodies = createCachedBodies({
     guard: deviceId && entityId && threadId ? {
-      address: { deviceId, entityId, kind: "thread", sub: conversationId || agentId },
-      accepts: (thread) => thread?.thread_id === threadId,
+      address: threadAddress,
+      accepts: history.accepts,
     } : null,
-    addressOf: (key) =>
-      deviceId && entityId
-        ? { deviceId, entityId, kind: ACTIVITY_RECORD_KIND, sub: runRecordSub(threadId ? `${agentId}:${threadId}` : agentId, key) }
-        : null,
+    addressOf: bodyAddress,
     fetchMissing: (keys) => Promise.all(keys.map((key) => fetchRun(Number(key)))),
     valueOf: (run) => ({ key: run.fromSequence, value: { items: run.items } }),
     onChange,
@@ -124,7 +148,8 @@ export function createActivityRuns({ deviceId, entityId, agentId, conversationId
     },
     itemsOf(runKey) {
       const fromSequence = runStartAt(runKey);
-      return fromSequence === null ? undefined : (bodies.read(fromSequence) || {}).items;
+      const items = (bodies.read(fromSequence) || {}).items;
+      return fromSequence === null || !items ? undefined : history.filter(items);
     },
 
     /** Hold what the run this digest describes contains, and answer whether
@@ -138,7 +163,10 @@ export function createActivityRuns({ deviceId, entityId, agentId, conversationId
       failures.delete(key);
       onChange();
       try {
-        return (await bodies.ensure([key])).length > 0;
+        await history.ready;
+        const filled = await bodies.ensure([key]);
+        await trimKnownBodies();
+        return filled.length > 0;
       } catch (error) {
         failures.set(key, error.message);
         throw error;
@@ -162,6 +190,6 @@ export function createActivityRuns({ deviceId, entityId, agentId, conversationId
 
     openKeys: () => new Set(openRuns),
     whenFoldPainted: () => foldPaint,
-    dispose: () => { folds?.dispose(); bodies.dispose(); },
+    dispose: () => { history.dispose(); folds?.dispose(); bodies.dispose(); },
   };
 }

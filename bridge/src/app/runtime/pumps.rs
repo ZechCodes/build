@@ -10,6 +10,8 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 
 #[cfg(test)]
+pub(in crate::app) mod activity_probe;
+#[cfg(test)]
 pub(in crate::app) mod status_publication_probe;
 #[cfg(test)]
 pub(in crate::app) mod status_timing;
@@ -20,7 +22,12 @@ pub(in crate::app) mod status_timing;
 /// One or the other and never both, because the two capabilities are
 /// alternatives — and never neither, because the death rites hang off a stream
 /// closing ([`open_session`] refuses a session with no stream at all).
-pub(in crate::app) fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, pumps: TabPumps) {
+pub(in crate::app) fn spawn_tab_pumps(
+    state: &Arc<Mutex<AppState>>,
+    key: TabKey,
+    pumps: TabPumps,
+    frame_clock: Arc<crate::timing::FrameClock>,
+) {
     let TabPumps {
         session,
         session_instance,
@@ -48,8 +55,16 @@ pub(in crate::app) fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey,
         session_instance.clone(),
         output.activity,
         output.surfaces,
+        Arc::clone(&frame_clock),
     );
-    spawn_status_pump(state, key, session, session_instance, status_changed);
+    spawn_status_pump(
+        state,
+        key,
+        session,
+        session_instance,
+        status_changed,
+        frame_clock,
+    );
 }
 
 pub(in crate::app) fn spawn_status_pump(
@@ -58,6 +73,7 @@ pub(in crate::app) fn spawn_status_pump(
     session: Arc<dyn AgentSession>,
     instance: Option<SessionInstance>,
     mut changed: Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>>,
+    frame_clock: Arc<crate::timing::FrameClock>,
 ) {
     let (Some(mut changed), Some(instance)) = (changed.take(), instance) else {
         return;
@@ -70,8 +86,7 @@ pub(in crate::app) fn spawn_status_pump(
         key,
         session: Arc::downgrade(&session),
         instance,
-        #[cfg(test)]
-        frame_clock: None,
+        frame_clock,
         recorded_context: None,
         recorded_context_reset_count: 0,
         recorded_limit: super::usage_limits::UsageObservation::default(),
@@ -100,8 +115,7 @@ struct StatusPump {
     key: TabKey,
     session: std::sync::Weak<dyn AgentSession>,
     instance: SessionInstance,
-    #[cfg(test)]
-    frame_clock: Option<Arc<crate::timing::FrameClock>>,
+    frame_clock: Arc<crate::timing::FrameClock>,
     recorded_context: Option<crate::harness::TurnContext>,
     recorded_context_reset_count: u64,
     recorded_limit: super::usage_limits::UsageObservation,
@@ -115,28 +129,11 @@ impl StatusPump {
         let Some(state) = self.state.upgrade() else {
             return false;
         };
-        #[cfg(test)]
-        let status_timer = self
-            .frame_clock
-            .as_ref()
-            .map(|clock| clock.frame("agent.poll_status"));
+        let status_timer = self.frame_clock.frame("agent.poll_status");
         let (ended, retry_deferred, clock) = {
-            // The optional benchmark span drops after the guard. It records
-            // outside the critical section and is absent from production.
             #[cfg(test)]
             let mut timing = status_timing::GuardSpan::start();
-            #[cfg(test)]
-            let mut measured_guard = status_timer.as_ref().map(|timer| timer.lock(&state));
-            #[cfg(test)]
-            let mut plain_guard = status_timer.is_none().then(|| state.lock().unwrap());
-            #[cfg(test)]
-            let app: &mut AppState = match measured_guard.as_mut() {
-                Some(guard) => guard,
-                None => plain_guard.as_mut().unwrap(),
-            };
-            #[cfg(not(test))]
-            let mut app_guard = state.lock().unwrap();
-            #[cfg(not(test))]
+            let mut app_guard = status_timer.lock(&state);
             let app: &mut AppState = &mut app_guard;
             #[cfg(test)]
             if let Some(timing) = timing.as_mut() {
@@ -184,7 +181,6 @@ impl StatusPump {
             }
             (ended, retry_deferred, Arc::clone(&app.frame_clock))
         };
-        #[cfg(test)]
         drop(status_timer);
         if retry_deferred {
             let timer = clock.frame(AGENT_DELIVERY_METHOD);
@@ -468,6 +464,7 @@ pub(in crate::app) fn spawn_activity_pump(
     instance: Option<SessionInstance>,
     mut rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
     mut surfaces_changed: Option<tokio::sync::watch::Receiver<u64>>,
+    frame_clock: Arc<crate::timing::FrameClock>,
 ) {
     if rx.is_none() && surfaces_changed.is_none() {
         return;
@@ -487,6 +484,7 @@ pub(in crate::app) fn spawn_activity_pump(
         key,
         session: Arc::downgrade(&session),
         instance,
+        frame_clock,
     });
     tokio::spawn(async move {
         if surfaces_changed.is_some() && !pump.step(ActivityPump::surfaces_moved).await {
@@ -502,13 +500,14 @@ pub(in crate::app) fn spawn_activity_pump(
                     surfaces_changed = None;
                     true
                 }
-                PumpWake::Reported(Ok(report)) => {
-                    pump.step(move |pump| pump.reported(&report)).await
-                }
+                PumpWake::Reported(Ok(report)) => pump.observe_report(report).await,
                 // A turn that called forty tools while the lock was busy is a
                 // reader problem, not a reason to stop reading: what is lost is
                 // lost, and the events after it still belong in the timeline.
-                PumpWake::Reported(Err(broadcast::error::RecvError::Lagged(_))) => true,
+                PumpWake::Reported(Err(broadcast::error::RecvError::Lagged(lost))) => {
+                    pump.frame_clock.record_activity_lag(lost);
+                    true
+                }
                 PumpWake::Reported(Err(broadcast::error::RecvError::Closed)) => {
                     pump.step(ActivityPump::closed).await;
                     false
@@ -526,6 +525,7 @@ pub(in crate::app) fn spawn_activity_pump(
 /// takes the app mutex — and most read the session's self-report, a
 /// filesystem walk, first.
 struct ActivityPump {
+    frame_clock: Arc<crate::timing::FrameClock>,
     state: std::sync::Weak<Mutex<AppState>>,
     key: TabKey,
     session: std::sync::Weak<dyn AgentSession>,
@@ -536,6 +536,18 @@ struct ActivityPump {
 type LivePump = (Arc<Mutex<AppState>>, Arc<dyn AgentSession>);
 
 impl ActivityPump {
+    /// Stamp observation before blocking-pool scheduling and retain it through
+    /// the committed snapshot and its change notification.
+    async fn observe_report(self: &Arc<Self>, report: crate::harness::ActivityReport) -> bool {
+        let timer = self.frame_clock.frame("agent.activity");
+        let waiting = crate::timing::WaitTimer::start();
+        self.step(move |pump| {
+            timer.record_pool_wait(waiting.elapsed());
+            pump.consume_report(&report, timer)
+        })
+        .await
+    }
+
     /// Run one step on the blocking pool.
     async fn step<T: Send + 'static>(
         self: &Arc<Self>,
@@ -555,7 +567,8 @@ impl ActivityPump {
         let Some((state, session)) = self.live() else {
             return false;
         };
-        let state = state.lock().unwrap();
+        let timer = self.frame_clock.frame("agent.activity_surfaces");
+        let state = timer.lock(&state);
         if !still_pumping_instance(&state, &self.key, &session, &self.instance) {
             return false;
         }
@@ -563,18 +576,48 @@ impl ActivityPump {
         true
     }
 
+    fn consume_report(
+        &self,
+        report: &crate::harness::ActivityReport,
+        timer: crate::timing::FrameTimer,
+    ) -> bool {
+        let live = self.reported(report, &timer);
+        // The activity endpoint is snapshot publication. Required failure
+        // delivery retains its own independently named frame after this one.
+        drop(timer);
+        if live
+            && matches!(
+                report.activity,
+                crate::harness::AgentActivity::TurnFailed { .. }
+            )
+        {
+            if let Some(state) = self.state.upgrade() {
+                let timer = self.frame_clock.frame(AGENT_DELIVERY_METHOD);
+                DeliveryRunner::drain(&state, &timer);
+            }
+        }
+        live
+    }
+
     /// Post one reported activity. Whether the tab is still this session's.
-    fn reported(&self, report: &crate::harness::ActivityReport) -> bool {
+    fn reported(
+        &self,
+        report: &crate::harness::ActivityReport,
+        timer: &crate::timing::FrameTimer,
+    ) -> bool {
         let instance = &self.instance;
         let Some((state, session)) = self.live() else {
             return false;
         };
         let said = SelfReport::read(&session);
-        let mut s = state.lock().unwrap();
+        let mut s = timer.lock(&state);
         if !still_pumping_instance(&s, &self.key, &session, instance) {
             return false;
         }
-        for operation in failure_receipt_operations(&session, report) {
+        // A newer turn can be consumed while this report waits for admission.
+        // Reconcile its bounded receipt only after locking and session fencing.
+        let operations = failure_receipt_operations(&session, report);
+        for operation in operations {
             if let Err(error) =
                 s.record_native_operation_seen(&instance.entity_id, &instance.agent_id, &operation)
             {
@@ -582,29 +625,23 @@ impl ActivityPump {
             }
         }
         s.note_self_report(&instance.entity_id, &instance.agent_id, instance, said);
-        record_activity(
+        let published_owner = record_activity(
             &mut s,
             &self.key,
             &instance.entity_id,
             &instance.agent_id,
             report,
         );
-        s.publish_owner_snapshot_projection(&instance.entity_id);
-        let timer = Arc::clone(&s.frame_clock).frame(AGENT_DELIVERY_METHOD);
-        drop(s);
-        if matches!(
-            report.activity,
-            crate::harness::AgentActivity::TurnFailed { .. }
-        ) {
-            // A provider failure is background work. Its coordinator must hear
-            // it even when no client frame will drain the notice queue.
-            DeliveryRunner::drain(&state, &timer);
+        if !published_owner {
+            s.publish_owner_snapshot_projection(&instance.entity_id);
         }
+        drop(s);
         true
     }
 
     /// The death rites, when the activity stream closes.
     fn closed(&self) {
+        let timer = self.frame_clock.frame("agent.activity_closed");
         let instance = &self.instance;
         let Some((state, session)) = self.live() else {
             return;
@@ -617,7 +654,7 @@ impl ActivityPump {
         let final_status = session
             .status_changed()
             .map(|status| status.borrow().clone());
-        let mut s = state.lock().unwrap();
+        let mut s = timer.lock(&state);
         // The reading is a filesystem walk, and a replacement can have taken
         // the tab over while it ran: what follows ends a session, and ending the
         // live one would mark it dead, harvest its open tool calls and close its

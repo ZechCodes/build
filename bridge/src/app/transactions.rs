@@ -38,6 +38,9 @@ impl AppState {
         active: &ActivePlan,
         clock: EntityClock,
     ) -> Result<(), String> {
+        let publication_clock = std::sync::Arc::clone(&self.frame_clock);
+        let _publication =
+            publication_clock.publication_phase(crate::timing::PublicationPhase::Persist);
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("finisher.save");
         let Some(store) = self.store.as_ref() else {
@@ -107,6 +110,9 @@ impl AppState {
         active: &ActiveRun,
         clock: EntityClock,
     ) -> Result<(), String> {
+        let publication_clock = std::sync::Arc::clone(&self.frame_clock);
+        let _publication =
+            publication_clock.publication_phase(crate::timing::PublicationPhase::Persist);
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("finisher.save");
         let Some(store) = self.store.as_ref() else {

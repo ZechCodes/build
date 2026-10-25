@@ -35,6 +35,7 @@
 // read it followed, so a read never writes over a record a push wrote after it
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
+import { threadHistoryStart, trimThreadHistory } from "./threadRetention.js";
 import { projectTerminalRpc } from "./projectTerminalRpc.js";
 import { projectTerminalScopes, writeProjectTerminalRoster } from "./projectTerminalCache.js";
 import { directoryCacheId } from "./directoryScope.js";
@@ -1874,7 +1875,8 @@ const tipKey = (tip) => tip.conversation_id || tip.agent_id || "";
 /** Whether a tip says anything the record does not already hold. A
  *  conversation this cache has never held is always news. */
 const tipIsNews = (tip, held) => !held || Boolean(held.repairThrough)
-  || Number(tip.last_sequence || 0) > Number(held.deliveredSequence || 0);
+  || Number(tip.last_sequence || 0) > Number(held.deliveredSequence || 0)
+  || threadHistoryStart(tip) > Number(held.historyStartSequence || 0);
 
 /** Whether a tip's items carry on from where the record stands. `since_sequence`
  *  is the sequence they run from, exclusive — the cursor the subscription had
@@ -1928,6 +1930,7 @@ async function writeThreadTipBody(context, entityId, tip, sub) {
   const held = (await readCached(address))?.value;
   if (!context.active() || !tipIsNews(tip, held)) return;
   if (tipGenerationMismatch(tip, held)) return;
+  if (await applyThreadHistoryTrim(context, address, tip, held)) return;
   // A burst past the push cap arrives as a tip with no items, a conversation
   // nothing is held for has nothing to append to, and a tip that starts past
   // the cursor would append over a gap. All three are one cursored page, which
@@ -1941,9 +1944,22 @@ async function writeThreadTipBody(context, entityId, tip, sub) {
   await mergeCachedAtomically(address, (current) => context.active() ? threadWindow(current, page) : null);
 }
 
+// A trim can advance independently of the item counter.
+async function applyThreadHistoryTrim(context, address, tip, held) {
+  if (!authoritativeTipFloor(tip, held)) return false;
+  await mergeCachedAtomically(address, (current) => context.active() ? trimmedThreadTip(current, tip) : null);
+  const trimmed = trimmedThreadTip(held, tip);
+  return !trimmed?.repairThrough && Number(tip.last_sequence || 0) <= Number(trimmed?.deliveredSequence || 0);
+}
+
+const authoritativeTipFloor = (tip, held) =>
+  !held?.thread_id || held.thread_id === tip.thread_id ? threadHistoryStart(tip) : 0;
+const trimmedThreadTip = (held, tip) => authoritativeTipFloor(tip, held) ? trimThreadHistory(held, tip) : held;
+
 const carriedThreadPage = (tip, held, items) => ({
   items, thread_total: tip.thread_total, thread_generation_revision: tip.thread_generation_revision,
   thread_id: tip.thread_id || held?.thread_id,
+  ...(authoritativeTipFloor(tip, held) ? { history_start_sequence: authoritativeTipFloor(tip, held) } : {}),
 });
 
 /** An untagged post-reset counter is not coverage evidence. Probe from the
@@ -1962,6 +1978,7 @@ async function deferThreadCatchup(context, entityId, tip, sub, held) {
   const settled = queuesFor(context).catchups.enqueue(JSON.stringify([entityId, sub]), {
     context: reading, active: reading.active, address, entityId, generation: threadGenerationKey(held),
     ...catchupGoal(tip, held),
+    historyStartSequence: Math.max(Number(held?.historyStartSequence || 0), authoritativeTipFloor(tip, held)),
     agent: { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: held?.thread_id || tip.thread_id },
   });
   if (context.pushing) context.pushCompletions?.push(settled);

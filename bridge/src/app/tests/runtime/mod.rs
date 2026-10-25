@@ -1,5 +1,7 @@
 use super::*;
 
+mod activity_publication;
+
 pub(in crate::app::tests) mod agent_tabs;
 mod claude_tui_compaction;
 mod codex_tui_compaction;

@@ -317,6 +317,7 @@ pub struct AppState {
     isolation: Isolation,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
+    retention: crate::retention::RetentionConfig,
     #[cfg(test)]
     config_persist_failure: Option<ConfigPersistStep>,
     agent: Agent,
@@ -693,6 +694,7 @@ impl AppState {
             agent_modes: AgentModes::from_legacy_default(DEFAULT_HARNESS),
             isolation: Isolation::default(),
             config_path: None,
+            retention: crate::retention::RetentionConfig::default(),
             #[cfg(test)]
             config_persist_failure: None,
             agent,
@@ -899,6 +901,8 @@ impl AppState {
         let (changes, watchers, push_runtime) = {
             let mut app = state.lock().unwrap();
             app.self_handle = Some(Arc::downgrade(&state));
+            app.changes
+                .set_publication_clock(Arc::clone(&app.frame_clock));
             let _ = app.facts_handle.set(facts::FactsSource::new(
                 app.read_view.clone(),
                 Arc::downgrade(&state),

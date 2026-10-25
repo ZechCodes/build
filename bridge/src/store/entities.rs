@@ -509,6 +509,11 @@ impl Store {
             // because those are small, bounded and always read whole.
             let mut skeleton = agent.clone();
             let items = std::mem::take(&mut skeleton.thread.items);
+            let retention_floor: Option<u64> = tx.query_row(
+                "SELECT history_start_sequence FROM conversation_retention WHERE agent_id = ?1 AND thread_id = ?2",
+                rusqlite::params![agent.id, agent.thread.id], |row| row.get::<_, i64>(0),
+            ).optional()?.map(|value| value as u64);
+            skeleton.thread.history_start_sequence = retention_floor;
             upsert_agent.execute(rusqlite::params![
                 agent.id,
                 owner_id,
@@ -523,11 +528,15 @@ impl Store {
                 )?
                 .collect::<Result<_, _>>()?;
             for item in &items {
+                if item.sequence() < retention_floor.unwrap_or(0) {
+                    continue;
+                }
                 let sequence = item.sequence() as i64;
                 let updated = item.latest_sequence() as i64;
                 // `remove` both answers "was it stored?" and leaves the map
                 // holding exactly the sequences the roster no longer has.
-                if stored.remove(&sequence) == Some(updated) {
+                let previous = stored.remove(&sequence);
+                if previous == Some(updated) {
                     continue;
                 }
                 upsert_item.execute(rusqlite::params![
@@ -586,6 +595,9 @@ impl Store {
             // tool can still be legacy-shaped. Materialize it in memory; only
             // the versioned boot migration above overwrites raw stored data.
             materialize_agent_identity(&mut agent, entity_choice, primary_conversation);
+            agent.thread.history_start_sequence = super::retention::read_boundary(conn, &id)?
+                .filter(|boundary| boundary.thread_id == agent.thread.id)
+                .map(|boundary| boundary.history_start_sequence);
             agents.push(agent);
         }
         Ok(agents)
@@ -625,6 +637,7 @@ impl Store {
                 held.saturating_sub(RESIDENT_CONVERSATION_TAIL as u64),
                 stored_last,
             );
+            agent.thread.advance_sequence_to(stored_last);
             let summary =
                 stored_conversation_summary(&mut last_message, &mut first_attention_after, &id)?;
             let last_attention_sequence =

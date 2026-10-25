@@ -52,6 +52,8 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 # passwd lookup for the user's login shell (terminal + PATH resolution).
 libc = "0.2"
+# Safe directory-relative attachment cleanup; already pinned transitively.
+rustix = { version = "=1.1.4", features = ["fs"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 webrtc = "0.20"
 # The facade webrtc reports TURN and STUN gathering failures through; `rtc.rs`

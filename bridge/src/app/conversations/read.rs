@@ -272,6 +272,11 @@ impl AppState {
     /// Ships exactly what a first page ships, so a client merges a page up the
     /// way it merges the page it opened on.
     pub(crate) fn thread_page(&self, params: &Value) -> Result<Value, String> {
+        let value = self.thread_page_contents(params)?;
+        self.thread_read_boundary(params, value)
+    }
+
+    fn thread_page_contents(&self, params: &Value) -> Result<Value, String> {
         let entity_id = conversation_owner_param(params)?;
         let address = self.resolve_conversation_params(&entity_id, params)?;
         let thread = self.conversation_at(&address)?;
@@ -348,6 +353,21 @@ impl AppState {
     /// its newest row, so opening it reads the span on demand and a later
     /// delta advances its digest.
     pub(crate) fn thread_activity(&self, params: &Value) -> Result<Value, String> {
+        let value = self.thread_activity_contents(params)?;
+        self.thread_read_boundary(params, value)
+    }
+
+    fn thread_read_boundary(&self, params: &Value, mut value: Value) -> Result<Value, String> {
+        let owner = conversation_owner_param(params)?;
+        let address = self.resolve_conversation_params(&owner, params)?;
+        let thread = self.conversation_at(&address)?;
+        if let Some(floor) = thread.history_start_sequence {
+            value["history_start_sequence"] = floor.into();
+        }
+        Ok(value)
+    }
+
+    fn thread_activity_contents(&self, params: &Value) -> Result<Value, String> {
         let entity_id = conversation_owner_param(params)?;
         let address = self.resolve_conversation_params(&entity_id, params)?;
         let thread = self.conversation_at(&address)?;

@@ -683,6 +683,7 @@ pub(in crate::app) fn publish_agent_tab(
         state,
         key.clone(),
         pumps.expect("a non-stranded tab starts its pumps"),
+        Arc::clone(timer.clock()),
     );
     Some(wire_id)
 }

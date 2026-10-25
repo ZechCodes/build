@@ -461,6 +461,9 @@ pub struct RevisionSummary {
 /// One page of a conversation, walking backward.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ThreadPage {
+    /// Inclusive retained-history floor for this thread generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_start_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_generation_revision: Option<u64>,
     pub id: String,
@@ -486,6 +489,8 @@ pub struct ThreadPage {
 /// this span because it already holds the digest that named it.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ActivityPage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_start_sequence: Option<u64>,
     pub items: Vec<ThreadItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oldest_sequence: Option<u64>,

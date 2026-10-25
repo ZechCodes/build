@@ -3594,6 +3594,12 @@ In practice:
 - No view waits on the wire to show what is already known.
 - No view branches on whether a device is connected, connecting or away.
 
+Animated agent canvases share a frame loop and retain their measured CSS box
+between frames (`agentCanvas.js`, `canvasGeometry.js`). A ResizeObserver
+invalidates the measurement and repaints even an idle canvas when its size
+changes. Animation therefore does not force layout after every cache paint.
+Engines without that observer retain the per-paint measurement fallback.
+
 Thread attachment tiles use cached message descriptors and held media bodies
 for user messages, agent replies and expanded outgoing agent messages (#696).
 The shared attachment loader fills missing bodies; the same image lightbox and
@@ -3925,10 +3931,16 @@ gate attachment display.
   stable projections (`feedCacheReader.js`, `cachedRows.js`). Concurrent readers
   share the initial row/owner read; auxiliary feed and support roots refresh
   independently, so route discovery never waits for those background reads.
+  Mounted lineage takes rows and maker support from the same snapshot and
+  responds to prefix invalidations, without a separate support read per hint.
   Later announcements reread only named records, in batches of at most 64.
-  Unrelated writes reuse the held snapshot. Prefix evictions rebuild the index
-  and fence combined owner/auxiliary snapshots across the reset. Reads still
-  include pending-write overlays and cross-tab changes; a failed read leaves the projection invalid for retry.
+  Unrelated writes reuse the held snapshot. An entity-prefix eviction removes
+  only that owner's rows and rosters. Active reads and owner/auxiliary joins
+  retain a departure fence so a captured response cannot restore the old owner;
+  a fresh reader can observe its recreation. Device-wide and global-root resets
+  rebuild the index and fence combined snapshots across the reset. Reads still
+  include pending-write overlays and cross-tab changes; a failed read leaves
+  the projection invalid for retry.
 - **Chat read marks** (#473) report the viewport sequence and window floor
   only while the reader is present. A known cursor can establish read progress
   even if the cached unread count is zero. `chatReadReporter.js` confirms
@@ -4443,6 +4455,14 @@ heading only folds.
 
 Inbox task rows come from cached `tasks.list` / `tasks.get` records through
 `spa/src/core/watchedTaskFollower.js` and `watchedTaskRows.js`.
+Project task lists refresh independently of device ownership and Needs-you
+policy (`watchedTaskDependencies.js`). Row hints share a finite device pass
+with at most one trailing pass queued; they do not reread every project's task
+list or policy.
+Unchanged derived state publishes no redraw. A project's first publication
+waits for its cached task list, agent ownership and actual policy, including a
+false policy. Later reads retain per-dependency eviction and session fences;
+user RPCs and cache writes do not acquire these background read slots.
 An inbox task opens in its assigned available agent's workspace Tasks tab with
 that agent's conversation, falling back to the project task page when no cached
 live workspace is known.

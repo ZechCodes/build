@@ -19,44 +19,13 @@ import { contextFor } from "./deviceContexts.js";
 import { isFinished } from "./trackerAgentTasks.js";
 import { createTrackerTaskDetailsFeed } from "./trackerTaskDetailsFeed.js";
 import { tasksAddress, readTasksRecord } from "./trackerCache.js";
-import { needsYouRuleAddress, readNeedsYouRule } from "./needsYouRule.js";
 import { taskAgentIsRunning, watchedTaskEntries } from "./watchedTaskRows.js";
 import { taskUnreadTally } from "./taskUnread.js";
-import { ROW_RECORD_KIND, cachedFeedView } from "./cachedRows.js";
-import { AGENT_LINEAGE_SUPPORT_KIND, readAgentLineageSupport } from "./agentLineageSupport.js";
-import { agentLineage, lineageMembers } from "./agentLineageModel.js";
-import { entityIdOf } from "./entityId.js";
-import { projectCoordinatorAgent, projectRosterRows } from "./projectRosterFeed.js";
-import { PROJECT_AGENTS_KIND, PROJECT_AGENTS_SUPPORT_KIND } from "./projectAgentsCache.js";
+import { createWatchedTaskDependencies } from "./watchedTaskDependencies.js";
+import { trailingRead } from "./trailingRead.js";
 
+const sessionOf = (deviceId) => contextFor(deviceId)?.session || null;
 const followsDetail = (task) => task?.watched === true && !isFinished(task);
-const AGENT_RECORD_KINDS = new Set([
-  ROW_RECORD_KIND, "projects", "workspaces", AGENT_LINEAGE_SUPPORT_KIND, PROJECT_AGENTS_KIND, PROJECT_AGENTS_SUPPORT_KIND,
-]);
-
-/** Legacy project-agent assignments name the persisted coordinator, never a
- *  currently working worker. Earlier bridges carry only the coordinator. */
-function projectAgentIdOf(project, feed) {
-  const owner = feed.projects.find((candidate) => candidate.id === project.id || candidate.project_id === project.id) || project;
-  const entityId = owner.entity_id || owner.run_id;
-  if (!entityId) return null;
-  const agents = projectRosterRows(feed).find((row) => row.project_id === project.id && entityIdOf(row) === entityId)?.agents || [];
-  return projectCoordinatorAgent(owner, agents)?.id || null;
-}
-
-/** The agents running for this project, including their Build and harness
- *  descendants, from the same cached lineage the Agents surface reads. */
-async function readRunningAgents(project) {
-  const { deviceId, id: projectId } = project;
-  const [feed, namesMakers] = await Promise.all([cachedFeedView(deviceId), readAgentLineageSupport(deviceId)]);
-  const members = lineageMembers(projectRosterRows(feed), { projectId, projects: feed.projects, workspaces: feed.workspaces });
-  const lineage = agentLineage(members, { namesMakers });
-  return {
-    runningAgentIds: new Set(members.filter(({ agent }) => lineage.rollup(agent.id).running).map(({ agent }) => agent.id)),
-    projectAgentId: projectAgentIdOf(project, feed),
-    workspaces: feed.workspaces,
-  };
-}
 
 /** Asks the machine for whatever session it is on when the read is made. */
 const callOn = (deviceId) => (method, params) => {
@@ -66,47 +35,58 @@ const callOn = (deviceId) => (method, params) => {
 
 /** One project's list and the details of its open watched tasks, and the
  *  Needs you rule its machine's tasks are read by (core/needsYouRule.js). */
-function followProject(project, onChange) {
+function followProject(project, onChange, dependencies) {
   const { deviceId, id: projectId } = project;
   let tasks = [];
   let askedOnly = false;
   let runningAgentIds = new Set();
   let projectAgentId = null;
   let workspaces = [];
-  let reads = 0;
+  let taskSignature = null;
   let disposed = false;
-  const details = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc: callOn(deviceId), onChange });
+  let invalidation = 0;
+  let tasksReady = false;
+  let dependenciesReady = false;
+  const ready = () => tasksReady && dependenciesReady;
+  const notify = () => { if (!disposed && ready()) onChange(); };
+  const details = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc: callOn(deviceId), onChange: notify });
 
-  async function reread() {
-    const read = ++reads;
-    const [record, rule, running] = await Promise.all([
-      readTasksRecord(deviceId, projectId), readNeedsYouRule(deviceId), readRunningAgents(project),
-    ]);
-    if (disposed || read !== reads) return;
-    tasks = record?.tasks || [];
-    askedOnly = rule;
-    runningAgentIds = running.runningAgentIds;
-    projectAgentId = running.projectAgentId;
-    workspaces = running.workspaces;
-    onChange();
+  async function readTasks() {
+    if (disposed) return;
+    const session = sessionOf(deviceId);
+    const before = invalidation;
+    const record = await readTasksRecord(deviceId, projectId);
+    if (disposed || before !== invalidation || session !== (sessionOf(deviceId))) return;
+    const next = record?.tasks || [];
+    const signature = JSON.stringify(next);
+    if (signature === taskSignature) return;
+    taskSignature = signature;
+    tasks = next;
+    tasksReady = true;
+    notify();
     await details.updateTasks(tasks.filter(followsDetail));
   }
 
-  const unsubscribe = subscribeCache(tasksAddress(deviceId, projectId), () => void reread());
-  const unsubscribeRule = subscribeCache(needsYouRuleAddress(deviceId), () => void reread());
-  const unsubscribeAgents = subscribeCache({ deviceId }, (address) => {
-    if (AGENT_RECORD_KINDS.has(address?.kind)) void reread();
+  const reread = trailingRead(readTasks, { generationOf: () => sessionOf(deviceId) });
+  const unsubscribe = subscribeCache(tasksAddress(deviceId, projectId), (address) => {
+    if (!address.kind) invalidation += 1;
+    void reread();
+  });
+  const unsubscribeDependencies = dependencies.subscribe(project, (next) => {
+    if (disposed) return;
+    ({ askedOnly, runningAgentIds, projectAgentId, workspaces } = next);
+    dependenciesReady = true;
+    notify();
   });
   void reread();
   return {
     // A reconnect is a new session: reads the old one refused are asked again.
-    session: contextFor(deviceId)?.session || null,
-    source: () => ({ project, tasks, details: details.read(), askedOnly, runningAgentIds, projectAgentId, workspaces }),
+    session: sessionOf(deviceId),
+    source: () => ({ project, tasks: ready() ? tasks : [], details: details.read(), askedOnly, runningAgentIds, projectAgentId, workspaces }),
     dispose() {
       disposed = true;
       unsubscribe();
-      unsubscribeRule();
-      unsubscribeAgents();
+      unsubscribeDependencies();
       details.dispose();
     },
   };
@@ -123,6 +103,7 @@ const projectKeyOf = (project) => `${project.deviceId}|${project.id}`;
  */
 export function followWatchedTasks({ onChange = () => {} } = {}) {
   const followed = new Map();
+  const devices = new Map();
 
   function drop(key) {
     followed.get(key)?.dispose();
@@ -134,9 +115,20 @@ export function followWatchedTasks({ onChange = () => {} } = {}) {
     for (const key of followed.keys()) if (!wanted.has(key)) drop(key);
     for (const [key, project] of wanted) {
       const standing = followed.get(key);
-      if (standing && standing.session === (contextFor(project.deviceId)?.session || null)) continue;
+      if (standing && standing.session === sessionOf(project.deviceId)) continue;
       drop(key);
-      followed.set(key, followProject(project, onChange));
+      if (!devices.has(project.deviceId)) devices.set(project.deviceId, createWatchedTaskDependencies(project.deviceId));
+      followed.set(key, followProject(project, onChange, devices.get(project.deviceId)));
+    }
+    retireUnusedDevices(projects);
+  }
+
+  function retireUnusedDevices(projects) {
+    const deviceIds = new Set(projects.map((project) => project.deviceId));
+    for (const [deviceId, dependency] of devices) {
+      if (deviceIds.has(deviceId)) continue;
+      dependency.dispose();
+      devices.delete(deviceId);
     }
   }
 
@@ -152,6 +144,10 @@ export function followWatchedTasks({ onChange = () => {} } = {}) {
     runningProjectKeys: () => new Set(sources()
       .filter(({ tasks, runningAgentIds, projectAgentId }) => tasks.some((task) => followsDetail(task) && taskAgentIsRunning(task, runningAgentIds, projectAgentId)))
       .map(({ project }) => project.projectKey)),
-    dispose: () => [...followed.keys()].forEach(drop),
+    dispose() {
+      [...followed.keys()].forEach(drop);
+      devices.forEach((dependency) => dependency.dispose());
+      devices.clear();
+    },
   };
 }

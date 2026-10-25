@@ -13,8 +13,9 @@
 import { PROJECT_AGENTS_KIND, PROJECT_AGENTS_SUPPORT_KIND } from "./projectAgentsCache.js";
 import { projectRosterRows } from "./projectRosterFeed.js";
 import { subscribeCache } from "./localCache.js";
-import { ROW_RECORD_KIND, cachedFeedView } from "./cachedRows.js";
-import { AGENT_LINEAGE_SUPPORT_KIND, readAgentLineageSupport } from "./agentLineageSupport.js";
+import { ROW_RECORD_KIND } from "./cachedRows.js";
+import { createFeedCacheReader } from "./feedCacheReader.js";
+import { AGENT_LINEAGE_SUPPORT_KIND } from "./agentLineageSupport.js";
 import { agentLineage, buildAgentEntries, lineageMembers, lineagePrint, withRollup } from "./agentLineageModel.js";
 
 /** The cache writes a read answers to: a row, the workspace and project lists
@@ -29,6 +30,7 @@ const REREAD_KINDS = new Set([ROW_RECORD_KIND, "workspaces", "projects", AGENT_L
 export function mountAgentLineage({ deviceId, projectId, onChanged } = {}) {
   const state = { lineage: null, print: null, disposed: false, reading: false, again: false };
   const named = Boolean(deviceId) && Boolean(projectId);
+  const cacheReader = createFeedCacheReader(deviceId);
 
   /** One read at a time: writes that land during a read ask for one more
    *  after it, however many there were — a pass writes many rows at once. */
@@ -51,7 +53,7 @@ export function mountAgentLineage({ deviceId, projectId, onChanged } = {}) {
   /** The rows, the lists that say where each lives, and whether the bridge
    *  that wrote them names makers (`agents.createdBy`, #221): all off the cache. */
   async function readOnce() {
-    const [feed, namesMakers] = await Promise.all([cachedFeedView(deviceId), readAgentLineageSupport(deviceId)]);
+    const { view: feed, namesMakers } = await cacheReader.refresh();
     if (state.disposed) return;
     const members = lineageMembers(projectRosterRows(feed), { projectId, workspaces: feed.workspaces, projects: feed.projects });
     const print = `${namesMakers}${lineagePrint(members)}`;
@@ -70,7 +72,7 @@ export function mountAgentLineage({ deviceId, projectId, onChanged } = {}) {
     start() {
       if (!named || unsubscribe || state.disposed) return;
       unsubscribe = subscribeCache({ deviceId }, (address) => {
-        if (REREAD_KINDS.has(address?.kind)) void reread();
+        if (!address?.kind || REREAD_KINDS.has(address.kind)) void reread();
       });
       void reread();
     },

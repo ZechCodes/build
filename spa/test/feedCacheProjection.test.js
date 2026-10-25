@@ -66,3 +66,66 @@ it("retries a failed incremental read instead of losing the dirty address", asyn
   await expect(rows.cachedFeedView(deviceId)).rejects.toThrow("transient read failure");
   expect((await rows.cachedFeedView(deviceId)).items.find((item) => item.entity_id === "r4").muted).toBe(true);
 });
+
+it("publishes a finite refresh while writes keep arriving under held reads", async () => {
+  const reader = createFeedCacheReader(deviceId);
+  await reader.refresh();
+  await cache.writeCached(rowAddress("r4"), row("r4", { muted: true }));
+  const readMany = cache.readCachedMany;
+  const releases = [];
+  const reads = vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+    const records = await readMany(addresses);
+    await new Promise((resolve) => releases.push(resolve));
+    return records;
+  });
+  let first;
+  const pending = reader.refresh().then((value) => { first = value; });
+  await vi.waitFor(() => expect(releases).toHaveLength(1));
+  await cache.writeCached(rowAddress("r5"), row("r5", { muted: true }));
+  // A consumer joining during this read must cover dirtiness at its own call.
+  const trailing = rows.cachedFeedView(deviceId);
+  releases[0]();
+  try {
+    await vi.waitFor(() => expect(first?.view.items.find((item) => item.entity_id === "r4").muted).toBe(true));
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    await cache.writeCached(rowAddress("r6"), row("r6", { muted: true }));
+    releases[1]();
+    const trailingView = await trailing;
+    expect(trailingView.items.find((item) => item.entity_id === "r5").muted).toBe(true);
+    expect(reads).toHaveBeenCalledTimes(2);
+    await pending;
+  } finally {
+    releases.forEach((release) => release());
+  }
+});
+
+it("covers every address already dirty at a direct lookup, in bounded batches", async () => {
+  await rows.cachedFeedView(deviceId);
+  await Promise.all(Array.from({ length: 130 }, (_, index) =>
+    cache.writeCached(rowAddress(`r${index}`), row(`r${index}`, { muted: true }))));
+  const reads = vi.spyOn(cache, "readCachedMany");
+  const view = await rows.cachedFeedView(deviceId);
+  expect(view.items).toHaveLength(130);
+  expect(view.items.every((item) => item.muted)).toBe(true);
+  expect(reads.mock.calls.map(([addresses]) => addresses.length)).toEqual([64, 64, 2]);
+});
+
+it.each(["entity", "device"])("fences held responses after %s eviction", async (scope) => {
+  await rows.cachedFeedView(deviceId);
+  await cache.writeCached(rowAddress("r4"), row("r4", { muted: true }));
+  const readMany = cache.readCachedMany;
+  let release;
+  vi.spyOn(cache, "readCachedMany").mockImplementationOnce(async (addresses) => {
+    const records = await readMany(addresses);
+    await new Promise((resolve) => { release = resolve; });
+    return records;
+  });
+  const pending = rows.cachedFeedView(deviceId);
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  if (scope === "entity") await cache.evictEntity(deviceId, "r4");
+  else await cache.wipeCache();
+  release();
+  const view = await pending;
+  expect(view.items.some((item) => item.entity_id === "r4")).toBe(false);
+  expect(view.items).toHaveLength(scope === "entity" ? 127 : 0);
+});

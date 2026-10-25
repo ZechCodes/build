@@ -184,3 +184,37 @@ it("preserves full state before legacy count-only digests without folding unsupp
   await done;
   expect(applied.slice(1).map((entry) => entry.state)).toEqual([state, { state: "building", agents: 2 }, { state: "building", agents: 0 }]);
 });
+
+
+it("bounds revision-only board demand without dividing mounted work into segments", async () => {
+  const stalled = gate(), applied = [];
+  const queue = createPushQueue({ priority: (entry) => entry.entity_id === "open", apply: async (_, entry) => {
+    applied.push(entry); if (applied.length === 1) await stalled.done;
+  } });
+  const done = queue.enqueue(context, [item("other", 1)]); await Promise.resolve();
+  for (let n = 1; n <= 1200; n += 1) {
+    queue.enqueue(context, [{ entity_id: "board", state: { revision: n } }, item("other", n), item("open", n)]);
+  }
+  const pending = queue.snapshot().pending;
+  stalled.release(); await done;
+  expect(pending).toBe(3);
+  expect(applied[1].entity_id).toBe("open");
+  expect(applied.find((entry) => entry.entity_id === "board").state.revision).toBe(1200);
+  expect(applied[1].thread[0].items).toHaveLength(1200);
+});
+
+it("keeps board revision high-water and treats unknown board fields as causal barriers", async () => {
+  const stalled = gate(), applied = [];
+  const queue = createPushQueue({ apply: async (_, entry) => {
+    applied.push(entry); if (applied.length === 1) await stalled.done;
+  } });
+  const done = queue.enqueue(context, [item("other", 1)]); await Promise.resolve();
+  queue.enqueue(context, [{ entity_id: "board", state: { revision: 9 } },
+    { entity_id: "board", state: { revision: 3 } },
+    { entity_id: "board", state: { revision: 10, future_transition: true } },
+    { entity_id: "board", state: { revision: 11 } }]);
+  stalled.release(); await done;
+  expect(applied.slice(1).map((entry) => entry.state)).toEqual([
+    { revision: 9 }, { revision: 10, future_transition: true }, { revision: 11 },
+  ]);
+});

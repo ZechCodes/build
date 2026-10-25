@@ -64,12 +64,12 @@ const push = (item) => {
 const page = (through, items) => ({ thread_id: "thread:c0", thread_last_sequence: through, items, has_more: false });
 const current = async () => (await cache.readCached(target))?.value;
 
-async function heldRepair(owner = "push") {
+async function heldRepair(owner = "push", repaired = page(5, [message(1, 5), message(3), message(5)])) {
   const visible = await import("../src/core/syncVisibleScopes.js");
   unmount = visible.registerSyncThread(() => ({ deviceId: "dev-1", entityId: "run-0", agentId: "agent-0", conversationId: "c0" }));
   await cache.writeCached(target, { thread_id: "thread:c0", items: [message(1)], deliveredSequence: 1 });
   let release, entered, released = false;
-  const waiting = new Promise((resolve) => { release = () => { released = true; resolve(page(5, [message(1, 5), message(3), message(5)])); }; });
+  const waiting = new Promise((resolve) => { release = () => { released = true; resolve(repaired); }; });
   const began = new Promise((resolve) => { entered = resolve; });
   releases.push(release);
   const previous = context.rpc.getMockImplementation();
@@ -199,4 +199,18 @@ it("retries exhausted push repair debt on a later ordinary recovery pass", async
   await sync.syncDevice("dev-1");
   expect((await current()).repairThrough).toBeUndefined();
   expect((await current()).items).toEqual([message(1, 3)]);
+});
+
+
+it("pays the older repair debt once when a later carried creation was absent from its capped page", async () => {
+  const repair = await heldRepair("push", { ...page(3, [message(1, 3), message(3)]), has_more: true });
+  const event = tip(3, 4);
+  event.thread[0].items = [message(4)];
+  await push(event);
+  expect(await current()).toMatchObject({ deliveredSequence: 4, repairThrough: 3 });
+  repair.release();
+  await Promise.all(work);
+  expect(context.rpc.mock.calls.filter(([method, params]) => method === "thread.page" && !params.newest)).toHaveLength(1);
+  expect((await current()).repairThrough).toBeUndefined();
+  expect((await current()).items).toEqual([message(1, 3), message(3), message(4)]);
 });

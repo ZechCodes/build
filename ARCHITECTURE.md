@@ -3922,10 +3922,13 @@ gate attachment display.
   lane; awaiting either still waits for the repair it requested. Repair debt
   remains on the canonical window until the old copies are covered, and a
   gapped carried tip still needs a forward page before delivery can advance. It rechecks canonical coverage before dispatch, skips already
-  covered goals, and allows two attempts per goal and cache lifetime. Repeated
-  unchanged tips do not renew that budget. An untagged post-reset hint probes
-  held coverage without borrowing its ambiguous counter. New evidence, eviction, reset or a
-  new session can. Ordinary recovery passes can retry retained repair debt.
+  covered goals, and allows two push attempts per goal and cache lifetime.
+  Ordinary recovery starts one historical attempt, leaving incomplete debt for
+  a later recovery. Shared rounds retain the larger joining budget; an ordinary
+  attempt alone does not exhaust a later push's budget. Repeated unchanged tips
+  do not renew that budget. An untagged post-reset hint probes held coverage
+  without borrowing its ambiguous counter. New evidence, eviction, reset or a
+  new session can renew it. Ordinary recovery passes can retry retained debt.
   Catch-up work does not acquire a roster/review enrichment worker. A mounted
   conversation's page and activity reads bypass background wire admission even
   between passes; mounting it or changing routes wakes queued readers. Stop

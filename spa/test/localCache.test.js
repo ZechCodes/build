@@ -46,6 +46,26 @@ beforeEach(async () => {
 });
 
 describe("records", () => {
+  it("reads feed dependencies atomically without bypassing captured-write guards or row observations", async () => {
+    const address = { deviceId: "dev-1", entityId: "", kind: "feed" };
+    const row = { deviceId: "dev-1", entityId: "run-1", kind: "row" };
+    const thread = { ...row, kind: "thread", sub: "agent-1" };
+    await cache.writeCached(row, { label: "current" });
+    await cache.writeCached(thread, { thread_id: "generation-2" });
+    const captured = await cache.captureCachedRecord(row);
+    const update = vi.fn((_held, _record, [found]) => ({ items: [{ run_id: "run-1", thread: found.value.thread_id }] }));
+    const options = { readAddresses: [thread], unchanged: [{ address: row, written: captured.write }], observedFeedRows: true };
+    expect(await cache.updateCachedFeed(address, update, options)).toBe(true);
+    const first = await cache.readCached(address);
+    expect(first.value.items[0]).toMatchObject({ thread: "generation-2", __cacheObserved: { at: first.at, order: first.order } });
+    await cache.writeCached(row, { label: "changed" });
+    expect(await cache.updateCachedFeed(address, update, options)).toBe(false);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect((await cache.readCached(address)).write).toBe(first.write);
+    await cache.updateCachedFeed(address, (held) => held, { supersededFeedRow: () => true, readAddresses: [thread] });
+    expect((await cache.readCached(address)).value.items[0].__cacheObserved).toEqual({ at: 0, order: 0 });
+  });
+
   it("round-trips a record and stamps when it was written", async () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "abc" });
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" });

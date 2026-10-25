@@ -199,18 +199,20 @@ export async function readCachedMany(addresses) {
  * surviving rows' observation times; a bridge board read explicitly replaces
  * them, less any row it names as superseded — one a push wrote after the read
  * was asked, whose own record is the newer word. An undo can merge into the
- * current value inside the same transaction. */
-function writeFeed(address, update, { observedFeedRows = false, supersededFeedRow, unchanged = [] } = {}) {
+ * current value inside the same transaction. `readAddresses` adds canonical
+ * records to that snapshot, handed to update as its third argument. */
+function writeFeed(address, update, { observedFeedRows = false, supersededFeedRow, unchanged = [], readAddresses = [] } = {}) {
   const key = recordKey(address);
   let changed = false;
   return wroteStore((store) => {
     changed = false;
     // Read and put in the same transaction: another tab can write between a
     // separate read and write, and its newer row observation must survive.
-    readRecordsInStore(store, [key, ...unchanged.map(({ address }) => recordKey(address))], ([previous, ...guards]) => {
+    const keys = [key, ...unchanged.map(({ address }) => recordKey(address)), ...readAddresses.map(recordKey)];
+    readRecordsInStore(store, keys, ([previous, ...records]) => {
       try {
-        if (!unchanged.every(({ written }, index) => isCachedWrite(guards[index], written))) return;
-        const next = update(previous?.value, previous);
+        if (!unchanged.every(({ written }, index) => isCachedWrite(records[index], written))) return;
+        const next = update(previous?.value, previous, records.slice(unchanged.length));
         if (next == null) return;
         const { write, ...stamp } = writeStamp();
         const record = { ...stamp, write, value: feedWithObservations(next, previous, stamp, observedFeedRows, supersededFeedRow) };

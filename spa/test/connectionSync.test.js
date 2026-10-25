@@ -257,6 +257,8 @@ it.each(["enrichment", "catch-up"].flatMap((kind) =>
     try {
       await replaceConnection(operation, work.context);
       expect(work.state.values()).toEqual(expected);
+      const { syncDiagnostics } = await import("../src/core/syncDiagnostics.js");
+      expect(syncDiagnostics.report().periods[0].passes[0].snapshot.drain).toBeNull();
     } finally {
       work.release(); await work.pending;
     }

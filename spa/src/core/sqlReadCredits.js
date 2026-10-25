@@ -49,6 +49,15 @@ export function createSqlReadCredits(limit = SQL_READ_LIMIT) {
       const entry = admitted.get(id);
       if (entry) entry.sent = true;
     },
+    snapshot: () => ({
+      queued: queued.size,
+      admitted: admitted.size,
+      timedOutHeld: [...admitted.values()].filter((entry) => entry.timedOut).length,
+    }),
+    timedOut(id) {
+      const entry = admitted.get(id);
+      if (entry?.sent) entry.timedOut = true;
+    },
     holds: (id) => Boolean(find(id)),
     accepts(id, carrier) {
       const entry = admitted.get(id);

@@ -123,6 +123,7 @@ export function diagnosticsJson(report) {
       since: whole.since ?? null,
       dropped: whole.dropped ?? 0,
       events: whole.events || [],
+      ...(whole.sync === undefined ? {} : { sync: whole.sync }),
     },
     null,
     2,
@@ -133,3 +134,61 @@ export function diagnosticsJson(report) {
 /// verdict: this section reports, it does not diagnose.
 export const diagnosticsSummary = (rows) =>
   rows.length ? `${rows.length} recorded event${rows.length === 1 ? "" : "s"}, newest first.` : "";
+
+
+// Timing records contain offsets, enums and counters; identity stays in the
+// existing connection events. Keep the readable view as pure as that report.
+const syncOffset = (value) => value == null ? "unfinished" : `+${value} ms`;
+const syncSpan = (start, end) => `${syncOffset(start)} → ${syncOffset(end)}`;
+const syncCounts = (counts = {}) => Object.entries(counts)
+  .filter(([key]) => key !== "at")
+  .map(([key, value]) => `${key}=${value == null ? "unavailable" : value}`)
+  .join(" ");
+
+function syncSnapshotText(name, snapshot) {
+  return `${name} ${syncOffset(snapshot?.at)}${snapshot ? ` ${syncCounts(snapshot)}` : ""}`;
+}
+
+function syncPassText(pass) {
+  return [
+    `Pass ${syncSpan(pass.start, pass.end)}`,
+    ...(pass.stages || []).map((stage) => `  ${stage.stage} ${syncSpan(stage.start, stage.end)}`),
+    `  ${syncSnapshotText("Capture", pass.snapshot?.capture)}`,
+    `  ${syncSnapshotText("Drain", pass.snapshot?.drain)}`,
+    `  Selected ${syncCounts(pass.selected)}`,
+  ].join("\n");
+}
+
+function syncRequestText(request) {
+  return `${request.verb} (${request.kind}) queued ${syncOffset(request.queued)}, start ${syncOffset(request.start)}, receipt ${syncOffset(request.receipt)}, settlement ${syncOffset(request.settlement)}; ${request.outcome}`;
+}
+
+function syncPeriodText(period) {
+  const passes = period.passes || [];
+  const count = period.passCount ?? passes.length;
+  return [
+    `Ring ${syncSpan(period.start, period.stop)}; ${count} pass${count === 1 ? "" : "es"}`,
+    ...passes.map(syncPassText),
+    ...(period.items ? [`Requests: ${syncCounts(period.items)}`] : []),
+    "Slowest recorded RPCs (up to 5):",
+    ...(period.slowest || []).slice(0, 5).map(syncRequestText),
+  ].join("\n");
+}
+
+function syncOldestText(sync) {
+  const label = sync.oldestUnsettledSampled ? "Oldest sampled unsettled" : "Oldest unsettled";
+  const absent = sync.oldestUnsettledSampled ? "unknown (detail cap)" : "none";
+  return `${label}: ${sync.oldestUnsettledMs == null ? absent : `${sync.oldestUnsettledMs} ms`}`;
+}
+
+export function syncDiagnosticsText(sync) {
+  if (!sync) return "";
+  return [
+    "Sync timing",
+    `Live devices: ${sync.liveCount ?? 0}`,
+    syncOldestText(sync),
+    `SQL credits: ${syncCounts(sync.sql || { queued: 0, admitted: 0, timedOutHeld: 0 })}`,
+    ...(sync.devices || []).map((device, index) => `Device ${index + 1}: ${syncCounts(device)}`),
+    ...(sync.periods || []).slice().reverse().map(syncPeriodText),
+  ].join("\n");
+}

@@ -8,6 +8,7 @@ import {
   diagnosticsSummary,
   formatDiagnosticTime,
   shortDeviceId,
+  syncDiagnosticsText,
 } from "../src/core/connectionDiagnosticsModel.js";
 
 const MAC = "3f2a91c4-0b1d-4e77-9a21-6c5b8e0d4417";
@@ -169,4 +170,44 @@ describe("the line above the list", () => {
     expect(diagnosticsSummary([{}])).toBe("1 recorded event, newest first.");
     expect(diagnosticsSummary([])).toBe("");
   });
+});
+
+
+describe("sync timing", () => {
+  it("preserves sync only when supplied", () => {
+    const sync = { periods: [], liveCount: 0 };
+    expect(JSON.parse(diagnosticsJson({ sync })).sync).toEqual(sync);
+    expect(JSON.parse(diagnosticsJson({}))).not.toHaveProperty("sync");
+  });
+  it("explains unfinished periods, stages, snapshots, selection and RPCs", () => {
+    const text = syncDiagnosticsText({ periods: [{ start: 0, stop: null, passes: [{ start: 1, end: null, stages: [{ stage: "priority", start: 2, end: null }], snapshot: { capture: { at: 3, bodyPending: 4 }, drain: null }, selected: { active: 1, recent: 2, projectOwner: 3, heldBodies: 4 } }], slowest: [{ verb: "get_task", kind: "body", queued: 4, start: 5, receipt: null, settlement: null, outcome: "reply" }] }], devices: [{ syncing: true, pass: true, bodyPending: 4 }], liveCount: 1, oldestUnsettledMs: 1200, sql: { queued: 0, admitted: 2, timedOutHeld: 1 } });
+    for (const expected of ["Ring +0 ms → unfinished", "1 pass", "Pass +1 ms → unfinished", "priority +2 ms → unfinished", "Capture +3 ms", "bodyPending=4", "Drain unfinished", "active=1 recent=2 projectOwner=3 heldBodies=4", "get_task (body)", "queued +4 ms", "start +5 ms", "receipt unfinished", "settlement unfinished", "reply", "Oldest unsettled: 1200 ms", "SQL credits: queued=0 admitted=2 timedOutHeld=1"]) expect(text).toContain(expected);
+  });
+  it("shows held SQL credits with no pending requests", () => {
+    expect(syncDiagnosticsText({ periods: [], oldestUnsettledMs: null, sql: { queued: 0, admitted: 1, timedOutHeld: 1 } })).toContain("SQL credits: queued=0 admitted=1 timedOutHeld=1");
+  });
+});
+
+
+it("shows completed pass and snapshot drain offsets, with only five slow RPC rows", () => {
+  const slowest = Array.from({ length: 6 }, (_, index) => ({ verb: `rpc_${index}`, kind: "rpc", queued: 1, start: 2, receipt: 3, settlement: 10, outcome: "answer-timeout" }));
+  const text = syncDiagnosticsText({ periods: [{ start: 0, stop: 20, passes: [{ start: 1, end: 19, stages: [{ stage: "background", start: 10, end: 18 }], snapshot: { capture: { at: 2, captured: 4, backgroundRunning: 1, backgroundPending: 2, catchupRunning: 3, catchupPending: 4 }, drain: { at: 18, drained: 4, bodyRunning: 0 } }, selected: { active: 1 } }], slowest }] });
+  for (const expected of ["Ring +0 ms → +20 ms", "Pass +1 ms → +19 ms", "background +10 ms → +18 ms", "Drain +18 ms", "drained=4", "captured=4", "backgroundRunning=1", "backgroundPending=2", "catchupRunning=3", "catchupPending=4", "bodyRunning=0", "receipt +3 ms", "settlement +10 ms", "answer-timeout", "rpc_4"]) expect(text).toContain(expected);
+  expect(text).not.toContain("rpc_5");
+});
+
+
+it("reports total passes after older details were bounded away", () => {
+  expect(syncDiagnosticsText({ periods: [{ start: 0, stop: 50, passCount: 35, passes: [] }] })).toContain("35 passes");
+});
+
+
+it("labels bounded request samples and reserved held counts honestly", () => {
+  const text = syncDiagnosticsText({ oldestUnsettledMs: 100, oldestUnsettledSampled: true, periods: [{ start: 0, stop: null,
+    items: { queued: 100000, settled: 1, unsettled: 99999, retained: 32, droppedDetail: 99968 },
+    passes: [{ start: 0, end: null, selected: { heldBodies: null } }] }] });
+  expect(text).toContain("Oldest sampled unsettled: 100 ms");
+  expect(text).toContain("heldBodies=unavailable");
+  expect(text).toContain("droppedDetail=99968");
+  expect(syncDiagnosticsText({ oldestUnsettledMs: null, oldestUnsettledSampled: true })).toContain("unknown (detail cap)");
 });

@@ -228,6 +228,7 @@ async function readBackground(state) {
 /** The foreground callback is also called at every background wire boundary
  * and by routeChanged, so a slow background answer never owns the new route. */
 export function createSyncPhases(options) {
+  const stage = options.stage || (() => {});
   const state = { ...options, done: new Set(), pending: new Map(), foreground: null, foregroundTurn: null };
   state.foreground = () => currentForeground(state).promise;
   return {
@@ -237,10 +238,15 @@ export function createSyncPhases(options) {
       envelope?.priority === "background" && foregroundRequest(state, scope)
         ? requestPriorityFields("foreground") : envelope,
     async run() {
+      stage("foreground");
       await state.foreground();
+      stage("rosters");
       await Promise.all((state.projectRosterReads || []).map((read) => takeJob(state, rosterJob(read))));
+      stage("foreground");
       await state.foreground();
+      stage("inbox");
       await readInbox(state);
+      stage("background");
       return readBackground(state);
     },
   };

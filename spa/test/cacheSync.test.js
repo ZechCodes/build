@@ -2096,3 +2096,63 @@ it("writes the mounted conversation before sibling tips in the same entity", asy
     expect(writes.mock.calls.filter(([address]) => address.kind === "thread").map(([address]) => address.sub)).toEqual(["open", "cold"]);
   } finally { stop(); writes.mockRestore(); }
 });
+
+
+describe("sync timing boundaries", () => {
+  it("keeps an unfinished pass readable, then stamps its stages and end", async () => {
+    const { syncDiagnostics } = await import("../src/core/syncDiagnostics.js");
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "unread-body", sub: "private-path" }, { secret: "private-body" });
+    let release;
+    script["board.list"] = () => new Promise((resolve) => { release = resolve; });
+    sync.startCacheSync();
+    await called(bridge.call, () => calls("board.list").length > 0);
+    const during = syncDiagnostics.report();
+    expect(during.periods).toHaveLength(1);
+    expect(during.periods[0].stop).toBeNull();
+    expect(during.periods[0].passes[0].end).toBeNull();
+    expect(during.periods[0].passes[0].stages).toContainEqual(expect.objectContaining({ stage: "lists", end: null }));
+    release({ items: [branchItem({ agents: [{ id: "private-agent" }] })] });
+    await passesSettled(sync, "dev-1");
+    const after = syncDiagnostics.report().periods[0];
+    expect(after.stop).toEqual(expect.any(Number));
+    expect(after.passes[0].end).toEqual(expect.any(Number));
+    expect(after.passes[0].selected.active).toBeGreaterThan(0);
+    expect(after.passes[0].selected.heldBodies).toBeNull();
+    expect(after.passes[0].snapshot.capture).toMatchObject({ captured: 0 });
+    expect(after.passes[0].snapshot.drain).toMatchObject({ drained: 0 });
+    expect(after.passes[0].stages.map(({ stage }) => stage)).toEqual(expect.arrayContaining(["greeting", "subscriptions", "lists", "selection", "foreground", "inbox", "background", "cleanup"]));
+    expect(JSON.stringify(syncDiagnostics.report())).not.toMatch(/dev-1|run-1|build\/login|wt-1|private-path|private-body/);
+  });
+});
+
+
+it("does not add a whole-device cache inventory for diagnostics", async () => {
+  const original = cache.cachedAddresses;
+  const selectionInventories = [];
+  const inventory = vi.spyOn(cache, "cachedAddresses").mockImplementation((prefix) => {
+    if (!Object.hasOwn(prefix, "entityId") && new Error().stack.includes("workspacesToRead")) selectionInventories.push(prefix);
+    return original(prefix);
+  });
+  try {
+    await boot([branchItem({ agents: [{ id: "private-agent" }] })]);
+    expect(selectionInventories).toEqual([]);
+    const { syncDiagnostics } = await import("../src/core/syncDiagnostics.js");
+    expect(syncDiagnostics.report().periods[0].passes[0].selected.heldBodies).toBeNull();
+  } finally { inventory.mockRestore(); }
+});
+
+it("starts the greeting before publishing its pass or notifying ring listeners", async () => {
+  const events = [];
+  const context = contexts.get("dev-1");
+  const greeting = Promise.resolve();
+  Object.defineProperty(context, "greeted", { get() {
+    events.push(["greeting", Boolean(sync.passInFlight("dev-1"))]);
+    return greeting;
+  } });
+  const stop = sync.subscribeConnectionSync((active) => { if (active) events.push(["ring"]); });
+  try {
+    await boot([]);
+    expect(events[0]).toEqual(["greeting", false]);
+    expect(events.findIndex(([kind]) => kind === "greeting")).toBeLessThan(events.findIndex(([kind]) => kind === "ring"));
+  } finally { stop(); }
+});

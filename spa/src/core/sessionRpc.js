@@ -9,6 +9,7 @@
 // Hides the pending map, the request ids, encrypt/decrypt, the per-call
 // timeout, and the rule that tells a reply from a push.
 
+import { syncDiagnostics } from "./syncDiagnostics.js";
 import { createSqlReadCredits, isSqlRead, SQL_READ_LIMIT } from "./sqlReadCredits.js";
 import { createBridgeEpoch, endedOpeningError } from "./bridgeEpoch.js";
 
@@ -43,7 +44,7 @@ export const ANSWER_TIMEOUT_MS = 120000;
  * because a queue is not a fault and reporting it as one is how a delivered
  * message read as failed.
  */
-function createDeadline(method, timeoutMs, onReceipt) {
+function createDeadline(method, timeoutMs, onReceipt, onTimeout) {
   let timer = null;
   let settle = null;
   let receipted = false;
@@ -53,6 +54,7 @@ function createDeadline(method, timeoutMs, onReceipt) {
     if (waitMs == null || waitMs === 0) return;
     timer = setTimeout(() => {
       const error = timedOutError(method, uncertain(), which);
+      onTimeout(error);
       // Remove an expired admission synchronously, before a late reply can
       // drain the credit queue in this same turn.
       onExpire?.(error);
@@ -147,6 +149,7 @@ export function createSessionRpc({
 }) {
   const pending = new Map();
   const sqlReads = createSqlReadCredits(sqlReadLimit);
+  const unregisterSqlCredits = syncDiagnostics.registerSqlCredits(sqlReads.snapshot);
   const readers = new WeakSet();
   const closedCarriers = new WeakSet();
   const pushListeners = new Set();
@@ -272,6 +275,7 @@ export function createSessionRpc({
     sessionId,
     deviceId,
     bridgeEpoch,
+    sqlReadCreditSnapshot: sqlReads.snapshot,
     onWriteFrame(fn) {
       writeListeners.add(fn);
       return () => writeListeners.delete(fn);
@@ -331,16 +335,33 @@ export function createSessionRpc({
       if (closed) throw noCarrier();
       const id = "r" + ++requestId;
       let waiting;
-      const deadline = createDeadline(method, timeoutMs, onReceipt);
+      const timing = syncDiagnostics.itemQueued(method, "rpc");
+      let timingSettled = false;
+      const settleTiming = (outcome) => {
+        if (timingSettled) return;
+        timingSettled = true;
+        syncDiagnostics.itemSettled(timing, outcome);
+      };
+      const deadline = createDeadline(method, timeoutMs, () => {
+        syncDiagnostics.itemReceipt(timing);
+        onReceipt?.();
+      }, (error) => {
+        sqlReads.timedOut(id);
+        settleTiming(error.deadline === "admission" ? "admission-cancel" : `${error.deadline}-timeout`);
+      });
       const answer = new Promise((resolve, reject) => {
         waiting = {
           method,
           write: Boolean(write),
           sendingCarrier: null,
           handoffAttempted: false,
-          reject,
+          reject: (error) => { settleTiming(null); reject(error); },
           receipt: () => deadline.receipted(waiting.handoffAttempted),
-          ok: (payload) => (payload.ok ? resolve(write ? payload : payload.result) : reject(refusalError(payload))),
+          ok: (payload) => {
+            settleTiming("reply");
+            if (payload.ok) resolve(write ? payload : payload.result);
+            else reject(refusalError(payload));
+          },
         };
         pending.set(id, waiting);
       });
@@ -379,6 +400,7 @@ export function createSessionRpc({
         await sending.send(envelope);
       };
       const start = () => {
+        syncDiagnostics.itemStart(timing);
         deadline.start(() => waiting.handoffAttempted);
         deliver().catch((error) => {
           reject(sql && waiting.handoffAttempted ? sqlDeliveryError(error) : error);
@@ -411,6 +433,7 @@ export function createSessionRpc({
      *  better answer than "nothing is carrying". */
     close(reason) {
       closed = true;
+      unregisterSqlCredits();
       stopEpoch();
       carrier = null;
       fail(reason || noCarrier());

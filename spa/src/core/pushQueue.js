@@ -1,6 +1,7 @@
 // Keep one cache applier running. Pending compatible snapshots share a job;
-// thread deltas retain their items and gaps. Destructive board and generation transitions
-// divide the queue, so foreground promotion cannot cross a removal or reset.
+// thread deltas retain their items and gaps. Destructive board and generation
+// transitions divide the queue, so foreground promotion cannot cross a removal
+// or reset.
 import { mergeThreadItems } from "./thread.js";
 import { isFinishedState } from "./inbox.js";
 

@@ -29,6 +29,11 @@ export function pushReplayPlugin({ revision } = {}) {
       return null;
     },
     transform(source, id) {
+      if (id.endsWith("/src/core/pushQueue.js")) return source.replace("async function run(job) {", `
+        async function run(job) {
+          const stats=window.__pushReplay?.stats;
+          if (stats) stats.schedulerStarts=(stats.schedulerStarts||0)+1;
+      `);
       if (!id.endsWith("/src/core/cacheSync.js")) return null;
       return source.replace("async function applyItem(", "async function replayOriginalApplyItem(") + `
         async function applyItem(...args) {
@@ -54,8 +59,8 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250, 
       await page.evaluate(async ({ intervalMs, stallMs, frames, mixed, drainMs }) => {
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const stats = { gets: 0, transactions: 0, pendingTransactions: 0, peakTransactions: 0,
-          pendingAppliers: 0, peakAppliers: 0, cacheLatencies: [], cacheApplyTurns: [], renderLatencies: [], rpcCalls: 0, rowGets: 0, backlogSamples: [] };
-        const fixture = window.__pushReplay = { stats, watchers: [], emitted: new Map(), emittedTurns: new Map(), server: new Map() };
+          pendingAppliers: 0, peakAppliers: 0, cacheLatencies: [], cacheApplyTurns: [], renderLatencies: [], renderSchedulerTurns: [], rpcCalls: 0, rowGets: 0, backlogSamples: [] };
+        const fixture = window.__pushReplay = { stats, watchers: [], emitted: new Map(), emittedTurns: new Map(), emittedSchedulerTurns: new Map(), server: new Map() };
         const { cache, sync, renderer, feed, visible, watched, lineage, app: { App } } = window.__layoutModules;
         App.devices = [{ id: "replay-device" }];
         App.route = { name: "project", deviceId: "replay-device", projectId: "p0", agent: "agent-0" };
@@ -114,6 +119,7 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250, 
             document.querySelector("#open-conversation").textContent = String(sequence);
             await new Promise(requestAnimationFrame);
             stats.renderLatencies.push(performance.now() - fixture.emitted.get(sequence));
+            stats.renderSchedulerTurns.push((stats.schedulerStarts || 0) - fixture.emittedSchedulerTurns.get(sequence));
           }
         });
         stats.seedRecords = (await cache.cachedAddresses({ deviceId: "replay-device" })).length;
@@ -180,6 +186,7 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250, 
           if (frame % 6 === 0) {
             fixture.emitted.set(sequence, performance.now());
             fixture.emittedTurns.set(sequence, stats.applierStarts || 0);
+            fixture.emittedSchedulerTurns.set(sequence, stats.schedulerStarts || 0);
           }
           // Empty, already-covered tips are duplicated by multiple active
           // subscriptions; include them without inventing cursor holes.
@@ -204,19 +211,21 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250, 
           if (frame < frames - 1 && fixture.seen?.size) stats.renderProgressDuringReplay = true;
         }
         fixture.inputEnded = performance.now();
+        const inputEndedSchedulerTurns = stats.schedulerStarts || 0;
         const deadline = fixture.inputEnded + drainMs;
         let deliveryTimer;
         await Promise.race([Promise.all(fixture.deliveries), new Promise((resolve) => {
           deliveryTimer = setTimeout(() => { stats.deliveryDeadlineReached = true; resolve(); }, drainMs);
         })]);
         clearTimeout(deliveryTimer);
-        while ((stats.pendingAppliers || stats.pendingTransactions || Object.values(fixture.work || {}).some(Boolean) || fixture.seen?.size !== Math.ceil(frames / 6)) && performance.now() < deadline) await sleep(20);
+        while ((stats.pendingAppliers || stats.pendingTransactions || Object.values(fixture.work || {}).some(Boolean) || fixture.seen?.size !== Math.ceil(frames / 6) || stats.renderLatencies.length !== Math.ceil(frames / 6)) && performance.now() < deadline) await sleep(20);
         await sleep(50);
         clearInterval(sampleTimer);
         sampleWork();
         stats.finalWork = fixture.work || null;
         fixture.elapsedMs = performance.now() - fixture.started;
         stats.drainMs = performance.now() - fixture.inputEnded;
+        stats.drainSchedulerTurns = (stats.schedulerStarts || 0) - inputEndedSchedulerTurns;
         IDBObjectStore.prototype.get = originalGet;
         IDBDatabase.prototype.transaction = originalTransaction;
         fixture.finalThreads = [];

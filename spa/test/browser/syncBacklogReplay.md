@@ -25,7 +25,16 @@ sends 240 frames at a requested 1 ms interval. Its body backlog assertion fails
 against b33f5250 (651 pending in the initial recorded red run before mounting
 the additional affected cache consumers). The test checks both body
 and enrichment backlog, exact final messages/row states, reset clearing, removal
-and full drain. To reproduce the baseline red:
+and full drain. CI also enforces a 2,048-row-get budget, at most 128 queue-job
+starts after input ends before draining, and at most 128 queue-job starts from
+any mounted message's push to its completed animation frame. Both body and
+enrichment jobs count as turns. All 40 mounted render samples must complete;
+all queues, active appliers, and transactions must be empty. These generous
+work-count margins do not depend on CPU time granted by a loaded host. The
+120-second drain deadline and 240-second test timeout are hang watchdogs, not
+latency thresholds. The b33f5250 run of this exact 240-frame fixture made
+419,801 row gets and failed the 2,048 count budget (exit 1). To reproduce the
+baseline red:
 
 ```sh
 nice -n 10 env SYNC_REPLAY_REVISION=b33f5250 npx vitest run test/browser/syncBacklogReplay.test.js

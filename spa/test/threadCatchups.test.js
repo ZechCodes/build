@@ -193,3 +193,17 @@ it("freezes captured trailing goals while coalescing later goals in their own ro
     expect(jobs.snapshot()).toEqual({ running: 1, pending: 0 });
   } finally { first.resolve(); later.resolve(); await Promise.all([one, two, three]); }
 });
+
+it("seals a descendant round on admission while sharing an already running equal goal", async () => {
+  const held = gate(), read = vi.fn(() => held.promise);
+  const jobs = createThreadCatchups({ needed: () => true, read });
+  const first = jobs.enqueue("thread", request(1));
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  expect(jobs.enqueue("thread", request(1), true)).toBe(first);
+  const child = jobs.enqueue("thread", request(2), true);
+  const later = jobs.enqueue("thread", request(3));
+  try {
+    expect(later).not.toBe(child);
+    expect(jobs.snapshot()).toEqual({ running: 1, pending: 2 });
+  } finally { jobs.clear(); held.resolve(); await Promise.all([first, child, later]); }
+});

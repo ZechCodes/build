@@ -262,3 +262,32 @@ it("freezes captured pending payloads and coalesces subsequent compatible arriva
     expect(queue.snapshot()).toEqual({ running: 1, pending: 0 });
   } finally { first.release(); later.release(); await draining; }
 });
+
+it("seals captured descendants on admission before later compatible work can merge", async () => {
+  const first = gate(), applied = [];
+  const queue = createPushQueue({ apply: async (_, entry) => {
+    applied.push(entry.thread[0].last_sequence);
+    if (applied.length === 1) await first.done;
+  } });
+  const draining = queue.enqueue(context, [item("a", 1)]);
+  await Promise.resolve();
+  const child = queue.enqueueApplied(context, [item("a", 2)], true);
+  queue.enqueueApplied(context, [item("a", 3)]);
+  try { expect(queue.snapshot()).toEqual({ running: 1, pending: 2 }); }
+  finally { first.release(); await Promise.all([draining, child]); }
+  expect(applied).toEqual([1, 2, 3]);
+});
+
+it("lets a running body discover that it was captured before admitting descendants", async () => {
+  const held = gate(), observations = [];
+  const queue = createPushQueue({ apply: async (_, _entry, isCaptured) => {
+    observations.push(isCaptured?.());
+    await held.done;
+    observations.push(isCaptured?.());
+  } });
+  const draining = queue.enqueue(context, [item("a", 1)]);
+  await Promise.resolve();
+  const captured = queue.capture();
+  held.release(); await Promise.all([captured, draining]);
+  expect(observations).toEqual([false, true]);
+});

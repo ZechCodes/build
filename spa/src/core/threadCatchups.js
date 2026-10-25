@@ -95,20 +95,24 @@ export function createThreadCatchups({ needed, read, onChange = () => {} }) {
 
   function queueTrailing(entry, request) {
     let pending = entry.pending.at(-1);
-    if (pending && !newerGoal(request, pending.request)) return pending.promise;
+    if (pending && !newerGoal(request, pending.request)) return pending;
     if (!pending || pending.captured) {
       pending = roundFor(combinedGoal(pending?.request || entry.current.request, request));
       entry.pending.push(pending);
     } else pending.request = combinedGoal(pending.request, request);
-    return pending.promise;
+    return pending;
   }
 
   return {
-    enqueue(key, request) {
+    enqueue(key, request, captured = false) {
       const entry = entryFor(key, request);
-      if (!entry.current) return start(entry, roundFor(request));
-      if (!newerGoal(request, entry.current.request)) return entry.current.promise;
-      return queueTrailing(entry, request);
+      let round = entry.current;
+      if (!round) {
+        round = roundFor(request);
+        start(entry, round);
+      } else if (newerGoal(request, round.request)) round = queueTrailing(entry, request);
+      round.captured ||= captured;
+      return round.promise;
     },
     // Preserve captured goals; newer tips share a separate trailing round.
     capture: () => Promise.all([...entries.values()].flatMap((entry) =>

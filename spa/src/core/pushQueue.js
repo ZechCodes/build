@@ -129,7 +129,7 @@ export function createPushQueue({ apply, priority = () => false, onError = () =>
   async function run(job) {
     let result;
     try {
-      if (job.context.active()) result = await apply(job.context, job.item);
+      if (job.context.active()) result = await apply(job.context, job.item, () => Boolean(job.captured));
     } catch (error) { onError(error); }
     finally {
       job.resolve?.(result);
@@ -171,9 +171,10 @@ export function createPushQueue({ apply, priority = () => false, onError = () =>
       for (const item of items) append(context, item);
       return schedule();
     },
-    enqueueApplied(context, items) {
+    enqueueApplied(context, items, captured = false) {
       const completions = items.map((item) => {
         const job = append(context, item);
+        job.captured ||= captured;
         return completion(job);
       });
       void schedule();

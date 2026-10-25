@@ -3293,6 +3293,10 @@ in `shell.js`. The bottom Console tray opens the existing console and never
 creates a shell; the project rail has no separate Terminal entry.
 `projectConsole.js` paints source-labelled tabs from each
 source's `terminals` cache record at device/project/source/captured-path addresses.
+Source terminal roster subscriptions use realtime delivery at foreground priority.
+`projectConsole.js` re-reads only its project/support/source-terminal cache records;
+create and close commit and read back independently of background collectors,
+guarded by an applied generation.
 A remembered source picker chooses only the next new shell. It stays visible
 even with one cached source, with the Files folder glyph inside the control
 before its name. Its fixed width avoids layout shifts as sources change.

@@ -180,7 +180,7 @@ describe("prompt project console actions", () => {
     expect(document.querySelectorAll(".console-tab")).toHaveLength(0);
   });
 
-  it("does not publish create completion after an unseen source removal", async () => {
+  it.each(["removal", "replacement"])("does not publish create completion after an unseen source %s", async (change) => {
     let finish;
     manager.createTerminal.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     document.querySelector(".console-new").click();
@@ -188,7 +188,8 @@ describe("prompt project console actions", () => {
     const blocked = new Promise((resolve) => { release = resolve; });
     harness.blockRead = () => blocked;
     try {
-      await writeCached(projectsAddress, [{ project_id: "p1", sources: [] }]);
+      if (change === "replacement") await moveSource();
+      else await writeCached(projectsAddress, [{ project_id: "p1", sources: [] }]);
       finish({ term_id: "late-term" }); await flush();
       expect(panel.size()).toBe("collapsed");
     } finally {
@@ -232,6 +233,10 @@ describe("late project console roster responses", () => {
     finish({ term_id: "late-term" }); await flush();
     expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
     expect((await readCached(movedAddress)).value.tabs).toEqual([]);
+    expect(panel.size()).toBe("collapsed");
+    expect(document.querySelectorAll(".console-tab")).toHaveLength(0);
+    await flush();
+    expect(document.querySelectorAll(".console-tab")).toHaveLength(0);
   });
 
   it("does not update a disposed console when a shell creation completes", async () => {
@@ -242,6 +247,49 @@ describe("late project console roster responses", () => {
     finish({ term_id: "late-term" }); await flush();
     expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
     expect(document.getElementById("console-region").innerHTML).toBe("");
+  });
+
+  it("does not redraw an old-path tab after replacement during close and a late roster read", async () => {
+    let finish;
+    manager.closeTerminal.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    document.querySelector("[data-close]").click();
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    harness.blockRead = (address) => {
+      if (address.entityId === rosterAddress.entityId && address.kind === "terminals") {
+        harness.blockRead = null; return blocked;
+      }
+    };
+    let observer;
+    const staleTabs = [];
+    try {
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-terminal-support" }, { projectSources: true });
+      await flush();
+      await writeCached(movedAddress, { tabs: [{ term_id: "term-1", name: "Replacement" }] });
+      await moveSource();
+      finish(); await flush();
+      const tabs = () => [...document.querySelectorAll(".console-tab")];
+      expect(tabs()).toHaveLength(1);
+      expect(tabs()[0].dataset.key).toContain("/moved");
+      expect(document.querySelector(".console-tab-name").textContent).toBe("Code · Replacement");
+      observer = new MutationObserver((changes) => {
+        for (const change of changes) for (const node of change.addedNodes) {
+          if (node.nodeType !== Node.ELEMENT_NODE) continue;
+          for (const tab of [node, ...node.querySelectorAll(".console-tab")]) {
+            if (tab.matches(".console-tab") && tab.dataset.key.includes("/code")) staleTabs.push(tab.dataset.key);
+          }
+        }
+      });
+      observer.observe(document.getElementById("console-region"), { childList: true, subtree: true });
+      release(); await flush();
+      expect(staleTabs).toEqual([]);
+      expect(tabs()).toHaveLength(1);
+      expect(tabs()[0].dataset.key).toContain("/moved");
+      expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
+      expect((await readCached(movedAddress)).value.tabs).toEqual([{ term_id: "term-1", name: "Replacement" }]);
+    } finally {
+      observer?.disconnect(); harness.blockRead = null; release(); await flush();
+    }
   });
 
   it("does not remove a replacement source's same-ID shell when the old close settles", async () => {

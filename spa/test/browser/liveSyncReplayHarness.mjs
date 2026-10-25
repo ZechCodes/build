@@ -243,6 +243,10 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         stats.seedFeedBytes = JSON.stringify((await cache.readCached(address("", "feed")))?.value).length;
         stats.seedWorkspaceBytes = JSON.stringify((await cache.readCached(address("", "workspaces")))?.value).length;
         stats.mountStartedAt = performance.now();
+        const sourcePhase = () => sync.passInFlight("replay-device") ? "source-active" : "mounted-only";
+        const readAttribution = window.__layoutModules.attribution;
+        window.__liveSyncMetrics.startupAttribution = readAttribution.createReadAttribution(() => performance.now(), sourcePhase);
+        window.__liveSyncMetrics.startupStorageAttribution = readAttribution.createReadAttribution(() => performance.now(), sourcePhase);
         inbox.mountInboxList();
         const rail = agentRail.mountAgentRail(document.querySelector("#agent-rail"), {
           kind: "branch", branch: "build/0", deviceId: "replay-device", projectId: "p0", entityId: "run-0", openAgentId: "agent-0", panelOpen: true,
@@ -442,6 +446,7 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         window.__liveSyncMetrics.active = false;
         await window.__stopLiveSyncMeasurement();
         stats.ui = { counters: window.__liveSyncMetrics.counters, timings: window.__liveSyncMetrics.timings,
+          startupReadAttribution: window.__liveSyncMetrics.startupAttribution.intervals, startupStorageReadAttribution: window.__liveSyncMetrics.startupStorageAttribution.intervals,
           readAttribution: window.__liveSyncMetrics.attribution.intervals, storageReadAttribution: window.__liveSyncMetrics.storageAttribution.intervals,
           drawCallsites: window.__liveSyncMetrics.drawCallsites, reads: window.__liveSyncMetrics.reads, readStacks: window.__liveSyncMetrics.readStacks, stages: window.__liveSyncMetrics.stages };
         observeRealPaint.disconnect();

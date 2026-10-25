@@ -10,13 +10,13 @@ export function instrumentReadCallsites(source, id) {
     changed = true;
     return `.map((address) => __profileCacheRead(${JSON.stringify(`${file}:${index + 1}`)}, captureCachedRecord, address))`;
   }));
-  return changed ? lines.join("\n") + '\nfunction __profileCacheRead(site, run, address) { window.__liveSyncMetrics?.attribution?.read(site, address); return run(address); }\n' : source;
+  return changed ? lines.join("\n") + '\nfunction __profileCacheRead(site, run, address) { window.__liveSyncMetrics?.attribution?.read(site, address); window.__liveSyncMetrics?.startupAttribution?.read(site, address); return run(address); }\n' : source;
 }
 
 export function instrumentStorageReadCallsites(source, id) {
   if (!id.endsWith("/src/core/localCache.js")) return source;
   return source.split("\n").map((line, index) => line.replace(/store\.get\(/g, `__profileStoreGet("core/localCache.js:${index + 1}", store, `)).join("\n")
-    + '\nfunction __profileStoreGet(site, store, key) { window.__liveSyncMetrics?.storageAttribution?.read(site, {kind: String(key).split("|")[2] || "other"}); return store.get(key); }\n';
+    + '\nfunction __profileStoreGet(site, store, key) { const address = {kind: String(key).split("|")[2] || "other"}; window.__liveSyncMetrics?.storageAttribution?.read(site, address); window.__liveSyncMetrics?.startupStorageAttribution?.read(site, address); return store.get(key); }\n';
 }
 
 export function createReadAttribution(clock, phase, intervalMs = 10000) {

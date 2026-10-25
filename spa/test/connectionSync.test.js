@@ -130,12 +130,14 @@ it("holds active for push enrichment still running after the pass completes", as
   const state = signals(), context = contexts[0], pass = hold(context, "board.list");
   const work = hold(context, "tasks.list", (params) => params.project_id.startsWith("pushed-project"));
   sync.startCacheSync(); await started(context);
-  const pushed = Promise.all([1, 2, 3].map((index) =>
-    push([{ entity_id: `pushed-project-${index}`, tasks: { task_ids: ["updated"] } }])));
-  await vi.waitFor(() => expect(sync.pushWorkInFlight("dev-1").backgroundPending).toBeGreaterThan(0));
+  const pushed = push([{ entity_id: "pushed-project", tasks: { task_ids: ["updated"] } }]);
+  await started(context, "tasks.list");
   pass.release({ items: [] }); await passesSettled(sync, "dev-1");
   expect(state.values()).toEqual([false, true]);
-  work.release({ tasks: [] }); await pushed; await idle(state);
+  const queued = [1, 2].map((index) => push([{ entity_id: `pushed-project-${index}`, tasks: { task_ids: ["updated"] } }]));
+  await vi.waitFor(() => expect(sync.pushWorkInFlight("dev-1").backgroundPending).toBeGreaterThan(0));
+  expect(state.values()).toEqual([false, true]);
+  work.release({ tasks: [] }); await Promise.all([pushed, ...queued]); await idle(state);
   expect(state.values()).toEqual([false, true, false]);
 });
 
@@ -158,8 +160,13 @@ it("holds active for thread catch-up after body application and the pass finish"
 
 it("does not treat retained repair debt in the cache as running work", async () => {
   const state = signals();
-  const address = { deviceId: "dev-1", entityId: "unlisted", kind: "thread", sub: "c1" };
+  const address = { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "c1" };
   await cache.writeCached(address, { thread_id: "thread:c1", items: [], deliveredSequence: 10, repairThrough: 10 });
+  const context = contexts[0], previous = context.rpc.getMockImplementation();
+  context.rpc.mockImplementation((method, ...args) => {
+    if (method === "thread.page") throw new Error("offline");
+    return previous(method, ...args);
+  });
   sync.startCacheSync(); await idle(state);
   expect((await cache.readCached(address))?.value.repairThrough).toBe(10);
   expect(state.values()).toEqual([false, true, false]);
@@ -184,4 +191,27 @@ it("clears the signal on stop and ignores completion from the stopped lifetime",
   expect(state.values()).toEqual([false, true, false]);
   held.release({ items: [] }); await oldPass;
   expect(state.values()).toEqual([false, true, false]);
+});
+
+it("does not reactivate when a queued replacement disconnects before its pass starts", async () => {
+  const state = signals(), context = contexts[0], held = hold(context, "board.list");
+  sync.startCacheSync(); await started(context);
+  const oldPass = sync.passInFlight("dev-1");
+  context.session = {}; deviceChanged();
+  const replacement = sync.syncDevice("dev-1");
+  context.connected = false; deviceChanged();
+  expect(state.values()).toEqual([false, true, false]);
+  held.release({ items: [] });
+  await Promise.all([oldPass, replacement]);
+  expect(state.values()).toEqual([false, true, false]);
+});
+
+it("starts a new active period when an existing session restores its connection", async () => {
+  const state = signals(), context = contexts[0];
+  sync.startCacheSync(); await idle(state);
+  const held = hold(context, "board.list");
+  const restored = sync.syncRestoredDevice("dev-1", context.session);
+  expect(state.values()).toEqual([false, true, false, true]);
+  held.release({ items: [] }); await restored;
+  expect(state.values()).toEqual([false, true, false, true, false]);
 });

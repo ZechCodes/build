@@ -3872,7 +3872,9 @@ gate attachment display.
   Empty in-place-only forward pages commit that coverage together with repair
   debt. Capped sparse repairs fetch omitted held representatives through exact
   one-item, unprojected pages (at most 50); failed or mismatched copies leave
-  debt for the next bounded attempt or recovery pass.
+  debt for the next bounded attempt or recovery pass. Creations after the
+  canonical debt counter do not extend that historical coverage requirement;
+  newer in-place debt and missing older representatives still prevent repayment.
   Sync and load-older pages request `activity: "newest"` only when the device
   advertises `threads.leanActivity`. Cold sync and conversation-open reads
   then request 23 messages, measured to fill the phone conversation even at

@@ -64,6 +64,8 @@ mod documents;
 pub use delivery_intents::{DeliveryIntent, DeliveryNotice};
 mod entities;
 mod legacy;
+mod maintenance;
+pub use maintenance::{StorageMaintenanceHandle, StorageMaintenanceProgress};
 mod migrations;
 pub mod mutations;
 mod writer;
@@ -385,6 +387,7 @@ impl Store {
             )?;
         }
         tracker::initialize_list_key(&conn)?;
+        maintenance::configure_incremental_vacuum(&conn)?;
         let writer = StoreWriter::new(conn);
         // Recover ambiguous claims without executing any command at startup.
         writer.recover_mutations()?;

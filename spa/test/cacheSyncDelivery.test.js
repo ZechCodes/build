@@ -386,6 +386,8 @@ describe("a pass racing the wire", () => {
     sync.startCacheSync();
     await settle();
 
+    await called(bridge.call, () => calls("board.list").length === 1);
+    await passesSettled(sync, "dev-1");
     expect(calls("board.list")).toHaveLength(1);
     expect(await headOf("run-1")).toBe("before");
 
@@ -394,6 +396,8 @@ describe("a pass racing the wire", () => {
     answerSubscribes();
     await settle();
 
+    await called(bridge.call, () => calls("board.list").length >= 2);
+    await passesSettled(sync, "dev-1");
     expect(await headOf("run-1")).toBe("after");
     expect(calls("board.list")).toHaveLength(2);
   });
@@ -766,13 +770,15 @@ describe("a pass racing the wire", () => {
     const answerSubscribe = wire.hold("changes.subscribe", ({ subscription_id }) => subscription_id === "s-background");
     const answerDiff = pending ? wire.hold("run.diff") : () => {};
     sync.startCacheSync();
-    await settle();
+    await called(bridge.call, () => calls("fs.read").length > 0);
+    if (pending) await called(bridge.call, () => calls("run.diff").length > 0);
+    else await passesSettled(sync, "dev-1");
     expect(calls("fs.read")).toHaveLength(1);
     body = "bmV3";
     answerSubscribe();
     await settle();
     answerDiff();
-    await settle();
+    await passesSettled(sync, "dev-1");
     expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("bmV3");
     const recovered = calls("fs.read").length;
     await sync.syncDevice("dev-1");
@@ -921,6 +927,8 @@ describe("a pass racing the wire", () => {
     sync.startCacheSync();
     await settle();
 
+    await announced((heard) => cache.subscribeCache({ deviceId: "dev-1", entityId: "", kind: "projects" }, heard), async () =>
+      (await read("", "projects"))?.value?.[0]?.id === "p2");
     expect((await read("", "projects")).value.map((project) => project.id)).toEqual(["p2"]);
   });
 
@@ -935,6 +943,8 @@ describe("a pass racing the wire", () => {
     sync.startCacheSync();
     await settle();
 
+    await announced((heard) => cache.subscribeCache({ deviceId: "dev-1", entityId: "run-2", kind: "row" }, heard), async () =>
+      (await read("run-2", "row"))?.value?.branch === "build/signup");
     expect((await read("run-2", "row"))?.value.branch).toBe("build/signup");
   });
 });

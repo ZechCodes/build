@@ -1011,6 +1011,34 @@ and its controls are
   (`MANIFEST_FILE` in `bridge/src/workspace.rs`), and update status and job files
   (`bridge/src/update/`).
 
+Delivered operation receipts retain their request hash, owner/agent identity and
+message sequence span, but discard their delivery prompt in the status update.
+Ordinary receipts clear `delivery` to NULL; historical Task-to-implementation
+forwarding retains a small target intent with no payload when its execution
+owner differs from the original receipt address.
+Queued, claimed and unresolved uncertain receipts retain their payload for
+recovery. A delivered receipt later marked uncertain remains payload-free and
+cannot replay. Sent, seen, failure and completion projection readers use receipt metadata and stored
+messages after delivery; boot recovery uses the receipt span even without a
+payload. The remaining receipt is an idempotency tombstone; retaining its numeric
+span does not require retaining the referenced transcript rows.
+
+Before publishing its read pool, Store startup converts older databases to
+`auto_vacuum=INCREMENTAL` with SQLite's transactional `VACUUM`; a failed conversion
+fails startup before serving requests. This one-time rewrite needs temporary
+space for the database. A startup-only WAL checkpoint/truncate returns the
+rewrite log space before reader admission; a pending marker makes an interrupted
+checkpoint retry on the next open. The daemon's storage maintenance worker uses the existing
+writer outside the app lock. It clears old delivered payloads with resumable
+rowid-keyset batches of at most 1,000 receipts and reclaims at most 32 free pages
+per step. Cleanup progress is committed with each batch; later steps retain only
+small incremental-vacuum work. Readers continue on their independent WAL pool.
+Shutdown records the restart roster and tears down children before cancelling
+maintenance. Its worker join has a one-second budget; the main Tokio runtime
+also has a one-second shutdown timeout so a blocking batch waiting on the writer
+cannot keep the process alive indefinitely. A detached batch may finish during
+that grace period; its transactions remain atomic and cleanup remains resumable.
+
 #### Durable write foundation (#739)
 
 Schema 18 adds `mutation_commands`, per-owner ordering, dependency edges,
@@ -1863,6 +1891,19 @@ live reclaim/placement
 checks, manifest installation and idempotent reviewer dispatch. Reviewer
 delivery runs after publication, with a durable status and explicit retry.
 
+New receivers share immutable source object files through hardlinks when the
+filesystem supports them (#839). They have their own directory entries, so
+source ref deletion, garbage collection and source removal cannot invalidate
+published reviews. Index files have independent inodes; linked packs have
+receiver-local `.keep` markers to avoid repacking another physical copy.
+Receivers never use object alternates: native
+Git pushes cannot atomically install protecting refs in the source repository.
+Optional seeding runs on a dedicated niced thread with a five-second budget and
+verifies the imported graph before publication. Unsupported links, incomplete
+graphs and budget exhaustion fall back to importing the selected commits and
+their reachable history. Garbage collection at creation would not remove that
+reachable history.
+
 The daemon registers `reviews/sync.rs` independently of client subscriptions.
 Its blocking worker discovers active PRs in pages, watches canonical worktree
 Git directories, shared common directories and bare receivers, and reconciles
@@ -1931,6 +1972,49 @@ review. Explicit reconciliation of a terminal PR updates bounded observations
 of later received work or unavailable receivers without changing its status,
 version or snapshots; ordinary worker discovery still visits active reviews
 and pending captures rather than polling retained terminal history.
+
+Receiver maintenance (#839) runs independently on a niced background thread,
+without the app mutex or an RPC caller. It releases merged reviews and Closed
+reviews whose original managed workspace is no longer retained, including their
+snapshot pins and opening journals; an unused owned receiver is removed. Closed,
+unmerged reviews retain their receiving setup while the original workspace stays
+ready, so reopen still requires that workspace. Metadata and comments survive
+receiver reclamation; historical Git content can become unavailable. Startup
+also collects retained receivers, with failures retried by later turns and
+successful collections throttled to once an hour. Build-owned pack keep markers
+are released when the source no longer shares their inode.
+Running or unsettled merge publication retains its receiver until saved retry
+work settles, even when local integration already marked the PR Merged.
+Active receivers use Git's normal pruning grace period: `--prune=now` could race
+native pushes before ref publication. Maintenance reports reclaimed bytes and
+preserves receivers whose ownership or in-flight operation cannot be established.
+Its Git-lock recovery uses a maintenance-only try-lock policy and retries contention;
+foreground opening and recovery retain their existing wait semantics. Recovery,
+opening and PR fence lock guards explicitly unlock on scope exit, including
+errors: CLOEXEC alone cannot release a flock inherited by a child before exec.
+The recovery guard Drop, previously reverted for #845 scope, is required by
+this production concurrency fix; no lock wait deadline changes. Contended
+maintenance lock destruction records exact released ownership for a later reaper,
+so a live daemon PID does not strand its completed reservations.
+Unused receivers first close native Git admission with owned
+`reference-transaction` (prepared-state) and `pre-receive` hooks in the gitdir's
+own `hooks/` directory, with `core.hooksPath` unset so discovery follows a
+quarantine rename. Foreign hook overrides are preserved. The marker and active
+hook configuration are rechecked inside quarantine before the final inventory.
+Migrating legacy absolute hooks restarts the full one-hour drain; inherited-hook
+refusals preserve the original config bytes. A durable close
+marker starts a one-hour admission drain; later turns require both that drain
+and an empty gitdir/ref lock tree before quarantine. Git's normal pruning grace
+remains independent and applies to GC of retained receivers. A new bridge
+opening removes that marker. Complete ref and object inventories are checked
+after quarantine; late or foreign state and unapproved interrupted quarantines
+are preserved. Only the private quarantined path is deleted. A reappeared
+canonical path is reported and retained. Deletion journals use a separate stable
+lease inode so atomic journal replacement cannot admit another cleaner.
+Accepted residual risk (#839): a Git process started before the close marker
+can retain a cached absolute gitdir, outlive the grace period and lock drain,
+and write afterwards. Receivers are bridge-internal; deletion is limited to
+terminal reviews with no retained reopenable workspace or unsettled work.
 
 `reviews/merge.rs` owns durable PR merge intents, independent of a browser.
 Admission reconciles receiving refs, checks the selected latest snapshot and
@@ -2068,9 +2152,9 @@ separate. Ordinary moves to Done complete an open review through the same writer
 with “Marked done”; for PR mode this records Closed. Snapshot-mode captures
 change only review metadata. Agent Complete reports and merged
 workspace Finish skip their old task-movement/closure hooks for review tasks.
-Closing/completing and removing workspaces or projects retain review history
-and refs; replacing its workspace or explicitly deleting task history releases
-the previous pins. MCP exposes
+Closing/completing and removing workspaces or projects retain review metadata.
+Snapshot-mode refs remain until workspace replacement or explicit task history
+deletion; PR receiver refs follow the maintenance retention rules above. MCP exposes
 `snapshot_review`, `get_review`, `read_review`, `act_review`, `complete_review` to coding and
 project agents, authenticated and restricted to their own project.
 
@@ -2990,6 +3074,40 @@ nothing else
 
 ### Update and install
 
+`buildctl` (`tools/buildctl/`, launched with `scripts/buildctl --env <name> …`)
+is the supported management entry point for authorized agents working against
+non-production environments. Its checked-in registry declares channels,
+services, isolated paths, public origins, hosted deployment branches and mutation
+policy. Production is read-only. The Python/uv CLI provides `bridge` deployment,
+status/logs, pairing, verified rollback and pruning; `app deploy` advances the
+registered hosted branch, while `app status` reads the public version and latest
+deployment workflow. An explicit `--force` uses an exact force-with-lease.
+
+Task branches start from `origin/dev` and enter `dev` through the serial merge
+gate. The dev branch runs its own deploy-only workflow on pushes: resolve the
+triggering SHA, build the app/relay images, then roll out only successful images
+to `build-dev`. Trusted dev pushers control that workflow and dev-only
+credentials; no main-owned signal workflow or CI checks precede dev builds.
+Rollout groups never cancel, and each rechecks the dev tip before applying
+immutable image digests. The `development` environment must allow the `dev` ref.
+After validation on the dev stack, `dev` is promoted to `main` by fast-forward.
+Main's `CI and deploy` retains the full test graph; both production rollouts
+require its validation aggregate, which accepts path-filtered skips but rejects
+failed or cancelled suites. `buildctl app deploy` still fast-forwards `dev`.
+
+Bridge deployment builds a resolved commit (default `origin/dev`) in a temporary
+worktree under `nice -n 10`, stages immutable binaries in
+`~/.local/state/build-dev/builds/<sha>/`, strips inherited `BRIDGE_*` settings,
+and invokes the selected channel and public origins from the registry. It
+installs/reloads/stops/starts only that channel's unit, then checks active state,
+the running executable's SHA-256 and fresh relay authentication before recording
+current/previous commits. First installation needs deploy → pair → deploy after
+approval. An unrecorded legacy executable is reported from `/proc` as unmanaged;
+its first verified replacement creates no previous record and never deletes the
+external binary. [Working against dev](AGENTS.md#working-against-dev) documents
+the policy: validate on `dev.getbuild.ing` / `relay-dev.getbuild.ing` before
+production; moving `dev` auto-deploys the hosted stack. Production rules remain.
+
 `BRIDGE_CHANNEL=dev` disables the updater independently of whether a binary
 has release provenance: no checks, installs (even confirmed replacement),
 schedules, staging, helper dispatch, recovery, probation or heartbeat. Its
@@ -3645,6 +3763,12 @@ gate attachment display.
   changed in place. The record then owes a repair (`repairThrough`, written
   with the cursor) until the newest `REPAIRED_THREAD_ITEMS` (50) held items
   have been read again at or past that counter.
+  Only the forward page's snapshot counter advances delivery coverage; a
+  later repair or exact-copy read cannot advance it over unseen creations.
+  Empty in-place-only forward pages commit that coverage together with repair
+  debt. Capped sparse repairs fetch omitted held representatives through exact
+  one-item, unprojected pages (at most 50); failed or mismatched copies leave
+  debt for the next bounded attempt or recovery pass.
   Sync and load-older pages request `activity: "newest"` only when the device
   advertises `threads.leanActivity`. Cold sync and conversation-open reads
   then request 23 messages, measured to fill the phone conversation even at
@@ -3671,6 +3795,39 @@ gate attachment display.
   `spa/src/core/cacheSync.js`). Most fields carry bodies that are written
   straight into the cache: `state`, `thread`, git `status`/`log`/`unpushed`/
   `diff`, the files root listing, and `terminals`.
+  `pushQueue.js` bounds each device/session/path to one body applier and two
+  deferred enrichment appliers. Compatible pending entity snapshots and thread
+  spans coalesce; board removals, roster generation changes and resets retain
+  their order. Unknown empty spans never become delivered coverage when folded.
+  The body lane writes conversations before state and session summaries, and
+  also writes terminal rosters without waiting for enrichment RPCs. The shown
+  conversation's entity has priority, with an ordinary turn after four promoted
+  jobs. Within an entity, its mounted conversation's carried tips land first. Roster/review reads run behind bodies with one pending refresh per key;
+  a key never has two enrichment appliers running together.
+  `threadCatchups.js` separately coordinates pushed catch-up/repair reads:
+  one active round and one coalesced trailing high-water per conversation and
+  generation. It rechecks canonical coverage before dispatch, skips already
+  covered goals, and allows two attempts per goal and cache lifetime. Repeated
+  unchanged tips do not renew that budget. An untagged post-reset hint probes
+  held coverage without borrowing its ambiguous counter. New evidence, eviction, reset or a
+  new session can. Ordinary recovery passes can retry retained repair debt.
+  Catch-up work does not acquire a roster/review enrichment worker. A mounted
+  conversation's page and activity reads bypass background wire admission even
+  between passes; mounting it or changing routes wakes queued readers. Stop
+  and generation replacement settle abandoned round waiters immediately.
+  `threadCatchupsInFlight()` reports these active/trailing rounds separately.
+  Finished-state eviction invalidates the entity data lifetime without removing
+  its feed row. Deferred reads retain that fence through cache commits; a
+  conversation reset also cancels its queued old-generation catch-up. Final
+  review metadata belongs to the project and still refreshes after workspace
+  eviction; the evicted entity's complete roster stays cold.
+  User actions bypass these queues; neither their RPCs nor their cache writes
+  acquire a push slot or wait for a batching timer. Awaiting a push still waits
+  for its own deferred fields, without holding a body slot during those reads.
+  `pushWorkInFlight()` counts pending applier jobs before IndexedDB admission.
+  Feed consumers retain an address index (`feedCacheReader.js`): announcements
+  reread only named records, in batches of at most 64; prefix evictions rebuild
+  the index. Reads still include pending-write overlays and cross-tab changes.
 - **Chat read marks** (#473) report the viewport sequence and window floor
   only while the reader is present. A known cursor can establish read progress
   even if the cached unread count is zero. `chatReadReporter.js` confirms
@@ -4239,6 +4396,12 @@ in the pinned inbox header or the main toolbar, follows the responsive overlay
 breakpoint, and marks empty headers draggable while excluding interactive
 targets and menus. An absent/inactive overlay (browser, standalone PWA or native
 fullscreen) keeps the ordinary shell layout. Linux/Windows retain native chrome.
+
+Development builds (`VITE_BUILD_CHANNEL=dev`) mark the connection button with a
+compact “D” corner bubble and the accessible description “Dev build”.
+`core/buildChannel.js` sets the tab title before boot and decorates the button
+when `connectionStatus.js` creates it; connection transitions retain that node.
+Production builds have neither the bubble nor its description.
 
 ### Theming
 

@@ -41,6 +41,8 @@ import { directoryCacheId } from "./directoryScope.js";
 import { projectRosterRows } from "./projectRosterFeed.js";
 import { projectsWithAgentRosters, syncProjectAgents } from "./projectAgentsCache.js";
 import { trailingRead } from "./trailingRead.js";
+import { combinePushItems, createPushQueue } from "./pushQueue.js";
+import { subscribeThreadReaders, visibleSyncThread } from "./syncVisibleScopes.js";
 import { createSyncPhases } from "./syncPhases.js";
 import { createBackgroundStreams } from "./syncBackgroundStreams.js";
 import { createTaskPhases, taskReadScope } from "./syncTaskPhases.js";
@@ -49,7 +51,7 @@ import { readSyncLists } from "./syncLists.js";
 import { App } from "../appState.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
 import { bridgeCapabilities, onSubscriptionHeld, subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
-import { forgetPushes, notePush, pushFence, pushedSince, removedSince } from "./pushFence.js";
+import { entityDataInvalidatedSince, forgetPushes, notePush, pushFence, pushedSince, removedSince } from "./pushFence.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { cachedRouteEntityId } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
@@ -57,6 +59,7 @@ import { FEED_COLLECTIONS, liveFeedSnapshot, stampProject, stampRow, stampWorksp
 import { THREAD_RECORD_KIND } from "./thread.js";
 import { reconcileConversationGeneration, reconcileConversationGenerations, resetAliasesInRow } from "./conversationReset.js";
 import { writeConversationFeed } from "./conversationFeedReset.js";
+import { createThreadCatchups } from "./threadCatchups.js";
 import { syncThreadWindow, threadWindow } from "./threadSync.js";
 import { replaceSessionList, sessionListObservation, updateSessionSummary } from "./sessionListCache.js";
 import {
@@ -159,6 +162,7 @@ let lockWait = null; // the bounded queue for the lock, while it is running
 let visibilityWired = false;
 let stopDeviceWatch = null;
 let stopLandingWatch = null;
+let stopThreadWatch = null;
 // Counts the times the sync layer stood down. Every read and push applier
 // belongs to the one it started under, and stops writing when that ends —
 // including across a restart on the same device and session, which would
@@ -226,10 +230,23 @@ const beforeBackgroundRead = (context, scope) => context.syncTurn?.phases?.befor
  * to finish that record inherit its scope, including a thread's repairs. */
 const callWhileActive = (context, method, params, envelope, scope = context.readScope) => context.backgroundStreams.read({
   active: context.active,
-  priority: () => foregroundPlanner(context)?.priorityForRead(scope, envelope) || envelope,
+  priority: () => threadReadIsVisible(context, scope) ? {}
+    : foregroundPlanner(context)?.priorityForRead(scope, envelope) || envelope,
   before: () => beforeBackgroundRead(context, scope),
   load: (priority) => context.call(method, params, priority),
 });
+
+/** A mounted conversation keeps foreground admission between sync passes too. */
+function threadReadIsVisible(context, scope) {
+  const visible = visibleSyncThread(context.deviceId);
+  return scope?.kind === THREAD_RECORD_KIND && scope.entityId === visible?.entityId
+    && (scope.sub === visible.conversationId || scope.sub === visible.agentId);
+}
+
+function wakeThreadReads() {
+  for (const queues of pushQueues.values()) queues.scope.wake();
+  for (const pass of passes.values()) void pass.foreground?.();
+}
 
 /** One read, written through by the caller. A failure is a cold record: the
  *  machine is offline, the checkout moved under the read, or this bridge does
@@ -249,7 +266,8 @@ async function readWhole(context, address, request, shape = (answer) => answer) 
   const fence = pushFence();
   const answer = await ask(context, request.method, request.params, request.priority, address);
   if (!answer || answer.unchanged || !context.active()) return answer;
-  if (!pushedSince(address, fence)) await writeCached(address, shape(answer));
+  await mergeCachedAtomically(address, () =>
+    context.active() && !pushedSince(address, fence) ? shape(answer) : null);
   return answer;
 }
 
@@ -494,13 +512,14 @@ function settledWithin(promise, waitMs) {
   ]).finally(() => clearTimeout(timer));
 }
 
-/** The context for one entity's records, stood down as well once a push takes
+/** The context for one entity's records, stood down as well once eviction or a push takes
  *  the entity off the board after the fence: a read already out when it went
  *  writes nothing back under it, and nothing after that read is asked. Every
  *  write here is behind `active()`, which is what makes this reach them all. */
 const whileOnBoard = (context, entityId, fence) => ({
   ...context,
-  active: () => context.active() && !removedSince(addressOf(context, entityId, "row"), fence),
+  active: () => context.active() && !removedSince(addressOf(context, entityId, "row"), fence)
+    && !entityDataInvalidatedSince(addressOf(context, entityId, "row"), fence),
 });
 
 /** Step 1: the three lists, written as they land so the inbox paints before
@@ -541,7 +560,7 @@ async function refreshProjectAgents(context, projects, entityId = null, afterWri
   if (!capabilities.agents?.projectWorkers) return;
   const owners = projects || await heldValue(context, "", "projects") || [];
   await Promise.all(owners.filter((project) => !entityId || (project.entity_id || project.run_id) === entityId)
-    .map((project) => syncProjectAgents({ deviceId: context.deviceId,
+    .map((project) => syncProjectAgents({ deviceId: context.deviceId, background: true,
       entityId: project.entity_id || project.run_id, capabilities: () => bridgeCapabilities(context.deviceId),
       call: (method, params) => callWhileActive(context, method, params, requestPriorityFields("background"),
         addressOf(context, params.entity_id, "project-agents")), active: context.active,
@@ -1467,6 +1486,7 @@ function followRoutedEntity(deviceId, entityId) {
  *  when it does, and again when it ends. */
 export function routeChanged() {
   if (!holdingLock) return;
+  wakeThreadReads();
   for (const deviceId of [...subscriptions.keys()]) {
     void passes.get(deviceId)?.foreground?.();
     void refollowRoute(deviceId);
@@ -1503,43 +1523,127 @@ function writePushed(address, value) {
   return writeCached(address, value);
 }
 
+const pushQueues = new Map();
+const pushError = (error) => console.warn("cache push application failed:", error);
+const openPushEntity = (deviceId) => visibleSyncThread(deviceId)?.entityId || subscriptions.get(deviceId)?.activeId;
+
+function queuesFor(context) {
+  const held = pushQueues.get(context.deviceId);
+  if (held?.scope === context.backgroundStreams) return held;
+  held?.body.clear(); held?.background.clear(); held?.catchups.clear();
+  const priority = (item) => item.owner === openPushEntity(context.deviceId) || item.entity_id === openPushEntity(context.deviceId);
+  const background = createPushQueue({ priority, onError: pushError, concurrency: 2,
+    isBarrier: () => false,
+    merge: (left, right) => left.run && right.run && left.replaceable && right.replaceable ? right : combinePushItems(left, right),
+    apply: (scoped, item) => item.run ? item.run() : applyRemainder(scoped, item),
+  });
+  const body = createPushQueue({ priority, onError: pushError, apply: async (scoped, item) => {
+    const applying = { ...scoped, pushCompletions: [] };
+    const before = await applyItem(applying, item);
+    if (before) void prunePushedDrafts(applying, before).catch(() => {});
+    return { settled: Promise.all(applying.pushCompletions) };
+  } });
+  const catchups = createThreadCatchups({
+    needed: async (request) => {
+      const held = (await readCached(request.address))?.value;
+      return catchupGenerationMatches(request, held)
+        && catchupStillNeeded(request, held);
+    },
+    read: (request, active) => syncThread({ ...request.context, active }, request.entityId, request.agent, "background"),
+  });
+  const queues = { scope: context.backgroundStreams, body, background, catchups };
+  pushQueues.set(context.deviceId, queues);
+  return queues;
+}
+
+/** Diagnostic counts include jobs waiting before IndexedDB admission. Payload
+ * items are retained inside coalesced jobs; these are work counts, not bytes. */
+export function pushWorkInFlight(deviceId) {
+  const queues = pushQueues.get(deviceId);
+  return { ...(queues?.body.snapshot() || { running: 0, pending: 0 }),
+    backgroundRunning: queues?.background.snapshot().running || 0,
+    backgroundPending: queues?.background.snapshot().pending || 0 };
+}
+
+export const threadCatchupsInFlight = (deviceId) =>
+  pushQueues.get(deviceId)?.catchups.snapshot() || { running: 0, pending: 0 };
+
+const threadGenerationKey = (window) => JSON.stringify([window?.thread_id || "", Number(window?.thread_generation_revision || 0)]);
+
+/** Legacy tips may learn their first identity from the read itself. A reset
+ * leaves retired identities and a revision, preventing adoption after reset. */
+function catchupGenerationMatches(request, held) {
+  return threadGenerationKey(held) === request.generation
+    || !request.agent.thread_id && legacyGenerationCanAdopt(held);
+}
+
+function catchupStillNeeded(request, held) {
+  const through = Number(held?.deliveredSequence || 0);
+  return through < request.sequence || Boolean(held?.repairThrough)
+    || request.probeFrom !== undefined && through <= request.probeFrom;
+}
+
+function deferPush(context, entityId, key, run, replaceable = true) {
+  if (!context.active()) return;
+  const settled = queuesFor(context).background.enqueueApplied(context, [{ entity_id: key, owner: entityId, run, replaceable }]);
+  context.pushCompletions?.push(settled);
+}
+
 async function applyChanges(items, deviceId) {
   const context = syncContext(contextFor(deviceId));
-  if (!context || !holdingLock) return;
-  const removedOwners = [];
-  for (const item of items) {
+  if (!context || !holdingLock) return Promise.resolve();
+  context.pushing = true;
+  const queues = queuesFor(context);
+  const applied = await queues.body.enqueueApplied(context, items);
+  await Promise.all(applied.map((job) => job?.settled));
+}
+
+async function applyRemainder(context, item) {
+  if (item.project_source) return applyProjectSourceItem(context, item);
+  const entityId = String(item.entity_id || "");
+  for (const [field, apply] of APPLIERS.slice(2)) {
     if (!context.active()) return;
-    const before = await applyItem(context, item);
-    if (before) removedOwners.push(before);
+    if (item[field]) await apply(context, entityId, item[field]);
   }
-  // Later items in this delivery can write or evict owner records. Confirm
-  // after they finish, while leaving the next delivery free to proceed.
-  for (const before of removedOwners) void prunePushedDrafts(context, before).catch(() => {});
 }
 
 async function applyItem(context, item) {
   if (item.project_source) return applyProjectSourceItem(context, item);
   const entityId = String(item.entity_id || "");
   if (!entityId) return;
-  if (entityId === BOARD_ENTITY) {
-    return applyBoard(context, item.state || {});
-  }
+  if (entityId === BOARD_ENTITY) return applyBoard(context, item.state || {});
+  return applyEntityBodies(context, entityId, item);
+}
+
+async function applyEntityBodies(context, entityId, item) {
   const scoped = whileOnBoard(context, entityId, pushFence());
-  for (const [field, apply] of APPLIERS) {
-    if (!scoped.active()) return;
-    if (item[field]) await apply(scoped, entityId, item[field]);
-  }
+  // Publish conversation bodies before state and expensive invalidation reads.
+  if (item.thread) await applyThreadItem(scoped, entityId, item.thread);
+  if (!scoped.active()) return;
+  if (item.state) await applyState(scoped, entityId, item.state, context);
+  if (!scoped.active()) return;
+  if (item.terminals) await applyTerminals(scoped, entityId, item.terminals);
+  enqueuePushRemainder(scoped, item);
+}
+
+function enqueuePushRemainder(context, item) {
+  if (!context.active()) return;
+  const entityId = String(item.entity_id);
+  if (item.state || item.thread) deferPush(context, entityId, `roster:${entityId}`, () => refreshProjectAgents(context, null, entityId));
+  const remainder = Object.fromEntries(APPLIERS.slice(2).filter(([field]) => field !== "terminals" && item[field])
+    .map(([field]) => [field, item[field]]));
+  if (!Object.keys(remainder).length) return;
+  remainder.entity_id = item.entity_id;
+  context.pushCompletions?.push(queuesFor(context).background.enqueueApplied(context, [remainder]));
 }
 
 /** Source subscriptions are owned by their mounted panes; writes still go
  * through the shared sync layer and the source's captured directory address. */
-export async function applyProjectSourceChanges(items, deviceId) {
+export function applyProjectSourceChanges(items, deviceId) {
   const context = syncContext(contextFor(deviceId));
-  if (!context) return;
-  for (const item of items) {
-    if (!context.active()) return;
-    if (item.project_source) await applyProjectSourceItem(context, item);
-  }
+  if (!context) return Promise.resolve();
+  context.pushing = true;
+  return queuesFor(context).body.enqueueApplied(context, items.filter((item) => item.project_source));
 }
 
 async function applyProjectSourceItem(context, item) {
@@ -1602,14 +1706,15 @@ async function applyBoard(context, state) {
   const before = {};
   const previousSources = state.projects ? projectTerminalScopes(await heldValue(context, "", "projects")) : null;
   await writePushedBoard(context, state, before);
-  await refreshChangedProjectTerminals(context, state.projects, previousSources);
-  if (context.active() && state.workspaces) await readWorkspaceReviews(context, state.workspaces);
+  enqueueBoardEnrichment(context, state, previousSources);
   return removedOwnerId(before, state) ? before : null;
 }
 
-async function refreshChangedProjectTerminals(context, projects, previousSources) {
-  if (!projects || !context.active()) return;
-  if (JSON.stringify(projectTerminalScopes(projects)) !== JSON.stringify(previousSources)) await syncProjectTerminals(context);
+function enqueueBoardEnrichment(context, state, previousSources) {
+  if (state.projects && JSON.stringify(projectTerminalScopes(state.projects)) !== JSON.stringify(previousSources)) {
+    deferPush(context, "board", "board-terminals", () => syncProjectTerminals(context));
+  }
+  if (state.workspaces) deferPush(context, "board", "board-reviews", () => readWorkspaceReviews(context, state.workspaces));
 }
 
 async function writePushedBoard(context, state, before) {
@@ -1624,7 +1729,7 @@ async function writePushedBoard(context, state, before) {
     await writeSessionList(context, "projects", state.projects.map((project) => stampProject(project, context.deviceId)), before);
   }
   if (!context.active()) return;
-  if (state.projects) await refreshProjectAgents(context, state.projects);
+  if (state.projects) deferPush(context, "board", "board-rosters", () => refreshProjectAgents(context, state.projects));
   if (state.workspaces) {
     // A row that names its own verdict — a list a git flush re-sent, with the
     // summary that flush re-read — is the fresh word. A row that names none
@@ -1721,30 +1826,45 @@ const isFeedRow = (state) => typeof state?.kind === "string" && state.kind !== "
 
 /** `state`: the feed row exactly as `board.list` carries it. A row whose work
  *  is over takes the workspace's data with it — nobody is coming back to it. */
-async function applyState(context, entityId, state) {
+async function applyState(context, entityId, state, metadataContext = context) {
   if (!isFeedRow(state)) return;
+  const fence = pushFence();
+  const review = state.review_summary && { projectId: state.project_id, ids: [state.review_summary.task_id] };
   if (!(await reconcileConversationGenerations(context, entityId, state.agents))) return;
   notePush(addressOf(context, entityId, "row"));
   await writeConversationRow(context, entityId, stampRow(state, context.deviceId));
   if (!context.active()) return;
   await writeSurfaces(context, entityId, state.agents);
-  await refreshProjectAgents(context, null, entityId);
   if (!context.active()) return;
   if (isFinishedState(state.state)) await evictWorkspaceData(context.deviceId, entityId, context.active);
-  if (state.review_summary && context.active()) {
-    const ids = [state.review_summary.task_id];
-    await readReviews(context, state.project_id, ids, ids);
-  }
+  deferStateReview(metadataContext, entityId, review, fence);
+}
+
+/** Review metadata belongs to the project and survives workspace-data eviction.
+ * Retain the device and board-removal fences, without recreating its roster. */
+function deferStateReview(context, entityId, review, fence) {
+  if (!review) return;
+  const reading = { ...context, active: () => context.active() && !removedSince(addressOf(context, entityId, "row"), fence) };
+  deferPush(reading, entityId, `reviews:${entityId}`, () => readReviews(reading, review.projectId, review.ids, review.ids));
 }
 
 /** `thread`: one tip per conversation, carrying the items since this
  *  subscription's last flush. */
 async function applyThreadItem(context, entityId, tips) {
-  for (const tip of tips || []) {
+  for (const tip of orderedThreadTips(context, entityId, tips || [])) {
     if (!context.active()) return;
     await applyThreadTip(context, entityId, tip);
   }
-  await refreshProjectAgents(context, null, entityId);
+}
+
+/** Promote carried data for the mounted conversation, retaining the order of
+ * every generation/reset tip within each conversation. */
+function orderedThreadTips(context, entityId, tips) {
+  const visible = visibleSyncThread(context.deviceId);
+  if (visible?.entityId !== entityId) return tips;
+  const selected = (tip) => Boolean(visible.conversationId) && tipKey(tip) === visible.conversationId
+    || tip.agent_id === visible.agentId;
+  return [...tips.filter(selected), ...tips.filter((tip) => !selected(tip))];
 }
 
 /** Which conversation a tip is about, addressed the way the record is. */
@@ -1752,7 +1872,8 @@ const tipKey = (tip) => tip.conversation_id || tip.agent_id || "";
 
 /** Whether a tip says anything the record does not already hold. A
  *  conversation this cache has never held is always news. */
-const tipIsNews = (tip, held) => !held || Number(tip.last_sequence || 0) > Number(held.deliveredSequence || 0);
+const tipIsNews = (tip, held) => !held || Boolean(held.repairThrough)
+  || Number(tip.last_sequence || 0) > Number(held.deliveredSequence || 0);
 
 /** Whether a tip's items carry on from where the record stands. `since_sequence`
  *  is the sequence they run from, exclusive — the cursor the subscription had
@@ -1787,23 +1908,63 @@ async function applyThreadTip(context, entityId, tip) {
   if (!sub) return;
   await reconcileConversationGeneration({ deviceId: context.deviceId, entityId, active: context.active,
     agent: { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: tip.thread_id, thread_generation_revision: tip.thread_generation_revision }, forceReset: tip.reset === true });
-  await applySessionTip(context, entityId, tip);
   if (!context.active()) return;
+  await writeThreadTipBody(context, entityId, tip, sub);
+  if (context.active()) await applySessionTip(context, entityId, tip);
+}
+
+const legacyGenerationCanAdopt = (held) => !held?.retired_thread_ids?.length
+  && Number(held?.thread_generation_revision || 0) <= 1;
+
+const canAppendThreadTip = (tip, held) => Boolean(held && tipRunsOnFromRecord(tip, held)
+  && (tip.thread_id || legacyGenerationCanAdopt(held)));
+
+const tipGenerationMismatch = (tip, held) =>
+  Boolean(tip.thread_id && held?.thread_id && tip.thread_id !== held.thread_id);
+
+async function writeThreadTipBody(context, entityId, tip, sub) {
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub);
   const held = (await readCached(address))?.value;
   if (!context.active() || !tipIsNews(tip, held)) return;
+  if (tipGenerationMismatch(tip, held)) return;
   // A burst past the push cap arrives as a tip with no items, a conversation
   // nothing is held for has nothing to append to, and a tip that starts past
   // the cursor would append over a gap. All three are one cursored page, which
   // is the read this layer would have made anyway.
-  const items = held && tipRunsOnFromRecord(tip, held) ? (tip.items || []) : [];
+  const items = canAppendThreadTip(tip, held) ? (tip.items || []) : [];
   if (!items.length) {
-    await syncThread(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: tip.thread_id }, "background");
+    await deferThreadCatchup(context, entityId, tip, sub, held);
     return;
   }
-  await mergeCachedAtomically(address, (current) => context.active() ? threadWindow(current, {
-    items, thread_total: tip.thread_total, ...(tip.thread_id ? { thread_id: tip.thread_id } : {}),
-  }) : null);
+  const page = carriedThreadPage(tip, held, items);
+  await mergeCachedAtomically(address, (current) => context.active() ? threadWindow(current, page) : null);
+}
+
+const carriedThreadPage = (tip, held, items) => ({
+  items, thread_total: tip.thread_total, thread_generation_revision: tip.thread_generation_revision,
+  thread_id: tip.thread_id || held?.thread_id,
+});
+
+/** An untagged post-reset counter is not coverage evidence. Probe from the
+ * held cursor instead, so it cannot exhaust a newer tagged goal's budget. */
+function catchupGoal(tip, held) {
+  const debt = Number(held?.repairThrough || 0);
+  if (tip.thread_id || legacyGenerationCanAdopt(held)) return { sequence: Math.max(Number(tip.last_sequence || 0), debt) };
+  const probeFrom = Number(held?.deliveredSequence || 0);
+  return { sequence: Math.max(probeFrom, debt), probeFrom };
+}
+
+async function deferThreadCatchup(context, entityId, tip, sub, held) {
+  const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub), fence = pushFence();
+  const reading = { ...context, active: () => context.active() && !pushedSince(address, fence) };
+  if (!reading.active()) return;
+  const settled = queuesFor(context).catchups.enqueue(JSON.stringify([entityId, sub]), {
+    context: reading, active: reading.active, address, entityId, generation: threadGenerationKey(held),
+    ...catchupGoal(tip, held),
+    agent: { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: held?.thread_id || tip.thread_id },
+  });
+  if (context.pushing) context.pushCompletions?.push(settled);
+  else await settled;
 }
 
 /** `git`: the shapes ride the push, so nothing is asked for them. Two things
@@ -1967,7 +2128,8 @@ const missingFile = (error) => error?.code === "not_found" || error?.error_code 
  *  reader may write; a different file's refresh cannot supersede this one. */
 async function readFileBody(context, entityId, scope, path) {
   context = { ...context, readScope: addressOf(context, entityId, FILE_RECORD_KIND, path) };
-  const held = (await readCached(addressOf(context, entityId, FILE_RECORD_KIND, path)))?.value;
+  const record = await readCached(addressOf(context, entityId, FILE_RECORD_KIND, path));
+  const held = record?.value;
   if (!context.active()) return "cancelled";
   const readPage = backgroundPageReader(context, scope, path);
   const file = await freshFileAnswer(context, scope, path, held?.file, readPage);
@@ -1980,7 +2142,7 @@ async function readFileBody(context, entityId, scope, path) {
   // kept: a record left over from before the change would hand the reader
   // that body on their next open, with no round trip and nothing saying so.
   await cacheFileBody({ deviceId: context.deviceId, entityId, path, file, openedAt: held?.openedAt,
-    readPage: backgroundPageReader(context, scope, path, file.mime) });
+    readPage: backgroundPageReader(context, scope, path, file.mime), still: context.active, written: recordWriteOf(record) });
   return context.active() ? "settled" : "cancelled";
 }
 
@@ -2145,6 +2307,7 @@ export function startCacheSync() {
   stopCacheSync();
   stopDeviceWatch = onDeviceStateChanged(considerDevices);
   stopLandingWatch = onSubscriptionHeld(subscriptionLanded);
+  stopThreadWatch = subscribeThreadReaders(wakeThreadReads);
   if (typeof document !== "undefined" && !visibilityWired) {
     document.addEventListener("visibilitychange", onVisibilityChange);
     visibilityWired = true;
@@ -2159,17 +2322,25 @@ function disposeProjectTerminalSubscriptions() {
   projectTerminalSubscriptions.clear();
 }
 
+function disposeThreadWatch() {
+  stopThreadWatch?.();
+  stopThreadWatch = null;
+}
+
 export function stopCacheSync() {
   if (stopDeviceWatch) stopDeviceWatch();
   stopDeviceWatch = null;
   if (stopLandingWatch) stopLandingWatch();
   stopLandingWatch = null;
+  disposeThreadWatch();
   for (const held of subscriptions.values()) {
     held.inbox.dispose();
     held.background.dispose();
     held.active?.dispose();
   }
   subscriptions.clear();
+  for (const queues of pushQueues.values()) { queues.body.clear(); queues.background.clear(); queues.catchups.clear(); }
+  pushQueues.clear();
   disposeProjectTerminalSubscriptions();
   syncedSessions.clear();
   restoredScopes.clear();

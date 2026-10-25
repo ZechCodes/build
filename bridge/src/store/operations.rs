@@ -295,18 +295,14 @@ impl Store {
             if receipt.status == OperationStatus::Delivered && receipt.execution_error.is_some() {
                 continue;
             }
-            let Some(payload) = receipt
-                .delivery
-                .as_ref()
-                .and_then(|delivery| delivery.payload.as_ref())
-            else {
+            let Some((start_sequence, end_sequence)) = receipt.delivery_message_span() else {
                 continue;
             };
             self.set_operation_delivery_status(
                 &receipt.conversation_id,
                 &receipt.operation_id,
-                payload.start_sequence,
-                payload.end_sequence,
+                start_sequence,
+                end_sequence,
                 MessageDeliveryStatus::Uncertain,
             )?;
         }
@@ -331,7 +327,28 @@ impl Store {
     ) -> Result<bool, StoreError> {
         self.in_transaction(|tx| {
             let changed = tx.execute(
-                "UPDATE operations SET status = ?3, execution_error = ?4, updated_at = ?5 \
+                // Keep legacy spans before releasing their sole payload copy.
+                // Forwarded plan receipts also retain their execution target:
+                // their receipt identity names the original requesting agent.
+                // The compare-and-set protects queued/uncertain payloads from
+                // stale workers trying to complete a different observed state.
+                "UPDATE operations SET status = ?3, execution_error = ?4, updated_at = ?5, \
+                 message_start_sequence = CASE \
+                     WHEN ?3 = 'delivered' AND message_start_sequence <= 0 THEN \
+                         CASE WHEN json_valid(delivery) THEN \
+                             CASE WHEN json_type(delivery, '$.payload.start_sequence') = 'integer' \
+                                 AND json_extract(delivery, '$.payload.start_sequence') > 0 \
+                                 THEN json_extract(delivery, '$.payload.start_sequence') \
+                                 ELSE posted_sequence END \
+                             ELSE posted_sequence END \
+                     ELSE message_start_sequence END, \
+                 delivery = CASE WHEN ?3 = 'delivered' THEN \
+                     CASE WHEN json_valid(delivery) THEN \
+                         CASE WHEN json_extract(delivery, '$.owner_id') != entity_id \
+                             OR json_extract(delivery, '$.agent_id') != agent_id \
+                             THEN json_set(delivery, '$.payload', NULL) END \
+                         END \
+                     ELSE delivery END \
                  WHERE operation_id = ?1 AND status = ?2",
                 rusqlite::params![
                     operation_id,

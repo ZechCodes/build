@@ -1,0 +1,36 @@
+# New environments also require matching bridge channel support.
+[dev]
+channel = "dev"
+service_manager = "systemd"
+service = "build-bridge-dev.service"
+state_root = "~/.local/state/build-dev"
+logs_dir = "~/.local/state/build-dev/log"
+binary_dir = "~/.local/state/build-dev/builds"
+web_url = "https://dev.getbuild.ing"
+api_url = "https://dev.getbuild.ing"
+relay_url = "wss://relay-dev.getbuild.ing"
+branch = "dev"
+repository = "ZechCodes/build"
+default_branch = "main"
+deploy_workflow = "dev-deploy.yml"
+allow_mutation = true
+# Includes dev path validation and all validated-path consumers.
+minimum_bridge_commit = "316cf0542e9963d6b8b3581512b95fb053142506"
+
+[prod]
+channel = "prod"
+service_manager = "systemd"
+service = "build-bridge.service"
+state_root = "~/.build"
+logs_dir = "~/.build/log"
+# buildctl does not install/manage prod binaries. Status reads /proc directly.
+binary_dir = "~/.build/builds"
+web_url = "https://getbuild.ing"
+api_url = "https://getbuild.ing"
+relay_url = "wss://relay.getbuild.ing"
+branch = "main"
+repository = "ZechCodes/build"
+default_branch = "main"
+deploy_workflow = "ci.yml"
+allow_mutation = false
+minimum_bridge_commit = "316cf0542e9963d6b8b3581512b95fb053142506"

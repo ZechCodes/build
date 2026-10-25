@@ -192,17 +192,17 @@ impl AppState {
             return None;
         }
         let receipt = self.operation_receipt(&intent.operation_id).ok()??;
-        let delivery = receipt.delivery.as_ref()?;
+        let (delivery_owner, delivery_agent) = receipt.delivery_target();
         let address = self
             .resolve_conversation_address(entity_id, Some(agent_id))
             .ok()?;
         let thread_id = intent.admitted.as_ref()?["params"]["thread_id"].as_str()?;
         if receipt.method != crate::operation::THREAD_POST_METHOD
-            || delivery.owner_id != entity_id
-            || delivery.agent_id != agent_id
+            || delivery_owner != entity_id
+            || delivery_agent != agent_id
             || receipt.conversation_id != address.conversation_id
             || self.conversation_at(&address).ok()?.id != thread_id
-            || delivery.payload.is_none()
+            || receipt.delivery_message_span().is_none()
         {
             return None;
         }

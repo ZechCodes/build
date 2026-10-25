@@ -2,6 +2,8 @@ use super::support::*;
 use super::*;
 use crate::thread::MessageDeliveryStatus;
 
+mod payload_retention;
+
 #[test]
 fn frozen_legacy_delivery_rejects_a_replaced_durable_generation_without_writing() {
     let dir = tempfile::tempdir().unwrap();

@@ -91,10 +91,12 @@ pub(super) fn initialize_receiver(receiver: &ReviewReceiver) -> Result<(), Strin
         ("core.hooksPath", "/dev/null"),
         ("gc.auto", "0"),
         ("maintenance.auto", "false"),
+        ("repack.packKeptObjects", "false"),
+        ("repack.writeBitmaps", "false"),
     ] {
         git(&receiver.path, &["config", "--local", key, value])?;
     }
-    Ok(())
+    super::storage::seed(receiver)
 }
 
 fn sync_tree(path: &Path) -> Result<(), String> {

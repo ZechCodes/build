@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# One entry point, with dependencies pinned by tools/buildctl/uv.lock.
+set -euo pipefail
+REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+exec uv run --frozen --project "$REPO/tools/buildctl" buildctl "$@"

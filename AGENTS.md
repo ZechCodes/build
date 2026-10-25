@@ -55,7 +55,7 @@ Design rules:
 - Run gitleaks before every push and semgrep before you post ready (commands below). The roll gate runs both again on every merge.
 - Security checklists must be 100/100. The feature checklists live in
   `planning/v2/*Security Checklist.md`.
-- One task per branch, branched from `main`. Nothing merges without a review.
+- One task per branch, branched from `dev`. Nothing merges without a review.
 - **SPA rendering draws from the cache, never from connection state.** Every
   view renders from the local cache and assumes it is up to date. Nothing
   draws based on the status of a connection or is aware of the connection
@@ -82,6 +82,58 @@ Design rules:
   Keep transport's own locked dependencies installed: npm links the local
   binding to `transport/js`, whose dependencies resolve from that directory.
   (`landing/` and `desktop/` retain their own committed locks and install policy.)
+
+## Working against dev
+
+Task branches start from `origin/dev` and pass through the serial merge gate
+into `dev`, the integration branch. A push to `dev` runs its own deploy-only
+workflow: image builds gate the dev rollout, with no CI tests or lint. Validate
+changes on `https://dev.getbuild.ing/app/` and `wss://relay-dev.getbuild.ing`
+before promotion. Once validated there, promote `dev` to `main` by fast-forward;
+main's `CI and deploy` runs the full validation graph, and both production
+rollouts require every test job to succeed or skip through its path filter.
+See [`deploy/k8s/dev/README.md`](deploy/k8s/dev/README.md#automatic-deployment-and-branch-ownership)
+for branch ownership and rollout safety. Push only where your task authorizes.
+
+**`buildctl` is the only supported management entry point for authorized agents
+working against non-production environments.** Use `scripts/buildctl --env dev …`
+or `uv run --frozen --project tools/buildctl buildctl --env dev …` from this
+checkout. Every invocation requires an explicit environment; the offline cutover
+command instead names both with `migrate --from prod --to dev`. Production bridge
+rolls and production deployments still need Zech's authorization and keep their
+current path; `buildctl --env prod` supports only status and bridge logs.
+
+```bash
+scripts/buildctl --env dev status
+scripts/buildctl --env dev bridge deploy          # origin/dev; fetch first
+scripts/buildctl --env dev bridge deploy <ref>
+scripts/buildctl --env dev bridge status
+scripts/buildctl --env dev bridge logs -f
+scripts/buildctl --env dev bridge pair
+scripts/buildctl --env dev bridge rollback
+scripts/buildctl --env dev bridge prune --keep 3
+scripts/buildctl --env dev app deploy <ref>         # fast-forward dev
+scripts/buildctl --env dev app status
+```
+
+The first bridge deployment stages a binary but an unpaired machine fails the
+bridge's install gate. Run `bridge pair`, approve the printed link on dev, then
+`bridge deploy` again with the same ref. Current/previous records advance only
+after the unit is active, `/proc/<pid>/exe` matches the staged binary's SHA-256,
+and a fresh relay authentication appears after the old process stops and the
+new one starts. An existing unrecorded bridge is reported as unmanaged; the
+first verified deployment takes it over without inventing a rollback target.
+Binaries now stage in `~/.local/state/build-dev/builds/<sha>/`; legacy binaries
+outside that root are left alone. Failed verification leaves records unchanged,
+but may leave a changed unit/process; inspect status/logs and explicitly redeploy
+or rollback. See [`tools/buildctl/README.md`](tools/buildctl/README.md) for recovery,
+configuration, requirements and offline checks. Never bypass `buildctl` by
+setting inherited `BRIDGE_*` variables or running a bridge binary by hand. The
+[prod-to-dev migration runbook](tools/buildctl/README.md#prod-to-dev-state-cutover)
+requires a Zech-picked window and operator-stopped bridges. Building/testing the
+tool does not authorize a live cutover. After migration, use `bridge deploy` to
+install shared-root settings before dev starts; migration never starts/stops
+services.
 
 ## Code rules
 
@@ -155,8 +207,8 @@ The scans (gitleaks before each push, semgrep before you post ready):
 
 ```bash
 nice -n 10 semgrep --config auto --error <changed js/mjs/css files>
-nice -n 10 gitleaks git --no-banner --redact --log-opts='main..HEAD' .
-git diff --check main..HEAD
+nice -n 10 gitleaks git --no-banner --redact --log-opts='origin/dev..HEAD' .
+git diff --check origin/dev..HEAD
 ```
 
 semgrep only scans files git tracks; `git add` a new file before scanning it.

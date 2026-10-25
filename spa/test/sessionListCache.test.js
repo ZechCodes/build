@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 const address = (kind) => ({ deviceId: "dev-1", entityId: "", kind });
 const old = { session_started_ms: 100, last_activity_ms: 200 };
@@ -25,6 +25,32 @@ beforeEach(async () => {
 const read = async (kind) => (await cache.readCached(address(kind)))?.value;
 
 describe("all session list writers", () => {
+  it("keeps repeated unchanged summaries out of the cache write lane", async () => {
+    const threadAddress = { deviceId: "dev-1", entityId: "run-A", kind: "thread", sub: "conversation-A" };
+    await cache.writeCached(threadAddress, { thread_id: "current-thread" });
+    await cache.writeCached(address("projects"), [row("projects", "A", fresh)]);
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction");
+    try {
+      for (let index = 0; index < 3; index += 1) {
+        await lists.updateSessionSummary(address("projects"), "projects", "A", old, {
+          threadAddress, threadId: "current-thread", conversationId: "conversation-A",
+        });
+      }
+      expect(transaction.mock.calls.filter(([, mode]) => mode === "readwrite")).toHaveLength(0);
+    } finally {
+      transaction.mockRestore();
+    }
+  });
+
+  it("does not retain a no-change summary verdict after canonical eviction", async () => {
+    await cache.writeCached(address("projects"), [row("projects", "A", fresh)]);
+    await lists.updateSessionSummary(address("projects"), "projects", "A", old);
+    await cache.deleteCached([address("projects")]);
+    await cache.writeCached(address("projects"), [row("projects", "A", { session_started_ms: 10, last_activity_ms: 20 })]);
+    await lists.updateSessionSummary(address("projects"), "projects", "A", old);
+    expect((await read("projects"))[0]).toMatchObject(old);
+  });
+
   it("a reset replaces only its owner's summary even when the new summary is empty", async () => {
     const threadAddress = { deviceId: "dev-1", entityId: "run-A", kind: "thread", sub: "conversation-A" };
     await cache.writeCached(threadAddress, { thread_id: "fresh-thread", thread_generation_revision: 1 });

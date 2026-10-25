@@ -10,6 +10,9 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+const channel = vi.hoisted(() => ({ current: "dev" }));
+vi.mock("../src/config.js", () => ({ get BUILD_CHANNEL() { return channel.current; } }));
+
 const recovery = vi.hoisted(() => ({ states: [], listener: null }));
 const contexts = vi.hoisted(() => ({ live: [], listener: null, paths: new Map(), restoring: new Set() }));
 
@@ -66,6 +69,7 @@ const recoveryMoved = (states) => {
 };
 
 beforeEach(() => {
+  channel.current = "dev";
   vi.useFakeTimers();
   // Fake timers cannot drive fake IndexedDB's transaction callbacks. This
   // icon suite exercises the cache-unavailable fallback; cache wiring has its
@@ -193,6 +197,41 @@ describe("what the icon animates between", () => {
     // The same elements: a repaint that rebuilt them would restart every
     // transition from nothing and the ring would jump between states.
     expect(centre()).toBe(ring);
+  });
+
+  it("retains the Dev bubble and description through reconnects and remounts", () => {
+    mountConnectionStatus();
+    const button = icon();
+    const badge = button.querySelector(".connection-build-channel");
+    expect(badge?.textContent).toBe("D");
+    expect(button.getAttribute("aria-description")).toBe("Dev build");
+    recoveryMoved([{ deviceId: "a", status: "attempting", failedAttempts: 0, nextAttemptAt: null }]);
+    recoveryMoved([{ deviceId: "a", status: "waiting", failedAttempts: 1, nextAttemptAt: Date.now() + 2000 }]);
+    vi.advanceTimersByTime(1000);
+    recoveryMoved([]);
+    expect(icon()).toBe(button);
+    expect(icon().querySelector(".connection-build-channel")).toBe(badge);
+    expect(centre().textContent).toBe("2");
+    contexts.live = [];
+    contexts.listener();
+    expect(centre().textContent).toBe("0");
+    expect(rows().map((row) => row.status)).toEqual(["Offline", "Offline"]);
+    expect(icon()).toBe(button);
+    expect(icon().querySelector(".connection-build-channel")).toBe(badge);
+    expect(icon().getAttribute("aria-description")).toBe("Dev build");
+    unmountConnectionStatus();
+    mountConnectionStatus();
+    expect(icon().querySelectorAll(".connection-build-channel")).toHaveLength(1);
+    expect(icon().getAttribute("aria-description")).toBe("Dev build");
+  });
+
+  it.each([undefined, "prod"])("keeps %s connection chrome free of Dev identity", (buildChannel) => {
+    channel.current = buildChannel;
+    mountConnectionStatus();
+    expect(icon().querySelector(".connection-build-channel")).toBeNull();
+    expect(icon().hasAttribute("aria-description")).toBe(false);
+    expect(icon().getAttribute("aria-label")).toBe("Connected to 2 devices");
+    expect(centre().textContent).toBe("2");
   });
 
   it("says which state it came from, so the change can be animated", () => {

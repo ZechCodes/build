@@ -228,6 +228,9 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250, 
         fixture.exactFinalStates = fixture.finalRows.every((row, index) =>
           Object.entries({ ...rows[index], replay_frame: Math.floor((frames - 1 - index) / 6) * 6 + index }).every(([key, value]) => JSON.stringify(row?.[key]) === JSON.stringify(value)));
         if (mixed) {
+          stats.finalNotificationTabs = [];
+          for (let index = 0; index < 8; index++) stats.finalNotificationTabs.push(
+            (await cache.readCached(address(`notification-${index}`, "terminals")))?.value?.tabs);
           stats.retiredAddresses = (await cache.cachedAddresses({ deviceId: "replay-device", entityId: "retired" })).length;
           stats.finalResetThread = (await cache.readCached(address("reset-fixture", "thread", "reset-agent")))?.value;
         }

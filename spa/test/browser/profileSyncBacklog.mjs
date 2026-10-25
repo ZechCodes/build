@@ -30,6 +30,7 @@ if (process.argv[4]) {
   assert(result.drainMs <= 5000);
   assert(report.rowGetReduction >= .8);
   assert(result.exactFinalMessages && result.exactFinalStates);
+  assert.deepEqual(result.finalNotificationTabs, Array.from({ length: 8 }, (_, index) => [{ term_id: `tab-${1192 + index}` }]));
   assert.equal(result.retiredAddresses, 0);
   assert.equal(result.finalResetThread.thread_id, "reset-1140");
   assert.deepEqual(result.finalResetThread.items, []);

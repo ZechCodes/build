@@ -49,6 +49,23 @@ afterEach(() => {
 });
 
 describe("SQL reads share eight sender credits per opening", () => {
+  it("reports queued, admitted and timed-out held credits after caller promises settle", async () => {
+    vi.useFakeTimers();
+    const { rpc, wire, ask } = setup({ sqlReadLimit: 1 });
+    const timedOut = ask("tasks.get", { timeoutMs: 10 });
+    ask("tasks.list");
+    await flush();
+    expect(rpc.sqlReadCreditSnapshot()).toEqual({ queued: 1, admitted: 1, timedOutHeld: 0 });
+    await vi.advanceTimersByTimeAsync(11);
+    await expect(timedOut).rejects.toMatchObject({ timedOut: true });
+    expect(rpc.sqlReadCreditSnapshot()).toEqual({ queued: 1, admitted: 1, timedOutHeld: 1 });
+    wire.deliver({ id: wire.sent[0].id, ok: true, result: {} });
+    await flush();
+    expect(rpc.sqlReadCreditSnapshot()).toEqual({ queued: 0, admitted: 1, timedOutHeld: 0 });
+    rpc.close();
+    expect(rpc.sqlReadCreditSnapshot()).toEqual({ queued: 0, admitted: 0, timedOutHeld: 0 });
+  });
+
   it("queues thread.revision behind eight SQL reads until a credit is released", async () => {
     const { wire, ask } = setup();
     for (let n = 0; n < 8; n += 1) ask("tasks.get");

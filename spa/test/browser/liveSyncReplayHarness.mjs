@@ -1,3 +1,4 @@
+import { instrumentReadCallsites, instrumentStorageReadCallsites } from "./liveSyncReadAttribution.mjs";
 import { writeFile } from "node:fs/promises";
 import { loadBrowserModules, mountLayout, openLayoutSession } from "./layoutHarness.mjs";
 import { LIVE_SYNC_SHAPE } from "./liveSyncShape.mjs";
@@ -30,7 +31,7 @@ export function liveSyncPlugin(options) {
       code = code.replace("function append(context, item) {", 'function append(context, item) { window.__liveSyncMetrics?.stage("admission", item);');
       code = code.replace("async function run(job) {", 'async function run(job) { window.__liveSyncMetrics?.stage("workerStart", job.item);');
     }
-    return code;
+    return instrumentStorageReadCallsites(instrumentReadCallsites(code, id), id);
   };
   return plugin;
 }
@@ -55,7 +56,7 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         <div id="view"><header id="toolbar">Replay</header><div id="view-body"><main id="root">
         <output id="open-conversation">0</output><section id="conversation"></section></main>
         <aside id="agent-rail"></aside></div><div id="console-region"></div></div></div>`, { basePath });
-      await loadBrowserModules(page, { cache: "src/core/localCache.js", app: "src/appState.js", sync: "src/core/cacheSync.js", renderer: "src/core/thread.js", feed: "src/core/taskFeed.js", visible: "src/core/syncVisibleScopes.js", watched: "src/core/watchedTaskFollower.js", lineage: "src/core/agentLineage.js", inbox: "src/core/inboxView.js", agentRail: "src/core/agentRail.js", tracker: "src/core/trackerCache.js", metrics: "test/browser/liveSyncMetrics.mjs", contexts: "src/core/deviceContexts.js", canvas: "src/core/agentCanvas.js" }, basePath, { timeoutMs: 60_000 });
+      await loadBrowserModules(page, { cache: "src/core/localCache.js", app: "src/appState.js", sync: "src/core/cacheSync.js", renderer: "src/core/thread.js", feed: "src/core/taskFeed.js", visible: "src/core/syncVisibleScopes.js", watched: "src/core/watchedTaskFollower.js", lineage: "src/core/agentLineage.js", inbox: "src/core/inboxView.js", agentRail: "src/core/agentRail.js", tracker: "src/core/trackerCache.js", metrics: "test/browser/liveSyncMetrics.mjs", contexts: "src/core/deviceContexts.js", canvas: "src/core/agentCanvas.js", attribution: "test/browser/liveSyncReadAttribution.mjs" }, basePath, { timeoutMs: 60_000 });
       await page.evaluate(async ({ intervalMs, stallMs, frames, mixed, drainMs, tasksPerProject, retainedMessages, shape, ablateCanvas, cacheCanvasRect, boardMembership, staticDomTarget, ablateInbox, resetFrame, removalFrame, warmCatchup, holdThreadMs, warmTipMode, initialBodyBacklog, holdReleaseAfterRPC, explicitThreadPriority, representativeRate }) => {
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const stats = { gets: 0, transactions: 0, pendingTransactions: 0, peakTransactions: 0,
@@ -319,6 +320,10 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         await window.__startLiveSyncMeasurement();
         window.__liveSyncMetrics.active = true;
         fixture.started = performance.now();
+        const phase = () => sync.passInFlight("replay-device") ? "source-active" : "mounted-only";
+        const attribution = window.__layoutModules.attribution;
+        window.__liveSyncMetrics.attribution = attribution.createReadAttribution(() => performance.now(), phase);
+        window.__liveSyncMetrics.storageAttribution = attribution.createReadAttribution(() => performance.now(), phase);
         stats.inputStartedAt = fixture.started;
         if (warmCatchup && !holdReleaseAfterRPC) scheduleThreadRelease();
         const inboxSubscription = fixture.watchers.find((watcher) => watcher.id === "s-inbox");
@@ -437,6 +442,7 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         window.__liveSyncMetrics.active = false;
         await window.__stopLiveSyncMeasurement();
         stats.ui = { counters: window.__liveSyncMetrics.counters, timings: window.__liveSyncMetrics.timings,
+          readAttribution: window.__liveSyncMetrics.attribution.intervals, storageReadAttribution: window.__liveSyncMetrics.storageAttribution.intervals,
           drawCallsites: window.__liveSyncMetrics.drawCallsites, reads: window.__liveSyncMetrics.reads, readStacks: window.__liveSyncMetrics.readStacks, stages: window.__liveSyncMetrics.stages };
         observeRealPaint.disconnect();
         fixture.elapsedMs = performance.now() - fixture.started;

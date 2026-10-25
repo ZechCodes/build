@@ -171,6 +171,33 @@ let stopThreadWatch = null;
 let lifetime = 0;
 const syncedSessions = new Map(); // deviceId → the session its last pass ran on
 const passes = new Map(); // deviceId → the pass running on it, so triggers never stack
+const connectionPassRequests = new Set();
+const connectionSyncListeners = new Set();
+let connectionSyncActive = false;
+
+/** Only connection status may render this signal; all other views use cache. */
+export function subscribeConnectionSync(listener) {
+  connectionSyncListeners.add(listener);
+  listener(connectionSyncActive);
+  return () => connectionSyncListeners.delete(listener);
+}
+
+function setConnectionSync(active) {
+  if (connectionSyncActive === active) return;
+  connectionSyncActive = active;
+  for (const listener of connectionSyncListeners) listener(active);
+}
+
+function connectionDeviceBusy({ deviceId }) {
+  if (connectionPassRequests.has(deviceId) || passes.has(deviceId)) return true;
+  return Object.values(pushWorkInFlight(deviceId)).some(Boolean)
+    || Object.values(threadCatchupsInFlight(deviceId)).some(Boolean);
+}
+
+/** Later pushes can prolong an active period, but only a connect starts one. */
+function updateConnectionSync() {
+  if (connectionSyncActive && !liveContexts().some(connectionDeviceBusy)) setConnectionSync(false);
+}
 const projectTerminalSubscriptions = new Map();
 const subscriptions = new Map(); // deviceId → its three watchers
 const restoredScopes = new Map(); // deviceId → fresh read identity for an ICE-restored session
@@ -349,6 +376,7 @@ export async function syncDevice(deviceId) {
  * Ordinary device-state changes are covered by the per-session pass. */
 export async function syncRestoredDevice(deviceId, session) {
   if (!holdingLock || sessionOf(deviceId) !== session) return false;
+  connectionPassRequests.add(deviceId);
   // A carried session has the same caller and cache scope as before its ICE
   // restart. The bridge behind it may be new, so reads from the old path may
   // neither answer nor be shared with this path's baseline.
@@ -398,6 +426,7 @@ function startPass(deviceId) {
     }
   })();
   passes.set(deviceId, turn);
+  if (connectionPassRequests.delete(deviceId)) setConnectionSync(true);
   return turn.done;
 }
 
@@ -409,6 +438,7 @@ function finishPass(deviceId, turn) {
   if (turn.again && !turn.superseded && holdingLock && sessionOf(deviceId) === turn.session) {
     turn.next = startPass(deviceId);
   }
+  updateConnectionSync();
 }
 
 async function orderedSync(deviceId, turn) {
@@ -1534,18 +1564,19 @@ function queuesFor(context) {
   if (held?.scope === context.backgroundStreams) return held;
   held?.body.clear(); held?.background.clear(); held?.catchups.clear();
   const priority = (item) => item.owner === openPushEntity(context.deviceId) || item.entity_id === openPushEntity(context.deviceId);
-  const background = createPushQueue({ priority, onError: pushError, concurrency: 2,
+  const background = createPushQueue({ priority, onChange: updateConnectionSync, onError: pushError, concurrency: 2,
     isBarrier: () => false,
     merge: (left, right) => left.run && right.run && left.replaceable && right.replaceable ? right : combinePushItems(left, right),
     apply: (scoped, item) => item.run ? item.run() : applyRemainder(scoped, item),
   });
-  const body = createPushQueue({ priority, onError: pushError, apply: async (scoped, item) => {
+  const body = createPushQueue({ priority, onChange: updateConnectionSync, onError: pushError, apply: async (scoped, item) => {
     const applying = { ...scoped, pushCompletions: [] };
     const before = await applyItem(applying, item);
     if (before) void prunePushedDrafts(applying, before).catch(() => {});
     return { settled: Promise.all(applying.pushCompletions) };
   } });
   const catchups = createThreadCatchups({
+    onChange: updateConnectionSync,
     needed: async (request) => {
       const held = (await readCached(request.address))?.value;
       return catchupGenerationMatches(request, held)
@@ -2305,6 +2336,7 @@ function considerDevices() {
     syncedSessions.set(context.deviceId, context.session);
     void syncSessionOnce(context.deviceId, context.session);
   }
+  updateConnectionSync();
 }
 
 /** A session is marked read before its pass runs, so two announcements in a
@@ -2313,6 +2345,7 @@ function considerDevices() {
  *  hearing only what changed after it and never reading what it missed.
  *  Unmarked, the next thing the device announces asks again. */
 async function syncSessionOnce(deviceId, session) {
+  connectionPassRequests.add(deviceId);
   const startedIn = lifetime;
   if (await syncDevice(deviceId)) return;
   if (startedIn === lifetime && syncedSessions.get(deviceId) === session) syncedSessions.delete(deviceId);
@@ -2379,6 +2412,8 @@ export function stopCacheSync() {
   // writes are behind `active()`, and queued follow-ups lose their turn.
   for (const turn of passes.values()) turn.superseded = true;
   passes.clear();
+  connectionPassRequests.clear();
+  setConnectionSync(false);
   clearTimeout(lockWait);
   lockWait = null;
   if (visibilityWired && typeof document !== "undefined") {

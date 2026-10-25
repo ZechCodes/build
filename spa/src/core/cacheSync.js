@@ -35,6 +35,7 @@
 // read it followed, so a read never writes over a record a push wrote after it
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
+import { isRestoringInPlace } from "./connectionStatusModel.js";
 import { threadHistoryStart, trimThreadHistory } from "./threadRetention.js";
 import { projectTerminalRpc } from "./projectTerminalRpc.js";
 import { projectTerminalScopes, writeProjectTerminalRoster } from "./projectTerminalCache.js";
@@ -193,7 +194,11 @@ function setConnectionSync(active) {
 async function requestConnectionPass(deviceId, run) {
   let requests = connectionPassRequests.get(deviceId);
   if (!requests) connectionPassRequests.set(deviceId, requests = new Set());
-  const request = {};
+  const context = contextFor(deviceId), session = context?.session, startedIn = lifetime;
+  // A pending successor owns the ring until its pass takes over, or this
+  // exact context/session/lifetime is abandoned. Restore may replace its scope.
+  const request = { active: () => holdingLock && startedIn === lifetime
+    && contextFor(deviceId) === context && context?.session === session };
   requests.add(request);
   try { return await run(); }
   finally {
@@ -205,8 +210,13 @@ async function requestConnectionPass(deviceId, run) {
   }
 }
 
-function connectionDeviceBusy({ deviceId }) {
-  if (connectionPassRequests.has(deviceId)) return true;
+const connectedForSync = (context) => context.active() && !isRestoringInPlace(context);
+const connectionRequested = (deviceId) => [...(connectionPassRequests.get(deviceId) || [])].some((request) => request.active());
+
+function connectionDeviceBusy(context) {
+  if (!connectedForSync(context)) return false;
+  const { deviceId } = context;
+  if (connectionRequested(deviceId)) return true;
   return connectionPeriods.get(deviceId)?.active() || false;
 }
 
@@ -397,11 +407,21 @@ export async function syncDevice(deviceId) {
     // another announcement would ever ask, and the announcement that would
     // have is the one being dropped.
     running.superseded = true;
-    await running.done;
-    // A stopped lifetime or a replaced session abandons this waiting request.
-    if (!holdingLock || startedIn !== lifetime || sessionOf(deviceId) !== session) return false;
-    if (passes.has(deviceId)) return false; // another ask got in first; it owns this turn
+    const resume = () => resumeSupersededPass(deviceId, running, session, startedIn);
+    // A direct sync can succeed a connection pass without a session watcher
+    // supplying another request. Keep its ownership across the awaited gap.
+    if (connectionPeriods.has(deviceId) || connectionRequested(deviceId)) {
+      return requestConnectionPass(deviceId, resume);
+    }
+    return resume();
   }
+  return startPass(deviceId);
+}
+
+async function resumeSupersededPass(deviceId, running, session, startedIn) {
+  await running.done;
+  if (!holdingLock || startedIn !== lifetime || sessionOf(deviceId) !== session) return false;
+  if (passes.has(deviceId)) return false; // another ask owns this turn
   return startPass(deviceId);
 }
 
@@ -465,10 +485,11 @@ function startPass(deviceId, connection = null) {
     }
   })();
   passes.set(deviceId, turn);
-  if (connectionPassRequests.delete(deviceId) && liveContexts().some((context) => context.deviceId === deviceId)) {
+  if (connectionRequested(deviceId) && liveContexts().some((context) => context.deviceId === deviceId && connectedForSync(context))) {
     turn.connection = { active: syncContext(contextFor(deviceId)).ownerActive };
     connectionPeriods.set(deviceId, turn.connection);
     setConnectionSync(true);
+    connectionPassRequests.delete(deviceId); // the period now owns the ring
   }
   return turn.done;
 }

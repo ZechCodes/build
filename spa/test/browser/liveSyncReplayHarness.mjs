@@ -35,7 +35,8 @@ export function liveSyncPlugin(options) {
   return plugin;
 }
 
-export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 0, frames = 120, mixed = true, drainMs = 20000, cpuProfilePath, ablateCanvas = false, ablateInbox = false, cacheCanvasRect = false, boardMembership = 6, staticDomTarget = 1284, tasksPerProject = 143, retainedMessages = 330, resetFrame = 180, removalFrame = 120 } = {}) {
+export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 0, frames = 120, mixed = true, drainMs, cpuProfilePath, ablateCanvas = false, ablateInbox = false, cacheCanvasRect = false, boardMembership = 6, staticDomTarget = 1284, tasksPerProject = 143, retainedMessages = 330, resetFrame = 180, removalFrame = 120, warmCatchup = false, holdThreadMs = 5000, warmTipMode = "empty", initialBodyBacklog = 0, holdReleaseAfterRPC = false, explicitThreadPriority = false, representativeRate = false } = {}) {
+  drainMs ??= warmCatchup ? 120000 : 20000;
   const session = await openLayoutSession({ plugins: [liveSyncPlugin({ revision })] });
   try {
     return await session.withPage(async ({ page, basePath }) => {
@@ -55,7 +56,7 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         <output id="open-conversation">0</output><section id="conversation"></section></main>
         <aside id="agent-rail"></aside></div><div id="console-region"></div></div></div>`, { basePath });
       await loadBrowserModules(page, { cache: "src/core/localCache.js", app: "src/appState.js", sync: "src/core/cacheSync.js", renderer: "src/core/thread.js", feed: "src/core/taskFeed.js", visible: "src/core/syncVisibleScopes.js", watched: "src/core/watchedTaskFollower.js", lineage: "src/core/agentLineage.js", inbox: "src/core/inboxView.js", agentRail: "src/core/agentRail.js", tracker: "src/core/trackerCache.js", metrics: "test/browser/liveSyncMetrics.mjs", contexts: "src/core/deviceContexts.js", canvas: "src/core/agentCanvas.js" }, basePath, { timeoutMs: 60_000 });
-      await page.evaluate(async ({ intervalMs, stallMs, frames, mixed, drainMs, tasksPerProject, retainedMessages, shape, ablateCanvas, cacheCanvasRect, boardMembership, staticDomTarget, ablateInbox, resetFrame, removalFrame }) => {
+      await page.evaluate(async ({ intervalMs, stallMs, frames, mixed, drainMs, tasksPerProject, retainedMessages, shape, ablateCanvas, cacheCanvasRect, boardMembership, staticDomTarget, ablateInbox, resetFrame, removalFrame, warmCatchup, holdThreadMs, warmTipMode, initialBodyBacklog, holdReleaseAfterRPC, explicitThreadPriority, representativeRate }) => {
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const stats = { gets: 0, transactions: 0, pendingTransactions: 0, peakTransactions: 0,
           pendingAppliers: 0, peakAppliers: 0, cacheLatencies: [], cacheApplyTurns: [], renderLatencies: [], renderSchedulerTurns: [], rpcCalls: 0, rowGets: 0, backlogSamples: [] };
@@ -65,6 +66,17 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         App.deviceFilter = null;
         App.devices = [{ id: "replay-device" }];
         App.route = { name: "branch", branch: "build/0", deviceId: "replay-device", projectId: "p0", agent: "agent-0" };
+        const cachedThrough = warmCatchup ? 1080 : 1100;
+        let releaseThreadRPC;
+        const threadGate = warmCatchup ? new Promise((resolve) => { releaseThreadRPC = resolve; }) : Promise.resolve();
+        stats.rpcPhases = [];
+        stats.ownRepairHolds = [];
+        let releaseScheduled = false;
+        const scheduleThreadRelease = () => {
+          if (releaseScheduled) return;
+          releaseScheduled = true;
+          setTimeout(() => { stats.threadRPCReleasedAt = performance.now(); releaseThreadRPC(); }, holdThreadMs);
+        };
         const address = (entityId, kind, sub = "") => ({ deviceId: "replay-device", entityId, kind, sub });
         const projects = Array.from({ length: 6 }, (_, index) => ({ id: `p${index}`, projectKey: `replay-device/p${index}`, project_id: `p${index}`, name: `Project ${index}`, metadata: "p".repeat(1750), entity_id: `run-${index}`, deviceId: "replay-device" }));
         const agents = Array.from({ length: 109 }, (_, index) => ({ id: `agent-${index}`, conversation_id: `agent-${index}`, thread_id: `thread-${index}`, thread_generation_revision: 1, ordinal: index + 1, working: index === 0, state: "live", watched: index === 0, unread_count: index === 0 ? 1 : 0, read_through_sequence: 1100, name: `Agent ${index}` }));
@@ -78,8 +90,18 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         fixture.context = { deviceId: "replay-device", session: {}, active: () => true,
           cacheScope: { deviceId: "replay-device", active: () => true }, rpc: async (method, params = {}) => {
             stats.rpcCalls++;
+            const rpcStarted = performance.now();
+            if (method === "thread.page") {
+              if (warmCatchup && holdReleaseAfterRPC && params.thread_id === "thread-0") scheduleThreadRelease();
+              stats.rpcPhases.push({ phase: "entered", method, entityId: params.entity_id, threadId: params.thread_id, afterSequence: params.after_sequence, at: rpcStarted });
+              await threadGate;
+              if (warmCatchup && params.thread_id === "thread-0" && rpcStarted < stats.threadRPCReleasedAt) stats.ownRepairHolds.push({ start: rpcStarted, end: performance.now() });
+              stats.rpcPhases.push({ phase: "released", method, entityId: params.entity_id, threadId: params.thread_id, afterSequence: params.after_sequence, at: performance.now(), waitMs: performance.now() - rpcStarted });
+            }
             stats.rpcMethods ||= {}; stats.rpcMethods[method] = (stats.rpcMethods[method] || 0) + 1;
-            if (method === "board.list") return { items: [...fixture.serverRows.values()].filter((row) => boardMembership === 204 || rows.some((active) => active.run_id === row.run_id)), runs: [], plans: [] };
+            if (method === "board.list") return { items: [...fixture.serverRows.values()].filter((row) => boardMembership === 204 || rows.some((active) => active.run_id === row.run_id)
+              || (row.run_id === "reset-fixture" && resetFrame >= 0 && resetFrame < frames)
+              || (row.run_id === "retired" && removalFrame >= 0 && removalFrame < frames && !fixture.retiredRemoved)), runs: [], plans: [] };
             if (method === "project.list") return { projects };
             if (method === "workspace.list") return { workspaces: fixture.serverWorkspaces || [] };
             if (method === "tasks.list") return { tasks: fixture.serverTasks?.get(params.project_id) || [], has_more: false };
@@ -102,8 +124,12 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
             const row = fixture.serverRows?.get(params.entity_id) || rows.find((row) => row.run_id === params.entity_id) || fixture.resetRow;
             if (method === "models.list") return { default_provider: "codex", providers: [{ id: "codex", label: "Codex", models: [], efforts: [] }] };
             if (method === "agent.list") return { entity_id: row.run_id, pinned_agent_id: row.agents[0]?.id || null, agents: (fixture.projectRosters.find((roster) => roster.entity_id === row.run_id) || row).agents };
-            if (method === "thread.page") return { thread_id: params.thread_id, thread_generation_revision: 1,
+            if (method === "thread.page") {
+              if (warmCatchup && holdReleaseAfterRPC && params.thread_id === "thread-0") scheduleThreadRelease();
+              stats.rpcPhases.push({ phase: "returned", method, entityId: params.entity_id, threadId: params.thread_id, afterSequence: params.after_sequence, at: performance.now() });
+              return { thread_id: params.thread_id, thread_generation_revision: row.agents.find((agent) => agent.thread_id === params.thread_id)?.thread_generation_revision || 1,
               items: (fixture.server.get(params.thread_id) || []).filter((item) => item.data.sequence > (params.after_sequence || 0)), has_more: false };
+            }
             return {};
           } };
         await cache.writeCached(address("", "projects"), projects);
@@ -112,7 +138,7 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         for (const row of rows) {
           await cache.writeCached(address(row.run_id, "row"), row);
           for (const agent of agents.filter((_, index) => index % 6 === Number(row.run_id.slice(4)))) await cache.writeCached(address(row.run_id, "thread", agent.id), {
-            thread_id: agent.thread_id, thread_generation_revision: 1, items: Array.from({ length: agent.id === "agent-0" ? retainedMessages : 0 }, (_, n) => ({ type: "message", data: { id: `retained-${agent.id}-${n}`, sequence: 1100 - retainedMessages + n + 1, role: "agent", body: `Retained fixture message ${n} ${"r".repeat(n === 0 ? 1200 : 1000)}` } })), deliveredSequence: 1100, activityDigests: [], knownTotalItems: 1100,
+            thread_id: agent.thread_id, thread_generation_revision: 1, items: Array.from({ length: agent.id === "agent-0" ? retainedMessages : 0 }, (_, n) => ({ type: "message", data: { id: `retained-${agent.id}-${n}`, sequence: cachedThrough - retainedMessages + n + 1, role: "agent", body: `Retained fixture message ${n} ${"r".repeat(n === 0 ? 1200 : 1000)}` } })), deliveredSequence: cachedThrough, activityDigests: [], knownTotalItems: cachedThrough,
           });
         }
         if (mixed) {
@@ -152,8 +178,9 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         fixture.serverWorkspaces = (await cache.readCached(address("", "workspaces")))?.value;
         contexts.adoptDeviceSession({ deviceId: "replay-device", call: fixture.context.rpc, close() {}, peer() {}, onCarrier() {}, onPush() {} });
         const openAddress = address("run-0", "thread", "agent-0");
-        const stopThread = visible.registerSyncThread(() => ({ deviceId: "replay-device", entityId: "run-0",
-          agentId: "agent-0", conversationId: "agent-0", threadId: "thread-0" }));
+        const stopThread = explicitThreadPriority ? visible.registerSyncThread(() => ({ deviceId: "replay-device", entityId: "run-0",
+          agentId: "agent-0", conversationId: "agent-0", threadId: "thread-0" })) : () => {};
+        stats.explicitThreadPriority = explicitThreadPriority;
         cache.subscribeCache(openAddress, async () => {
           const held = (await cache.readCached(openAddress))?.value;
           const appliedAtRead = stats.applierStarts || 0;
@@ -164,17 +191,17 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
             (fixture.seen ||= new Set()).add(sequence);
             stats.cacheLatencies.push(performance.now() - fixture.emitted.get(sequence));
             stats.cacheApplyTurns.push(appliedAtRead - fixture.emittedTurns.get(sequence));
-            document.querySelector("#open-conversation").textContent = String(sequence);
-            await new Promise(requestAnimationFrame);
-            stats.renderLatencies.push(performance.now() - fixture.emitted.get(sequence));
-            stats.renderSchedulerTurns.push((stats.schedulerStarts || 0) - fixture.emittedSchedulerTurns.get(sequence));
+            // This observer records cache delivery only; actual rail owns all rendering.
+
           }
         });
         const originalTransaction = IDBDatabase.prototype.transaction;
         const originalGet = IDBObjectStore.prototype.get;
         const originalPut = IDBObjectStore.prototype.put;
         IDBObjectStore.prototype.put = function (record, key, ...args) {
+          if (record.value?.replay_backlog) this.transaction.addEventListener("complete", () => { (fixture.backlogSeen ||= new Set()).add(record.value.replay_backlog); stats.backlogCommitted = fixture.backlogSeen.size; }, { once: true });
           if (key === "replay-device|run-0|thread|agent-0") this.transaction.addEventListener("complete", () => {
+            if (record.value?.deliveredSequence > 1100 && stats.firstOwnCommitBacklogCompleted === undefined) stats.firstOwnCommitBacklogCompleted = stats.backlogCommitted || 0;
             window.__liveSyncMetrics.stage("cacheCommit", { entity_id: "run-0", thread: [{ last_sequence: record.value?.deliveredSequence }] });
           }, { once: true });
           return originalPut.call(this, record, key, ...args);
@@ -214,17 +241,19 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         stats.seedOwnThreadChars = JSON.stringify((await cache.readCached(openAddress))?.value).length;
         stats.seedFeedBytes = JSON.stringify((await cache.readCached(address("", "feed")))?.value).length;
         stats.seedWorkspaceBytes = JSON.stringify((await cache.readCached(address("", "workspaces")))?.value).length;
+        stats.mountStartedAt = performance.now();
         inbox.mountInboxList();
         const rail = agentRail.mountAgentRail(document.querySelector("#agent-rail"), {
           kind: "branch", branch: "build/0", deviceId: "replay-device", projectId: "p0", entityId: "run-0", openAgentId: "agent-0", panelOpen: true,
           call: fixture.context.rpc,
         });
+        if (warmCatchup) for (const row of rows) fixture.server.set(row.agents[0].thread_id, Array.from({ length: 20 }, (_, n) => ({ type: "message", data: { id: `backlog-${row.run_id}-${n}`, sequence: 1081 + n, role: "agent", body: `backlog ${n}` } })));
         await sync.startPushReplay();
         await feed.startFeed();
-        await sleep(1000);
+        if (!warmCatchup) await sleep(1000);
         const warmStarted = performance.now();
-        for (let pass = sync.passInFlight("replay-device"); pass; pass = sync.passInFlight("replay-device")) await pass;
-        stats.warmBoundary = await waitForQuiet();
+        if (!warmCatchup) for (let pass = sync.passInFlight("replay-device"); pass; pass = sync.passInFlight("replay-device")) await pass;
+        stats.warmBoundary = warmCatchup ? { passRunning: Boolean(sync.passInFlight("replay-device")), pendingTransactions: stats.pendingTransactions } : await waitForQuiet();
         stats.warmPassStillRunning = Boolean(sync.passInFlight("replay-device"));
         stats.warmWaitMs = performance.now() - warmStarted;
         fixture.expectedStates = new Map();
@@ -240,6 +269,8 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         }
         stats.seedRecords = (await cache.cachedAddresses({ deviceId: "replay-device" })).length;
         stats.seedRailMarkup = document.querySelector("#agent-rail").innerHTML;
+        stats.seedRetiredAddresses = (await cache.cachedAddresses({ deviceId: "replay-device", entityId: "retired" })).length;
+        stats.seedResetThreadId = (await cache.readCached(address("reset-fixture", "thread", "reset-agent")))?.value?.thread_id;
         stats.seedDomElements = document.querySelectorAll("*").length;
         stats.seedVisibleInboxRows = [...document.querySelectorAll("#inbox-list [data-key]")].filter((node) => node.getBoundingClientRect().height > 0).length;
         stats.seedCanvasCount = document.querySelectorAll("canvas").length;
@@ -255,8 +286,11 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
             if (!row || !row.textContent.includes(`frame ${(sequence - 1101) * 6}`)) continue;
             realSeen.add(sequence);
             requestAnimationFrame(() => {
+              if (!stats.realPaintLatencies.length) stats.firstOwnPaintBacklogCompleted = stats.backlogCommitted || 0;
               stats.realPaintLatencies.push(performance.now() - at);
               stats.realPaintSchedulerTurns.push((stats.schedulerStarts || 0) - fixture.emittedSchedulerTurns.get(sequence));
+              if (stats.threadRPCReleasedAt && !fixture.inputEnded) stats.progressAfterReleaseDuringProducer = true;
+              if (stats.firstFullPassCompletedAt && !fixture.inputEnded) stats.progressAfterInitialPassDuringProducer = true;
               window.__liveSyncMetrics.stage("mountedPaint", { entity_id: "run-0", thread: [{ last_sequence: sequence }] });
             });
           }
@@ -272,8 +306,8 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         keepAlive();
         window.__liveSyncMetrics.active = true;
         const beforeProbeGets = stats.gets;
-        await Promise.all(Array.from({ length: 32 }, () => cache.writeCached(address("run-1", "row"), rows[1])));
-        stats.measurementBoundary = await waitForQuiet();
+        if (!warmCatchup) await Promise.all(Array.from({ length: 32 }, () => cache.writeCached(address("run-1", "row"), rows[1])));
+        stats.measurementBoundary = warmCatchup ? { passRunning: Boolean(sync.passInFlight("replay-device")), pendingTransactions: stats.pendingTransactions } : await waitForQuiet();
         stats.noopProbe = { directGets: stats.gets - beforeProbeGets,
           counters: structuredClone(window.__liveSyncMetrics.counters), timings: structuredClone(window.__liveSyncMetrics.timings),
           reads: structuredClone(window.__liveSyncMetrics.reads) };
@@ -285,22 +319,53 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         await window.__startLiveSyncMeasurement();
         window.__liveSyncMetrics.active = true;
         fixture.started = performance.now();
+        stats.inputStartedAt = fixture.started;
+        if (warmCatchup && !holdReleaseAfterRPC) scheduleThreadRelease();
         const inboxSubscription = fixture.watchers.find((watcher) => watcher.id === "s-inbox");
         fixture.deliveries = [];
-        fixture.expectedMessages = Array.from({ length: 6 }, () => []);
+        fixture.expectedMessages = rows.map((row) => warmCatchup ? [...fixture.server.get(row.agents[0].thread_id)] : []);
         const sampleWork = () => {
+          const shown = visible.visibleSyncThread("replay-device");
+          if (shown?.entityId === "run-0" && shown.agentId === "agent-0" && stats.mountedPriorityKnownAt === undefined) stats.mountedPriorityKnownAt = performance.now();
           const work = sync.pushWorkInFlight?.("replay-device");
           if (!work) return;
           fixture.work = work;
+          const half = (fixture.inputFrame || 0) < frames / 2 ? "first" : "second";
+          stats[half + "HalfPendingPeak"] = Math.max(stats[half + "HalfPendingPeak"] || 0, work.pending);
+          fixture.catchups = sync.threadCatchupsInFlight?.("replay-device") || { running: 0, pending: 0 };
+          stats.peakCatchupRunning = Math.max(stats.peakCatchupRunning || 0, fixture.catchups.running);
+          stats.peakCatchupPending = Math.max(stats.peakCatchupPending || 0, fixture.catchups.pending);
+          const pass = sync.passInFlight("replay-device");
+          stats.fullPassObserved ||= Boolean(pass);
+          if (pass && !fixture.firstFullPass) {
+            fixture.firstFullPass = pass;
+            stats.firstFullPassObservedAt = performance.now();
+            pass.then((completed) => { stats.firstFullPassCompletedAt = performance.now(); stats.firstFullPassCompletedSuccessfully = completed; stats.firstFullPassCompletedDuringProducer = !fixture.inputEnded; });
+          }
+          if ((fixture.inputFrame || 0) >= frames * .75) {
+            stats.lateBodyPendingPeak = Math.max(stats.lateBodyPendingPeak || 0, work.pending);
+            stats.lateCatchupPendingPeak = Math.max(stats.lateCatchupPendingPeak || 0, fixture.catchups.pending);
+          }
+          if (fixture.inputEnded && stats.bodyDrainMs === undefined && !Object.values(work).some(Boolean)
+            && !Object.values(fixture.catchups).some(Boolean) && !stats.pendingAppliers
+            && stats.realPaintLatencies.length === Math.ceil(frames / 6)) stats.bodyDrainMs = performance.now() - fixture.inputEnded;
           const now = performance.now() - fixture.started;
           if (!stats.backlogSamples.length || now - stats.backlogSamples.at(-1).at >= 1000)
-            stats.backlogSamples.push({ at: now, pending: work.pending, backgroundPending: work.backgroundPending });
+            stats.backlogSamples.push({ at: now, pending: work.pending, backgroundPending: work.backgroundPending, catchupPending: fixture.catchups.pending, catchupRunning: fixture.catchups.running, fullPassRunning: Boolean(sync.passInFlight("replay-device")) });
           for (const [key, value] of Object.entries(work)) {
             stats[`peakWork_${key}`] = Math.max(stats[`peakWork_${key}`] || 0, value);
           }
         };
+        let regularItems = 0;
         const sampleTimer = setInterval(sampleWork, 1);
+        stats.initialBodyBacklog = initialBodyBacklog;
+        if (initialBodyBacklog) {
+          const burst = Array.from({ length: initialBodyBacklog }, (_, index) => ({ entity_id: `padding-${index}`, state: { ...fixture.serverRows.get(`padding-${index}`), replay_backlog: index + 1 } }));
+          for (const item of burst) fixture.serverRows.set(item.entity_id, structuredClone(item.state));
+          fixture.deliveries.push(Promise.resolve(inboxSubscription.onChanges(burst)));
+        }
         for (let frame = 0; frame < frames; frame++) {
+          fixture.inputFrame = frame;
           const row = rows[frame % 6];
           const agent = row.agents[0];
           const sequence = 1100 + Math.floor(frame / 6) + 1;
@@ -317,7 +382,7 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
           // Empty, already-covered tips are duplicated by multiple active
           // subscriptions; include them without inventing cursor holes.
           const duplicate = { ...tip, since_sequence: Math.max(0, sequence - 1), last_sequence: Math.max(0, sequence - 1), items: [] };
-          if (mixed && frame % 36 === 12) tip.items = []; // A genuine missing inline delta, repaired from thread.page.
+          if ((warmCatchup && (warmTipMode === "empty" || frame % 8 < 3)) || (mixed && frame % 36 === 12)) tip.items = []; // A genuine missing inline delta, repaired from thread.page.
           if (mixed) row.agents[0].topic = `topic-${frame}`;
           const pushedState = structuredClone({ ...row, replay_frame: frame });
           fixture.expectedStates.set(row.run_id, pushedState);
@@ -325,24 +390,35 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
           const changes = [{ entity_id: row.run_id, state: pushedState, thread: [tip, duplicate] }];
           if (mixed) {
             changes.unshift({ entity_id: "board", state: { revision: frame } });
-            changes.push({ entity_id: `notification-${frame % 8}`, terminals: { tabs: [{ term_id: `tab-${frame}` }] } });
-            if (frame === removalFrame) changes.push({ entity_id: "board", state: { revision: frame, removed: ["retired"] } });
+            const terminal = { entity_id: `notification-${(representativeRate ? Math.floor(frame / 20) : frame) % 8}`, terminals: { tabs: [{ term_id: `tab-${frame}` }] } };
+            if (!representativeRate) changes.push(terminal);
+            else if (frame % 20 === 0) changes[0] = terminal;
+            if (frame === removalFrame) {
+              fixture.retiredRemoved = true; fixture.serverRows.delete("retired");
+              changes.push({ entity_id: "board", state: { revision: frame, removed: ["retired"] } });
+            }
             // Exercise a real reset barrier on an independent conversation.
             if (frame === resetFrame) {
               fixture.resetRow.agents[0] = { id: "reset-agent", conversation_id: "reset-agent", thread_id: `reset-${frame}`, thread_generation_revision: frame };
+              fixture.serverRows.set("reset-fixture", structuredClone(fixture.resetRow));
               changes.push({ entity_id: "reset-fixture", thread: [{ agent_id: "reset-agent",
               conversation_id: "reset-agent", thread_id: `reset-${frame}`, thread_generation_revision: frame,
               since_sequence: 0, last_sequence: 0, reset: true, items: [] }] });
             }
           }
-          window.__liveSyncMetrics.stage("receipt", changes[1]);
+          regularItems += changes.length;
+          window.__liveSyncMetrics.stage("receipt", changes.find((item) => item.entity_id === row.run_id));
           fixture.deliveries.push(Promise.resolve(inboxSubscription.onChanges(changes)));
           await sleep(intervalMs);
           if (frame < frames - 1 && fixture.seen?.size) stats.renderProgressDuringReplay = true;
         }
         fixture.inputEnded = performance.now();
+        stats.progressDuringRecovery = stats.realPaintLatencies.length > 0;
         stats.inputDurationMs = fixture.inputEnded - fixture.started;
         stats.framesReceived = frames;
+        stats.representativeRate = representativeRate;
+        stats.regularItemsReceived = regularItems;
+        stats.regularItemsPerSecond = regularItems / (stats.inputDurationMs / 1000);
         stats.framesPerSecond = frames / (stats.inputDurationMs / 1000);
         const inputEndedSchedulerTurns = stats.schedulerStarts || 0;
         const deadline = fixture.inputEnded + drainMs;
@@ -351,11 +427,13 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
           deliveryTimer = setTimeout(() => { stats.deliveryDeadlineReached = true; resolve(); }, drainMs);
         })]);
         clearTimeout(deliveryTimer);
-        while ((stats.pendingAppliers || stats.pendingTransactions || Object.values(fixture.work || {}).some(Boolean) || fixture.seen?.size !== Math.ceil(frames / 6) || stats.renderLatencies.length !== Math.ceil(frames / 6) || stats.realPaintLatencies.length !== Math.ceil(frames / 6)) && performance.now() < deadline) await sleep(20);
+        while ((stats.pendingAppliers || stats.pendingTransactions || (warmCatchup && sync.passInFlight("replay-device")) || Object.values(fixture.work || {}).some(Boolean) || Object.values(fixture.catchups || {}).some(Boolean) || fixture.seen?.size !== Math.ceil(frames / 6) || stats.realPaintLatencies.length !== Math.ceil(frames / 6)) && performance.now() < deadline) await sleep(20);
         await sleep(50);
         clearInterval(sampleTimer);
         sampleWork();
         stats.finalWork = fixture.work || null;
+        stats.finalCatchups = fixture.catchups || null;
+        stats.finalPassRunning = Boolean(sync.passInFlight("replay-device"));
         window.__liveSyncMetrics.active = false;
         await window.__stopLiveSyncMeasurement();
         stats.ui = { counters: window.__liveSyncMetrics.counters, timings: window.__liveSyncMetrics.timings,
@@ -375,7 +453,13 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         }
         fixture.exactFinalMessages = fixture.finalThreads.every((thread, index) =>
           thread.thread_id === rows[index].agents[0].thread_id
-          && thread.deliveredSequence === 1100 + fixture.expectedMessages[index].length && JSON.stringify(thread.items.filter((item) => item.data.sequence > 1100)) === JSON.stringify(fixture.expectedMessages[index]));
+          && thread.deliveredSequence === 1100 + fixture.expectedMessages[index].length - (warmCatchup ? 20 : 0) && JSON.stringify(thread.items.filter((item) => item.data.sequence > cachedThrough)) === JSON.stringify(fixture.expectedMessages[index]));
+        stats.exactBacklogStates = true;
+        for (let index = 0; index < initialBodyBacklog; index++) {
+          const held = (await cache.readCached(address(`padding-${index}`, "row")))?.value;
+          const expected = fixture.serverRows.get(`padding-${index}`);
+          if (!held || held.replay_backlog !== index + 1 || !Object.entries(expected).every(([key, value]) => JSON.stringify(held[key]) === JSON.stringify(value))) stats.exactBacklogStates = false;
+        }
         fixture.messageMismatch = fixture.exactFinalMessages ? null : { actual: fixture.finalThreads[0], expected: fixture.expectedMessages[0] };
         const readFields = new Set(["read_through_sequence", "read_from_sequence", "unread_count"]);
         const withoutReadFields = (agent) => Object.fromEntries(Object.entries(agent).filter(([key]) => !readFields.has(key)));
@@ -411,7 +495,7 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         stopThread();
         sync.stopCacheSync();
         db.close();
-      }, { basePath, intervalMs, stallMs, frames, mixed, drainMs, tasksPerProject, retainedMessages, shape: LIVE_SYNC_SHAPE, ablateCanvas, cacheCanvasRect, boardMembership, staticDomTarget, ablateInbox, resetFrame, removalFrame });
+      }, { basePath, intervalMs, stallMs, frames, mixed, drainMs, tasksPerProject, retainedMessages, shape: LIVE_SYNC_SHAPE, ablateCanvas, cacheCanvasRect, boardMembership, staticDomTarget, ablateInbox, resetFrame, removalFrame, warmCatchup, holdThreadMs, warmTipMode, initialBodyBacklog, holdReleaseAfterRPC, explicitThreadPriority, representativeRate });
       if (cpuProfilePath) await writeFile(cpuProfilePath, JSON.stringify(cpuProfile));
       const browserMetrics = (await cdp.send("Performance.getMetrics")).metrics;
       const result = await page.evaluate(() => {

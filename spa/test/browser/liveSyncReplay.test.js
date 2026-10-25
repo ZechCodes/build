@@ -32,6 +32,8 @@ it("profiles mounted inbox, actual rail canvases and conversation against real c
   expect(result.exactFinalMessages).toBe(true);
   expect(result.exactFinalStates).toBe(true);
   expect(result.readMarkerConstraints).toBe(true);
+  expect(result.seedRetiredAddresses).toBeGreaterThan(0);
+  expect(result.seedResetThreadId).toBe("reset-old");
   expect(result.retiredAddresses).toBe(0);
   expect(result.finalResetThread.thread_id).toBe("reset-18");
   expect(result.finalResetThread.items).toEqual([]);

@@ -173,3 +173,44 @@ it("joins an active goal without restarting its budget for an explicit recovery 
   held.resolve(); await first;
   expect(read).toHaveBeenCalledTimes(2);
 });
+
+it("lets an ordinary one-attempt repair finish without exhausting a later push", async () => {
+  const read = vi.fn(async () => {});
+  const jobs = createThreadCatchups({ needed: () => true, read });
+  await jobs.enqueue("thread", request(3), { maxAttempts: 1, retryExhausted: true });
+  expect(read).toHaveBeenCalledTimes(1);
+  await jobs.enqueue("thread", request(3));
+  expect(read).toHaveBeenCalledTimes(3);
+  await jobs.enqueue("thread", request(3));
+  expect(read).toHaveBeenCalledTimes(3);
+});
+
+it.each([[1, 2], [2, 1]])("shares an active repair with budgets %i then %i without reducing push attempts", async (firstBudget, joiningBudget) => {
+  const held = gate(), read = vi.fn(() => held.promise);
+  const jobs = createThreadCatchups({ needed: () => true, read });
+  const first = jobs.enqueue("thread", request(3), { maxAttempts: firstBudget });
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  expect(jobs.enqueue("thread", request(3), { maxAttempts: joiningBudget })).toBe(first);
+  held.resolve(); await first;
+  expect(read).toHaveBeenCalledTimes(2);
+});
+
+it("keeps a trailing push's two attempts when a recovery caller joins its newer goal", async () => {
+  const held = gate(), read = vi.fn((goal) => goal.sequence === 3 ? held.promise : Promise.resolve());
+  const jobs = createThreadCatchups({ needed: () => true, read });
+  const first = jobs.enqueue("thread", request(3), { maxAttempts: 1 });
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  const next = jobs.enqueue("thread", request(4));
+  expect(jobs.enqueue("thread", request(4), { maxAttempts: 1 })).toBe(next);
+  held.resolve(); await Promise.all([first, next]);
+  expect(read.mock.calls.map(([goal]) => goal.sequence)).toEqual([3, 4, 4]);
+});
+
+it("allows one ordinary recovery attempt after a push exhausted its two attempts", async () => {
+  const read = vi.fn(async () => {});
+  const jobs = createThreadCatchups({ needed: () => true, read });
+  await jobs.enqueue("thread", request(3));
+  expect(read).toHaveBeenCalledTimes(2);
+  await jobs.enqueue("thread", request(3), { retryExhausted: true, maxAttempts: 1 });
+  expect(read).toHaveBeenCalledTimes(3);
+});

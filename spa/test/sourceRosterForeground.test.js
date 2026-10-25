@@ -57,7 +57,10 @@ const gate = () => {
   return { promise, release };
 };
 
-let cache, sync, rpc, script;
+let cache, sync, rpc, script, foregroundAtSource, foregroundCommits, commitsAtSource, stopTracking;
+const threadMessage = (agentId, sequence) => ({ type: "message", data: { sequence, role: "agent", body: `${agentId} revision ${sequence}` } });
+const threadPage = (agentId, sequence = 1) => ({ thread_id: `thread-${agentId}`,
+  items: [threadMessage(agentId, sequence)], has_more: false });
 const answers = {
   "board.list": () => ({ items: board }),
   "project.list": () => ({ projects }),
@@ -67,7 +70,7 @@ const answers = {
   "term.list": () => ({ terminals: [] }),
   "git.log": () => ({ commits: [], newest: "head" }),
   "git.unpushed": () => ({ commits: [], base: {}, diff_key: "diff" }),
-  "thread.page": () => ({ items: [], has_more: false }),
+  "thread.page": ({ agent_id }) => threadPage(agent_id),
   "run.diff": () => ({ diff_key: "new-diff", patch: "new patch" }),
   "tasks.columns": ({ project_id }) => ({ project_id, columns: [{ id: "backlog", name: "Backlog" }] }),
   "tasks.list": ({ project_id, cursor }) => ({
@@ -97,6 +100,9 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   delete navigator.locks;
   script = {};
+  foregroundAtSource = null;
+  foregroundCommits = 0;
+  commitsAtSource = 0;
   App.route = routeTo(10);
   rpc = vi.fn(async (method, params = {}) => (script[method] || answers[method] || (() => ({})))(params));
   context = {
@@ -108,14 +114,33 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  stopTracking?.();
+  stopTracking = null;
   sync.stopCacheSync();
   vi.unstubAllGlobals();
   await finish();
 });
 
 const sourceCalls = () => calls("term.list").filter(([, params]) => params.source_id);
-const expectWorkspaceCached = async (number) => {
-  expect((await cache.readCached(address(`run-${number}`, "thread", `ag-${number}-b`)))?.value).toBeDefined();
+const trackForegroundCommit = () => {
+  stopTracking = cache.subscribeCache(address("run-10", "thread", "ag-10-b"), () => { foregroundCommits += 1; });
+};
+const sourceReply = (params, answer) => {
+  if (params.source_id && !foregroundAtSource) {
+    // Capture at the first unrelated roster's dispatch, before its held reply.
+    commitsAtSource = foregroundCommits;
+    foregroundAtSource = cache.readCached(address("run-10", "thread", "ag-10-b")).then((record) => record?.value);
+  }
+  return answer;
+};
+const expectThreadCached = (thread, number, sequence = 1) => {
+  expect(thread?.thread_id).toBe(`thread-ag-${number}-b`);
+  expect(thread?.items).toEqual(Array.from({ length: sequence }, (_, index) => threadMessage(`ag-${number}-b`, index + 1)));
+  expect(thread?.deliveredSequence).toBe(sequence);
+};
+const expectWorkspaceCached = async (number, sequence = 1) => {
+  const thread = (await cache.readCached(address(`run-${number}`, "thread", `ag-${number}-b`)))?.value;
+  expectThreadCached(thread, number, sequence);
   expect((await cache.readCached(address(`run-${number}`, "status")))?.value.status_key).toBe("status");
   expect((await cache.readCached(address(`run-${number}`, "tree")))?.value.entries).toEqual([]);
   expect((await cache.readCached(address(`run-${number}`, "diff")))?.value.diff_key).toBe("new-diff");
@@ -127,15 +152,20 @@ it.each(["initial", "reconnect"])("refreshes foreground before unrelated source 
     await finish();
     rpc.mockClear();
     context.session = {};
+    script["thread.page"] = ({ agent_id }) => threadPage(agent_id, 2);
   }
+  trackForegroundCommit();
   const roster = gate();
-  script["term.list"] = (params) => params.source_id ? roster.promise : answers["term.list"]();
+  script["term.list"] = (params) => sourceReply(params, params.source_id ? roster.promise : answers["term.list"]());
   const traffic = backgroundTraffic();
   if (mode === "initial") start();
   else void sync.syncDevice("dev-1");
   try {
     await called(rpc, () => sourceCalls().length > 0);
-    await expectWorkspaceCached(10);
+    expect(commitsAtSource).toBeGreaterThanOrEqual(1);
+    const sequence = mode === "reconnect" ? 2 : 1;
+    expectThreadCached(await foregroundAtSource, 10, sequence);
+    await expectWorkspaceCached(10, sequence);
     expect(calls("thread.page").some(([, params]) => params.agent_id === "ag-10-b")).toBe(true);
     expect(calls("tasks.list").some(([, params]) => params.project_id === "p2" && !params.cursor)).toBe(true);
     const foreground = rpc.mock.calls.findIndex(([method, params]) => method === "thread.page" && params.agent_id === "ag-10-b");
@@ -149,12 +179,15 @@ it.each(["initial", "reconnect"])("refreshes foreground before unrelated source 
 });
 
 it("promotes a new workspace while unrelated source responses occupy both background slots", async () => {
+  trackForegroundCommit();
   const roster = gate();
-  script["term.list"] = (params) => params.project_id === "p1" ? roster.promise : answers["term.list"]();
+  script["term.list"] = (params) => sourceReply(params, params.project_id === "p1" ? roster.promise : answers["term.list"]());
   const traffic = backgroundTraffic();
   start();
   try {
     await vi.waitFor(() => expect(sourceCalls().filter(([, params]) => params.project_id === "p1")).toHaveLength(2));
+    expect(commitsAtSource).toBeGreaterThanOrEqual(1);
+    expectThreadCached(await foregroundAtSource, 10);
     App.route = routeTo(9);
     sync.routeChanged();
     await vi.waitFor(async () => {

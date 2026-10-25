@@ -610,11 +610,13 @@ impl ActivityPump {
             return false;
         };
         let said = SelfReport::read(&session);
-        let operations = failure_receipt_operations(&session, report);
         let mut s = timer.lock(&state);
         if !still_pumping_instance(&s, &self.key, &session, instance) {
             return false;
         }
+        // A newer turn can be consumed while this report waits for admission.
+        // Reconcile its bounded receipt only after locking and session fencing.
+        let operations = failure_receipt_operations(&session, report);
         for operation in operations {
             if let Err(error) =
                 s.record_native_operation_seen(&instance.entity_id, &instance.agent_id, &operation)

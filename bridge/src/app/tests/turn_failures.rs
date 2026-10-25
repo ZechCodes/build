@@ -557,9 +557,6 @@ fn a_failure_waiting_for_the_lock_preserves_a_turn_seen_during_the_wait() {
         .to_string();
     app.delivery_queue.clear_queued();
     let started = "2026-10-25T05:00:00Z";
-    app.record_agent_working_since(&owner, &agent, None);
-    app.record_agent_working_since(&owner, &agent, Some(started.into()));
-    let lifecycle = app.runs[&owner].run.state;
     let root = app.runs[&owner].worktree.path.clone();
     let (receipts, watched) = tokio::sync::watch::channel(crate::harness::TurnReceiptSnapshot {
         seen_operation_ids: vec![first.clone()],
@@ -572,6 +569,11 @@ fn a_failure_waiting_for_the_lock_preserves_a_turn_seen_during_the_wait() {
         &agent,
         DictatedSession::reporting(AgentStatus::Working).watching_receipts(watched),
     );
+    // Installing a test session starts its clock; establish B's exact interval
+    // afterwards, in a lifecycle where an unfenced Failed would be accepted.
+    app.record_agent_working_since(&owner, &agent, Some(started.into()));
+    app.runs.get_mut(&owner).unwrap().run.state = RunState::Building;
+    let lifecycle = app.runs[&owner].run.state;
     let tab = app.session_registry.test_tab(&key).unwrap();
     let session = Arc::clone(&tab.session);
     let instance = tab.session_instance.clone().unwrap();

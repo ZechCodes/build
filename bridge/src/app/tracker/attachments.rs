@@ -143,6 +143,7 @@ impl AppState {
                 "a task carries at most {ATTACHMENTS_PER_MESSAGE_MAX} attachments"
             ));
         }
+        let _admission = crate::store::attachment_admission();
         listed
             .iter()
             .map(|entry| self.one_task_attachment(entry))
@@ -158,6 +159,8 @@ impl AppState {
             .and_then(Value::as_str)
             .ok_or("each attachment needs a path")?;
         let resolved = self.resolve_task_attachment(path)?;
+        crate::store::refresh_attachment_admission(&resolved)
+            .map_err(|e| format!("cannot refresh the attachment: {e}"))?;
         let size = std::fs::metadata(&resolved)
             .map_err(|e| format!("cannot stat the attachment: {e}"))?
             .len();

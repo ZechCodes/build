@@ -372,3 +372,61 @@ async fn sql_operation_reads_preserve_explicit_agent_binding_checks() {
         );
     }
 }
+
+#[tokio::test]
+async fn retained_thread_reads_publish_the_same_boundary_on_catch_up_and_activity() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let mut record = stored_read_run(&mut state, "run-retention", 4);
+    // These are delivered messages; pending legacy inputs intentionally protect history.
+    record.agents[0].thread.set_legacy_delivery_status(
+        1,
+        6,
+        crate::thread::MessageDeliveryStatus::Seen,
+    );
+    state.store.as_ref().unwrap().save_run(&record).unwrap();
+    state.runs.insert(
+        record.id.clone(),
+        crate::orchestrator::ActiveRun::reattach(&record, ".build/plan.md".into()),
+    );
+    let store = state.store.as_ref().unwrap();
+    store
+        .prune_conversation_batch(
+            &record.agents[0].id,
+            crate::store::RetentionPolicy {
+                min_messages: 1,
+                max_messages: 1,
+                max_age_days: 7,
+            },
+            "2026-10-20T00:00:00Z",
+        )
+        .unwrap();
+    let context = state.thread_read_context();
+    let mut reader = store.read_pool().acquire().await;
+    for (method, params) in [
+        ("thread.page", json!({"entity_id": record.id})),
+        (
+            "thread.page",
+            json!({"entity_id": record.id, "after_sequence": 1, "newest": true}),
+        ),
+        (
+            "thread.page",
+            json!({"entity_id": record.id, "activity": "newest"}),
+        ),
+        (
+            "thread.activity",
+            json!({"entity_id": record.id, "from_sequence": 2, "through_sequence": 5}),
+        ),
+    ] {
+        let actual = reader
+            .read(|tx| context.read(Some(tx), method, &params))
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual["history_start_sequence"], 6, "{method}: {actual}");
+        assert!(actual["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["data"]["sequence"].as_u64().unwrap() >= 6));
+    }
+}

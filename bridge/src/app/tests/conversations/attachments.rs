@@ -375,3 +375,37 @@ fn thread_attachment_refuses_bad_offsets() {
         assert_eq!(refused["error_code"], "invalid_params", "{refused:?}");
     }
 }
+
+#[test]
+fn attachment_admission_refreshes_old_files_before_durable_publication() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_, run_id) = planned_run_in_review(&mut state, "attachment admission");
+    let relative = ".build/attachments/old.png";
+    let message_file = state.runs[&run_id].worktree.path.join(relative);
+    let task_file = state.local_attachments_dir().join("old-task.png");
+    let mirror = state.local_attachments_dir().join("old.png");
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
+    for file in [&message_file, &task_file, &mirror] {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, ONE_PIXEL_PNG).unwrap();
+        std::fs::File::open(file)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+    let before = std::time::SystemTime::now();
+    state
+        .parse_message_attachments(&run_id, &json!({"attachments":[{"path":relative}]}))
+        .unwrap();
+    state
+        .parse_task_attachments(&json!({"attachments":[{"path":task_file}]}))
+        .unwrap();
+    for file in [&message_file, &task_file, &mirror] {
+        assert!(
+            std::fs::metadata(file).unwrap().modified().unwrap() >= before,
+            "{} must stay safe until its reference commits",
+            file.display()
+        );
+    }
+}

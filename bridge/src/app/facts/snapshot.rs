@@ -81,13 +81,25 @@ impl PushThread {
             let mut retained = previous.clone();
             retained.tip = tip;
             retained.tip.last_sequence = retained.tip.last_sequence.max(retained.external_sequence);
+            retained.trim_history();
             return retained;
         }
         let mut captured = Self::capture(tip, thread);
         if let Some(previous) = previous {
             captured.merge_previous(previous);
         }
+        captured.trim_history();
         captured
+    }
+
+    fn trim_history(&mut self) {
+        let Some(floor) = self.tip.history_start_sequence else {
+            return;
+        };
+        self.floor = self.floor.max(floor.saturating_sub(1));
+        Arc::make_mut(&mut self.items)
+            .retain(|(latest, item)| item["data"]["sequence"].as_u64().unwrap_or(*latest) >= floor);
+        Arc::make_mut(&mut self.external).retain(|sequence, _| *sequence >= floor);
     }
 
     fn capture(tip: ThreadTip, thread: &Thread) -> Self {
@@ -207,6 +219,7 @@ impl PushThread {
         }
         self.items = Arc::new(items);
         self.external = Arc::new(external);
+        self.trim_history();
     }
 
     fn render(&self, after: &[(String, u64)]) -> ThreadTip {
@@ -787,6 +800,34 @@ mod tests {
             .iter()
             .all(|(_, value)| value["data"]["sequence"] != removed));
         assert!(recaptured.items.len() <= THREAD_PUSH_MAX_ITEMS);
+    }
+
+    #[test]
+    fn retained_floor_discards_external_historical_mutations_on_recapture() {
+        let mut complete = Thread::for_agent("agent");
+        for index in 0..32 {
+            complete.post_user(index.to_string(), None, "now");
+        }
+        let mut resident = Thread::for_agent("agent");
+        resident.adopt_stored_tail(complete.items[24..].to_vec(), 24, complete.last_sequence());
+        let mut published = PushThread::capture(tip(&resident), &resident);
+        complete.set_legacy_delivery_status(1, 1, crate::thread::MessageDeliveryStatus::Seen);
+        published.apply_committed(&crate::store::CommittedThreadItems {
+            conversation_id: "agent".into(),
+            thread_id: complete.id.clone(),
+            generation_revision: 0,
+            sequence: complete.last_sequence(),
+            items: vec![complete.items[0].clone()],
+        });
+        resident.apply_retention_boundary(20, complete.last_sequence(), 19);
+        let mut newer_tip = tip(&resident);
+        newer_tip.history_start_sequence = Some(20);
+        let retained = PushThread::recapture(newer_tip, &resident, Some(&published));
+        assert!(retained
+            .items
+            .iter()
+            .all(|(_, item)| item["data"]["sequence"].as_u64().unwrap() >= 20));
+        assert!(retained.external.keys().all(|sequence| *sequence >= 20));
     }
 
     #[test]

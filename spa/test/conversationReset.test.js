@@ -241,3 +241,13 @@ it("resetting one project worker retires its exact generation while shared-owner
   expect(controllers[2].readDraft().body).toBe("draft-2");
   repo.dispose();
 });
+
+it("starts retention again at one after a generation reset", async () => {
+  await writeCached(address, { thread_id: "old-thread", historyStartSequence: 900, items: [], deliveredSequence: 899 });
+  await reconcileConversationGeneration({ deviceId: address.deviceId, entityId: address.entityId,
+    agent: { id: "agent-1", conversation_id: address.sub, thread_id: "replacement", thread_generation_revision: 2 } });
+  const reset = (await readCached(address)).value;
+  const fresh = threadWindow(reset, { thread_id: "replacement", history_start_sequence: 1, items: [item(1, "fresh words")] });
+  expect(fresh.historyStartSequence).toBe(1);
+  expect(fresh.items.map((one) => one.data.sequence)).toEqual([1]);
+});

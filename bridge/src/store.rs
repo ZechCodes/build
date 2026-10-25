@@ -57,6 +57,9 @@ use std::sync::Mutex;
 pub(crate) use operations::CommittedThreadItems;
 pub(crate) use reviews::TrackingExpectation;
 
+mod attachment_sweep;
+pub use attachment_sweep::AttachmentSweep;
+pub(crate) use attachment_sweep::{attachment_admission, refresh_attachment_admission};
 mod conversation_reset;
 mod conversations;
 mod delivery_intents;
@@ -80,7 +83,11 @@ mod read_pool;
 pub(crate) use read_pool::ReadClass;
 pub use read_pool::{ReadConnection, ReadPool, ReadTransaction};
 pub mod push_keys;
+mod retention;
 mod reviews;
+pub use retention::{
+    ConversationRetentionReport, RetentionBatch, RetentionBoundary, RetentionPolicy,
+};
 mod schema;
 mod source_sync;
 mod task_observation;
@@ -119,6 +126,8 @@ pub use tracker::{TaskFilter, TaskSeek, TaskStretch};
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("invalid retention policy: {0}")]
+    RetentionInvalid(String),
     #[error("mutation journal: {0}")]
     MutationInvalid(String),
     /// Retryable refusal: another principal's unmaterialized reservation
@@ -255,7 +264,8 @@ pub enum StoreError {
 /// 16 adds task dependencies, readiness reconciliation and transition receipts.
 /// 17 adds explicit assignment delivery intents and coordinator notice receipts.
 /// 18 adds the durable mutation journal, reservations and confirmation outbox.
-pub const SCHEMA_VERSION: i64 = 18;
+/// 19 adds durable conversation retention boundaries.
+pub const SCHEMA_VERSION: i64 = 19;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -361,8 +371,12 @@ impl Store {
             }
         }
         waiting_on::ensure_reconciliation_columns(&conn)?;
+        retention::upgrade_pending_delivery_index(&conn)?;
+        retention::upgrade_thread_retention_indexes(&conn)?;
+        retention::upgrade_agent_conversation_index(&conn)?;
         conn.execute_batch(SCHEMA)?;
         ensure_operation_receipt_columns(&conn)?;
+        retention::ensure_upload_retention_columns(&conn)?;
         let journal_incarnation = mutations::initialize(&conn)?;
         // Against the newest HOISTED column's version rather than against the
         // schema's: a bump that adds a table has nothing for the classifier to

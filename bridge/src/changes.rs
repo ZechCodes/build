@@ -688,6 +688,9 @@ pub struct ThreadTip {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub choice_revision: Option<u64>,
     pub last_sequence: u64,
+    /// Nothing below this creation sequence exists in this thread generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_start_sequence: Option<u64>,
     /// The inbox row this conversation belongs to, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,

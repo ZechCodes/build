@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createPushQueue } from "../src/core/pushQueue.js";
 
 const context = { active: () => true };
@@ -217,4 +217,27 @@ it("keeps board revision high-water and treats unknown board fields as causal ba
   expect(applied.slice(1).map((entry) => entry.state)).toEqual([
     { revision: 9 }, { revision: 10, future_transition: true }, { revision: 11 },
   ]);
+});
+
+it("captures running and queued applications with descendants without later jobs", async () => {
+  const first = gate(), captured = gate(), later = gate(), child = gate(), started = [];
+  const queue = createPushQueue({ apply: async (_, entry) => {
+    const sequence = entry.thread[0].last_sequence;
+    started.push(sequence);
+    await [null, first, captured, later][sequence].done;
+    return { settled: sequence === 2 ? child.done : Promise.resolve() };
+  } });
+  const draining = queue.enqueue(context, [item("a", 1)]);
+  await Promise.resolve();
+  queue.enqueue(context, [item("a", 2)]);
+  let settled = false;
+  const snapshot = queue.capture().then(() => { settled = true; });
+  queue.enqueue(context, [item("later", 3)]);
+  first.release(); captured.release();
+  await vi.waitFor(() => expect(started).toContain(3));
+  expect(started).toEqual([1, 2, 3]);
+  expect(settled).toBe(false);
+  child.release(); await snapshot;
+  expect(queue.snapshot()).toEqual({ running: 1, pending: 0 });
+  later.release(); await draining;
 });

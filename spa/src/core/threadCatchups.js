@@ -103,6 +103,9 @@ export function createThreadCatchups({ needed, read, onChange = () => {} }) {
       if (newerGoal(request, entry.pending.request)) entry.pending.request = combinedGoal(entry.pending.request, request);
       return entry.pending.promise;
     },
+    // A captured trailing round does not include rounds queued after it starts.
+    capture: () => Promise.all([...entries.values()].flatMap((entry) =>
+      [entry.current?.promise, entry.pending?.promise].filter(Boolean))),
     snapshot: () => ({
       running: [...entries.values()].filter((entry) => entry.current).length,
       pending: [...entries.values()].filter((entry) => entry.pending).length,

@@ -1,4 +1,5 @@
 //! Bounded, restartable conversation pruning. Call outside application guards.
+use super::schema::{RETENTION_MESSAGE_TIME_SQL, RETENTION_PENDING_ITEM_SQL};
 use super::{ReadTransaction, Store, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -22,6 +23,34 @@ pub(super) fn upgrade_pending_delivery_index(conn: &Connection) -> Result<(), St
         transaction.commit()?;
     }
     Ok(())
+}
+
+/// Guard pre-release thread indexes before schema creation and classification.
+/// Each old definition is replaced atomically; later opens leave it untouched.
+pub(super) fn upgrade_thread_retention_indexes(conn: &Connection) -> Result<(), StoreError> {
+    let definitions = [
+        ("thread_items_message_time", "glob", format!("CREATE INDEX thread_items_message_time ON thread_items(agent_id, {RETENTION_MESSAGE_TIME_SQL}) WHERE message = 1")),
+        ("thread_items_pending_delivery", "json_valid(item)", format!("CREATE INDEX thread_items_pending_delivery ON thread_items(agent_id) WHERE message = 1 AND {RETENTION_PENDING_ITEM_SQL}")),
+    ];
+    for (name, marker, definition) in definitions {
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if existing.is_some_and(|sql| !sql.to_ascii_lowercase().contains(marker)) {
+            let transaction = conn.unchecked_transaction()?;
+            transaction.execute_batch(&format!("DROP INDEX {name}; {definition};"))?;
+            transaction.commit()?;
+        }
+    }
+    Ok(())
+}
+
+fn recent_message_count_sql() -> String {
+    format!("SELECT COUNT(*) FROM (SELECT 1 FROM thread_items INDEXED BY thread_items_message_time WHERE agent_id = ?1 AND message = 1 AND {RETENTION_MESSAGE_TIME_SQL} >= julianday(?3) LIMIT ?2)")
 }
 
 /// Legacy reservations have no creation clock. Give them one migration-wide
@@ -142,10 +171,7 @@ const PENDING_START_SQL: &str = "WITH conversation_ids(id) AS (SELECT ?1 UNION S
                  AND conversation_id NOT IN (SELECT id FROM conversation_ids)
              UNION ALL
              SELECT MIN(sequence) FROM thread_items INDEXED BY thread_items_pending_delivery WHERE agent_id = ?1 AND message = 1
-                 AND json_extract(item, '$.data.role') = 'user'
-                 AND json_extract(item, '$.data.operation_id') IS NULL
-                 AND json_extract(item, '$.data.seen_at') IS NULL
-                 AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted')
+                 AND CASE WHEN json_valid(item) THEN json_extract(item, '$.data.role') = 'user' AND json_extract(item, '$.data.operation_id') IS NULL AND json_extract(item, '$.data.seen_at') IS NULL AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted') ELSE 1 END
          )";
 
 // Pending work protects its own sequence space from the earliest span start.
@@ -180,8 +206,7 @@ fn plan(
     // Count at most the cap through the timestamp index. Timestamps need not
     // follow sequence order (imports and delayed messages can arrive later).
     let recent: usize = conn.query_row(
-        "SELECT COUNT(*) FROM (SELECT 1 FROM thread_items WHERE agent_id = ?1 AND message = 1
-         AND julianday(json_extract(item, '$.data.created_at')) >= julianday(?3) LIMIT ?2)",
+        &recent_message_count_sql(),
         rusqlite::params![
             id,
             i64::try_from(policy.max_messages).unwrap_or(i64::MAX),
@@ -257,9 +282,9 @@ fn batch_message_times(
     let mut times = prior
         .query_map(rusqlite::params![id, cutoff], |row| row.get::<_, f64>(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    let mut selected = conn.prepare("SELECT julianday(json_extract(item, '$.data.created_at')) FROM
+    let mut selected = conn.prepare(&format!("SELECT message_time FROM (SELECT {RETENTION_MESSAGE_TIME_SQL} AS message_time FROM
         (SELECT message, item FROM thread_items WHERE agent_id = ?1 AND sequence < ?2 ORDER BY sequence LIMIT ?3)
-        WHERE message = 1 AND julianday(json_extract(item, '$.data.created_at')) >= julianday(?4)")?;
+        WHERE message = 1) WHERE message_time >= julianday(?4)"))?;
     for timestamp in selected.query_map(
         rusqlite::params![id, floor as i64, limit as i64, cutoff],
         |row| row.get::<_, f64>(0),
@@ -327,9 +352,7 @@ impl Store {
                 AND NOT EXISTS (SELECT 1 FROM operations WHERE status IN ('queued','claimed','uncertain')
                     AND (CASE WHEN json_valid(delivery) THEN json_extract(delivery, '$.agent_id') END) IN (SELECT conversation_attachment_uploads.conversation_id UNION SELECT id FROM agents WHERE json_extract(record, '$.conversation_id') = conversation_attachment_uploads.conversation_id))
                 AND NOT EXISTS (SELECT 1 FROM thread_items WHERE agent_id = conversation_attachment_uploads.conversation_id AND message = 1
-                    AND json_extract(item, '$.data.role') = 'user' AND json_extract(item, '$.data.operation_id') IS NULL
-                    AND json_extract(item, '$.data.seen_at') IS NULL
-                    AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted'))
+                    AND CASE WHEN json_valid(item) THEN json_extract(item, '$.data.role') = 'user' AND json_extract(item, '$.data.operation_id') IS NULL AND json_extract(item, '$.data.seen_at') IS NULL AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted') ELSE 1 END)
                 ORDER BY rowid LIMIT ?2")?;
             let candidates = statement.query_map(rusqlite::params![cutoff, limit.min(BATCH_ROWS) as i64], |row| row.get::<_,i64>(0))?.collect::<Result<Vec<_>,_>>()?;
             drop(statement);

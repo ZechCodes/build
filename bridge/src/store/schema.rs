@@ -1,3 +1,8 @@
+// Lazy CASE excludes SQLite's dynamic date literals and malformed JSON before
+// evaluating date/JSON functions. Queries repeat these indexed expressions.
+pub(super) const RETENTION_MESSAGE_TIME_SQL: &str = "CASE WHEN json_valid(item) THEN CASE WHEN json_extract(item, '$.data.created_at') GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' THEN julianday(json_extract(item, '$.data.created_at')) END END";
+pub(super) const RETENTION_PENDING_ITEM_SQL: &str = "CASE WHEN json_valid(item) THEN json_extract(item, '$.data.role') = 'user' AND json_extract(item, '$.data.operation_id') IS NULL AND json_extract(item, '$.data.seen_at') IS NULL AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted') ELSE 1 END";
+
 /// The database schema. Applied on open; `schema_version` in `meta` is what a
 /// future change reads to decide whether it has work to do.
 ///
@@ -124,15 +129,12 @@ CREATE INDEX IF NOT EXISTS thread_items_conversation
 CREATE INDEX IF NOT EXISTS thread_items_messages
     ON thread_items(agent_id, sequence) WHERE message = 1;
 CREATE INDEX IF NOT EXISTS thread_items_message_time
-    ON thread_items(agent_id, julianday(json_extract(item, '$.data.created_at'))) WHERE message = 1;
+    ON thread_items(agent_id, CASE WHEN json_valid(item) THEN CASE WHEN json_extract(item, '$.data.created_at') GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' THEN julianday(json_extract(item, '$.data.created_at')) END END) WHERE message = 1;
 -- Retention must not scan old message bodies on every bounded batch just to
 -- discover a delivery that is still pending.
 CREATE INDEX IF NOT EXISTS thread_items_pending_delivery
     ON thread_items(agent_id) WHERE message = 1
-    AND json_extract(item, '$.data.role') = 'user'
-    AND json_extract(item, '$.data.operation_id') IS NULL
-    AND json_extract(item, '$.data.seen_at') IS NULL
-    AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted');
+    AND CASE WHEN json_valid(item) THEN json_extract(item, '$.data.role') = 'user' AND json_extract(item, '$.data.operation_id') IS NULL AND json_extract(item, '$.data.seen_at') IS NULL AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted') ELSE 1 END;
 -- The dismissal line, indexed: what a row was cleared against is the newest
 -- message the conversation's own two parties spoke, so the seek that finds it
 -- walks past the hand-offs between them without reading one.

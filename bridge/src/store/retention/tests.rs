@@ -975,3 +975,134 @@ fn intermediate_unguarded_target_index_is_upgraded_once_before_new_writes() {
         "guarded index must not be rebuilt on every startup"
     );
 }
+
+#[test]
+fn malformed_thread_items_and_dynamic_timestamp_literals_do_not_break_writes_or_retention() {
+    let (dir, store) = fixture(150);
+    store.in_transaction(|tx| {
+        tx.execute_batch("DROP INDEX thread_items_message_time; DROP INDEX thread_items_pending_delivery;")?;
+        tx.execute("UPDATE thread_items SET item = 'not JSON' WHERE agent_id = 'a' AND sequence = 1", [])?;
+        tx.execute("UPDATE thread_items SET item = json_set(item, '$.data.created_at', 'now') WHERE agent_id = 'a' AND sequence = 2", [])?;
+        tx.execute("UPDATE meta SET value = '18' WHERE key = 'schema_version'", [])?;
+        Ok(())
+    }).unwrap();
+    drop(store);
+    let store = Store::new(dir.path())
+        .expect("legacy malformed items and nonliteral timestamps must not break index creation");
+    store.in_transaction(|tx| {
+        tx.execute("UPDATE thread_items SET item = 'still not JSON' WHERE sequence = 1", [])?;
+        for timestamp in [serde_json::json!("now"),serde_json::json!("bad timestamp"),serde_json::json!(""),serde_json::json!(42),serde_json::json!({"bad":"shape"}),serde_json::Value::Null] {
+            tx.execute("UPDATE thread_items SET item = json_set(item, '$.data.created_at', json(?1)) WHERE sequence = 2", [timestamp.to_string()])?;
+        }
+        tx.execute("INSERT INTO agents VALUES ('unrelated','owner',2,'{\"thread\":{\"id\":\"other\"}}')", [])?;
+        tx.execute("INSERT INTO thread_items(agent_id,sequence,updated_sequence,message,item) SELECT 'unrelated',sequence,updated_sequence,message,item FROM thread_items WHERE agent_id = 'a' AND sequence > 2", [])?;
+        tx.execute("INSERT INTO conversation_attachment_uploads VALUES ('unrelated','t','old.png','2026-10-01T00:00:00Z')", [])?;
+        Ok(())
+    }).unwrap();
+    let report = store
+        .retention_report_conversation("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+        .unwrap();
+    assert!(
+        report.protected,
+        "a malformed message cannot be proven free of pending delivery"
+    );
+    assert_eq!(report.items_to_prune, 0);
+    assert_eq!(
+        store
+            .retention_report_conversation(
+                "unrelated",
+                RetentionPolicy::default(),
+                "2026-10-24T12:00:00Z"
+            )
+            .unwrap()
+            .items_to_prune,
+        48
+    );
+    assert_eq!(
+        store
+            .cleanup_conversation_attachment_uploads(7, "2026-10-24T12:00:00Z", 1000)
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn timestamp_index_preserves_fractional_offset_dates_and_ignores_now_and_invalid_dates() {
+    let (_dir, store) = fixture(150);
+    store.in_transaction(|tx| {
+        tx.execute("UPDATE thread_items SET item = json_set(item, '$.data.created_at', '2026-10-23T20:30:00.123456+08:30') WHERE sequence <= 40", [])?;
+        tx.execute("UPDATE thread_items SET item = json_set(item, '$.data.created_at', '2026-10-23T06:30:00.654321-05:30') WHERE sequence > 40 AND sequence <= 80", [])?;
+        for timestamp in ["now","bad timestamp","2026-99-99T12:00:00Z","2026-10-23now"] {
+            tx.execute("UPDATE thread_items SET item = json_set(item, '$.data.created_at', ?1) WHERE sequence > 80", [timestamp])?;
+        }
+        Ok(())
+    }).expect("nonliteral timestamps must never invoke dynamic date functions inside indexes");
+    let report = store
+        .retention_report_conversation("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+        .unwrap();
+    assert_eq!(report.history_start_sequence, 71);
+    assert_eq!(report.items_to_prune, 70);
+    assert_eq!(
+        store
+            .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+            .unwrap()
+            .items_deleted,
+        70
+    );
+}
+
+#[test]
+fn prerelease_thread_indexes_upgrade_once_before_legacy_rows_are_reclassified() {
+    let (dir, store) = fixture(150);
+    store.in_transaction(|tx| {
+        tx.execute_batch("DROP INDEX thread_items_message_time; DROP INDEX thread_items_pending_delivery;
+            CREATE INDEX thread_items_message_time ON thread_items(agent_id,julianday(json_extract(item,'$.data.created_at'))) WHERE message = 1;
+            CREATE INDEX thread_items_pending_delivery ON thread_items(agent_id) WHERE message = 1 AND json_extract(item,'$.data.role') = 'user' AND json_extract(item,'$.data.operation_id') IS NULL AND json_extract(item,'$.data.seen_at') IS NULL AND COALESCE(json_extract(item,'$.data.delivery_status'),'queued') IN ('queued','submitted');")?;
+        tx.execute("UPDATE thread_items SET message = 0, item = 'not JSON' WHERE sequence = 1", [])?;
+        tx.execute("UPDATE thread_items SET message = 0, item = json_set(item, '$.data.created_at', 'now') WHERE sequence = 2", [])?;
+        Ok(())
+    }).unwrap();
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    store
+        .in_transaction(|tx| {
+            tx.execute(
+                "UPDATE thread_items SET message = 1 WHERE sequence IN (1,2)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("upgraded indexes must allow later classification of legacy rows");
+    let first: i64 = store
+        .connection()
+        .pragma_query_value(None, "schema_version", |row| row.get(0))
+        .unwrap();
+    drop(store);
+    let reopened = Store::new(dir.path()).unwrap();
+    let second: i64 = reopened
+        .connection()
+        .pragma_query_value(None, "schema_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(first, second, "safe indexes must not rebuild every startup");
+}
+
+#[test]
+fn guarded_timestamp_planner_seeks_the_bounded_date_range() {
+    let (_dir, store) = fixture(150);
+    let conn = store.connection();
+    let mut statement = conn
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN {}",
+            recent_message_count_sql()
+        ))
+        .unwrap();
+    let details = statement
+        .query_map(rusqlite::params!["a", 100, "2026-10-17T12:00:00Z"], |row| {
+            row.get::<_, String>(3)
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    eprintln!("retention guarded timestamp plan: {details:#?}");
+    assert!(details.iter().any(|detail|detail.contains("SEARCH thread_items USING INDEX thread_items_message_time") && detail.contains("agent_id=? AND <expr>>?")),"recent counting must seek its guarded timestamp range, not scan lifetime message bodies: {details:#?}");
+}

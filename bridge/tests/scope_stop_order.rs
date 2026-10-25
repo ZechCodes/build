@@ -72,12 +72,15 @@ impl Drop for Units {
     }
 }
 
-/// A process that notes its SIGTERM in `dir/<name>-term`, then exits.
+/// A process that announces its installed trap in `dir/<name>-ready`, then
+/// notes its SIGTERM in `dir/<name>-term` and exits.
 fn noting_term(dir: &Path, name: &str) -> String {
     let note = dir.join(format!("{name}-term"));
+    let ready = dir.join(format!("{name}-ready"));
     format!(
-        "trap 'touch {note}; exit 0' TERM; while :; do sleep 0.05; done",
-        note = note.display()
+        "trap 'touch {note}; exit 0' TERM; touch {ready}; while :; do sleep 0.05; done",
+        note = note.display(),
+        ready = ready.display()
     )
 }
 
@@ -87,12 +90,14 @@ fn noting_term(dir: &Path, name: &str) -> String {
 fn stand_in_bridge(dir: &Path, service: &str, scope: &str) {
     let saw = dir.join("bridge-saw");
     let harness_term = dir.join("harness-term");
+    let ready = dir.join("bridge-ready");
     let script = format!(
         "trap 'if [ -e {harness_term} ]; then echo gone; else echo alive; fi > {saw}; \
          systemctl --user stop --no-block {scope}; exit 0' TERM; \
-         while :; do sleep 0.05; done",
+         touch {ready}; while :; do sleep 0.05; done",
         harness_term = harness_term.display(),
-        saw = saw.display()
+        saw = saw.display(),
+        ready = ready.display()
     );
     let started = Command::new("systemd-run")
         .args(["--user", "--quiet", "--collect", "--unit", service])
@@ -103,6 +108,10 @@ fn stand_in_bridge(dir: &Path, service: &str, scope: &str) {
     assert!(started.success(), "the stand-in bridge started");
     wait_until("the stand-in bridge to be active", || {
         systemctl(&["is-active", "--quiet", service])
+    });
+    // Type=simple becomes active before bash has installed its SIGTERM trap.
+    wait_until("the stand-in bridge's SIGTERM trap to be ready", || {
+        ready.exists()
     });
 }
 
@@ -122,6 +131,10 @@ fn stand_in_harness_in_scope(dir: &Path, scope: &str, service: &str) -> Child {
     assert!(placed.success(), "the manager started the scope");
     wait_until("the scope to be active", || {
         systemctl(&["is-active", "--quiet", scope])
+    });
+    // Scope admission says nothing about how far the harness has executed.
+    wait_until("the harness's SIGTERM trap to be ready", || {
+        dir.join("harness-ready").exists()
     });
     harness
 }

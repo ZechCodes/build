@@ -3829,10 +3829,12 @@ gate attachment display.
   `pushWorkInFlight()` counts pending applier jobs before IndexedDB admission.
   Feed and route consumers share an address index (`feedCacheRecords.js`) and
   stable projections (`feedCacheReader.js`, `cachedRows.js`). Concurrent readers
-  share the initial read; later announcements reread only named records, in
-  batches of at most 64. Unrelated writes reuse the held snapshot. Prefix
-  evictions rebuild the index. Reads still include pending-write overlays and
-  cross-tab changes; a failed read leaves the projection invalid for retry.
+  share the initial row/owner read; auxiliary feed and support roots refresh
+  independently, so route discovery never waits for those background reads.
+  Later announcements reread only named records, in batches of at most 64.
+  Unrelated writes reuse the held snapshot. Prefix evictions rebuild the index
+  and fence combined owner/auxiliary snapshots across the reset. Reads still
+  include pending-write overlays and cross-tab changes; a failed read leaves the projection invalid for retry.
 - **Chat read marks** (#473) report the viewport sequence and window floor
   only while the reader is present. A known cursor can establish read progress
   even if the cached unread count is zero. `chatReadReporter.js` confirms

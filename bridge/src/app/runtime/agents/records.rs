@@ -57,10 +57,15 @@ pub(in crate::app) fn record_activity(
     owner: &str,
     agent_id: &str,
     report: &crate::harness::ActivityReport,
-) {
+) -> bool {
     use crate::harness::AgentActivity;
     let parent_sequence = parent_row_sequence(state, key, report.parent_call_id.as_deref());
-    match &report.activity {
+    // Only the canonical owner commit carries this owner's runtime projection.
+    // Shared conversations and unsuccessful saves still need the pump's fallback.
+    let publishes_owner = state
+        .resolve_conversation_address(owner, Some(agent_id))
+        .is_ok_and(|address| address.conversation_entity_id == owner);
+    let saved = match &report.activity {
         AgentActivity::TurnFailed {
             summary,
             operation_id,
@@ -75,16 +80,18 @@ pub(in crate::app) fn record_activity(
             } else {
                 state.record_agent_turn_failure(owner, agent_id, operation_id.as_deref(), summary);
             }
+            // Failure handling can mutate more than the canonical conversation.
+            false
         }
-        AgentActivity::TurnFailed { summary, .. } => {
-            state.record_activity_row(
+        AgentActivity::TurnFailed { summary, .. } => state
+            .record_activity_row(
                 owner,
                 agent_id,
                 crate::thread::ThreadEventKind::TaskUpdate,
                 summary.clone(),
                 parent_sequence,
-            );
-        }
+            )
+            .is_some(),
         AgentActivity::Compaction { completed: true } => {
             let landed = state
                 .edit_agent_conversation(owner, agent_id, |thread, _artifact| {
@@ -92,9 +99,10 @@ pub(in crate::app) fn record_activity(
                     Ok(thread.resolve_compaction(session_id.as_deref()))
                 })
                 .unwrap_or(false);
-            if !landed {
-                state.record_agent_activity(owner, agent_id, &report.activity, parent_sequence);
-            }
+            landed
+                || state
+                    .record_agent_activity(owner, agent_id, &report.activity, parent_sequence)
+                    .is_some()
         }
         AgentActivity::ToolUse { call_id, .. } => {
             let minted =
@@ -104,6 +112,7 @@ pub(in crate::app) fn record_activity(
                     .session_registry
                     .insert_call_sequence(key, call_id.clone(), sequence);
             }
+            minted.is_some()
         }
         AgentActivity::ToolResult {
             call_id,
@@ -125,20 +134,23 @@ pub(in crate::app) fn record_activity(
             });
             // An empty answer mints nothing, exactly as it never did: a row
             // saying only that some tool answered says nothing at all.
-            if !landed && !answer.is_empty() {
-                state.record_activity_row(
-                    owner,
-                    agent_id,
-                    crate::thread::ThreadEventKind::ToolResult,
-                    answer.to_string(),
-                    parent_sequence,
-                );
-            }
+            landed
+                || (!answer.is_empty()
+                    && state
+                        .record_activity_row(
+                            owner,
+                            agent_id,
+                            crate::thread::ThreadEventKind::ToolResult,
+                            answer.to_string(),
+                            parent_sequence,
+                        )
+                        .is_some())
         }
-        _ => {
-            state.record_agent_activity(owner, agent_id, &report.activity, parent_sequence);
-        }
-    }
+        _ => state
+            .record_agent_activity(owner, agent_id, &report.activity, parent_sequence)
+            .is_some(),
+    };
+    publishes_owner && saved
 }
 
 pub(in crate::app) fn parent_row_sequence(

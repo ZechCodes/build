@@ -501,13 +501,14 @@ async fn a_tabs_pumps_start_while_another_frame_holds_the_app_mutex() {
     .expect("the tab spawns");
     let pumps = tab.pumps(output);
     let held = state.lock().unwrap();
+    let frame_clock = Arc::clone(&held.frame_clock);
 
     let runtime = tokio::runtime::Handle::current();
     let starting = Arc::clone(&state);
     let (started, start) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _in_runtime = runtime.enter();
-        crate::app::spawn_tab_pumps(&starting, key, pumps);
+        crate::app::spawn_tab_pumps(&starting, key, pumps, frame_clock);
         let _ = started.send(());
     });
     start
@@ -545,7 +546,8 @@ async fn a_streaming_pty_never_takes_the_app_mutex() {
         .unwrap()
         .session_registry
         .test_insert_tab(key.clone(), tab);
-    crate::app::spawn_tab_pumps(&state, key, pumps);
+    let frame_clock = Arc::clone(&state.lock().unwrap().frame_clock);
+    crate::app::spawn_tab_pumps(&state, key, pumps, frame_clock);
 
     // The app mutex is held for the whole of this, the way a slow frame
     // holds it. The screen must keep filling underneath.
@@ -1028,7 +1030,8 @@ async fn a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone() {
         .unwrap()
         .session_registry
         .test_insert_tab(key.clone(), replaced);
-    crate::app::spawn_tab_pumps(&state, key.clone(), pumps);
+    let frame_clock = Arc::clone(&state.lock().unwrap().frame_clock);
+    crate::app::spawn_tab_pumps(&state, key.clone(), pumps, frame_clock);
 
     // The replacement takes the tab over while the first session is still
     // being reaped, which is what an asynchronous kill allows.
@@ -1040,7 +1043,8 @@ async fn a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone() {
         .unwrap()
         .session_registry
         .test_insert_tab(key.clone(), replacement);
-    crate::app::spawn_tab_pumps(&state, key.clone(), pumps);
+    let frame_clock = Arc::clone(&state.lock().unwrap().frame_clock);
+    crate::app::spawn_tab_pumps(&state, key.clone(), pumps, frame_clock);
 
     dying.end();
     wait_for(Duration::from_secs(10), || {
@@ -1284,6 +1288,7 @@ async fn a_replaced_sessions_late_activity_close_leaves_the_replacement_alone() 
         .session_registry
         .test_insert_tab(key.clone(), reporting);
     let (activity, subscribed) = broadcast::channel(4);
+    let frame_clock = Arc::clone(&state.lock().unwrap().frame_clock);
     crate::app::spawn_activity_pump(
         &state,
         key.clone(),
@@ -1291,6 +1296,7 @@ async fn a_replaced_sessions_late_activity_close_leaves_the_replacement_alone() 
         instance,
         Some(subscribed),
         None,
+        frame_clock,
     );
     // The stream closes: the session behind this tab is over.
     drop(activity);

@@ -901,6 +901,8 @@ impl AppState {
         let (changes, watchers, push_runtime) = {
             let mut app = state.lock().unwrap();
             app.self_handle = Some(Arc::downgrade(&state));
+            app.changes
+                .set_publication_clock(Arc::clone(&app.frame_clock));
             let _ = app.facts_handle.set(facts::FactsSource::new(
                 app.read_view.clone(),
                 Arc::downgrade(&state),

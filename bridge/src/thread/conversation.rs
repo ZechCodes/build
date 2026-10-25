@@ -51,6 +51,14 @@ pub struct SessionLineage {
 }
 
 impl SessionLineage {
+    fn matches_instance(&self, instance: &SessionInstance) -> bool {
+        self.id == instance.id
+            && self.entity_id == instance.entity_id
+            && self.agent_id == instance.agent_id
+            && self.conversation_id == instance.conversation_id
+            && self.checkout.as_deref().unwrap_or_default() == instance.checkout
+    }
+
     /// The directory this process stood in.
     pub fn stood_in(&self) -> Option<&str> {
         self.cwd.as_deref().or(self.checkout.as_deref())
@@ -1337,19 +1345,29 @@ impl Thread {
                 checkout: session.checkout.clone().unwrap_or_default(),
             })
     }
+    /// Whether the exact process already carries this provider resume id.
+    pub fn session_instance_is_named(
+        &self,
+        instance: &SessionInstance,
+        resume_session_id: &str,
+    ) -> bool {
+        self.sessions.iter().any(|session| {
+            session.matches_instance(instance)
+                && session.resume_session_id.as_deref() == Some(resume_session_id)
+        })
+    }
+
     /// Attach the provider's resume id to the exact process that announced it.
     pub fn name_session_instance(
         &mut self,
         instance: &SessionInstance,
         resume_session_id: &str,
     ) -> bool {
-        let Some(session) = self.sessions.iter_mut().find(|session| {
-            session.id == instance.id
-                && session.entity_id == instance.entity_id
-                && session.agent_id == instance.agent_id
-                && session.conversation_id == instance.conversation_id
-                && session.checkout.as_deref().unwrap_or_default() == instance.checkout
-        }) else {
+        let Some(session) = self
+            .sessions
+            .iter_mut()
+            .find(|session| session.matches_instance(instance))
+        else {
             return false;
         };
         session.resume_session_id = Some(resume_session_id.to_string());

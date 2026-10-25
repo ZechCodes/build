@@ -66,7 +66,7 @@ impl MeasuredStatusPump {
             key,
             session: Arc::downgrade(session),
             instance,
-            frame_clock: Some(Arc::clone(&state.lock().unwrap().frame_clock)),
+            frame_clock: Arc::clone(&state.lock().unwrap().frame_clock),
             recorded_context: None,
             recorded_context_reset_count: 0,
             recorded_limit: super::super::usage_limits::UsageObservation::default(),

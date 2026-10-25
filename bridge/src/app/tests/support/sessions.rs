@@ -48,6 +48,7 @@ pub(in crate::app::tests) struct DictatedSession {
     watched_receipts: Option<tokio::sync::watch::Receiver<crate::harness::TurnReceiptSnapshot>>,
     activity: Option<tokio::sync::broadcast::Sender<crate::harness::ActivityReport>>,
     active_model: Option<String>,
+    resume_name: Option<String>,
     native_choices: Vec<ModelChoice>,
     interruptible: bool,
     start_refused: Option<String>,
@@ -67,6 +68,7 @@ impl DictatedSession {
             watched_receipts: None,
             activity: None,
             active_model: None,
+            resume_name: None,
             native_choices: Vec::new(),
             interruptible: false,
             start_refused: None,
@@ -134,6 +136,11 @@ impl DictatedSession {
         self
     }
 
+    pub(in crate::app::tests) fn named(mut self, name: &str) -> Self {
+        self.resume_name = Some(name.into());
+        self
+    }
+
     pub(in crate::app::tests) fn announcing_model(mut self, model: &str) -> DictatedSession {
         self.active_model = Some(model.to_string());
         self
@@ -162,6 +169,9 @@ impl DictatedSession {
 }
 
 impl AgentSession for DictatedSession {
+    fn session_id(&self) -> Option<String> {
+        self.resume_name.clone()
+    }
     fn activity(&self) -> Option<tokio::sync::broadcast::Receiver<crate::harness::ActivityReport>> {
         self.activity.as_ref().map(|activity| activity.subscribe())
     }

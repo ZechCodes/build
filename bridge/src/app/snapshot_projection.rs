@@ -248,6 +248,9 @@ impl AppState {
         &self,
         owner: &str,
     ) -> Option<SnapshotDelta> {
+        let _publication = self
+            .frame_clock
+            .publication_phase(crate::timing::PublicationPhase::OwnerPrepare);
         if !self.snapshot_observations.ready {
             return None;
         }
@@ -301,6 +304,9 @@ impl AppState {
     }
 
     pub(in crate::app) fn publish_prepared_snapshot_projection(&self, mut delta: SnapshotDelta) {
+        let publication_clock = std::sync::Arc::clone(&self.frame_clock);
+        let _publication =
+            publication_clock.publication_phase(crate::timing::PublicationPhase::Install);
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.install");
         let receipts = delta.take_observation_receipts();

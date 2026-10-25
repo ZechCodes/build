@@ -478,6 +478,17 @@ const sessionOf = (deviceId) => contextFor(deviceId)?.session ?? null;
  *  question is only ever whether it got all the way through. */
 function startPass(deviceId, connection = null) {
   const turn = { connection, session: sessionOf(deviceId), superseded: false, reading: false, again: false, next: null, done: null };
+  turn.done = (async () => {
+    try {
+      return await orderedSync(deviceId, turn);
+    } catch {
+      return false;
+    } finally {
+      turn.finishDiagnosticStage?.();
+      syncDiagnostics.passEnd(turn.diagnostic);
+      finishPass(deviceId, turn);
+    }
+  })();
   passes.set(deviceId, turn);
   if (connectionPassRequests.delete(deviceId) && liveContexts().some((context) => context.deviceId === deviceId)) {
     turn.connection = { active: syncContext(contextFor(deviceId)).ownerActive };
@@ -485,17 +496,8 @@ function startPass(deviceId, connection = null) {
     setConnectionSync(true);
   }
   turn.diagnostic = turn.connection ? syncDiagnostics.passStart() : null;
+  diagnosticStage(turn, "greeting");
   diagnosticDevices();
-  turn.done = (async () => {
-    try {
-      return await orderedSync(deviceId, turn);
-    } catch {
-      return false;
-    } finally {
-      syncDiagnostics.passEnd(turn.diagnostic);
-      finishPass(deviceId, turn);
-    }
-  })();
   return turn.done;
 }
 
@@ -510,18 +512,19 @@ function finishPass(deviceId, turn) {
   updateConnectionSync();
 }
 
-async function diagnosticStage(turn, name, read) {
-  const finish = syncDiagnostics.stageStart(turn.diagnostic, name);
-  try { return await read(); }
-  finally { finish(); }
+function diagnosticStage(turn, name) {
+  turn.finishDiagnosticStage?.();
+  turn.finishDiagnosticStage = syncDiagnostics.stageStart(turn.diagnostic, name);
 }
 
 async function orderedSync(deviceId, turn) {
-  const context = await diagnosticStage(turn, "greeting", () => greetedContext(deviceId, turn));
+  const context = await greetedContext(deviceId, turn);
   if (!context) return false;
-  await diagnosticStage(turn, "subscriptions", () => subscribeDevice(context));
+  diagnosticStage(turn, "subscriptions");
+  await subscribeDevice(context);
   if (!context.active()) return false;
-  await diagnosticStage(turn, "held", () => heldBeforeReading(context));
+  diagnosticStage(turn, "held");
+  await heldBeforeReading(context);
   if (!context.active()) return false;
   const recovery = fileRecoveryFor(context, turn.session);
   const recoveryRevision = recovery.revision;
@@ -533,14 +536,16 @@ async function orderedSync(deviceId, turn) {
   turn.reading = true;
   const passStartedAt = Date.now();
   const fence = pushFence();
-  const lists = await diagnosticStage(turn, "lists", () => readLists(context, fence));
+  diagnosticStage(turn, "lists");
+  const lists = await readLists(context, fence);
   if (!lists || !context.active()) return false;
   const { before, ownership } = lists;
   const view = { ...lists.view, projects: await projectsWithAgentRosters(context.deviceId, lists.view.projects) };
-  const pass = await diagnosticStage(turn, "selection", () => workspacesToRead(context, view));
+  diagnosticStage(turn, "selection");
+  const pass = await workspacesToRead(context, view);
   const phases = createSyncPhases({
     context, pass, view, route: () => App.route,
-    stage: (name, read) => diagnosticStage(turn, name, read),
+    stage: (name) => diagnosticStage(turn, name),
     projectRosterReads: projectRosterReads(context, view, pass),
     sourceTerminalReads: lists.sourceTerminalReads,
     entityContext: (id) => whileOnBoard(context, id, fence),
@@ -556,16 +561,16 @@ async function orderedSync(deviceId, turn) {
   // keeping the completed pass's foreground planner alive.
   turn.phases = null;
   turn.foreground = null;
-  await diagnosticStage(turn, "cleanup", async () => {
-    await evictRowsThatAreOver(context, view, fence);
-    await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
-  });
+  diagnosticStage(turn, "cleanup");
+  await evictRowsThatAreOver(context, view, fence);
+  await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
   if (!context.active()) return false;
   if (filesRecovered && fileRecoveries.get(deviceId) === recovery && recovery.revision === recoveryRevision) recovery.complete = true;
   diffRecovery.complete = true;
   // The reader may have walked off while the pass read, and on a cold cache
   // the workspace they stand in had no row to resolve until the lists landed.
-  await diagnosticStage(turn, "route", () => refollowRoute(deviceId));
+  diagnosticStage(turn, "route");
+  await refollowRoute(deviceId);
   // The pass's row writes and evictions must finish before observing changes
   // to ownership for cleanup. This work never holds up the sync result.
   void pruneReadDrafts(context, before, ownership).catch(() => {});
@@ -960,14 +965,8 @@ async function workspacesToRead(context, view) {
   const routed = routedEntityId(App.route, view);
   const order = [...new Set([...(routed ? [routed] : []), ...active, ...recent])].filter((id) => rows.has(id));
   const conversations = (ids) => ids.reduce((count, id) => count + (rows.get(id)?.agents || []).length, 0);
-  if (context.syncTurn?.diagnostic) {
-    // Keys only: inventory the selected cache without reading any body or wire.
-    const selected = new Set(order);
-    const held = await cachedAddresses({ deviceId: context.deviceId });
-    const heldBodies = held.filter((address) => selected.has(address.entityId) && isWorkspaceDataKind(address.kind)).length;
-    syncDiagnostics.selected(context.syncTurn.diagnostic, { active: conversations(activeIds),
-      recent: conversations(recent), projectOwner: conversations(owners), heldBodies });
-  }
+  syncDiagnostics.selected(context.syncTurn?.diagnostic, { active: conversations(activeIds),
+    recent: conversations(recent), projectOwner: conversations(owners) });
   return { order, rows, routed };
 }
 

@@ -200,3 +200,14 @@ it("shows completed pass and snapshot drain offsets, with only five slow RPC row
 it("reports total passes after older details were bounded away", () => {
   expect(syncDiagnosticsText({ periods: [{ start: 0, stop: 50, passCount: 35, passes: [] }] })).toContain("35 passes");
 });
+
+
+it("labels bounded request samples and reserved held counts honestly", () => {
+  const text = syncDiagnosticsText({ oldestUnsettledMs: 100, oldestUnsettledSampled: true, periods: [{ start: 0, stop: null,
+    items: { queued: 100000, settled: 1, unsettled: 99999, retained: 32, droppedDetail: 99968 },
+    passes: [{ start: 0, end: null, selected: { heldBodies: null } }] }] });
+  expect(text).toContain("Oldest sampled unsettled: 100 ms");
+  expect(text).toContain("heldBodies=unavailable");
+  expect(text).toContain("droppedDetail=99968");
+  expect(syncDiagnosticsText({ oldestUnsettledMs: null, oldestUnsettledSampled: true })).toContain("unknown (detail cap)");
+});

@@ -2044,7 +2044,7 @@ describe("sync timing boundaries", () => {
     expect(after.stop).toEqual(expect.any(Number));
     expect(after.passes[0].end).toEqual(expect.any(Number));
     expect(after.passes[0].selected.active).toBeGreaterThan(0);
-    expect(after.passes[0].selected.heldBodies).toBeGreaterThan(0);
+    expect(after.passes[0].selected.heldBodies).toBeNull();
     expect(after.passes[0].snapshot.capture).toMatchObject({ captured: 0 });
     expect(after.passes[0].snapshot.drain).toMatchObject({ drained: 0 });
     expect(after.passes[0].stages.map(({ stage }) => stage)).toEqual(expect.arrayContaining(["greeting", "subscriptions", "lists", "selection", "foreground", "inbox", "background", "cleanup"]));
@@ -2053,15 +2053,33 @@ describe("sync timing boundaries", () => {
 });
 
 
-it("counts selected held bodies without needing to read those bodies", async () => {
-  const { syncDiagnostics } = await import("../src/core/syncDiagnostics.js");
-  await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "private-conversation" }, { items: [], body: "private-body" });
-  let release;
-  script["thread.page"] = () => new Promise((resolve) => { release = resolve; });
-  board = [branchItem({ agents: [{ id: "private-agent" }] })];
-  sync.startCacheSync();
-  await called(bridge.call, () => calls("thread.page").length > 0);
-  expect(syncDiagnostics.report().periods[0].passes[0].selected.heldBodies).toBe(1);
-  release({ items: [], has_more: false });
-  await passesSettled(sync, "dev-1");
+it("does not add a whole-device cache inventory for diagnostics", async () => {
+  const original = cache.cachedAddresses;
+  const selectionInventories = [];
+  const inventory = vi.spyOn(cache, "cachedAddresses").mockImplementation((prefix) => {
+    if (!Object.hasOwn(prefix, "entityId") && new Error().stack.includes("workspacesToRead")) selectionInventories.push(prefix);
+    return original(prefix);
+  });
+  try {
+    await boot([branchItem({ agents: [{ id: "private-agent" }] })]);
+    expect(selectionInventories).toEqual([]);
+    const { syncDiagnostics } = await import("../src/core/syncDiagnostics.js");
+    expect(syncDiagnostics.report().periods[0].passes[0].selected.heldBodies).toBeNull();
+  } finally { inventory.mockRestore(); }
+});
+
+it("starts the greeting before publishing its pass or notifying ring listeners", async () => {
+  const events = [];
+  const context = contexts.get("dev-1");
+  const greeting = Promise.resolve();
+  Object.defineProperty(context, "greeted", { get() {
+    events.push(["greeting", Boolean(sync.passInFlight("dev-1"))]);
+    return greeting;
+  } });
+  const stop = sync.subscribeConnectionSync((active) => { if (active) events.push(["ring"]); });
+  try {
+    await boot([]);
+    expect(events[0]).toEqual(["greeting", false]);
+    expect(events.findIndex(([kind]) => kind === "greeting")).toBeLessThan(events.findIndex(([kind]) => kind === "ring"));
+  } finally { stop(); }
 });

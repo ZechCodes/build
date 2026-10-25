@@ -142,7 +142,7 @@ const syncOffset = (value) => value == null ? "unfinished" : `+${value} ms`;
 const syncSpan = (start, end) => `${syncOffset(start)} → ${syncOffset(end)}`;
 const syncCounts = (counts = {}) => Object.entries(counts)
   .filter(([key]) => key !== "at")
-  .map(([key, value]) => `${key}=${value}`)
+  .map(([key, value]) => `${key}=${value == null ? "unavailable" : value}`)
   .join(" ");
 
 function syncSnapshotText(name, snapshot) {
@@ -169,9 +169,16 @@ function syncPeriodText(period) {
   return [
     `Ring ${syncSpan(period.start, period.stop)}; ${count} pass${count === 1 ? "" : "es"}`,
     ...passes.map(syncPassText),
-    "Slowest RPCs (up to 5):",
+    ...(period.items ? [`Requests: ${syncCounts(period.items)}`] : []),
+    "Slowest recorded RPCs (up to 5):",
     ...(period.slowest || []).slice(0, 5).map(syncRequestText),
   ].join("\n");
+}
+
+function syncOldestText(sync) {
+  const label = sync.oldestUnsettledSampled ? "Oldest sampled unsettled" : "Oldest unsettled";
+  const absent = sync.oldestUnsettledSampled ? "unknown (detail cap)" : "none";
+  return `${label}: ${sync.oldestUnsettledMs == null ? absent : `${sync.oldestUnsettledMs} ms`}`;
 }
 
 export function syncDiagnosticsText(sync) {
@@ -179,7 +186,7 @@ export function syncDiagnosticsText(sync) {
   return [
     "Sync timing",
     `Live devices: ${sync.liveCount ?? 0}`,
-    `Oldest unsettled: ${sync.oldestUnsettledMs == null ? "none" : `${sync.oldestUnsettledMs} ms`}`,
+    syncOldestText(sync),
     `SQL credits: ${syncCounts(sync.sql || { queued: 0, admitted: 0, timedOutHeld: 0 })}`,
     ...(sync.devices || []).map((device, index) => `Device ${index + 1}: ${syncCounts(device)}`),
     ...(sync.periods || []).slice().reverse().map(syncPeriodText),

@@ -29,6 +29,7 @@ export function createWatchedTaskDependencies(deviceId) {
   const reader = createFeedCacheReader(deviceId);
   let disposed = false;
   let invalidation = 0;
+  let agentsVersion = 0;
   let ruleInvalidation = 0;
   let ruleVersion = 0;
   let askedOnly = false;
@@ -58,11 +59,15 @@ export function createWatchedTaskDependencies(deviceId) {
     if (disposed) return;
     const session = sessionOf(deviceId);
     const before = invalidation;
+    const version = agentsVersion;
     const { view, namesMakers } = await reader.refresh();
     if (disposed || before !== invalidation || session !== sessionOf(deviceId)) return;
     acceptWorkspaces(view.workspaces);
     const rows = projectRosterRows(view);
     for (const listener of listeners) {
+      // New subscribers need a pass covering their join; established ones keep
+      // publishing finite passes even when more hints arrive during the read.
+      if (!listener.agentsReady && version < listener.agentsVersion) continue;
       listener.running = runningFor(listener.project, view, rows, namesMakers);
       listener.agentsReady = true;
       publish(listener);
@@ -88,7 +93,10 @@ export function createWatchedTaskDependencies(deviceId) {
   const refreshRule = trailingRead(readRule, options);
   const unsubscribeAgents = subscribeCache({ deviceId }, (address) => {
     if (!address.kind) invalidation += 1;
-    if (!address.kind || AGENT_KINDS.has(address.kind)) void refreshAgents();
+    if (!address.kind || AGENT_KINDS.has(address.kind)) {
+      agentsVersion += 1;
+      void refreshAgents();
+    }
   });
   const unsubscribeRule = subscribeCache(needsYouRuleAddress(deviceId), (address) => {
     ruleVersion += 1;
@@ -98,7 +106,7 @@ export function createWatchedTaskDependencies(deviceId) {
 
   return {
     subscribe(project, onChange) {
-      const listener = { project, onChange, signature: null, agentsReady: false, ruleReady: false, ruleVersion, running: { runningAgentIds: new Set(), projectAgentId: null } };
+      const listener = { project, onChange, signature: null, agentsReady: false, agentsVersion, ruleReady: false, ruleVersion, running: { runningAgentIds: new Set(), projectAgentId: null } };
       listeners.add(listener);
       void refreshAgents();
       void refreshRule();

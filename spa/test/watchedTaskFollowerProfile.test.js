@@ -352,3 +352,41 @@ it("waits for a pending changed policy before publishing a project joining a war
   await vi.waitFor(() => expect(snapshots.length).toBeGreaterThan(0));
   expect(snapshots.every((entry) => !entry.quiet && entry.reason.includes("In review"))).toBe(true);
 });
+
+it("waits for a covering agent pass when a project joins after a held roster snapshot", async () => {
+  follower.follow(projects.slice(0, 1));
+  await idle();
+  const readMany = cache.readCachedMany;
+  const releases = [];
+  vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+    const records = await readMany(addresses);
+    if (addresses.every(({ kind }) => kind === "row" || kind === "project-agents")) {
+      await new Promise((resolve) => releases.push(resolve));
+    }
+    return records;
+  });
+  cache.announceCacheEvidence(address(row.entity_id, "row"));
+  await vi.waitFor(() => expect(releases).toHaveLength(1));
+  const rosterAddress = address(projects[1].entity_id, "project-agents");
+  const roster = (await cache.readCached(rosterAddress)).value;
+  await cache.writeCached(rosterAddress, { ...roster, agents: roster.agents.map((agent) => ({ ...agent, working: false })) });
+  const snapshots = [];
+  onChange.mockImplementation(() => {
+    const entry = follower.entries().find((item) => item.projectId === projects[1].id);
+    if (entry) snapshots.push({ working: entry.working });
+  });
+  follower.follow(projects.slice(0, 2));
+  await idle();
+  expect(snapshots).toEqual([]);
+  releases[0]();
+  try {
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    expect(snapshots).toEqual([]);
+    releases[1]();
+    await vi.waitFor(() => expect(snapshots.length).toBeGreaterThan(0));
+    expect(snapshots.every((entry) => entry.working === false)).toBe(true);
+  } finally {
+    follower.dispose();
+    releases.forEach((release) => release());
+  }
+});

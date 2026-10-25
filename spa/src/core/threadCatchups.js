@@ -93,8 +93,11 @@ export function createThreadCatchups({ needed, read }) {
   }
 
   return {
-    enqueue(key, request) {
+    enqueue(key, request, { retryExhausted = false } = {}) {
       const entry = entryFor(key, request);
+      // An ordinary recovery pass may retry retained debt. Repeated push
+      // goals keep their bounded budget, and active readers remain shared.
+      if (retryExhausted && !entry.current) entry.exhaustedThrough = -1;
       if (!entry.current) return start(entry, roundFor(request));
       if (!newerGoal(request, entry.current.request)) return entry.current.promise;
       entry.pending ||= roundFor(combinedGoal(entry.current.request, request));

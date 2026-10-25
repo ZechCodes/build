@@ -197,19 +197,22 @@ it("coalesces same-counter floor tips while retaining a real repair obligation",
   const stalled = gate(), previous = context.rpc.getMockImplementation();
   context.rpc.mockClear();
   context.rpc.mockImplementation((method, params) => method === "thread.page"
-    ? (params.newest ? stalled.promise : { thread_id: "thread:c0", items: [{ ...row, data: { ...row.data, updated_sequence: 10, body: "fresh" } }], thread_last_sequence: 10 })
+    ? (params.newest ? { thread_id: "thread:c0", items: [], thread_last_sequence: 10 } : stalled.promise)
     : previous(method, params));
   const event = tip(10, 10); event.thread[0].history_start_sequence = 8;
   const first = push([event]);
   await called(context.rpc, () => calls("thread.page").length === 1);
   const second = push([event]);
-  stalled.release({ thread_id: "thread:c0", items: [], history_start_sequence: 8, thread_last_sequence: 10 });
+  await vi.waitFor(() => expect(sync.pushWorkInFlight("dev-1").running).toBe(0));
+  expect(sync.threadCatchupsInFlight("dev-1").running).toBe(1);
+  expect(calls("thread.page")).toHaveLength(1);
+  stalled.release({ thread_id: "thread:c0", items: [{ ...row, data: { ...row.data, updated_sequence: 10, body: "fresh" } }], history_start_sequence: 8, thread_last_sequence: 10 });
   await Promise.all([first, second]);
   const held = (await cache.readCached(target)).value;
   expect(held.historyStartSequence).toBe(8);
   expect(held.items[0].data.body).toBe("fresh");
   expect(held.repairThrough).toBeUndefined();
-  expect(calls("thread.page")).toHaveLength(2);
+  expect(calls("thread.page")).toHaveLength(1);
 });
 
 it("retries an exhausted same-counter suffix when a higher floor removes its failed representative", async () => {
@@ -225,17 +228,20 @@ it("retries an exhausted same-counter suffix when a higher floor removes its fai
     return { thread_id: "thread:c0", items: [{ ...retained, data: { ...retained.data, body: "fresh", updated_sequence: 10 } }], has_more: true, thread_last_sequence: 10 };
   });
   await push([tip(10, 10)]);
-  expect(calls("thread.page")).toHaveLength(6);
+  expect(calls("thread.page")).toHaveLength(4);
+  expect(calls("thread.page").filter(([, params]) => params.newest)).toHaveLength(0);
+  expect(calls("thread.page").filter(([, params]) => params.limit === 50)).toHaveLength(2);
+  expect(calls("thread.page").filter(([, params]) => params.limit === 1)).toHaveLength(2);
   await push([tip(10, 10)]);
-  expect(calls("thread.page")).toHaveLength(6);
+  expect(calls("thread.page")).toHaveLength(4);
   const advanced = tip(10, 10); advanced.thread[0].history_start_sequence = 8;
   await push([advanced]);
   const held = (await cache.readCached(target)).value;
   expect(held.historyStartSequence).toBe(8);
   expect(held.items).toEqual([{ ...retained, data: { ...retained.data, body: "fresh", updated_sequence: 10 } }]);
   expect(held.repairThrough).toBeUndefined();
-  expect(calls("thread.page")).toHaveLength(8);
+  expect(calls("thread.page")).toHaveLength(5);
   const lower = tip(10, 10); lower.thread[0].history_start_sequence = 7;
   await push([lower]); await push([advanced]);
-  expect(calls("thread.page")).toHaveLength(8);
+  expect(calls("thread.page")).toHaveLength(5);
 });

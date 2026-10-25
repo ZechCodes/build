@@ -106,3 +106,26 @@ it("rejects a foreign generation's repair-page floor before publishing or readin
   expect(held.repairThrough).toBe(203);
   expect(call).toHaveBeenCalledTimes(2);
 });
+
+
+it.each([3, 5])("pays debt older than a new creation omitted from a capped repair at counter %s", (counter) => {
+  const held = { ...windowAt(message(1), message(4)), repairThrough: 3 };
+  const repaired = sync.repairedThreadWindow(held, { thread_id: "thread", items: [message(1, 3)], has_more: true, thread_last_sequence: counter });
+  expect(repaired.repairThrough).toBeUndefined();
+  expect(repaired.deliveredSequence).toBe(4);
+  expect(repaired.items).toEqual([message(1, 3), message(4)]);
+});
+
+it.each([3, 5])("retains newer debt when a capped repair at counter %s omits a creation inside its obligation", (counter) => {
+  const held = { ...windowAt(message(1), message(4)), repairThrough: 5 };
+  const repaired = sync.repairedThreadWindow(held, { thread_id: "thread", items: [message(1, 3)], has_more: true, thread_last_sequence: counter });
+  expect(repaired.repairThrough).toBe(5);
+  expect(repaired.items).toEqual([message(1, 3), message(4)]);
+});
+
+it("retains capped repair debt when an older representative is still missing", () => {
+  const held = { ...windowAt(message(1), message(2), message(4)), repairThrough: 3 };
+  const repaired = sync.repairedThreadWindow(held, { thread_id: "thread", items: [message(1, 3)], has_more: true, thread_last_sequence: 3 });
+  expect(repaired.repairThrough).toBe(3);
+  expect(repaired.items).toEqual([message(1, 3), message(2), message(4)]);
+});

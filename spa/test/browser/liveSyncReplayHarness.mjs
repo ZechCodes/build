@@ -36,7 +36,7 @@ export function liveSyncPlugin(options) {
   return plugin;
 }
 
-export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 0, frames = 120, mixed = true, drainMs, cpuProfilePath, ablateCanvas = false, ablateInbox = false, cacheCanvasRect = false, boardMembership = 6, staticDomTarget = 1284, tasksPerProject = 143, retainedMessages = 330, resetFrame = 180, removalFrame = 120, warmCatchup = false, holdThreadMs = 5000, warmTipMode = "empty", initialBodyBacklog = 0, holdReleaseAfterRPC = false, explicitThreadPriority = false, representativeRate = false } = {}) {
+export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 0, frames = 120, mixed = true, drainMs, cpuProfilePath, ablateCanvas = false, ablateInbox = false, cacheCanvasRect = false, boardMembership = 6, staticDomTarget = 1284, tasksPerProject = 143, retainedMessages = 330, resetFrame = 180, removalFrame = 120, warmCatchup = false, holdThreadMs = 5000, warmTipMode = "empty", initialBodyBacklog = 0, holdReleaseAfterRPC = false, explicitThreadPriority = false, representativeRate = false, historyRepair = false } = {}) {
   drainMs ??= warmCatchup ? 120000 : 20000;
   const session = await openLayoutSession({ plugins: [liveSyncPlugin({ revision })] });
   try {
@@ -56,18 +56,20 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         <div id="view"><header id="toolbar">Replay</header><div id="view-body"><main id="root">
         <output id="open-conversation">0</output><section id="conversation"></section></main>
         <aside id="agent-rail"></aside></div><div id="console-region"></div></div></div>`, { basePath });
-      await loadBrowserModules(page, { cache: "src/core/localCache.js", app: "src/appState.js", sync: "src/core/cacheSync.js", renderer: "src/core/thread.js", feed: "src/core/taskFeed.js", visible: "src/core/syncVisibleScopes.js", watched: "src/core/watchedTaskFollower.js", lineage: "src/core/agentLineage.js", inbox: "src/core/inboxView.js", agentRail: "src/core/agentRail.js", tracker: "src/core/trackerCache.js", metrics: "test/browser/liveSyncMetrics.mjs", contexts: "src/core/deviceContexts.js", canvas: "src/core/agentCanvas.js", attribution: "test/browser/liveSyncReadAttribution.mjs" }, basePath, { timeoutMs: 60_000 });
-      await page.evaluate(async ({ intervalMs, stallMs, frames, mixed, drainMs, tasksPerProject, retainedMessages, shape, ablateCanvas, cacheCanvasRect, boardMembership, staticDomTarget, ablateInbox, resetFrame, removalFrame, warmCatchup, holdThreadMs, warmTipMode, initialBodyBacklog, holdReleaseAfterRPC, explicitThreadPriority, representativeRate }) => {
+      await loadBrowserModules(page, { cache: "src/core/localCache.js", app: "src/appState.js", sync: "src/core/cacheSync.js", renderer: "src/core/thread.js", feed: "src/core/taskFeed.js", visible: "src/core/syncVisibleScopes.js", watched: "src/core/watchedTaskFollower.js", lineage: "src/core/agentLineage.js", inbox: "src/core/inboxView.js", agentRail: "src/core/agentRail.js", tracker: "src/core/trackerCache.js", metrics: "test/browser/liveSyncMetrics.mjs", contexts: "src/core/deviceContexts.js", canvas: "src/core/agentCanvas.js", paintOracle: "test/browser/liveSyncPaintOracle.mjs", historyFixture: "test/browser/liveSyncHistoryFixture.mjs", attribution: "test/browser/liveSyncReadAttribution.mjs" }, basePath, { timeoutMs: 60_000 });
+      await page.evaluate(async ({ intervalMs, stallMs, frames, mixed, drainMs, tasksPerProject, retainedMessages, shape, ablateCanvas, cacheCanvasRect, boardMembership, staticDomTarget, ablateInbox, resetFrame, removalFrame, warmCatchup, holdThreadMs, warmTipMode, initialBodyBacklog, holdReleaseAfterRPC, explicitThreadPriority, representativeRate, historyRepair }) => {
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const stats = { gets: 0, transactions: 0, pendingTransactions: 0, peakTransactions: 0,
           pendingAppliers: 0, peakAppliers: 0, cacheLatencies: [], cacheApplyTurns: [], renderLatencies: [], renderSchedulerTurns: [], rpcCalls: 0, rowGets: 0, backlogSamples: [] };
-        const fixture = window.__pushReplay = { stats, watchers: [], emitted: new Map(), emittedTurns: new Map(), emittedSchedulerTurns: new Map(), server: new Map() };
+        const fixture = window.__pushReplay = { stats, watchers: [], emitted: new Map(), emittedBodies: new Map(), emittedTurns: new Map(), emittedSchedulerTurns: new Map(), server: new Map() };
         const { cache, sync, renderer, feed, visible, watched, lineage, inbox, agentRail, tracker, metrics, contexts, canvas, app: { App } } = window.__layoutModules;
         metrics.installLiveSyncMetrics();
         App.deviceFilter = null;
         App.devices = [{ id: "replay-device" }];
         App.route = { name: "branch", branch: "build/0", deviceId: "replay-device", projectId: "p0", agent: "agent-0" };
         const cachedThrough = warmCatchup ? 1080 : 1100;
+        const historical = historyRepair ? window.__layoutModules.historyFixture.historyRepairSeed() : null;
+        stats.historyRepairFixture = historyRepair;
         let releaseThreadRPC;
         const threadGate = warmCatchup ? new Promise((resolve) => { releaseThreadRPC = resolve; }) : Promise.resolve();
         stats.rpcPhases = [];
@@ -94,10 +96,10 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
             const rpcStarted = performance.now();
             if (method === "thread.page") {
               if (warmCatchup && holdReleaseAfterRPC && params.thread_id === "thread-0") scheduleThreadRelease();
-              stats.rpcPhases.push({ phase: "entered", method, entityId: params.entity_id, threadId: params.thread_id, afterSequence: params.after_sequence, at: rpcStarted });
+              stats.rpcPhases.push({ phase: "entered", method, entityId: params.entity_id, threadId: params.thread_id, afterSequence: params.after_sequence, limit: params.limit, newest: params.newest, at: rpcStarted });
               await threadGate;
               if (warmCatchup && params.thread_id === "thread-0" && rpcStarted < stats.threadRPCReleasedAt) stats.ownRepairHolds.push({ start: rpcStarted, end: performance.now() });
-              stats.rpcPhases.push({ phase: "released", method, entityId: params.entity_id, threadId: params.thread_id, afterSequence: params.after_sequence, at: performance.now(), waitMs: performance.now() - rpcStarted });
+              stats.rpcPhases.push({ phase: "released", method, entityId: params.entity_id, threadId: params.thread_id, afterSequence: params.after_sequence, limit: params.limit, newest: params.newest, at: performance.now(), waitMs: performance.now() - rpcStarted });
             }
             stats.rpcMethods ||= {}; stats.rpcMethods[method] = (stats.rpcMethods[method] || 0) + 1;
             if (method === "board.list") return { items: [...fixture.serverRows.values()].filter((row) => boardMembership === 204 || rows.some((active) => active.run_id === row.run_id)
@@ -127,9 +129,11 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
             if (method === "agent.list") return { entity_id: row.run_id, pinned_agent_id: row.agents[0]?.id || null, agents: (fixture.projectRosters.find((roster) => roster.entity_id === row.run_id) || row).agents };
             if (method === "thread.page") {
               if (warmCatchup && holdReleaseAfterRPC && params.thread_id === "thread-0") scheduleThreadRelease();
-              stats.rpcPhases.push({ phase: "returned", method, entityId: params.entity_id, threadId: params.thread_id, afterSequence: params.after_sequence, at: performance.now() });
+              stats.rpcPhases.push({ phase: "returned", method, entityId: params.entity_id, threadId: params.thread_id, afterSequence: params.after_sequence, limit: params.limit, newest: params.newest, at: performance.now() });
               return { thread_id: params.thread_id, thread_generation_revision: row.agents.find((agent) => agent.thread_id === params.thread_id)?.thread_generation_revision || 1,
-              items: (fixture.server.get(params.thread_id) || []).filter((item) => item.data.sequence > (params.after_sequence || 0)), has_more: false };
+              ...(historical && params.thread_id === "thread-0"
+                ? window.__layoutModules.historyFixture.historyRepairPage(historical, fixture.server.get(params.thread_id) || [], params)
+                : { items: (fixture.server.get(params.thread_id) || []).filter((item) => item.data.sequence > (params.after_sequence || 0)), has_more: false }) };
             }
             return {};
           } };
@@ -139,7 +143,7 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         for (const row of rows) {
           await cache.writeCached(address(row.run_id, "row"), row);
           for (const agent of agents.filter((_, index) => index % 6 === Number(row.run_id.slice(4)))) await cache.writeCached(address(row.run_id, "thread", agent.id), {
-            thread_id: agent.thread_id, thread_generation_revision: 1, items: Array.from({ length: agent.id === "agent-0" ? retainedMessages : 0 }, (_, n) => ({ type: "message", data: { id: `retained-${agent.id}-${n}`, sequence: cachedThrough - retainedMessages + n + 1, role: "agent", body: `Retained fixture message ${n} ${"r".repeat(n === 0 ? 1200 : 1000)}` } })), deliveredSequence: cachedThrough, activityDigests: [], knownTotalItems: cachedThrough,
+            thread_id: agent.thread_id, thread_generation_revision: 1, items: historical && agent.id === "agent-0" ? historical.held : Array.from({ length: agent.id === "agent-0" ? retainedMessages : 0 }, (_, n) => ({ type: "message", data: { id: `retained-${agent.id}-${n}`, sequence: cachedThrough - retainedMessages + n + 1, role: "agent", body: `Retained fixture message ${n} ${"r".repeat(n === 0 ? 1200 : 1000)}` } })), deliveredSequence: cachedThrough, activityDigests: [], knownTotalItems: cachedThrough,
           });
         }
         if (mixed) {
@@ -253,6 +257,7 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
           call: fixture.context.rpc,
         });
         if (warmCatchup) for (const row of rows) fixture.server.set(row.agents[0].thread_id, Array.from({ length: 20 }, (_, n) => ({ type: "message", data: { id: `backlog-${row.run_id}-${n}`, sequence: 1081 + n, role: "agent", body: `backlog ${n}` } })));
+        if (historical) fixture.server.set("thread-0", historical.backlog);
         await sync.startPushReplay();
         await feed.startFeed();
         if (!warmCatchup) await sleep(1000);
@@ -281,16 +286,26 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         stats.seedCanvasCount = document.querySelectorAll("canvas").length;
         stats.animatingCanvasCount = canvas.animatingRendererCount();
         stats.seedInboxRows = document.querySelectorAll("#inbox-list .inbox-entry").length;
-        const realSeen = new Set();
+        const realSeen = new Set(), realPending = new Set();
+        const paintOracle = window.__layoutModules.paintOracle;
+        stats.realPaintSequences = [];
+        stats.realPaintDomHighwaters = [];
+        stats.rejectedPaintFrames = 0;
         stats.realPaintLatencies = [];
         stats.realPaintSchedulerTurns = [];
         const observeRealPaint = new MutationObserver(() => {
           for (const [sequence, at] of fixture.emitted) {
-            if (realSeen.has(sequence)) continue;
+            if (realSeen.has(sequence) || realPending.has(sequence)) continue;
             const row = document.querySelector(`#agent-rail [data-sequence="${sequence}"]`);
-            if (!row || !row.textContent.includes(`frame ${(sequence - 1101) * 6}`)) continue;
-            realSeen.add(sequence);
+            if (!paintOracle.paintedRowMatches(row, sequence, fixture.emittedBodies.get(sequence))) continue;
+            realPending.add(sequence);
             requestAnimationFrame(() => {
+              realPending.delete(sequence);
+              const paintedRow = document.querySelector(`#agent-rail [data-sequence="${sequence}"]`);
+              if (!paintOracle.paintedRowMatches(paintedRow, sequence, fixture.emittedBodies.get(sequence))) { stats.rejectedPaintFrames++; return; }
+              realSeen.add(sequence);
+              stats.realPaintSequences.push(sequence);
+              stats.realPaintDomHighwaters.push(Math.max(...[...document.querySelectorAll("#agent-rail [data-sequence]")].map((node) => Number(node.dataset.sequence))));
               if (!stats.realPaintLatencies.length) stats.firstOwnPaintBacklogCompleted = stats.backlogCommitted || 0;
               stats.realPaintLatencies.push(performance.now() - at);
               stats.realPaintSchedulerTurns.push((stats.schedulerStarts || 0) - fixture.emittedSchedulerTurns.get(sequence));
@@ -375,16 +390,18 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         }
         for (let frame = 0; frame < frames; frame++) {
           fixture.inputFrame = frame;
-          const row = rows[frame % 6];
+          const { rowIndex, sequence } = historical ? window.__layoutModules.historyFixture.historyReplayFrame(frame)
+            : { rowIndex: frame % 6, sequence: 1100 + Math.floor(frame / 6) + 1 };
+          const row = rows[rowIndex];
           const agent = row.agents[0];
-          const sequence = 1100 + Math.floor(frame / 6) + 1;
           const item = { type: "message", data: { id: `message-${frame}`, sequence, role: "agent", body: `frame ${frame}`, created_at: "2026-10-24T16:00:00Z" } };
-          fixture.expectedMessages[frame % 6].push(item);
-          fixture.server.set(agent.thread_id, fixture.expectedMessages[frame % 6]);
+          fixture.expectedMessages[rowIndex].push(item);
+          fixture.server.set(agent.thread_id, fixture.expectedMessages[rowIndex]);
           const tip = { agent_id: agent.id, conversation_id: agent.id, thread_id: agent.thread_id, thread_generation_revision: 1,
             since_sequence: sequence - 1, last_sequence: sequence, thread_total: sequence, items: [item] };
-          if (frame % 6 === 0) {
+          if (rowIndex === 0) {
             fixture.emitted.set(sequence, performance.now());
+            fixture.emittedBodies.set(sequence, item.data.body);
             fixture.emittedTurns.set(sequence, stats.applierStarts || 0);
             fixture.emittedSchedulerTurns.set(sequence, stats.schedulerStarts || 0);
           }
@@ -443,6 +460,7 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         stats.finalWork = fixture.work || null;
         stats.finalCatchups = fixture.catchups || null;
         stats.finalPassRunning = Boolean(sync.passInFlight("replay-device"));
+        stats.exactMonotonicPaint = paintOracle.paintOrderMatches([...fixture.emitted.keys()].sort((left, right) => left - right), stats.realPaintSequences, stats.realPaintDomHighwaters);
         window.__liveSyncMetrics.active = false;
         for (const metric of ["attribution", "storageAttribution", "startupAttribution", "startupStorageAttribution"]) window.__liveSyncMetrics[metric].stop();
         await window.__stopLiveSyncMeasurement();
@@ -463,9 +481,11 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
           fixture.finalThreads.push((await cache.readCached(address(row.run_id, "thread", row.agents[0].id)))?.value);
           fixture.finalRows.push((await cache.readCached(address(row.run_id, "row")))?.value);
         }
+        stats.historicalRepairSettled = !historical || (fixture.finalThreads[0].repairThrough === undefined
+          && fixture.finalThreads[0].items.find((item) => item.data.sequence === 1000)?.data.updated_sequence === 1100);
         fixture.exactFinalMessages = fixture.finalThreads.every((thread, index) =>
           thread.thread_id === rows[index].agents[0].thread_id
-          && thread.deliveredSequence === 1100 + fixture.expectedMessages[index].length - (warmCatchup ? 20 : 0) && JSON.stringify(thread.items.filter((item) => item.data.sequence > cachedThrough)) === JSON.stringify(fixture.expectedMessages[index]));
+          && thread.deliveredSequence === 1100 + fixture.expectedMessages[index].length - (warmCatchup ? historical && index === 0 ? 19 : 20 : 0) && JSON.stringify(thread.items.filter((item) => item.data.sequence > cachedThrough)) === JSON.stringify(fixture.expectedMessages[index]));
         stats.exactBacklogStates = true;
         for (let index = 0; index < initialBodyBacklog; index++) {
           const held = (await cache.readCached(address(`padding-${index}`, "row")))?.value;
@@ -507,7 +527,7 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         stopThread();
         sync.stopCacheSync();
         db.close();
-      }, { basePath, intervalMs, stallMs, frames, mixed, drainMs, tasksPerProject, retainedMessages, shape: LIVE_SYNC_SHAPE, ablateCanvas, cacheCanvasRect, boardMembership, staticDomTarget, ablateInbox, resetFrame, removalFrame, warmCatchup, holdThreadMs, warmTipMode, initialBodyBacklog, holdReleaseAfterRPC, explicitThreadPriority, representativeRate });
+      }, { basePath, intervalMs, stallMs, frames, mixed, drainMs, tasksPerProject, retainedMessages, shape: LIVE_SYNC_SHAPE, ablateCanvas, cacheCanvasRect, boardMembership, staticDomTarget, ablateInbox, resetFrame, removalFrame, warmCatchup, holdThreadMs, warmTipMode, initialBodyBacklog, holdReleaseAfterRPC, explicitThreadPriority, representativeRate, historyRepair });
       if (cpuProfilePath) await writeFile(cpuProfilePath, JSON.stringify(cpuProfile));
       const browserMetrics = (await cdp.send("Performance.getMetrics")).metrics;
       const result = await page.evaluate(() => {

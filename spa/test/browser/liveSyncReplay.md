@@ -20,6 +20,24 @@ Report raw latency, latency minus only the measured own-repair gate overlap, and
 
 The pure `liveSyncDelivery.mjs` report matches stable-generation covering highwaters for admission, worker start and commit, while requiring each actual mounted sequence. These are observational coverage boundaries rather than per-job causality. If a concurrent source pass commits before the queued body worker starts, that unordered interval is counted separately instead of reported as a negative causal latency.
 
+`--history-repair --warm-catchup --mixed-warm-tips --no-rpc-hold` is a synthetic
+sparse-history sensitivity case. It retains 330 messages (about 366 KB), with
+gaps between recent retained creations. Nineteen new creations and one update
+under the cursor advance the initial counter to 1100. Repair pages obey the
+50-item cap; omitted held representatives require exact one-item reads at the
+fixture's ordinary 15 ms RPC latency. The first two mounted tips use adjacent
+producer slots by swapping two existing slots, preserving every conversation's
+sequence set, total input and mean rate. This burst is a fixture assumption,
+not a reconstruction of the live capture. No additional RPC delay is imposed.
+
+The paint oracle records each actual emitted body instead of inferring its
+producer frame from the sequence. Inside animation frame it rechecks that the
+current row is connected, still carries the exact sequence and has the exact
+plain message body. Every expected tip must paint once in sequence order, with
+no regression of the mounted DOM's sequence high-water. CLI failure includes
+missing paint, stale body, ordering or outstanding historical repair debt.
+`delivery.receiptToCommit` reports commit coverage separately from mounted paint.
+
 Live evidence has two separate boundaries. The older capture's 26 matches give nearest-rank p95 17,385 ms. The later reopened retained browser matched only 8 of 25 highwaters, with a 144,434 ms maximum among those matches and 17 highwaters still uncommitted at capture end; that censored capture has no representative p95. Passing isolated fixtures does not prove that the live censored tail is eliminated.
 
 Accepted SLA captures keep the optional CDP CPU profiler off; common stage/read/UI instrumentation remains enabled. A diagnostic CPU-on capture overlapped other host test workers, so its incremental profiler overhead was not isolated. Do not treat its wall-clock difference from a CPU-off run as a causal overhead estimate.

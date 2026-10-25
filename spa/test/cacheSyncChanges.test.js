@@ -1424,6 +1424,52 @@ describe("project source terminal rosters", () => {
     expect(bridge.call).toHaveBeenCalledWith("term.list", { ...scope, source_id: "plain", source_path: "/plain" }, expect.anything());
     expect(live().filter((watcher) => watcher.scope?.kind === "project_source").map((watcher) => watcher.kinds)).toEqual([["terminals"], ["terminals"]]);
   });
+  it("delivers create then close immediately to two independent client caches", async () => {
+    const id = await prepare();
+    const first = { cache, sync, watcher: live().find((watcher) => watcher.scope?.source_id === scope.source_id) };
+    try {
+      // A second module graph and IndexedDB represent another client, rather
+      // than a second reader observing the first client's local writes.
+      vi.resetModules();
+      globalThis.indexedDB = new IDBFactory();
+      cache = await import("../src/core/localCache.js");
+      sync = await import("../src/core/cacheSync.js");
+      const before = registeredWatchers.length;
+      await boot([]);
+      const second = { cache, sync, watcher: registeredWatchers.slice(before).find((watcher) => watcher.scope?.source_id === scope.source_id) };
+      const address = { deviceId: "dev-1", entityId: id, kind: "terminals" };
+      await first.cache.writeCached(address, { tabs: [{ term_id: "only-first-client" }] });
+      expect((await second.cache.readCached(address)).value.tabs).toEqual([{ term_id: "term-s1" }]);
+      const clients = [first, second].map((client) => ({ ...client, deliveredAt: [], lastFlush: 0 }));
+      // The bridge has just sent its opening flush at t=0. Enforce the
+      // requested cooldown against a deterministic wire clock, so calling
+      // onChanges directly cannot hide a delayed subscription policy.
+      let wireTime = 0;
+      const publish = async (client, tabs) => {
+        const cooldown = client.watcher.mode.batch_ms || 0;
+        if (wireTime - client.lastFlush < cooldown) return;
+        client.lastFlush = wireTime;
+        client.deliveredAt.push(wireTime);
+        await client.watcher.onChanges([{ project_source: scope, terminals: { tabs } }]);
+      };
+      const started = performance.now();
+      for (const tabs of [[{ term_id: "created" }], []]) {
+        wireTime += 10;
+        await Promise.all(clients.map((client) => publish(client, tabs)));
+        for (const client of clients) {
+          expect((await client.cache.readCached(address)).value.tabs).toEqual(tabs);
+        }
+      }
+      expect(clients.map((client) => client.deliveredAt)).toEqual([[10, 20], [10, 20]]);
+      for (const client of clients) {
+        expect(client.watcher.mode).toBe("realtime");
+        expect(client.watcher.priority).toBe("foreground");
+      }
+      expect(performance.now() - started).toBeLessThan(1000);
+    } finally {
+      first.sync.stopCacheSync();
+    }
+  });
   it("writes source terminal pushes separately and refuses removed locations", async () => {
     const id = await prepare();
     await sync.applyProjectSourceChanges([{ project_source: scope, terminals: { tabs: [{ term_id: "new" }] } }], "dev-1");

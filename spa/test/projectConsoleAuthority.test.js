@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-const harness = vi.hoisted(() => ({ registered: new Map(), starts: [], status: null, statusListeners: new Set(), subscriptions: 0 }));
+const harness = vi.hoisted(() => ({ registered: new Map(), starts: [], status: null, statusListeners: new Set(), subscriptions: 0, reads: [], blockRead: null }));
 const manager = vi.hoisted(() => ({
   listTerminals: vi.fn(async () => []),
   createTerminal: vi.fn(async () => ({ term_id: "new-term" })),
@@ -13,6 +13,15 @@ const manager = vi.hoisted(() => ({
   }),
   detach: vi.fn((id) => harness.registered.delete(id)),
 }));
+vi.mock("../src/core/localCache.js", async (original) => {
+  const cache = await original();
+  return { ...cache, readCached: async (address) => {
+    harness.reads.push(address);
+    const record = await cache.readCached(address);
+    await harness.blockRead?.(address);
+    return record;
+  } };
+});
 vi.mock("../src/terminal/manager.js", () => ({
   terminalManager: () => manager,
   terminalDeviceId: () => "dev-1",
@@ -36,7 +45,7 @@ vi.mock("../src/terminal/pane.js", () => ({
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 const { mountProjectConsole } = await import("../src/core/projectConsole.js");
-const { deleteCached, readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { deleteCached, readCached, readCanonicalCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { TerminalSocket } = await import("../src/terminal/session.js");
 const flush = async () => { for (let step = 0; step < 15; step++) await new Promise((done) => setTimeout(done, 0)); };
@@ -49,6 +58,7 @@ let panel;
 beforeEach(async () => {
   await wipeCache(); await wipeUiRecords();
   harness.registered.clear(); harness.starts.length = 0;
+  harness.reads = []; harness.blockRead = null;
   harness.status = null; harness.statusListeners.clear(); harness.subscriptions = 0;
   manager.detach.mockClear();
   manager.listTerminals.mockReset().mockResolvedValue([]);
@@ -93,14 +103,140 @@ describe("project console source picker", () => {
   });
 });
 
+describe("prompt project console actions", () => {
+  it("ignores continuous unrelated thread pushes on the same device", async () => {
+    harness.reads = [];
+    for (let index = 0; index < 20; index++) {
+      await writeCached({ deviceId: "dev-1", entityId: "thread-1", kind: "feed" }, { index });
+      await new Promise((done) => setTimeout(done, 0));
+    }
+    await flush();
+    expect(harness.reads).toEqual([]);
+  });
+
+  it("creates and closes immediately while unrelated thread pushes continue", async () => {
+    let pushing = true;
+    let pushes = 0;
+    const flood = (async () => {
+      while (pushing) {
+        await writeCached({ deviceId: "dev-1", entityId: "thread-1", kind: "feed" }, { sequence: ++pushes });
+        await new Promise((done) => setTimeout(done, 0));
+      }
+    })();
+    try {
+      document.querySelector(".console-new").click();
+      expect(manager.createTerminal).toHaveBeenCalledOnce();
+      await flush();
+      expect(panel.size()).toBe("half");
+      const createdTab = [...document.querySelectorAll(".console-tab")].find((tab) => tab.dataset.key.includes("new-term"));
+      expect(createdTab).toBeDefined();
+      createdTab.querySelector("[data-close]").click();
+      expect(manager.closeTerminal).toHaveBeenCalledWith("new-term", { project_id: "p1", source_id: "code", source_path: "/code" });
+      await flush();
+      expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
+      expect(pushes).toBeGreaterThan(1);
+    } finally { pushing = false; await flood; }
+  });
+
+  it("opens a newly created shell without waiting for an in-flight background cache read", async () => {
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    harness.blockRead = (address) => {
+      if (address.kind === "terminals") { harness.blockRead = null; return blocked; }
+    };
+    try {
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-terminal-support" }, { projectSources: true });
+      await flush();
+      document.querySelector(".console-new").click();
+      expect(manager.createTerminal).toHaveBeenCalledOnce();
+      await flush();
+      expect((await readCanonicalCached(rosterAddress)).value.tabs).toContainEqual({ term_id: "new-term" });
+      expect(panel.size()).toBe("half");
+      const createdTab = [...document.querySelectorAll(".console-tab")].find((tab) => tab.dataset.key.includes("new-term"));
+      expect(createdTab).toBeDefined();
+      createdTab.querySelector("[data-close]").click();
+      expect(manager.closeTerminal).toHaveBeenCalledWith("new-term", { project_id: "p1", source_id: "code", source_path: "/code" });
+      await flush();
+      expect([...document.querySelectorAll(".console-tab")].some((tab) => tab.dataset.key.includes("new-term"))).toBe(false);
+    } finally {
+      harness.blockRead = null; release(); await flush();
+    }
+  });
+
+  it("does not restore a closed tab when an older cached roster read finishes", async () => {
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    harness.blockRead = (address) => {
+      if (address.kind === "terminals") { harness.blockRead = null; return blocked; }
+    };
+    try {
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-terminal-support" }, { projectSources: true });
+      await flush();
+      document.querySelector("[data-close]").click(); await flush();
+      expect(document.querySelectorAll(".console-tab")).toHaveLength(0);
+    } finally {
+      harness.blockRead = null; release(); await flush();
+    }
+    expect(document.querySelectorAll(".console-tab")).toHaveLength(0);
+  });
+
+  it.each(["removal", "replacement"])("does not publish create completion after an unseen source %s", async (change) => {
+    let finish;
+    manager.createTerminal.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    document.querySelector(".console-new").click();
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    harness.blockRead = () => blocked;
+    try {
+      if (change === "replacement") await moveSource();
+      else await writeCached(projectsAddress, [{ project_id: "p1", sources: [] }]);
+      finish({ term_id: "late-term" }); await flush();
+      expect(panel.size()).toBe("collapsed");
+    } finally {
+      harness.blockRead = null; release(); await flush();
+    }
+    expect(panel.size()).toBe("collapsed");
+    expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
+    expect(document.querySelectorAll(".console-tab")).toHaveLength(0);
+  });
+});
+
 describe("late project console roster responses", () => {
-  it("retries a failed missing roster on a later cache update", async () => {
+  it("re-reads a replacement source invalidated during its first roster collection", async () => {
+    await writeCached(movedAddress, { tabs: [] });
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    let captured = false;
+    harness.blockRead = (address) => {
+      if (address.entityId === movedAddress.entityId && address.kind === "terminals") {
+        captured = true; harness.blockRead = null; return blocked;
+      }
+    };
+    try {
+      await moveSource(); await flush();
+      expect(captured).toBe(true);
+      expect(document.querySelector(".console-tab").dataset.key).toContain("/code");
+      harness.reads = [];
+      await writeCached({ deviceId: "dev-1", entityId: 'project:["other","code","/moved"]', kind: "terminals" }, { tabs: [] });
+      await writeCached({ deviceId: "dev-1", entityId: "thread-1", kind: "feed" }, { sequence: 1 });
+      await flush();
+      expect(harness.reads).toEqual([]);
+      await writeCached(movedAddress, { tabs: [{ term_id: "replacement-term", name: "Pushed" }] });
+      release(); await flush();
+      expect(document.querySelector(".console-tab-name")?.textContent).toBe("Code · Pushed");
+      expect(document.querySelector(".console-tab").dataset.key).toContain("/moved");
+    } finally {
+      harness.blockRead = null; release(); await flush();
+    }
+  });
+
+  it("retries a failed missing roster on a later relevant cache update", async () => {
     manager.listTerminals.mockRejectedValueOnce(new Error("socket lost"))
       .mockResolvedValueOnce([{ term_id: "retried-term" }]);
     await deleteCached([rosterAddress]); await flush();
     expect(manager.listTerminals).toHaveBeenCalledTimes(1);
     expect(await readCached(rosterAddress)).toBeUndefined();
-    await writeCached({ deviceId: "dev-1", entityId: "unrelated", kind: "tasks" }, []);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-terminal-support" }, { projectSources: true });
     await flush();
     expect(manager.listTerminals).toHaveBeenCalledTimes(2);
     expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "retried-term" }]);
@@ -125,6 +261,10 @@ describe("late project console roster responses", () => {
     finish({ term_id: "late-term" }); await flush();
     expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
     expect((await readCached(movedAddress)).value.tabs).toEqual([]);
+    expect(panel.size()).toBe("collapsed");
+    expect(document.querySelectorAll(".console-tab")).toHaveLength(0);
+    await flush();
+    expect(document.querySelectorAll(".console-tab")).toHaveLength(0);
   });
 
   it("does not update a disposed console when a shell creation completes", async () => {
@@ -135,6 +275,49 @@ describe("late project console roster responses", () => {
     finish({ term_id: "late-term" }); await flush();
     expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
     expect(document.getElementById("console-region").innerHTML).toBe("");
+  });
+
+  it("does not redraw an old-path tab after replacement during close and a late roster read", async () => {
+    let finish;
+    manager.closeTerminal.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    document.querySelector("[data-close]").click();
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    harness.blockRead = (address) => {
+      if (address.entityId === rosterAddress.entityId && address.kind === "terminals") {
+        harness.blockRead = null; return blocked;
+      }
+    };
+    let observer;
+    const staleTabs = [];
+    try {
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-terminal-support" }, { projectSources: true });
+      await flush();
+      await writeCached(movedAddress, { tabs: [{ term_id: "term-1", name: "Replacement" }] });
+      await moveSource();
+      finish(); await flush();
+      const tabs = () => [...document.querySelectorAll(".console-tab")];
+      expect(tabs()).toHaveLength(1);
+      expect(tabs()[0].dataset.key).toContain("/moved");
+      expect(document.querySelector(".console-tab-name").textContent).toBe("Code · Replacement");
+      observer = new MutationObserver((changes) => {
+        for (const change of changes) for (const node of change.addedNodes) {
+          if (node.nodeType !== Node.ELEMENT_NODE) continue;
+          for (const tab of [node, ...node.querySelectorAll(".console-tab")]) {
+            if (tab.matches(".console-tab") && tab.dataset.key.includes("/code")) staleTabs.push(tab.dataset.key);
+          }
+        }
+      });
+      observer.observe(document.getElementById("console-region"), { childList: true, subtree: true });
+      release(); await flush();
+      expect(staleTabs).toEqual([]);
+      expect(tabs()).toHaveLength(1);
+      expect(tabs()[0].dataset.key).toContain("/moved");
+      expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
+      expect((await readCached(movedAddress)).value.tabs).toEqual([{ term_id: "term-1", name: "Replacement" }]);
+    } finally {
+      observer?.disconnect(); harness.blockRead = null; release(); await flush();
+    }
   });
 
   it("does not remove a replacement source's same-ID shell when the old close settles", async () => {

@@ -9,7 +9,7 @@ import { directoryCacheId } from "./directoryScope.js";
 import { readCached, mergeCachedTogether, subscribeCache } from "./localCache.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { hasProjectTerminalSource } from "./projectTerminalCache.js";
-import { readProjectTerminalSupport } from "./projectTerminalSupport.js";
+import { PROJECT_TERMINAL_SUPPORT_KIND, readProjectTerminalSupport } from "./projectTerminalSupport.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { notifyError } from "./notify.js";
@@ -27,6 +27,9 @@ export function mountProjectConsole(host, context) {
   const projectsAddress = { deviceId: context.deviceId, entityId: "", kind: "projects" };
   const state = { disposed: false, sources: [], tabs: [], selected: null, sourceId: null, supported: false,
     size: "collapsed", reopen: "half", pane: null, paneKey: null, mountAbort: null, mounting: 0, listeners: new Set(), records: new Map() };
+  const collectingSources = new Map();
+  let collecting = 0;
+  let collected = 0;
   let reading = null;
   let again = false;
   let uiReady = false;
@@ -147,11 +150,21 @@ export function mountProjectConsole(host, context) {
   }
 
   async function collect() {
+    const generation = ++collecting;
     const project = ((await readCached(projectsAddress))?.value || []).find((row) => (row.project_id || row.id) === context.projectId);
     const sources = sourcesOf(project);
+    // Register before reading rosters: their invalidations must survive until
+    // these sources have become the applied view (including replacement paths).
+    collectingSources.set(generation, new Set(sources.map((source) => address(scopeOf(context.projectId, source)).entityId)));
+    try { await collectSources(sources, generation); }
+    finally { collectingSources.delete(generation); }
+  }
+
+  async function collectSources(sources, generation) {
     const support = await readProjectTerminalSupport(context.deviceId);
     const records = await Promise.all(sources.map(async (source) => ({ source, record: await readCached(address(scopeOf(context.projectId, source))) })));
-    if (!active()) return;
+    if (!active() || generation < collected) return;
+    collected = generation;
     state.sources = sources;
     state.supported = support.projectSources;
     state.records = new Map(records.map(({ source, record }) => [source.id, record]));
@@ -193,13 +206,25 @@ export function mountProjectConsole(host, context) {
     });
   }
   async function change(tab, mutate) {
-    await mutateRoster(tab.scope, (held) => ({ tabs: mutate(held?.tabs || []) }));
+    return mutateRoster(tab.scope, (held) => ({ tabs: mutate(held?.tabs || []) }));
   }
   const remove = (tab) => change(tab, (tabs) => tabs.filter((entry) => entry.term_id !== tab.termId));
   async function close(tab) {
     if (!tab) return;
-    try { await manager.closeTerminal(tab.termId, tab.scope); await remove(tab); }
+    try { await manager.closeTerminal(tab.termId, tab.scope); await remove(tab); await collect(); }
     catch (error) { notifyError("Could not close the terminal", error.message || "error"); }
+  }
+  async function completeCreate(scope, created) {
+    state.selected = tabKey(scope, created.term_id);
+    const committed = await change({ scope }, (tabs) => tabs.some((tab) => tab.term_id === created.term_id) ? tabs : [...tabs, created]);
+    if (!committed || !active()) return;
+    // Read the committed cache independently of a stalled background pass.
+    // Its generation prevents that older pass from repainting stale tabs.
+    await collect();
+    if (!active() || !state.tabs.some((tab) => tab.id === tabKey(scope, created.term_id))) return;
+    state.selected = tabKey(scope, created.term_id);
+    await remember();
+    await setSize(state.reopen);
   }
   async function create() {
     const source = currentSource();
@@ -208,19 +233,23 @@ export function mountProjectConsole(host, context) {
     try {
       const created = await manager.createTerminal(scope, 80, 24);
       if (state.disposed || !state.sources.some((item) => item.id === source.id && item.path === source.path) || !created?.term_id) return;
-      state.selected = tabKey(scope, created.term_id);
-      await change({ scope }, (tabs) => tabs.some((tab) => tab.term_id === created.term_id) ? tabs : [...tabs, created]);
-      await read();
-      state.selected = tabKey(scope, created.term_id);
-      await remember();
-      await setSize(state.reopen);
+      await completeCreate(scope, created);
     } catch (error) { notifyError("Could not open a terminal", error.message || "error"); }
   }
   function onKey(event) {
     if (event.key !== "`" || event.metaKey || event.ctrlKey || event.altKey || !consoleTakesKey(event.target)) return;
     event.preventDefault(); void toggle();
   }
-  const unwatch = subscribeCache({ deviceId: context.deviceId }, () => void read());
+  function affectsConsole(changed) {
+    if (changed.entityId === undefined) return true; // device/account eviction
+    if (changed.entityId === "") return changed.kind === undefined || ["projects", PROJECT_TERMINAL_SUPPORT_KIND].includes(changed.kind);
+    if (changed.kind !== undefined && changed.kind !== "terminals") return false;
+    return state.sources.some((source) => changed.entityId === address(scopeOf(context.projectId, source)).entityId)
+      || [...collectingSources.values()].some((entities) => entities.has(changed.entityId));
+  }
+  const unwatch = subscribeCache({ deviceId: context.deviceId }, (changed) => {
+    if (affectsConsole(changed)) void read();
+  });
   document.addEventListener("keydown", onKey);
   ui = watchUiState(uiAddress({ deviceId: context.deviceId, entityId: key, view: "console", kind: "fold" }), (saved) => {
     state.size = consoleSize(saved?.size); state.reopen = saved?.reopenSize === "full" ? "full" : "half";

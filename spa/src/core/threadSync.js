@@ -151,6 +151,8 @@ async function recentRepairPage(request, held, floor) {
     limit: REPAIRED_THREAD_ITEMS,
   });
   if (!response || !requestIsActive(request)) return null;
+  if (!repairGenerationMatches(request, held, response.page)) return null;
+  await publishRepairFloor(request, held, response.page);
   return repairedHeldCopies(request, held, response.page, response.lean);
 }
 

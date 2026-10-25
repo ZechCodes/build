@@ -1977,6 +1977,7 @@ async function deferThreadCatchup(context, entityId, tip, sub, held) {
   const settled = queuesFor(context).catchups.enqueue(JSON.stringify([entityId, sub]), {
     context: reading, active: reading.active, address, entityId, generation: threadGenerationKey(held),
     ...catchupGoal(tip, held),
+    historyStartSequence: Math.max(Number(held?.historyStartSequence || 0), authoritativeTipFloor(tip, held)),
     agent: { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: held?.thread_id || tip.thread_id },
   });
   if (context.pushing) context.pushCompletions?.push(settled);

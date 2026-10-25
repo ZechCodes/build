@@ -76,3 +76,33 @@ it("ignores an old generation's exact floor after a concurrent reset", async () 
   expect(held.historyStartSequence).toBe(1);
   expect(held.items).toEqual([message(1)]);
 });
+
+it("publishes a capped repair page's floor even when a retained exact copy fails", async () => {
+  await cache.writeCached(address, windowAt(message(1), message(200)));
+  const call = vi.fn(async (_method, params) => {
+    if (params.newest) return { thread_id: "thread", items: [], thread_last_sequence: 203 };
+    if (params.limit === 50) return { thread_id: "thread", items: [message(150)], history_start_sequence: 150,
+      has_more: true, thread_last_sequence: 203 };
+    expect(params.after_sequence).toBe(199);
+    throw new Error("retained copy temporarily unavailable");
+  });
+  await sync.syncThreadWindow({ ...address, conversationId: address.sub, call });
+  const held = (await cache.readCached(address)).value;
+  expect(held.historyStartSequence).toBe(150);
+  expect(held.items).toEqual([message(200)]);
+  expect(held.repairThrough).toBe(203);
+  expect(held.deliveredSequence).toBe(203);
+});
+
+it("rejects a foreign generation's repair-page floor before publishing or reading exact copies", async () => {
+  await cache.writeCached(address, windowAt(message(1), message(200)));
+  const call = vi.fn(async (_method, params) => params.newest
+    ? { thread_id: "thread", items: [], thread_last_sequence: 203 }
+    : { thread_id: "foreign-thread", items: [], history_start_sequence: 500, has_more: true, thread_last_sequence: 600 });
+  await sync.syncThreadWindow({ ...address, conversationId: address.sub, call });
+  const held = (await cache.readCached(address)).value;
+  expect(held.historyStartSequence).toBeUndefined();
+  expect(held.items).toEqual([message(1), message(200)]);
+  expect(held.repairThrough).toBe(203);
+  expect(call).toHaveBeenCalledTimes(2);
+});

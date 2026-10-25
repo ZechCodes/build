@@ -109,7 +109,7 @@ fn acquire(
     Ok(guards)
 }
 
-pub(super) struct MergeLease {
+pub(crate) struct MergeLease {
     directory: std::fs::File,
 }
 
@@ -128,14 +128,21 @@ impl Drop for MergeLease {
 
 /// The immutable intent supplies recovery identity; a concurrent retry never
 /// replays a live worker. Explicit guard release also settles inherited FDs.
-pub(super) fn lease(review: &Review) -> Result<MergeLease, String> {
+pub(crate) fn lease(review: &Review) -> Result<MergeLease, String> {
+    lease_with_recovery_wait(review, receivers::locks::RecoveryWait::Wait)
+}
+
+pub(crate) fn lease_with_recovery_wait(
+    review: &Review,
+    recovery_wait: receivers::locks::RecoveryWait,
+) -> Result<MergeLease, String> {
     use sha2::{Digest, Sha256};
     let binding = review
         .bindings
         .iter()
         .min_by_key(|binding| &binding.receiving_repository)
         .ok_or("PR merge requires a registered receiver")?;
-    receivers::validate_registered_receiver(binding)?;
+    receivers::validate_registered_receiver_with_recovery_wait(binding, recovery_wait)?;
     let root = binding.receiving_repository.join("build-review-merges");
     ensure_directory(&root)?;
     let path = root.join(format!("{:x}", Sha256::digest(review.task_id.as_bytes())));

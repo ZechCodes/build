@@ -1950,6 +1950,19 @@ live reclaim/placement
 checks, manifest installation and idempotent reviewer dispatch. Reviewer
 delivery runs after publication, with a durable status and explicit retry.
 
+New receivers share immutable source object files through hardlinks when the
+filesystem supports them (#839). They have their own directory entries, so
+source ref deletion, garbage collection and source removal cannot invalidate
+published reviews. Index files have independent inodes; linked packs have
+receiver-local `.keep` markers to avoid repacking another physical copy.
+Receivers never use object alternates: native
+Git pushes cannot atomically install protecting refs in the source repository.
+Optional seeding runs on a dedicated niced thread with a five-second budget and
+verifies the imported graph before publication. Unsupported links, incomplete
+graphs and budget exhaustion fall back to importing the selected commits and
+their reachable history. Garbage collection at creation would not remove that
+reachable history.
+
 The daemon registers `reviews/sync.rs` independently of client subscriptions.
 Its blocking worker discovers active PRs in pages, watches canonical worktree
 Git directories, shared common directories and bare receivers, and reconciles
@@ -2018,6 +2031,49 @@ review. Explicit reconciliation of a terminal PR updates bounded observations
 of later received work or unavailable receivers without changing its status,
 version or snapshots; ordinary worker discovery still visits active reviews
 and pending captures rather than polling retained terminal history.
+
+Receiver maintenance (#839) runs independently on a niced background thread,
+without the app mutex or an RPC caller. It releases merged reviews and Closed
+reviews whose original managed workspace is no longer retained, including their
+snapshot pins and opening journals; an unused owned receiver is removed. Closed,
+unmerged reviews retain their receiving setup while the original workspace stays
+ready, so reopen still requires that workspace. Metadata and comments survive
+receiver reclamation; historical Git content can become unavailable. Startup
+also collects retained receivers, with failures retried by later turns and
+successful collections throttled to once an hour. Build-owned pack keep markers
+are released when the source no longer shares their inode.
+Running or unsettled merge publication retains its receiver until saved retry
+work settles, even when local integration already marked the PR Merged.
+Active receivers use Git's normal pruning grace period: `--prune=now` could race
+native pushes before ref publication. Maintenance reports reclaimed bytes and
+preserves receivers whose ownership or in-flight operation cannot be established.
+Its Git-lock recovery uses a maintenance-only try-lock policy and retries contention;
+foreground opening and recovery retain their existing wait semantics. Recovery,
+opening and PR fence lock guards explicitly unlock on scope exit, including
+errors: CLOEXEC alone cannot release a flock inherited by a child before exec.
+The recovery guard Drop, previously reverted for #845 scope, is required by
+this production concurrency fix; no lock wait deadline changes. Contended
+maintenance lock destruction records exact released ownership for a later reaper,
+so a live daemon PID does not strand its completed reservations.
+Unused receivers first close native Git admission with owned
+`reference-transaction` (prepared-state) and `pre-receive` hooks in the gitdir's
+own `hooks/` directory, with `core.hooksPath` unset so discovery follows a
+quarantine rename. Foreign hook overrides are preserved. The marker and active
+hook configuration are rechecked inside quarantine before the final inventory.
+Migrating legacy absolute hooks restarts the full one-hour drain; inherited-hook
+refusals preserve the original config bytes. A durable close
+marker starts a one-hour admission drain; later turns require both that drain
+and an empty gitdir/ref lock tree before quarantine. Git's normal pruning grace
+remains independent and applies to GC of retained receivers. A new bridge
+opening removes that marker. Complete ref and object inventories are checked
+after quarantine; late or foreign state and unapproved interrupted quarantines
+are preserved. Only the private quarantined path is deleted. A reappeared
+canonical path is reported and retained. Deletion journals use a separate stable
+lease inode so atomic journal replacement cannot admit another cleaner.
+Accepted residual risk (#839): a Git process started before the close marker
+can retain a cached absolute gitdir, outlive the grace period and lock drain,
+and write afterwards. Receivers are bridge-internal; deletion is limited to
+terminal reviews with no retained reopenable workspace or unsettled work.
 
 `reviews/merge.rs` owns durable PR merge intents, independent of a browser.
 Admission reconciles receiving refs, checks the selected latest snapshot and
@@ -2155,9 +2211,9 @@ separate. Ordinary moves to Done complete an open review through the same writer
 with “Marked done”; for PR mode this records Closed. Snapshot-mode captures
 change only review metadata. Agent Complete reports and merged
 workspace Finish skip their old task-movement/closure hooks for review tasks.
-Closing/completing and removing workspaces or projects retain review history
-and refs; replacing its workspace or explicitly deleting task history releases
-the previous pins. MCP exposes
+Closing/completing and removing workspaces or projects retain review metadata.
+Snapshot-mode refs remain until workspace replacement or explicit task history
+deletion; PR receiver refs follow the maintenance retention rules above. MCP exposes
 `snapshot_review`, `get_review`, `read_review`, `act_review`, `complete_review` to coding and
 project agents, authenticated and restricted to their own project.
 

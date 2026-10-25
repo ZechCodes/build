@@ -10,9 +10,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub(crate) mod admission;
 mod initialization;
 pub(crate) mod locks;
 pub(crate) mod refs;
+pub(crate) mod storage;
 
 const OWNERSHIP_FILE: &str = ".build-review-receiver.json";
 
@@ -61,7 +63,8 @@ pub fn plan_receiver(
 }
 
 pub fn ensure_receiver(receiver: &ReviewReceiver) -> Result<(), String> {
-    initialization::ensure_with(receiver, initialization::initialize_receiver)
+    initialization::ensure_with(receiver, initialization::initialize_receiver)?;
+    admission::reopen(&receiver.path)
 }
 
 pub fn validate_binding_receiver(binding: &ReviewBranchBinding) -> Result<(), String> {
@@ -80,15 +83,25 @@ pub fn validate_binding_receiver(binding: &ReviewBranchBinding) -> Result<(), St
 
 /// Validate the registered receiver even after a source checkout is removed.
 pub fn validate_registered_receiver(binding: &ReviewBranchBinding) -> Result<(), String> {
+    validate_registered_receiver_with_recovery_wait(binding, locks::RecoveryWait::Wait)
+}
+
+pub(crate) fn validate_registered_receiver_with_recovery_wait(
+    binding: &ReviewBranchBinding,
+    wait: locks::RecoveryWait,
+) -> Result<(), String> {
     let saved = read_ownership(&binding.receiving_repository.join(OWNERSHIP_FILE))?;
     if saved.repository_id != binding.repository_id {
         return Err("review receiver repository identity changed".into());
     }
-    validate_receiver(&ReviewReceiver {
-        repository_id: saved.repository_id,
-        path: binding.receiving_repository.clone(),
-        source_common_git_dir: saved.source_common_git_dir,
-    })
+    validate_receiver_with_recovery_wait(
+        &ReviewReceiver {
+            repository_id: saved.repository_id,
+            path: binding.receiving_repository.clone(),
+            source_common_git_dir: saved.source_common_git_dir,
+        },
+        wait,
+    )
 }
 
 fn identity(common_git_dir: &Path) -> String {
@@ -100,12 +113,22 @@ fn identity(common_git_dir: &Path) -> String {
 
 /// Historical snapshots may outlive both the source and its workspace.
 pub fn validate_recorded_receiver(path: &Path) -> Result<(), String> {
+    validate_recorded_receiver_with_recovery_wait(path, locks::RecoveryWait::Wait)
+}
+
+pub(crate) fn validate_recorded_receiver_with_recovery_wait(
+    path: &Path,
+    wait: locks::RecoveryWait,
+) -> Result<(), String> {
     let saved = read_ownership(&path.join(OWNERSHIP_FILE))?;
-    validate_receiver(&ReviewReceiver {
-        repository_id: saved.repository_id,
-        path: path.into(),
-        source_common_git_dir: saved.source_common_git_dir,
-    })
+    validate_receiver_with_recovery_wait(
+        &ReviewReceiver {
+            repository_id: saved.repository_id,
+            path: path.into(),
+            source_common_git_dir: saved.source_common_git_dir,
+        },
+        wait,
+    )
 }
 
 fn canonical_future_path(path: &Path) -> Result<PathBuf, String> {
@@ -149,11 +172,25 @@ fn ownership(receiver: &ReviewReceiver) -> ReceiverOwnership {
 }
 
 fn validate_receiver(receiver: &ReviewReceiver) -> Result<(), String> {
+    validate_receiver_with_recovery_wait(receiver, locks::RecoveryWait::Wait)
+}
+
+fn validate_receiver_with_recovery_wait(
+    receiver: &ReviewReceiver,
+    wait: locks::RecoveryWait,
+) -> Result<(), String> {
     validate_placement(receiver)?;
-    validate_receiver_contents(receiver)
+    validate_receiver_contents_with_recovery_wait(receiver, wait)
 }
 
 fn validate_receiver_contents(receiver: &ReviewReceiver) -> Result<(), String> {
+    validate_receiver_contents_with_recovery_wait(receiver, locks::RecoveryWait::Wait)
+}
+
+fn validate_receiver_contents_with_recovery_wait(
+    receiver: &ReviewReceiver,
+    wait: locks::RecoveryWait,
+) -> Result<(), String> {
     let saved = read_ownership(&receiver.path.join(OWNERSHIP_FILE))?;
     if saved != ownership(receiver) {
         return Err("review receiver ownership marker changed".into());
@@ -170,7 +207,7 @@ fn validate_receiver_contents(receiver: &ReviewReceiver) -> Result<(), String> {
             return Err("review receiver must not use object alternates".into());
         }
     }
-    locks::recover_git_locks(&receiver.path)
+    locks::recover_git_locks_with_wait(&receiver.path, wait)
 }
 
 fn read_ownership(path: &Path) -> Result<ReceiverOwnership, String> {
@@ -228,6 +265,14 @@ pub(crate) fn with_local_config_locked(
     path: &Path,
     mutate: impl FnOnce(&git2::Config, &mut git2::Config) -> Result<(), String>,
 ) -> Result<(), String> {
+    with_local_config_locked_with_recovery_wait(path, locks::RecoveryWait::Wait, mutate)
+}
+
+pub(crate) fn with_local_config_locked_with_recovery_wait(
+    path: &Path,
+    recovery_wait: locks::RecoveryWait,
+    mutate: impl FnOnce(&git2::Config, &mut git2::Config) -> Result<(), String>,
+) -> Result<(), String> {
     let repository = git2::Repository::open(path).map_err(|error| error.to_string())?;
     let parent = repository
         .commondir()
@@ -238,7 +283,8 @@ pub(crate) fn with_local_config_locked(
     if !metadata.file_type().is_file() {
         return Err("local review repository config is not a regular file".into());
     }
-    let (guard, mut lock) = locks::acquire_git_lock(&parent, Path::new("config.lock"))?;
+    let (guard, mut lock) =
+        locks::acquire_git_lock_with_wait(&parent, Path::new("config.lock"), recovery_wait)?;
     lock.set_permissions(metadata.permissions())
         .map_err(|error| error.to_string())?;
     let temporary =
@@ -286,3 +332,7 @@ mod tests;
 #[cfg(test)]
 #[path = "receivers/initialization_tests.rs"]
 mod initialization_tests;
+
+#[cfg(test)]
+#[path = "receivers/storage_tests.rs"]
+mod storage_tests;

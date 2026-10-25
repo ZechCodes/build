@@ -1,6 +1,6 @@
 //! Literal review refs with registered, recoverable Git file locks.
 
-use super::locks::{acquire_git_lock, OwnedGitFileLock};
+use super::locks::{acquire_git_lock, acquire_git_lock_with_wait, OwnedGitFileLock, RecoveryWait};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -223,6 +223,23 @@ pub(crate) fn remove_expected_reference_checked(
     remove_expected_reference_finalized(repository, reference, expected, checkpoint, || Ok(()))
 }
 
+pub(crate) fn remove_expected_reference_checked_with_recovery_wait(
+    repository: &git2::Repository,
+    reference: &str,
+    expected: git2::Oid,
+    recovery_wait: RecoveryWait,
+    checkpoint: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    remove_expected_reference_finalized_with_recovery_wait(
+        repository,
+        reference,
+        expected,
+        checkpoint,
+        || Ok(()),
+        recovery_wait,
+    )
+}
+
 /// Retain both Git locks through durable sidecar finalization after deletion.
 pub(crate) fn remove_expected_reference_finalized(
     repository: &git2::Repository,
@@ -231,11 +248,33 @@ pub(crate) fn remove_expected_reference_finalized(
     checkpoint: impl FnOnce() -> Result<(), String>,
     finalize: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
+    remove_expected_reference_finalized_with_recovery_wait(
+        repository,
+        reference,
+        expected,
+        checkpoint,
+        finalize,
+        RecoveryWait::Wait,
+    )
+}
+
+fn remove_expected_reference_finalized_with_recovery_wait(
+    repository: &git2::Repository,
+    reference: &str,
+    expected: git2::Oid,
+    checkpoint: impl FnOnce() -> Result<(), String>,
+    finalize: impl FnOnce() -> Result<(), String>,
+    recovery_wait: RecoveryWait,
+) -> Result<(), String> {
     validate_reference(reference)?;
     let directory = repository.commondir();
     let (packed_guard, mut packed_file) =
-        acquire_git_lock(directory, Path::new("packed-refs.lock"))?;
-    let (ref_guard, _) = acquire_git_lock(directory, Path::new(&format!("{reference}.lock")))?;
+        acquire_git_lock_with_wait(directory, Path::new("packed-refs.lock"), recovery_wait)?;
+    let (ref_guard, _) = acquire_git_lock_with_wait(
+        directory,
+        Path::new(&format!("{reference}.lock")),
+        recovery_wait,
+    )?;
     checkpoint()?;
     ref_guard.verify_owned()?;
     packed_guard.verify_owned()?;

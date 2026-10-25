@@ -1,6 +1,6 @@
 //! Durable PR integration and publication, independent of browser lifetime.
 mod execution;
-mod fence;
+pub(crate) mod fence;
 mod plan;
 pub(crate) mod progress;
 mod recovery;
@@ -61,6 +61,9 @@ fn merge_prepared_observed(
     notify: &impl Fn(),
     checkpoint: &impl Fn(MergeCheckpoint) -> Result<(), String>,
 ) -> Result<Review, String> {
+    if let Some(review) = completed_retry(store, job)? {
+        return Ok(review);
+    }
     let review = load(store, &job.request.task_id)?;
     let _lease = fence::lease(&review)?;
     let existing = store
@@ -95,6 +98,21 @@ fn merge_prepared_observed(
         notify();
     }
     result
+}
+
+/// A saved success remains idempotent after terminal receiver reclamation.
+/// Incomplete operations still reload their intent under the native lease.
+fn completed_retry(store: &Store, job: &MergeJob) -> Result<Option<Review>, String> {
+    let existing = store
+        .load_review_merge_intent(&job.project_path, &job.request_id)
+        .map_err(|error| error.to_string())?;
+    let Some(intent) = existing.filter(|intent| intent.state == ReviewMergeState::Succeeded) else {
+        return Ok(None);
+    };
+    if intent.request != job.request {
+        return Err("conflict: request_id names a different PR merge".into());
+    }
+    load(store, &job.request.task_id).map(Some)
 }
 
 fn admit(store: &Store, job: &MergeJob, review: &Review) -> Result<ReviewMergeIntent, String> {

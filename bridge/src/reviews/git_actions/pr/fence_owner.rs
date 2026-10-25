@@ -1,5 +1,6 @@
 //! Durable ownership of per-command PR hook directories.
 use crate::git_process::GitProcessEvent;
+use crate::reviews::receivers::locks::FileLock;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::os::unix::fs::DirBuilderExt;
@@ -52,7 +53,7 @@ impl Launch {
 
 pub(super) struct OwnedFence {
     path: PathBuf,
-    directory: File,
+    directory: FileLock,
     registry: File,
     marker: File,
     record: Mutex<Record>,
@@ -77,6 +78,7 @@ impl OwnedFence {
             .map_err(|error| error.to_string())?;
         let directory = files::directory(&files::at(&registry, &name))?;
         directory.try_lock().map_err(|error| error.to_string())?;
+        let directory = FileLock::from_locked(directory);
         let marker = files::regular(&files::at(&directory, MARKER), true)?;
         fs::hard_link(
             files::at(&directory, MARKER),
@@ -226,7 +228,7 @@ fn registry(common: &File, create: bool) -> Result<Option<File>, String> {
     }
 }
 
-fn registry_lease(registry: &File) -> Result<File, String> {
+fn registry_lease(registry: &File) -> Result<FileLock, String> {
     let lease = File::open(files::at(registry, "")).map_err(|error| error.to_string())?;
     loop {
         match lease.lock() {
@@ -235,7 +237,7 @@ fn registry_lease(registry: &File) -> Result<File, String> {
             Err(error) => return Err(error.to_string()),
         }
     }
-    Ok(lease)
+    Ok(FileLock::from_locked(lease))
 }
 
 fn marker_pin(token: &str) -> String {
@@ -284,6 +286,7 @@ fn recover_one(
 ) -> Result<(), String> {
     let directory = files::directory(&files::at(registry, name))?;
     directory.try_lock().map_err(|error| error.to_string())?;
+    let directory = FileLock::from_locked(directory);
     let marker = files::regular(&files::at(&directory, MARKER), false)?;
     let record = latest_record(&marker)?;
     if record.kind != "build-pr-hook-fence-v1"

@@ -740,3 +740,22 @@ fn cancel_preserves_all_setup_and_claim_when_original_branch_has_another_holder(
         Some("refs/heads/build/work")
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn opening_drop_unlocks_while_a_forked_child_retains_the_fd() {
+    use crate::git_fixture::inherited_fd::{assert_cloexec, InheritedFdChild};
+    let (home, source) = init_repo();
+    let request = request(home.path(), &source);
+    let held = journal::lock(&request).unwrap();
+    assert_cloexec(&held);
+    let _child = InheritedFdChild::hold();
+    drop(held);
+    let file = std::fs::File::open(request.receiver_root.join("operations/opening.lock")).unwrap();
+    let replacement = file.try_lock();
+    assert!(
+        replacement.is_ok(),
+        "completed opening lease survived in a forked child"
+    );
+    file.unlock().unwrap();
+}

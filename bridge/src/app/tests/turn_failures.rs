@@ -534,3 +534,93 @@ fn delivered_receipt_retains_consumed_failure_identity_without_payload() {
         )
         .is_none());
 }
+
+#[test]
+fn a_failure_waiting_for_the_lock_preserves_a_turn_seen_during_the_wait() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_home, mut app, project) = tracked(temp.path());
+    project_agent(&mut app, &project);
+    let ws = workspace(&mut app, &project, "receipt admission race");
+    let (_, owner, agent) = assign_failure_task(&mut app, &project, &ws);
+    let first = app.task_failure_operation(&agent).unwrap().to_string();
+    let second_task = filed(&mut app, &project, "Newer turn");
+    let assigned = app.handle(req(
+        "tasks.assign",
+        json!({
+            "task_id": second_task["id"], "assignee": {"kind": "agent", "agent_id": agent},
+        }),
+    ));
+    assert_eq!(assigned["ok"], true, "{assigned}");
+    let second = assigned["result"]["dispatch"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    app.delivery_queue.clear_queued();
+    let started = "2026-10-25T05:00:00Z";
+    app.record_agent_working_since(&owner, &agent, None);
+    app.record_agent_working_since(&owner, &agent, Some(started.into()));
+    let lifecycle = app.runs[&owner].run.state;
+    let root = app.runs[&owner].worktree.path.clone();
+    let (receipts, watched) = tokio::sync::watch::channel(crate::harness::TurnReceiptSnapshot {
+        seen_operation_ids: vec![first.clone()],
+        uncertain_operation_ids: Vec::new(),
+    });
+    let key = insert_agent_tab(
+        &mut app,
+        &root,
+        &owner,
+        &agent,
+        DictatedSession::reporting(AgentStatus::Working).watching_receipts(watched),
+    );
+    let tab = app.session_registry.test_tab(&key).unwrap();
+    let session = Arc::clone(&tab.session);
+    let instance = tab.session_instance.clone().unwrap();
+    let clock = Arc::clone(&app.frame_clock);
+    let state = app.shared();
+    let pump = crate::app::runtime::pumps::activity_probe::ActivityProbe::new(
+        &state, key, &session, instance,
+    );
+    let (waiting, wait) = std::sync::mpsc::channel();
+    clock.observe_requests(Arc::new(move |_, phase, _| {
+        if phase == "app_wait_start" {
+            waiting.send(()).unwrap();
+        }
+    }));
+    let mut timer = clock.frame("agent.activity");
+    let frame = serde_json::from_value(json!({
+        "session_id":"test", "message_id":"failure", "frame_type":"data",
+        "sender":"client", "created_at":"", "payload":{}
+    }))
+    .unwrap();
+    timer.bind_request(&frame);
+    let guard = state.lock().unwrap();
+    let failure = std::thread::spawn(move || {
+        pump.report_with_timer(
+            &crate::harness::ActivityReport::own_work(crate::harness::AgentActivity::TurnFailed {
+                summary: "old turn A failed".into(),
+                operation_id: Some(first),
+                episode_id: None,
+            }),
+            timer,
+        )
+    });
+    wait.recv_timeout(Duration::from_secs(30))
+        .expect("A reached app-lock admission");
+    // The harness consumes B while A is blocked. No receipt pump is admitted:
+    // A must reconcile the latest bounded receipt itself after acquiring the lock.
+    receipts.send_modify(|snapshot| snapshot.seen_operation_ids.push(second.clone()));
+    drop(guard);
+    assert!(failure.join().unwrap());
+    let app = state.lock().unwrap();
+    assert_eq!(
+        app.runs[&owner]
+            .agents
+            .by_id(&agent)
+            .unwrap()
+            .working_since
+            .as_deref(),
+        Some(started)
+    );
+    assert_eq!(app.runs[&owner].run.state, lifecycle);
+    assert_eq!(app.task_failure_operation(&agent), Some(second.as_str()));
+}

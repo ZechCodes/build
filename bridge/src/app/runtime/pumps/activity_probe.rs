@@ -26,6 +26,14 @@ impl ActivityProbe {
         self.0.observe_report(report).await
     }
 
+    pub(in crate::app) fn report_with_timer(
+        &self,
+        report: &crate::harness::ActivityReport,
+        timer: crate::timing::FrameTimer,
+    ) -> bool {
+        self.0.consume_report(report, timer)
+    }
+
     pub(in crate::app) fn report(&self, report: &crate::harness::ActivityReport) -> bool {
         let timer = self.0.frame_clock.frame("agent.activity");
         self.0.consume_report(report, timer)

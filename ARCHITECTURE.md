@@ -3832,7 +3832,11 @@ gate attachment display.
   overtake a read, so a read never writes over a record a push wrote after the
   read was asked, nor under an entity a push took off the board since
   (`spa/src/core/pushFence.js`). A board read leaves a row a push wrote since
-  unobserved in the `feed`, so the row's own record paints. Stopping sync
+  unobserved in the `feed`, so the row's own record paints. Board admission
+  reads its canonical row and thread guards inside the same feed write
+  transaction that checks reset generations and stamps row observations. It
+  does not capture each guard in a separate transaction or retry the whole
+  board when a concurrent thread tip changes one record. Stopping sync
   permanently invalidates that lifetime's passes and push appliers, even on
   the same session. The first recovery pass refreshes file bodies still cached
   under live workspaces (at most `RECENT_FILES`, five per workspace), after
@@ -3904,7 +3908,10 @@ gate attachment display.
   The body lane writes conversations before state and session summaries, and
   also writes terminal rosters without waiting for enrichment RPCs. The shown
   conversation's entity has priority, with an ordinary turn after four promoted
-  jobs. Within an entity, its mounted conversation's carried tips land first. Roster/review reads run behind bodies with one pending refresh per key;
+  jobs. Within an entity, its mounted conversation's carried tips land first. A carried
+  thread page publishes its items and retention floor in one transaction. An
+  empty or gapped tip publishes an advancing floor before its deferred repair,
+  so a held RPC cannot keep deleted history visible. Roster/review reads run behind bodies with one pending refresh per key;
   a key never has two enrichment appliers running together.
   `threadCatchups.js` separately coordinates pushed catch-up/repair reads:
   one active round and one coalesced trailing high-water per conversation and

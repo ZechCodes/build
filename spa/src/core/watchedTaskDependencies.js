@@ -29,12 +29,15 @@ export function createWatchedTaskDependencies(deviceId) {
   const reader = createFeedCacheReader(deviceId);
   let disposed = false;
   let invalidation = 0;
+  let ruleInvalidation = 0;
+  let ruleVersion = 0;
   let askedOnly = false;
   let workspaceSignature = "[]";
   let workspaceVersion = 0;
   let workspaces = [];
 
   function publish(listener) {
+    if (!listener.ruleReady || !listener.agentsReady) return;
     const { runningAgentIds, projectAgentId } = listener.running;
     const signature = JSON.stringify([askedOnly, [...runningAgentIds].sort(), projectAgentId, workspaceVersion]);
     if (listener.signature === signature) return;
@@ -52,6 +55,7 @@ export function createWatchedTaskDependencies(deviceId) {
   }
 
   async function readAgents() {
+    if (disposed) return;
     const session = sessionOf(deviceId);
     const before = invalidation;
     const { view, namesMakers } = await reader.refresh();
@@ -60,17 +64,23 @@ export function createWatchedTaskDependencies(deviceId) {
     const rows = projectRosterRows(view);
     for (const listener of listeners) {
       listener.running = runningFor(listener.project, view, rows, namesMakers);
+      listener.agentsReady = true;
       publish(listener);
     }
   }
 
   async function readRule() {
+    if (disposed) return;
     const session = sessionOf(deviceId);
-    const before = invalidation;
+    const before = ruleInvalidation;
+    const version = ruleVersion;
     const next = await readNeedsYouRule(deviceId);
-    if (disposed || before !== invalidation || session !== sessionOf(deviceId) || next === askedOnly) return;
+    if (disposed || before !== ruleInvalidation || session !== sessionOf(deviceId)) return;
     askedOnly = next;
-    listeners.forEach(publish);
+    for (const listener of listeners) {
+      if (version >= listener.ruleVersion) listener.ruleReady = true;
+      publish(listener);
+    }
   }
 
   const options = { generationOf: () => sessionOf(deviceId) };
@@ -80,11 +90,15 @@ export function createWatchedTaskDependencies(deviceId) {
     if (!address.kind) invalidation += 1;
     if (!address.kind || AGENT_KINDS.has(address.kind)) void refreshAgents();
   });
-  const unsubscribeRule = subscribeCache(needsYouRuleAddress(deviceId), () => void refreshRule());
+  const unsubscribeRule = subscribeCache(needsYouRuleAddress(deviceId), (address) => {
+    ruleVersion += 1;
+    if (!address.kind) ruleInvalidation += 1;
+    void refreshRule();
+  });
 
   return {
     subscribe(project, onChange) {
-      const listener = { project, onChange, signature: null, running: { runningAgentIds: new Set(), projectAgentId: null } };
+      const listener = { project, onChange, signature: null, agentsReady: false, ruleReady: false, ruleVersion, running: { runningAgentIds: new Set(), projectAgentId: null } };
       listeners.add(listener);
       void refreshAgents();
       void refreshRule();

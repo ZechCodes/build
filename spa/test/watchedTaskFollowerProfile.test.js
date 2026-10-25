@@ -120,7 +120,7 @@ it("publishes finite agent passes under continued hints and lets actions commit 
   resetCounters();
   const readMany = cache.readCachedMany;
   const releases = [];
-  vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+  const heldReads = vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
     const result = await readMany(addresses);
     await new Promise((resolve) => releases.push(resolve));
     return result;
@@ -142,6 +142,8 @@ it("publishes finite agent passes under continued hints and lets actions commit 
   } finally {
     follower.dispose();
     releases.forEach((release) => release());
+    await idle();
+    expect(heldReads).toHaveBeenCalledTimes(2);
   }
 });
 
@@ -215,4 +217,133 @@ it("keeps the replacement session current when an older task read finishes late"
   release();
   await idle();
   expect(follower.entries().find((entry) => entry.projectId === projects[0].id).title).toBe("Replacement session title");
+});
+
+it.each([true, false])("waits for actual cold policy %s before publishing task attention", async (askedOnly) => {
+  follower.dispose();
+  await cache.writeCached(address("", "needs-you-rule"), { askedOnly });
+  const record = await tracker.readTasksRecord(deviceId, projects[0].id);
+  await tracker.writeTasksRecord(deviceId, projects[0].id, { ...record, tasks: record.tasks.map((task) => ({ ...task, status: "in_review" })) });
+  const rule = await import("../src/core/needsYouRule.js");
+  const readRule = rule.readNeedsYouRule;
+  let release;
+  vi.spyOn(rule, "readNeedsYouRule").mockImplementationOnce(async (...args) => {
+    const value = await readRule(...args);
+    await new Promise((resolve) => { release = resolve; });
+    return value;
+  });
+  const snapshots = [];
+  onChange = vi.fn(() => snapshots.push(follower.entries().map(({ quiet, reason }) => ({ quiet, reason }))));
+  const { followWatchedTasks } = await import("../src/core/watchedTaskFollower.js");
+  follower = followWatchedTasks({ onChange });
+  follower.follow(projects.slice(0, 1));
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  await idle();
+  try {
+    expect(onChange).not.toHaveBeenCalled();
+  } finally { release(); }
+  await vi.waitFor(() => expect(follower.entries()).toHaveLength(1));
+  expect(snapshots.length).toBeGreaterThan(0);
+  expect(snapshots.flat().every((entry) => entry.quiet === askedOnly)).toBe(true);
+  expect(snapshots.flat().every((entry) => entry.reason.includes("In review") === !askedOnly)).toBe(true);
+});
+
+it("does not discard a held policy update after an unrelated entity eviction", async () => {
+  await cache.writeCached(address("", "needs-you-rule"), { askedOnly: false });
+  const record = await tracker.readTasksRecord(deviceId, projects[0].id);
+  await tracker.writeTasksRecord(deviceId, projects[0].id, { ...record, tasks: record.tasks.map((task) => ({ ...task, status: "in_review" })) });
+  await idle();
+  expect(follower.entries().find((entry) => entry.projectId === projects[0].id).quiet).toBe(false);
+  const rule = await import("../src/core/needsYouRule.js");
+  const readRule = rule.readNeedsYouRule;
+  let release;
+  vi.spyOn(rule, "readNeedsYouRule").mockImplementationOnce(async (...args) => {
+    const value = await readRule(...args);
+    await new Promise((resolve) => { release = resolve; });
+    return value;
+  });
+  await cache.writeCached(address("", "needs-you-rule"), { askedOnly: true });
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  await cache.evictEntity(deviceId, row.entity_id);
+  release();
+  await idle();
+  expect(follower.entries().find((entry) => entry.projectId === projects[0].id).quiet).toBe(true);
+});
+
+it("uses the actual cached policy for a project joining a warm device", async () => {
+  follower.follow(projects.slice(0, 1));
+  await idle();
+  const record = await tracker.readTasksRecord(deviceId, projects[1].id);
+  await tracker.writeTasksRecord(deviceId, projects[1].id, { ...record, tasks: record.tasks.map((task) => ({ ...task, status: "in_review" })) });
+  const readMany = cache.readCachedMany;
+  let release;
+  vi.spyOn(cache, "readCachedMany").mockImplementationOnce(async (addresses) => {
+    const records = await readMany(addresses);
+    await new Promise((resolve) => { release = resolve; });
+    return records;
+  });
+  cache.announceCacheEvidence(address(row.entity_id, "row"));
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  const snapshots = [];
+  onChange.mockImplementation(() => {
+    const entry = follower.entries().find((item) => item.projectId === projects[1].id);
+    if (entry) snapshots.push({ quiet: entry.quiet, reason: entry.reason });
+  });
+  follower.follow(projects.slice(0, 2));
+  await idle();
+  try { expect(snapshots).toEqual([]); }
+  finally { release(); }
+  await vi.waitFor(() => expect(snapshots.length).toBeGreaterThan(0));
+  await idle();
+  expect(snapshots.length).toBeGreaterThan(0);
+  expect(snapshots.every((entry) => entry.quiet && !entry.reason.includes("In review"))).toBe(true);
+});
+
+it("waits for the initial task source after actual policy and agent sources load", async () => {
+  follower.dispose();
+  const readTasks = tracker.readTasksRecord;
+  let release;
+  vi.spyOn(tracker, "readTasksRecord").mockImplementationOnce(async (...args) => {
+    const record = await readTasks(...args);
+    await new Promise((resolve) => { release = resolve; });
+    return record;
+  });
+  const { followWatchedTasks } = await import("../src/core/watchedTaskFollower.js");
+  onChange = vi.fn();
+  follower = followWatchedTasks({ onChange });
+  follower.follow(projects.slice(0, 1));
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  await idle();
+  try { expect(onChange).not.toHaveBeenCalled(); }
+  finally { release(); }
+  await vi.waitFor(() => expect(follower.entries()).toHaveLength(1));
+  expect(follower.runningProjectKeys().has(projects[0].projectKey)).toBe(true);
+});
+
+it("waits for a pending changed policy before publishing a project joining a warm device", async () => {
+  follower.follow(projects.slice(0, 1));
+  await idle();
+  const record = await tracker.readTasksRecord(deviceId, projects[1].id);
+  await tracker.writeTasksRecord(deviceId, projects[1].id, { ...record, tasks: record.tasks.map((task) => ({ ...task, status: "in_review" })) });
+  const rule = await import("../src/core/needsYouRule.js");
+  const readRule = rule.readNeedsYouRule;
+  let release;
+  vi.spyOn(rule, "readNeedsYouRule").mockImplementationOnce(async (...args) => {
+    const value = await readRule(...args);
+    await new Promise((resolve) => { release = resolve; });
+    return value;
+  });
+  await cache.writeCached(address("", "needs-you-rule"), { askedOnly: false });
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  const snapshots = [];
+  onChange.mockImplementation(() => {
+    const entry = follower.entries().find((item) => item.projectId === projects[1].id);
+    if (entry) snapshots.push({ quiet: entry.quiet, reason: entry.reason });
+  });
+  follower.follow(projects.slice(0, 2));
+  await idle();
+  try { expect(snapshots).toEqual([]); }
+  finally { release(); }
+  await vi.waitFor(() => expect(snapshots.length).toBeGreaterThan(0));
+  expect(snapshots.every((entry) => !entry.quiet && entry.reason.includes("In review"))).toBe(true);
 });

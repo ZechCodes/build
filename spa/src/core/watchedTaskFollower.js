@@ -45,9 +45,14 @@ function followProject(project, onChange, dependencies) {
   let taskSignature = null;
   let disposed = false;
   let invalidation = 0;
-  const details = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc: callOn(deviceId), onChange });
+  let tasksReady = false;
+  let dependenciesReady = false;
+  const ready = () => tasksReady && dependenciesReady;
+  const notify = () => { if (!disposed && ready()) onChange(); };
+  const details = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc: callOn(deviceId), onChange: notify });
 
   async function readTasks() {
+    if (disposed) return;
     const session = sessionOf(deviceId);
     const before = invalidation;
     const record = await readTasksRecord(deviceId, projectId);
@@ -57,7 +62,8 @@ function followProject(project, onChange, dependencies) {
     if (signature === taskSignature) return;
     taskSignature = signature;
     tasks = next;
-    onChange();
+    tasksReady = true;
+    notify();
     await details.updateTasks(tasks.filter(followsDetail));
   }
 
@@ -69,13 +75,14 @@ function followProject(project, onChange, dependencies) {
   const unsubscribeDependencies = dependencies.subscribe(project, (next) => {
     if (disposed) return;
     ({ askedOnly, runningAgentIds, projectAgentId, workspaces } = next);
-    onChange();
+    dependenciesReady = true;
+    notify();
   });
   void reread();
   return {
     // A reconnect is a new session: reads the old one refused are asked again.
     session: sessionOf(deviceId),
-    source: () => ({ project, tasks, details: details.read(), askedOnly, runningAgentIds, projectAgentId, workspaces }),
+    source: () => ({ project, tasks: ready() ? tasks : [], details: details.read(), askedOnly, runningAgentIds, projectAgentId, workspaces }),
     dispose() {
       disposed = true;
       unsubscribe();

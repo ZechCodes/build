@@ -204,8 +204,12 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250, 
           if (frame < frames - 1 && fixture.seen?.size) stats.renderProgressDuringReplay = true;
         }
         fixture.inputEnded = performance.now();
-        await Promise.all(fixture.deliveries);
-        const deadline = performance.now() + drainMs;
+        const deadline = fixture.inputEnded + drainMs;
+        let deliveryTimer;
+        await Promise.race([Promise.all(fixture.deliveries), new Promise((resolve) => {
+          deliveryTimer = setTimeout(() => { stats.deliveryDeadlineReached = true; resolve(); }, drainMs);
+        })]);
+        clearTimeout(deliveryTimer);
         while ((stats.pendingAppliers || stats.pendingTransactions || Object.values(fixture.work || {}).some(Boolean) || fixture.seen?.size !== Math.ceil(frames / 6)) && performance.now() < deadline) await sleep(20);
         await sleep(50);
         clearInterval(sampleTimer);

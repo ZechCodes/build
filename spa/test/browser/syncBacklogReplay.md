@@ -46,7 +46,9 @@ The second command exits nonzero if any acceptance bound fails: measured input
 rate, mounted push-to-DOM-frame p95 <=1 second/max <=3 seconds, body pending <=64,
 nonpositive endpoint backlog slope over the final two input minutes, drain <=5
 seconds, >=80% fewer IndexedDB row `get` calls, exact messages/rows, reset/removal,
-and empty final queues. JSON reports every latency and one-second backlog samples
+and empty final queues. The post-input drain bound includes delivery promises and work polling; an
+unsettled delivery is reported as `deliveryDeadlineReached`, with its final
+queue snapshot and incomplete-state checks preserved. JSON reports every latency and one-second backlog samples
 so a reader can inspect more than the endpoint slope. Wall-clock timing includes
 shared-host CPU scheduling. It does not claim virtual time or exclude incidental
 machine delays. The only deliberate storage stall is in the separate burst test.

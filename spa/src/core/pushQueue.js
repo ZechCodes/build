@@ -80,7 +80,7 @@ function combineItems(left, right) {
 export const combinePushItems = (left, right) => compatible(left, right) ? combineItems(left, right) : null;
 
 export function createPushQueue({ apply, priority = () => false, onError = () => {}, merge = combinePushItems,
-  isBarrier = boundary, concurrency = 1, onChange = () => {} }) {
+  isBarrier = boundary, concurrency = 1 }) {
   const segments = [], busy = new Set();
   let running = 0, done = null, resolveIdle, promoted = 0, barrierRunning = false;
   const keyOf = (item) => item.project_source ? JSON.stringify(item.project_source) : String(item.entity_id || "");
@@ -143,7 +143,6 @@ export function createPushQueue({ apply, priority = () => false, onError = () =>
       done = null;
       resolve();
     }
-    onChange();
   }
 
   function schedule() {

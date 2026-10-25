@@ -13,13 +13,11 @@
 // machine that cannot be reached at all, a refusal with a reason. Those say
 // what to do about something; this says what is happening.
 //
-// Connection details come from core/connectionStatusModel.js; cache sync adds
-// rotation to the dashed ring while post-connect work runs. The parts are
-// built once and only their classes and text change, so every move
+// What it draws is core/connectionStatusModel.js's answer and nothing else. The
+// parts are built once and only their classes and text change, so every move
 // between states is a CSS transition rather than a redraw (spa/src/styles.css).
 
 import { App } from "./app.js";
-import { subscribeConnectionSync } from "./core/cacheSync.js";
 import { mountBuildChannel } from "./core/buildChannel.js";
 import { esc } from "./core/text.js";
 import { deviceRecoverySnapshot, onDeviceRecoveryChanged } from "./connection.js";
@@ -34,7 +32,6 @@ const STATE_CLASSES = ["is-connected", "is-attempting", "is-waiting"];
 
 let stopRecoveryWatch = null;
 let stopDeviceWatch = null;
-let stopSyncWatch = null;
 let countdownTimer = null;
 let menuRecord = null;
 let restoreMenuFocus = false;
@@ -214,10 +211,6 @@ export function mountConnectionStatus() {
   stopRecoveryWatch = onDeviceRecoveryChanged(paint);
   stopDeviceWatch = onDeviceStateChanged(paint);
   paint();
-  stopSyncWatch = subscribeConnectionSync((active) => {
-    document.querySelector("#connection-status .connection-status")
-      ?.classList.toggle("connection-status--syncing", active);
-  });
   menuRecord = watchUiState(uiAddress({ view: "connection", kind: "menu" }), (saved) => {
     const host = document.getElementById("connection-status");
     if (host) paintMenuOpen(host, Boolean(saved?.open), restoreMenuFocus);
@@ -233,8 +226,6 @@ export function unmountConnectionStatus() {
   stopRecoveryWatch = null;
   stopDeviceWatch?.();
   stopDeviceWatch = null;
-  stopSyncWatch?.();
-  stopSyncWatch = null;
   keepTime(false);
   painted = "";
   shownState = "";

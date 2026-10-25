@@ -18,9 +18,8 @@
 
    The ring is dashed in every state — green at rest, amber while something is
    being done about a machine — so what changes between states is the colour
-   and what is inside the ring. During post-connect cache sync, only the dashed
-   ring rotates; the count, build badge and menu stay still. Every state change
-   is a transition rather than a redraw, because the markup is written once and
+   and what is inside the ring, never the ring itself. Every move between the three is
+   a transition rather than a redraw, because the markup is written once and
    only its classes change (spa/src/connectionStatus.js). */
 #connection-status {
   position:absolute; z-index:38; right:0; bottom:8px;
@@ -48,12 +47,6 @@
   border:2px dashed var(--green); opacity:.85;
   transition:border-color 260ms ease, opacity 260ms ease,
     transform 260ms cubic-bezier(.2,.8,.2,1);
-}
-.connection-status--syncing::before {
-  animation:connection-sync-spin 1.6s linear infinite;
-}
-@keyframes connection-sync-spin {
-  to { transform:rotate(360deg); }
 }
 .connection-status.is-attempting::before, .connection-status.is-waiting::before {
   border-color:var(--amber); opacity:1;
@@ -98,7 +91,6 @@
    rather than travel. */
 @media (prefers-reduced-motion: reduce) {
   .connection-status::before, .connection-centre, .connection-radiate { transition:none; }
-  .connection-status--syncing::before { animation:none; }
   .connection-status.is-attempting .connection-radiate::before,
   .connection-status.is-attempting .connection-radiate::after {
     animation:none; opacity:.5; transform:scale(.8);

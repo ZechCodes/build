@@ -1,0 +1,11 @@
+# Mounted live-sync replay
+
+Run `nice -n 10 node test/browser/profileLiveSync.mjs /tmp/live-sync.json --board204 --current` from `spa`. Omit `--current` for the pinned pre-change baseline, 83d5c9fd. `--cpu` saves an optional CDP CPU profile; timings with that flag include profiler overhead. `--cache-canvas-rect` is a fixed-viewport geometry ablation; `--canvas-off` and `--inbox-off` independently disable those consumers during measured traffic. `--sensitivity` uses 36 rather than 120 frames.
+
+The fixture seeds the sanitized retained scale: 1,673 records, six projects, 104 workspaces, 204 row records, 110 threads, 858 task details, nine roster agents and one policy. Startup sync may populate additional records; reports distinguish `seedRecordsBeforeWarm` from `seedRecords`. The mounted UI has four visible inbox rows, one animated canvas and 1,284 DOM elements. Actual inbox and agent-rail code renders the conversation; static detail padding supplies the remaining DOM size.
+
+Current board membership, task-list membership and read-through were not measured live. They are explicit synthetic parameters: board membership six by default or 204 with `--board204`, 143 tasks per project, two watched tasks and read-through 1100. Retained counts do not establish current membership. A branch route mounts the actual canvas without reconstructing the unknown live route.
+
+Input sends revision-only board hints, row updates, thread deltas and unrelated terminal notifications every 375 ms. Warm startup and the 32-notification no-op probe quiesce before traffic counters reset. Instrumentation records receipt, queue admission, worker start, exact transaction commit and actual rail mutation followed by animation frame. Quantiles use nearest rank, `ceil(n*q)-1`. CPU wrappers account for nested wrappers but are not a complete browser CPU profiler.
+
+The short Vitest replay guards read counts, actual mounted-paint scheduler turns, bounded drain turns, empty queues, exact pushed state/messages, monotonic bounded read markers, entity removal and conversation reset. Count limits avoid load-sensitive timing assertions. Sustained CLI results supply elapsed latency measurements; they cannot establish that the separately observed live 17.4-second p95 was reproduced or eliminated.

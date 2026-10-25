@@ -294,3 +294,190 @@ fn matching_resume_name_does_not_bypass_any_session_instance_fence() {
         );
     }
 }
+
+#[test]
+fn unchanged_session_name_still_commits_runtime_model_changes() {
+    let fixture = Fixture::new();
+    assert!(fixture.report("named lineage before model change"));
+    let samples = fixture.clock.capture_phases();
+    let timer = fixture.clock.frame("agent.deliver");
+    {
+        let mut app = timer.lock(&fixture.state);
+        let instance = app
+            .session_registry
+            .test_tab(&fixture.key)
+            .unwrap()
+            .session_instance
+            .clone()
+            .unwrap();
+        app.note_self_report(
+            OWNER,
+            &fixture.agent,
+            &instance,
+            SelfReport {
+                named: Some("activity-provider-session".into()),
+                model: Some("changed-runtime-model".into()),
+                effort: Some("high".into()),
+            },
+        );
+    }
+    drop(timer);
+    assert_eq!(
+        samples.snapshot()["agent.deliver"]["entered.finisher.save"]["count"],
+        1,
+        "the repeated lineage name is free, but the changed model still commits once"
+    );
+    let app = fixture.state.lock().unwrap();
+    let stored = app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_all_runs()
+        .unwrap()
+        .into_iter()
+        .find(|run| run.id == OWNER)
+        .unwrap();
+    let saved_agent = stored
+        .agents
+        .iter()
+        .find(|agent| agent.id == fixture.agent)
+        .unwrap();
+    assert_eq!(
+        saved_agent.active_model.as_deref(),
+        Some("changed-runtime-model")
+    );
+    assert_eq!(saved_agent.active_effort.as_deref(), Some("high"));
+    assert_eq!(
+        saved_agent.resume_session_id.as_deref(),
+        Some("activity-provider-session")
+    );
+    let root = app.read_view.load();
+    let published = root.get_owned("agent.list", OWNER).unwrap();
+    let published_agent = published["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["id"].as_str() == Some(fixture.agent.as_str()))
+        .unwrap();
+    assert_eq!(published_agent["active_model"], "changed-runtime-model");
+    assert_eq!(published_agent["active_effort"], "high");
+}
+
+#[test]
+fn unchanged_session_name_cannot_bypass_a_reset_reservation() {
+    let fixture = Fixture::new();
+    assert!(fixture.report("named lineage before reservation"));
+    let mut app = fixture.state.lock().unwrap();
+    let instance = app
+        .session_registry
+        .test_tab(&fixture.key)
+        .unwrap()
+        .session_instance
+        .clone()
+        .unwrap();
+    // The lineage name is already current, but its addressed roster needs repair.
+    app.record_agent_resume_id(OWNER, &fixture.agent, None);
+    let before = app.read_view.load();
+    let saved_before = app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_all_runs()
+        .unwrap()
+        .into_iter()
+        .find(|run| run.id == OWNER)
+        .unwrap();
+    app.resetting_conversations.insert(fixture.agent.clone());
+    app.note_self_report(
+        OWNER,
+        &fixture.agent,
+        &instance,
+        SelfReport {
+            named: Some("activity-provider-session".into()),
+            model: Some("model-refused-during-reset".into()),
+            effort: Some("high".into()),
+        },
+    );
+    assert_eq!(app.recorded_resume_id(OWNER, &fixture.agent), None);
+    assert_ne!(
+        app.recorded_active_model(OWNER, &fixture.agent).as_deref(),
+        Some("model-refused-during-reset")
+    );
+    let saved_after = app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_all_runs()
+        .unwrap()
+        .into_iter()
+        .find(|run| run.id == OWNER)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(saved_before).unwrap(),
+        serde_json::to_value(saved_after).unwrap()
+    );
+    assert!(
+        Arc::ptr_eq(&before, &app.read_view.load()),
+        "the refused no-op name must publish neither roster repair nor model changes"
+    );
+}
+
+#[test]
+fn shared_conversation_activity_commits_history_without_claiming_alias_publication() {
+    let fixture = Fixture::new();
+    assert!(fixture.report("canonical activity before sharing"));
+    let mut app = fixture.state.lock().unwrap();
+    let repo = app.project_at(0).repo_path.clone();
+    let alias_owner = adopted_run(
+        &mut app,
+        &repo,
+        fixture._directory.path(),
+        "activity-shared-alias",
+    );
+    let alias_agent = primary_agent_id(&app, &alias_owner);
+    let mut active = app.take_run(&alias_owner).unwrap();
+    active
+        .agents
+        .by_id_mut(&alias_agent)
+        .unwrap()
+        .bind_conversation(&fixture.agent);
+    app.finish_run_mutation(alias_owner.clone(), active)
+        .unwrap();
+    let report = ActivityReport::own_work(AgentActivity::Narration {
+        summary: "shared canonical activity".into(),
+    });
+    assert!(
+        !record_activity(&mut app, &fixture.key, &alias_owner, &alias_agent, &report),
+        "a canonical history save must leave the alias owner's fallback publication required"
+    );
+    let durable = app
+        .store
+        .as_ref()
+        .unwrap()
+        .thread_items(&fixture.agent)
+        .unwrap();
+    assert_eq!(
+        durable
+            .iter()
+            .filter(|item| matches!(item,
+        crate::thread::ThreadItem::Event(event)
+            if event.summary.as_deref() == Some("shared canonical activity")))
+            .count(),
+        1
+    );
+    let root = app.read_view.load();
+    let published = root.history(&fixture.agent).unwrap().render(&json!({}));
+    assert_eq!(
+        published["items"],
+        serde_json::to_value(&durable).unwrap(),
+        "the false alias receipt must not suppress the canonical committed history"
+    );
+    assert_eq!(
+        app.agent_conversation(&alias_owner, Some(&alias_agent))
+            .unwrap()
+            .id,
+        app.agent_conversation(OWNER, Some(&fixture.agent))
+            .unwrap()
+            .id
+    );
+}

@@ -215,3 +215,50 @@ it("starts a new active period when an existing session restores its connection"
   held.release({ items: [] }); await restored;
   expect(state.values()).toEqual([false, true, false, true, false]);
 });
+
+async function holdPostConnectWork(kind) {
+  const state = signals(), context = contexts[0], pass = hold(context, "board.list");
+  const method = kind === "enrichment" ? "tasks.list" : "thread.page";
+  const reading = hold(context, method, (params) => kind === "catch-up" || params.project_id === "pushed-project");
+  sync.startCacheSync(); await started(context);
+  const items = kind === "enrichment"
+    ? [{ entity_id: "pushed-project", tasks: { task_ids: ["updated"] } }]
+    : [{ entity_id: "run-1", thread: [{ agent_id: "agent-1", conversation_id: "c1",
+      thread_id: "thread:c1", since_sequence: 5, last_sequence: 10, items: [] }] }];
+  const pending = push(items);
+  await started(context, method);
+  pass.release({ items: [] }); await passesSettled(sync, "dev-1");
+  expect(state.values()).toEqual([false, true]);
+  return { context, state, pending, release: () => reading.release(kind === "enrichment" ? { tasks: [] }
+    : { thread_id: "thread:c1", thread_last_sequence: 10, has_more: false,
+      items: [{ type: "message", data: { id: "m10", sequence: 10 } }] }) };
+}
+
+async function replaceConnection(operation, context) {
+  if (operation === "restore") return sync.syncRestoredDevice("dev-1", context.session);
+  if (operation === "new session") {
+    context.session = {}; deviceChanged();
+  } else if (operation === "restart") {
+    sync.stopCacheSync(); sync.startCacheSync();
+  } else {
+    context.connected = false; contexts = []; deviceChanged();
+    contexts = [makeContext("dev-1")]; deviceChanged();
+  }
+  await passesSettled(sync, "dev-1");
+}
+
+it.each(["enrichment", "catch-up"].flatMap((kind) =>
+  ["restore", "new session", "restart", "re-adoption"].map((operation) => ({ kind, operation }))))(
+  "ignores retired $kind queues after connection $operation before their RPC answers", async ({ kind, operation }) => {
+    const work = await holdPostConnectWork(kind);
+    const expected = ["restart", "re-adoption"].includes(operation)
+      ? [false, true, false, true, false] : [false, true, false];
+    try {
+      await replaceConnection(operation, work.context);
+      expect(work.state.values()).toEqual(expected);
+    } finally {
+      work.release(); await work.pending;
+    }
+    expect(work.state.values()).toEqual(expected);
+  },
+);

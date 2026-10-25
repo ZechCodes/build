@@ -13,25 +13,29 @@ export function createThreadHistoryGuard({ address, threadId, onChange = () => {
   let matches = true;
   let disposed = false;
   let reading = 0;
+  const acceptsPage = (page) => !threadId || !page?.thread_id || page.thread_id === threadId;
   const refresh = async () => {
     if (!address) return;
     const version = ++reading;
     const parent = (await readCached(address))?.value;
     if (disposed || version !== reading) return;
+    const previousFloor = floor;
+    const previouslyMatched = matches;
     matches = historyGenerationMatches(parent, threadId);
     if (matches) floor = Math.max(floor, Number(parent?.historyStartSequence || 0));
-    onChange();
+    if (floor !== previousFloor || matches !== previouslyMatched) onChange();
   };
   const unwatch = address ? subscribeCache(address, () => void refresh()) : () => {};
   const ready = refresh();
   return {
     ready,
+    acceptsPage,
     floor: () => floor,
     filter: (items) => matches ? retainedActivityItems(items, floor) : [],
     accepts: (parent, value) => historyGenerationMatches(parent, threadId)
       && retainedActivityItems(value.items, Number(parent?.historyStartSequence || 0)).length === value.items.length,
     async observe(page) {
-      if (!threadHistoryStart(page) || disposed) return;
+      if (!acceptsPage(page) || !threadHistoryStart(page) || disposed) return;
       if (!address) { floor = Math.max(floor, threadHistoryStart(page)); return; }
       await mergeCachedAtomically(address, (parent) =>
         !disposed && historyGenerationMatches(parent, threadId)

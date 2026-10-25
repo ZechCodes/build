@@ -63,6 +63,34 @@ describe("the runs a pane has open", () => {
 });
 
 describe("fetching what a run holds", () => {
+  it("publishes loading in the opening turn before awaiting the parent history", async () => {
+    let answer;
+    const call = vi.fn(() => new Promise((resolve) => { answer = resolve; }));
+    const runs = runsOver([], [], { call });
+    const opening = runs.open(DIGEST);
+    const immediate = runs.stateOf(DIGEST.from_sequence);
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+    answer(page([121]));
+    await opening;
+    runs.dispose();
+    expect(immediate).toEqual({ loading: true });
+  });
+
+  it("rejects an explicitly foreign activity generation before publishing its floor or body", async () => {
+    const threadAddress = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "canonical" };
+    await cache.writeCached(threadAddress, { thread_id: "current", historyStartSequence: 1, items: [] });
+    const runs = runsOver([{ ...page([121]), thread_id: "foreign", history_start_sequence: 200 }], [], {
+      conversationId: "canonical", threadId: "current",
+    });
+    try {
+      await expect(runs.open(DIGEST)).rejects.toThrow(/conversation/i);
+      expect((await cache.readCached(threadAddress)).value.historyStartSequence).toBe(1);
+      expect(await cache.readCached({ ...threadAddress, kind: "activity", sub: "ag-1:current:120" })).toBeUndefined();
+    } finally {
+      runs.dispose();
+    }
+  });
+
   it("refuses a held old generation body even while its offscreen reader remains live", async () => {
     const threadAddress = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "canonical" };
     await cache.writeCached(threadAddress, { thread_id: "old-thread", items: [] });

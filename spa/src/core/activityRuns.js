@@ -108,6 +108,7 @@ export function createActivityRuns({ deviceId, entityId, agentId, conversationId
     let before = null;
     for (;;) {
       const page = await activityPage(fromSequence, before);
+      if (!history.acceptsPage(page)) throw new Error("Conversation changed while loading activity");
       await history.observe(page);
       const arrived = history.filter(page.items);
       items.unshift(...arrived);
@@ -155,7 +156,6 @@ export function createActivityRuns({ deviceId, entityId, agentId, conversationId
      *  that is news. A run already in hand is never asked for twice: it cannot
      *  have changed. An entity with no id has no conversation to ask about. */
     async open(digest) {
-      await history.ready;
       const key = String(digest.from_sequence);
       if (!entityId || bodies.has(key) || asking.has(key)) return false;
       spans.set(digest.from_sequence, digest.through_sequence);
@@ -163,6 +163,7 @@ export function createActivityRuns({ deviceId, entityId, agentId, conversationId
       failures.delete(key);
       onChange();
       try {
+        await history.ready;
         const filled = await bodies.ensure([key]);
         await trimKnownBodies();
         return filled.length > 0;

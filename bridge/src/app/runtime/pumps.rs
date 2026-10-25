@@ -591,7 +591,7 @@ impl ActivityPump {
                 crate::harness::AgentActivity::TurnFailed { .. }
             )
         {
-            if let Some((state, _)) = self.live() {
+            if let Some(state) = self.state.upgrade() {
                 let timer = self.frame_clock.frame(AGENT_DELIVERY_METHOD);
                 DeliveryRunner::drain(&state, &timer);
             }
@@ -623,14 +623,16 @@ impl ActivityPump {
             }
         }
         s.note_self_report(&instance.entity_id, &instance.agent_id, instance, said);
-        record_activity(
+        let published_owner = record_activity(
             &mut s,
             &self.key,
             &instance.entity_id,
             &instance.agent_id,
             report,
         );
-        s.publish_owner_snapshot_projection(&instance.entity_id);
+        if !published_owner {
+            s.publish_owner_snapshot_projection(&instance.entity_id);
+        }
         drop(s);
         true
     }

@@ -1,8 +1,9 @@
 //! Fixed publication stages, independent of request labels and app locks.
 //!
 //! Prepare covers finisher candidate staging, including owner_prepare, which
-//! captures each ordinary owner projection. Persist records the durable owner;
-//! install atomically publishes the accepted snapshot; push covers a nonempty
+//! captures each ordinary owner projection. Persist measures save attempts,
+//! including failures; install measures attempts, including rejected stale deltas.
+//! Accepted installs atomically publish the snapshot; push covers a nonempty
 //! ChangeBus flush through encrypted carrier submission. Push excludes the
 //! coalescing wait and does not imply a browser receipt. Spans may nest and
 //! include unrelated operations within their boundaries: their sums are not an

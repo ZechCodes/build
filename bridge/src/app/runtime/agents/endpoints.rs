@@ -1654,18 +1654,24 @@ impl AppState {
         report: SelfReport,
     ) {
         if let Some(named) = report.named {
-            if let Err(error) =
-                self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
-                    if thread.name_session_instance(instance, &named) {
-                        Ok(())
-                    } else {
-                        Err(
-                            "session instance no longer matches its conversation lineage"
-                                .to_string(),
-                        )
+            let named_result = self
+                .session_name_is_current(owner, agent_id, instance, &named)
+                .and_then(|unchanged| {
+                    if unchanged {
+                        return Ok(());
                     }
-                })
-            {
+                    self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
+                        if thread.name_session_instance(instance, &named) {
+                            Ok(())
+                        } else {
+                            Err(
+                                "session instance no longer matches its conversation lineage"
+                                    .into(),
+                            )
+                        }
+                    })
+                });
+            if let Err(error) = named_result {
                 eprintln!("note_self_report {owner}: {error}");
                 return;
             }
@@ -1676,5 +1682,20 @@ impl AppState {
         if report.model.is_some() {
             self.record_agent_runtime_choice(owner, agent_id, report.model, report.effort);
         }
+    }
+
+    fn session_name_is_current(
+        &self,
+        owner: &str,
+        agent_id: &str,
+        instance: &SessionInstance,
+        named: &str,
+    ) -> Result<bool, String> {
+        let address = self.resolve_conversation_address(owner, Some(agent_id))?;
+        self.guard_conversation_reservation(&address)?;
+        let agent = self
+            .entity_agents(&address.conversation_entity_id)?
+            .resolve(Some(&address.conversation_id))?;
+        Ok(agent.thread.session_instance_is_named(instance, named))
     }
 }

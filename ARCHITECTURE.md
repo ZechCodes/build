@@ -432,13 +432,44 @@ work dropped before a handler starts remain outside the served counts.
 Registered v1/legacy/QA methods and fixed internal work labels have bounded
 records; unknown names share `other`. Histograms use fixed buckets, so
 percentiles are estimates; sums/max retain microsecond resolution. Existing
-total/hold keys and slow-frame log formatting remain. SQLite time is not
-separately measured. The priority queues' `p95_ms` fields still describe total
+total/hold keys and slow-frame log formatting remain. Per-acquisition
+`lock_acquisition_wait` and `lock_hold` histograms distinguish individual mutex
+waits and holds from those frame sums; `lock_holder` and `lock_holder_age_ms`
+identify the observed named holder and its age when a waiter arrives. They do
+not attribute the entire wait to one holder. The priority queues' `p95_ms` fields still describe total
 frame duration, and their depth counts dispatch waiting, not wire admission.
 Total duration, per-queue p95, slow-frame `total=`/`queued=` and the 200 ms
 slow-frame threshold now measure from intake, including decrypt and admission;
 compare them only against this change's baseline, not older logs.
 `bridge.stats` answers at intake without an app lock or dispatch worker.
+
+Activity observations begin an `agent.activity` frame before blocking-pool
+scheduling, with pool wait reported separately. Self-report discovery runs
+outside the app mutex; `ActivityPump::reported` then takes a timed lock. Its
+frame ends after snapshot publication, before any required failure-delivery
+drain. Status, surface-change and stream-close pumps have separate fixed labels;
+their frames cover processing rather than pool scheduling. Broadcast overflow
+increments `activity_lagged_reports` and consumption continues with the retained
+tail; it does not reconstruct lost events.
+
+The fixed `publication` histograms measure candidate `prepare` (including
+`owner_prepare`), save attempts (`persist`), snapshot installation attempts
+(`install`, including rejected stale deltas), and nonempty push flushes through
+encrypted carrier submission (`push`). `push_pending` measures the oldest
+pending batch through successful submission, including coalescing time. These
+are batch/stage diagnostics, not per-event browser receipt timestamps. Prepare
+spans nest, attempts may fail, and global totals include unrelated producers;
+their sums cannot be added as an exclusive event breakdown. Production records
+histogram atomics without request-phase observer locks.
+
+An unchanged provider resume name skips its conversation edit only after the
+canonical binding, reset reservation and all five session-instance identity
+fields match the named lineage. Roster/model updates retain their own mutation
+boundaries. A successful canonical activity save carries that owner's snapshot,
+so the activity pump does not project it again. Shared conversation owners,
+failed saves and complex turn-failure handling retain the explicit owner
+projection fallback. This reduces repeated publication without changing commit
+atomicity, stale-generation rejection or existing lock-held SQLite paths.
 
 Fine-grained request-phase tracing is test-only: `timing/requests.rs`, its
 observer fields and its call sites compile under `cfg(test)`. The non-test

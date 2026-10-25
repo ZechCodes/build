@@ -351,8 +351,8 @@ impl FrameClock {
         )
     }
 
-    fn hold_began(&self, method: &Arc<MethodRecord>) {
-        *self.holder.lock().unwrap() = Some((Arc::clone(method), Instant::now()));
+    fn hold_began(&self, method: &Arc<MethodRecord>, acquired_at: Instant) {
+        *self.holder.lock().unwrap() = Some((Arc::clone(method), acquired_at));
     }
 
     fn hold_ended(&self) {
@@ -559,19 +559,20 @@ impl FrameTimer {
         self.mark_request("app_wait_start");
         let asked_at = Instant::now();
         let guard = state.lock().unwrap();
+        let acquired_at = Instant::now();
+        let waited = acquired_at.duration_since(asked_at);
+        self.lock_wait_micros
+            .fetch_add(micros(waited), Ordering::Relaxed);
+        self.method.lock_acquisition_wait.record(waited);
+        self.clock.hold_began(&self.method, acquired_at);
         #[cfg(test)]
         self.mark_request("app_wait_end");
         #[cfg(test)]
         self.mark_request("app_hold_start");
-        let waited = asked_at.elapsed();
-        self.lock_wait_micros
-            .fetch_add(micros(waited), Ordering::Relaxed);
-        self.method.lock_acquisition_wait.record(waited);
-        self.clock.hold_began(&self.method);
         LockedFor {
             guard: Some(guard),
             timer: self,
-            acquired_at: Instant::now(),
+            acquired_at,
             #[cfg(test)]
             phase_sample: phase_samples::LockSample::begin(self),
         }
@@ -620,8 +621,8 @@ impl Drop for FrameTimer {
 ///
 /// The guard sits in an `Option` so [`Drop`] can release it in the right order:
 /// clear the holder slot while the mutex is still held (or the next frame's
-/// claim would be wiped by this one's release), drop the guard, and only then
-/// write the hold time down.
+/// claim would be wiped by this one's release), capture the hold duration,
+/// drop the guard, and only then write the cached hold time down.
 pub struct LockedFor<'a, T> {
     guard: Option<MutexGuard<'a, T>>,
     timer: &'a FrameTimer,
@@ -670,13 +671,14 @@ impl<'a, T> LockedFor<'a, T> {
         let (guard, result) = condvar
             .wait_timeout(guard, timeout)
             .expect("the app mutex is never poisoned by a waiter");
-        let waited = asked_at.elapsed();
+        let acquired_at = Instant::now();
+        let waited = acquired_at.duration_since(asked_at);
         self.timer
             .lock_wait_micros
             .fetch_add(micros(waited), Ordering::Relaxed);
         self.timer.method.lock_acquisition_wait.record(waited);
-        self.timer.clock.hold_began(&self.timer.method);
-        self.acquired_at = Instant::now();
+        self.timer.clock.hold_began(&self.timer.method, acquired_at);
+        self.acquired_at = acquired_at;
         self.guard = Some(guard);
         #[cfg(test)]
         {
@@ -705,10 +707,10 @@ impl<T> Drop for LockedFor<'_, T> {
         #[cfg(test)]
         self.phase_sample.take();
         self.timer.clock.hold_ended();
+        let held = self.acquired_at.elapsed();
         self.guard.take();
         #[cfg(test)]
         self.timer.mark_request("app_hold_end");
-        let held = self.acquired_at.elapsed();
         self.timer
             .held_micros
             .fetch_add(micros(held), Ordering::Relaxed);
@@ -1040,6 +1042,71 @@ mod tests {
         drop(second);
         assert_eq!(clock.stats()["queue_depth"], 0);
         drop(timer);
+    }
+
+    fn observed_lock_timer(clock: &Arc<FrameClock>) -> FrameTimer {
+        let mut timer = clock.frame("agent.deliver");
+        timer.bind_request(&crate::transport::Frame {
+            session_id: "timing-session".into(),
+            message_id: "timing-request".into(),
+            frame_type: "data".into(),
+            sender: "client".into(),
+            created_at: String::new(),
+            payload: json!({"method": "agent.deliver"}),
+        });
+        timer
+    }
+
+    #[test]
+    fn acquisition_boundary_precedes_the_acquired_observer() {
+        let (clock, _) = recording_clock();
+        let observed = Arc::new(Mutex::new(None));
+        let callback = Arc::clone(&observed);
+        clock.observe_requests(Arc::new(move |_, phase, at| {
+            if phase == "app_wait_end" {
+                *callback.lock().unwrap() = Some(at);
+            }
+        }));
+        let state = Arc::new(Mutex::new(()));
+        let timer = observed_lock_timer(&clock);
+        let held = timer.lock(&state);
+        let observed = observed.lock().unwrap().expect("the acquired observer ran");
+        assert!(
+            held.acquired_at <= observed,
+            "the hold starts at native acquisition, before any acquired observer"
+        );
+    }
+
+    #[test]
+    fn released_observer_time_is_excluded_from_both_hold_counters() {
+        let (clock, _) = recording_clock();
+        let released_at = Arc::new(Mutex::new(None));
+        let callback = Arc::clone(&released_at);
+        clock.observe_requests(Arc::new(move |_, phase, at| {
+            if phase == "app_hold_end" {
+                *callback.lock().unwrap() = Some(at);
+                // This is deliberately after unlock. Compare causal boundaries,
+                // not a scheduling-sensitive absolute duration ceiling.
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }));
+        let state = Arc::new(Mutex::new(()));
+        let timer = observed_lock_timer(&clock);
+        let held = timer.lock(&state);
+        let acquired_at = held.acquired_at;
+        drop(held);
+        let observer_at = released_at
+            .lock()
+            .unwrap()
+            .expect("the released observer ran");
+        assert!(
+            timer.spent().held <= observer_at.duration_since(acquired_at),
+            "a hold must stop before the post-unlock observer starts"
+        );
+        drop(timer);
+        let stats = clock.stats();
+        let method = &stats["methods"]["agent.deliver"];
+        assert_eq!(method["held"]["sum_ms"], method["lock_hold"]["sum_ms"]);
     }
 
     #[test]

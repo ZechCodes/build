@@ -98,9 +98,18 @@ async fn busy_activity_publication_finishes_within_budget() {
         captured["agent.activity"]["frame.total"]["count"],
         AGENTS * REPORTS
     );
+    assert_activity_state(&busy);
+    // Each first report registers the canonical name and roster resume id;
+    // every subsequent report needs only its own canonical activity commit.
+    let expected_commits = AGENTS * (REPORTS + 2);
+    for phase in ["entered.finisher.save", "entered.publication.install"] {
+        assert_eq!(
+            captured["agent.activity"][phase]["count"], expected_commits,
+            "activity work must stay bounded independently of host load: {phase}"
+        );
+    }
     assert_latency_budget(&captured, "agent.activity");
     assert_latency_budget(&captured, "term.close");
-    assert_activity_state(&busy);
 }
 
 fn activity_agent(

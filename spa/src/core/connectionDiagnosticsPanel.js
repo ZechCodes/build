@@ -10,7 +10,7 @@
 // use: the host ships the panel in its own html and this fills it.
 
 import { esc } from "./text.js";
-import { diagnosticRows, diagnosticsJson, diagnosticsSummary } from "./connectionDiagnosticsModel.js";
+import { diagnosticRows, diagnosticsJson, diagnosticsSummary, syncDiagnosticsText } from "./connectionDiagnosticsModel.js";
 import { applyFieldTraits } from "./fieldTraits.js";
 
 /// How often the open section re-reads the history.
@@ -25,12 +25,12 @@ const POLL_MS = 1000;
 /// rather than behind a link because the buttons under it send this somewhere:
 /// whoever presses Share is owed the contents before they do.
 const PRIVACY_NOTE =
-  "Timestamps, connection identifiers and the browser's storage errors only — no message content, no keys, no addresses. The history lives in this tab and a reload clears it.";
+  "Connection events include timestamps, identifiers and browser storage errors. Sync timing includes monotonic offsets, enums and counters — no message content, no keys, no addresses. The history lives in this tab and a reload clears it.";
 
 export function connectionDiagnosticsPanelHtml() {
   return `<div class="panel" id="diagnostics">
       <h3>🔌 Diagnostics</h3>
-      <div class="dim" style="font-size:13px;margin-bottom:8px">The last connection events this tab recorded. Useful when a device keeps dropping.</div>
+      <div class="dim" style="font-size:13px;margin-bottom:8px">Connection events and sync timing this tab recorded. Useful when a device keeps dropping or the sync ring keeps spinning.</div>
       <div class="dim" style="font-size:12px;margin-bottom:10px">${esc(PRIVACY_NOTE)}</div>
       <div class="addproj">
         <button class="btn mini" id="diagcopy">Copy</button>
@@ -38,6 +38,7 @@ export function connectionDiagnosticsPanelHtml() {
         <button class="btn mini" id="diagclear">Clear</button>
       </div>
       <div class="dim" id="diagsummary" style="font-size:12px;margin:10px 0 2px" role="status"></div>
+      <pre class="mono" id="diagsync" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
       <div class="diaglist" id="diaglist"></div>
       <div class="adderr" id="diagerr"></div>
     </div>`;
@@ -106,11 +107,14 @@ function reportOnButton(button, said, timers) {
 /// Repaint the list from the history, unless it would say what is on screen
 /// already — a tick that rebuilt an unchanged list would drop the reader out of
 /// wherever they had scrolled to, once a second.
-function painterFor(panel, { history, devices }) {
+function painterFor(panel, { history, report, devices }) {
+  const sync = panel.querySelector("#diagsync");
   const list = panel.querySelector("#diaglist");
   const summary = panel.querySelector("#diagsummary");
   let painted = null;
   return () => {
+    const syncText = syncDiagnosticsText(report()?.sync);
+    if (sync.textContent !== syncText) sync.textContent = syncText;
     const rows = diagnosticRows(history(), devices());
     const html = diagnosticsListHtml(rows);
     if (html === painted) return;
@@ -176,7 +180,7 @@ export function mountConnectionDiagnostics(host, options = {}) {
   const error = panel.querySelector("#diagerr");
   const say = (message) => { error.textContent = message; };
   const timers = new Set();
-  const paint = painterFor(panel, { history, devices });
+  const paint = painterFor(panel, { history, report, devices });
   paint();
   const ticker = setInterval(paint, pollMs);
 

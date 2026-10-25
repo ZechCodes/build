@@ -16,6 +16,9 @@ import {
   recordConnectionDiagnostic,
 } from "../src/core/connectionDiagnostics.js";
 
+vi.mock("../src/core/syncDiagnostics.js", () => ({ syncDiagnostics: { report: vi.fn(() => ({ periods: [] })), clear: vi.fn() } }));
+import { syncDiagnostics } from "../src/core/syncDiagnostics.js";
+
 const fill = (count, event = "state") => {
   for (let at = 0; at < count; at++) recordConnectionDiagnostic(`dev-a:sess-${at}`, event, { at });
 };
@@ -79,4 +82,13 @@ describe("the connection diagnostic ring", () => {
       vi.useRealTimers();
     }
   });
+});
+
+
+it("includes the sync report and clears it with connection events", () => {
+  const sync = { periods: [{ start: 0, stop: 10 }] };
+  syncDiagnostics.report.mockReturnValueOnce(sync);
+  expect(connectionDiagnosticReport().sync).toEqual(sync);
+  syncDiagnostics.clear.mockClear(); clearConnectionDiagnosticHistory();
+  expect(syncDiagnostics.clear).toHaveBeenCalledOnce();
 });

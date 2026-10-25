@@ -110,7 +110,7 @@ describe("the events on the page", () => {
     mount();
 
     const note = document.querySelector("#diagnostics").textContent;
-    expect(note).toContain("Timestamps, connection identifiers and the browser's storage errors only");
+    expect(note).toContain("Connection events include timestamps, identifiers and browser storage errors");
     expect(note).toContain("no message content, no keys");
   });
 });
@@ -261,4 +261,44 @@ describe("a host with no panel in it", () => {
 
     expect(() => teardown()).not.toThrow();
   });
+});
+
+
+describe("sync timing on the page", () => {
+  it("uses existing polling and clears the sync section", () => {
+    let sync = { periods: [{ start: 0, stop: null, passes: [], slowest: [] }], sql: { queued: 0, admitted: 1, timedOutHeld: 1 } };
+    mount({ report: () => ({ events: recorded, sync }), clear: () => { recorded = []; sync = { periods: [] }; } });
+    expect(document.querySelector("#diagsync").textContent).toContain("Ring +0 ms → unfinished");
+    expect(vi.getTimerCount()).toBe(1);
+    sync.periods[0].stop = 250;
+    vi.advanceTimersByTime(1000);
+    expect(document.querySelector("#diagsync").textContent).toContain("Ring +0 ms → +250 ms");
+    button("diagclear").click();
+    expect(document.querySelector("#diagsync").textContent).not.toContain("Ring +0 ms");
+    dispose(); dispose = null;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("copies and shares sync alongside connection events", async () => {
+    const sync = { periods: [{ start: 0, stop: null, passes: [], slowest: [] }] };
+    const share = vi.fn(async () => {}); const writeText = vi.fn(async () => {});
+    mount({ share, clipboard: { writeText }, report: () => ({ events: recorded, sync }) });
+    button("diagcopy").click(); button("diagshare").click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(JSON.parse(writeText.mock.calls[0][0]).sync).toEqual(sync);
+    expect(JSON.parse(share.mock.calls[0][0].text).sync).toEqual(sync);
+    expect(document.querySelector("#diagnostics").textContent).toContain("Sync timing includes monotonic offsets, enums and counters");
+  });
+});
+
+
+it("renders sync values as text and preserves the existing connection row on sync-only updates", () => {
+  recorded = [entry()];
+  const sync = { periods: [{ start: 0, stop: null, passes: [], slowest: [{ verb: "<img src=x onerror=alert(1)>", kind: "rpc", outcome: "error" }] }] };
+  mount({ report: () => ({ events: recorded, sync }) });
+  const standing = rows()[0];
+  expect(document.querySelector("#diagsync img")).toBeNull();
+  expect(document.querySelector("#diagsync").textContent).toContain("<img");
+  sync.periods[0].stop = 100;
+  vi.advanceTimersByTime(1000);
+  expect(rows()[0]).toBe(standing);
 });

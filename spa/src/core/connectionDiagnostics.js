@@ -1,3 +1,5 @@
+import { syncDiagnostics } from "./syncDiagnostics.js";
+
 // What this tab has seen its connections do, since the page loaded.
 //
 // # Why the ring is large and says when it overflowed
@@ -50,10 +52,11 @@ export function connectionDiagnosticHistory() {
  *  still holds. What gets copied and shared, because a report that cannot say it
  *  is incomplete is the failure this exists to fix. */
 export function connectionDiagnosticReport() {
-  return { since, dropped, events: connectionDiagnosticHistory() };
+  return { since, dropped, events: connectionDiagnosticHistory(), sync: syncDiagnostics.report() };
 }
 
 export function clearConnectionDiagnosticHistory() {
+  syncDiagnostics.clear();
   history.length = 0;
   dropped = 0;
 }

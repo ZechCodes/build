@@ -44,6 +44,7 @@ let painted = "";
 /** The state the ring is showing, which is where its next change animates
  *  FROM, and what a screen reader has already been told. */
 let shownState = "";
+let syncActive = false;
 
 /** The account's machines, each said to be holding a session or not. "Live"
  *  is `canAnswer` — the same question every surface asks before it calls a
@@ -187,6 +188,7 @@ function paint() {
   button.dataset.state = status.state;
   button.classList.remove(...STATE_CLASSES);
   button.classList.add(`is-${status.state}`);
+  paintSync(button);
   host.hidden = !status.visible;
   button.setAttribute("aria-label", status.label);
   button.setAttribute("title", status.label);
@@ -209,14 +211,18 @@ function keepTime(ticking) {
   }
 }
 
+function paintSync(button) {
+  button?.classList.toggle("connection-status--syncing", syncActive && shownState === "connected");
+}
+
 export function mountConnectionStatus() {
   unmountConnectionStatus();
   stopRecoveryWatch = onDeviceRecoveryChanged(paint);
   stopDeviceWatch = onDeviceStateChanged(paint);
   paint();
   stopSyncWatch = subscribeConnectionSync((active) => {
-    document.querySelector("#connection-status .connection-status")
-      ?.classList.toggle("connection-status--syncing", active);
+    syncActive = active;
+    paintSync(document.querySelector("#connection-status .connection-status"));
   });
   menuRecord = watchUiState(uiAddress({ view: "connection", kind: "menu" }), (saved) => {
     const host = document.getElementById("connection-status");
@@ -238,6 +244,7 @@ export function unmountConnectionStatus() {
   keepTime(false);
   painted = "";
   shownState = "";
+  syncActive = false;
   const host = document.getElementById("connection-status");
   if (host) {
     paintMenuOpen(host, false);

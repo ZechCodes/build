@@ -506,3 +506,30 @@ describe("post-connect cache sync", () => {
     expect(reduced).toMatch(/\.connection-status--syncing::before\s*\{[^}]*animation:none/);
   });
 });
+
+
+describe("sync rotation during recovery", () => {
+  it.each(["attempting", "waiting"])("stops an active ring on %s and guards later sync notifications", (state) => {
+    sync.active = true;
+    mountConnectionStatus();
+    const button = icon();
+    recoveryMoved([{ deviceId: "a", status: state, nextAttemptAt: Date.now() + 5000 }]);
+    expect(icon()).toBe(button);
+    expect(host().hidden).toBe(false);
+    expect(button.classList.contains("connection-status--syncing")).toBe(false);
+    sync.listener(true);
+    expect(button.classList.contains("connection-status--syncing")).toBe(false);
+    recoveryMoved([]);
+    expect(button.classList.contains("connection-status--syncing")).toBe(true);
+    sync.listener(false);
+    expect(button.classList.contains("connection-status--syncing")).toBe(false);
+  });
+
+  it("guards active sync on mount while a still-answering peer restores", () => {
+    sync.active = true;
+    contexts.restoring.add("a");
+    mountConnectionStatus();
+    expect(icon().dataset.state).toBe("attempting");
+    expect(icon().classList.contains("connection-status--syncing")).toBe(false);
+  });
+});

@@ -274,6 +274,79 @@ describe("the order a pass reads in", () => {
 });
 
 describe("what a pass writes", () => {
+  it("retains thread repair debt through SQL admission expiry and retries on the next pass", async () => {
+    const { createSessionRpc, SQL_ADMISSION_TIMEOUT_MS } = await import("../src/core/sessionRpc.js");
+    const { transportEpoch } = await import("./transportEpoch.js");
+    const listeners = new Set();
+    let recovered = false;
+    const wire = {
+      sent: [],
+      onEnvelope: (listener) => listeners.add(listener),
+      onClose: () => {},
+      send(frame) {
+        this.sent.push(frame.payload);
+        if (!recovered) return;
+        const { id, params } = frame.payload;
+        const item = { type: "message", data: { id: params.agent_id, sequence: 1, updated_sequence: 2, body: "fresh" } };
+        for (const listener of listeners) listener({ payload: { id, ok: true, result: { items: [item], thread_last_sequence: 2, has_more: false } } });
+      },
+    };
+    const rpc = createSessionRpc({
+      transport: { encryptFrame: async ({ frameFields }) => frameFields, decryptEnvelope: async ({ envelope }) => envelope },
+      bridgeEpoch: transportEpoch(), sessionId: "opening", sessionKeyB64: "key", deviceId: "dev-1", timeoutMs: 0,
+    });
+    rpc.rideOn(wire);
+    const holders = Array.from({ length: 8 }, () => rpc.call("tasks.get").catch(() => {}));
+    const ids = ["run-1", "run-2"];
+    board = ids.map((run_id, index) => branchItem({ run_id, worktree_id: `wt-${index}`, agents: [{ id: run_id }] }));
+    for (const id of ids) {
+      await cache.writeCached({ deviceId: "dev-1", entityId: id, kind: "thread", sub: id }, {
+        items: [{ type: "message", data: { id, sequence: 1, body: "cached" } }], deliveredSequence: 2, repairThrough: 2,
+      });
+    }
+    const original = bridge.call.getMockImplementation();
+    const failures = [];
+    bridge.call.mockImplementation((method, params, options) => method === "thread.page"
+      ? rpc.call(method, params, options).catch((error) => { failures.push(error); throw error; })
+      : original(method, params, options));
+    // Capture only the transport admission clocks; IndexedDB keeps real timers.
+    const setTimer = globalThis.setTimeout;
+    const deadlines = [];
+    const timers = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+      const handle = setTimer(callback, delay, ...args);
+      if (delay === SQL_ADMISSION_TIMEOUT_MS) deadlines.push(() => { clearTimeout(handle); callback(...args); });
+      return handle;
+    });
+    try {
+      sync.startCacheSync();
+      await called(bridge.call, () => calls("thread.page").length === 2);
+      expect(deadlines).toHaveLength(2);
+      expect(wire.sent).toHaveLength(8);
+      for (const expire of deadlines.splice(0)) expire();
+      await passesSettled(sync, "dev-1");
+      expect(failures).toHaveLength(2);
+      expect(failures).toEqual(expect.arrayContaining([expect.objectContaining({ deadline: "admission", uncertain: false, retryable: true })]));
+      for (const id of ids) {
+        expect((await read(id, "thread", id)).value).toMatchObject({ repairThrough: 2, items: [{ data: { body: "cached" } }] });
+      }
+      // Both shared slots can serve checkout work after the two SQL waits end.
+      expect(paramsOf("git.status").map((params) => params.run_id).sort()).toEqual(ids);
+      recovered = true;
+      rpc.resetSqlReads();
+      await sync.syncDevice("dev-1");
+      await passesSettled(sync, "dev-1");
+      for (const id of ids) {
+        const value = (await read(id, "thread", id)).value;
+        expect(value.items[0].data.body).toBe("fresh");
+        expect(value.repairThrough).toBeUndefined();
+      }
+    } finally {
+      timers.mockRestore();
+      rpc.close();
+      await Promise.all(holders);
+    }
+  });
+
   it("failed_refresh_retains_rows until a confirmed empty workspace roster arrives", async () => {
     const { cachedFeedView } = await import("../src/core/cachedRows.js");
     const { navigationCatalog, projectWorkspaceInventory } = await import("../src/core/navigationModel.js");

@@ -14,7 +14,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
   watchChanges: (registration) => { watchers.push(registration); return { dispose() {} }; },
 }));
 vi.mock("../src/core/deviceContexts.js", () => ({
-  contextFor: (id) => contexts.find((context) => context.deviceId === id), liveContexts: () => contexts.filter((context) => context.active()),
+  contextFor: (id) => contexts.find((context) => context.deviceId === id), liveContexts: () => contexts.filter((context) => context.connected || context.answering === true),
   whenGreeted: async (_context, dispatch) => ({ sent: dispatch(() => true), stands: () => true }),
   onDeviceStateChanged: (callback) => { deviceChanged = callback; return () => {}; },
 }));
@@ -319,4 +319,77 @@ it("keeps each device's cut bounded while another device is still connecting", a
   } finally {
     later.release({ tasks: [] }); await pushedLater;
   }
+});
+
+it.each(["restoring", "inactive"])("stops a held pass when a still-answering device is %s", async (kind) => {
+  const state = signals(), context = contexts[0], held = hold(context, "board.list");
+  sync.startCacheSync(); await started(context);
+  if (kind === "restoring") context.peerLink = { restoring: () => true };
+  else { context.connected = false; context.answering = true; }
+  deviceChanged();
+  try {
+    expect(state.values()).toEqual([false, true, false]);
+  } finally {
+    held.release({ items: [] }); await passesSettled(sync, "dev-1");
+  }
+});
+
+it.each(["enrichment", "catch-up"])("stops disconnected %s before its RPC settles and allows reconnect", async (kind) => {
+  const work = await holdPostConnectWork(kind);
+  work.context.peerLink = { restoring: () => true };
+  deviceChanged();
+  try {
+    expect(work.state.values()).toEqual([false, true, false]);
+    work.context.peerLink = null;
+    work.context.session = {};
+    const next = hold(work.context, "board.list");
+    deviceChanged();
+    await called(work.context.rpc, () => work.context.rpc.mock.calls.filter(([method]) => method === "board.list").length === 2);
+    work.release(); await work.pending;
+    expect(work.state.values()).toEqual([false, true, false, true]);
+    next.release({ items: [] }); await idle(work.state);
+    expect(work.state.values()).toEqual([false, true, false, true, false]);
+  } finally {
+    work.release(); await work.pending;
+  }
+});
+
+it("keeps syncing another connected device when a still-answering peer starts restoring", async () => {
+  const first = contexts[0], second = makeContext("dev-2"); contexts.push(second);
+  const firstHeld = hold(first, "board.list"), secondHeld = hold(second, "board.list"), state = signals();
+  sync.startCacheSync(); await Promise.all(contexts.map((context) => started(context)));
+  first.peerLink = { restoring: () => true }; deviceChanged();
+  expect(state.values()).toEqual([false, true]);
+  secondHeld.release({ items: [] }); await passesSettled(sync, "dev-2");
+  try { expect(state.values()).toEqual([false, true, false]); }
+  finally { firstHeld.release({ items: [] }); await passesSettled(sync, "dev-1"); }
+});
+
+it("keeps ring ownership through a superseded pass until its successor starts", async () => {
+  const state = signals(), context = contexts[0], old = hold(context, "board.list");
+  sync.startCacheSync(); await started(context);
+  const previous = sync.passInFlight("dev-1");
+  context.session = {};
+  const next = hold(context, "board.list");
+  const successor = sync.syncDevice("dev-1");
+  old.release({ items: [] }); await previous;
+  await called(context.rpc, () => context.rpc.mock.calls.filter(([method]) => method === "board.list").length === 2);
+  try { expect(state.values()).toEqual([false, true]); }
+  finally { next.release({ items: [] }); await successor; await idle(state); }
+  expect(state.values()).toEqual([false, true, false]);
+});
+
+it("starts and finishes a fresh pass after the same session finishes ICE restoration", async () => {
+  const state = signals(), context = contexts[0], old = hold(context, "board.list");
+  sync.startCacheSync(); await started(context);
+  context.peerLink = { restoring: () => true }; deviceChanged();
+  try { expect(state.values()).toEqual([false, true, false]); }
+  finally { old.release({ items: [] }); await passesSettled(sync, "dev-1"); }
+  context.peerLink = null; deviceChanged();
+  const next = hold(context, "board.list");
+  const restored = sync.syncRestoredDevice("dev-1", context.session);
+  await called(context.rpc, () => context.rpc.mock.calls.filter(([method]) => method === "board.list").length === 2);
+  expect(state.values()).toEqual([false, true, false, true]);
+  next.release({ items: [] }); await restored; await idle(state);
+  expect(state.values()).toEqual([false, true, false, true, false]);
 });

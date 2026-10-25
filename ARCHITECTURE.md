@@ -4242,7 +4242,13 @@ through the same device's rendezvous (`mintTerminalSession`), and it rides the
   `spa/src/core/deviceContexts.js`.
 
 `sessionRpc.js` shares eight SQL sender credits across the opening's carriers
-and priorities. Extra reads stay unsent and have no wire deadline yet. Each
+and priorities. Extra reads stay unsent and have no wire deadline yet.
+Background SQL reads have a separate 12 s admission deadline, independent of
+path timeout opt-outs. Expiry atomically removes the unsent reservation and
+rejects with a retryable, definitely-unsent `deadline: "admission"` timeout;
+it is no reason to probe the wire. Existing sync failure handling retains cached
+content and recovery debt and releases the background stream slot. Foreground
+SQL admission remains unchanged. Admission starts a fresh path deadline. Each
 credit records its actual sending carrier and settles once on a final reply,
 unsent cancellation, that carrier closing, authoritative restore, or opening
 end. Receipts, timeouts, sent cancellation and switching carriers retain it.

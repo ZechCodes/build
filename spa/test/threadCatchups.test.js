@@ -149,27 +149,3 @@ it("keeps the larger retained suffix goal when a same-generation floor advances 
   stalled.resolve(); await Promise.all([first, next]);
   expect(read.mock.calls.map(([goal]) => [goal.sequence, goal.historyStartSequence])).toEqual([[100, 1], [100, 8], [100, 8]]);
 });
-
-
-it("renews an exhausted goal only when an idle recovery caller explicitly retries", async () => {
-  const read = vi.fn(async () => {});
-  const jobs = createThreadCatchups({ needed: () => true, read });
-  await jobs.enqueue("thread", request(3));
-  await jobs.enqueue("thread", request(3));
-  expect(read).toHaveBeenCalledTimes(2);
-  await jobs.enqueue("thread", request(3), { retryExhausted: true });
-  expect(read).toHaveBeenCalledTimes(4);
-  await jobs.enqueue("thread", request(3));
-  expect(read).toHaveBeenCalledTimes(4);
-});
-
-it("joins an active goal without restarting its budget for an explicit recovery retry", async () => {
-  const held = gate(), read = vi.fn(() => held.promise);
-  const jobs = createThreadCatchups({ needed: () => true, read });
-  const first = jobs.enqueue("thread", request(3));
-  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
-  expect(jobs.enqueue("thread", request(3), { retryExhausted: true })).toBe(first);
-  expect(read).toHaveBeenCalledTimes(1);
-  held.resolve(); await first;
-  expect(read).toHaveBeenCalledTimes(2);
-});

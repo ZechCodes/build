@@ -580,8 +580,8 @@ describe("bounded background streams", () => {
     script["thread.activity"] = () => ({ items: [{ ...item, data: { ...item.data, updated_sequence: 4, outcome: "ok" } }] });
     script["fs.tree"] = (params) => ["run-2", "run-3"].includes(params.run_id) ? pushed.promise : answers["fs.tree"](params);
     const threads = await import("../src/core/threadSync.js");
-    const repairThread = threads.repairThreadWindow;
-    const spy = vi.spyOn(threads, "repairThreadWindow").mockImplementation((request) => repairThread({
+    const readThread = threads.syncThreadWindow;
+    const spy = vi.spyOn(threads, "syncThreadWindow").mockImplementation((request) => readThread({
       ...request,
       call: (method, ...args) => {
         if (method === "thread.activity") queued.release();

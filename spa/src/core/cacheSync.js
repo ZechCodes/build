@@ -61,7 +61,7 @@ import { THREAD_RECORD_KIND } from "./thread.js";
 import { reconcileConversationGeneration, reconcileConversationGenerations, resetAliasesInRow } from "./conversationReset.js";
 import { writeConversationFeed } from "./conversationFeedReset.js";
 import { createThreadCatchups } from "./threadCatchups.js";
-import { repairThreadWindow, syncThreadWindow, threadWindow } from "./threadSync.js";
+import { syncThreadWindow, threadWindow } from "./threadSync.js";
 import { replaceSessionList, sessionListObservation, updateSessionSummary } from "./sessionListCache.js";
 import {
   cachedAddresses,
@@ -74,7 +74,6 @@ import {
   mergeCachedRecordsTogether,
   mergeCachedTogether,
   readCached,
-  readCanonicalCached,
   recordWriteOf,
   updateCachedFeed,
   writeCached,
@@ -1347,13 +1346,8 @@ const staleDiffRecord = (held) => (!held || held.stale ? null : { ...held, stale
 
 /** One conversation, read forward from the sequence the cache holds — or the
  *  latest capability-sized page where it holds none. */
-async function syncThread(context, entityId, agent, priority, forwardOnly = false) {
-  const read = await syncThreadWindow({ ...threadReadRequest(context, entityId, agent, priority), forwardOnly: true });
-  if (read && !forwardOnly) await scheduleThreadRepair(context, entityId, agent, priority);
-}
-
-function threadReadRequest(context, entityId, agent, priority) {
-  return {
+async function syncThread(context, entityId, agent, priority) {
+  await syncThreadWindow({
     deviceId: context.deviceId,
     call: (method, params, envelope) => callWhileActive(context, method, params, envelope,
       addressOf(context, entityId, THREAD_RECORD_KIND, agent.conversation_id || agent.id)),
@@ -1363,7 +1357,7 @@ function threadReadRequest(context, entityId, agent, priority) {
     conversationId: agent.conversation_id,
     threadId: agent.thread_id,
     priority,
-  };
+  });
 }
 
 // ─── Step 0: the three subscriptions ─────────────────────────────────────────
@@ -1538,7 +1532,7 @@ const openPushEntity = (deviceId) => visibleSyncThread(deviceId)?.entityId || su
 function queuesFor(context) {
   const held = pushQueues.get(context.deviceId);
   if (held?.scope === context.backgroundStreams) return held;
-  held?.body.clear(); held?.background.clear(); held?.catchups.clear(); held?.repairs.clear();
+  held?.body.clear(); held?.background.clear(); held?.catchups.clear();
   const priority = (item) => item.owner === openPushEntity(context.deviceId) || item.entity_id === openPushEntity(context.deviceId);
   const background = createPushQueue({ priority, onError: pushError, concurrency: 2,
     isBarrier: () => false,
@@ -1557,17 +1551,9 @@ function queuesFor(context) {
       return catchupGenerationMatches(request, held)
         && catchupStillNeeded(request, held);
     },
-    read: (request, active) => syncThread({ ...request.context, active }, request.entityId, request.agent, "background", true),
+    read: (request, active) => syncThread({ ...request.context, active }, request.entityId, request.agent, "background"),
   });
-  const repairs = createThreadCatchups({
-    needed: async (request) => {
-      const held = (await readCanonicalCached(request.address))?.value;
-      return catchupGenerationMatches(request, held) && Boolean(held?.repairThrough);
-    },
-    read: (request, active) => repairThreadWindow(threadReadRequest(
-      { ...request.context, active }, request.entityId, request.agent, request.priority)),
-  });
-  const queues = { scope: context.backgroundStreams, body, background, catchups, repairs };
+  const queues = { scope: context.backgroundStreams, body, background, catchups };
   pushQueues.set(context.deviceId, queues);
   return queues;
 }
@@ -1581,12 +1567,8 @@ export function pushWorkInFlight(deviceId) {
     backgroundPending: queues?.background.snapshot().pending || 0 };
 }
 
-export function threadCatchupsInFlight(deviceId) {
-  const queues = pushQueues.get(deviceId);
-  return [queues?.catchups.snapshot(), queues?.repairs.snapshot()].reduce((total, queue) => ({
-    running: total.running + (queue?.running || 0), pending: total.pending + (queue?.pending || 0),
-  }), { running: 0, pending: 0 });
-}
+export const threadCatchupsInFlight = (deviceId) =>
+  pushQueues.get(deviceId)?.catchups.snapshot() || { running: 0, pending: 0 };
 
 const threadGenerationKey = (window) => JSON.stringify([window?.thread_id || "", Number(window?.thread_generation_revision || 0)]);
 
@@ -1599,7 +1581,7 @@ function catchupGenerationMatches(request, held) {
 
 function catchupStillNeeded(request, held) {
   const through = Number(held?.deliveredSequence || 0);
-  return through < request.sequence
+  return through < request.sequence || Boolean(held?.repairThrough)
     || request.probeFrom !== undefined && through <= request.probeFrom;
 }
 
@@ -1997,32 +1979,14 @@ async function deferThreadCatchup(context, entityId, tip, sub, held) {
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub), fence = pushFence();
   const reading = { ...context, active: () => context.active() && !pushedSince(address, fence) };
   if (!reading.active()) return;
-  const forward = queuesFor(context).catchups.enqueue(JSON.stringify([entityId, sub]), {
+  const settled = queuesFor(context).catchups.enqueue(JSON.stringify([entityId, sub]), {
     context: reading, active: reading.active, address, entityId, generation: threadGenerationKey(held),
     ...catchupGoal(tip, held),
     historyStartSequence: Math.max(Number(held?.historyStartSequence || 0), authoritativeTipFloor(tip, held)),
     agent: { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: held?.thread_id || tip.thread_id },
   });
-  const settled = forward.then(() => scheduleThreadRepair(reading, entityId,
-    { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: held?.thread_id || tip.thread_id }, "background"));
   if (context.pushing) context.pushCompletions?.push(settled);
   else await settled;
-}
-
-/** Historical copy repair shares one lane across pass and push callers. Its
- * wait never owns the forward high-water lane, and debt remains canonical. */
-async function scheduleThreadRepair(context, entityId, agent, priority) {
-  const sub = agent.conversation_id || agent.id;
-  const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub);
-  const held = (await readCanonicalCached(address))?.value;
-  if (!context.active() || !held?.repairThrough) return;
-  const generation = threadGenerationKey(held);
-  if (agent.thread_id && held.thread_id !== agent.thread_id) return;
-  return queuesFor(context).repairs.enqueue(JSON.stringify([entityId, sub]), {
-    context, active: context.active, address, entityId, generation, priority,
-    sequence: Number(held.repairThrough), historyStartSequence: Number(held.historyStartSequence || 0),
-    agent: { ...agent, thread_id: held.thread_id },
-  }, { retryExhausted: Boolean(context.syncTurn) });
 }
 
 /** `git`: the shapes ride the push, so nothing is asked for them. Two things
@@ -2397,7 +2361,7 @@ export function stopCacheSync() {
     held.active?.dispose();
   }
   subscriptions.clear();
-  for (const queues of pushQueues.values()) { queues.body.clear(); queues.background.clear(); queues.catchups.clear(); queues.repairs.clear(); }
+  for (const queues of pushQueues.values()) { queues.body.clear(); queues.background.clear(); queues.catchups.clear(); }
   pushQueues.clear();
   disposeProjectTerminalSubscriptions();
   syncedSessions.clear();

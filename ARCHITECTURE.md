@@ -3872,9 +3872,7 @@ gate attachment display.
   Empty in-place-only forward pages commit that coverage together with repair
   debt. Capped sparse repairs fetch omitted held representatives through exact
   one-item, unprojected pages (at most 50); failed or mismatched copies leave
-  debt for the next bounded attempt or recovery pass. Creations after the
-  canonical debt counter do not extend that historical coverage requirement;
-  newer in-place debt and missing older representatives still prevent repayment.
+  debt for the next bounded attempt or recovery pass.
   Sync and load-older pages request `activity: "newest"` only when the device
   advertises `threads.leanActivity`. Cold sync and conversation-open reads
   then request 23 messages, measured to fill the phone conversation even at
@@ -3915,13 +3913,9 @@ gate attachment display.
   empty or gapped tip publishes an advancing floor before its deferred repair,
   so a held RPC cannot keep deleted history visible. Roster/review reads run behind bodies with one pending refresh per key;
   a key never has two enrichment appliers running together.
-  `threadCatchups.js` coordinates separate forward and historical-repair lanes:
-  each has one active round and one coalesced trailing high-water per conversation
-  and generation. A newer forward page can publish its cursor while an older
-  historical repair waits on the wire. Passes and pushes share the historical
-  lane; awaiting either still waits for the repair it requested. Repair debt
-  remains on the canonical window until the old copies are covered, and a
-  gapped carried tip still needs a forward page before delivery can advance. It rechecks canonical coverage before dispatch, skips already
+  `threadCatchups.js` separately coordinates pushed catch-up/repair reads:
+  one active round and one coalesced trailing high-water per conversation and
+  generation. It rechecks canonical coverage before dispatch, skips already
   covered goals, and allows two attempts per goal and cache lifetime. Repeated
   unchanged tips do not renew that budget. An untagged post-reset hint probes
   held coverage without borrowing its ambiguous counter. New evidence, eviction, reset or a

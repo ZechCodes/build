@@ -22,7 +22,7 @@ export function summarizeLiveSyncDelivery(result) {
   }
   const holdsMeasured = Array.isArray(result.ownRepairHolds);
   const holds = unionIntervals(result.ownRepairHolds || []);
-  const raw = [], adjusted = [], late = [], commits = [];
+  const raw = [], adjusted = [], late = [];
   const completeness = { receipt: receipts.size, admission: 0, workerStart: 0, cacheCommit: 0, mountedPaint: 0 };
   const unorderedStageIntervals = {};
   const stageLatencies = { receiptToAdmission: [], admissionToWorker: [], workerToCommit: [], commitToPaint: [] };
@@ -38,7 +38,6 @@ export function summarizeLiveSyncDelivery(result) {
       if (at[last] >= at[first]) stageLatencies[key].push(at[last] - at[first]);
       else unorderedStageIntervals[key] = (unorderedStageIntervals[key] || 0) + 1;
     }
-    if (at.cacheCommit !== undefined) commits.push(at.cacheCommit - receipt);
     if (at.mountedPaint === undefined) continue;
     const latency = at.mountedPaint - receipt;
     raw.push(latency);
@@ -50,7 +49,6 @@ export function summarizeLiveSyncDelivery(result) {
   return { quantile: "nearest rank ceil(n*q)-1", expectedTips: expected, completeness,
     complete: Object.values(completeness).every((count) => count === expected),
     holdAdjustmentAvailable: holdsMeasured, measuredOwnRepairHoldUnion: holds,
-    receiptToCommit: distribution(commits),
     raw: distribution(raw), holdAdjusted: holdsMeasured ? distribution(adjusted) : null,
     lateUnheld: holdsMeasured ? distribution(late) : null,
     stageIntervalsAreCoverageObservations: true, unorderedStageIntervals,

@@ -295,7 +295,10 @@ const repaidBy = (held, page) =>
 function repairCoversHeld(held, page) {
   if (page.has_more !== true) return true;
   const shipped = new Set((page.items || []).map(threadItemKey));
-  return recentHeldItems(held).every((item) => shipped.has(threadItemKey(item)));
+  // A creation after the debt's counter cannot owe an earlier update. New
+  // forward coverage must not extend an in-flight historical obligation.
+  return recentHeldItems(held).filter((item) => Number(item.data?.sequence || 0) <= Number(held.repairThrough))
+    .every((item) => shipped.has(threadItemKey(item)));
 }
 
 /** The arrivals that are newer copies of items held. */

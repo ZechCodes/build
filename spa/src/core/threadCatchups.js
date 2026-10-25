@@ -33,7 +33,7 @@ function abandon(entry) {
   entry.pending = null;
 }
 
-export function createThreadCatchups({ needed, read }) {
+export function createThreadCatchups({ needed, read, onChange = () => {} }) {
   const entries = new Map();
 
   async function stillNeeded(round, active) {
@@ -69,11 +69,13 @@ export function createThreadCatchups({ needed, read }) {
         entry.pending = null;
         if (next && entry.valid) start(entry, next);
       }
+      onChange();
     }
   }
 
   function start(entry, round) {
     entry.current = round;
+    onChange();
     void run(entry, round);
     return round.promise;
   }
@@ -108,6 +110,7 @@ export function createThreadCatchups({ needed, read }) {
     clear() {
       for (const entry of entries.values()) abandon(entry);
       entries.clear();
+      onChange();
     },
   };
 }

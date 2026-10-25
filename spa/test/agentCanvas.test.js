@@ -88,6 +88,18 @@ function fakeFrames() {
   return { request, cancel, run, pending: () => pending.size };
 }
 
+function canvasResizeObserver() {
+  let notify;
+  const observe = vi.fn();
+  const disconnect = vi.fn();
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback) { notify = callback; }
+    observe = observe;
+    disconnect = disconnect;
+  });
+  return { observe, disconnect, resize: () => notify([]) };
+}
+
 const opsOf = (context, names) =>
   context.ops.filter(({ op }) => names.includes(op)).map(({ op, args }) => [op, ...args]);
 
@@ -228,6 +240,45 @@ describe("createPatternRenderer", () => {
 });
 
 describe("the shared frame loop", () => {
+  it("reuses observed geometry across unchanged animation frames", () => {
+    const observer = canvasResizeObserver();
+    const { canvas } = fakeCanvas();
+    const measure = vi.spyOn(canvas, "getBoundingClientRect");
+    const renderer = createPatternRenderer({ canvas });
+    try {
+      renderer.setWorking(true);
+      for (let frame = 1; frame <= 30; frame++) frames.run(frame * 16);
+      expect(measure).toHaveBeenCalledTimes(1);
+      expect(observer.observe).toHaveBeenCalledWith(canvas);
+      vi.stubGlobal("devicePixelRatio", 1);
+      frames.run(496);
+      expect([canvas.width, canvas.height]).toEqual([40, 40]);
+      expect(measure).toHaveBeenCalledTimes(1);
+    } finally { renderer.destroy(); }
+    expect(observer.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("repaints an idle canvas when its observed box becomes visible or resizes", () => {
+    const observer = canvasResizeObserver();
+    const { canvas } = fakeCanvas();
+    let box = { width: 0, height: 0 };
+    canvas.getBoundingClientRect = vi.fn(() => box);
+    const renderer = createPatternRenderer({ canvas });
+    try {
+      expect(canvas.width).toBe(0);
+      box = { width: 36, height: 24 };
+      observer.resize();
+      expect([canvas.width, canvas.height]).toEqual([72, 48]);
+      box = { width: 48, height: 30 };
+      observer.resize();
+      expect([canvas.width, canvas.height]).toEqual([96, 60]);
+      expect(frames.pending()).toBe(0);
+    } finally { renderer.destroy(); }
+    const reads = canvas.getBoundingClientRect.mock.calls.length;
+    observer.resize();
+    expect(canvas.getBoundingClientRect).toHaveBeenCalledTimes(reads);
+  });
+
   it("starts when a renderer begins working and keeps asking for the next frame", () => {
     const { canvas } = fakeCanvas();
     const renderer = createPatternRenderer({ canvas, patternIndex: 1, seed: "agent-1" });

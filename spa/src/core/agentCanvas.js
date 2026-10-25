@@ -33,6 +33,7 @@
 // state; it just has nowhere to put pixels.
 
 import { prefersReducedMotion } from "./motion.js";
+import { createCanvasGeometry } from "./canvasGeometry.js";
 import { TILINGS, tilingForPattern } from "./tilings.js";
 import {
   CELL_SCALE_BASE,
@@ -186,17 +187,6 @@ function deviceRatio() {
   return Math.min(Math.max(ratio, 1), MAX_DEVICE_PIXEL_RATIO);
 }
 
-/** The bubble's CSS box. Zero while the element is still unlaid-out, which is
- *  a perfectly ordinary state to be painted in — the caller mounts the canvas
- *  and asks for a frame in the same tick. */
-function cssBoxOf(canvas) {
-  const measurable = typeof canvas.getBoundingClientRect === "function";
-  const rect = measurable ? canvas.getBoundingClientRect() : null;
-  const width = Math.max(0, (rect && rect.width) || canvas.clientWidth || 0);
-  const height = Math.max(0, (rect && rect.height) || canvas.clientHeight || 0);
-  return { width, height };
-}
-
 /** Travel split into whole lattice periods and what is left over: `offset` is
  *  what the painter translates by, small forever rather than growing with the
  *  session, and `wraps` is how many periods were shaved off to keep it that
@@ -253,6 +243,7 @@ export function createPatternRenderer({ canvas, patternIndex = 1, seed = "" } = 
   let dimmed = false;
   let ink = DEFAULT_INK;
   let field = null; // { cells, cellSize, size } — rebuilt when the box changes
+  const geometry = createCanvasGeometry(canvas, paint);
 
   function contextOf() {
     if (context) return context;
@@ -296,7 +287,7 @@ export function createPatternRenderer({ canvas, patternIndex = 1, seed = "" } = 
   // eslint-disable-next-line complexity -- ratchet: paint is at 12, cap 10 — reduce it, then drop this line
   function paint() {
     if (destroyed || !canvas) return;
-    const box = cssBoxOf(canvas);
+    const box = geometry.read();
     if (box.width <= 0 || box.height <= 0) return;
     const ctx = contextOf();
     if (!ctx) return;
@@ -421,6 +412,7 @@ export function createPatternRenderer({ canvas, patternIndex = 1, seed = "" } = 
       working = false;
       clock.stop();
       leaveLoop(renderer);
+      geometry.dispose();
       field = null;
       context = null;
     },

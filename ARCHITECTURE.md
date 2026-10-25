@@ -3797,7 +3797,9 @@ gate attachment display.
   `diff`, the files root listing, and `terminals`.
   `pushQueue.js` bounds each device/session/path to one body applier and two
   deferred enrichment appliers. Compatible pending entity snapshots and thread
-  spans coalesce; board removals, roster generation changes and resets retain
+  spans coalesce. Numeric revision-only board hints share a high-water job and
+  allow mounted priority across intervening hints. Board list replacements,
+  removals, unknown board payloads, roster generation changes and resets retain
   their order. Unknown empty spans never become delivered coverage when folded.
   The body lane writes conversations before state and session summaries, and
   also writes terminal rosters without waiting for enrichment RPCs. The shown
@@ -3825,9 +3827,12 @@ gate attachment display.
   acquire a push slot or wait for a batching timer. Awaiting a push still waits
   for its own deferred fields, without holding a body slot during those reads.
   `pushWorkInFlight()` counts pending applier jobs before IndexedDB admission.
-  Feed consumers retain an address index (`feedCacheReader.js`): announcements
-  reread only named records, in batches of at most 64; prefix evictions rebuild
-  the index. Reads still include pending-write overlays and cross-tab changes.
+  Feed and route consumers share an address index (`feedCacheRecords.js`) and
+  stable projections (`feedCacheReader.js`, `cachedRows.js`). Concurrent readers
+  share the initial read; later announcements reread only named records, in
+  batches of at most 64. Unrelated writes reuse the held snapshot. Prefix
+  evictions rebuild the index. Reads still include pending-write overlays and
+  cross-tab changes; a failed read leaves the projection invalid for retry.
 - **Chat read marks** (#473) report the viewport sequence and window floor
   only while the reader is present. A known cursor can establish read progress
   even if the cached unread count is zero. `chatReadReporter.js` confirms

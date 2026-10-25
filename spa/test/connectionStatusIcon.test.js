@@ -13,6 +13,15 @@ import { resolve } from "node:path";
 const channel = vi.hoisted(() => ({ current: "dev" }));
 vi.mock("../src/config.js", () => ({ get BUILD_CHANNEL() { return channel.current; } }));
 
+const sync = vi.hoisted(() => ({ active: false, listener: null, unsubscribe: vi.fn() }));
+vi.mock("../src/core/cacheSync.js", () => ({
+  subscribeConnectionSync: (listener) => {
+    sync.listener = listener;
+    listener(sync.active);
+    return () => { sync.listener = null; sync.unsubscribe(); };
+  },
+}));
+
 const recovery = vi.hoisted(() => ({ states: [], listener: null }));
 const contexts = vi.hoisted(() => ({ live: [], listener: null, paths: new Map(), restoring: new Set() }));
 
@@ -70,6 +79,8 @@ const recoveryMoved = (states) => {
 
 beforeEach(() => {
   channel.current = "dev";
+  sync.active = false;
+  sync.unsubscribe.mockClear();
   vi.useFakeTimers();
   // Fake timers cannot drive fake IndexedDB's transaction callbacks. This
   // icon suite exercises the cache-unavailable fallback; cache wiring has its
@@ -450,5 +461,48 @@ describe("where the menu opens", () => {
     const narrow = sheet.slice(sheet.indexOf("@media (max-width: 760px)"));
     expect(narrow).toMatch(/#connection-status \{[^}]*right:8px/);
     expect(narrow).toMatch(/#connection-status \{[^}]*bottom:calc\(var\(--console-space, 0px\) \+ 8px\)/);
+  });
+});
+
+
+describe("post-connect cache sync", () => {
+  it("rotates the existing ring without changing its connection details", () => {
+    mountConnectionStatus();
+    const button = icon();
+    const count = centre();
+    const badge = button.querySelector(".connection-build-channel");
+    const label = button.getAttribute("aria-label");
+    sync.listener(true);
+
+    expect(icon()).toBe(button);
+    expect(button.classList.contains("connection-status--syncing")).toBe(true);
+    expect(button.dataset.state).toBe("connected");
+    expect(button.getAttribute("aria-label")).toBe(label);
+    expect(centre()).toBe(count);
+    expect(count.textContent).toBe("2");
+    expect(button.querySelector(".connection-build-channel")).toBe(badge);
+    sync.listener(false);
+    expect(button.classList.contains("connection-status--syncing")).toBe(false);
+  });
+
+  it("reads active sync on mount and releases the subscription on unmount", () => {
+    sync.active = true;
+    mountConnectionStatus();
+    expect(icon().classList.contains("connection-status--syncing")).toBe(true);
+    mountConnectionStatus();
+    expect(sync.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(icon().classList.contains("connection-status--syncing")).toBe(true);
+    unmountConnectionStatus();
+    expect(sync.unsubscribe).toHaveBeenCalledTimes(2);
+    expect(sync.listener).toBeNull();
+  });
+
+  it("animates only the dashed ring and stops it for reduced motion", () => {
+    const sheet = readFileSync(resolve("src/styles.css"), "utf8");
+    expect(sheet).toMatch(/\.connection-status--syncing::before\s*\{[^}]*animation:connection-sync-spin [^;]*linear infinite/);
+    expect(sheet).toMatch(/@keyframes connection-sync-spin\s*\{\s*to\s*\{\s*transform:rotate\(360deg\)/);
+    expect(sheet).not.toMatch(/\.connection-status--syncing\s*\{[^}]*animation:/);
+    const reduced = sheet.slice(sheet.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toMatch(/\.connection-status--syncing::before\s*\{[^}]*animation:none/);
   });
 });

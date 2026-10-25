@@ -112,7 +112,9 @@ it("keeps row-only no-op hints out of task and rule dependencies", async () => {
 });
 
 it("publishes finite agent passes under continued hints and lets actions commit while held", async () => {
-  const actionRpc = vi.fn(async () => ({ committed: true }));
+  const task = { id: "task-user", project_id: projects[0].id, title: "Assigned immediately", status: "ready",
+    assignee: { kind: "agent", agent_id: "worker-p0" }, updated_at: "2026-10-25T00:00:00Z" };
+  const actionRpc = vi.fn(async () => ({ task, timeline: [] }));
   const context = contexts.adoptDeviceSession({ deviceId, call: actionRpc, close() {}, peer() {}, onCarrier() {} });
   contexts.adoptBridgeSelection(context, { major: 2, version: "2.0.0" }, {});
   follower.follow(projects);
@@ -122,6 +124,7 @@ it("publishes finite agent passes under continued hints and lets actions commit 
   const releases = [];
   const heldReads = vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
     const result = await readMany(addresses);
+    if (!addresses.every(({ kind }) => kind === "row" || kind === "project-agents")) return result;
     await new Promise((resolve) => releases.push(resolve));
     return result;
   });
@@ -130,10 +133,12 @@ it("publishes finite agent passes under continued hints and lets actions commit 
   await cache.writeCached(rosterAddress, { ...roster, agents: roster.agents.map((agent) => ({ ...agent, working: false })) });
   await vi.waitFor(() => expect(releases).toHaveLength(1));
   cache.announceCacheEvidence(address(row.entity_id, "row"));
-  const answer = await context.rpc("tasks.update", { task_id: "user-action" });
-  await cache.writeCached(address("user-action", "profile-action"), answer);
-  expect((await cache.readCached(address("user-action", "profile-action"))).value).toEqual({ committed: true });
-  expect(actionRpc).toHaveBeenCalledTimes(1);
+  const { createTaskWaitingOnActions } = await import("../src/core/taskWaitingOnActions.js");
+  const actions = createTaskWaitingOnActions({ deviceId, projectId: projects[0].id, taskId: task.id, call: context.rpc });
+  await actions.assign({ assignee: task.assignee });
+  expect(actionRpc).toHaveBeenCalledExactlyOnceWith("tasks.assign", { task_id: task.id, assignee: task.assignee });
+  expect((await cache.readCached(tracker.taskAddress(deviceId, projects[0].id, task.id)))?.value.task).toEqual(task);
+  expect(releases).toHaveLength(1);
   releases[0]();
   try {
     await vi.waitFor(() => expect(follower.runningProjectKeys().size).toBe(5));

@@ -274,7 +274,7 @@ mod tests {
                         } else {
                             "queued"
                         },
-                        "x".repeat(8192)
+                        serde_json::json!({ "padding": "x".repeat(8192) }).to_string()
                     ],
                 )
                 .unwrap();

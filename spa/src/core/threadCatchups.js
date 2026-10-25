@@ -3,6 +3,21 @@
 const MAX_ATTEMPTS = 2;
 const sequenceOf = (request) => Number(request.sequence || 0);
 const requestActive = (request) => !request.active || request.active();
+const floorOf = (request) => Number(request.historyStartSequence || 0);
+const newerGoal = (request, held) => sequenceOf(request) > sequenceOf(held) || floorOf(request) > floorOf(held);
+const combinedGoal = (held, request) => ({
+  ...request,
+  sequence: Math.max(sequenceOf(held), sequenceOf(request)),
+  historyStartSequence: Math.max(floorOf(held), floorOf(request)),
+});
+const exhaustedThrough = (entry, request) => floorOf(request) > entry.exhaustedFloor ? -1 : entry.exhaustedThrough;
+
+function exhaustGoal(entry, request) {
+  if (floorOf(request) > entry.exhaustedFloor) entry.exhaustedThrough = -1;
+  entry.exhaustedFloor = Math.max(entry.exhaustedFloor, floorOf(request));
+  entry.exhaustedThrough = Math.max(entry.exhaustedThrough, sequenceOf(request));
+}
+
 
 function roundFor(request) {
   let resolve;
@@ -30,8 +45,8 @@ export function createThreadCatchups({ needed, read }) {
   async function attemptRound(entry, round, active) {
     let attempts = 0;
     while (await stillNeeded(round, active)) {
-      if (sequenceOf(round.request) <= entry.exhaustedThrough || attempts === MAX_ATTEMPTS) {
-        entry.exhaustedThrough = Math.max(entry.exhaustedThrough, sequenceOf(round.request));
+      if (sequenceOf(round.request) <= exhaustedThrough(entry, round.request) || attempts === MAX_ATTEMPTS) {
+        exhaustGoal(entry, round.request);
         return;
       }
       attempts += 1;
@@ -71,7 +86,7 @@ export function createThreadCatchups({ needed, read }) {
     if (!entry || entry.generation !== request.generation || !requestActive(entry.owner)
       || entry.current && !requestActive(entry.current.request)) {
       if (entry) abandon(entry);
-      entry = { generation: request.generation, owner: request, valid: true, current: null, pending: null, exhaustedThrough: -1 };
+      entry = { generation: request.generation, owner: request, valid: true, current: null, pending: null, exhaustedThrough: -1, exhaustedFloor: 0 };
       entries.set(key, entry);
     }
     return entry;
@@ -81,9 +96,9 @@ export function createThreadCatchups({ needed, read }) {
     enqueue(key, request) {
       const entry = entryFor(key, request);
       if (!entry.current) return start(entry, roundFor(request));
-      if (sequenceOf(request) <= sequenceOf(entry.current.request)) return entry.current.promise;
-      entry.pending ||= roundFor(request);
-      if (sequenceOf(request) > sequenceOf(entry.pending.request)) entry.pending.request = request;
+      if (!newerGoal(request, entry.current.request)) return entry.current.promise;
+      entry.pending ||= roundFor(combinedGoal(entry.current.request, request));
+      if (newerGoal(request, entry.pending.request)) entry.pending.request = combinedGoal(entry.pending.request, request);
       return entry.pending.promise;
     },
     snapshot: () => ({

@@ -9,6 +9,7 @@
     "limit": 20
   },
   "result": {
+    "history_start_sequence": 30,
     "id": "conversation-3",
     "agent": {
       "id": "agent-1"
@@ -680,5 +681,11 @@
       "message_agent"
     ],
     "note": "Agent replies and both sides of agent delivery carry the existing attachment descriptor. Display uses cached fields without a capability gate."
+  },
+  "retention": {
+    "since": "3.25.0",
+    "capability": "thread.retention",
+    "field": "history_start_sequence",
+    "note": "Optional inclusive creation-sequence floor, scoped to thread_id and generation. Older rows no longer exist. It never certifies gaps above the floor. Page, activity and push tips carry the same boundary."
   }
 }

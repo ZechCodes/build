@@ -327,6 +327,7 @@ dependencies = [
  "ring",
  "rtc",
  "rusqlite",
+ "rustix",
  "rustls",
  "semver",
  "serde",

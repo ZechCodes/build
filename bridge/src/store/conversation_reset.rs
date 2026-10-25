@@ -12,7 +12,8 @@ impl Store {
         path: &str,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
-            tx.execute("INSERT OR IGNORE INTO conversation_attachment_uploads (conversation_id, thread_id, path) VALUES (?1, ?2, ?3)",
+            tx.execute("INSERT INTO conversation_attachment_uploads (conversation_id, thread_id, path, uploaded_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    ON CONFLICT(conversation_id,thread_id,path) DO UPDATE SET uploaded_at = excluded.uploaded_at",
                 rusqlite::params![conversation_id, thread_id, path])?;
             Ok(())
         })
@@ -28,10 +29,12 @@ impl Store {
         summary_owners: &HashSet<String>,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            tx.execute("DELETE FROM conversation_retention WHERE agent_id = ?1", [conversation_id])?;
             tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [conversation_id])?;
             tx.execute("DELETE FROM operations WHERE conversation_id = ?1", [conversation_id])?;
             tx.execute("DELETE FROM conversation_attachment_uploads WHERE conversation_id = ?1", [conversation_id])?;
             for agent in agents {
+                tx.execute("DELETE FROM conversation_retention WHERE agent_id = ?1", [&agent.id])?;
                 tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [&agent.id])?;
                 tx.execute("DELETE FROM operations WHERE conversation_id = ?1", [&agent.id])?;
                 tx.execute("DELETE FROM conversation_attachment_uploads WHERE conversation_id = ?1", [&agent.id])?;

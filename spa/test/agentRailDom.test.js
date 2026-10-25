@@ -5437,6 +5437,7 @@ describe("sending to an agent that is already there", () => {
     await press("are you still on this?");
     expect(callsTo("thread.post")).toHaveLength(1);
     expect(callsTo("thread.post")[0].params.body).toBe("are you still on this?");
+    await vi.waitFor(() => expect(timeline().querySelector('[data-delivery-status="queued"]')).not.toBeNull());
     const queued = timeline().querySelector('[data-delivery-status="queued"]');
     expect(queued).not.toBeNull();
     expect(queued.hasAttribute("title")).toBe(false);
@@ -5455,7 +5456,9 @@ describe("sending to an agent that is already there", () => {
 
     await press("look at the login flow");
 
-    expect(timeline().textContent).toContain("look at the login flow");
+    // IndexedDB publication is asynchronous; the still-held RPC is the
+    // boundary this test promises to beat, rather than a fixed timer count.
+    await vi.waitFor(() => expect(timeline().textContent).toContain("look at the login flow"));
     expect(timeline().querySelector('[data-delivery-status="queued"]').textContent).toBe("Queued");
     expect(composer().value).toBe("");
     expect(railHost().querySelector("#railsend").disabled).toBe(false);

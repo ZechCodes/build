@@ -363,6 +363,59 @@ fn a_v1_database_is_migrated_and_its_items_classified() {
     );
 }
 
+#[test]
+fn literal_v2_shape_upgrades_to_nineteen_before_retention_indexes_classify_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut thread = crate::thread::Thread::new("legacy");
+    thread.post_agent("written by the old bridge", None, "now");
+    let raw = serde_json::to_string(&thread.items[0]).unwrap();
+    let conn = Connection::open(dir.path().join(DB_FILE)).unwrap();
+    // A literal old shape, never initialized through today's Store or its
+    // downgrade helpers: v2 has attention but none of the later hoisted flags.
+    conn.execute_batch(
+        "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT INTO meta VALUES ('schema_version', '2');
+         CREATE TABLE thread_items(agent_id TEXT NOT NULL, sequence INTEGER NOT NULL,
+             updated_sequence INTEGER NOT NULL, attention INTEGER NOT NULL DEFAULT 0,
+             item TEXT NOT NULL, PRIMARY KEY(agent_id, sequence));",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO thread_items VALUES ('legacy', 1, 1, 0, ?1)",
+        [&raw],
+    )
+    .unwrap();
+    drop(conn);
+
+    let store = Store::new(dir.path()).expect("production startup upgrades a literal v2 store");
+    let conn = store.connection();
+    let version: String = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, "19");
+    let stored: (i64, String) = conn
+        .query_row(
+            "SELECT message, item FROM thread_items WHERE agent_id = 'legacy'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        stored,
+        (1, raw),
+        "classification preserves the original message bytes"
+    );
+    let indexes: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type = 'index' AND name IN ('thread_items_message_time', 'thread_items_pending_delivery')", [], |row| row.get(0)).unwrap();
+    assert_eq!(
+        indexes, 2,
+        "retention indexes exist after legacy columns are added"
+    );
+}
+
 /// A database written by a newer bridge is refused, and refused WITHOUT
 /// being written to — the point of the guard is to leave it untouched.
 #[test]

@@ -94,6 +94,9 @@
           "thread": [
             {
               "agent_id": "agent-3",
+              "thread_id": "thread:agent-3",
+              "thread_generation_revision": 0,
+              "history_start_sequence": 400,
               "last_sequence": 412,
               "since_sequence": 410,
               "items": [

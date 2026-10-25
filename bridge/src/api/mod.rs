@@ -63,7 +63,8 @@ use std::collections::BTreeSet;
 /// 3.22.0 adds per-harness compaction policies and observations.
 /// 3.23.0 populates attachments on agent replies and agent-to-agent messages (#696).
 /// 3.24.0 adds bridge epochs and the durable-write journal wire foundation (#739).
-pub const API_VERSION: &str = "3.24.0";
+/// 3.25.0 adds generation-scoped conversation history retention floors (#836).
+pub const API_VERSION: &str = "3.25.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -92,6 +93,7 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// Cross-verb wire features whose availability cannot be expressed by a
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
+    "thread.retention", // Since 3.25.0: inclusive generation-scoped history floors (#836).
     "bridge.epoch", // Since 3.24.0: authenticated process epochs and journal incarnation (#739).
     "unread.watchScoped", // Since 3.19.0: watched-only unread after the persisted watch baseline (#474).
     "agents.createdBy",   // Since 3.1.0: created_by on an agent's digest (#216).

@@ -63,6 +63,34 @@ describe("the runs a pane has open", () => {
 });
 
 describe("fetching what a run holds", () => {
+  it("publishes loading in the opening turn before awaiting the parent history", async () => {
+    let answer;
+    const call = vi.fn(() => new Promise((resolve) => { answer = resolve; }));
+    const runs = runsOver([], [], { call });
+    const opening = runs.open(DIGEST);
+    const immediate = runs.stateOf(DIGEST.from_sequence);
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+    answer(page([121]));
+    await opening;
+    runs.dispose();
+    expect(immediate).toEqual({ loading: true });
+  });
+
+  it("rejects an explicitly foreign activity generation before publishing its floor or body", async () => {
+    const threadAddress = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "canonical" };
+    await cache.writeCached(threadAddress, { thread_id: "current", historyStartSequence: 1, items: [] });
+    const runs = runsOver([{ ...page([121]), thread_id: "foreign", history_start_sequence: 200 }], [], {
+      conversationId: "canonical", threadId: "current",
+    });
+    try {
+      await expect(runs.open(DIGEST)).rejects.toThrow(/conversation/i);
+      expect((await cache.readCached(threadAddress)).value.historyStartSequence).toBe(1);
+      expect(await cache.readCached({ ...threadAddress, kind: "activity", sub: "ag-1:current:120" })).toBeUndefined();
+    } finally {
+      runs.dispose();
+    }
+  });
+
   it("refuses a held old generation body even while its offscreen reader remains live", async () => {
     const threadAddress = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "canonical" };
     await cache.writeCached(threadAddress, { thread_id: "old-thread", items: [] });
@@ -258,4 +286,59 @@ describe("fetching what a run holds", () => {
     expect(calls).toHaveLength(1);
     expect(runs.itemsOf(120)).toEqual([]);
   });
+});
+
+describe("activity history retention", () => {
+  const threadAddress = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "canonical" };
+  const bodyAddress = { ...threadAddress, kind: "activity", sub: "ag-1:thread:120" };
+  const scopedRuns = (pages) => runsOver(pages, [], { threadId: "thread", conversationId: "canonical" });
+
+  it("filters hydrated children and trims their stored body when the parent floor advances", async () => {
+    await cache.writeCached(threadAddress, { thread_id: "thread", items: [], historyStartSequence: 1 });
+    await cache.writeCached(bodyAddress, { items: [item(121), item(800)] });
+    const runs = scopedRuns([]);
+    await runs.open(DIGEST);
+    expect(runs.itemsOf(120).map((one) => one.data.sequence)).toEqual([121, 800]);
+    await cache.writeCached(threadAddress, { thread_id: "thread", items: [], historyStartSequence: 700 });
+    await vi.waitFor(() => expect(runs.itemsOf(120).map((one) => one.data.sequence)).toEqual([800]));
+    await vi.waitFor(async () => expect((await cache.readCached(bodyAddress)).value.items.map((one) => one.data.sequence)).toEqual([800]));
+    runs.dispose();
+  });
+
+  it("publishes an activity response floor even when the requested run was completely removed", async () => {
+    await cache.writeCached(threadAddress, { thread_id: "thread", items: [item(121)], deliveredSequence: 121 });
+    const runs = scopedRuns([{ items: [], history_start_sequence: 900, has_more: false }]);
+    await runs.open(DIGEST);
+    expect((await cache.readCached(threadAddress)).value.historyStartSequence).toBe(900);
+    expect((await cache.readCached(threadAddress)).value.items).toEqual([]);
+    expect(runs.itemsOf(120)).toEqual([]);
+    runs.dispose();
+  });
+
+  it("hides an old generation's hydrated body after reset without applying its response floor", async () => {
+    await cache.writeCached(threadAddress, { thread_id: "thread", items: [] });
+    await cache.writeCached(bodyAddress, { items: [item(121)] });
+    const runs = scopedRuns([]);
+    await runs.open(DIGEST);
+    await cache.writeCached(threadAddress, { thread_id: "replacement", historyStartSequence: 1, items: [] });
+    await vi.waitFor(() => expect(runs.itemsOf(120)).toEqual([]));
+    expect((await cache.readCached(threadAddress)).value.historyStartSequence).toBe(1);
+    runs.dispose();
+  });
+});
+
+it("fences a stale activity response against a concurrently advanced parent floor", async () => {
+  const at = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "canonical" };
+  await cache.writeCached(at, { thread_id: "thread", items: [], historyStartSequence: 1 });
+  let answer;
+  const runs = runsOver([], [], { threadId: "thread", conversationId: "canonical", call: () => new Promise((resolve) => { answer = resolve; }) });
+  const opening = runs.open(DIGEST);
+  await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+  await cache.writeCached(at, { thread_id: "thread", items: [], historyStartSequence: 900 });
+  answer(page([121, 800]));
+  await opening;
+  expect(runs.itemsOf(120) || []).toEqual([]);
+  const body = await cache.readCached({ ...at, kind: "activity", sub: "ag-1:thread:120" });
+  expect(body?.value.items || []).toEqual([]);
+  runs.dispose();
 });

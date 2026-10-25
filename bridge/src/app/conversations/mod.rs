@@ -11,6 +11,7 @@ mod post;
 mod read;
 mod reset;
 mod reset_files;
+mod retention;
 mod senders;
 pub(in crate::app) mod sql_read;
 

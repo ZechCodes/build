@@ -426,7 +426,9 @@ function startPass(deviceId) {
     }
   })();
   passes.set(deviceId, turn);
-  if (connectionPassRequests.delete(deviceId)) setConnectionSync(true);
+  if (connectionPassRequests.delete(deviceId) && liveContexts().some((context) => context.deviceId === deviceId)) {
+    setConnectionSync(true);
+  }
   return turn.done;
 }
 

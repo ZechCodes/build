@@ -114,6 +114,38 @@ describe("prompt project console actions", () => {
     expect(harness.reads).toEqual([]);
   });
 
+  it("keeps New terminal focused without repainting for an unrelated committed write", async () => {
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    let captured = false;
+    harness.blockRead = (address) => {
+      if (address.kind === "terminals") {
+        captured = true; harness.blockRead = null; return blocked;
+      }
+    };
+    const paints = [];
+    const observer = new MutationObserver((records) => paints.push(...records));
+    try {
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-terminal-support" }, { projectSources: true });
+      await flush();
+      expect(captured).toBe(true);
+      const add = document.querySelector(".console-new");
+      add.focus();
+      observer.observe(document.getElementById("console-region"), { attributes: true, attributeFilter: ["data-size"] });
+      await writeCached({ deviceId: "dev-1", entityId: "unrelated", kind: "tasks" }, []);
+      await flush();
+      // The held collector cannot provide an incidental paint, and unrelated
+      // invalidations must not start another collector just to wake a test.
+      expect(paints).toEqual([]);
+      expect(document.activeElement).toBe(add);
+      add.click();
+      expect(manager.createTerminal).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(panel.size()).toBe("half"));
+      expect(document.querySelector(".console-tab.active").dataset.key).toContain("new-term");
+      expect((await readCanonicalCached(rosterAddress)).value.tabs).toContainEqual({ term_id: "new-term" });
+    } finally { observer.disconnect(); harness.blockRead = null; release(); await flush(); }
+  });
+
   it("creates and closes immediately while unrelated thread pushes continue", async () => {
     let pushing = true;
     let pushes = 0;
@@ -126,14 +158,12 @@ describe("prompt project console actions", () => {
     try {
       document.querySelector(".console-new").click();
       expect(manager.createTerminal).toHaveBeenCalledOnce();
-      await flush();
-      expect(panel.size()).toBe("half");
+      await vi.waitFor(() => expect(panel.size()).toBe("half"));
       const createdTab = [...document.querySelectorAll(".console-tab")].find((tab) => tab.dataset.key.includes("new-term"));
       expect(createdTab).toBeDefined();
       createdTab.querySelector("[data-close]").click();
       expect(manager.closeTerminal).toHaveBeenCalledWith("new-term", { project_id: "p1", source_id: "code", source_path: "/code" });
-      await flush();
-      expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
+      await vi.waitFor(async () => expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]));
       expect(pushes).toBeGreaterThan(1);
     } finally { pushing = false; await flood; }
   });

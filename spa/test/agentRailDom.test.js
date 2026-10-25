@@ -238,10 +238,10 @@ const railAddress = (over = {}) => ({
   ...over,
 });
 
-const mount = async (context = {}) => {
+const mount = async (context = {}, ready = flush) => {
   await writeRailWorkItem(payload);
   rail = mountAgentRail(railHost(), railAddress(context));
-  await flush();
+  await ready();
 };
 
 const mountOverviewReady = async (context = {}) => {
@@ -1398,9 +1398,8 @@ describe("the rail over a machine that is asked nothing", () => {
     rail = mountAgentRail(railHost(), railAddress({
       kind: "project", projectId: "p1", entityId: "run-3", openAgentId: "ag-1",
     }));
-    await flush();
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Project conversation words"));
 
-    expect(railHost().querySelector("#rail-body").textContent).toContain("Project conversation words");
     expect(headWho()).toBe(TOPICS["ag-1"]);
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
@@ -2523,7 +2522,7 @@ describe("taking an agent back off the branch", () => {
 
   const openSecondAgent = async () => {
     payload = twoAgents();
-    await mount();
+    await mount({}, () => vi.waitFor(() => expect(bubbles()[1]?.dataset.agent).toBe("ag-2")));
     bubbles()[1].click();
     await flush();
   };

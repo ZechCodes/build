@@ -3,7 +3,7 @@
 import { FEED_COLLECTIONS } from "./feedMerge.js";
 import { entityIdOf } from "./entityId.js";
 import { recordKey } from "./idbRecords.js";
-import { cachedWriteOf, captureCachedRecord, updateCachedFeed } from "./localCache.js";
+import { updateCachedFeed } from "./localCache.js";
 import { preserveTaskReviewSummary } from "./trackerCache.js";
 
 const rosterOf = (agents) => Array.isArray(agents) ? agents : [];
@@ -40,21 +40,12 @@ export function retireConversationFeed(ownership, agent, rewriteRow) {
   } });
 }
 
-/** The existing feed transaction compares every guard before invoking its
- * update. Retry a changed snapshot; never split the check from the write. */
-async function guardedFeedWrite(address, guards, { active, makeFeed, options = {} }) {
-  while (active()) {
-    const found = await Promise.all(guards.map(captureCachedRecord));
-    if (found.some((record) => !cachedWriteOf(record))) return false;
-    const unchanged = guards.map((at, index) => ({ address: at, written: cachedWriteOf(found[index]) }));
-    let attempted = false;
-    const written = await updateCachedFeed(address, (held) => {
-      attempted = true;
-      return active() ? makeFeed(held, found) : null;
-    }, { ...options, unchanged });
-    if (written || attempted) return written;
-  }
-  return false;
+/** Read canonical guards with the feed inside its existing write transaction.
+ * An independent push cannot invalidate the snapshot between check and put,
+ * and continuing tips cannot restart an entire board's guard sweep. */
+function guardedFeedWrite(address, guards, { active, makeFeed, options = {} }) {
+  return updateCachedFeed(address, (held, _record, found) =>
+    active() ? makeFeed(held, found) : null, { ...options, readAddresses: guards });
 }
 
 function feedGuards(deviceId, view) {

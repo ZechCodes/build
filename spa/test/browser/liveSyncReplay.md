@@ -23,3 +23,13 @@ The pure `liveSyncDelivery.mjs` report matches stable-generation covering highwa
 Live evidence has two separate boundaries. The older capture's 26 matches give nearest-rank p95 17,385 ms. The later reopened retained browser matched only 8 of 25 highwaters, with a 144,434 ms maximum among those matches and 17 highwaters still uncommitted at capture end; that censored capture has no representative p95. Passing isolated fixtures does not prove that the live censored tail is eliminated.
 
 Accepted SLA captures keep the optional CDP CPU profiler off; common stage/read/UI instrumentation remains enabled. A diagnostic CPU-on capture overlapped other host test workers, so its incremental profiler overhead was not isolated. Do not treat its wall-clock difference from a CPU-off run as a causal overhead estimate.
+
+Read attribution is test-only and uses static source callsite labels rather than
+per-read stack allocation. `startup*ReadAttribution` starts immediately before
+mounting inbox and rail; interval zero is the first ten seconds after mount.
+The unprefixed `*ReadAttribution` starts with producer receipt measurement, so
+its interval zero is producer-aligned. Both count logical address reads and
+actual local-cache `store.get` calls separately, grouped by callsite and kind.
+`source-active` means a full source pass was concurrently active; it does not
+assert that every read in that bucket belongs to that pass. The callsite labels
+identify the read's direct owner. These instruments remain on in matched runs.

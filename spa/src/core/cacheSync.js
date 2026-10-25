@@ -1930,18 +1930,22 @@ async function writeThreadTipBody(context, entityId, tip, sub) {
   const held = (await readCached(address))?.value;
   if (!context.active() || !tipIsNews(tip, held)) return;
   if (tipGenerationMismatch(tip, held)) return;
-  if (await applyThreadHistoryTrim(context, address, tip, held)) return;
   // A burst past the push cap arrives as a tip with no items, a conversation
   // nothing is held for has nothing to append to, and a tip that starts past
   // the cursor would append over a gap. All three are one cursored page, which
   // is the read this layer would have made anyway.
   const items = canAppendThreadTip(tip, held) ? (tip.items || []) : [];
   if (!items.length) {
+    // A stalled repair must not postpone an authoritative retention floor.
+    if (await applyThreadHistoryTrim(context, address, tip, held)) return;
     await deferThreadCatchup(context, entityId, tip, sub, held);
     return;
   }
+  // Retire old items (and their repair debt) before appending carried items,
+  // inside one transaction so the floor and page publish together.
   const page = carriedThreadPage(tip, held, items);
-  await mergeCachedAtomically(address, (current) => context.active() ? threadWindow(current, page) : null);
+  await mergeCachedAtomically(address, (current) =>
+    context.active() ? threadWindow(trimmedThreadTip(current, tip), page) : null);
 }
 
 // A trim can advance independently of the item counter.

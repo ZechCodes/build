@@ -347,7 +347,7 @@ export function createSessionRpc({
         onReceipt?.();
       }, (error) => {
         sqlReads.timedOut(id);
-        settleTiming(`${error.deadline}-timeout`);
+        settleTiming(error.deadline === "admission" ? "admission-cancel" : `${error.deadline}-timeout`);
       });
       const answer = new Promise((resolve, reject) => {
         waiting = {

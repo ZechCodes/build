@@ -6,7 +6,7 @@ const timing = vi.hoisted(() => ({
   unregister: vi.fn(), registerSqlCredits: vi.fn(),
 }));
 vi.mock("../src/core/syncDiagnostics.js", () => ({ syncDiagnostics: timing }));
-import { createSessionRpc, ANSWER_TIMEOUT_MS } from "../src/core/sessionRpc.js";
+import { createSessionRpc, ANSWER_TIMEOUT_MS, SQL_ADMISSION_TIMEOUT_MS } from "../src/core/sessionRpc.js";
 
 const flush = async () => { for (let n = 0; n < 20; n += 1) await Promise.resolve(); };
 const sessions = [];
@@ -63,7 +63,7 @@ it.each([[false, "path-timeout"], [true, "answer-timeout"]])("records deadline o
   expect(rpc.sqlReadCreditSnapshot()).toEqual({ queued: 0, admitted: 1, timedOutHeld: 1 });
 });
 
-it("does not populate admission-cancel before the admission cancellation integration", async () => {
+it("does not classify an explicit caller abort as an admission deadline", async () => {
   const { ask } = setup();
   ask("tasks.get", { timeoutMs: 0 });
   const abort = new AbortController();
@@ -72,4 +72,24 @@ it("does not populate admission-cancel before the admission cancellation integra
   await expect(queued).rejects.toMatchObject({ name: "AbortError" });
   expect(timing.itemSettled).toHaveBeenCalledWith("token", null);
   expect(timing.itemSettled.mock.calls.some(([, outcome]) => outcome === "admission-cancel")).toBe(false);
+});
+
+
+it.each([null, 0])("records admission-cancel when background SQL admission expires (timeoutMs=%s)", async (timeoutMs) => {
+  vi.useFakeTimers();
+  const { rpc, wire, ask, reply } = setup();
+  const blocker = ask("tasks.get", { timeoutMs: 0 });
+  await flush();
+  const queued = ask("tasks.list", { priority: "background", timeoutMs });
+  await flush();
+  expect(timing.itemStart).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(SQL_ADMISSION_TIMEOUT_MS);
+  await expect(queued).rejects.toMatchObject({ deadline: "admission", timedOut: true, uncertain: false, retryable: true });
+  expect(timing.itemSettled).toHaveBeenCalledExactlyOnceWith("token", "admission-cancel");
+  expect(rpc.sqlReadCreditSnapshot()).toEqual({ queued: 0, admitted: 1, timedOutHeld: 0 });
+  reply({ id: wire.sent[0].id, ok: true, result: {} });
+  await blocker;
+  await flush();
+  expect(wire.sent).toHaveLength(1);
+  expect(timing.itemStart).toHaveBeenCalledTimes(1);
 });

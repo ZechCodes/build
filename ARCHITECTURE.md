@@ -4178,8 +4178,8 @@ diagnostics adds no inventory scan or storage wait. Selected
 conversation counters describe active, retained Recent and project-owner rosters
 (the categories may overlap). `sessionRpc.js` stamps queued/admitted/receipt/
 settlement offsets and exposes aggregate SQL queued, admitted and timed-out-held
-credits independently of pending reply promises. Admission cancellation is a
-reserved outcome until SQL admission cancellation is wired. Other transport
+credits independently of pending reply promises. A local SQL admission timeout
+(`deadline: "admission"`) records the `admission-cancel` outcome. Other transport
 failures have a null outcome. SQL snapshots cover registered RPC sessions; live
 device counts come from the sync context registry.
 

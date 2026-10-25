@@ -236,9 +236,10 @@ function finishConnectionPass(deviceId, turn) {
     return;
   }
   void Promise.all([queues.body.capture(), queues.background.capture(), queues.catchups.capture()]).then(() => {
-    if (connectionPeriods.get(deviceId) !== period) return;
-    syncDiagnostics.snapshot(turn.diagnostic, "drain", { ...diagnosticQueueCounts(deviceId), captured, drained: captured });
-    if (connectionPeriods.get(deviceId) === period) connectionPeriods.delete(deviceId);
+    if (connectionPeriods.get(deviceId) === period) {
+      syncDiagnostics.snapshot(turn.diagnostic, "drain", { ...diagnosticQueueCounts(deviceId), captured, drained: captured });
+      connectionPeriods.delete(deviceId);
+    }
     updateConnectionSync();
   });
 }
@@ -253,8 +254,8 @@ function diagnosticQueueCounts(deviceId) {
 }
 
 function diagnosticDevices() {
-  syncDiagnostics.deviceState(liveContexts().map(({ deviceId }) => ({
-    syncing: connectionDeviceBusy({ deviceId }), pass: passes.has(deviceId), ...diagnosticQueueCounts(deviceId),
+  syncDiagnostics.deviceState(liveContexts().map((context) => ({
+    syncing: connectionDeviceBusy(context), pass: passes.has(context.deviceId), ...diagnosticQueueCounts(context.deviceId),
   })));
 }
 

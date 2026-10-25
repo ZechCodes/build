@@ -1066,7 +1066,8 @@ function reconcileProjectTerminalSubscriptions(context, scopes) {
     if (held.has(id)) continue;
     held.set(id, watchChanges({ ...subscriptionShape(deviceId), id: `s-project-term:${id}`,
       scope: { kind: "project_source", ...scope }, kinds: ["terminals"],
-      mode: { batch_ms: BACKGROUND_COOLDOWN_MS }, priority: "background" }));
+      // Console create and close change another client's visible roster now.
+      mode: "realtime", priority: "foreground" }));
   }
 }
 

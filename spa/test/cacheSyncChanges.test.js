@@ -1408,6 +1408,42 @@ describe("project source terminal rosters", () => {
     expect(bridge.call).toHaveBeenCalledWith("term.list", { ...scope, source_id: "plain", source_path: "/plain" }, expect.anything());
     expect(live().filter((watcher) => watcher.scope?.kind === "project_source").map((watcher) => watcher.kinds)).toEqual([["terminals"], ["terminals"]]);
   });
+  it("delivers create then close immediately to two independent client caches", async () => {
+    const id = await prepare();
+    const first = { cache, sync, watcher: live().find((watcher) => watcher.scope?.source_id === scope.source_id) };
+    try {
+      // A second module graph and IndexedDB represent another client, rather
+      // than a second reader observing the first client's local writes.
+      vi.resetModules();
+      globalThis.indexedDB = new IDBFactory();
+      cache = await import("../src/core/localCache.js");
+      sync = await import("../src/core/cacheSync.js");
+      const before = registeredWatchers.length;
+      await boot([]);
+      const second = { cache, sync, watcher: registeredWatchers.slice(before).find((watcher) => watcher.scope?.source_id === scope.source_id) };
+      const address = { deviceId: "dev-1", entityId: id, kind: "terminals" };
+      await first.cache.writeCached(address, { tabs: [{ term_id: "only-first-client" }] });
+      expect((await second.cache.readCached(address)).value.tabs).toEqual([{ term_id: "term-s1" }]);
+      for (const client of [first, second]) {
+        // Both lifecycle snapshots must be eligible immediately, including
+        // the close following the create inside the old 30-second cooldown.
+        expect(client.watcher.mode).toBe("realtime");
+        expect(client.watcher.priority).toBe("foreground");
+      }
+      const started = performance.now();
+      for (const tabs of [[{ term_id: "created" }], []]) {
+        await Promise.all([first, second].map((client) => client.watcher.onChanges([
+          { project_source: scope, terminals: { tabs } },
+        ])));
+        for (const client of [first, second]) {
+          expect((await client.cache.readCached(address)).value.tabs).toEqual(tabs);
+        }
+      }
+      expect(performance.now() - started).toBeLessThan(1000);
+    } finally {
+      first.sync.stopCacheSync();
+    }
+  });
   it("writes source terminal pushes separately and refuses removed locations", async () => {
     const id = await prepare();
     await sync.applyProjectSourceChanges([{ project_source: scope, terminals: { tabs: [{ term_id: "new" }] } }], "dev-1");

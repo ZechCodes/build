@@ -121,3 +121,19 @@ it("does not let a restored waiter resume after a restart on the same session", 
   expect(context.rpc.mock.calls.filter(([method]) => method === "board.list")).toHaveLength(callsBeforeOldAnswer);
   expect(values()).toEqual([false, true, false, true, false]);
 });
+
+it.each(["disconnect", "session replacement", "stop"])("releases a direct pending successor on %s", async (operation) => {
+  const release = holdBoard();
+  sync.startCacheSync(); await boardStarted();
+  const previous = sync.passInFlight("dev-1");
+  context.session = {};
+  const successor = sync.syncDevice("dev-1");
+  if (operation === "disconnect") { context.connected = false; deviceChanged(); }
+  else if (operation === "session replacement") context.session = {};
+  else sync.stopCacheSync();
+  if (operation !== "session replacement") expect(values()).toEqual([false, true, false]);
+  release(); await previous;
+  expect(await successor).toBe(false);
+  expect(values()).toEqual([false, true, false]);
+  expect(context.rpc.mock.calls.filter(([method]) => method === "board.list")).toHaveLength(1);
+});

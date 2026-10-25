@@ -15,6 +15,8 @@ it("counts addresses per callsite, kind, source phase and fixed interval", () =>
   attribution.read("core/cacheSync.js:2", [{ kind: "row" }, { kind: "thread" }]);
   now = 10101; phase = "mounted-only";
   attribution.read("core/thread.js:3", { kind: "thread" });
+  attribution.stop();
+  attribution.read("after-measurement", { kind: "row" });
   expect(attribution.intervals).toEqual([
     { interval: 0, reads: 2, byKind: { row: 1, thread: 1 }, byCallsite: { "core/cacheSync.js:2": 2 }, byCallsiteKind: { "core/cacheSync.js:2|row": 1, "core/cacheSync.js:2|thread": 1 }, byPhase: { "initial-source": 2 } },
     { interval: 1, reads: 1, byKind: { thread: 1 }, byCallsite: { "core/thread.js:3": 1 }, byCallsiteKind: { "core/thread.js:3|thread": 1 }, byPhase: { "mounted-only": 1 } },

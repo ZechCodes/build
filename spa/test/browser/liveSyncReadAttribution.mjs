@@ -21,7 +21,9 @@ export function instrumentStorageReadCallsites(source, id) {
 
 export function createReadAttribution(clock, phase, intervalMs = 10000) {
   const started = clock(), intervals = [];
-  return { intervals, read(site, input) {
+  let active = true;
+  return { intervals, stop() { active = false; }, read(site, input) {
+    if (!active) return;
     const interval = Math.floor((clock() - started) / intervalMs);
     let bucket = intervals.find((held) => held.interval === interval);
     if (!bucket) { bucket = { interval, reads: 0, byKind: {}, byCallsite: {}, byCallsiteKind: {}, byPhase: {} }; intervals.push(bucket); }

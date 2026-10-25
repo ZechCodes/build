@@ -444,6 +444,7 @@ export async function runLiveSyncReplay({ revision, intervalMs = 375, stallMs = 
         stats.finalCatchups = fixture.catchups || null;
         stats.finalPassRunning = Boolean(sync.passInFlight("replay-device"));
         window.__liveSyncMetrics.active = false;
+        for (const metric of ["attribution", "storageAttribution", "startupAttribution", "startupStorageAttribution"]) window.__liveSyncMetrics[metric].stop();
         await window.__stopLiveSyncMeasurement();
         stats.ui = { counters: window.__liveSyncMetrics.counters, timings: window.__liveSyncMetrics.timings,
           startupReadAttribution: window.__liveSyncMetrics.startupAttribution.intervals, startupStorageReadAttribution: window.__liveSyncMetrics.startupStorageAttribution.intervals,

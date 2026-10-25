@@ -1941,9 +1941,11 @@ async function writeThreadTipBody(context, entityId, tip, sub) {
     await deferThreadCatchup(context, entityId, tip, sub, held);
     return;
   }
-  // A carried page applies its floor and items together, publishing once.
+  // Retire old items (and their repair debt) before appending carried items,
+  // inside one transaction so the floor and page publish together.
   const page = carriedThreadPage(tip, held, items);
-  await mergeCachedAtomically(address, (current) => context.active() ? threadWindow(current, page) : null);
+  await mergeCachedAtomically(address, (current) =>
+    context.active() ? threadWindow(trimmedThreadTip(current, tip), page) : null);
 }
 
 // A trim can advance independently of the item counter.

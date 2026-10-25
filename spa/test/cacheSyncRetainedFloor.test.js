@@ -82,3 +82,33 @@ it("does not publish a stale generation's carried tip or retention floor", async
     expect((await cache.readCached(target)).value).toMatchObject({ thread_id: "current", deliveredSequence: 10, historyStartSequence: 5 });
   } finally { stop(); }
 });
+
+it("clears repair debt when the carried floor retires every previously held item", async () => {
+  await cache.writeCached(target, { thread_id: "current", thread_generation_revision: 2,
+    deliveredSequence: 10, historyStartSequence: 5, repairThrough: 10,
+    items: [5, 10].map(message), activityDigests: [] });
+  let commits = 0;
+  const stop = cache.subscribeCache(target, () => { commits += 1; });
+  try {
+    await push(event(11));
+    const held = (await cache.readCached(target)).value;
+    expect(held.repairThrough).toBeUndefined();
+    await push(event(11, { since: 11, last: 11, items: [] }));
+    expect(context.rpc.mock.calls.filter(([method]) => method === "thread.page")).toHaveLength(0);
+    expect(held.items.map((item) => item.data.sequence)).toEqual([11]);
+    expect(held.deliveredSequence).toBe(11);
+    expect(held.historyStartSequence).toBe(11);
+    expect(commits).toBe(1);
+  } finally { stop(); }
+});
+
+it("retains repair debt for an older held item surviving a carried floor", async () => {
+  await cache.writeCached(target, { thread_id: "current", thread_generation_revision: 2,
+    deliveredSequence: 10, historyStartSequence: 5, repairThrough: 10,
+    items: [5, 10].map(message), activityDigests: [] });
+  await push(event(8));
+  const held = (await cache.readCached(target)).value;
+  expect(held.repairThrough).toBe(10);
+  expect(held.items.map((item) => item.data.sequence)).toEqual([10, 11]);
+  expect(held.deliveredSequence).toBe(11);
+});

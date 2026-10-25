@@ -50,13 +50,13 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250, 
   const session = await openLayoutSession({ plugins: [pushReplayPlugin({ revision })] });
   try {
     return await session.withPage(async ({ page, basePath }) => {
-      await loadBrowserModules(page, { cache: "src/core/localCache.js", app: "src/appState.js", sync: "src/core/cacheSync.js", renderer: "src/core/thread.js", feed: "src/core/taskFeed.js", visible: "src/core/syncVisibleScopes.js" }, basePath);
+      await loadBrowserModules(page, { cache: "src/core/localCache.js", app: "src/appState.js", sync: "src/core/cacheSync.js", renderer: "src/core/thread.js", feed: "src/core/taskFeed.js", visible: "src/core/syncVisibleScopes.js", watched: "src/core/watchedTaskFollower.js", lineage: "src/core/agentLineage.js" }, basePath, { timeoutMs: 60_000 });
       await page.evaluate(async ({ intervalMs, stallMs, frames, mixed, drainMs }) => {
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const stats = { gets: 0, transactions: 0, pendingTransactions: 0, peakTransactions: 0,
           pendingAppliers: 0, peakAppliers: 0, cacheLatencies: [], cacheApplyTurns: [], renderLatencies: [], rpcCalls: 0, rowGets: 0, backlogSamples: [] };
         const fixture = window.__pushReplay = { stats, watchers: [], emitted: new Map(), emittedTurns: new Map(), server: new Map() };
-        const { cache, sync, renderer, feed, visible, app: { App } } = window.__layoutModules;
+        const { cache, sync, renderer, feed, visible, watched, lineage, app: { App } } = window.__layoutModules;
         App.devices = [{ id: "replay-device" }];
         App.route = { name: "project", deviceId: "replay-device", projectId: "p0", agent: "agent-0" };
         const address = (entityId, kind, sub = "") => ({ deviceId: "replay-device", entityId, kind, sub });
@@ -86,6 +86,9 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250, 
           });
         }
         if (mixed) {
+          for (let index = 0; index < 117; index++) await cache.writeCached(address(`padding-${index}`, "row"), {
+            kind: "branch", run_id: `padding-${index}`, project_id: "p0", state: "building", agents: [], body: "x".repeat(2900),
+          });
           await cache.writeCached(address("retired", "row"), { ...rows[0], run_id: "retired" });
           await cache.writeCached(address("retired", "status"), { head: "must-be-removed" });
           await cache.writeCached(address("reset-fixture", "row"), fixture.resetRow);
@@ -116,6 +119,12 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250, 
         stats.seedRecords = (await cache.cachedAddresses({ deviceId: "replay-device" })).length;
         stats.seedFeedBytes = JSON.stringify((await cache.readCached(address("", "feed")))?.value).length;
         stats.seedWorkspaceBytes = JSON.stringify((await cache.readCached(address("", "workspaces")))?.value).length;
+        const watchedTasks = mixed ? watched.followWatchedTasks({ onChange: () => { stats.watchedTaskPaints = (stats.watchedTaskPaints || 0) + 1; } }) : null;
+        watchedTasks?.follow(projects.map((project) => ({ ...project, id: project.project_id })));
+        const mountedLineage = mixed ? lineage.mountAgentLineage({ deviceId: "replay-device", projectId: "p0",
+          onChanged: () => { stats.lineagePaints = (stats.lineagePaints || 0) + 1; } }) : null;
+        mountedLineage?.start();
+        if (mixed) await sleep(50); // Let the initial mounted cache readers warm.
         await sync.startPushReplay();
         await feed.startFeed();
         const stopFeedListener = feed.subscribeFeed(() => { stats.feedPaints = (stats.feedPaints || 0) + 1; });
@@ -224,6 +233,8 @@ export async function runPushReplay({ revision, intervalMs = 12, stallMs = 250, 
         }
         fixture.rendered = document.querySelector("#open-conversation").textContent;
         fixture.renderedText = document.querySelector("#conversation").textContent;
+        watchedTasks?.dispose();
+        mountedLineage?.dispose();
         stopFeedListener();
         feed.stopFeed();
         stopThread();

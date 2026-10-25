@@ -238,10 +238,10 @@ const railAddress = (over = {}) => ({
   ...over,
 });
 
-const mount = async (context = {}) => {
+const mount = async (context = {}, ready = flush) => {
   await writeRailWorkItem(payload);
   rail = mountAgentRail(railHost(), railAddress(context));
-  await flush();
+  await ready();
 };
 
 const mountOverviewReady = async (context = {}) => {
@@ -2523,7 +2523,7 @@ describe("taking an agent back off the branch", () => {
 
   const openSecondAgent = async () => {
     payload = twoAgents();
-    await mount();
+    await mount({}, () => vi.waitFor(() => expect(bubbles()[1]?.dataset.agent).toBe("ag-2")));
     bubbles()[1].click();
     await flush();
   };

@@ -112,10 +112,10 @@ export async function takeCachedCount(address, floor = 0) {
 
 // The feed's own write path. The rows' observation stamps it keeps are the
 // real cache's business (core/cacheFreshness.js); this double keeps none.
-export async function updateCachedFeed(address, update, { unchanged = [] } = {}) {
+export async function updateCachedFeed(address, update, { unchanged = [], readAddresses = [] } = {}) {
   if (unchanged.some((guard) => cachedWriteOf(records.get(recordKey(guard.address))) !== guard.written)) return false;
   const held = records.get(recordKey(address));
-  const next = update(held?.value, held);
+  const next = update(held?.value, held, readAddresses.map((dependency) => records.get(recordKey(dependency))));
   if (next === undefined || next === null) return false;
   await writeCached(address, next);
   return true;

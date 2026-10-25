@@ -2022,7 +2022,7 @@ async function scheduleThreadRepair(context, entityId, agent, priority) {
     context, active: context.active, address, entityId, generation, priority,
     sequence: Number(held.repairThrough), historyStartSequence: Number(held.historyStartSequence || 0),
     agent: { ...agent, thread_id: held.thread_id },
-  }, { retryExhausted: Boolean(context.syncTurn) });
+  }, { retryExhausted: Boolean(context.syncTurn), maxAttempts: context.syncTurn ? 1 : 2 });
 }
 
 /** `git`: the shapes ride the push, so nothing is asked for them. Two things

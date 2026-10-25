@@ -1,6 +1,6 @@
 import { transportEpoch } from "./transportEpoch.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createSessionRpc } from "../src/core/sessionRpc.js";
+import { ANSWER_TIMEOUT_MS, SQL_ADMISSION_TIMEOUT_MS, createSessionRpc } from "../src/core/sessionRpc.js";
 import { normalizeError } from "../src/core/bridgeApi/index.js";
 import { isTransientTransportError } from "../src/core/transientRead.js";
 import { SQL_READ_METHODS } from "../src/core/sqlReadCredits.js";
@@ -145,6 +145,81 @@ describe("SQL reads share eight sender credits per opening", () => {
     wire.deliver({ id: wire.sent[8].id, ok: true, result: {} });
     await flush();
     expect(wire.sent).toHaveLength(10);
+  });
+
+  it.each([undefined, null, 0])("bounds a ninth background read behind eight stuck sent reads (timeoutMs=%s)", async (timeoutMs) => {
+    vi.useFakeTimers();
+    const { wire, ask } = setup();
+    for (let n = 0; n < 8; n += 1) ask();
+    await flush();
+    for (const { id } of wire.sent) wire.deliver({ id, accepted: true });
+    await vi.advanceTimersByTimeAsync(ANSWER_TIMEOUT_MS);
+    const observed = vi.fn();
+    const queued = ask("tasks.list", { priority: "background", timeoutMs }).catch(observed);
+    await vi.advanceTimersByTimeAsync(12000);
+    expect(observed).toHaveBeenCalledOnce();
+    await queued;
+    const error = normalizeError(observed.mock.calls[0][0]);
+    expect(error).toMatchObject({ timedOut: true, uncertain: false, retryable: true, deadline: "admission" });
+    expect(isTransientTransportError(error)).toBe(true);
+    expect(wire.sent).toHaveLength(8);
+    const next = ask("thread.revision");
+    ask("thread.post");
+    await flush();
+    expect(wire.sent.at(-1).method).toBe("thread.post");
+    wire.deliver({ id: wire.sent[0].id, ok: true, result: {} });
+    await flush();
+    expect(wire.sent.map(({ method }) => method)).not.toContain("tasks.list");
+    expect(wire.sent.at(-1).method).toBe("thread.revision");
+    wire.deliver({ id: wire.sent.at(-1).id, ok: true, result: { revision: 1 } });
+    await expect(next).resolves.toEqual({ revision: 1 });
+  });
+
+  it("cancels admission atomically before a credit released in the expiry turn can dispatch it", async () => {
+    vi.useFakeTimers();
+    const { wire, ask } = setup();
+    for (let n = 0; n < 8; n += 1) ask();
+    const failed = ask("tasks.list", { priority: "background" }).catch((error) => error);
+    await flush();
+    vi.advanceTimersByTime(12000);
+    wire.deliver({ id: wire.sent[0].id, ok: true, result: {} });
+    await flush();
+    expect(await failed).toMatchObject({ deadline: "admission", uncertain: false });
+    expect(wire.sent).toHaveLength(8);
+  });
+
+  it("replaces admission with a fresh path deadline when a credit arrives", async () => {
+    vi.useFakeTimers();
+    const { wire, ask } = setup();
+    for (let n = 0; n < 8; n += 1) ask();
+    const observed = vi.fn();
+    const queued = ask("tasks.list", { priority: "background", timeoutMs: 20000 }).catch(observed);
+    await vi.advanceTimersByTimeAsync(SQL_ADMISSION_TIMEOUT_MS - 1);
+    wire.deliver({ id: wire.sent[0].id, ok: true, result: {} });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(wire.sent).toHaveLength(9);
+    expect(observed).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(19999);
+    await queued;
+    expect(observed).toHaveBeenCalledWith(expect.objectContaining({ deadline: "path", uncertain: true }));
+  });
+
+  it.each(["abort", "close", "reset"])("clears the admission clock on %s without sending the queued read", async (reason) => {
+    vi.useFakeTimers();
+    const { rpc, wire, ask } = setup();
+    for (let n = 0; n < 8; n += 1) ask();
+    const abort = new AbortController();
+    const queued = ask("tasks.list", { priority: "background", signal: abort.signal }).catch((error) => error);
+    await flush();
+    expect(vi.getTimerCount()).toBe(1);
+    if (reason === "abort") abort.abort();
+    if (reason === "close") rpc.close(new Error("closed"));
+    if (reason === "reset") rpc.resetSqlReads();
+    expect(await queued).toBeInstanceOf(Error);
+    expect(vi.getTimerCount()).toBe(0);
+    wire.deliver({ id: wire.sent[0].id, ok: true, result: {} });
+    await vi.advanceTimersByTimeAsync(SQL_ADMISSION_TIMEOUT_MS);
+    expect(wire.sent).toHaveLength(8);
   });
 
   it("cancels unsent reads without sending later, and retains sent credits until a final reply", async () => {

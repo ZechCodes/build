@@ -11,14 +11,31 @@ const READ_BATCH_SIZE = 64;
 
 function createProjection(deviceId, rootKinds, withRows) {
   const relevantKinds = new Set([...rootKinds, ...(withRows ? rowKinds : [])]);
-  const state = { rootKinds, withRows, full: true, dirty: new Map(), records: new Map(), snapshot: null, reading: null, version: 0, snapshotVersion: -1 };
+  const state = { rootKinds, withRows, full: true, dirty: new Map(), records: new Map(), snapshot: null, reading: null, version: 0, snapshotVersion: -1, evictedDuringRead: null };
   subscribeCache({ deviceId }, (address) => {
+    if (!address.kind && address.entityId) {
+      if (withRows) retireEntity(state, address.entityId);
+      return;
+    }
     if (address.kind && !relevantKinds.has(address.kind)) return;
     state.version += 1;
     if (!address.kind) state.full = true;
     else state.dirty.set(keyOf(address), address);
   });
   return state;
+}
+
+// A departure only removes that owner's records. Remember it while a captured
+// read is outstanding, so its older response cannot put the entity back.
+function retireEntity(state, entityId) {
+  state.version += 1;
+  state.evictedDuringRead?.add(entityId);
+  for (const [key, entry] of state.records) {
+    if (entry.address.entityId === entityId) state.records.delete(key);
+  }
+  for (const [key, address] of state.dirty) {
+    if (address.entityId === entityId) state.dirty.delete(key);
+  }
 }
 
 async function addressesToRead(deviceId, state) {
@@ -59,12 +76,15 @@ async function drainRecords(deviceId, state) {
   do {
     const version = state.version;
     const full = state.full;
+    const evicted = new Set();
+    state.evictedDuringRead = evicted;
     const addresses = await addressesToRead(deviceId, state);
     const records = await (full ? readInitialRecords(addresses, state.rootKinds.length) : readDirtyRecords(addresses));
-    // Prefix eviction invalidates the held index and any response captured
-    // before it. Ordinary writes remain dirty for the next finite pass.
+    // A device/global-root reset invalidates the index. Entity departures
+    // discard only their captured responses; later writes remain dirty.
     if (state.full) continue;
     addresses.forEach((address, index) => {
+      if (evicted.has(address.entityId)) return;
       if (records[index]) state.records.set(keyOf(address), { address, record: records[index] });
       else state.records.delete(keyOf(address));
     });
@@ -83,7 +103,7 @@ function startRead(deviceId, state) {
   return drainRecords(deviceId, state).catch((error) => {
     state.full = true;
     throw error;
-  }).finally(() => { state.reading = null; });
+  }).finally(() => { state.reading = null; state.evictedDuringRead = null; });
 }
 
 async function readProjection(deviceId, state) {
@@ -118,23 +138,38 @@ export async function readFeedCacheRecords(deviceId, { routeOnly = false } = {})
   if (routeOnly) return readProjection(deviceId, state.owners);
   for (;;) {
     const epoch = state.epoch;
-    const [owners, auxiliary] = await Promise.all([
-      readProjection(deviceId, state.owners), readProjection(deviceId, state.auxiliary),
-    ]);
-    // One side may have finished before a reset while the other was held.
-    // Never combine snapshots from opposite sides of a prefix eviction.
-    if (epoch === state.epoch) return combineSnapshots(owners, auxiliary);
+    const evicted = new Set();
+    state.joins.add(evicted);
+    try {
+      const [owners, auxiliary] = await Promise.all([
+        readProjection(deviceId, state.owners), readProjection(deviceId, state.auxiliary),
+      ]);
+      // Global roots still join within one reset epoch. Entity departures
+      // filter an older owner result even when auxiliary reads finished later.
+      if (epoch === state.epoch) return combineSnapshots(withoutDepartedRows(owners, evicted), auxiliary);
+    } finally {
+      state.joins.delete(evicted);
+    }
   }
+}
+
+function withoutDepartedRows(snapshot, evicted) {
+  if (!snapshot.rows.some(({ address }) => evicted.has(address.entityId))) return snapshot;
+  return { ...snapshot, rows: snapshot.rows.filter(({ address }) => !evicted.has(address.entityId)) };
 }
 
 function createDeviceProjections(deviceId) {
   const state = {
     epoch: 0,
+    joins: new Set(),
     owners: createProjection(deviceId, ownerKinds, true),
     auxiliary: createProjection(deviceId, auxiliaryKinds, false),
   };
   subscribeCache({ deviceId }, (address) => {
-    if (!address.kind) state.epoch += 1;
+    if (address.kind) return;
+    if (address.entityId) {
+      for (const evicted of state.joins) evicted.add(address.entityId);
+    } else state.epoch += 1;
   });
   return state;
 }

@@ -173,3 +173,118 @@ it.each(["entity", "device"])("fences held responses after %s eviction", async (
   expect(view.items.some((item) => item.entity_id === "r4")).toBe(false);
   expect(view.items).toHaveLength(scope === "entity" ? 127 : 0);
 });
+
+it("bounds row reads while serial entity departures retire retained board rows", async () => {
+  await Promise.all(Array.from({ length: 76 }, (_, index) => cache.writeCached(rowAddress(`r${index + 128}`), row(`r${index + 128}`))));
+  await rows.cachedFeedView(deviceId);
+  const gets = vi.spyOn(IDBObjectStore.prototype, "get");
+  for (let index = 6; index < 204; index += 1) {
+    await cache.evictEntity(deviceId, `r${index}`);
+    await cache.writeCached(rowAddress("r0"), row("r0", { revision: index }));
+    const [feed, route] = await Promise.all([
+      rows.cachedFeedView(deviceId), rows.cachedFeedView(deviceId, { projectRosters: false }),
+    ]);
+    expect(feed.items).toHaveLength(203 - (index - 6));
+    expect(route.items).toEqual(feed.items);
+  }
+  // Only changed live rows and departed addresses need reads, never a whole
+  // remaining-row sweep for every departure (20,691 gets before the fix).
+  expect(rowReads(gets)).toBeLessThanOrEqual(400);
+}, 60000);
+
+it("publishes a finite held pass while a different entity leaves", async () => {
+  await rows.cachedFeedView(deviceId);
+  await cache.writeCached(rowAddress("r4"), row("r4", { muted: true }));
+  const readMany = cache.readCachedMany;
+  const releases = [];
+  vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+    const records = await readMany(addresses);
+    await new Promise((resolve) => releases.push(resolve));
+    return records;
+  });
+  let view;
+  const pending = rows.cachedFeedView(deviceId).then((next) => { view = next; });
+  await vi.waitFor(() => expect(releases).toHaveLength(1));
+  await cache.evictEntity(deviceId, "r5");
+  await cache.writeCached(rowAddress("r6"), row("r6", { muted: true }));
+  releases[0]();
+  try {
+    await vi.waitFor(() => expect(view).toBeDefined());
+    expect(view.items.find((item) => item.entity_id === "r4").muted).toBe(true);
+    expect(view.items.some((item) => item.entity_id === "r5")).toBe(false);
+  } finally {
+    releases.forEach((release) => release());
+    await pending;
+  }
+});
+
+it("keeps recreated entity writes dirty after rejecting an older held response", async () => {
+  await rows.cachedFeedView(deviceId);
+  await cache.writeCached(rowAddress("r4"), row("r4", { label: "old held row" }));
+  const readMany = cache.readCachedMany;
+  let release;
+  vi.spyOn(cache, "readCachedMany").mockImplementationOnce(async (addresses) => {
+    const records = await readMany(addresses);
+    await new Promise((resolve) => { release = resolve; });
+    return records;
+  });
+  const pending = rows.cachedFeedView(deviceId);
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  await cache.evictEntity(deviceId, "r4");
+  await cache.writeCached(rowAddress("r4"), row("r4", { label: "recreated row" }));
+  release();
+  const first = await pending;
+  expect(first.items.find((item) => item.entity_id === "r4")?.label).not.toBe("old held row");
+  const current = await rows.cachedFeedView(deviceId);
+  expect(current.items.find((item) => item.entity_id === "r4").label).toBe("recreated row");
+});
+
+it("does not reload rows or auxiliary roots for an unrelated entity eviction", async () => {
+  await cache.writeCached({ deviceId, entityId: "thread-only", kind: "thread" }, { messages: [] });
+  await rows.cachedFeedView(deviceId);
+  const gets = vi.spyOn(IDBObjectStore.prototype, "get");
+  await cache.evictEntity(deviceId, "thread-only");
+  const view = await rows.cachedFeedView(deviceId);
+  expect(view.items).toHaveLength(128);
+  expect(gets).not.toHaveBeenCalled();
+});
+
+it("does not combine departed owner rows with auxiliary roots held across recreation", async () => {
+  await cache.writeCached(rowAddress("r4"), row("r4", { label: "departed owner row" }));
+  await cache.writeCached({ deviceId, entityId: "", kind: "feed" }, { items: [] });
+  const read = cache.readCached;
+  let release;
+  vi.spyOn(cache, "readCached").mockImplementation(async (address) => {
+    const record = await read(address);
+    if (address.kind === "feed" && !release) await new Promise((resolve) => { release = resolve; });
+    return record;
+  });
+  const feeding = createFeedCacheReader(deviceId).refresh();
+  await rows.cachedFeedView(deviceId, { projectRosters: false });
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  // Replace the current projection entry while the older owner snapshot is
+  // still held by the auxiliary join, then retire and recreate that owner.
+  await cache.writeCached(rowAddress("r4"), row("r4", { label: "intermediate replacement" }));
+  await rows.cachedFeedView(deviceId, { projectRosters: false });
+  await cache.evictEntity(deviceId, "r4");
+  await cache.writeCached(rowAddress("r4"), row("r4", { label: "recreated after owners resolved" }));
+  const route = await rows.cachedFeedView(deviceId, { projectRosters: false });
+  expect(route.items.find((item) => item.entity_id === "r4").label).toBe("recreated after owners resolved");
+  release();
+  const combined = await feeding;
+  expect(combined.view.items.find((item) => item.entity_id === "r4")?.label).not.toBe("departed owner row");
+  const current = await createFeedCacheReader(deviceId).refresh();
+  expect(current.view.items.find((item) => item.entity_id === "r4").label).toBe("recreated after owners resolved");
+});
+
+it("invalidates owner and auxiliary roots after an empty-entity prefix eviction", async () => {
+  await cache.writeCached({ deviceId, entityId: "", kind: "projects" }, [{ id: "p1" }]);
+  await cache.writeCached({ deviceId, entityId: "", kind: "agent-lineage-support" }, { namesMakers: true });
+  const reader = createFeedCacheReader(deviceId);
+  expect((await reader.refresh()).namesMakers).toBe(true);
+  await cache.evictEntity(deviceId, "");
+  const current = await reader.refresh();
+  expect(current.view.projects).toEqual([]);
+  expect(current.namesMakers).toBe(false);
+  expect(current.view.items).toHaveLength(128);
+});

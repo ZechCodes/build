@@ -3932,9 +3932,13 @@ gate attachment display.
   share the initial row/owner read; auxiliary feed and support roots refresh
   independently, so route discovery never waits for those background reads.
   Later announcements reread only named records, in batches of at most 64.
-  Unrelated writes reuse the held snapshot. Prefix evictions rebuild the index
-  and fence combined owner/auxiliary snapshots across the reset. Reads still
-  include pending-write overlays and cross-tab changes; a failed read leaves the projection invalid for retry.
+  Unrelated writes reuse the held snapshot. An entity-prefix eviction removes
+  only that owner's rows and rosters. Active reads and owner/auxiliary joins
+  retain a departure fence so a captured response cannot restore the old owner;
+  a fresh reader can observe its recreation. Device-wide and global-root resets
+  rebuild the index and fence combined snapshots across the reset. Reads still
+  include pending-write overlays and cross-tab changes; a failed read leaves
+  the projection invalid for retry.
 - **Chat read marks** (#473) report the viewport sequence and window floor
   only while the reader is present. A known cursor can establish read progress
   even if the cached unread count is zero. `chatReadReporter.js` confirms

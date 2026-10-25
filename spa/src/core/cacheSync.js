@@ -171,6 +171,65 @@ let stopThreadWatch = null;
 let lifetime = 0;
 const syncedSessions = new Map(); // deviceId → the session its last pass ran on
 const passes = new Map(); // deviceId → the pass running on it, so triggers never stack
+const connectionPassRequests = new Map();
+const connectionSyncListeners = new Set();
+const connectionPeriods = new Map();
+let connectionSyncActive = false;
+
+/** Only connection status may render this signal; all other views use cache. */
+export function subscribeConnectionSync(listener) {
+  connectionSyncListeners.add(listener);
+  listener(connectionSyncActive);
+  return () => connectionSyncListeners.delete(listener);
+}
+
+function setConnectionSync(active) {
+  if (connectionSyncActive === active) return;
+  connectionSyncActive = active;
+  for (const listener of connectionSyncListeners) listener(active);
+}
+
+/** Each caller releases only its own request, even across stop/reconnect. */
+async function requestConnectionPass(deviceId, run) {
+  let requests = connectionPassRequests.get(deviceId);
+  if (!requests) connectionPassRequests.set(deviceId, requests = new Set());
+  const request = {};
+  requests.add(request);
+  try { return await run(); }
+  finally {
+    if (connectionPassRequests.get(deviceId) === requests) {
+      requests.delete(request);
+      if (!requests.size) connectionPassRequests.delete(deviceId);
+    }
+    updateConnectionSync();
+  }
+}
+
+function connectionDeviceBusy({ deviceId }) {
+  if (connectionPassRequests.has(deviceId)) return true;
+  return connectionPeriods.get(deviceId)?.active() || false;
+}
+
+/** Each device drains a finite cut after its last chained connection pass. */
+function finishConnectionPass(deviceId, turn) {
+  const period = turn.connection;
+  if (!period || connectionPeriods.get(deviceId) !== period) return;
+  const queues = pushQueues.get(deviceId);
+  const work = [...Object.values(pushWorkInFlight(deviceId)), ...Object.values(threadCatchupsInFlight(deviceId))];
+  if (!queues?.active() || !work.some(Boolean)) {
+    connectionPeriods.delete(deviceId);
+    return;
+  }
+  void Promise.all([queues.body.capture(), queues.background.capture(), queues.catchups.capture()]).then(() => {
+    if (connectionPeriods.get(deviceId) === period) connectionPeriods.delete(deviceId);
+    updateConnectionSync();
+  });
+}
+
+/** Only a connect starts a period; later queue work cannot prolong its cut. */
+function updateConnectionSync() {
+  if (connectionSyncActive && !liveContexts().some(connectionDeviceBusy)) setConnectionSync(false);
+}
 const projectTerminalSubscriptions = new Map();
 const subscriptions = new Map(); // deviceId → its three watchers
 const restoredScopes = new Map(); // deviceId → fresh read identity for an ICE-restored session
@@ -200,14 +259,17 @@ const syncContext = (context, turn = null) => {
   const session = context.session;
   const requestScope = requestScopeOf(context);
   const startedIn = lifetime;
+  // Queue ownership follows the path, independent of pass or per-record fences.
+  const ownerActive = () => context.active() && context.session === session && startedIn === lifetime
+    && requestScopeOf(context) === requestScope;
   return {
     deviceId: context.deviceId,
     call: context.rpc,
     requestScope,
     syncTurn: turn,
     backgroundStreams: backgroundStreams.forContext({ deviceId: context.deviceId, session, requestScope, lifetime: startedIn }),
-    active: () => context.active() && context.session === session && startedIn === lifetime
-      && requestScopeOf(context) === requestScope && !turn?.superseded,
+    ownerActive,
+    active: () => ownerActive() && !turn?.superseded,
   };
 };
 
@@ -349,6 +411,11 @@ export async function syncDevice(deviceId) {
  * Ordinary device-state changes are covered by the per-session pass. */
 export async function syncRestoredDevice(deviceId, session) {
   if (!holdingLock || sessionOf(deviceId) !== session) return false;
+  return requestConnectionPass(deviceId, () => restoreDevice(deviceId, session));
+}
+
+async function restoreDevice(deviceId, session) {
+  const startedIn = lifetime;
   // A carried session has the same caller and cache scope as before its ICE
   // restart. The bridge behind it may be new, so reads from the old path may
   // neither answer nor be shared with this path's baseline.
@@ -369,7 +436,7 @@ export async function syncRestoredDevice(deviceId, session) {
     // already fenced off, so it must not hold the restored bridge's first pass.
     if (passes.get(deviceId) === previous) passes.delete(deviceId);
   }
-  if (!holdingLock || sessionOf(deviceId) !== session) return false;
+  if (!holdingLock || startedIn !== lifetime || sessionOf(deviceId) !== session) return false;
   return syncDevice(deviceId);
 }
 
@@ -386,8 +453,8 @@ const sessionOf = (deviceId) => contextFor(deviceId)?.session ?? null;
 /** Run one pass and hold it where the next ask can find it. The promise never
  *  rejects: a pass that threw is a pass that did not finish, and the caller's
  *  question is only ever whether it got all the way through. */
-function startPass(deviceId) {
-  const turn = { session: sessionOf(deviceId), superseded: false, reading: false, again: false, next: null, done: null };
+function startPass(deviceId, connection = null) {
+  const turn = { connection, session: sessionOf(deviceId), superseded: false, reading: false, again: false, next: null, done: null };
   turn.done = (async () => {
     try {
       return await orderedSync(deviceId, turn);
@@ -398,6 +465,11 @@ function startPass(deviceId) {
     }
   })();
   passes.set(deviceId, turn);
+  if (connectionPassRequests.delete(deviceId) && liveContexts().some((context) => context.deviceId === deviceId)) {
+    turn.connection = { active: syncContext(contextFor(deviceId)).ownerActive };
+    connectionPeriods.set(deviceId, turn.connection);
+    setConnectionSync(true);
+  }
   return turn.done;
 }
 
@@ -407,8 +479,9 @@ function finishPass(deviceId, turn) {
   if (passes.get(deviceId) !== turn) return;
   passes.delete(deviceId);
   if (turn.again && !turn.superseded && holdingLock && sessionOf(deviceId) === turn.session) {
-    turn.next = startPass(deviceId);
-  }
+    turn.next = startPass(deviceId, turn.connection);
+  } else finishConnectionPass(deviceId, turn);
+  updateConnectionSync();
 }
 
 async function orderedSync(deviceId, turn) {
@@ -1534,18 +1607,19 @@ function queuesFor(context) {
   if (held?.scope === context.backgroundStreams) return held;
   held?.body.clear(); held?.background.clear(); held?.catchups.clear();
   const priority = (item) => item.owner === openPushEntity(context.deviceId) || item.entity_id === openPushEntity(context.deviceId);
-  const background = createPushQueue({ priority, onError: pushError, concurrency: 2,
+  const background = createPushQueue({ priority, onChange: updateConnectionSync, onError: pushError, concurrency: 2,
     isBarrier: () => false,
     merge: (left, right) => left.run && right.run && left.replaceable && right.replaceable ? right : combinePushItems(left, right),
     apply: (scoped, item) => item.run ? item.run() : applyRemainder(scoped, item),
   });
-  const body = createPushQueue({ priority, onError: pushError, apply: async (scoped, item) => {
-    const applying = { ...scoped, pushCompletions: [] };
+  const body = createPushQueue({ priority, onChange: updateConnectionSync, onError: pushError, apply: async (scoped, item, connectionSnapshot) => {
+    const applying = { ...scoped, connectionSnapshot, pushCompletions: [] };
     const before = await applyItem(applying, item);
     if (before) void prunePushedDrafts(applying, before).catch(() => {});
     return { settled: Promise.all(applying.pushCompletions) };
   } });
   const catchups = createThreadCatchups({
+    onChange: updateConnectionSync,
     needed: async (request) => {
       const held = (await readCached(request.address))?.value;
       return catchupGenerationMatches(request, held)
@@ -1553,7 +1627,7 @@ function queuesFor(context) {
     },
     read: (request, active) => syncThread({ ...request.context, active }, request.entityId, request.agent, "background"),
   });
-  const queues = { scope: context.backgroundStreams, body, background, catchups };
+  const queues = { scope: context.backgroundStreams, active: context.ownerActive, body, background, catchups };
   pushQueues.set(context.deviceId, queues);
   return queues;
 }
@@ -1587,7 +1661,7 @@ function catchupStillNeeded(request, held) {
 
 function deferPush(context, entityId, key, run, replaceable = true) {
   if (!context.active()) return;
-  const settled = queuesFor(context).background.enqueueApplied(context, [{ entity_id: key, owner: entityId, run, replaceable }]);
+  const settled = queuesFor(context).background.enqueueApplied(context, [{ entity_id: key, owner: entityId, run, replaceable }], context.connectionSnapshot?.());
   context.pushCompletions?.push(settled);
 }
 
@@ -1636,7 +1710,7 @@ function enqueuePushRemainder(context, item) {
     .map(([field]) => [field, item[field]]));
   if (!Object.keys(remainder).length) return;
   remainder.entity_id = item.entity_id;
-  context.pushCompletions?.push(queuesFor(context).background.enqueueApplied(context, [remainder]));
+  context.pushCompletions?.push(queuesFor(context).background.enqueueApplied(context, [remainder], context.connectionSnapshot?.()));
 }
 
 /** Source subscriptions are owned by their mounted panes; writes still go
@@ -1984,7 +2058,7 @@ async function deferThreadCatchup(context, entityId, tip, sub, held) {
     ...catchupGoal(tip, held),
     historyStartSequence: Math.max(Number(held?.historyStartSequence || 0), authoritativeTipFloor(tip, held)),
     agent: { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: held?.thread_id || tip.thread_id },
-  });
+  }, context.connectionSnapshot?.());
   if (context.pushing) context.pushCompletions?.push(settled);
   else await settled;
 }
@@ -2305,6 +2379,7 @@ function considerDevices() {
     syncedSessions.set(context.deviceId, context.session);
     void syncSessionOnce(context.deviceId, context.session);
   }
+  updateConnectionSync();
 }
 
 /** A session is marked read before its pass runs, so two announcements in a
@@ -2314,7 +2389,7 @@ function considerDevices() {
  *  Unmarked, the next thing the device announces asks again. */
 async function syncSessionOnce(deviceId, session) {
   const startedIn = lifetime;
-  if (await syncDevice(deviceId)) return;
+  if (await requestConnectionPass(deviceId, () => syncDevice(deviceId))) return;
   if (startedIn === lifetime && syncedSessions.get(deviceId) === session) syncedSessions.delete(deviceId);
 }
 
@@ -2379,6 +2454,9 @@ export function stopCacheSync() {
   // writes are behind `active()`, and queued follow-ups lose their turn.
   for (const turn of passes.values()) turn.superseded = true;
   passes.clear();
+  connectionPassRequests.clear();
+  connectionPeriods.clear();
+  setConnectionSync(false);
   clearTimeout(lockWait);
   lockWait = null;
   if (visibilityWired && typeof document !== "undefined") {

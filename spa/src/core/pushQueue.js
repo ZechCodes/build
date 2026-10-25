@@ -80,21 +80,32 @@ function combineItems(left, right) {
 export const combinePushItems = (left, right) => compatible(left, right) ? combineItems(left, right) : null;
 
 export function createPushQueue({ apply, priority = () => false, onError = () => {}, merge = combinePushItems,
-  isBarrier = boundary, concurrency = 1 }) {
-  const segments = [], busy = new Set();
+  isBarrier = boundary, concurrency = 1, onChange = () => {} }) {
+  const segments = [], busy = new Set(), trackedJobs = new Set();
   let running = 0, done = null, resolveIdle, promoted = 0, barrierRunning = false;
   const keyOf = (item) => item.project_source ? JSON.stringify(item.project_source) : String(item.entity_id || "");
 
+  function newJob(context, item, barrier = false) {
+    const job = { context, item, barrier };
+    trackedJobs.add(job);
+    return job;
+  }
+
+  function completion(job) {
+    job.done ||= new Promise((resolve) => { job.resolve = resolve; });
+    return job.done;
+  }
+
   function append(context, item) {
-    if (isBarrier(item)) { const job = { context, item, barrier: true }; segments.push({ barrier: job }); return job; }
+    if (isBarrier(item)) { const job = newJob(context, item, true); segments.push({ barrier: job }); return job; }
     let segment = segments.at(-1);
     if (!segment || segment.barrier) { segment = { entities: new Map() }; segments.push(segment); }
     const key = keyOf(item);
     const jobs = segment.entities.get(key) || [];
     const last = jobs.at(-1);
-    const merged = last?.context.active() && merge(last.item, item);
+    const merged = last && !last.captured && last.context.active() && merge(last.item, item);
     if (merged) { last.item = merged; last.context = context; }
-    else jobs.push({ context, item });
+    else jobs.push(newJob(context, item));
     segment.entities.set(key, jobs);
     return jobs.at(-1);
   }
@@ -118,10 +129,11 @@ export function createPushQueue({ apply, priority = () => false, onError = () =>
   async function run(job) {
     let result;
     try {
-      if (job.context.active()) result = await apply(job.context, job.item);
+      if (job.context.active()) result = await apply(job.context, job.item, () => Boolean(job.captured));
     } catch (error) { onError(error); }
     finally {
       job.resolve?.(result);
+      trackedJobs.delete(job);
       busy.delete(keyOf(job.item));
       if (job.barrier) barrierRunning = false;
       running -= 1;
@@ -143,6 +155,7 @@ export function createPushQueue({ apply, priority = () => false, onError = () =>
       done = null;
       resolve();
     }
+    onChange();
   }
 
   function schedule() {
@@ -158,21 +171,26 @@ export function createPushQueue({ apply, priority = () => false, onError = () =>
       for (const item of items) append(context, item);
       return schedule();
     },
-    enqueueApplied(context, items) {
+    enqueueApplied(context, items, captured = false) {
       const completions = items.map((item) => {
         const job = append(context, item);
-        job.done ||= new Promise((resolve) => { job.resolve = resolve; });
-        return job.done;
+        job.captured ||= captured;
+        return completion(job);
       });
       void schedule();
       return Promise.all(completions);
     },
+    // Preserve the boundary: later compatible payloads coalesce in a new job.
+    capture: () => Promise.all([...trackedJobs].map((job) => {
+      job.captured = true;
+      return completion(job).then((result) => result?.settled);
+    })),
     snapshot: () => ({ running, pending: segments.reduce((count, segment) => count + (segment.barrier ? 1
       : [...segment.entities.values()].reduce((sum, jobs) => sum + jobs.length, 0)), 0) }),
     clear: () => {
       for (const segment of segments) {
-        const jobs = segment.barrier ? [segment.barrier] : [...segment.entities.values()].flat();
-        for (const job of jobs) job.resolve?.();
+        const pending = segment.barrier ? [segment.barrier] : [...segment.entities.values()].flat();
+        for (const job of pending) { job.resolve?.(); trackedJobs.delete(job); }
       }
       segments.length = 0;
       pump();

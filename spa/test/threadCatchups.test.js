@@ -149,3 +149,61 @@ it("keeps the larger retained suffix goal when a same-generation floor advances 
   stalled.resolve(); await Promise.all([first, next]);
   expect(read.mock.calls.map(([goal]) => [goal.sequence, goal.historyStartSequence])).toEqual([[100, 1], [100, 8], [100, 8]]);
 });
+
+it("captures active and queued rounds without waiting for later rounds", async () => {
+  const gates = [null, gate(), gate(), gate()];
+  let covered = 0;
+  const read = vi.fn(async (goal) => { await gates[goal.sequence].promise; covered = goal.sequence; });
+  const jobs = createThreadCatchups({ needed: (goal) => goal.sequence > covered, read });
+  const first = jobs.enqueue("thread", request(1));
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  const second = jobs.enqueue("thread", request(2));
+  const captured = jobs.capture();
+  gates[1].resolve(); await first;
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+  expect(read.mock.calls[1][0].sequence).toBe(2);
+  const third = jobs.enqueue("thread", request(3));
+  expect(third).not.toBe(second);
+  gates[2].resolve(); await captured;
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+  expect(jobs.snapshot()).toEqual({ running: 1, pending: 0 });
+  gates[3].resolve(); await third;
+});
+
+it("freezes captured trailing goals while coalescing later goals in their own round", async () => {
+  const first = gate(), later = gate();
+  let covered = 0;
+  const read = vi.fn(async (goal) => {
+    if (goal.sequence === 1) await first.promise;
+    if (goal.sequence > 2) await later.promise;
+    covered = goal.sequence;
+  });
+  const jobs = createThreadCatchups({ needed: (goal) => goal.sequence > covered, read });
+  const one = jobs.enqueue("thread", request(1));
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  const two = jobs.enqueue("thread", request(2));
+  const captured = jobs.capture();
+  const three = jobs.enqueue("thread", request(3));
+  expect(jobs.enqueue("thread", request(4))).toBe(three);
+  try {
+    expect(three).not.toBe(two);
+    expect(jobs.snapshot()).toEqual({ running: 1, pending: 2 });
+    first.resolve(); await captured;
+    await vi.waitFor(() => expect(read.mock.calls.map(([goal]) => goal.sequence)).toEqual([1, 2, 4]));
+    expect(jobs.snapshot()).toEqual({ running: 1, pending: 0 });
+  } finally { first.resolve(); later.resolve(); await Promise.all([one, two, three]); }
+});
+
+it("seals a descendant round on admission while sharing an already running equal goal", async () => {
+  const held = gate(), read = vi.fn(() => held.promise);
+  const jobs = createThreadCatchups({ needed: () => true, read });
+  const first = jobs.enqueue("thread", request(1));
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  expect(jobs.enqueue("thread", request(1), true)).toBe(first);
+  const child = jobs.enqueue("thread", request(2), true);
+  const later = jobs.enqueue("thread", request(3));
+  try {
+    expect(later).not.toBe(child);
+    expect(jobs.snapshot()).toEqual({ running: 1, pending: 2 });
+  } finally { jobs.clear(); held.resolve(); await Promise.all([first, child, later]); }
+});

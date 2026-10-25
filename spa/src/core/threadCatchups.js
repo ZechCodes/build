@@ -28,12 +28,12 @@ function roundFor(request) {
 function abandon(entry) {
   entry.valid = false;
   entry.current?.resolve();
-  entry.pending?.resolve();
+  for (const round of entry.pending) round.resolve();
   entry.current = null;
-  entry.pending = null;
+  entry.pending = [];
 }
 
-export function createThreadCatchups({ needed, read }) {
+export function createThreadCatchups({ needed, read, onChange = () => {} }) {
   const entries = new Map();
 
   async function stillNeeded(round, active) {
@@ -54,7 +54,7 @@ export function createThreadCatchups({ needed, read }) {
       catch { /* The canonical obligation, rather than RPC success, settles work. */ }
       // Newer evidence has its own round. Let current callers finish rather
       // than repeatedly extending their wait with continuously arriving tips.
-      if (entry.pending) return;
+      if (entry.pending.length) return;
     }
   }
 
@@ -65,15 +65,16 @@ export function createThreadCatchups({ needed, read }) {
       round.resolve();
       if (entry.current === round) {
         entry.current = null;
-        const next = entry.pending;
-        entry.pending = null;
+        const next = entry.pending.shift();
         if (next && entry.valid) start(entry, next);
       }
+      onChange();
     }
   }
 
   function start(entry, round) {
     entry.current = round;
+    onChange();
     void run(entry, round);
     return round.promise;
   }
@@ -86,28 +87,47 @@ export function createThreadCatchups({ needed, read }) {
     if (!entry || entry.generation !== request.generation || !requestActive(entry.owner)
       || entry.current && !requestActive(entry.current.request)) {
       if (entry) abandon(entry);
-      entry = { generation: request.generation, owner: request, valid: true, current: null, pending: null, exhaustedThrough: -1, exhaustedFloor: 0 };
+      entry = { generation: request.generation, owner: request, valid: true, current: null, pending: [], exhaustedThrough: -1, exhaustedFloor: 0 };
       entries.set(key, entry);
     }
     return entry;
   }
 
+  function queueTrailing(entry, request) {
+    let pending = entry.pending.at(-1);
+    if (pending && !newerGoal(request, pending.request)) return pending;
+    if (!pending || pending.captured) {
+      pending = roundFor(combinedGoal(pending?.request || entry.current.request, request));
+      entry.pending.push(pending);
+    } else pending.request = combinedGoal(pending.request, request);
+    return pending;
+  }
+
   return {
-    enqueue(key, request) {
+    enqueue(key, request, captured = false) {
       const entry = entryFor(key, request);
-      if (!entry.current) return start(entry, roundFor(request));
-      if (!newerGoal(request, entry.current.request)) return entry.current.promise;
-      entry.pending ||= roundFor(combinedGoal(entry.current.request, request));
-      if (newerGoal(request, entry.pending.request)) entry.pending.request = combinedGoal(entry.pending.request, request);
-      return entry.pending.promise;
+      let round = entry.current;
+      if (!round) {
+        round = roundFor(request);
+        start(entry, round);
+      } else if (newerGoal(request, round.request)) round = queueTrailing(entry, request);
+      round.captured ||= captured;
+      return round.promise;
     },
+    // Preserve captured goals; newer tips share a separate trailing round.
+    capture: () => Promise.all([...entries.values()].flatMap((entry) =>
+      [entry.current, ...entry.pending].filter(Boolean).map((round) => {
+        round.captured = true;
+        return round.promise;
+      }))),
     snapshot: () => ({
       running: [...entries.values()].filter((entry) => entry.current).length,
-      pending: [...entries.values()].filter((entry) => entry.pending).length,
+      pending: [...entries.values()].reduce((count, entry) => count + entry.pending.length, 0),
     }),
     clear() {
       for (const entry of entries.values()) abandon(entry);
       entries.clear();
+      onChange();
     },
   };
 }

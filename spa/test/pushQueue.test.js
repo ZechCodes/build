@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createPushQueue } from "../src/core/pushQueue.js";
 
 const context = { active: () => true };
@@ -217,4 +217,77 @@ it("keeps board revision high-water and treats unknown board fields as causal ba
   expect(applied.slice(1).map((entry) => entry.state)).toEqual([
     { revision: 9 }, { revision: 10, future_transition: true }, { revision: 11 },
   ]);
+});
+
+it("captures running and queued applications with descendants without later jobs", async () => {
+  const first = gate(), captured = gate(), later = gate(), child = gate(), started = [];
+  const queue = createPushQueue({ apply: async (_, entry) => {
+    const sequence = entry.thread[0].last_sequence;
+    started.push(sequence);
+    await [null, first, captured, later][sequence].done;
+    return { settled: sequence === 2 ? child.done : Promise.resolve() };
+  } });
+  const draining = queue.enqueue(context, [item("a", 1)]);
+  await Promise.resolve();
+  queue.enqueue(context, [item("a", 2)]);
+  let settled = false;
+  const snapshot = queue.capture().then(() => { settled = true; });
+  queue.enqueue(context, [item("later", 3)]);
+  first.release(); captured.release();
+  await vi.waitFor(() => expect(started).toContain(3));
+  expect(started).toEqual([1, 2, 3]);
+  expect(settled).toBe(false);
+  child.release(); await snapshot;
+  expect(queue.snapshot()).toEqual({ running: 1, pending: 0 });
+  later.release(); await draining;
+});
+
+it("freezes captured pending payloads and coalesces subsequent compatible arrivals separately", async () => {
+  const first = gate(), later = gate(), started = [];
+  const queue = createPushQueue({ apply: async (_, entry) => {
+    const sequence = entry.thread[0].last_sequence;
+    started.push(sequence);
+    if (sequence === 1) await first.done;
+    if (sequence > 2) await later.done;
+  } });
+  const draining = queue.enqueue(context, [item("a", 1)]);
+  await Promise.resolve();
+  queue.enqueue(context, [item("a", 2)]);
+  const captured = queue.capture();
+  queue.enqueue(context, [item("a", 3), item("a", 4)]);
+  try {
+    expect(queue.snapshot()).toEqual({ running: 1, pending: 2 });
+    first.release(); await captured;
+    await vi.waitFor(() => expect(started).toEqual([1, 2, 4]));
+    expect(queue.snapshot()).toEqual({ running: 1, pending: 0 });
+  } finally { first.release(); later.release(); await draining; }
+});
+
+it("seals captured descendants on admission before later compatible work can merge", async () => {
+  const first = gate(), applied = [];
+  const queue = createPushQueue({ apply: async (_, entry) => {
+    applied.push(entry.thread[0].last_sequence);
+    if (applied.length === 1) await first.done;
+  } });
+  const draining = queue.enqueue(context, [item("a", 1)]);
+  await Promise.resolve();
+  const child = queue.enqueueApplied(context, [item("a", 2)], true);
+  queue.enqueueApplied(context, [item("a", 3)]);
+  try { expect(queue.snapshot()).toEqual({ running: 1, pending: 2 }); }
+  finally { first.release(); await Promise.all([draining, child]); }
+  expect(applied).toEqual([1, 2, 3]);
+});
+
+it("lets a running body discover that it was captured before admitting descendants", async () => {
+  const held = gate(), observations = [];
+  const queue = createPushQueue({ apply: async (_, _entry, isCaptured) => {
+    observations.push(isCaptured?.());
+    await held.done;
+    observations.push(isCaptured?.());
+  } });
+  const draining = queue.enqueue(context, [item("a", 1)]);
+  await Promise.resolve();
+  const captured = queue.capture();
+  held.release(); await Promise.all([captured, draining]);
+  expect(observations).toEqual([false, true]);
 });

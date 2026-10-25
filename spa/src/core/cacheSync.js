@@ -415,6 +415,7 @@ export async function syncRestoredDevice(deviceId, session) {
 }
 
 async function restoreDevice(deviceId, session) {
+  const startedIn = lifetime;
   // A carried session has the same caller and cache scope as before its ICE
   // restart. The bridge behind it may be new, so reads from the old path may
   // neither answer nor be shared with this path's baseline.
@@ -435,7 +436,7 @@ async function restoreDevice(deviceId, session) {
     // already fenced off, so it must not hold the restored bridge's first pass.
     if (passes.get(deviceId) === previous) passes.delete(deviceId);
   }
-  if (!holdingLock || sessionOf(deviceId) !== session) return false;
+  if (!holdingLock || startedIn !== lifetime || sessionOf(deviceId) !== session) return false;
   return syncDevice(deviceId);
 }
 

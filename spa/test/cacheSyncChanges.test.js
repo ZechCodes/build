@@ -1424,20 +1424,30 @@ describe("project source terminal rosters", () => {
       const address = { deviceId: "dev-1", entityId: id, kind: "terminals" };
       await first.cache.writeCached(address, { tabs: [{ term_id: "only-first-client" }] });
       expect((await second.cache.readCached(address)).value.tabs).toEqual([{ term_id: "term-s1" }]);
-      for (const client of [first, second]) {
-        // Both lifecycle snapshots must be eligible immediately, including
-        // the close following the create inside the old 30-second cooldown.
-        expect(client.watcher.mode).toBe("realtime");
-        expect(client.watcher.priority).toBe("foreground");
-      }
+      const clients = [first, second].map((client) => ({ ...client, deliveredAt: [], lastFlush: 0 }));
+      // The bridge has just sent its opening flush at t=0. Enforce the
+      // requested cooldown against a deterministic wire clock, so calling
+      // onChanges directly cannot hide a delayed subscription policy.
+      let wireTime = 0;
+      const publish = async (client, tabs) => {
+        const cooldown = client.watcher.mode.batch_ms || 0;
+        if (wireTime - client.lastFlush < cooldown) return;
+        client.lastFlush = wireTime;
+        client.deliveredAt.push(wireTime);
+        await client.watcher.onChanges([{ project_source: scope, terminals: { tabs } }]);
+      };
       const started = performance.now();
       for (const tabs of [[{ term_id: "created" }], []]) {
-        await Promise.all([first, second].map((client) => client.watcher.onChanges([
-          { project_source: scope, terminals: { tabs } },
-        ])));
-        for (const client of [first, second]) {
+        wireTime += 10;
+        await Promise.all(clients.map((client) => publish(client, tabs)));
+        for (const client of clients) {
           expect((await client.cache.readCached(address)).value.tabs).toEqual(tabs);
         }
+      }
+      expect(clients.map((client) => client.deliveredAt)).toEqual([[10, 20], [10, 20]]);
+      for (const client of clients) {
+        expect(client.watcher.mode).toBe("realtime");
+        expect(client.watcher.priority).toBe("foreground");
       }
       expect(performance.now() - started).toBeLessThan(1000);
     } finally {

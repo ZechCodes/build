@@ -138,9 +138,9 @@ describe("prompt project console actions", () => {
       // invalidations must not start another collector just to wake a test.
       expect(paints).toEqual([]);
       expect(document.activeElement).toBe(add);
-      add.click(); await flush();
+      add.click();
       expect(manager.createTerminal).toHaveBeenCalledOnce();
-      expect(panel.size()).toBe("half");
+      await vi.waitFor(() => expect(panel.size()).toBe("half"));
       expect(document.querySelector(".console-tab.active").dataset.key).toContain("new-term");
       expect((await readCanonicalCached(rosterAddress)).value.tabs).toContainEqual({ term_id: "new-term" });
     } finally { observer.disconnect(); harness.blockRead = null; release(); await flush(); }
@@ -158,14 +158,12 @@ describe("prompt project console actions", () => {
     try {
       document.querySelector(".console-new").click();
       expect(manager.createTerminal).toHaveBeenCalledOnce();
-      await flush();
-      expect(panel.size()).toBe("half");
+      await vi.waitFor(() => expect(panel.size()).toBe("half"));
       const createdTab = [...document.querySelectorAll(".console-tab")].find((tab) => tab.dataset.key.includes("new-term"));
       expect(createdTab).toBeDefined();
       createdTab.querySelector("[data-close]").click();
       expect(manager.closeTerminal).toHaveBeenCalledWith("new-term", { project_id: "p1", source_id: "code", source_path: "/code" });
-      await flush();
-      expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
+      await vi.waitFor(async () => expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]));
       expect(pushes).toBeGreaterThan(1);
     } finally { pushing = false; await flood; }
   });

@@ -35,6 +35,7 @@
 // read it followed, so a read never writes over a record a push wrote after it
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
+import { syncDiagnostics } from "./syncDiagnostics.js";
 import { threadHistoryStart, trimThreadHistory } from "./threadRetention.js";
 import { projectTerminalRpc } from "./projectTerminalRpc.js";
 import { projectTerminalScopes, writeProjectTerminalRoster } from "./projectTerminalCache.js";
@@ -186,6 +187,7 @@ export function subscribeConnectionSync(listener) {
 function setConnectionSync(active) {
   if (connectionSyncActive === active) return;
   connectionSyncActive = active;
+  syncDiagnostics.ring(active);
   for (const listener of connectionSyncListeners) listener(active);
 }
 
@@ -216,18 +218,39 @@ function finishConnectionPass(deviceId, turn) {
   if (!period || connectionPeriods.get(deviceId) !== period) return;
   const queues = pushQueues.get(deviceId);
   const work = [...Object.values(pushWorkInFlight(deviceId)), ...Object.values(threadCatchupsInFlight(deviceId))];
+  const captured = work.reduce((sum, count) => sum + count, 0);
+  syncDiagnostics.snapshot(turn.diagnostic, "capture", { ...diagnosticQueueCounts(deviceId), captured });
   if (!queues?.active() || !work.some(Boolean)) {
+    syncDiagnostics.snapshot(turn.diagnostic, "drain", { ...diagnosticQueueCounts(deviceId), captured, drained: captured });
     connectionPeriods.delete(deviceId);
     return;
   }
   void Promise.all([queues.body.capture(), queues.background.capture(), queues.catchups.capture()]).then(() => {
+    if (connectionPeriods.get(deviceId) !== period) return;
+    syncDiagnostics.snapshot(turn.diagnostic, "drain", { ...diagnosticQueueCounts(deviceId), captured, drained: captured });
     if (connectionPeriods.get(deviceId) === period) connectionPeriods.delete(deviceId);
     updateConnectionSync();
   });
 }
 
+/** Queue aggregates have no device labels in the exported timing record. */
+function diagnosticQueueCounts(deviceId) {
+  const body = pushWorkInFlight(deviceId);
+  const catchups = threadCatchupsInFlight(deviceId);
+  return { bodyRunning: body.running, bodyPending: body.pending,
+    backgroundRunning: body.backgroundRunning, backgroundPending: body.backgroundPending,
+    catchupRunning: catchups.running, catchupPending: catchups.pending };
+}
+
+function diagnosticDevices() {
+  syncDiagnostics.deviceState(liveContexts().map(({ deviceId }) => ({
+    syncing: connectionDeviceBusy({ deviceId }), pass: passes.has(deviceId), ...diagnosticQueueCounts(deviceId),
+  })));
+}
+
 /** Only a connect starts a period; later queue work cannot prolong its cut. */
 function updateConnectionSync() {
+  diagnosticDevices();
   if (connectionSyncActive && !liveContexts().some(connectionDeviceBusy)) setConnectionSync(false);
 }
 const projectTerminalSubscriptions = new Map();
@@ -455,21 +478,24 @@ const sessionOf = (deviceId) => contextFor(deviceId)?.session ?? null;
  *  question is only ever whether it got all the way through. */
 function startPass(deviceId, connection = null) {
   const turn = { connection, session: sessionOf(deviceId), superseded: false, reading: false, again: false, next: null, done: null };
-  turn.done = (async () => {
-    try {
-      return await orderedSync(deviceId, turn);
-    } catch {
-      return false;
-    } finally {
-      finishPass(deviceId, turn);
-    }
-  })();
   passes.set(deviceId, turn);
   if (connectionPassRequests.delete(deviceId) && liveContexts().some((context) => context.deviceId === deviceId)) {
     turn.connection = { active: syncContext(contextFor(deviceId)).ownerActive };
     connectionPeriods.set(deviceId, turn.connection);
     setConnectionSync(true);
   }
+  turn.diagnostic = turn.connection ? syncDiagnostics.passStart() : null;
+  diagnosticDevices();
+  turn.done = (async () => {
+    try {
+      return await orderedSync(deviceId, turn);
+    } catch {
+      return false;
+    } finally {
+      syncDiagnostics.passEnd(turn.diagnostic);
+      finishPass(deviceId, turn);
+    }
+  })();
   return turn.done;
 }
 
@@ -484,12 +510,18 @@ function finishPass(deviceId, turn) {
   updateConnectionSync();
 }
 
+async function diagnosticStage(turn, name, read) {
+  const finish = syncDiagnostics.stageStart(turn.diagnostic, name);
+  try { return await read(); }
+  finally { finish(); }
+}
+
 async function orderedSync(deviceId, turn) {
-  const context = await greetedContext(deviceId, turn);
+  const context = await diagnosticStage(turn, "greeting", () => greetedContext(deviceId, turn));
   if (!context) return false;
-  await subscribeDevice(context);
+  await diagnosticStage(turn, "subscriptions", () => subscribeDevice(context));
   if (!context.active()) return false;
-  await heldBeforeReading(context);
+  await diagnosticStage(turn, "held", () => heldBeforeReading(context));
   if (!context.active()) return false;
   const recovery = fileRecoveryFor(context, turn.session);
   const recoveryRevision = recovery.revision;
@@ -501,13 +533,14 @@ async function orderedSync(deviceId, turn) {
   turn.reading = true;
   const passStartedAt = Date.now();
   const fence = pushFence();
-  const lists = await readLists(context, fence);
+  const lists = await diagnosticStage(turn, "lists", () => readLists(context, fence));
   if (!lists || !context.active()) return false;
   const { before, ownership } = lists;
   const view = { ...lists.view, projects: await projectsWithAgentRosters(context.deviceId, lists.view.projects) };
-  const pass = await workspacesToRead(context, view);
+  const pass = await diagnosticStage(turn, "selection", () => workspacesToRead(context, view));
   const phases = createSyncPhases({
     context, pass, view, route: () => App.route,
+    stage: (name, read) => diagnosticStage(turn, name, read),
     projectRosterReads: projectRosterReads(context, view, pass),
     sourceTerminalReads: lists.sourceTerminalReads,
     entityContext: (id) => whileOnBoard(context, id, fence),
@@ -523,14 +556,16 @@ async function orderedSync(deviceId, turn) {
   // keeping the completed pass's foreground planner alive.
   turn.phases = null;
   turn.foreground = null;
-  await evictRowsThatAreOver(context, view, fence);
-  await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
+  await diagnosticStage(turn, "cleanup", async () => {
+    await evictRowsThatAreOver(context, view, fence);
+    await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
+  });
   if (!context.active()) return false;
   if (filesRecovered && fileRecoveries.get(deviceId) === recovery && recovery.revision === recoveryRevision) recovery.complete = true;
   diffRecovery.complete = true;
   // The reader may have walked off while the pass read, and on a cold cache
   // the workspace they stand in had no row to resolve until the lists landed.
-  await refollowRoute(deviceId);
+  await diagnosticStage(turn, "route", () => refollowRoute(deviceId));
   // The pass's row writes and evictions must finish before observing changes
   // to ownership for cleanup. This work never holds up the sync result.
   void pruneReadDrafts(context, before, ownership).catch(() => {});
@@ -918,10 +953,21 @@ async function workspacesToRead(context, view) {
     const entityId = entityIdOf(row);
     if (entityId) rows.set(entityId, row);
   }
-  const active = [...new Set([...cacheableEntityIds({ items }), ...projectConversationIds(view)])];
+  const activeIds = cacheableEntityIds({ items });
+  const owners = projectConversationIds(view);
+  const active = [...new Set([...activeIds, ...owners])];
   const recent = await recentStillHoldingData(context, items, new Set(active));
   const routed = routedEntityId(App.route, view);
   const order = [...new Set([...(routed ? [routed] : []), ...active, ...recent])].filter((id) => rows.has(id));
+  const conversations = (ids) => ids.reduce((count, id) => count + (rows.get(id)?.agents || []).length, 0);
+  if (context.syncTurn?.diagnostic) {
+    // Keys only: inventory the selected cache without reading any body or wire.
+    const selected = new Set(order);
+    const held = await cachedAddresses({ deviceId: context.deviceId });
+    const heldBodies = held.filter((address) => selected.has(address.entityId) && isWorkspaceDataKind(address.kind)).length;
+    syncDiagnostics.selected(context.syncTurn.diagnostic, { active: conversations(activeIds),
+      recent: conversations(recent), projectOwner: conversations(owners), heldBodies });
+  }
   return { order, rows, routed };
 }
 
@@ -2457,6 +2503,7 @@ export function stopCacheSync() {
   connectionPassRequests.clear();
   connectionPeriods.clear();
   setConnectionSync(false);
+  diagnosticDevices();
   clearTimeout(lockWait);
   lockWait = null;
   if (visibilityWired && typeof document !== "undefined") {

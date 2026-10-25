@@ -165,8 +165,9 @@ function syncRequestText(request) {
 
 function syncPeriodText(period) {
   const passes = period.passes || [];
+  const count = period.passCount ?? passes.length;
   return [
-    `Ring ${syncSpan(period.start, period.stop)}; ${passes.length} pass${passes.length === 1 ? "" : "es"}`,
+    `Ring ${syncSpan(period.start, period.stop)}; ${count} pass${count === 1 ? "" : "es"}`,
     ...passes.map(syncPassText),
     "Slowest RPCs (up to 5):",
     ...(period.slowest || []).slice(0, 5).map(syncRequestText),

@@ -2023,3 +2023,45 @@ it("writes the mounted conversation before sibling tips in the same entity", asy
     expect(writes.mock.calls.filter(([address]) => address.kind === "thread").map(([address]) => address.sub)).toEqual(["open", "cold"]);
   } finally { stop(); writes.mockRestore(); }
 });
+
+
+describe("sync timing boundaries", () => {
+  it("keeps an unfinished pass readable, then stamps its stages and end", async () => {
+    const { syncDiagnostics } = await import("../src/core/syncDiagnostics.js");
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "unread-body", sub: "private-path" }, { secret: "private-body" });
+    let release;
+    script["board.list"] = () => new Promise((resolve) => { release = resolve; });
+    sync.startCacheSync();
+    await called(bridge.call, () => calls("board.list").length > 0);
+    const during = syncDiagnostics.report();
+    expect(during.periods).toHaveLength(1);
+    expect(during.periods[0].stop).toBeNull();
+    expect(during.periods[0].passes[0].end).toBeNull();
+    expect(during.periods[0].passes[0].stages).toContainEqual(expect.objectContaining({ stage: "lists", end: null }));
+    release({ items: [branchItem({ agents: [{ id: "private-agent" }] })] });
+    await passesSettled(sync, "dev-1");
+    const after = syncDiagnostics.report().periods[0];
+    expect(after.stop).toEqual(expect.any(Number));
+    expect(after.passes[0].end).toEqual(expect.any(Number));
+    expect(after.passes[0].selected.active).toBeGreaterThan(0);
+    expect(after.passes[0].selected.heldBodies).toBeGreaterThan(0);
+    expect(after.passes[0].snapshot.capture).toMatchObject({ captured: 0 });
+    expect(after.passes[0].snapshot.drain).toMatchObject({ drained: 0 });
+    expect(after.passes[0].stages.map(({ stage }) => stage)).toEqual(expect.arrayContaining(["greeting", "subscriptions", "lists", "selection", "foreground", "inbox", "background", "cleanup"]));
+    expect(JSON.stringify(syncDiagnostics.report())).not.toMatch(/dev-1|run-1|build\/login|wt-1|private-path|private-body/);
+  });
+});
+
+
+it("counts selected held bodies without needing to read those bodies", async () => {
+  const { syncDiagnostics } = await import("../src/core/syncDiagnostics.js");
+  await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "private-conversation" }, { items: [], body: "private-body" });
+  let release;
+  script["thread.page"] = () => new Promise((resolve) => { release = resolve; });
+  board = [branchItem({ agents: [{ id: "private-agent" }] })];
+  sync.startCacheSync();
+  await called(bridge.call, () => calls("thread.page").length > 0);
+  expect(syncDiagnostics.report().periods[0].passes[0].selected.heldBodies).toBe(1);
+  release({ items: [], has_more: false });
+  await passesSettled(sync, "dev-1");
+});

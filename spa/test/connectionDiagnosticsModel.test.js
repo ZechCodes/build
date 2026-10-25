@@ -195,3 +195,8 @@ it("shows completed pass and snapshot drain offsets, with only five slow RPC row
   for (const expected of ["Ring +0 ms → +20 ms", "Pass +1 ms → +19 ms", "background +10 ms → +18 ms", "Drain +18 ms", "drained=4", "captured=4", "backgroundRunning=1", "backgroundPending=2", "catchupRunning=3", "catchupPending=4", "bodyRunning=0", "receipt +3 ms", "settlement +10 ms", "answer-timeout", "rpc_4"]) expect(text).toContain(expected);
   expect(text).not.toContain("rpc_5");
 });
+
+
+it("reports total passes after older details were bounded away", () => {
+  expect(syncDiagnosticsText({ periods: [{ start: 0, stop: 50, passCount: 35, passes: [] }] })).toContain("35 passes");
+});

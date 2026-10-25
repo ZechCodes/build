@@ -4160,6 +4160,32 @@ reports of the rows the viewport has reached. The read calculation
 itself is unchanged. Roster hydration rebinds the transcript subscription when
 the transient reader becomes the canonical history, even at the same address.
 
+### Sync timing diagnostics (#873)
+
+Settings → Diagnostics reads a tab-local, bounded `sync` record alongside the
+existing connection events. `core/syncDiagnostics.js` retains eight ring periods,
+32 detailed passes per period (with a total `passCount`), 64 stage spans per pass,
+and the five slowest RPCs. The record uses monotonic offsets, fixed enums and
+numeric counters only. Device summaries are unlabeled; no device/session/entity
+IDs, parameters, paths, bodies or raw errors enter the timing record. Existing
+connection events retain their previous schema.
+
+`cacheSync.js` stamps ring, pass, stage and finite queue capture/drain boundaries.
+At selection, a cache-key-only inventory counts held data records for selected
+entities; it does not deserialize bodies or make a network request. Selected
+conversation counters describe active, retained Recent and project-owner rosters
+(the categories may overlap). `sessionRpc.js` stamps queued/admitted/receipt/
+settlement offsets and exposes aggregate SQL queued, admitted and timed-out-held
+credits independently of pending reply promises. Admission cancellation is a
+reserved outcome until SQL admission cancellation is wired. Other transport
+failures have a null outcome. SQL snapshots cover registered RPC sessions; live
+device counts come from the sync context registry.
+
+Active request ages are computed only on report reads, using the mounted panel's
+existing refresh. Copy and Share include the timing record; Clear resets its
+history while preserving live counters and an active ring. Reload discards it.
+No new timer, persistent store or connection-state UI is introduced.
+
 ### Connection state machine
 
 `spa/src/connection.js` runs one **application** session per device, carried

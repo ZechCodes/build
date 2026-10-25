@@ -190,6 +190,7 @@ function setConnectionSync(active) {
 
 function connectionDeviceBusy({ deviceId }) {
   if (connectionPassRequests.has(deviceId) || passes.has(deviceId)) return true;
+  if (!pushQueues.get(deviceId)?.active()) return false;
   return Object.values(pushWorkInFlight(deviceId)).some(Boolean)
     || Object.values(threadCatchupsInFlight(deviceId)).some(Boolean);
 }
@@ -227,14 +228,17 @@ const syncContext = (context, turn = null) => {
   const session = context.session;
   const requestScope = requestScopeOf(context);
   const startedIn = lifetime;
+  // Queue ownership follows the path, independent of pass or per-record fences.
+  const ownerActive = () => context.active() && context.session === session && startedIn === lifetime
+    && requestScopeOf(context) === requestScope;
   return {
     deviceId: context.deviceId,
     call: context.rpc,
     requestScope,
     syncTurn: turn,
     backgroundStreams: backgroundStreams.forContext({ deviceId: context.deviceId, session, requestScope, lifetime: startedIn }),
-    active: () => context.active() && context.session === session && startedIn === lifetime
-      && requestScopeOf(context) === requestScope && !turn?.superseded,
+    ownerActive,
+    active: () => ownerActive() && !turn?.superseded,
   };
 };
 
@@ -1586,7 +1590,7 @@ function queuesFor(context) {
     },
     read: (request, active) => syncThread({ ...request.context, active }, request.entityId, request.agent, "background"),
   });
-  const queues = { scope: context.backgroundStreams, body, background, catchups };
+  const queues = { scope: context.backgroundStreams, active: context.ownerActive, body, background, catchups };
   pushQueues.set(context.deviceId, queues);
   return queues;
 }

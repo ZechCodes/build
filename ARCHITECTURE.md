@@ -3780,7 +3780,9 @@ gate attachment display.
   a boolean and returns an unsubscribe function. Only the connection status
   ring consumes this signal. A connect/reconnect pass starts the active period;
   it ends when every connected device has no pass (including chained passes),
-  push applier/enrichment jobs or thread catch-up rounds in flight. Queue and
+  push applier/enrichment jobs or thread catch-up rounds in flight on its current
+  path. Queues from retired sessions, restored paths or stopped lifetimes do not
+  hold the signal active, even if an abandoned RPC never answers. Queue and
   pass mutations notify directly, without polling or delaying sync. Retained
   historical repair debt (`repairThrough`) is excluded; later pushes and tab
   return passes do not restart an idle ring. Standing down the sync layer clears

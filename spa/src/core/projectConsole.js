@@ -27,6 +27,7 @@ export function mountProjectConsole(host, context) {
   const projectsAddress = { deviceId: context.deviceId, entityId: "", kind: "projects" };
   const state = { disposed: false, sources: [], tabs: [], selected: null, sourceId: null, supported: false,
     size: "collapsed", reopen: "half", pane: null, paneKey: null, mountAbort: null, mounting: 0, listeners: new Set(), records: new Map() };
+  const collectingSources = new Map();
   let collecting = 0;
   let collected = 0;
   let reading = null;
@@ -152,6 +153,14 @@ export function mountProjectConsole(host, context) {
     const generation = ++collecting;
     const project = ((await readCached(projectsAddress))?.value || []).find((row) => (row.project_id || row.id) === context.projectId);
     const sources = sourcesOf(project);
+    // Register before reading rosters: their invalidations must survive until
+    // these sources have become the applied view (including replacement paths).
+    collectingSources.set(generation, new Set(sources.map((source) => address(scopeOf(context.projectId, source)).entityId)));
+    try { await collectSources(sources, generation); }
+    finally { collectingSources.delete(generation); }
+  }
+
+  async function collectSources(sources, generation) {
     const support = await readProjectTerminalSupport(context.deviceId);
     const records = await Promise.all(sources.map(async (source) => ({ source, record: await readCached(address(scopeOf(context.projectId, source))) })));
     if (!active() || generation < collected) return;
@@ -235,7 +244,8 @@ export function mountProjectConsole(host, context) {
     if (changed.entityId === undefined) return true; // device/account eviction
     if (changed.entityId === "") return changed.kind === undefined || ["projects", PROJECT_TERMINAL_SUPPORT_KIND].includes(changed.kind);
     if (changed.kind !== undefined && changed.kind !== "terminals") return false;
-    return state.sources.some((source) => changed.entityId === address(scopeOf(context.projectId, source)).entityId);
+    return state.sources.some((source) => changed.entityId === address(scopeOf(context.projectId, source)).entityId)
+      || [...collectingSources.values()].some((entities) => entities.has(changed.entityId));
   }
   const unwatch = subscribeCache({ deviceId: context.deviceId }, (changed) => {
     if (affectsConsole(changed)) void read();

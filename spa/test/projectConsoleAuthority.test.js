@@ -202,6 +202,34 @@ describe("prompt project console actions", () => {
 });
 
 describe("late project console roster responses", () => {
+  it("re-reads a replacement source invalidated during its first roster collection", async () => {
+    await writeCached(movedAddress, { tabs: [] });
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    let captured = false;
+    harness.blockRead = (address) => {
+      if (address.entityId === movedAddress.entityId && address.kind === "terminals") {
+        captured = true; harness.blockRead = null; return blocked;
+      }
+    };
+    try {
+      await moveSource(); await flush();
+      expect(captured).toBe(true);
+      expect(document.querySelector(".console-tab").dataset.key).toContain("/code");
+      harness.reads = [];
+      await writeCached({ deviceId: "dev-1", entityId: 'project:["other","code","/moved"]', kind: "terminals" }, { tabs: [] });
+      await writeCached({ deviceId: "dev-1", entityId: "thread-1", kind: "feed" }, { sequence: 1 });
+      await flush();
+      expect(harness.reads).toEqual([]);
+      await writeCached(movedAddress, { tabs: [{ term_id: "replacement-term", name: "Pushed" }] });
+      release(); await flush();
+      expect(document.querySelector(".console-tab-name")?.textContent).toBe("Code · Pushed");
+      expect(document.querySelector(".console-tab").dataset.key).toContain("/moved");
+    } finally {
+      harness.blockRead = null; release(); await flush();
+    }
+  });
+
   it("retries a failed missing roster on a later relevant cache update", async () => {
     manager.listTerminals.mockRejectedValueOnce(new Error("socket lost"))
       .mockResolvedValueOnce([{ term_id: "retried-term" }]);

@@ -17,8 +17,9 @@ vi.mock("../src/core/localCache.js", async (original) => {
   const cache = await original();
   return { ...cache, readCached: async (address) => {
     harness.reads.push(address);
+    const record = await cache.readCached(address);
     await harness.blockRead?.(address);
-    return cache.readCached(address);
+    return record;
   } };
 });
 vi.mock("../src/terminal/manager.js", () => ({
@@ -113,22 +114,70 @@ describe("prompt project console actions", () => {
     expect(harness.reads).toEqual([]);
   });
 
+  it("creates and closes immediately while unrelated thread pushes continue", async () => {
+    let pushing = true;
+    let pushes = 0;
+    const flood = (async () => {
+      while (pushing) {
+        await writeCached({ deviceId: "dev-1", entityId: "thread-1", kind: "feed" }, { sequence: ++pushes });
+        await new Promise((done) => setTimeout(done, 0));
+      }
+    })();
+    try {
+      document.querySelector(".console-new").click();
+      expect(manager.createTerminal).toHaveBeenCalledOnce();
+      await flush();
+      expect(panel.size()).toBe("half");
+      const createdTab = [...document.querySelectorAll(".console-tab")].find((tab) => tab.dataset.key.includes("new-term"));
+      expect(createdTab).toBeDefined();
+      createdTab.querySelector("[data-close]").click();
+      expect(manager.closeTerminal).toHaveBeenCalledWith("new-term", { project_id: "p1", source_id: "code", source_path: "/code" });
+      await flush();
+      expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
+      expect(pushes).toBeGreaterThan(1);
+    } finally { pushing = false; await flood; }
+  });
+
   it("opens a newly created shell without waiting for an in-flight background cache read", async () => {
     let release;
     const blocked = new Promise((resolve) => { release = resolve; });
-    harness.blockRead = () => blocked;
+    harness.blockRead = (address) => {
+      if (address.kind === "terminals") { harness.blockRead = null; return blocked; }
+    };
     try {
       await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-terminal-support" }, { projectSources: true });
+      await flush();
       document.querySelector(".console-new").click();
       expect(manager.createTerminal).toHaveBeenCalledOnce();
       await flush();
       expect((await readCanonicalCached(rosterAddress)).value.tabs).toContainEqual({ term_id: "new-term" });
       expect(panel.size()).toBe("half");
-      document.querySelector("[data-close]").click();
-      expect(manager.closeTerminal).toHaveBeenCalledOnce();
+      const createdTab = [...document.querySelectorAll(".console-tab")].find((tab) => tab.dataset.key.includes("new-term"));
+      expect(createdTab).toBeDefined();
+      createdTab.querySelector("[data-close]").click();
+      expect(manager.closeTerminal).toHaveBeenCalledWith("new-term", { project_id: "p1", source_id: "code", source_path: "/code" });
+      await flush();
+      expect([...document.querySelectorAll(".console-tab")].some((tab) => tab.dataset.key.includes("new-term"))).toBe(false);
     } finally {
       harness.blockRead = null; release(); await flush();
     }
+  });
+
+  it("does not restore a closed tab when an older cached roster read finishes", async () => {
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    harness.blockRead = (address) => {
+      if (address.kind === "terminals") { harness.blockRead = null; return blocked; }
+    };
+    try {
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-terminal-support" }, { projectSources: true });
+      await flush();
+      document.querySelector("[data-close]").click(); await flush();
+      expect(document.querySelectorAll(".console-tab")).toHaveLength(0);
+    } finally {
+      harness.blockRead = null; release(); await flush();
+    }
+    expect(document.querySelectorAll(".console-tab")).toHaveLength(0);
   });
 
   it("does not publish create completion after an unseen source removal", async () => {
@@ -145,6 +194,7 @@ describe("prompt project console actions", () => {
     } finally {
       harness.blockRead = null; release(); await flush();
     }
+    expect(panel.size()).toBe("collapsed");
     expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
     expect(document.querySelectorAll(".console-tab")).toHaveLength(0);
   });

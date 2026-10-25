@@ -106,3 +106,18 @@ it.each(["restart", "reconnect"])("keeps the new request active after an old wai
   releaseNew(); await settle();
   expect(values()).toEqual([false, true, false, true, false]);
 });
+
+it("does not let a restored waiter resume after a restart on the same session", async () => {
+  const release = holdBoard();
+  sync.startCacheSync(); await boardStarted();
+  const previous = sync.passInFlight("dev-1");
+  const waiting = sync.syncRestoredDevice("dev-1", context.session);
+  sync.stopCacheSync(); sync.startCacheSync();
+  await boardStarted(2);
+  const callsBeforeOldAnswer = context.rpc.mock.calls.filter(([method]) => method === "board.list").length;
+  release(); await previous;
+  expect(await waiting).toBe(false);
+  await passesSettled(sync, "dev-1");
+  expect(context.rpc.mock.calls.filter(([method]) => method === "board.list")).toHaveLength(callsBeforeOldAnswer);
+  expect(values()).toEqual([false, true, false, true, false]);
+});

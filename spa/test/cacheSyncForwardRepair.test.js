@@ -64,7 +64,7 @@ const push = (item) => {
 const page = (through, items) => ({ thread_id: "thread:c0", thread_last_sequence: through, items, has_more: false });
 const current = async () => (await cache.readCached(target))?.value;
 
-async function heldRepair() {
+async function heldRepair(owner = "push") {
   const visible = await import("../src/core/syncVisibleScopes.js");
   unmount = visible.registerSyncThread(() => ({ deviceId: "dev-1", entityId: "run-0", agentId: "agent-0", conversationId: "c0" }));
   await cache.writeCached(target, { thread_id: "thread:c0", items: [message(1)], deliveredSequence: 1 });
@@ -80,7 +80,8 @@ async function heldRepair() {
     entered();
     return waiting;
   });
-  push(tip(1, 3));
+  if (owner === "pass") work.push(sync.syncDevice("dev-1"));
+  else push(tip(1, 3));
   await began;
   expect(await current()).toMatchObject({ deliveredSequence: 3, repairThrough: 3 });
   return { release, released: () => released };
@@ -127,4 +128,75 @@ it.each(["reset", "source", "lifetime"])("refuses an old held repair after its %
   repair.release();
   await Promise.all(work);
   expect(await current()).toEqual(before);
+});
+
+it("reads a carried one-item gap forward without advancing the cursor over missing creations", async () => {
+  await cache.writeCached(target, { thread_id: "thread:c0", items: [message(1)], deliveredSequence: 1 });
+  let release, began;
+  const waiting = new Promise((resolve) => { release = () => resolve(page(4, [message(2), message(3), message(4)])); });
+  const entered = new Promise((resolve) => { began = resolve; });
+  releases.push(release);
+  const previous = context.rpc.getMockImplementation();
+  context.rpc.mockImplementation((method, params) => {
+    if (method !== "thread.page") return previous(method, params);
+    expect(params).toMatchObject({ after_sequence: 1, newest: true });
+    began();
+    return waiting;
+  });
+  const event = tip(3, 4);
+  event.thread[0].items = [message(4)];
+  const pending = push(event);
+  await entered;
+  expect(await current()).toMatchObject({ deliveredSequence: 1, items: [message(1)] });
+  release();
+  await pending;
+  expect(await current()).toMatchObject({ deliveredSequence: 4, items: [message(1), message(2), message(3), message(4)] });
+});
+
+it("appends a ready carried tip while a historical repair is held without another forward RPC", async () => {
+  const repair = await heldRepair();
+  const event = tip(3, 4);
+  event.thread[0].items = [message(4)];
+  await push(event);
+  expect(repair.released()).toBe(false);
+  expect(await current()).toMatchObject({ deliveredSequence: 4, repairThrough: 3 });
+  expect((await current()).items).toContainEqual(message(4));
+  expect(context.rpc.mock.calls.filter(([method, params]) => method === "thread.page" && params.newest)).toHaveLength(1);
+});
+
+
+it.each(["push", "pass"])("shares an active historical repair owned by a %s with the other caller", async (owner) => {
+  const repair = await heldRepair(owner);
+  if (owner === "push") {
+    work.push(sync.syncDevice("dev-1"));
+    await vi.waitFor(async () => expect((await current()).deliveredSequence).toBe(5), { timeout: 10000 });
+  } else {
+    push(tip(3, 3));
+    await vi.waitFor(() => expect(sync.pushWorkInFlight("dev-1").running).toBe(0), { timeout: 10000 });
+  }
+  expect(context.rpc.mock.calls.filter(([method, params]) => method === "thread.page" && !params.newest)).toHaveLength(1);
+  expect(repair.released()).toBe(false);
+  repair.release();
+  await Promise.all(work);
+  expect((await current()).repairThrough).toBeUndefined();
+});
+
+it("retries exhausted push repair debt on a later ordinary recovery pass", async () => {
+  await cache.writeCached(target, { thread_id: "thread:c0", items: [message(1)], deliveredSequence: 3, repairThrough: 3 });
+  const previous = context.rpc.getMockImplementation();
+  let available = false;
+  context.rpc.mockClear();
+  context.rpc.mockImplementation((method, params) => {
+    if (method !== "thread.page" || params.entity_id !== "run-0") return previous(method, params);
+    if (params.newest) return page(3, []);
+    if (!available) throw new Error("repair temporarily unavailable");
+    return page(3, [message(1, 3)]);
+  });
+  await push(tip(3, 3));
+  expect((await current()).repairThrough).toBe(3);
+  expect(context.rpc.mock.calls.filter(([method, params]) => method === "thread.page" && !params.newest)).toHaveLength(2);
+  available = true;
+  await sync.syncDevice("dev-1");
+  expect((await current()).repairThrough).toBeUndefined();
+  expect((await current()).items).toEqual([message(1, 3)]);
 });

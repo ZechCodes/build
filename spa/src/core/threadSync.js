@@ -77,7 +77,7 @@ export async function syncThreadWindow(request) {
   const owed = changedUnderCursor(page, after, lean) ? Number(page.thread_last_sequence) : 0;
   await mergeCachedAtomically(target, (current) =>
     mergedThreadPage(request, current, page, after, owed, lean));
-  await repairRecentItems(request, target);
+  if (!request.forwardOnly) await repairRecentItems(request, target);
   return true;
 }
 
@@ -132,6 +132,11 @@ function valuesWornPast(items, after) {
  *  ones that changed taken. Nothing it does not hold is added and the cursor
  *  does not move: the forward read owns both, and a repair that crossed a new
  *  item on the wire must not carry the cursor past it. */
+export async function repairThreadWindow(request) {
+  if (!validThreadRequest(request)) return;
+  await repairRecentItems(request, threadTarget(request));
+}
+
 async function repairRecentItems(request, target) {
   const held = (await readCached(target))?.value;
   if (!held?.repairThrough) return;

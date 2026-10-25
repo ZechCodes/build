@@ -9,7 +9,7 @@ import { directoryCacheId } from "./directoryScope.js";
 import { readCached, mergeCachedTogether, subscribeCache } from "./localCache.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { hasProjectTerminalSource } from "./projectTerminalCache.js";
-import { readProjectTerminalSupport } from "./projectTerminalSupport.js";
+import { PROJECT_TERMINAL_SUPPORT_KIND, readProjectTerminalSupport } from "./projectTerminalSupport.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { notifyError } from "./notify.js";
@@ -193,7 +193,7 @@ export function mountProjectConsole(host, context) {
     });
   }
   async function change(tab, mutate) {
-    await mutateRoster(tab.scope, (held) => ({ tabs: mutate(held?.tabs || []) }));
+    return mutateRoster(tab.scope, (held) => ({ tabs: mutate(held?.tabs || []) }));
   }
   const remove = (tab) => change(tab, (tabs) => tabs.filter((entry) => entry.term_id !== tab.termId));
   async function close(tab) {
@@ -209,8 +209,10 @@ export function mountProjectConsole(host, context) {
       const created = await manager.createTerminal(scope, 80, 24);
       if (state.disposed || !state.sources.some((item) => item.id === source.id && item.path === source.path) || !created?.term_id) return;
       state.selected = tabKey(scope, created.term_id);
-      await change({ scope }, (tabs) => tabs.some((tab) => tab.term_id === created.term_id) ? tabs : [...tabs, created]);
-      await read();
+      const committed = await change({ scope }, (tabs) => tabs.some((tab) => tab.term_id === created.term_id) ? tabs : [...tabs, created]);
+      if (!committed || !active()) return;
+      // The roster write announces its own redraw. Opening belongs to this
+      // action and must not await the cache reader's unrelated trailing work.
       state.selected = tabKey(scope, created.term_id);
       await remember();
       await setSize(state.reopen);
@@ -220,7 +222,15 @@ export function mountProjectConsole(host, context) {
     if (event.key !== "`" || event.metaKey || event.ctrlKey || event.altKey || !consoleTakesKey(event.target)) return;
     event.preventDefault(); void toggle();
   }
-  const unwatch = subscribeCache({ deviceId: context.deviceId }, () => void read());
+  function affectsConsole(changed) {
+    if (changed.entityId === undefined) return true; // device/account eviction
+    if (changed.entityId === "") return changed.kind === undefined || ["projects", PROJECT_TERMINAL_SUPPORT_KIND].includes(changed.kind);
+    if (changed.kind !== undefined && changed.kind !== "terminals") return false;
+    return state.sources.some((source) => changed.entityId === address(scopeOf(context.projectId, source)).entityId);
+  }
+  const unwatch = subscribeCache({ deviceId: context.deviceId }, (changed) => {
+    if (affectsConsole(changed)) void read();
+  });
   document.addEventListener("keydown", onKey);
   ui = watchUiState(uiAddress({ deviceId: context.deviceId, entityId: key, view: "console", kind: "fold" }), (saved) => {
     state.size = consoleSize(saved?.size); state.reopen = saved?.reopenSize === "full" ? "full" : "half";

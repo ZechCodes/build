@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-const harness = vi.hoisted(() => ({ registered: new Map(), starts: [], status: null, statusListeners: new Set(), subscriptions: 0 }));
+const harness = vi.hoisted(() => ({ registered: new Map(), starts: [], status: null, statusListeners: new Set(), subscriptions: 0, reads: [], blockRead: null }));
 const manager = vi.hoisted(() => ({
   listTerminals: vi.fn(async () => []),
   createTerminal: vi.fn(async () => ({ term_id: "new-term" })),
@@ -13,6 +13,14 @@ const manager = vi.hoisted(() => ({
   }),
   detach: vi.fn((id) => harness.registered.delete(id)),
 }));
+vi.mock("../src/core/localCache.js", async (original) => {
+  const cache = await original();
+  return { ...cache, readCached: async (address) => {
+    harness.reads.push(address);
+    await harness.blockRead?.(address);
+    return cache.readCached(address);
+  } };
+});
 vi.mock("../src/terminal/manager.js", () => ({
   terminalManager: () => manager,
   terminalDeviceId: () => "dev-1",
@@ -36,7 +44,7 @@ vi.mock("../src/terminal/pane.js", () => ({
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 const { mountProjectConsole } = await import("../src/core/projectConsole.js");
-const { deleteCached, readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { deleteCached, readCached, readCanonicalCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { TerminalSocket } = await import("../src/terminal/session.js");
 const flush = async () => { for (let step = 0; step < 15; step++) await new Promise((done) => setTimeout(done, 0)); };
@@ -49,6 +57,7 @@ let panel;
 beforeEach(async () => {
   await wipeCache(); await wipeUiRecords();
   harness.registered.clear(); harness.starts.length = 0;
+  harness.reads = []; harness.blockRead = null;
   harness.status = null; harness.statusListeners.clear(); harness.subscriptions = 0;
   manager.detach.mockClear();
   manager.listTerminals.mockReset().mockResolvedValue([]);
@@ -93,14 +102,62 @@ describe("project console source picker", () => {
   });
 });
 
+describe("prompt project console actions", () => {
+  it("ignores continuous unrelated thread pushes on the same device", async () => {
+    harness.reads = [];
+    for (let index = 0; index < 20; index++) {
+      await writeCached({ deviceId: "dev-1", entityId: "thread-1", kind: "feed" }, { index });
+      await new Promise((done) => setTimeout(done, 0));
+    }
+    await flush();
+    expect(harness.reads).toEqual([]);
+  });
+
+  it("opens a newly created shell without waiting for an in-flight background cache read", async () => {
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    harness.blockRead = () => blocked;
+    try {
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-terminal-support" }, { projectSources: true });
+      document.querySelector(".console-new").click();
+      expect(manager.createTerminal).toHaveBeenCalledOnce();
+      await flush();
+      expect((await readCanonicalCached(rosterAddress)).value.tabs).toContainEqual({ term_id: "new-term" });
+      expect(panel.size()).toBe("half");
+      document.querySelector("[data-close]").click();
+      expect(manager.closeTerminal).toHaveBeenCalledOnce();
+    } finally {
+      harness.blockRead = null; release(); await flush();
+    }
+  });
+
+  it("does not publish create completion after an unseen source removal", async () => {
+    let finish;
+    manager.createTerminal.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    document.querySelector(".console-new").click();
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    harness.blockRead = () => blocked;
+    try {
+      await writeCached(projectsAddress, [{ project_id: "p1", sources: [] }]);
+      finish({ term_id: "late-term" }); await flush();
+      expect(panel.size()).toBe("collapsed");
+    } finally {
+      harness.blockRead = null; release(); await flush();
+    }
+    expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "term-1" }]);
+    expect(document.querySelectorAll(".console-tab")).toHaveLength(0);
+  });
+});
+
 describe("late project console roster responses", () => {
-  it("retries a failed missing roster on a later cache update", async () => {
+  it("retries a failed missing roster on a later relevant cache update", async () => {
     manager.listTerminals.mockRejectedValueOnce(new Error("socket lost"))
       .mockResolvedValueOnce([{ term_id: "retried-term" }]);
     await deleteCached([rosterAddress]); await flush();
     expect(manager.listTerminals).toHaveBeenCalledTimes(1);
     expect(await readCached(rosterAddress)).toBeUndefined();
-    await writeCached({ deviceId: "dev-1", entityId: "unrelated", kind: "tasks" }, []);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-terminal-support" }, { projectSources: true });
     await flush();
     expect(manager.listTerminals).toHaveBeenCalledTimes(2);
     expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "retried-term" }]);

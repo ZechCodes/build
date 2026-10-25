@@ -103,7 +103,7 @@ export function createPushQueue({ apply, priority = () => false, onError = () =>
     const key = keyOf(item);
     const jobs = segment.entities.get(key) || [];
     const last = jobs.at(-1);
-    const merged = last?.context.active() && merge(last.item, item);
+    const merged = last && !last.captured && last.context.active() && merge(last.item, item);
     if (merged) { last.item = merged; last.context = context; }
     else jobs.push(newJob(context, item));
     segment.entities.set(key, jobs);
@@ -179,9 +179,11 @@ export function createPushQueue({ apply, priority = () => false, onError = () =>
       void schedule();
       return Promise.all(completions);
     },
-    // Wait for these jobs and their descendants, never for a globally idle queue.
-    capture: () => Promise.all([...trackedJobs].map((job) =>
-      completion(job).then((result) => result?.settled))),
+    // Preserve the boundary: later compatible payloads coalesce in a new job.
+    capture: () => Promise.all([...trackedJobs].map((job) => {
+      job.captured = true;
+      return completion(job).then((result) => result?.settled);
+    })),
     snapshot: () => ({ running, pending: segments.reduce((count, segment) => count + (segment.barrier ? 1
       : [...segment.entities.values()].reduce((sum, jobs) => sum + jobs.length, 0)), 0) }),
     clear: () => {

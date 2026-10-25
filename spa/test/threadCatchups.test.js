@@ -169,3 +169,27 @@ it("captures active and queued rounds without waiting for later rounds", async (
   expect(jobs.snapshot()).toEqual({ running: 1, pending: 0 });
   gates[3].resolve(); await third;
 });
+
+it("freezes captured trailing goals while coalescing later goals in their own round", async () => {
+  const first = gate(), later = gate();
+  let covered = 0;
+  const read = vi.fn(async (goal) => {
+    if (goal.sequence === 1) await first.promise;
+    if (goal.sequence > 2) await later.promise;
+    covered = goal.sequence;
+  });
+  const jobs = createThreadCatchups({ needed: (goal) => goal.sequence > covered, read });
+  const one = jobs.enqueue("thread", request(1));
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  const two = jobs.enqueue("thread", request(2));
+  const captured = jobs.capture();
+  const three = jobs.enqueue("thread", request(3));
+  expect(jobs.enqueue("thread", request(4))).toBe(three);
+  try {
+    expect(three).not.toBe(two);
+    expect(jobs.snapshot()).toEqual({ running: 1, pending: 2 });
+    first.resolve(); await captured;
+    await vi.waitFor(() => expect(read.mock.calls.map(([goal]) => goal.sequence)).toEqual([1, 2, 4]));
+    expect(jobs.snapshot()).toEqual({ running: 1, pending: 0 });
+  } finally { first.resolve(); later.resolve(); await Promise.all([one, two, three]); }
+});

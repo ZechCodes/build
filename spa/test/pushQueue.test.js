@@ -241,3 +241,24 @@ it("captures running and queued applications with descendants without later jobs
   expect(queue.snapshot()).toEqual({ running: 1, pending: 0 });
   later.release(); await draining;
 });
+
+it("freezes captured pending payloads and coalesces subsequent compatible arrivals separately", async () => {
+  const first = gate(), later = gate(), started = [];
+  const queue = createPushQueue({ apply: async (_, entry) => {
+    const sequence = entry.thread[0].last_sequence;
+    started.push(sequence);
+    if (sequence === 1) await first.done;
+    if (sequence > 2) await later.done;
+  } });
+  const draining = queue.enqueue(context, [item("a", 1)]);
+  await Promise.resolve();
+  queue.enqueue(context, [item("a", 2)]);
+  const captured = queue.capture();
+  queue.enqueue(context, [item("a", 3), item("a", 4)]);
+  try {
+    expect(queue.snapshot()).toEqual({ running: 1, pending: 2 });
+    first.release(); await captured;
+    await vi.waitFor(() => expect(started).toEqual([1, 2, 4]));
+    expect(queue.snapshot()).toEqual({ running: 1, pending: 0 });
+  } finally { first.release(); later.release(); await draining; }
+});

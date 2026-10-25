@@ -184,7 +184,7 @@ export async function captureLayout(page, name) {
 /** Load production ES modules in the browser itself. Vitest rewrites dynamic
  * import expressions in test callbacks, so page.evaluate must read these from
  * window rather than importing within its serialized callback. */
-export async function loadBrowserModules(page, modules, basePath = "/app/static/") {
+export async function loadBrowserModules(page, modules, basePath = "/app/static/", { timeoutMs = 15_000 } = {}) {
   const names = Object.keys(modules);
   const paths = Object.values(modules).map((path) => `${basePath}${path}`);
   const failures = [];
@@ -207,7 +207,7 @@ export async function loadBrowserModules(page, modules, basePath = "/app/static/
     ` });
     // A full renderer graph needs its own bound, independent of field/action
     // timeouts when several browser suites compile modules on the same host.
-    await page.waitForFunction(() => window.__layoutModules || window.__layoutModuleError, null, { timeout: 15_000 });
+    await page.waitForFunction(() => window.__layoutModules || window.__layoutModuleError, null, { timeout: timeoutMs });
     const error = await page.evaluate(() => window.__layoutModuleError);
     if (error) throw new Error(`${error}; network: ${(await Promise.all(failures)).join(" | ") || "no failed requests"}`);
   } finally {

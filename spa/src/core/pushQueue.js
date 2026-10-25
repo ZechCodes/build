@@ -1,6 +1,7 @@
 // Keep one cache applier running. Pending compatible snapshots share a job;
-// thread deltas retain their items and gaps. Board and generation transitions
-// divide the queue, so foreground promotion cannot cross a removal or reset.
+// thread deltas retain their items and gaps. Destructive board and generation
+// transitions divide the queue, so foreground promotion cannot cross a removal
+// or reset.
 import { mergeThreadItems } from "./thread.js";
 import { isFinishedState } from "./inbox.js";
 
@@ -13,7 +14,12 @@ const rosterKey = (item) => item.state && JSON.stringify([item.state.kind, (item
   [agent.id, agent.conversation_id, agent.thread_id, agent.thread_generation_revision])]);
 const terminalSource = (item) => item.project_source && item.terminals
   && Object.keys(item).every((key) => ["entity_id", "project_source", "terminals"].includes(key));
-const boundary = (item) => item.entity_id === "board" || (item.project_source && !terminalSource(item))
+// A numeric revision is a dirty/high-water hint, not an ownership transition.
+// Unknown board payloads stay ordered until their causal semantics are known.
+const boardRevisionHint = (item) => item.entity_id === "board"
+  && Object.keys(item).every((key) => ["entity_id", "state"].includes(key))
+  && Number.isFinite(item.state?.revision) && Object.keys(item.state).length === 1;
+const boundary = (item) => (item.entity_id === "board" && !boardRevisionHint(item)) || (item.project_source && !terminalSource(item))
   || isFinishedState(item.state?.state) || item.thread?.some((tip) => tip.reset);
 const FOLDABLE = new Set(["entity_id", "state", "thread", "terminals", "tasks", "files"]);
 const stateCanFold = (state) => !state || typeof state.kind === "string" && state.kind !== ""
@@ -25,6 +31,7 @@ const sameTerminalSource = (left, right) => Boolean(terminalSource(left) && term
   && JSON.stringify(left.project_source) === JSON.stringify(right.project_source);
 
 function compatible(left, right) {
+  if (boardRevisionHint(left) && boardRevisionHint(right)) return true;
   if (left.project_source || right.project_source) return sameTerminalSource(left, right);
   if (!itemCanFold(left) || !itemCanFold(right)) return false;
   if (left.state && right.state && rosterKey(left) !== rosterKey(right)) return false;
@@ -60,6 +67,9 @@ const combineInvalidation = (left, right, field) => !left || !right ? right || l
   : { ...left, ...right, [field]: union(left[field], right[field]), truncated: Boolean(left.truncated || right.truncated) };
 
 function combineItems(left, right) {
+  if (boardRevisionHint(left) && boardRevisionHint(right)) {
+    return { ...right, state: { revision: Math.max(left.state.revision, right.state.revision) } };
+  }
   const merged = { ...left, ...right };
   if (left.thread || right.thread) merged.thread = combineTips(left.thread, right.thread);
   if (left.files || right.files) merged.files = combineInvalidation(left.files, right.files, "paths");

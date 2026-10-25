@@ -13,13 +13,15 @@
 // nowhere else. That workspace is the likeliest of all to be the one being
 // stood on: the reader just made it and walked in.
 
-import { cachedAddresses, deleteCached, mergeCachedAtomically, readCached, readCachedMany,
+import { deleteCached, mergeCachedAtomically, readCached,
   updateCachedFeed, writeCached } from "./localCache.js";
 import { entryKeyOf, routedEntry } from "./inbox.js";
 import { entityIdOf } from "./entityId.js";
 import { isAtLeastAsFresh, withCacheFreshness } from "./cacheFreshness.js";
 
-import { PROJECT_AGENTS_KIND, projectAgentsSupportAddress, projectRosterProjection } from "./projectAgentsCache.js";
+import { PROJECT_AGENTS_KIND, projectRosterProjection } from "./projectAgentsCache.js";
+
+import { readFeedCacheRecords } from "./feedCacheRecords.js";
 
 export const ROW_RECORD_KIND = "row";
 
@@ -32,11 +34,8 @@ const listKnowledgeOf = (record) => ({
 export async function cachedFeedView(deviceId, { projectRosters = true } = {}) {
   if (!deviceId) return { items: [], projects: [], workspaces: [],
     listKnowledge: { projects: listKnowledgeOf(), workspaces: listKnowledgeOf() } };
-  if (!projectRosters) return cachedRouteView(deviceId);
-  const addresses = (await cachedAddresses({ deviceId })).filter((address) => address.kind === ROW_RECORD_KIND || address.kind === PROJECT_AGENTS_KIND);
-  const records = await readCachedMany([...addresses, { deviceId, entityId: "", kind: "projects" },
-    { deviceId, entityId: "", kind: "workspaces" }, projectAgentsSupportAddress(deviceId)]);
-  return feedViewFromRecords(addresses, records);
+  const snapshot = await readFeedCacheRecords(deviceId, { routeOnly: !projectRosters });
+  return cachedFeedSnapshotView(snapshot, projectRosters);
 }
 
 /** Project one snapshot of named records, shared with the incremental feed. */
@@ -54,21 +53,18 @@ export function feedViewFromRecords(addresses, records) {
   };
 }
 
-/** Route discovery does not project workers. Keep its independent owner lists
- * out of the row transaction so the selected conversation starts reading
- * promptly, rather than behind unrelated list requests in that transaction. */
-async function cachedRouteView(deviceId) {
-  const addresses = (await cachedAddresses({ deviceId })).filter((address) => address.kind === ROW_RECORD_KIND);
-  const [rows, projects, workspaces] = await Promise.all([
-    readCachedMany(addresses),
-    readCached({ deviceId, entityId: "", kind: "projects" }),
-    readCached({ deviceId, entityId: "", kind: "workspaces" }),
-  ]);
-  return {
-    items: rows.map((record) => withCacheFreshness(record?.value, record)).filter(Boolean),
-    projects: projects?.value || [], workspaces: workspaces?.value || [],
-    listKnowledge: { projects: listKnowledgeOf(projects), workspaces: listKnowledgeOf(workspaces) },
-  };
+const projectedViews = new WeakMap();
+
+export function cachedFeedSnapshotView(snapshot, projectRosters = true) {
+  if (!projectedViews.has(snapshot)) {
+    const { rows, roots } = snapshot;
+    const addresses = rows.map(({ address }) => address);
+    const records = [...rows.map(({ record }) => record), roots.get("projects"), roots.get("workspaces"), roots.get("project-agents-support")];
+    const feed = feedViewFromRecords(addresses, records);
+    projectedViews.set(snapshot, { feed, route: { ...feed, projects: roots.get("projects")?.value || [] } });
+  }
+  const views = projectedViews.get(snapshot);
+  return projectRosters ? views.feed : views.route;
 }
 
 /** The row this route is standing on, on this device — or null while the cache

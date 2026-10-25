@@ -373,6 +373,7 @@ impl Store {
         waiting_on::ensure_reconciliation_columns(&conn)?;
         retention::upgrade_pending_delivery_index(&conn)?;
         retention::upgrade_thread_retention_indexes(&conn)?;
+        retention::upgrade_agent_conversation_index(&conn)?;
         conn.execute_batch(SCHEMA)?;
         ensure_operation_receipt_columns(&conn)?;
         retention::ensure_upload_retention_columns(&conn)?;

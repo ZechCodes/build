@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS agents_by_owner ON agents(owner_id, ordinal);
 CREATE INDEX IF NOT EXISTS agents_by_conversation
-    ON agents(json_extract(record, '$.conversation_id'));
+    ON agents(CASE WHEN json_valid(record) THEN json_extract(record, '$.conversation_id') END);
 
 -- Draft uploads belong to the generation that accepted them, even before
 -- a message references them. Content-addressed bytes may be shared.

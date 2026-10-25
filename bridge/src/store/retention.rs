@@ -25,6 +25,23 @@ pub(super) fn upgrade_pending_delivery_index(conn: &Connection) -> Result<(), St
     Ok(())
 }
 
+/// Allow corrupt metadata to reach the existing strict read validator instead
+/// of failing an unrelated index write. Valid alias lookups remain indexed.
+pub(super) fn upgrade_agent_conversation_index(conn: &Connection) -> Result<(), StoreError> {
+    let existing: Option<String> = conn.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'agents_by_conversation'",
+        [], |row| row.get(0),
+    ).optional()?;
+    if existing.is_some_and(|sql| !sql.to_ascii_lowercase().contains("json_valid(record)")) {
+        let transaction = conn.unchecked_transaction()?;
+        transaction.execute_batch("DROP INDEX agents_by_conversation;
+            CREATE INDEX agents_by_conversation
+            ON agents(CASE WHEN json_valid(record) THEN json_extract(record, '$.conversation_id') END);")?;
+        transaction.commit()?;
+    }
+    Ok(())
+}
+
 /// Guard pre-release thread indexes before schema creation and classification.
 /// Each old definition is replaced atomically; later opens leave it untouched.
 pub(super) fn upgrade_thread_retention_indexes(conn: &Connection) -> Result<(), StoreError> {
@@ -153,7 +170,7 @@ pub(super) fn read_boundary(
     ).optional().map_err(StoreError::from)
 }
 
-const PENDING_START_SQL: &str = "WITH conversation_ids(id) AS (SELECT ?1 UNION SELECT id FROM agents WHERE json_extract(record, '$.conversation_id') = ?1)
+const PENDING_START_SQL: &str = "WITH conversation_ids(id) AS (SELECT ?1 UNION SELECT id FROM agents WHERE (CASE WHEN json_valid(record) THEN json_extract(record, '$.conversation_id') END) = ?1)
          SELECT MIN(start_sequence) FROM (
              SELECT MIN(CASE WHEN delivery IS NOT NULL AND NOT json_valid(delivery) THEN 0
                  WHEN message_start_sequence > 0 AND posted_sequence >= message_start_sequence
@@ -350,7 +367,7 @@ impl Store {
                 WHERE julianday(CASE WHEN uploaded_at = '' THEN (SELECT value FROM meta WHERE key = 'retention_uploads_registered_at') ELSE uploaded_at END) < julianday(?1)
                 AND NOT EXISTS (SELECT 1 FROM operations WHERE conversation_id = conversation_attachment_uploads.conversation_id AND status IN ('queued','claimed','uncertain'))
                 AND NOT EXISTS (SELECT 1 FROM operations WHERE status IN ('queued','claimed','uncertain')
-                    AND (CASE WHEN json_valid(delivery) THEN json_extract(delivery, '$.agent_id') END) IN (SELECT conversation_attachment_uploads.conversation_id UNION SELECT id FROM agents WHERE json_extract(record, '$.conversation_id') = conversation_attachment_uploads.conversation_id))
+                    AND (CASE WHEN json_valid(delivery) THEN json_extract(delivery, '$.agent_id') END) IN (SELECT conversation_attachment_uploads.conversation_id UNION SELECT id FROM agents WHERE (CASE WHEN json_valid(record) THEN json_extract(record, '$.conversation_id') END) = conversation_attachment_uploads.conversation_id))
                 AND NOT EXISTS (SELECT 1 FROM thread_items WHERE agent_id = conversation_attachment_uploads.conversation_id AND message = 1
                     AND CASE WHEN json_valid(item) THEN json_extract(item, '$.data.role') = 'user' AND json_extract(item, '$.data.operation_id') IS NULL AND json_extract(item, '$.data.seen_at') IS NULL AND COALESCE(json_extract(item, '$.data.delivery_status'), 'queued') IN ('queued','submitted') ELSE 1 END)
                 ORDER BY rowid LIMIT ?2")?;

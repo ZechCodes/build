@@ -889,6 +889,12 @@ fn pending_span_planner_seeks_pending_rows_instead_of_lifetime_history() {
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
+    assert!(
+        details.iter().any(|detail| detail
+            .contains("SEARCH agents USING INDEX agents_by_conversation")
+            && detail.contains("<expr>=?")),
+        "guarded canonical alias lookup must retain its index seek: {details:#?}"
+    );
     eprintln!("retention pending span query plan: {details:#?}");
     assert!(
         details.iter().any(|detail| detail
@@ -1105,4 +1111,96 @@ fn guarded_timestamp_planner_seeks_the_bounded_date_range() {
         .unwrap();
     eprintln!("retention guarded timestamp plan: {details:#?}");
     assert!(details.iter().any(|detail|detail.contains("SEARCH thread_items USING INDEX thread_items_message_time") && detail.contains("agent_id=? AND <expr>>?")),"recent counting must seek its guarded timestamp range, not scan lifetime message bodies: {details:#?}");
+}
+
+#[test]
+fn malformed_agent_metadata_does_not_block_unrelated_retention_but_requested_identity_stays_strict()
+{
+    let (dir, store) = fixture(150);
+    store
+        .in_transaction(|tx| {
+            tx.execute_batch("DROP INDEX agents_by_conversation;")?;
+            tx.execute("INSERT INTO agents VALUES ('corrupt','owner',2,'{')", [])?;
+            tx.execute(
+                "UPDATE meta SET value = '18' WHERE key = 'schema_version'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    drop(store);
+    let store = Store::new(dir.path())
+        .expect("preexisting malformed metadata must not break schema19 alias index creation");
+    store.in_transaction(|tx| {
+        tx.execute("UPDATE agents SET record = 'still not JSON' WHERE id = 'corrupt'", [])?;
+        tx.execute("INSERT INTO agents VALUES ('also-corrupt','owner',3,'{')", [])?;
+        tx.execute("INSERT INTO conversation_attachment_uploads VALUES ('a','t','old.png','2026-10-01T00:00:00Z')", [])?;
+        Ok(())
+    }).expect("guarded alias index must allow corruption fixtures to reach strict read validation");
+    let report = store
+        .retention_report_conversation("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+        .unwrap();
+    assert_eq!(report.items_to_prune, 50);
+    assert_eq!(
+        store
+            .prune_conversation_batch("a", RetentionPolicy::default(), "2026-10-24T12:00:00Z")
+            .unwrap()
+            .items_deleted,
+        50
+    );
+    assert_eq!(
+        store
+            .cleanup_conversation_attachment_uploads(7, "2026-10-24T12:00:00Z", 1000)
+            .unwrap(),
+        1
+    );
+    assert!(
+        store
+            .retention_report_conversation(
+                "corrupt",
+                RetentionPolicy::default(),
+                "2026-10-24T12:00:00Z"
+            )
+            .is_err(),
+        "the explicitly requested canonical metadata must still fail validation"
+    );
+}
+
+#[test]
+fn prerelease_agent_alias_index_upgrades_once_and_preserves_corrupt_record_read_failure() {
+    let (dir, store) = fixture(150);
+    store.in_transaction(|tx| {
+        tx.execute_batch("DROP INDEX agents_by_conversation; CREATE INDEX agents_by_conversation ON agents(json_extract(record,'$.conversation_id'));")?;
+        tx.execute("INSERT INTO agents VALUES ('corrupt','owner',2,'{}')", [])?;
+        Ok(())
+    }).unwrap();
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    store
+        .in_transaction(|tx| {
+            tx.execute("UPDATE agents SET record = '{' WHERE id = 'corrupt'", [])?;
+            Ok(())
+        })
+        .expect("upgraded alias index must not reject a later malformed metadata write");
+    let first: i64 = store
+        .connection()
+        .pragma_query_value(None, "schema_version", |row| row.get(0))
+        .unwrap();
+    drop(store);
+    let reopened = Store::new(dir.path()).unwrap();
+    let second: i64 = reopened
+        .connection()
+        .pragma_query_value(None, "schema_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        first, second,
+        "guarded alias index must not rebuild on repeat startup"
+    );
+    assert!(reopened
+        .retention_report_conversation(
+            "corrupt",
+            RetentionPolicy::default(),
+            "2026-10-24T12:00:00Z"
+        )
+        .is_err());
 }

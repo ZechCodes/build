@@ -3931,6 +3931,8 @@ gate attachment display.
   stable projections (`feedCacheReader.js`, `cachedRows.js`). Concurrent readers
   share the initial row/owner read; auxiliary feed and support roots refresh
   independently, so route discovery never waits for those background reads.
+  Mounted lineage takes rows and maker support from the same snapshot and
+  responds to prefix invalidations, without a separate support read per hint.
   Later announcements reread only named records, in batches of at most 64.
   Unrelated writes reuse the held snapshot. An entity-prefix eviction removes
   only that owner's rows and rosters. Active reads and owner/auxiliary joins

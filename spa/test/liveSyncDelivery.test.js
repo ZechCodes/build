@@ -6,6 +6,16 @@ const capture = (count) => ({ framesReceived: count * 6, ownRepairHolds: [], ui:
   return ["receipt", "admission", "workerStart", "cacheCommit", "mountedPaint"].map((stage, offset) => ({ stage, entityId: "run-0", sequences: [sequence], at: receipt + (offset === 4 ? index + 1 : 0) }));
 }).flat() } });
 
+it("reports receipt-to-commit separately from mounted paint and deduplicates receipts", () => {
+  const result = capture(2);
+  result.ui.stages.find((event) => event.stage === "cacheCommit" && event.sequences[0] === 1101).at = 40;
+  result.ui.stages.find((event) => event.stage === "cacheCommit" && event.sequences[0] === 1102).at = 170;
+  result.ui.stages.push({ stage: "receipt", entityId: "run-0", sequences: [1101], at: 10 });
+  const summary = summarizeLiveSyncDelivery(result);
+  expect(summary.receiptToCommit).toEqual({ samples: 2, p95Ms: 70, maxMs: 70 });
+  expect(summary.raw.maxMs).toBe(2);
+});
+
 it("unions overlapping own repair waits and clips them to each tip's lifetime", () => {
   const result = capture(1);
   for (const event of result.ui.stages) event.at = event.stage === "mountedPaint" ? 100 : event.at;

@@ -3779,11 +3779,16 @@ gate attachment display.
   ordered pass per device. `subscribeConnectionSync(listener)` immediately reports
   a boolean and returns an unsubscribe function. Only the connection status
   ring consumes this signal. A connect/reconnect pass starts the active period;
-  it ends when every connected device has no pass (including chained passes),
-  push applier/enrichment jobs or thread catch-up rounds in flight on its current
-  path. Queues from retired sessions, restored paths or stopped lifetimes do not
-  hold the signal active, even if an abandoned RPC never answers. Queue and
-  pass mutations notify directly, without polling or delaying sync. Retained
+  each device captures its pending/running push jobs and catch-up rounds after
+  its final chained pass. The period ends when every connected device's own
+  snapshot drains, including deferred work spawned by captured body jobs.
+  Captured payloads and catch-up goals are fixed; later arrivals coalesce in a
+  separate trailing job/round and cannot extend the snapshot. No extra sync is
+  requested for the signal. Queues from retired sessions, restored paths or
+  stopped lifetimes do not hold it active, even if an abandoned RPC never
+  answers. Connection-pass requests release their own ownership token on every
+  exit, including exits that start no pass. Queue and pass mutations notify
+  directly, without polling or delaying sync. Retained
   historical repair debt (`repairThrough`) is excluded; later pushes and tab
   return passes do not restart an idle ring. Standing down the sync layer clears
   the signal. The three ownership lists are requested together
@@ -4202,8 +4207,9 @@ through the same device's rendezvous (`mintTerminalSession`), and it rides the
   shows the projection from `spa/src/core/connectionStatusModel.js`
   (`connected`, `attempting`, `waiting`, `offline`). The existing dashed ring
   rotates during the post-connect sync active period reported by
-  `subscribeConnectionSync`; reduced motion disables rotation. This connection
-  status exception does not expose sync state to other cache-rendered views.
+  `subscribeConnectionSync`: final chained passes plus each device's bounded
+  queue snapshot, excluding later traffic. Reduced motion disables rotation. This
+  connection status exception does not expose sync state to other cache-rendered views.
   Per-device contexts live in
   `spa/src/core/deviceContexts.js`.
 

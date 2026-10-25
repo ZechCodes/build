@@ -238,6 +238,25 @@ describe("a session that is being upgraded", () => {
     }
   });
 
+  it("does not probe a live carrier after background SQL admission expires", async () => {
+    vi.useFakeTimers();
+    const { session, peer, events } = await carrying();
+    session.installAdapter(selectAdapter({ api_version: "3.24.0" }));
+    const holders = Array.from({ length: 8 }, () => session.call("tasks.list", {}, { timeoutMs: 0 }).catch(() => {}));
+    const queued = session.call("tasks.get", {}, { priority: "background" }).catch((error) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(12000);
+      expect(await queued).toMatchObject({ deadline: "admission", uncertain: false, retryable: true });
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(peer.sent).toHaveLength(8);
+      expect(events.lost).toBe(0);
+    } finally {
+      session.close();
+      await Promise.all(holders);
+      vi.useRealTimers();
+    }
+  });
+
   it("passes cancellation through the public session without freeing sent SQL credit", async () => {
     const { session, peer } = await carrying();
     const abort = new AbortController();

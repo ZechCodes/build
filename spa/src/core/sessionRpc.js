@@ -19,6 +19,10 @@ import { createBridgeEpoch, endedOpeningError } from "./bridgeEpoch.js";
  *  applies — see [`ANSWER_TIMEOUT_MS`]. */
 export const DEFAULT_RPC_TIMEOUT_MS = 12000;
 
+/** A background SQL read may wait this long for sender credit. This is local
+ * admission, independent of the caller's path/answer timeout opt-out. */
+export const SQL_ADMISSION_TIMEOUT_MS = 12000;
+
 /** How long a call waits once the bridge has said it has the request.
  *
  *  A receipt separates two questions a single deadline was answering at once:
@@ -30,7 +34,7 @@ export const DEFAULT_RPC_TIMEOUT_MS = 12000;
 export const ANSWER_TIMEOUT_MS = 120000;
 
 /**
- * One call's two deadlines: the path's, and the answer's.
+ * One call's deadlines: local SQL admission, the path, then the answer.
  *
  * Until a receipt arrives the call is waiting on the wire, and `timeoutMs` is
  * what says the wire is not carrying. A receipt is the device saying it has
@@ -44,12 +48,21 @@ function createDeadline(method, timeoutMs, onReceipt) {
   let settle = null;
   let receipted = false;
   const expiry = new Promise((_, reject) => { settle = reject; });
-  const arm = (waitMs, uncertain, which) => {
+  const arm = (waitMs, uncertain, which, onExpire) => {
     clearTimeout(timer);
     if (waitMs == null || waitMs === 0) return;
-    timer = setTimeout(() => settle?.(timedOutError(method, uncertain(), which)), waitMs);
+    timer = setTimeout(() => {
+      const error = timedOutError(method, uncertain(), which);
+      // Remove an expired admission synchronously, before a late reply can
+      // drain the credit queue in this same turn.
+      onExpire?.(error);
+      settle?.(error);
+    }, waitMs);
   };
   return {
+    admission(sql, priority, cancel) {
+      if (sql && priority === "background") arm(SQL_ADMISSION_TIMEOUT_MS, () => false, "admission", cancel);
+    },
     start: (uncertain) => arm(timeoutMs, uncertain, "path"),
     race: (answer) => Promise.race([answer, expiry]),
     receipted(handoffAttempted) {
@@ -64,7 +77,8 @@ function createDeadline(method, timeoutMs, onReceipt) {
   };
 }
 
-/** `deadline` says WHICH of the two fired, because they mean opposite things
+/** `deadline` distinguishes local `"admission"` (definitely unsent) from
+ *  the two delivery deadlines, because they mean opposite things
  *  about the wire: `"path"` is a frame that went unacknowledged and is reason to
  *  doubt the connection (what core/pathProbe.js acts on), while `"answer"` is a
  *  device that has the request and is taking its time, which says the wire is
@@ -75,6 +89,7 @@ function timedOutError(method, uncertain = false, deadline = "path") {
   error.timedOut = true;
   error.uncertain = uncertain;
   error.deadline = deadline;
+  if (deadline === "admission") error.retryable = true;
   return error;
 }
 
@@ -302,7 +317,9 @@ export function createSessionRpc({
      * and stamps nothing: absence is the default on both ends.
      * A `null` or zero `timeoutMs` leaves the call pending until an answer or
      * session failure; it does not create a browser timer.
-     * SQL reads start that deadline after sender admission. An optional
+     * SQL reads start that deadline after sender admission. Background SQL
+     * reads have a separate bounded admission wait, even with timeoutMs null/0.
+     * An optional
      * `signal` cancels the caller; once sent, its SQL credit stays occupied
      * until the bridge answers or the carrying path is retired.
      */
@@ -369,6 +386,10 @@ export function createSessionRpc({
         });
       };
       const settled = deadline.race(answer);
+      deadline.admission(sql, priority, (error) => {
+        reject(error);
+        sqlReads.cancel(id);
+      });
       if (sql) sqlReads.reserve(id, start, reject);
       else start();
       const stopCancellation = watchCancellation(signal, (error) => { reject(error); sqlReads.cancel(id); });

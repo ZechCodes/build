@@ -60,3 +60,41 @@ page, rail DOM component, or console. Their shared changed-address reads are add
 covered by `feedCacheProjection.test.js`. Source/session/epoch retirement and
 actual user-action commit independence remain integration tests in the targeted
 cache-sync and deferred-fence suites, rather than being simulated by this replay.
+
+## Recorded acceptance evidence
+
+The sequential October 25 run used b33f5250 for all baseline production modules
+and the task branch's final queue/projection implementation for the after run.
+Both sent all 1,200 identical mixed frames and met the required measured rates.
+There was no injected storage stall in either run.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Measured frames/s | 3.500638 | 3.932134 |
+| Measured items/s | 10.531085 | 11.829170 |
+| IndexedDB row gets | 2,092,257 | 3,030 |
+| Mounted push-to-frame p95 | 237,522.6 ms | 76.2 ms |
+| Mounted push-to-frame max | 250,727.8 ms | 246.7 ms |
+| Peak pending body jobs | 1,813 | 8 |
+| Peak pending enrichment jobs | 1 | 0 |
+| Final-two-minute body slope | +5.297302 jobs/s | -0.008419 jobs/s |
+| Final-two-minute enrichment slope | 0 | 0 |
+| Drain after final input | 272,687.7 ms | 55.5 ms |
+| Exact final messages/rows | true | true |
+
+Row gets fell 99.85518%. Both final queues were empty. The after run also passed
+seeded removal/reset checks and all eight final terminal snapshots. Raw reports
+are `/tmp/850-before-acceptance.json` and `/tmp/850-after-acceptance.json`; the
+comparison command exited zero. The before runner awaited all delivery promises
+before its polling deadline, allowing its full 272.7-second drain to be measured.
+That runner weakness was fixed before the after run: the deadline now covers the
+delivery promises too. The emitted load and measured counters did not change.
+Final terminal verification was added after the baseline started; it executes
+after counter restoration and has no effect on measured load or latency.
+
+The separate after-only stall capture (`/tmp/850-burst-after.json`) sends 240
+mixed frames at requested 1 ms intervals while a real IndexedDB write transaction
+is deliberately held for 500 ms. Including that injected stall, mounted latency
+was p95 836.6 ms/max 876.5 ms, peak pending body jobs 41, and drain 1,406.5 ms.
+Exact final messages/rows passed and the capture command exited zero. These
+numbers are separate from the steady-load acceptance table above.

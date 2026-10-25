@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSyncDiagnostics } from "../src/core/syncDiagnostics.js";
+import { createSyncDiagnostics, SYNC_DIAGNOSTIC_ITEM_LIMIT } from "../src/core/syncDiagnostics.js";
 
 function fixture() {
   let time = 1000;
@@ -32,7 +32,7 @@ describe("sync timing recorder", () => {
     expect(period.stop).toBe(14);
     expect(period.passes[0]).toMatchObject({ start: 2, end: 14, stages: [{ stage: "lists", start: 2, end: 14 }],
       snapshot: { capture: { at: 9, bodyRunning: 1, captured: 3 }, drain: { at: 14, drained: 3 } },
-      selected: { active: 1, recent: 2, projectOwner: 3, heldBodies: 4 } });
+      selected: { active: 1, recent: 2, projectOwner: 3, heldBodies: null } });
     expect(period.slowest).toEqual([{ verb: "board.list", kind: "rpc", queued: 2, start: 5, receipt: 9, settlement: 14, outcome: "reply" }]);
     expect(d.report().oldestUnsettledMs).toBeNull();
   });
@@ -89,7 +89,7 @@ describe("sync timing recorder", () => {
     const report = d.report();
     expect(JSON.stringify(report)).not.toContain(secret);
     expect(report.periods[0].passes[0].stages).toEqual([]);
-    expect(report.periods[0].passes[0].selected).toEqual({ active: 2, recent: 0, projectOwner: 0, heldBodies: 3 });
+    expect(report.periods[0].passes[0].selected).toEqual({ active: 2, recent: 0, projectOwner: 0, heldBodies: null });
     expect(report.periods[0].slowest[0]).toMatchObject({ verb: "unknown", kind: "unknown", outcome: null });
     report.periods[0].passes[0].selected.active = 999;
     expect(d.report().periods[0].passes[0].selected.active).toBe(2);
@@ -140,7 +140,7 @@ describe("sync timing recorder", () => {
     expect(period.passCount).toBe(40);
     expect(period.passes).toHaveLength(32);
     expect(period.passes[0].stages).toHaveLength(64);
-    expect(period.passes[0].selected).toEqual({ active: 2, recent: 3, projectOwner: 0, heldBodies: 4 });
+    expect(period.passes[0].selected).toEqual({ active: 2, recent: 3, projectOwner: 0, heldBodies: null });
   });
 
   it("discards active request history from evicted periods and ignores late milestones", () => {
@@ -175,5 +175,54 @@ describe("sync timing recorder", () => {
     d.ring(false);
     expect(d.report().periods[0]).toMatchObject({ stop: 10, passes: [{ start: 0, end: 0 }],
       slowest: [{ verb: "thread.activity", start: 0, settlement: 10 }] });
+  });
+
+  it("bounds outstanding detail in a single 100,000-request period while counting every settlement", () => {
+    const { diagnostics: d, tick } = fixture();
+    d.ring(true);
+    const tokens = Array.from({ length: 100_000 }, () => d.itemQueued("thread.page", "rpc"));
+    tick(10);
+    const report = d.report();
+    expect(report.periods[0].items).toEqual({ queued: 100_000, settled: 0, unsettled: 100_000,
+      retained: SYNC_DIAGNOSTIC_ITEM_LIMIT, droppedDetail: 100_000 - SYNC_DIAGNOSTIC_ITEM_LIMIT });
+    expect(report.items).toEqual(report.periods[0].items);
+    expect(report.oldestUnsettledSampled).toBe(true);
+    expect(report.periods[0].oldestUnsettledSampled).toBe(true);
+    expect(report.periods[0].slowest).toHaveLength(5);
+    expect(JSON.stringify(report).length).toBeLessThan(5000);
+
+    // Caller-held overflow tokens carry only shared counters and a settled
+    // flag. They still settle exactly once without retaining request detail.
+    for (const token of tokens.slice(0, SYNC_DIAGNOSTIC_ITEM_LIMIT)) d.itemSettled(token, "reply");
+    expect(d.report()).toMatchObject({ oldestUnsettledMs: null, oldestUnsettledSampled: true,
+      items: { settled: SYNC_DIAGNOSTIC_ITEM_LIMIT, retained: 0 } });
+    d.itemStart(tokens.at(-1));
+    d.itemReceipt(tokens.at(-1));
+    d.itemSettled(tokens.at(-1), "answer-timeout");
+    d.itemSettled(tokens.at(-1), "reply");
+    expect(d.report().items.settled).toBe(SYNC_DIAGNOSTIC_ITEM_LIMIT + 1);
+    for (const token of tokens) d.itemSettled(token, "reply");
+    expect(d.report()).toMatchObject({ oldestUnsettledMs: null, oldestUnsettledSampled: false,
+      items: { queued: 100_000, settled: 100_000, unsettled: 0, retained: 0 } });
+  });
+
+  it("reuses bounded sample slots and invalidates overflow counters on clear and eviction", () => {
+    const { diagnostics: d } = fixture();
+    d.ring(true);
+    const tokens = Array.from({ length: SYNC_DIAGNOSTIC_ITEM_LIMIT + 1 }, () => d.itemQueued("fs.read", "file"));
+    d.itemSettled(tokens[0], "reply");
+    const replacement = d.itemQueued("git.log", "log");
+    expect(d.report().items).toMatchObject({ retained: SYNC_DIAGNOSTIC_ITEM_LIMIT, droppedDetail: 1 });
+    d.itemSettled(replacement, "reply");
+    expect(d.report().periods[0].slowest.some((item) => item.verb === "git.log")).toBe(true);
+    d.ring(false);
+    for (let index = 0; index < 8; index += 1) { d.ring(true); d.ring(false); }
+    for (const token of tokens) d.itemSettled(token, "reply");
+    expect(d.report().items).toEqual({ queued: 0, settled: 0, unsettled: 0, retained: 0, droppedDetail: 0 });
+    d.ring(true);
+    const stale = Array.from({ length: SYNC_DIAGNOSTIC_ITEM_LIMIT + 1 }, () => d.itemQueued("fs.read", "file"));
+    d.clear();
+    for (const token of stale) d.itemSettled(token, "reply");
+    expect(d.report().items).toEqual({ queued: 0, settled: 0, unsettled: 0, retained: 0, droppedDetail: 0 });
   });
 });

@@ -14,9 +14,11 @@ const VERBS = new Set([
 const KINDS = new Set(["rpc", "board", "projects", "workspaces", "agents", "tasks", "tasks-first", "tasks-rest",
   "terminals", "status", "log", "unpushed", "tree", "file", "patch", "diff", "thread", "reviews", "row", "feed"]);
 const OUTCOMES = new Set(["reply", "path-timeout", "answer-timeout", "admission-cancel"]);
+export const SYNC_DIAGNOSTIC_ITEM_LIMIT = 32;
 const QUEUE_COUNTS = ["bodyRunning", "bodyPending", "backgroundRunning", "backgroundPending", "catchupRunning", "catchupPending", "captured", "drained"];
-const SELECTED_COUNTS = ["active", "recent", "projectOwner", "heldBodies"];
+const SELECTED_COUNTS = ["active", "recent", "projectOwner"];
 const SQL_COUNTS = ["queued", "admitted", "timedOutHeld"];
+const ITEM_COUNTS = ["queued", "settled", "unsettled", "droppedDetail"];
 const count = (value) => Number.isFinite(value) ? Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value))) : 0;
 const counters = (source, keys) => Object.fromEntries(keys.map((key) => [key, count(source?.[key])]));
 const offset = (now, period) => Math.max(0, now - period.epoch);
@@ -24,7 +26,10 @@ const age = (item, at) => (item.settlement ?? at) - item.queued;
 const oldest = (items, now) => items.reduce((age, item) => Math.max(age ?? 0, now - item.epoch), null);
 
 function createPeriod(epoch) {
-  return { epoch, stop: null, passCount: 0, passes: [], slowest: [], active: new Set() };
+  // Tokens may outlive their period. Shared counters contain no back-reference
+  // to the history, so an overflow token cannot keep that history alive.
+  const tally = { active: true, ...counters(null, ITEM_COUNTS) };
+  return { epoch, tally, stop: null, passCount: 0, passes: [], slowest: [], active: new Set() };
 }
 
 function reportPeriod(period, at) {
@@ -32,7 +37,18 @@ function reportPeriod(period, at) {
   const active = [...period.active];
   const slowest = [...period.slowest, ...active.map((item) => item.record)]
     .sort((a, b) => age(b, now) - age(a, now)).slice(0, 5);
-  return { start: 0, stop: period.stop, passCount: period.passCount, passes: period.passes, slowest, oldestUnsettledMs: oldest(active, at) };
+  return { start: 0, stop: period.stop, passCount: period.passCount, passes: period.passes, slowest,
+    items: { ...counters(period.tally, ITEM_COUNTS), retained: active.length },
+    oldestUnsettledMs: oldest(active, at), oldestUnsettledSampled: period.tally.unsettled > active.length };
+}
+
+function itemTotals(periods) {
+  const total = { ...counters(null, ITEM_COUNTS), retained: 0 };
+  for (const period of periods) {
+    for (const key of ITEM_COUNTS) total[key] += period.tally[key];
+    total.retained += period.active.size;
+  }
+  return total;
 }
 
 function sqlSnapshot(providers) {
@@ -48,12 +64,22 @@ export function createSyncDiagnostics({ now = () => performance.now() } = {}) {
   let periods = [], current = null, devices = [];
   let passes = new WeakMap(), requests = new WeakMap();
   const unsettled = new Set(), providers = new Set();
+  const requestState = Symbol("sync timing counters");
   let lastTime = 0;
   const time = () => {
     const value = now();
     if (Number.isFinite(value)) lastTime = Math.max(lastTime, value);
     return lastTime;
   };
+
+  function dropPeriod(period) {
+    period.tally.active = false;
+    for (const item of period.active) {
+      requests.delete(item.token);
+      unsettled.delete(item);
+    }
+    period.active.clear();
+  }
 
   function ring(active) {
     if (Boolean(active) === Boolean(current)) return;
@@ -64,13 +90,7 @@ export function createSyncDiagnostics({ now = () => performance.now() } = {}) {
     }
     current = createPeriod(time());
     periods.push(current);
-    for (const period of periods.slice(0, -8)) {
-      for (const item of period.active) {
-        requests.delete(item.token);
-        unsettled.delete(item);
-      }
-      period.active.clear();
-    }
+    for (const period of periods.slice(0, -8)) dropPeriod(period);
     periods = periods.slice(-8);
   }
 
@@ -78,7 +98,7 @@ export function createSyncDiagnostics({ now = () => performance.now() } = {}) {
     if (!current) return null;
     const token = {};
     const record = { start: offset(time(), current), end: null, stages: [],
-      snapshot: { capture: null, drain: null }, selected: counters(null, SELECTED_COUNTS) };
+      snapshot: { capture: null, drain: null }, selected: { ...counters(null, SELECTED_COUNTS), heldBodies: null } };
     passes.set(token, { period: current, record });
     current.passCount += 1;
     current.passes.push(record);
@@ -118,8 +138,15 @@ export function createSyncDiagnostics({ now = () => performance.now() } = {}) {
 
   function itemQueued(verb, kind) {
     if (!current) return null;
+    const tally = current.tally;
+    tally.queued += 1;
+    tally.unsettled += 1;
+    const token = { [requestState]: { tally, settled: false } };
+    if (current.active.size >= SYNC_DIAGNOSTIC_ITEM_LIMIT) {
+      tally.droppedDetail += 1;
+      return token;
+    }
     const epoch = time();
-    const token = {};
     const record = { verb: VERBS.has(verb) ? verb : "unknown", kind: KINDS.has(kind) ? kind : "unknown",
       queued: offset(epoch, current), start: null, receipt: null, settlement: null, outcome: null };
     const item = { token, epoch, period: current, record };
@@ -135,6 +162,11 @@ export function createSyncDiagnostics({ now = () => performance.now() } = {}) {
   }
 
   function itemSettled(token, outcome) {
+    const state = token?.[requestState];
+    if (!state?.tally.active || state.settled) return;
+    state.settled = true;
+    state.tally.settled += 1;
+    state.tally.unsettled -= 1;
     const item = requests.get(token);
     if (!item) return;
     const { period, record } = item;
@@ -159,12 +191,15 @@ export function createSyncDiagnostics({ now = () => performance.now() } = {}) {
 
   function report() {
     const at = time();
+    const items = itemTotals(periods);
     return structuredClone({ periods: periods.map((period) => reportPeriod(period, at)), devices,
-      liveCount: devices.length, sql: sqlSnapshot(providers), oldestUnsettledMs: oldest([...unsettled], at) });
+      liveCount: devices.length, sql: sqlSnapshot(providers), items, oldestUnsettledMs: oldest([...unsettled], at),
+      oldestUnsettledSampled: items.unsettled > items.retained });
   }
 
   function clear() {
     const active = Boolean(current);
+    for (const period of periods) dropPeriod(period);
     periods = [];
     current = null;
     passes = new WeakMap();

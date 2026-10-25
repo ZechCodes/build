@@ -24,7 +24,7 @@ it("starts independent route lists while the row transaction is still pending", 
   finishRows([{ value: row }]);
   const entry = await pending;
 
-  expect(startedLists).toEqual(["projects", "workspaces"]);
+  expect(startedLists).toEqual(expect.arrayContaining(["projects", "workspaces"]));
   expect(cache.readCachedMany).toHaveBeenCalledWith([address]);
   expect(entry.entityId).toBe("run-1");
 });

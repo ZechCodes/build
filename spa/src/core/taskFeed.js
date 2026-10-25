@@ -183,7 +183,8 @@ export function joinFeed(context) {
 }
 
 function watchDevice(deviceId) {
-  if (!running || !deviceId || watchers.has(deviceId)) return undefined;
+  if (!running || !deviceId) return undefined;
+  if (watchers.has(deviceId)) return readers.get(deviceId)?.done;
   watchers.set(
     deviceId,
     subscribeCache({ deviceId }, (address) => {

@@ -1398,9 +1398,8 @@ describe("the rail over a machine that is asked nothing", () => {
     rail = mountAgentRail(railHost(), railAddress({
       kind: "project", projectId: "p1", entityId: "run-3", openAgentId: "ag-1",
     }));
-    await flush();
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Project conversation words"));
 
-    expect(railHost().querySelector("#rail-body").textContent).toContain("Project conversation words");
     expect(headWho()).toBe(TOPICS["ag-1"]);
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });

@@ -102,10 +102,6 @@ for (const rosterChanges of [false, true]) {
         moves.observe(strip, { childList: true });
         // Exercise the fallback for browsers without state-preserving moves.
         if (rosterChanges) strip.moveBefore = undefined;
-        const painted = new Promise((resolve) => {
-          const observer = new MutationObserver(() => { observer.disconnect(); resolve(); });
-          observer.observe(region, { attributes: true, attributeFilter: ["data-size"] });
-        });
         if (rosterChanges) {
           const scope = { project_id: "p", source_id: "notes", source_path: "/project/notes" };
           await cache.writeCached({ deviceId: "console-device", entityId: directory.directoryCacheId(scope), kind: "terminals" },
@@ -113,16 +109,21 @@ for (const rosterChanges of [false, true]) {
         } else {
           await cache.writeCached({ deviceId: "console-device", entityId: "unrelated", kind: "tasks" }, []);
         }
-        await painted;
-        moves.disconnect();
+        // writeCached resolves after commit and synchronous cache delivery.
+        // An unrelated write intentionally causes no console repaint.
+        window.__stopConsoleMoves = () => moves.disconnect();
       }, rosterChanges);
+      if (rosterChanges) await page.waitForFunction(() => [...document.querySelectorAll(".console-tab-name")].some((tab) => tab.textContent === "Notes · External"));
+      await page.evaluate(() => window.__stopConsoleMoves());
       expect(await add.evaluate((button) => button === document.activeElement)).toBe(true);
       expect(await page.evaluate(() => window.__keptNewTerminal === document.querySelector(".console-new"))).toBe(true);
       expect(await page.locator(".console-tabs > :last-child").getAttribute("aria-label")).toBe("New terminal");
       if (rosterChanges) expect(await page.locator(".console-tab-name").allTextContents()).toContain("Notes · External");
       else expect(await page.evaluate(() => window.__consoleListMoves)).toEqual([]);
       await page.keyboard.press("Enter");
-      await page.waitForFunction(() => window.__terminalCalls.some((call) => call.method === "term.create"));
+      await page.waitForFunction(() => document.querySelector("#console-region")?.dataset.size === "half"
+        && document.querySelector(".console-tab.active")?.dataset.key.includes("term-created"));
+      await page.locator(".project-terminal-screen").waitFor();
       expect(await callsTo(page, "term.create")).toHaveLength(1);
     });
   }, 60_000);

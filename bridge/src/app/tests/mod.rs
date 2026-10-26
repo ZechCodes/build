@@ -277,6 +277,7 @@ mod tracker_identity_removal;
 mod tracker_inbox_wire;
 mod tracker_list_pages;
 mod tracker_list_reads;
+mod tracker_summary_reads;
 mod tracker_observation_purity;
 mod tracker_tools;
 mod tracker_tracking;

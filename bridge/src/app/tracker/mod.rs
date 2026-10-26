@@ -12,6 +12,7 @@
 //! [`refs`].
 
 mod activity;
+mod bounded_pages;
 mod agent_files;
 mod attachments;
 pub(in crate::app) use attachments::read_task_attachment;
@@ -48,6 +49,7 @@ mod refs;
 mod reminder;
 mod reviews;
 mod said;
+mod selections;
 mod tools;
 mod tracking;
 mod views;
@@ -142,6 +144,10 @@ impl AppState {
     pub(crate) fn tasks_list(&self, params: &Value) -> Result<Value, String> {
         self.task_read_context()
             .tasks_list(self.tracker_store()?, params)
+    }
+
+    pub(crate) fn tasks_filter_choices(&self, _params: &Value) -> Result<Value, String> {
+        Err("not implemented".into())
     }
 
     pub(crate) fn tasks_get(&self, params: &Value) -> Result<Value, String> {

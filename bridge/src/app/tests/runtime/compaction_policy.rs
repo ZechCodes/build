@@ -3,7 +3,6 @@ use crate::app::runtime::spawning::{
     open_agent_session, publish_agent_tab, OpenedSession, ReservedSpawn,
 };
 use crate::compaction::{CompactionScope, CompactionSource};
-use crate::harness::TurnContext;
 
 const OWNER: &str = "run-policy-lifecycle";
 const CONTEXT_AT: &str = "2026-10-18T12:00:00Z";
@@ -564,7 +563,7 @@ async fn missing_recorded_resume_starts_fresh_and_clears_the_old_context() {
 }
 
 #[tokio::test]
-async fn first_user_turn_after_exact_reopen_compacts_with_the_saved_context_before() {
+async fn first_user_turn_after_exact_reopen_delegates_compaction_to_claude_native() {
     let fixture = PolicyLaunch::new(false);
     fixture.set_threshold(234_567);
     fixture.publish(fixture.open(fixture.reserve())).unwrap();
@@ -628,32 +627,69 @@ async fn first_user_turn_after_exact_reopen_compacts_with_the_saved_context_befo
     .await
     .expect("the fake child receives a turn");
     assert!(
-        input.contains("/compact"),
-        "expected compaction first, got {input:?}"
+        !input.contains("/compact"),
+        "Build must never precede Claude's native recovery: {input:?}"
     );
-    assert!(
-        !input.contains(USER_TURN),
-        "the user turn must wait for compaction"
+    assert_eq!(
+        input.matches(USER_TURN).count(),
+        1,
+        "the waking turn is delivered once"
     );
-    let mut app = fixture.state.lock().unwrap();
-    assert_eq!(app.delivery_queue.queued_len(), 1);
-    app.record_agent_turn_context(
-        OWNER,
-        &fixture.agent,
-        TurnContext {
-            context_tokens: 10_000,
-            cache_read_tokens: 0,
-        },
+    let app = fixture.state.lock().unwrap();
+    assert_eq!(app.delivery_queue.queued_len(), 0);
+    assert_eq!(
+        app.session_registry
+            .agent_snapshot(&fixture.key)
+            .unwrap()
+            .session
+            .compaction_policy()
+            .unwrap()
+            .enforcement,
+        crate::harness::compaction::CompactionEnforcement::Native
     );
-    let thread = app.agent_conversation(OWNER, Some(&fixture.agent)).unwrap();
-    let detail = thread
-        .items
-        .iter()
-        .find_map(|item| match item {
-            crate::thread::ThreadItem::Event(event) => event.compaction.as_ref(),
-            _ => None,
-        })
-        .expect("the compaction row retains its measurements");
-    assert_eq!(detail.context_before, Some(456_789));
-    assert_eq!(detail.context_after, Some(10_000));
+}
+
+#[test]
+fn claude_native_window_observation_preserves_intent_without_claiming_an_exact_trigger() {
+    let fixture = PolicyLaunch::new(false);
+    for tokens in [1, 150_000, 200_000, 1_000_000, 1_000_001] {
+        fixture.set_threshold(tokens);
+        let policy = crate::harness::harness_for(AgentProvider::Claude)
+            .prepare_compaction_policy(
+                crate::compaction::ResolvedCompactionPolicy {
+                    tokens,
+                    source: CompactionSource::Device,
+                },
+                ModelChoice {
+                    model: Some("claude-haiku-4-5".into()),
+                    ..fixture.choice.clone()
+                },
+                None,
+                crate::harness::compaction::CompactionLaunchIdentity::new("native-observation"),
+            )
+            .unwrap();
+        let observation = fixture.state.lock().unwrap().agent_compaction_observation(
+            OWNER,
+            &fixture.agent,
+            Some(&policy),
+        );
+        assert_eq!(observation["configured"]["tokens"], tokens);
+        assert_eq!(observation["active"]["tokens"], tokens);
+        assert_eq!(observation["enforcement"], "native");
+        assert_eq!(observation["active"]["translated_trigger"], Value::Null);
+        assert_eq!(observation["active"]["native_trigger"]["exact"], false);
+        if (100_000..=1_000_000).contains(&tokens) {
+            assert_eq!(observation["active"]["native_window"], tokens);
+            assert_eq!(
+                observation["active"]["native_trigger"]["catalog_window_estimate"]["min_tokens"],
+                tokens.min(200_000) - 33_000
+            );
+        } else {
+            assert_eq!(observation["active"]["native_window"], "auto");
+            assert_eq!(
+                observation["active"]["native_trigger"]["catalog_window_estimate"],
+                Value::Null
+            );
+        }
+    }
 }

@@ -53,6 +53,8 @@ impl CompactionLaunchIdentity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeCompactionSettings {
     Claude(super::claude_compaction::Translation),
+    /// Requested native context window; None leaves Claude on auto.
+    ClaudeWindow(Option<u64>),
     Codex(super::codex_compaction::Translation),
 }
 

@@ -1,9 +1,8 @@
 //! Claude Code's explicit-window adapter shared by ADK and TUI.
 //!
-//! Formula revision 1 is inspected against 2.1.284. Production native promotion
-//! remains closed: launch version/model do not bound effective output settings,
-//! managed policy refresh or native in-turn model fallback. See the qualification
-//! record in planning/v2/Claude Compaction Qualification.md.
+//! Build selects Claude's native context window; Claude owns when to compact.
+//! Its trigger is approximate because effective output reserves, managed policy,
+//! model remapping and native fallback remain provider-owned.
 use crate::compaction::ResolvedCompactionPolicy;
 use crate::harness::compaction::{
     fallback_policy, AppliedCompactionPolicy, CompactionEnforcement, CompactionLaunchIdentity,
@@ -89,27 +88,26 @@ pub(super) fn prepare<H: Harness + ?Sized>(
     identity: CompactionLaunchIdentity,
 ) -> Result<AppliedCompactionPolicy, HarnessError> {
     let mut policy = fallback_policy(harness, requested, choice, version, identity)?;
-    if policy.enforcement == CompactionEnforcement::Unsupported {
-        return Ok(policy);
-    }
-    let reason = managed::launch_conflict().unwrap_or_else(|| unqualified_reason(&policy).into());
+    let window = (100_000..=1_000_000)
+        .contains(&policy.requested.tokens)
+        .then_some(policy.requested.tokens);
+    policy.enforcement = CompactionEnforcement::Native;
+    policy.native_settings = Some(NativeCompactionSettings::ClaudeWindow(window));
+    policy.capabilities.native_threshold = true;
+    policy.capabilities.native_unit = Some("context_window_tokens".into());
+    policy.capabilities.native_range = Some(100_000..=1_000_000);
     policy.capabilities.qualification.evidence =
-        "Claude formula revision 1 (2.1.284); isolated resumed compaction observed; effective launch budgets and model fallback unverified".into();
-    policy.capabilities.unsupported_reason = Some(reason.clone());
-    policy.reason = Some(reason);
+        "Claude native auto-compaction requested; trigger approximately window minus min(maxOutput, 20000) minus 13000; effective model/output and managed policy remain provider-owned".into();
+    let reason = managed::launch_conflict()
+        .or_else(|| {
+            window
+                .is_none()
+                .then(|| "claude_requested_window_unrepresentable_using_auto".into())
+        })
+        .or_else(|| Some("claude_native_trigger_approximate_no_live_readback".into()));
+    policy.capabilities.unsupported_reason = reason.clone();
+    policy.reason = reason;
     Ok(policy)
-}
-
-fn unqualified_reason(policy: &AppliedCompactionPolicy) -> &'static str {
-    if policy.capabilities.qualification.version.as_deref() != Some(VERSION) {
-        return "claude_version_unqualified";
-    }
-    // Even an explicit model can be remapped by managed restrictions or native
-    // fallback. Do not infer a reserve from the catalog's advertised context.
-    if policy.choice.model.is_none() {
-        return "claude_model_and_output_budgets_unverified";
-    }
-    "claude_effective_output_budget_and_model_fallback_unverified"
 }
 
 /// Merge only compaction controls into the existing hook settings. Settings.env
@@ -119,23 +117,16 @@ pub(super) fn apply(
     choice: &ModelChoice,
     policy: Option<&AppliedCompactionPolicy>,
 ) -> Result<HarnessSpec, HarnessError> {
-    let Some(policy) = policy else {
-        return Ok(spec);
-    };
-    if &policy.choice != choice {
+    if policy.is_some_and(|policy| &policy.choice != choice) {
         return Err(HarnessError::Setup(
             "Claude compaction policy belongs to another launch choice".into(),
         ));
     }
-    let translation = native_translation(policy)?;
+    let (window, percentage) = native_window(policy)?;
     let values = [
-        translation
-            .map(|t| t.window.to_string())
-            .unwrap_or_default(),
-        translation
-            .and_then(|t| t.percentage.clone())
-            .unwrap_or_default(),
-        if translation.is_some() { "0" } else { "1" }.into(),
+        window.map(|window| window.to_string()).unwrap_or_default(),
+        percentage.unwrap_or_default(),
+        "0".into(),
         "0".into(),
     ];
     let index = spec
@@ -150,18 +141,41 @@ pub(super) fn apply(
         .ok_or_else(|| HarnessError::Setup("Claude hook settings are missing".into()))?;
     let mut settings: Value = serde_json::from_str(settings)
         .map_err(|_| HarnessError::Setup("Claude hook settings are invalid".into()))?;
-    merge_settings(&mut settings, translation, &values)?;
+    merge_settings(&mut settings, window, &values)?;
     spec.args[index] = settings.to_string();
     spec = spec.unset_all(COMPACTION_ENV);
     for (key, value) in COMPACTION_ENV.into_iter().zip(values) {
         spec = spec.env(key, value);
     }
-    if let Some(translation) = translation {
-        spec = spec
-            .arg("--autocompact")
-            .arg(translation.window.to_string());
+    Ok(spec.arg("--autocompact").arg(
+        window
+            .map(|window| window.to_string())
+            .unwrap_or_else(|| "auto".into()),
+    ))
+}
+
+fn native_window(
+    policy: Option<&AppliedCompactionPolicy>,
+) -> Result<(Option<u64>, Option<String>), HarnessError> {
+    let Some(policy) = policy else {
+        return Ok((None, None));
+    };
+    if let Some(NativeCompactionSettings::ClaudeWindow(window)) = policy.native_settings {
+        let expected = (100_000..=1_000_000)
+            .contains(&policy.requested.tokens)
+            .then_some(policy.requested.tokens);
+        if policy.enforcement != CompactionEnforcement::Native || window != expected {
+            return Err(HarnessError::Setup(
+                "Claude native window does not match its policy".into(),
+            ));
+        }
+        return Ok((window, None));
     }
-    Ok(spec)
+    let translation = native_translation(policy)?;
+    Ok((
+        translation.map(|t| t.window),
+        translation.and_then(|t| t.percentage.clone()),
+    ))
 }
 
 fn native_translation(
@@ -189,18 +203,17 @@ fn native_translation(
 
 fn merge_settings(
     settings: &mut Value,
-    translation: Option<&Translation>,
+    window: Option<u64>,
     values: &[String; 4],
 ) -> Result<(), HarnessError> {
     let object = settings
         .as_object_mut()
         .ok_or_else(|| HarnessError::Setup("Claude hook settings must be an object".into()))?;
-    object.insert("autoCompactEnabled".into(), json!(translation.is_some()));
+    object.insert("autoCompactEnabled".into(), json!(true));
     object.insert(
         "autoCompactWindow".into(),
-        translation.map_or(json!("auto"), |t| json!(t.window)),
+        window.map_or(json!("auto"), |window| json!(window)),
     );
-    object.insert("precomputeCompactionEnabled".into(), json!(false));
     let env = object
         .entry("env")
         .or_insert_with(|| json!({}))

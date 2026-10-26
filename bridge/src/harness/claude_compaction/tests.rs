@@ -65,7 +65,7 @@ pub(super) fn choice(provider: AgentProvider) -> ModelChoice {
 }
 
 #[test]
-fn claude_compaction_fallback_settings_override_inherited_policy_preserve_hooks_and_resume() {
+fn claude_compaction_native_settings_override_inherited_policy_preserve_hooks_and_resume() {
     let root = tempfile::tempdir().unwrap();
     let context = HarnessContext {
         channel: crate::config::Channel::Prod,
@@ -97,11 +97,12 @@ fn claude_compaction_fallback_settings_override_inherited_policy_preserve_hooks_
             let spec = harness.spec(&choice, &options, &context).unwrap();
             let i = spec.args.iter().position(|a| a == "--settings").unwrap();
             let settings: Value = serde_json::from_str(&spec.args[i + 1]).unwrap();
-            assert_eq!(settings["env"]["DISABLE_AUTO_COMPACT"], "1");
+            assert_eq!(settings["env"]["DISABLE_AUTO_COMPACT"], "0");
             assert_eq!(settings["env"]["DISABLE_COMPACT"], "0");
             assert_eq!(settings["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "");
-            assert_eq!(settings["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "");
-            assert_eq!(settings["autoCompactEnabled"], false);
+            assert_eq!(settings["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "150000");
+            assert_eq!(settings["autoCompactEnabled"], true);
+            assert!(settings.get("precomputeCompactionEnabled").is_none());
             assert!(settings["hooks"]["PreCompact"].is_array());
             assert!(settings["env"]
                 .get("CLAUDE_CODE_MAX_OUTPUT_TOKENS")
@@ -146,51 +147,59 @@ pub(super) fn native_policy(
 
 #[test]
 fn claude_compaction_merge_preserves_unrelated_settings_and_hooks() {
-    let original = json!({"hooks":{"PreCompact":[{"sentinel":true}]},"env":{"OTHER":"keep","CLAUDE_CODE_MAX_OUTPUT_TOKENS":"8192","DISABLE_COMPACT":"1"},"otherSetting":42});
+    let original = json!({"hooks":{"PreCompact":[{"sentinel":true}]},"env":{"OTHER":"keep","CLAUDE_CODE_MAX_OUTPUT_TOKENS":"8192","DISABLE_COMPACT":"1"},"otherSetting":42,"precomputeCompactionEnabled":true});
     let mut settings = original.clone();
     let values = ["183000".into(), "".into(), "0".into(), "0".into()];
-    merge_settings(
-        &mut settings,
-        Some(&translate("2.1.284", 150_000, 1_000_000, 20_000).unwrap()),
-        &values,
-    )
-    .unwrap();
+    merge_settings(&mut settings, Some(183_000), &values).unwrap();
     assert_eq!(settings["hooks"], original["hooks"]);
     assert_eq!(settings["env"]["OTHER"], "keep");
     assert_eq!(settings["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "8192");
     assert_eq!(settings["otherSetting"], 42);
+    assert_eq!(settings["precomputeCompactionEnabled"], true);
     assert_eq!(settings["env"]["DISABLE_COMPACT"], "0");
 }
 
 #[test]
-fn claude_compaction_production_is_unqualified_even_for_the_observed_model_and_version() {
+fn claude_compaction_production_uses_native_window_without_exact_trigger_claim() {
     for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
-        for model in [
-            None,
-            Some("claude-haiku-4-5"),
-            Some("claude-opus-5[1m]"),
-            Some("unknown-model"),
-        ] {
-            for version in [None, Some("2.1.284"), Some("2.1.285")] {
-                let mut choice = choice(provider);
-                choice.model = model.map(str::to_owned);
+        for version in [None, Some("2.1.284"), Some("2.1.285")] {
+            for tokens in [
+                1,
+                99_999,
+                100_000,
+                150_000,
+                200_000,
+                1_000_000,
+                1_000_001,
+                u64::MAX,
+            ] {
                 let policy = harness_for(provider)
                     .prepare_compaction_policy(
                         ResolvedCompactionPolicy {
-                            tokens: 150_000,
+                            tokens,
                             source: CompactionSource::Device,
                         },
-                        choice.clone(),
+                        choice(provider),
                         version.map(str::to_owned),
-                        CompactionLaunchIdentity::new("thread"),
+                        CompactionLaunchIdentity::new("native-window"),
                     )
                     .unwrap();
-                assert_eq!(policy.choice, choice);
-                assert_eq!(policy.enforcement, CompactionEnforcement::BetweenTurn);
-                assert!(!policy.capabilities.native_threshold);
-                assert!(policy.native_settings.is_none());
-                assert!(policy.translated_trigger.is_none());
-                assert!(policy.reason.is_some());
+                assert_eq!(policy.requested.tokens, tokens);
+                assert_eq!(policy.enforcement, CompactionEnforcement::Native);
+                assert!(policy.capabilities.native_threshold);
+                assert!(
+                    policy.translated_trigger.is_none(),
+                    "effective trigger is not exact"
+                );
+                let window = (100_000..=1_000_000).contains(&tokens).then_some(tokens);
+                assert_eq!(
+                    policy.native_settings,
+                    Some(NativeCompactionSettings::ClaudeWindow(window))
+                );
+                assert!(
+                    !policy.automatic_due(Some(u64::MAX)),
+                    "Build must never double-compact Claude"
+                );
             }
         }
     }

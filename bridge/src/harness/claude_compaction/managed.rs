@@ -38,6 +38,14 @@ const ENV_KEYS: &[&str] = &[
     "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT",
 ];
 
+#[cfg(test)]
+pub(super) fn launch_conflict() -> Option<String> {
+    // Unit/child tests never inspect the developer's configuration. Managed
+    // policy inspection itself is covered below against temporary roots.
+    None
+}
+
+#[cfg(not(test))]
 pub(super) fn launch_conflict() -> Option<String> {
     if !cfg!(target_os = "linux")
         || std::env::var_os("WSL_DISTRO_NAME").is_some()

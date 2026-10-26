@@ -221,22 +221,61 @@ fn valid_assignee_choice(value: &Value) -> bool {
 /// rowid checkpoint, so an interrupted migration resumes without restarting.
 pub(super) fn initialize(conn: &mut Connection) -> Result<(), StoreError> {
     let existing: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices','tracker_task_filter_values','tracker_task_summary_identities')",[],|row|row.get(0))?;
-    conn.execute_batch(sql::TABLES)?;
     if existing != 5 {
-        // Projection tables form one versioned unit. Canonical task/history
-        // rows remain authoritative if a repair restores only some tables.
-        // Reset every checkpoint rather than admitting a partial projection.
-        conn.execute_batch(
-            "DELETE FROM tracker_task_filter_choices; DELETE FROM tracker_task_filter_values;
-            DELETE FROM tracker_task_summary_facts; DELETE FROM tracker_task_summaries; DELETE FROM tracker_task_summary_identities;
-            DELETE FROM meta WHERE key LIKE 'task_summary_v1_%';",
+        // Commit repair intent before recreating a missing table: a crash
+        // between DDL and reset must not make a partial unit look complete.
+        conn.execute(
+            "INSERT OR IGNORE INTO meta(key,value) VALUES('task_summary_rebuild','1')",
+            [],
         )?;
+    }
+    conn.execute_batch(sql::TABLES)?;
+    let rebuilding: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM meta WHERE key='task_summary_rebuild')",
+        [],
+        |row| row.get(0),
+    )?;
+    if rebuilding {
+        reset_projection(conn)?;
     }
     migrate_facts(conn, "tracker_comments")?;
     migrate_facts(conn, "tracker_events")?;
     migrate_tasks(conn)?;
     migrate_identities(conn)?;
     conn.execute_batch(&sql::triggers())?;
+    Ok(())
+}
+
+fn reset_projection(conn: &mut Connection) -> Result<(), StoreError> {
+    for table in [
+        "tracker_task_filter_choices",
+        "tracker_task_filter_values",
+        "tracker_task_summary_facts",
+        "tracker_task_summaries",
+        "tracker_task_summary_identities",
+    ] {
+        reset_table(conn, table)?;
+    }
+    // Rows are fully reset before dropping progress. Clearing the durable
+    // repair marker and old migration checkpoints shares one commit.
+    let tx = conn.transaction()?;
+    tx.execute(
+        "DELETE FROM meta WHERE key LIKE 'task_summary_v1_%' OR key='task_summary_rebuild'",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn reset_table(conn: &mut Connection, table: &str) -> Result<(), StoreError> {
+    loop {
+        let tx = conn.transaction()?;
+        let changed=tx.execute(&format!("DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} ORDER BY rowid LIMIT 128)"),[])?;
+        tx.commit()?;
+        if changed == 0 {
+            break;
+        }
+    }
     Ok(())
 }
 

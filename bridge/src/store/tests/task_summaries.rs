@@ -710,3 +710,54 @@ fn invalid_filter_choices_fail_before_returning_an_unusable_page() {
         );
     }
 }
+
+#[test]
+fn interrupted_projection_repair_resumes_with_all_tables_present_and_old_checkpoints() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::new(dir.path()).unwrap();
+        let mut task = Task::drafted("/summary", "canonical title", Actor::User, support::NOW);
+        task.watched = true;
+        task.labels = vec!["Canonical".into()];
+        let task = store.create_tracker_task(task, &[]).unwrap();
+        store
+            .save_tracker_task_activity(
+                &task,
+                &[said(&task, "tc-00000000000000000000000001", support::NOW)],
+                &[],
+            )
+            .unwrap();
+    }
+    {
+        let store = Store::new(dir.path()).unwrap(); // complete old checkpoints
+        let conn = store.connection();
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES('task_summary_rebuild','1')",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE tracker_task_summaries SET record=json_set(record,'$.title','partial stale projection')",[]).unwrap();
+        conn.execute("DELETE FROM tracker_task_summary_facts", [])
+            .unwrap();
+    }
+    let store = Store::new(dir.path()).unwrap();
+    let row = summary(&store, "/summary");
+    assert_eq!(row["title"], "canonical title");
+    assert_eq!(row["unread_count"], 1);
+    assert_eq!(
+        store
+            .list_task_filter_choices("/summary", "label", None, 1)
+            .unwrap()[0]
+            .value,
+        "Canonical"
+    );
+    let marker: i64 = store
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM meta WHERE key='task_summary_rebuild'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(marker, 0);
+}

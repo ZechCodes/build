@@ -25,7 +25,7 @@ const mounted = (entityId, kind, sub = "", active = () => true, read = null) => 
   return callback;
 };
 
-function fixture(recoverWorkingDiff = false, backgroundStreams = null) {
+function fixture(recoverWorkingDiff = false, backgroundStreams = null, options = {}) {
   const rows = [1, 2].map((number) => ({
     kind: "branch", run_id: `run-${number}`, worktree_id: `wt-${number}`, branch: `build/${number}`,
     project_id: "p1", workspace_id: `ws-${number}`, state: "building",
@@ -40,6 +40,7 @@ function fixture(recoverWorkingDiff = false, backgroundStreams = null) {
     context, view, route: () => route,
     pass: { order: ["run-1", "run-2"], rows: new Map(view.items.map((row) => [row.run_id, row])) },
     entityContext: () => context,
+    ...options,
     readers,
     tasks: {
       first: async (projectId) => event(projectId, "tasks-first", "foreground"),
@@ -384,5 +385,71 @@ describe("mounted source reads in foreground phases", () => {
     expect(after).toHaveBeenCalledOnce();
     expect(events.some((item) => item.kind === "tasks-rest")).toBe(true);
     expect(events.some((item) => item.entityId === "run-2" && item.kind === "extras")).toBe(true);
+  });
+});
+
+
+describe("parallel Inbox conversations", () => {
+  it("waits for all foreground records, then refills only two conversation workers", async () => {
+    const foreground = gate(), background = gate();
+    const thread = readers.thread, status = readers.status;
+    readers.status = async (...args) => { await status(...args); await foreground.promise; };
+    readers.thread = async (...args) => {
+      await thread(...args);
+      if (args[3] === "background") await background.promise;
+    };
+    const pass = fixture().run();
+    await microtasks();
+    const beforeForeground = events.filter((item) => item.kind === "thread");
+    foreground.release();
+    await microtasks();
+    const whileHeld = events.slice();
+    background.release();
+    await pass;
+    expect(beforeForeground.map((item) => item.sub)).toEqual(["ag-1-b"]);
+    expect(whileHeld.filter((item) => item.kind === "thread" && item.priority === "background")
+      .map((item) => item.sub)).toEqual(["ag-1-a", "ag-2-a"]);
+    expect(whileHeld.some((item) => item.kind === "tasks-rest")).toBe(false);
+    expect(events.filter((item) => item.kind === "thread")).toHaveLength(4);
+  });
+
+  it("keeps the Inbox diagnostic stage until both workers finish", async () => {
+    route = { name: "inbox" };
+    const held = gate(), stages = [];
+    readers.thread = async (_context, entityId, agent, priority) => {
+      event(entityId, "thread", priority, agent.id);
+      if (agent.id === "ag-1-a") await held.promise;
+    };
+    const pass = fixture(false, null, { stage: (name) => stages.push(name) }).run();
+    await microtasks();
+    const beforeRelease = { stages: [...stages], events: [...events] };
+    held.release();
+    await pass;
+    expect(beforeRelease.events.filter((item) => item.kind === "thread")).toHaveLength(4);
+    expect(beforeRelease.stages.at(-1)).toBe("inbox");
+    expect(beforeRelease.events.some((item) => item.kind === "tasks-rest")).toBe(false);
+    expect(stages.at(-1)).toBe("background");
+  });
+
+  it("drains a failed worker's sibling before ending the Inbox stage", async () => {
+    route = { name: "inbox" };
+    const failed = gate(), sibling = gate(), stages = [];
+    const failure = new Error("cache unavailable");
+    readers.thread = async (_context, entityId, agent, priority) => {
+      event(entityId, "thread", priority, agent.id);
+      if (agent.id === "ag-1-a") { await failed.promise; throw failure; }
+      await sibling.promise;
+    };
+    const pass = fixture(false, null, { stage: (name) => stages.push(name) }).run();
+    let settled = false;
+    const outcome = pass.then(() => { settled = true; }, (error) => { settled = true; return error; });
+    await microtasks();
+    failed.release();
+    await microtasks();
+    const whileSibling = { settled, stage: stages.at(-1) };
+    sibling.release();
+    expect(await outcome).toBe(failure);
+    expect(whileSibling).toEqual({ settled: false, stage: "inbox" });
+    expect(events.filter((item) => item.kind === "thread").map((item) => item.sub)).toEqual(["ag-1-a", "ag-1-b"]);
   });
 });

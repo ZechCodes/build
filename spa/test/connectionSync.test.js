@@ -393,3 +393,45 @@ it("starts and finishes a fresh pass after the same session finishes ICE restora
   next.release({ items: [] }); await restored; await idle(state);
   expect(state.values()).toEqual([false, true, false, true, false]);
 });
+
+
+it.each(["completion", "disconnect"])("keeps the parallel Inbox ring continuous until %s", async (ending) => {
+  const context = contexts[0], state = signals();
+  const first = gate(), sibling = gate();
+  const previous = context.rpc.getMockImplementation();
+  context.rpc.mockImplementation(async (method, params = {}, ...rest) => {
+    if (method === "board.list") {
+      const board = await previous(method, params, ...rest);
+      board.items[0].agents = [1, 2, 3, 4].map((n) => ({
+        id: `agent-${n}`, conversation_id: `c${n}`, thread_id: `thread:c${n}`,
+      }));
+      return board;
+    }
+    if (method === "thread.page" && params.thread_id === "thread:c1") await first.promise;
+    if (method === "thread.page" && params.thread_id === "thread:c2") await sibling.promise;
+    return previous(method, params, ...rest);
+  });
+  const threads = () => context.rpc.mock.calls.filter(([method]) => method === "thread.page");
+  sync.startCacheSync();
+  try {
+    await called(context.rpc, () => threads().length === 2);
+    expect(state.values()).toEqual([false, true]);
+    first.release();
+    await called(context.rpc, () => threads().length === 4);
+    // One walker has exhausted its conversations while its sibling still waits.
+    expect(state.values()).toEqual([false, true]);
+    const { syncDiagnostics } = await import("../src/core/syncDiagnostics.js");
+    const pass = syncDiagnostics.report().periods[0].passes[0];
+    expect(pass.end).toBeNull();
+    expect(pass.stages.at(-1)).toMatchObject({ stage: "inbox", end: null });
+    if (ending === "disconnect") {
+      context.connected = false;
+      deviceChanged();
+      expect(state.values()).toEqual([false, true, false]);
+    }
+  } finally {
+    first.release(); sibling.release();
+    await idle(state);
+  }
+  expect(state.values()).toEqual([false, true, false]);
+});

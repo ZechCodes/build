@@ -180,7 +180,18 @@ impl ReadTransaction<'_> {
 /// Startup precedes reader admission. Every transaction advances a durable
 /// rowid checkpoint, so an interrupted migration resumes without restarting.
 pub(super) fn initialize(conn: &mut Connection) -> Result<(), StoreError> {
+    let existing: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices','tracker_task_filter_values')",[],|row|row.get(0))?;
     conn.execute_batch(sql::TABLES)?;
+    if existing != 4 {
+        // Projection tables form one versioned unit. Canonical task/history
+        // rows remain authoritative if a repair restores only some tables.
+        // Reset every checkpoint rather than admitting a partial projection.
+        conn.execute_batch(
+            "DELETE FROM tracker_task_filter_choices; DELETE FROM tracker_task_filter_values;
+            DELETE FROM tracker_task_summary_facts; DELETE FROM tracker_task_summaries;
+            DELETE FROM meta WHERE key LIKE 'task_summary_v1_%';",
+        )?;
+    }
     migrate_facts(conn, "tracker_comments")?;
     migrate_facts(conn, "tracker_events")?;
     migrate_tasks(conn)?;

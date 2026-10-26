@@ -477,3 +477,47 @@ fn projection_rolls_back_with_canonical_write_and_project_deletion_removes_all_m
         assert_eq!(count, 0, "{table}");
     }
 }
+
+#[test]
+fn missing_projection_rebuilds_even_when_completed_migration_checkpoints_remain() {
+    let dir = tempfile::tempdir().unwrap();
+    let task_id;
+    {
+        let store = Store::new(dir.path()).unwrap();
+        let mut draft = Task::drafted("/summary", "rebuild", Actor::User, support::NOW);
+        draft.watched = true;
+        draft.labels = vec!["Restored".into()];
+        let task = store.create_tracker_task(draft, &[]).unwrap();
+        store
+            .save_tracker_task_activity(
+                &task,
+                &[said(&task, "tc-00000000000000000000000100", support::NOW)],
+                &[],
+            )
+            .unwrap();
+        task_id = task.id;
+    }
+    {
+        // Advance startup checkpoints, then lose only the display projection.
+        let store = Store::new(dir.path()).unwrap();
+        let conn = store.connection();
+        let checkpoints: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM meta WHERE key LIKE 'task_summary_v1_%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(checkpoints >= 2);
+        conn.execute_batch("DROP TABLE tracker_task_summaries;")
+            .unwrap();
+    }
+    let store = Store::new(dir.path()).unwrap();
+    assert_eq!(summary(&store, "/summary")["unread_count"], 1);
+    assert_matches_history(&store, &task_id);
+    let choices = store
+        .list_task_filter_choices("/summary", "label", None, 10)
+        .unwrap();
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0].value, "Restored");
+}

@@ -1,6 +1,9 @@
 use super::*;
 use crate::tracker::{Actor, Task};
 
+#[path = "task_summaries/direct_sql.rs"]
+mod direct_sql;
+
 #[test]
 fn bounded_summary_omits_task_payload_and_carries_watch_count() {
     let dir = tempfile::tempdir().unwrap();

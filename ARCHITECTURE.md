@@ -1252,57 +1252,62 @@ newer runtime settings, tokens or waiting clients. Capture routers have no
 canonical conversation and retain their existing launch behavior without a
 policy snapshot.
 
-The snapshot records requested tokens/source, any qualified native trigger,
-enforcement (`native`, `between_turn`, `unsupported`), the launch choice and
-identity, and version/evidence/reason. Capability descriptors include native
-threshold and between-turn command support plus the native unit/range when
-qualified. Native adapters remain unqualified. Claude and Codex carriers use
-the existing between-turn command path; Pi qualifies its extension-backed
-fallback only for 0.86.1. Unknown or failed version readings never infer
-native support. Unsafe legacy values remain exact and unsupported; zero is
-refused. Wire agent `compaction` observations expose configured and inherited
-policy independently from the active snapshot. An unknown active policy stays
-null, with unsupported enforcement and an explicit reason; pending change is
-unknown until there is a snapshot to compare. A save never substitutes the
-configured policy for active evidence. Qualified active snapshots report the
-policy applied at start and its harness qualification, rather
-than claiming a live native readback.
+The snapshot records requested tokens/source, enforcement, launch identity,
+version/evidence/reason and optional native settings. A requested value is
+configuration intent, not an observed exact compaction trigger. Wire observations
+keep configured/inherited policy separate from the active session snapshot;
+saving settings does not replace the active policy before reopening.
 
-Both Claude carriers share `harness/claude_compaction.rs` (#656). Formula
-revision 1 targets the inspected 2.1.284 explicit window: reserve is the smaller
-of the effective output maximum and 20000; the trigger is window minus reserve
-minus 13000, optionally lowered by a valid percentage of usable context.
-Small thresholds use a legal 100k window and a decimal percentage whose actual
-round trip preserves the requested count. The model window clamps the usable
-window, never the requested policy. The adapter refuses unknown versions,
-unknown budgets and targets above the native trigger. A captured optional
-`NativeCompactionSettings` carries a translated window/percentage so spec
-construction cannot recompute it from later settings.
+**Native-first compaction (#884): every wrapper lets the harness compact itself.**
+Build's automatic between-turn scheduler is reserved for a harness without an
+automatic compaction mechanism. All five current providers have one: Claude
+TUI/ADK, Codex TUI/app-server and Pi. Their normal launches never schedule a
+Build threshold command. Explicit user/agent `/compact` remains available where
+supported. Managed policy can override a child's settings: this is observable,
+not permission to claim a native trigger was observed or silently install a
+second scheduler. There is no managed-policy exception scheduler in #884.
 
-Production Claude native promotion is deliberately closed: the requested
-model and observed CLI version cannot bound settings-sourced output reserves,
-managed model remapping or in-turn model fallback. Both carriers report a
-reason and use between-turn enforcement. Their specs merge only compaction
-controls into their existing hook `--settings`, including `settings.env`,
-because Claude applies that environment after inherited child environment.
-Fallback sets child-only `DISABLE_AUTO_COMPACT=1` and `DISABLE_COMPACT=0`, clears
-stale window/percentage overrides, and leaves manual `/compact` available.
-Output limits, selected model IDs (including `[1m]`), ordinary settings,
-credentials and parent environment are unchanged. Policy-free routers keep
-their original specs.
+Both Claude carriers share `harness/claude_compaction.rs`. The requested
+100000–1000000 tokens select the native **window** directly. Other positive
+values, including unsafe legacy values, use `auto`; they never disable native
+compaction. Both child environment and hook `--settings` set
+`DISABLE_AUTO_COMPACT=0`, `DISABLE_COMPACT=0`, `autoCompactEnabled=true` and the
+chosen window; stale percentage overrides are cleared. `--autocompact` carries
+the same window or `auto`. Output limits, model selection and unrelated settings
+are preserved, including native precomputation defaults. Policy-free router
+launches also request native `auto`.
 
-Managed settings outrank flag settings. Bounded read-only inspection of local
-Linux managed files, fragments and the remote cache names observed conflicting
-keys without exposing values. Such fallback is explicitly **best effort,
-managed policy present**; unreadable, dynamic and unverified platform policy
-also reports its limit. This is a launch-time local observation, not a claim
-about subsequent remote policy refreshes. No policy helper is executed. These
-bounded reads currently run under the app lock as part of admission, where the
-complete immutable policy is captured; moving them off-lock requires separating
-captured inputs from adapter preparation. The qualification record is
-`planning/v2/Claude Compaction Qualification.md`:
-four isolated 2.1.284 model runs observed successful resumed auto-compaction,
-but did not establish production budget/fallback invariants.
+This intentionally replaces #656's exact-trigger promotion requirement. The
+2.1.284 inspected trigger is approximately
+`min(native_window, model_window) - min(maxOutput, 20000) - 13000`.
+The active observation exposes `native_window`, an explicitly inexact formula
+and optional catalog-based estimate; `translated_trigger` stays null for this
+production path. Catalog windows do not prove managed remapping, output budgets
+or fallback models. CLI version evidence is reported, not an exactness gate.
+The old exact mathematical translator remains independently tested for
+historical qualification fixtures.
+
+Bounded read-only managed-policy inspection reports conflicting key names or
+an unreadable/unverified-policy reason without disclosing values. A managed
+native disable remains an observable limitation; Build does not compensate with
+its own automatic compaction. Tests inspect only temporary fixtures and never
+home configuration. `planning/v2/Claude Compaction Qualification.md` records the
+original qualification and #884's revised contract and static reactive audit.
+
+Claude's native reactive compaction also depends on automatic compaction being
+enabled. The statically inspected 2.1.284 query loop recognizes a synthetic
+`Prompt is too long`, summarizes/replaces context and retries the original query
+with bounded retry/deeper-pass guards. It can fail because of hooks, abort,
+insufficient groups, fixed prompt size or upstream summary failure. An already
+over-window resumed session can therefore attempt native recovery on its first
+wake after reopening with these settings. Build sends no replay or extra compact
+command. An unrecovered terminal error reaches `TurnFailed`, failed outcome,
+RunFailed attention and the ordinary dispatcher/task failure-notice pipeline;
+`subtype=success` never overrides `is_error=true`. Usage refusals retain their
+separate reset contract, and acknowledged interrupts do not become failures.
+A synthetic error recovered before a successful result produces no TurnFailed.
+No fresh continuation/handoff is constructed; it would need an explicit context
+selection and durable delivery contract.
 
 ADK recognizes both PreCompact hooks and 2.1.284 `status=compacting` as one
 compaction start. Only `compact_boundary` establishes completion and changed
@@ -1316,41 +1321,20 @@ compaction row, and both leave the session working and its queued follow-up
 untouched. After an explicit turn end, the real delivery queue sends that
 follow-up once without injecting a Build threshold command under Native.
 
-Both Codex carriers share `harness/codex_compaction.rs` (#657). Translation
-revision 1 targets 0.160.0: `model_auto_compact_token_limit=T` with explicit
-`model_auto_compact_token_limit_scope="total"`, bounded by the native ceiling
-`floor(9 * raw_model_window / 10)`. This is distinct from the usual 95% usable
-context window. The translator refuses zero, unsafe integers, overflowing
-upstream window arithmetic and thresholds beyond that ceiling. Exact trigger
-qualification also requires an established usable-context cap, zero fallback
-buffer and compatible post-turn settings; no model/window is inferred from a
-version or catalog name. Both carriers currently report explicit between-turn
-fallback. Codex's native defaults remain active; there is no native-disable
-mechanism or claim of exclusive fallback control.
-
-A captured Codex native translation, when qualified, normalizes only the two
-compaction overrides in each child's argv. The TUI applies them before fresh,
-exact-resume or `resume --last` selection. App-server also stores the same
-immutable config per connection and includes it only on `thread/start` and
-`thread/resume`. Both specs reject a mismatched launch choice or malformed
-native snapshot; app-server validates again when opening its thread. The TUI
-uses the existing immutable prepared spec and default terminal opener.
-User/project configuration files, `model_context_window`,
-parent environment, routing and session ownership are untouched. Qualification
-in `planning/v2/Codex Compaction Qualification.md` records isolated app-server
-start/resume and TUI resume compaction, including a mid-turn tool continuation,
-and the dynamic model/buffer/settings limits that keep production native off.
-Selected-profile precedence is another explicit promotion blocker. A
-credential-free 0.160.0 `config/read` probe rejects legacy `profile`/`profiles`
-tables; its suggested `--profile x` file form is disallowed for app-server.
-Ordinary-file overrides are established, but supported runtime-profile and
-per-thread profile precedence remain unverified. Profile fixtures retain
-positive fallback and unchanged files; they do not simulate a native override
-of rejected legacy settings. Fallback does not repair those settings.
-Both selected-profile forms retain the known-version reason
-`codex_model_window_buffer_and_profile_unqualified`. Since the captured launch
-does not establish profile absence, this reason also applies to other 0.160.0
-openings without reading user configuration.
+Both Codex carriers share `harness/codex_compaction.rs`. Their native defaults
+remain active and Build no longer schedules competing between-turn compaction.
+Production delegates to the provider without writing native token-limit or
+scope overrides. The historical 0.160.0 exact translator remains tested but
+unqualified for custom threshold injection; configured Build tokens are not
+claimed to be the provider's actual trigger. User/project configuration,
+model windows, selected profiles and routing remain provider-owned.
+`planning/v2/Codex Compaction Qualification.md` distinguishes historical isolated
+custom-limit evidence from this native-default contract. App-server context
+window exhaustion is a permanent failure: it emits one TurnFailed and keeps the
+thread usable for an explicit manual compaction; no Build automatic retry is
+introduced. Its fake protocol covers both accepted and refused manual compact
+responses without claiming live-provider success. A reading above a configured
+Build count alone is not evidence of overflowing the provider's actual window.
 
 Codex app-server compaction items and the TUI's persisted `compacted` records
 remain activity within an open turn. Fake children exercise both through the
@@ -1361,56 +1345,28 @@ follow-up is delivered exactly once, without Build threshold compaction under
 Native. Fresh/resumed config fixtures independently preserve stale file bytes
 and isolate concurrent sessions' captured thresholds.
 
-Pi's adapter (`harness/pi_compaction.rs`, #659) passes the captured positive
-policy and exact owner/thread/launch identities only to its child extension.
-It leaves user and workspace settings alone. The existing private session
-directory and `--session-id <owner>` preserve exact continuation; each opening
-gets a new private telemetry file. Unknown versions remain unsupported with
-`pi_version_unqualified` and retain the existing terminal lifecycle without
-loading unqualified observation hooks. Native threshold injection remains unqualified
-(`pi_native_threshold_injection_unqualified`); it is not needed for the
-qualified between-turn fallback. `planning/v2/Pi Compaction Qualification.md`
-records the pinned 0.86.1 executable, documented hooks and credential-free
-synthetic-provider runs through the real TUI and unmodified default export,
-with a fake MCP endpoint in an isolated child environment. The supplemental
-RPC probe is hook evidence only. Promotion blockers remain for other Pi
-versions and native threshold injection; neither is claimed supported.
-Live-provider summary quality also remains unqualified: the carrier evidence
-uses a synthetic provider and does not promote any external provider.
+Pi's adapter (`harness/pi_compaction.rs`) preserves native threshold and
+overflow compaction, with no Build automatic threshold scheduler. The extension
+never cancels a native threshold hook, even if given a stale enabled-policy
+payload. Build's tokens remain requested intent, not an injected native limit.
+Pinned 0.86.1 hooks and the private sidecar observe working/context/compaction;
+manual compaction still requires a confirmed idle boundary. Unknown versions or
+broken telemetry report unsupported observation, while Pi's native machinery
+and healthy Build tools remain available. No user/workspace configuration is
+rewritten. `planning/v2/Pi Compaction Qualification.md` records the original
+carrier evidence and revised native-first behavior.
 
-The extension cancels only native `threshold` attempts while fallback owns
-the threshold. Native `overflow` recovery and manual compaction remain
-available. Context and working observations use the private sidecar, never
-screen scraping or shared configuration. `PtySession` consumes these through
-`pi_telemetry.rs`; it retains the terminal escape hatch but stops inferring
-idle from silence while telemetry is healthy. The session exposes explicit
-unsupported states until the extension confirms its exact Pi session identity,
-and after extension or telemetry failure. Those failures never kill Pi or
-close a healthy MCP client: Build stops threshold compaction, clears stale
-context once per generation, and uses the ordinary terminal lifecycle for
-continued work. Build tools remain available. Actual MCP transport failure is
-different: the extension reaps its owned MCP child and signals Pi with SIGTERM
-so the normal tab-exit path can respawn it with working tools, including when
-no compaction policy exists. The shared policy decorator preserves the explicit
-unsupported reason for compaction observation failure.
-
-A startup record and one-second heartbeats are independent of MCP initialization.
-The initial observation budget is 90 seconds, covering both 30-second MCP
-requests; a ten-second heartbeat gap withdraws support even if a broken sink
-cannot report its own failure. Threshold cancellation requires a fresh receipt
-from the Rust observer in a private, atomically replaced `.ack` sidecar. The
-receipt binds owner, thread, launch, generation and the last sequence actually
-read; only a ready observer can authorize cancellation. Reading the same receipt
-again cannot renew its eight-second monotonic lease, which is bounded by the
-original record emission time rather than the receipt arrival time. Thus successful writes
-without a working reader cannot suppress native threshold compaction. Failure
-withdraws the receipt once; a valid new generation can requalify. The extension
-also rejects a stalled local writer, without closing healthy Build tools.
+Startup and one-second telemetry heartbeats remain independent of MCP
+initialization. Identity-bound acknowledgement receipts and readiness fencing
+are retained for observer health; they never authorize cancellation of native
+compaction. MCP transport failure still reaps the owned MCP child and signals
+Pi so the normal tab-exit path can respawn working tools. Telemetry failure
+alone never kills a healthy Pi/MCP process or authorizes a Build scheduler.
 Each extension reload advances a launch-scoped
 generation and restarts its sequence at one. The bridge requires a new starting
 record, resets context and readiness, and rejects records from retired
 generations. Foreign launch identities, replayed sequences and malformed or
-missing records cannot authorize fallback. Terminal EOF drains final complete
+missing records cannot establish trusted observations. Terminal EOF drains final complete
 records without publishing another idle boundary, then closes activity even
 while the ended session remains available in the terminal.
 
@@ -1451,9 +1407,11 @@ That reading remains available for the context gauge, threshold decisions and
 compaction before/after reporting. A resume probe that establishes the recorded
 session is gone clears its reading when the replacement starts fresh;
 conversation reset also clears it. Warm turns, idle demotion (which retains
-the live session) and browser attach keep their policy snapshot. Native model
-changes require requalification at an opening; fallback uses its unchanged
-token threshold across a supported in-place model change.
+the live session) and browser attach keep their policy snapshot. Delegated native
+policies allow carrier-supported model changes; the provider clamps its window
+for the effective model. Only an exact translated native trigger requires
+requalification at an opening. A future between-turn fallback would retain its
+captured threshold across a supported in-place model change.
 
 ### Workspaces and worktrees
 

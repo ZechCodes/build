@@ -1,5 +1,22 @@
 # Pi compaction qualification — #659
 
+## Current native-first contract — #884 (2026-10-26)
+
+Pi owns automatic threshold and overflow compaction. Build's extension never
+cancels native threshold hooks, including stale enabled-policy payloads, and
+Build never schedules an automatic threshold command. Native settings and
+provider defaults remain untouched; Build's requested token count is not an
+injected Pi threshold. Pinned-version telemetry, identity/readiness fencing,
+manual compaction and observed boundaries remain available. Unknown versions or
+broken telemetry limit observation rather than disabling Pi's native machinery.
+
+## Historical #659 evidence
+
+The original qualification below records earlier behavior. Statements about
+Build owning/cancelling thresholds or production native being off are superseded
+by the current contract above. Isolated evidence is not rerun for #884.
+
+
 Observed 2026-10-18 against Pi **0.86.1**. The production **TUI under a PTY**
 now executes Build's actual default extension export, real MCP initialization
 and private telemetry-file sink. The actual Rust `PiTelemetry::follow` observer

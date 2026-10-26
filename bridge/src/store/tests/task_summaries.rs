@@ -1323,3 +1323,185 @@ fn metadata_guard_repair_resumes_failed_batch_and_skips_completed_reopen() {
         129
     );
 }
+
+#[test]
+fn completed_reopen_preserves_schema_and_does_no_projection_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::new(dir.path()).unwrap();
+        let task = store
+            .create_tracker_task(
+                Task::drafted("/summary", "after migration", Actor::User, support::NOW),
+                &[],
+            )
+            .unwrap();
+        store
+            .save_tracker_task_activity(
+                &task,
+                &[said(&task, "tc-00000000000000000000000999", support::NOW)],
+                &[],
+            )
+            .unwrap();
+    }
+    let mut conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
+    let schema: i64 = conn
+        .query_row("PRAGMA schema_version", [], |row| row.get(0))
+        .unwrap();
+    let writes = conn.total_changes();
+    super::super::task_summaries::initialize(&mut conn).unwrap();
+    assert_eq!(
+        conn.total_changes(),
+        writes,
+        "completed projection must not replay migration or rewrite markers"
+    );
+    assert_eq!(
+        conn.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        schema,
+        "completed projection must preserve its trigger programs"
+    );
+    drop(conn);
+    let store = Store::new(dir.path()).unwrap();
+    assert_eq!(
+        store
+            .connection()
+            .query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        schema
+    );
+    assert_eq!(summary(&store, "/summary")["title"], "after migration");
+}
+
+#[test]
+fn completed_projection_repairs_missing_triggers_and_indexes_before_admission() {
+    for (kind, name) in [
+        ("TRIGGER", "tracker_summary_tracker_comments_INSERT"),
+        ("INDEX", "tracker_summaries_number"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let task = {
+            let store = Store::new(dir.path()).unwrap();
+            let mut task = Task::drafted("/summary", "repair schema", Actor::User, support::NOW);
+            task.watched = true;
+            store.create_tracker_task(task, &[]).unwrap()
+        };
+        {
+            let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
+            conn.execute_batch(&format!("DROP {kind} {name}")).unwrap();
+        }
+        let store = Store::new(dir.path()).unwrap();
+        let exists: bool = store
+            .connection()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1)",
+                [name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists, "required {kind} must be repaired");
+        store
+            .save_tracker_task_activity(
+                &task,
+                &[said(&task, "tc-00000000000000000000000999", support::NOW)],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(summary(&store, "/summary")["unread_count"], 1);
+    }
+}
+
+#[test]
+fn unrelated_schema_change_revalidates_without_replaying_completed_history() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::new(dir.path()).unwrap();
+        let task = store
+            .create_tracker_task(
+                Task::drafted("/summary", "no replay", Actor::User, support::NOW),
+                &[],
+            )
+            .unwrap();
+        store
+            .save_tracker_task_activity(
+                &task,
+                &[said(&task, "tc-00000000000000000000000999", support::NOW)],
+                &[],
+            )
+            .unwrap();
+    }
+    let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
+    conn.execute_batch("CREATE TABLE unrelated_migration(id TEXT); CREATE TRIGGER forbid_replay BEFORE INSERT ON tracker_task_summary_facts BEGIN SELECT RAISE(ABORT,'completed history replayed'); END;").unwrap();
+    let trigger_sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='tracker_summary_tracker_comments_INSERT'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(conn);
+    let store = Store::new(dir.path()).unwrap();
+    let conn = store.connection();
+    assert_eq!(
+        conn.query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='tracker_summary_tracker_comments_INSERT'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        trigger_sql
+    );
+    drop(conn);
+    assert_eq!(summary(&store, "/summary")["title"], "no replay");
+}
+
+#[test]
+fn missing_maintenance_trigger_reconciles_canonical_mutations_before_admission() {
+    for trigger in [
+        "tracker_summary_tracker_comments_UPDATE",
+        "tracker_summary_task_UPDATE",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let task = {
+            let store = Store::new(dir.path()).unwrap();
+            let mut task = Task::drafted("/summary", "missed mutation", Actor::User, support::NOW);
+            task.watched = true;
+            task.labels = vec!["before".into()];
+            let task = store.create_tracker_task(task, &[]).unwrap();
+            store
+                .save_tracker_task_activity(
+                    &task,
+                    &[said(&task, "tc-00000000000000000000000999", support::NOW)],
+                    &[],
+                )
+                .unwrap();
+            task
+        };
+        {
+            let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
+            conn.execute_batch(&format!("DROP TRIGGER {trigger}"))
+                .unwrap();
+            if trigger.ends_with("comments_UPDATE") {
+                conn.execute("UPDATE tracker_comments SET record=json_set(record,'$.author',json('{\"kind\":\"user\"}')) WHERE task_id=?1",[&task.id]).unwrap();
+            } else {
+                conn.execute("UPDATE tracker_tasks SET record=json_set(record,'$.labels',json('[\"after\"]')) WHERE id=?1",[&task.id]).unwrap();
+            }
+        }
+        let store = Store::new(dir.path()).unwrap();
+        assert_matches_history(&store, &task.id);
+        let choices = store
+            .list_task_filter_choices("/summary", "label", None, 10)
+            .unwrap();
+        let expected = if trigger.ends_with("comments_UPDATE") {
+            "before"
+        } else {
+            "after"
+        };
+        assert_eq!(
+            choices
+                .iter()
+                .map(|choice| choice.key.as_str())
+                .collect::<Vec<_>>(),
+            vec![expected]
+        );
+    }
+}

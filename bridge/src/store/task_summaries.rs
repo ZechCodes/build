@@ -5,7 +5,9 @@
 use super::{ReadTransaction, Store, StoreError};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 mod sql;
 
@@ -229,20 +231,114 @@ fn valid_assignee_choice(value: &Value) -> bool {
     valid_id && serde_json::to_value(assignee).is_ok_and(|canonical| canonical == *value)
 }
 
+// Bind completion to both the code's SQL definition and SQLite's schema
+// generation. Missing/replaced tables, indexes or triggers invalidate it even
+// when all row checkpoints remain. Row writes do not change schema_version.
+struct ProjectionDefinition {
+    triggers: String,
+    fingerprint: String,
+}
+
+fn projection_definition() -> &'static ProjectionDefinition {
+    static DEFINITION: OnceLock<ProjectionDefinition> = OnceLock::new();
+    DEFINITION.get_or_init(|| {
+        let triggers = sql::triggers();
+        let mut hash = Sha256::new();
+        hash.update(sql::TABLES);
+        hash.update(&triggers);
+        ProjectionDefinition {
+            triggers,
+            fingerprint: format!("{:x}", hash.finalize()),
+        }
+    })
+}
+
+fn projection_complete(conn: &Connection, fingerprint: &str) -> Result<bool, StoreError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM meta WHERE key='task_summary_v1_ready'
+            AND value=?1 || ':' || (SELECT schema_version FROM pragma_schema_version))
+        AND EXISTS(SELECT 1 FROM meta WHERE key='task_summary_v1_metadata_complete')
+        AND NOT EXISTS(SELECT 1 FROM meta WHERE key='task_summary_rebuild')",
+        [fingerprint],
+        |row| row.get(0),
+    )?)
+}
+
+// An unrelated schema migration invalidates the cheap generation check, but
+// must not replay canonical history. Compare the saved installed definitions
+// and repair only missing/changed indexes. Missing maintenance triggers may
+// have missed canonical writes, so they require conservative data repair.
+fn revalidate_projection(conn: &mut Connection, fingerprint: &str) -> Result<bool, StoreError> {
+    let previous: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key='task_summary_v1_objects'
+        AND EXISTS(SELECT 1 FROM meta WHERE key='task_summary_v1_ready' AND value LIKE ?1 || ':%')
+        AND EXISTS(SELECT 1 FROM meta WHERE key='task_summary_v1_metadata_complete')
+        AND NOT EXISTS(SELECT 1 FROM meta WHERE key='task_summary_rebuild')",
+            [fingerprint],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(previous) = previous else {
+        return Ok(false);
+    };
+    let expected: BTreeMap<String, String> = serde_json::from_str(&previous)
+        .map_err(|error| StoreError::TaskSummaryInvalid(error.to_string()))?;
+    let actual = projection_objects(conn)?;
+    let changed: Vec<_> = expected
+        .iter()
+        .filter(|(name, sql)| actual.get(*name) != Some(*sql))
+        .collect();
+    if changed
+        .iter()
+        .any(|(_, sql)| !sql.starts_with("CREATE INDEX"))
+    {
+        require_projection_rebuild(conn)?;
+        return Ok(false);
+    }
+    let tx = conn.transaction()?;
+    for (name, sql) in changed {
+        tx.execute_batch(&format!(
+            "DROP INDEX IF EXISTS \"{}\"",
+            name.replace('"', "\"\"")
+        ))?;
+        tx.execute_batch(sql)?;
+    }
+    tx.commit()?;
+    Ok(true)
+}
+
+fn projection_objects(conn: &Connection) -> Result<BTreeMap<String, String>, StoreError> {
+    let mut statement = conn.prepare(
+        "SELECT name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND
+        (name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices',
+            'tracker_task_filter_values','tracker_task_summary_identities')
+        OR name GLOB 'tracker_summary_*' OR name GLOB 'tracker_summaries_*' OR name GLOB 'tracker_choices_*')"
+    )?;
+    let objects = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    Ok(objects)
+}
+
 /// Startup precedes reader admission. Every transaction advances a durable
 /// rowid checkpoint, so an interrupted migration resumes without restarting.
-pub(super) fn initialize(conn: &mut Connection) -> Result<(), StoreError> {
+pub(super) fn initialize(conn: &mut Connection) -> Result<bool, StoreError> {
     #[cfg(test)]
     let _phase = MigrationPhase::new("initialize");
+    let definition = projection_definition();
+    if projection_complete(conn, &definition.fingerprint)? {
+        return Ok(false);
+    }
+    if revalidate_projection(conn, &definition.fingerprint)? {
+        return Ok(true);
+    }
     let existing: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices','tracker_task_filter_values','tracker_task_summary_identities')",[],|row|row.get(0))?;
     let has_context = has_context_column(conn)?;
     if existing != 5 || !has_context {
         // Commit repair intent before recreating a missing table: a crash
         // between DDL and reset must not make a partial unit look complete.
-        conn.execute(
-            "INSERT OR IGNORE INTO meta(key,value) VALUES('task_summary_rebuild','1')",
-            [],
-        )?;
+        require_projection_rebuild(conn)?;
     }
     conn.execute_batch(sql::TABLES)?;
     if !has_context_column(conn)? {
@@ -262,7 +358,34 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<(), StoreError> {
     migrate_metadata(conn)?;
     migrate_tasks(conn)?;
     migrate_identities(conn)?;
-    conn.execute_batch(&sql::triggers())?;
+    conn.execute_batch(&definition.triggers)?;
+    Ok(true)
+}
+
+// Stamp only after the remaining startup maintenance: a first-open VACUUM can
+// change schema_version. Never write this marker on the completed fast path.
+pub(super) fn mark_complete(conn: &mut Connection) -> Result<(), StoreError> {
+    let objects = serde_json::to_string(&projection_objects(conn)?)
+        .map_err(|error| StoreError::TaskSummaryInvalid(error.to_string()))?;
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT OR REPLACE INTO meta(key,value) VALUES('task_summary_v1_objects',?1)",
+        [objects],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO meta(key,value) SELECT 'task_summary_v1_ready',
+            ?1 || ':' || schema_version FROM pragma_schema_version",
+        [&projection_definition().fingerprint],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn require_projection_rebuild(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key,value) VALUES('task_summary_rebuild','1')",
+        [],
+    )?;
     Ok(())
 }
 

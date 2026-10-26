@@ -112,7 +112,12 @@ before creating the shared app mutex. Startup time is separate from page latency
 the first page never queues a hidden projection rebuild. Backfill checkpoints
 commit with batches of at most 128 canonical rows. A failed batch rolls back its
 facts and checkpoint together; restart resumes after the last committed batch.
-Missing projection components first persist a repair marker, clear derived rows
+Completed projections retain a SQL-definition fingerprint, installed-object manifest
+and SQLite schema generation. Intact reopens skip projection DDL, backfill and
+eager write-program preparation. An unrelated schema change only revalidates the
+manifest; missing indexes are restored selectively, without replaying history.
+Missing/changed maintenance triggers or missing projection tables first persist
+a repair marker, clear derived rows
 in bounded batches, then restart the backfill. Canonical records remain intact.
 Batch counts bound row cardinality, not the size of an imported canonical body;
 one legacy record can still be large and must be parsed during migration.

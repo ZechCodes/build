@@ -13,7 +13,7 @@
 use super::{Store, StoreError};
 use crate::store::ReadTransaction;
 use crate::tracker::{Task, TaskComment, TaskEvent, TaskState, TimelineEntry};
-use rusqlite::{Connection, OptionalExtension, Transaction};
+use rusqlite::{OptionalExtension, Transaction};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -453,15 +453,6 @@ const APPEND_COMMENT: &str =
     VALUES (?1, ?2, ?3, ?4)";
 const APPEND_EVENT: &str = "INSERT OR IGNORE INTO tracker_events (id, task_id, at, record)
     VALUES (?1, ?2, ?3, ?4)";
-
-/// Compile the fixed trigger programs before reader/writer admission, keeping
-/// the first activity write from paying a deferred projection setup cost.
-pub(super) fn prepare_activity_statements(conn: &Connection) -> Result<(), StoreError> {
-    for sql in [WRITE_TASK, APPEND_COMMENT, APPEND_EVENT] {
-        drop(conn.prepare_cached(sql)?);
-    }
-    Ok(())
-}
 
 pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
     super::waiting_on::note_task_write(tx, task)?;

@@ -405,9 +405,11 @@ impl Store {
             )?;
         }
         tracker::initialize_list_key(&conn)?;
-        task_summaries::initialize(&mut conn)?;
+        let summaries_initialized = task_summaries::initialize(&mut conn)?;
         maintenance::configure_incremental_vacuum(&conn)?;
-        tracker::prepare_activity_statements(&conn)?;
+        if summaries_initialized {
+            task_summaries::mark_complete(&mut conn)?;
+        }
         let writer = StoreWriter::new(conn);
         // Recover ambiguous claims without executing any command at startup.
         writer.recover_mutations()?;

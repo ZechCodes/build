@@ -24,6 +24,8 @@ it("rejects dangerous syntax before loading or rendering measurement DOM", async
     'flowchart LR\nA["`HTML label`"]',
     'sequenceDiagram\nparticipant Alice\nparticipant Bob\nproperties Alice: {"icon":"//evil.test/pixel"}\nAlice->>Bob: Hello',
     'sequenceDiagram\nparticipant Alice\nparticipant Bob\ndetails Alice: {"properties":{"icon":"/relative/pixel"}}\nAlice->>Bob: Hello',
+    'flowchart LR\nA["#60;img src=//evil.test/entity#62;"]',
+    'flowchart LR\nA["$$~img src=//evil.test/math~$$"]',
     'x'.repeat(16_385),
   ];
   for (const source of hostile) await expect(renderer.renderMermaid(source, "light")).rejects.toThrow();

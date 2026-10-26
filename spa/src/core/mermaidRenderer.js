@@ -16,7 +16,7 @@ const cache = new Map();
 export function assertMermaidSource(source) {
   if (source.length > SOURCE_LIMIT) throw new Error("Diagram is too large");
   if (/^\s*---/.test(source) || /%%/.test(source)) throw new Error("Diagram configuration is unsupported");
-  if (/[<&\\`\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(source.replace(/<(?=[|.-])/g, ""))) throw new Error("Use plain text diagram labels");
+  if (/[<&\\`\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|#\w+;|\$\$|ﬂ°|¶ß/.test(source.replace(/<(?=[|.-])/g, ""))) throw new Error("Use plain text diagram labels");
   if (/(?:^|[;\n])\s*(?:properties|details|links|link)\b/i.test(source) || /\b(?:icon|img|image)["']?\s*:/i.test(source)) throw new Error("Actor metadata is unsupported");
   if (/\b(?:click|classDef|style|linkStyle)\b/i.test(source) || /@\{|\burl\s*\(|(?:https?|javascript|data|file|blob|vbscript)\s*:/i.test(source)) throw new Error("Diagram resources and styling are unsupported");
 }

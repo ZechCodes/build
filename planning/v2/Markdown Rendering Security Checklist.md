@@ -21,7 +21,8 @@ and disposal; measurements live in an owned host removed in `finally`.
 
 Strict output settings alone cannot protect Mermaid's **transient measurement
 DOM**. Before invocation, reject configuration/frontmatter, `%%` directives and
-comments, HTML/entities/escapes/markdown labels, CSS commands, URL functions and
+comments, HTML/entities/escapes/markdown and math labels (including Mermaid `#word;`
+entities and internal entity placeholders), CSS commands, URL functions and
 resource schemes, `@{…}` image/icon metadata, and legacy sequence
 properties/details/links commands including relative/protocol-relative icons.
 The actor metadata Chromium regression originally recorded two image href

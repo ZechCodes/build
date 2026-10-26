@@ -35,11 +35,12 @@ per insertion, including copies from the 32-entry source/theme cache.
 Because Mermaid uses live measurement nodes before returning output, **source
 validation happens before importing/invoking Mermaid**. This release deliberately
 rejects config/frontmatter and `%%` directives/comments; HTML, entities, escapes
-and markdown labels; authored CSS commands, resource URLs and URL functions;
+and markdown/math labels (including Mermaid’s `#word;` entities); authored CSS commands, resource URLs and URL functions;
 image/icon `@{…}` metadata; and sequence `properties`/`details`/`links`/`link`
 commands (including legacy actor icon forms and relative/protocol-relative
 resources). Plain structural arrows such as `<|--` remain supported. Sources
-over 16,384 UTF-16 units and Mermaid’s graph edge limit is set to 200. Limit violations fall back. These
+over 16,384 UTF-16 units are refused; Mermaid’s graph edge limit is set to 200.
+Limit violations fall back. These
 restrictions produce the original escaped source with a small fixed error;
 there is no image-consent override or automatic resource loading for diagrams.
 

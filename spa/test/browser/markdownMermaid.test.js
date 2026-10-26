@@ -92,6 +92,8 @@ it("loads no Mermaid runtime for ordinary markdown and rejects hostile transient
       'flowchart LR\nA-->B\nstyle A fill:url(https://evil.test/style)',
       'flowchart LR\nA-->B\nclick A "javascript:window.pwned=1"',
       'flowchart LR\nA["\\x3cimg src=https://evil.test/escape"]',
+      'flowchart LR\nA["#60;img src=//evil.test/entity#62;"]',
+      'flowchart LR\nA["$$~img src=//evil.test/math~$$"]',
       'this is invalid Mermaid',
     ];
     for (const source of hostile) {

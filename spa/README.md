@@ -187,7 +187,7 @@ without a connection. Invalid or deliberately unsupported syntax retains its
 escaped code and a small “Diagram unavailable” message.
 
 Only text labels are supported: configuration/frontmatter, `%%` comments and
-directives, HTML/entities/escapes, markdown labels, custom CSS, links and
+directives, HTML/entities/escapes, markdown/math labels, custom CSS, links and
 image/icon or legacy sequence actor metadata are refused before rendering. No
 diagram can load an authored image or stylesheet. Output SVG is rebuilt through
 a narrow allowlist and uses application colors. See the

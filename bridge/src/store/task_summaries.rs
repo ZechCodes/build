@@ -149,7 +149,7 @@ impl ReadTransaction<'_> {
         limit: usize,
     ) -> Result<Vec<TaskFilterChoice>, StoreError> {
         let mut statement = self.connection().prepare(
-            "SELECT CASE WHEN length(CAST(choice_key AS BLOB))<=1024 THEN choice_key ELSE '' END, CASE WHEN length(CAST(value AS BLOB))<=1024 THEN value END FROM tracker_task_filter_values
+            "SELECT CASE WHEN length(CAST(choice_key AS BLOB))<=512 THEN choice_key ELSE '' END, CASE WHEN length(CAST(choice_key AS BLOB))<=512 AND length(CAST(value AS BLOB))<=1024 THEN value END FROM tracker_task_filter_values
              WHERE project_key = ?1 AND dimension = ?2 AND choice_key > ?3
              ORDER BY choice_key LIMIT ?4",
         )?;
@@ -165,15 +165,56 @@ impl ReadTransaction<'_> {
         rows.map(|row| {
             let (key, raw) = row?;
             let raw = raw.ok_or_else(|| {
-                StoreError::TaskSummaryInvalid("filter choice exceeds 1024 bytes".into())
+                StoreError::TaskSummaryInvalid(
+                    "filter choice key exceeds 512 bytes or value exceeds 1024 bytes".into(),
+                )
             })?;
-            Ok(TaskFilterChoice {
-                key,
-                value: super::tracker::decode(&raw, "tracker_task_filter_choices", project)?,
-            })
+            let value = super::tracker::decode(&raw, "tracker_task_filter_choices", project)?;
+            validate_filter_choice(dimension, &value)?;
+            Ok(TaskFilterChoice { key, value })
         })
         .collect()
     }
+}
+
+fn validate_filter_choice(dimension: &str, value: &Value) -> Result<(), StoreError> {
+    let valid = match dimension {
+        "label" => value.as_str().is_some_and(|label| {
+            !label.is_empty()
+                && label.trim() == label
+                && label.len() <= crate::tracker::MAX_LABEL_BYTES
+        }),
+        "assignee" => valid_assignee_choice(value),
+        "state" => value
+            .as_str()
+            .and_then(crate::tracker::TaskState::parse)
+            .is_some(),
+        "status" => value
+            .as_str()
+            .and_then(crate::tracker::normalize_status)
+            .is_some(),
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(StoreError::TaskSummaryInvalid(format!(
+            "invalid {dimension} filter choice"
+        )))
+    }
+}
+
+fn valid_assignee_choice(value: &Value) -> bool {
+    if value.as_str() == Some("none") {
+        return true;
+    }
+    let Ok(assignee) = serde_json::from_value::<crate::tracker::Assignee>(value.clone()) else {
+        return false;
+    };
+    let valid_id = assignee
+        .agent_id()
+        .is_none_or(|id| !id.is_empty() && id.len() <= 128);
+    valid_id && serde_json::to_value(assignee).is_ok_and(|canonical| canonical == *value)
 }
 
 /// Startup precedes reader admission. Every transaction advances a durable

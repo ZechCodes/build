@@ -668,3 +668,45 @@ fn activity_millisecond_projection_matches_nanosecond_timestamp_truncation_and_o
         assert_matches_history(&store, &task.id);
     }
 }
+
+#[test]
+fn invalid_filter_choices_fail_before_returning_an_unusable_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let cases = [
+        ("label", "x".repeat(513), serde_json::json!("label")),
+        ("label", "valid".into(), serde_json::json!("x".repeat(1025))),
+        ("label", "valid".into(), serde_json::json!("x".repeat(41))),
+        ("label", "valid".into(), serde_json::json!("")),
+        ("label", "valid".into(), serde_json::json!(42)),
+        (
+            "assignee",
+            "valid".into(),
+            serde_json::json!({"kind":"agent","agent_id":"x".repeat(129)}),
+        ),
+        (
+            "assignee",
+            "valid".into(),
+            serde_json::json!({"kind":"agent","agent_id":""}),
+        ),
+        (
+            "assignee",
+            "valid".into(),
+            serde_json::json!({"kind":"user","agent_id":null}),
+        ),
+    ];
+    for (dimension, key, value) in cases {
+        let conn = store.connection();
+        conn.execute("DELETE FROM tracker_task_filter_values", [])
+            .unwrap();
+        conn.execute("INSERT INTO tracker_task_filter_values(project_key,dimension,choice_key,value,refs) VALUES('/summary',?1,?2,?3,1)",rusqlite::params![dimension,key,value.to_string()]).unwrap();
+        assert!(
+            matches!(
+                ReadTransaction::new(&conn)
+                    .list_task_filter_choices("/summary", dimension, None, 1),
+                Err(StoreError::TaskSummaryInvalid(_))
+            ),
+            "{dimension} choice {value}"
+        );
+    }
+}

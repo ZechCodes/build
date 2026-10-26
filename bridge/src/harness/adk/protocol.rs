@@ -191,6 +191,16 @@ impl ProtocolState {
         }
     }
 
+    /// A plain in-turn input joins the current turn, so its latest operation
+    /// owns a terminal failure. Steering waits for the interrupted boundary.
+    pub(super) fn accept_operation(&mut self, operation_id: Option<&str>) {
+        if self.turn_open && self.pending_interrupt.is_some() {
+            self.steered_operation_id = operation_id.map(str::to_string);
+        } else if !self.turn_open || operation_id.is_some() {
+            self.operation_id = operation_id.map(str::to_string);
+        }
+    }
+
     /// What a session that has not exited is doing, straight from its own turn
     /// boundaries: starting until it announces itself, working while a turn it
     /// accepted is unanswered OR background work it started is still running,

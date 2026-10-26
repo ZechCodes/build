@@ -59,11 +59,13 @@ for index,line in enumerate(sys.stdin):
             );
         let (session, mut activity) = AdkSession::spawn(&spec, None, &choice).unwrap();
         let session = PolicySession::attach(Arc::new(session), policy);
+        let status = session.status_changed().unwrap();
         session
             .send_turn(&Turn::new("first wake after deploy").with_operation_id("original-wake"))
             .unwrap();
-        assert!(becomes_true_within(Duration::from_secs(5), || session
-            .status()
+        assert!(becomes_true_within(Duration::from_secs(5), || status
+            .borrow()
+            .status
             == AgentStatus::Waiting));
         let reports = reports_already_sent(&mut activity);
         assert_eq!(
@@ -88,8 +90,9 @@ for index,line in enumerate(sys.stdin):
         session
             .send_turn(&Turn::new("later input").with_operation_id("later-wake"))
             .unwrap();
-        assert!(becomes_true_within(Duration::from_secs(5), || session
-            .status()
+        assert!(becomes_true_within(Duration::from_secs(5), || status
+            .borrow()
+            .status
             == AgentStatus::Waiting));
         let written = std::fs::read_to_string(directory.path().join("input")).unwrap();
         let turns: Vec<Value> = written

@@ -170,3 +170,36 @@ async fn resumed_over_window_fake_can_compact_or_refuse_without_a_boundary() {
         session.end();
     }
 }
+
+#[tokio::test]
+async fn an_in_turn_send_attributes_terminal_failure_to_latest_operation() {
+    let directory = tempfile::tempdir().unwrap();
+    let spec = HarnessSpec::new("sh").arg("-c").arg(format!(
+        r#"
+        IFS= read -r first || exit 1
+        printf '%s\n' '{INIT}' '{TOOL_USE}'
+        IFS= read -r second || exit 1
+        printf '%s\n' '{OVERFLOW}' '{FAILED_RESULT}'
+        while IFS= read -r rest; do :; done
+    "#
+    ));
+    let (session, mut activity) =
+        AdkSession::spawn(&spec, Some(directory.path().into()), &adk_choice()).unwrap();
+    session
+        .send_turn(&Turn::new("first").with_operation_id("first-operation"))
+        .unwrap();
+    assert!(matches!(
+        next_activity(&mut activity).await,
+        AgentActivity::ToolUse { .. }
+    ));
+    session
+        .send_turn(&Turn::new("in-turn send").with_operation_id("latest-operation"))
+        .unwrap();
+    loop {
+        if let AgentActivity::TurnFailed { operation_id, .. } = next_activity(&mut activity).await {
+            assert_eq!(operation_id.as_deref(), Some("latest-operation"));
+            break;
+        }
+    }
+    session.end();
+}

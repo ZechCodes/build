@@ -675,6 +675,54 @@ export async function cachedAddressesWrittenBefore(prefixAddress, writtenBefore)
   return stale;
 }
 
+/** Expire several prefixes together without cloning bodies or one callback
+ * per stale account record. The existing time index and bounded primary-key
+ * reads intersect inside one exclusive transaction, so a refreshed record
+ * cannot be deleted using an age observed before its write. */
+export async function expireCachedPrefixes(prefixAddresses, writtenBefore, { still = () => true, keep = () => false } = {}) {
+  const prefixes = [...new Set(prefixAddresses.map((address) => `${keyOfParts(addressParts(address))}|`))];
+  let result = { dropped: [], kept: [] };
+  if (!prefixes.length) return result;
+  const committed = await wroteStore((store) => {
+    result = { dropped: [], kept: [] };
+    readExpiryKeys(store, prefixes, writtenBefore, (stale, selected) => {
+      try {
+        if (still()) result = expireSelectedKeys(store, stale, selected, keep);
+      } catch (error) {
+        abortForError(store, error);
+      }
+    });
+    return null;
+  });
+  if (!committed) return { dropped: [], kept: [] };
+  for (const address of result.dropped) announce(addressParts(address));
+  return result;
+}
+
+function readExpiryKeys(store, prefixes, writtenBefore, ready) {
+  const stale = store.index(AT_INDEX).getAllKeys(IDBKeyRange.upperBound(writtenBefore, true));
+  const selected = prefixes.map((prefix) => store.getAllKeys(prefixRange(prefix)));
+  let waiting = selected.length + 1;
+  const done = () => {
+    if (--waiting === 0) ready(stale.result, selected.flatMap((request) => request.result));
+  };
+  for (const request of [stale, ...selected]) request.onsuccess = done;
+}
+
+function expireSelectedKeys(store, stale, selected, keep) {
+  const remaining = new Set(selected);
+  const dropped = [];
+  for (const key of stale) {
+    if (!remaining.has(key) || isUiRecordKey(key)) continue;
+    const address = addressOfParts(partsOfKey(key));
+    if (keep(address)) continue;
+    store.delete(key);
+    remaining.delete(key);
+    dropped.push(address);
+  }
+  return { dropped, kept: [...remaining].map((key) => addressOfParts(partsOfKey(key))) };
+}
+
 /** Every record under an address prefix: its full address, when it was
  *  written, and its value. For the one reader whose question is about the
  *  value itself — everything that only wants addresses or ages asks above. */

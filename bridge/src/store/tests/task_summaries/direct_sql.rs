@@ -54,6 +54,8 @@ fn metadata_reparent_refreshes_old_and_new_cards_for_owned_and_raw_writers() {
         )
         .unwrap();
         assert_eq!(card(conn, &first.id)["review_summary"]["status"], "open");
+        let before = [card(conn, &first.id), card(conn, &second.id)];
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
         conn.execute(
             "UPDATE reviews SET task_id=?1 WHERE task_id=?2",
             params![second.id, first.id],
@@ -64,12 +66,23 @@ fn metadata_reparent_refreshes_old_and_new_cards_for_owned_and_raw_writers() {
             "OLD review endpoint, raw={raw}"
         );
         assert_eq!(card(conn, &second.id)["review_summary"]["status"], "open");
+        conn.execute_batch("ROLLBACK").unwrap();
+        assert_eq!([card(conn, &first.id), card(conn, &second.id)], before);
+        conn.execute(
+            "UPDATE reviews SET task_id=?1 WHERE task_id=?2",
+            params![second.id, first.id],
+        )
+        .unwrap();
+        assert!(card(conn, &first.id).get("review_summary").is_none());
+        assert_eq!(card(conn, &second.id)["review_summary"]["status"], "open");
         conn.execute("DELETE FROM reviews", []).unwrap();
         conn.execute("INSERT INTO tracker_delivery_intents(id,task_id,project_key,generation,operation_id,state,record) VALUES('intent',?1,'/summary',1,'operation','queued',?2)",params![first.id,json!({"target":{"kind":"agent","agent_id":"CaseSensitive"}}).to_string()]).unwrap();
         assert_eq!(
             card(conn, &first.id)["deferred_assignment"]["target"]["agent_id"],
             "CaseSensitive"
         );
+        let before = [card(conn, &first.id), card(conn, &second.id)];
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
         conn.execute(
             "UPDATE tracker_delivery_intents SET task_id=?1 WHERE task_id=?2",
             params![second.id, first.id],
@@ -79,6 +92,18 @@ fn metadata_reparent_refreshes_old_and_new_cards_for_owned_and_raw_writers() {
             card(conn, &first.id).get("deferred_assignment").is_none(),
             "OLD delivery endpoint, raw={raw}"
         );
+        assert_eq!(
+            card(conn, &second.id)["deferred_assignment"]["target"]["agent_id"],
+            "CaseSensitive"
+        );
+        conn.execute_batch("ROLLBACK").unwrap();
+        assert_eq!([card(conn, &first.id), card(conn, &second.id)], before);
+        conn.execute(
+            "UPDATE tracker_delivery_intents SET task_id=?1 WHERE task_id=?2",
+            params![second.id, first.id],
+        )
+        .unwrap();
+        assert!(card(conn, &first.id).get("deferred_assignment").is_none());
         assert_eq!(
             card(conn, &second.id)["deferred_assignment"]["target"]["agent_id"],
             "CaseSensitive"

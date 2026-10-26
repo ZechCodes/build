@@ -186,15 +186,143 @@ impl Fixture {
         Ok((times, bytes, rows))
     }
 }
+struct ScenarioResult {
+    tasks: usize,
+    scenario: usize,
+    method: &'static str,
+    result: Result<(Vec<Duration>, usize, usize), String>,
+}
+
+fn report_results(results: Vec<ScenarioResult>, mut emit: impl FnMut(String)) {
+    let mut failures = Vec::new();
+    for ScenarioResult {
+        tasks,
+        scenario,
+        method,
+        result,
+    } in results
+    {
+        let (mut times, bytes, rows) = match result {
+            Ok(samples) => samples,
+            Err(error) => {
+                emit(format!("carrier_read tasks={tasks} scenario={scenario} method={method} error={error:?}"));
+                failures.push(format!(
+                    "{method} tasks={tasks} scenario={scenario}: {error}"
+                ));
+                continue;
+            }
+        };
+        times.sort();
+        let p99 = times[(times.len() * 99).div_ceil(100) - 1];
+        let max = *times.last().unwrap();
+        emit(format!("carrier_read profile={} tasks={tasks} scenario={scenario} method={method} samples={} rows={rows} bytes={bytes} p99_us={} max_us={}",if cfg!(debug_assertions){"debug"}else{"release"},times.len(),p99.as_micros(),max.as_micros()));
+        if bytes > 1_048_576 {
+            failures.push(format!(
+                "{method} tasks={tasks} scenario={scenario}: bytes={bytes} exceeds 1048576"
+            ));
+        }
+        if max > CEILING {
+            failures.push(format!(
+                "{method} tasks={tasks} scenario={scenario}: max={max:?}, p99={p99:?}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn reports_all_scenarios_before_rejecting_latency_and_byte_failures() {
+    let mut results = Vec::new();
+    for tasks in [1, 100, 5000] {
+        for scenario in 0..4 {
+            let time = if tasks == 1 && scenario == 0 {
+                CEILING + Duration::from_nanos(1)
+            } else {
+                CEILING
+            };
+            let bytes = if tasks == 100 && scenario == 1 {
+                1_048_577
+            } else {
+                1_048_576
+            };
+            results.push(ScenarioResult {
+                tasks,
+                scenario,
+                method: "tasks.list",
+                result: Ok((vec![time; SAMPLES], bytes, 1)),
+            });
+        }
+    }
+    let mut reports = Vec::new();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        report_results(results, |line| reports.push(line));
+    }));
+    assert!(
+        failure.is_err(),
+        "hard latency/byte failures must remain nonzero"
+    );
+    assert_eq!(
+        reports.len(),
+        12,
+        "all 1,200 collected requests must be reported before failing"
+    );
+    assert!(reports.last().unwrap().contains("tasks=5000 scenario=3"));
+    let error = failure.unwrap_err();
+    let message = error.downcast_ref::<String>().unwrap();
+    assert!(message.contains("max=100.000001ms"));
+    assert!(message.contains("bytes=1048577"));
+}
+
+#[test]
+fn reports_protocol_failure_and_later_results_before_aggregate_rejection() {
+    let results = vec![
+        ScenarioResult {
+            tasks: 1,
+            scenario: 0,
+            method: "tasks.list",
+            result: Err("request refused".into()),
+        },
+        ScenarioResult {
+            tasks: 1,
+            scenario: 1,
+            method: "tasks.list",
+            result: Ok((vec![CEILING; SAMPLES], 1_048_576, 1)),
+        },
+    ];
+    let mut reports = Vec::new();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        report_results(results, |line| reports.push(line));
+    }));
+    assert!(failure.is_err());
+    assert_eq!(reports.len(), 2);
+    assert!(reports[0].contains("request refused"));
+    assert!(reports[1].contains("scenario=1"));
+}
+
+#[test]
+fn reports_and_accepts_exact_latency_and_byte_limits() {
+    let mut reports = Vec::new();
+    report_results(
+        vec![ScenarioResult {
+            tasks: 1,
+            scenario: 0,
+            method: "tasks.list",
+            result: Ok((vec![CEILING; SAMPLES], 1_048_576, 1)),
+        }],
+        |line| reports.push(line),
+    );
+    assert_eq!(reports.len(), 1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bounded_reads_carrier_max_and_p99_with_both_locks_held() {
     let tools = tempfile::tempdir().unwrap();
     // This standalone test process must never discover installed provider CLIs.
     std::env::set_var("PATH", project_bridge::private_path(tools.path()));
+    let mut results = Vec::new();
     for count in [1, 100, 5000] {
         let mut fixture = Fixture::new(count);
         let (release, holder) = fixture.hold_locks();
-        let mut results = Vec::new();
         for (scenario, (method, params)) in [
             ("tasks.list", json!({"summary":true})),
             ("tasks.list", json!({"summary":true,"limit":500})),
@@ -204,25 +332,15 @@ async fn bounded_reads_carrier_max_and_p99_with_both_locks_held() {
         .into_iter()
         .enumerate()
         {
-            results.push((
+            results.push(ScenarioResult {
+                tasks: count,
                 scenario,
                 method,
-                fixture.samples(scenario, method, params).await,
-            ));
+                result: fixture.samples(scenario, method, params).await,
+            });
         }
         release.send(()).unwrap();
         holder.join().unwrap();
-        for (scenario, method, result) in results {
-            let (mut times, bytes, rows) = result.unwrap();
-            times.sort();
-            let p99 = times[(times.len() * 99).div_ceil(100) - 1];
-            let max = *times.last().unwrap();
-            println!("carrier_read profile={} tasks={count} scenario={scenario} method={method} samples={} rows={rows} bytes={bytes} p99_us={} max_us={}",if cfg!(debug_assertions){"debug"}else{"release"},times.len(),p99.as_micros(),max.as_micros());
-            assert!(bytes <= 1_048_576);
-            assert!(
-                max <= CEILING,
-                "{method} tasks={count} scenario={scenario}: max={max:?}, p99={p99:?}"
-            );
-        }
     }
+    report_results(results, |line| println!("{line}"));
 }

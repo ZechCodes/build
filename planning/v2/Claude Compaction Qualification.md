@@ -7,9 +7,22 @@ native window, not an exact trigger: requested 100k–1M maps directly to that
 window; all other positive requests use `auto`. The child receives matching
 `--autocompact`, settings and environment overrides. Output limits and native
 precomputation defaults remain untouched. There is no competing automatic Build
-scheduler, including when managed policy overrides native settings. Such
-conflicts are reported by key name/reason, not claimed to be repaired. Manual
-`/compact` remains available.
+scheduler while native remains available. Managed disabling policy is the
+exception: `autoCompactEnabled=false` or truthy `DISABLE_AUTO_COMPACT` /
+`DISABLE_COMPACT` selects `between_turn` at the unchanged requested threshold,
+with the disabling reason on the wire. A window-only override stays Native.
+The child still requests native enablement; managed policy takes precedence.
+Manual `/compact` remains available unless managed policy disables it too.
+
+The disable parser matches 2.1.284 (`1`, `true`, `yes`, `on`, trimmed and case
+insensitive; byte 197482109). Later local fragments overwrite earlier scalar
+and env values. Raw remote cache content does not prove active server policy;
+those conflicts remain observable warnings, not fallback authority.
+`DISABLE_COMPACT` also removes the manual command (byte 206239892). Below the
+requested threshold wakes run normally. At the threshold, Build refuses the
+wake and records one durable failed outcome/attention per agent conversation,
+plus the original task/coordinator notice. Repeated wakes do not add failures,
+send input or attempt an unavailable command. No wrapper replay is built.
 
 The previous qualification rule required an exact requested-token trigger.
 Zech explicitly accepted an inexact provider trigger for #884. Production now

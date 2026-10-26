@@ -223,3 +223,36 @@ fn claude_compaction_refuses_mismatched_native_policy_or_choice() {
     policy.native_settings = None;
     assert!(native_translation(&policy).is_err());
 }
+
+#[test]
+fn managed_disable_selects_fallback_but_window_override_keeps_native() {
+    for (disabled, command_disabled, expected) in [
+        (false, false, CompactionEnforcement::Native),
+        (true, false, CompactionEnforcement::BetweenTurn),
+        (true, true, CompactionEnforcement::BetweenTurn),
+    ] {
+        let choice = choice(AgentProvider::ClaudeAdk);
+        let harness = harness_for(choice.provider);
+        let policy = prepare_observed(
+            harness,
+            ResolvedCompactionPolicy {
+                tokens: 150_000,
+                source: CompactionSource::Device,
+            },
+            choice,
+            Some("2.1.284".into()),
+            CompactionLaunchIdentity::new("thread"),
+            managed::Observation {
+                reason: Some("managed policy present: test key".into()),
+                disables_auto: disabled,
+                disables_command: command_disabled,
+            },
+        )
+        .unwrap();
+        assert_eq!(policy.enforcement, expected);
+        assert_eq!(policy.capabilities.between_turn_compact, !command_disabled);
+        assert_eq!(policy.automatic_due(Some(150_000)), disabled);
+        assert_eq!(policy.requested.tokens, 150_000);
+        assert!(policy.reason.as_deref().unwrap().contains("managed policy"));
+    }
+}

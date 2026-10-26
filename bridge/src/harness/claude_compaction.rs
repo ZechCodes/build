@@ -87,7 +87,41 @@ pub(super) fn prepare<H: Harness + ?Sized>(
     version: Option<String>,
     identity: CompactionLaunchIdentity,
 ) -> Result<AppliedCompactionPolicy, HarnessError> {
+    prepare_observed(
+        harness,
+        requested,
+        choice,
+        version,
+        identity,
+        managed::launch_conflict(),
+    )
+}
+
+fn prepare_observed<H: Harness + ?Sized>(
+    harness: &H,
+    requested: ResolvedCompactionPolicy,
+    choice: ModelChoice,
+    version: Option<String>,
+    identity: CompactionLaunchIdentity,
+    managed: managed::Observation,
+) -> Result<AppliedCompactionPolicy, HarnessError> {
     let mut policy = fallback_policy(harness, requested, choice, version, identity)?;
+    if managed.disables_auto {
+        policy.enforcement = CompactionEnforcement::BetweenTurn;
+        policy.capabilities.between_turn_compact = !managed.disables_command;
+        policy.capabilities.qualification.evidence = "Managed policy disables Claude native auto-compaction; Build owns the requested between-turn threshold".into();
+        let limitation = if managed.disables_command {
+            "managed policy disables native and command compaction; operator must change managed policy"
+        } else {
+            "managed policy disables native auto-compaction; Build between-turn fallback"
+        };
+        policy.reason = Some(format!(
+            "{limitation}; {}",
+            managed.reason.unwrap_or_default()
+        ));
+        policy.capabilities.unsupported_reason = policy.reason.clone();
+        return Ok(policy);
+    }
     let window = (100_000..=1_000_000)
         .contains(&policy.requested.tokens)
         .then_some(policy.requested.tokens);
@@ -98,14 +132,15 @@ pub(super) fn prepare<H: Harness + ?Sized>(
     policy.capabilities.native_range = Some(100_000..=1_000_000);
     policy.capabilities.qualification.evidence =
         "Claude native auto-compaction requested; trigger approximately window minus min(maxOutput, 20000) minus 13000; effective model/output and managed policy remain provider-owned".into();
-    let reason = managed::launch_conflict()
+    let reason = managed
+        .reason
         .or_else(|| {
             window
                 .is_none()
                 .then(|| "claude_requested_window_unrepresentable_using_auto".into())
         })
         .or_else(|| Some("claude_native_trigger_approximate_no_live_readback".into()));
-    policy.capabilities.unsupported_reason = reason.clone();
+    policy.capabilities.unsupported_reason = None;
     policy.reason = reason;
     Ok(policy)
 }

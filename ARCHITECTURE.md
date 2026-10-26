@@ -1264,8 +1264,10 @@ automatic compaction mechanism. All five current providers have one: Claude
 TUI/ADK, Codex TUI/app-server and Pi. Their normal launches never schedule a
 Build threshold command. Explicit user/agent `/compact` remains available where
 supported. Managed policy can override a child's settings: this is observable,
-not permission to claim a native trigger was observed or silently install a
-second scheduler. There is no managed-policy exception scheduler in #884.
+not permission to claim a native trigger was observed. Claude has one explicit
+exception: when inspected managed policy disables native auto-compaction,
+Build owns its requested threshold with `between_turn` enforcement and a reason.
+A window override alone stays Native.
 
 Both Claude carriers share `harness/claude_compaction.rs`. The requested
 100000–1000000 tokens select the native **window** directly. Other positive
@@ -1289,9 +1291,18 @@ historical qualification fixtures.
 
 Bounded read-only managed-policy inspection reports conflicting key names or
 an unreadable/unverified-policy reason without disclosing values. A managed
-native disable remains an observable limitation; Build does not compensate with
-its own automatic compaction. Tests inspect only temporary fixtures and never
-home configuration. `planning/v2/Claude Compaction Qualification.md` records the
+disable (`autoCompactEnabled=false`, truthy `DISABLE_AUTO_COMPACT` or
+`DISABLE_COMPACT`) selects the requested-threshold between-turn fallback.
+Truthy means `1`, `true`, `yes` or `on`, ignoring case and whitespace. Local
+base/fragments are merged in filename order; an enabling later value wins.
+A raw remote cache cannot establish live eligibility, so its conflicts remain
+warnings rather than authority to install a competing scheduler.
+When `DISABLE_COMPACT` also blocks the command, input runs normally below the
+threshold. At or above it, Build refuses the waking delivery without sending
+input or a compact command and records one durable failed outcome/attention
+per agent conversation, with the original task/coordinator failure notice.
+Later wakes are refused without producing more attention rows. No replay is
+scheduled. Tests inspect only temporary fixtures and never home configuration. `planning/v2/Claude Compaction Qualification.md` records the
 original qualification and #884's revised contract and static reactive audit.
 
 Claude's native reactive compaction also depends on automatic compaction being

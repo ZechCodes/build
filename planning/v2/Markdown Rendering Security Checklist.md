@@ -1,7 +1,91 @@
 # Markdown rendering security checklist
 
-**Status:** 100/100 — post-merge combined scanners passed on 2026-10-22.
-**Verified:** 2026-10-22 (post-merge scanner refresh); 2026-10-20 (#695 rich markdown rendering; #701 boundary revisions; #700 production-CSP redirect consent policy); earlier desktop link, credential, persistence and API authentication evidence remains recorded below (#262, #615, #616).
+**Status:** 100/100 — #889 targeted gates and changed-file scanners passed on 2026-10-26.
+**Verified:** 2026-10-26 (#889; evidence below); 2026-10-22 (post-merge scanner refresh); 2026-10-20 (#695 rich markdown rendering; #701 boundary revisions; #700 production-CSP redirect consent policy); earlier desktop link, credential, persistence and API authentication evidence remains recorded below (#262, #615, #616).
+
+## Mermaid boundary amendment — #889 (2026-10-26)
+
+The earlier renderer has **no existing DOM/SVG sanitizer**: its boundary is
+escape-first fixed markup. Mermaid fences retain that escaped source and add
+only a fixed `md-code-block md-mermaid` wrapper synchronously. A document-level
+controller lazily enhances complete fences on every cached surface. The
+original code remains available, with a fixed small error on invalid/refused
+source. Ordinary/unfinished fences and inline/plain modes keep their old behavior.
+
+`mermaidRenderer.js` pins `securityLevel: "strict"`, global/flowchart
+`htmlLabels: false`, no auto-start, suppressed error diagrams, 16,384 source
+units and 200 edges. All library initialize/render operations share one serial
+queue. The 32-entry source/theme cache holds only independently sanitized SVG;
+every mount gets fresh local IDs. Mounts guard source/theme changes, detachment
+and disposal; measurements live in an owned host removed in `finally`.
+
+Strict output settings alone cannot protect Mermaid's **transient measurement
+DOM**. Before invocation, reject configuration/frontmatter, `%%` directives and
+comments, HTML/entities/escapes/markdown and math labels (including Mermaid `#word;`
+entities and internal entity placeholders), CSS commands, URL functions and
+resource schemes, `@{…}` image/icon metadata, and legacy sequence
+properties/details/links commands including relative/protocol-relative icons.
+The actor metadata Chromium regression originally recorded two image href
+assignments while connected (red exit 1). It now checks zero href/src assignments
+and zero requests, including during parser errors and subsequent valid rendering.
+
+`mermaidSvg.js` parses XML off-DOM and rebuilds only SVG geometry, groups, text,
+titles/descriptions, markers and clips. No HTML/foreignObject, scripts, events,
+images/use, links, CSS stylesheets, arbitrary classes or external references can
+survive. Only validated numeric/enum presentation values become attributes;
+fixed semantic classes preserve filled shapes, dashed messages and themed pie
+palettes. Unique local marker/clip targets are remapped for every insertion;
+malformed, oversized or deeply nested SVG fails closed. Thus controls 2–5 and 7
+below now cover two explicit boundaries: escaped source plus an independently
+rebuilt SVG vocabulary, rather than arbitrary source markup.
+
+Evidence: `markdownMermaid.test.js`, `markdownMermaidMount.test.js`,
+`mermaidRenderer.test.js`, `mermaidSvg.test.js`, and real pinned-library
+`browser/markdownMermaid.test.js`. The Chromium suite checks common diagram
+semantics, both themes, lazy library requests, invalid-source retention and zero
+hostile resource requests/assignments. See [dependency review](Mermaid%20Dependency%20Review.md)
+for exact version, release-age enforcement, existing audit advisories and syntax
+limits. #889 gate exits and scanner results are recorded with the final handoff.
+
+### #889 gate evidence
+
+Base `c6b1ae4f973dad19d70d6a58c39513e983878ac8`; frozen implementation
+`d23799ca0ab196216d8e7254d0ebe84ed700eb55`. All executable gates below ran
+under `nice -n 10` with Node 22.23.4/npm 12.0.2, judged by actual process exits.
+Full command/exit manifest and raw logs are retained in `/tmp/build889-gates/`
+and attached to the handoff. Documentation-only evidence commits follow this
+source without changing code/tests/dependencies.
+
+| Gate | Actual exit / evidence |
+| --- | --- |
+| `npm ci --prefix transport/js --ignore-scripts` | 0; `final-install-transport.log` |
+| SPA `npm ci --legacy-peer-deps` | 0; `final-install-spa.log` |
+| SPA `npm run lint` | 0; `lint.log` |
+| SPA `npx vitest run test/markdown*.test.js test/mermaid*.test.js test/theme.test.js test/themeDom.test.js test/complexityRatchet.test.js` | 0; 26 files, 372 tests; `vitest.log` |
+| SPA `npx vitest run test/browser/markdown*.test.js` | 0; 9 files, 49 Chromium tests; `browser.log` |
+| SPA `npm run build` | 0; `build.log` |
+| Built bundle graph + offline production Chromium probe | 0; `production-graph.log` and `verify-production.mjs`; boot and lazy diagram render, zero page errors; all 68 Mermaid-containing chunks excluded from initial static imports |
+| `semgrep --config auto --error --jobs 2` over changed tracked JS/CSS files | 0; 200 rules, 13 targets, zero findings; `semgrep.log`, `semgrep-files.txt` |
+| `gitleaks git --no-banner --redact --log-opts='<base>..HEAD' .` | 0; zero leaks; `gitleaks.log`; repeated after final documentation commit |
+| `git diff --check <base>..HEAD` | 0; `diff-check.log`; repeated after final documentation commit |
+
+TDD evidence: `red-fence.log` fails the missing Mermaid wrapper assertion,
+`red-actor-browser.log` fails because two connected image href assignments occur,
+`red-markers.log` fails the missing hollow UML marker assertion, and
+`red-label-syntax.log` fails rejection of unsupported Mermaid entity/math syntax;
+each exits 1. The final tests above pass their corresponding regressions. Early development
+startup/timeout failures remain in their separate logs and are not counted as
+assertion-based red evidence. The final gate batch was repeated after the entity/math policy revision; no
+source changed during that batch. Earlier runs remain in `initial-f73/`.
+
+The production entry changes from 883,249 to 884,840 raw bytes (+1,591),
+293,816 to 294,319 gzip bytes (+503). This small controller cost is separate
+from the lazy Mermaid runtime. The large-chunk and existing libsodium/browser
+externalization warnings remain non-failing; built runtime behavior was checked.
+The full unrelated SPA suite and live deployment/pairing were deliberately not
+run; scope was the required affected suites and offline production assets.
+
+## Earlier controls and evidence
 
 Checklist rendering re-verified 2026-10-03 (#347): checklist list items have the
 fixed `task-item` class and a native input with only fixed checkbox type/class,

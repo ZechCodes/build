@@ -52,7 +52,7 @@ const PRISM_CLASSES = new Set((
 const FIXED_CLASSES = {
   INPUT: ["md-task-checkbox"], P: ["md-alert-title"], HR: ["md-rule"], PRE: ["md-code"], LI: ["task-item"],
   BLOCKQUOTE: ["md-quote", ...["note", "tip", "important", "warning", "caution"].map((kind) => `md-alert md-alert-${kind}`)],
-  DIV: ["mdtable", "md-code-block", "md-code-label"], TD: ["md-cell-short"], A: ["md-ref", "md-link", "md-footnote-backref"],
+  DIV: ["mdtable", "md-code-block", "md-code-label", "md-code-block md-mermaid"], TD: ["md-cell-short"], A: ["md-ref", "md-link", "md-footnote-backref"],
   DETAILS: ["md-details"], SUP: ["md-footnote-ref"], SECTION: ["md-footnotes"],
   BUTTON: ["md-image-load"],
 };

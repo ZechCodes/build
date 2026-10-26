@@ -69,6 +69,7 @@ impl MeasuredStatusPump {
             frame_clock: Arc::clone(&state.lock().unwrap().frame_clock),
             recorded_context: None,
             recorded_context_reset_count: 0,
+            recorded_completed_success_count: 0,
             recorded_limit: super::super::usage_limits::UsageObservation::default(),
         })
     }

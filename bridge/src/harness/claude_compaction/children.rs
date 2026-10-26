@@ -1,6 +1,5 @@
 //! Fake CLI applies the observed 2.1.284 environment/settings precedence.
-use super::tests::{choice, native_policy};
-use super::translate;
+use super::tests::choice;
 use crate::compaction::{CompactionSource, ResolvedCompactionPolicy};
 use crate::harness::compaction::CompactionLaunchIdentity;
 use crate::harness::{harness_for, HarnessContext};
@@ -61,51 +60,38 @@ fn check_child(
 ) {
     let choice = choice(provider);
     let harness = harness_for(provider);
-    let fallback = harness
-        .prepare_compaction_policy(
-            ResolvedCompactionPolicy {
-                tokens: 150_000,
-                source: CompactionSource::Device,
-            },
-            choice.clone(),
-            Some("2.1.284".into()),
-            CompactionLaunchIdentity::new("thread"),
-        )
-        .unwrap();
-    let translation = tokens.map(|tokens| translate("2.1.284", tokens, 1_000_000, 20_000).unwrap());
-    let policy = translation
-        .clone()
-        .map_or(fallback, |t| native_policy(provider, t));
+    let policy = tokens.map(|tokens| {
+        harness
+            .prepare_compaction_policy(
+                ResolvedCompactionPolicy {
+                    tokens,
+                    source: CompactionSource::Device,
+                },
+                choice.clone(),
+                Some("2.1.284".into()),
+                CompactionLaunchIdentity::new("thread"),
+            )
+            .unwrap()
+    });
+    let window = tokens.filter(|tokens| (100_000..=1_000_000).contains(tokens));
     let options = SpawnOptions {
-        compaction_policy: Some(policy),
+        compaction_policy: policy,
         resume_session_id: resume.filter(|r| *r == "exact").map(str::to_owned),
         continue_session: resume.is_some(),
         ..SpawnOptions::default()
     };
     let spec = harness.spec(&choice, &options, context).unwrap();
     let result = run_child(script, user_path, spec);
-    assert_eq!(
-        result["env"]["DISABLE_AUTO_COMPACT"],
-        if tokens.is_some() { "0" } else { "1" }
-    );
+    assert_eq!(result["env"]["DISABLE_AUTO_COMPACT"], "0");
     assert_eq!(
         result["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
-        translation
-            .as_ref()
-            .map(|t| t.window.to_string())
-            .unwrap_or_default()
+        window.map(|w| w.to_string()).unwrap_or_default()
     );
-    assert_eq!(
-        result["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"],
-        translation
-            .as_ref()
-            .and_then(|t| t.percentage.clone())
-            .unwrap_or_default()
-    );
+    assert_eq!(result["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "");
     assert_eq!(result["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "64000");
     assert_eq!(result["manual"], true);
     assert!(result["hooks"]["PreCompact"].is_array());
-    check_args(&result, translation.as_ref(), resume);
+    check_args(&result, window, resume);
 }
 
 fn run_child(
@@ -140,14 +126,15 @@ fn run_child(
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-fn check_args(result: &Value, translation: Option<&super::Translation>, resume: Option<&str>) {
+fn check_args(result: &Value, window: Option<u64>, resume: Option<&str>) {
     let args = result["args"].as_array().unwrap();
     assert!(args.contains(&json!("claude-opus-5[1m]")));
-    if let Some(t) = translation {
+    if let Some(window) = window {
         let index = args.iter().position(|arg| arg == "--autocompact").unwrap();
-        assert_eq!(args[index + 1], t.window.to_string());
+        assert_eq!(args[index + 1], window.to_string());
     } else {
-        assert!(!args.contains(&json!("--autocompact")));
+        let index = args.iter().position(|arg| arg == "--autocompact").unwrap();
+        assert_eq!(args[index + 1], "auto");
     }
     assert_eq!(args.contains(&json!("--resume")), resume == Some("exact"));
     assert_eq!(

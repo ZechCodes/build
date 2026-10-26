@@ -102,7 +102,7 @@ fn codex_compaction_fallback_does_not_claim_to_disable_native_defaults() {
         CompactionLaunchIdentity::new("test-thread"),
     )
     .unwrap();
-    assert_eq!(p.enforcement, CompactionEnforcement::BetweenTurn);
+    assert_eq!(p.enforcement, CompactionEnforcement::Native);
     assert!(!p.capabilities.native_threshold);
     assert!(p.reason.is_some());
     assert_eq!(thread_config(&choice(), Some(&p)).unwrap(), None);
@@ -151,7 +151,7 @@ fn codex_compaction_translation_rejects_unknown_or_unrepresentable_inputs() {
 }
 
 #[test]
-fn codex_compaction_unqualified_models_and_versions_keep_positive_fallback() {
+fn codex_compaction_unqualified_models_and_versions_delegate_native_defaults() {
     for harness in [
         &CodexHarness as &dyn Harness,
         &crate::harness::codex_app_server::CodexAppServerHarness as &dyn Harness,
@@ -178,12 +178,14 @@ fn codex_compaction_unqualified_models_and_versions_keep_positive_fallback() {
                     )
                     .unwrap();
                 assert_eq!(p.choice, selection);
-                assert_eq!(p.enforcement, CompactionEnforcement::BetweenTurn);
+                assert_eq!(p.enforcement, CompactionEnforcement::Native);
                 assert!(!p.capabilities.native_threshold);
                 assert!(p.native_settings.is_none());
                 assert!(p.translated_trigger.is_none());
                 assert!(p.reason.as_deref().unwrap().starts_with("codex_"));
                 assert_eq!(p.reason, p.capabilities.unsupported_reason);
+                assert!(!p.automatic_due(Some(u64::MAX)));
+                assert_eq!(thread_config(&selection, Some(&p)).unwrap(), None);
             }
         }
     }

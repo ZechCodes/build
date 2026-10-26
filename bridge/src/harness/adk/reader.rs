@@ -1,7 +1,7 @@
 use super::activity::{spawn_shell_tail_poller, ActivitySlot};
 use super::protocol::{
-    publish_status, publish_successful_response, publish_usage_limit, ProtocolState, RecordedCall,
-    BUILD_MCP_TOOL_PREFIX, SURFACE_TASK_SUBTYPES,
+    publish_completed_turn, publish_status, publish_successful_response, publish_usage_limit,
+    ProtocolState, RecordedCall, BUILD_MCP_TOOL_PREFIX, SURFACE_TASK_SUBTYPES,
 };
 use super::translation::{
     bounded_activity_text, ended_summary, result_error_text, spoken, task_description,
@@ -33,6 +33,9 @@ pub(super) struct ProtocolReader {
     /// Newer CLIs report native compaction through status as well as hooks.
     /// Both observations describe one attempt inside the current turn.
     compaction_active: bool,
+    /// Synthetic request errors sometimes carry the only useful explanation;
+    /// the following result can say only subtype=success, is_error=true.
+    assistant_error: Option<String>,
     /// The child this reader is reading, for the one thing a reader may do
     /// to it: end it when its `init` line says it is running a model Build
     /// did not ask for. `None` for a reader driven from a recording.
@@ -55,6 +58,7 @@ impl ProtocolReader {
             shell_poller: Arc::new(Mutex::new(None)),
             context: TurnContext::default(),
             compaction_active: false,
+            assistant_error: None,
             child: None,
         }
     }
@@ -169,10 +173,14 @@ impl ProtocolReader {
     /// diagnosable from bridge.log whatever it turns out to be.
     fn read_assistant_error(&mut self, event: &Value) {
         let Some(error) = event["error"].as_str() else {
+            self.assistant_error = None;
             self.state.lock().unwrap().limit_said_last = None;
             return;
         };
         let said = assistant_text(&event["message"]);
+        self.assistant_error = Some(crate::harness::codex_app_server::sanitize_provider_error(
+            &said,
+        ));
         let agent = {
             let mut state = self.state.lock().unwrap();
             state.limit_said_last = (error == "rate_limit")
@@ -598,41 +606,81 @@ impl ProtocolReader {
         );
         // Record the result before the status says the turn is over, so a
         // coalesced watch snapshot still carries the right limit or success.
+        let (usage_refusal, was_open, interrupted) = {
+            let state = self.state.lock().unwrap();
+            (
+                failed && state.limit_said_last.is_some(),
+                state.turn_open,
+                state
+                    .pending_interrupt
+                    .as_ref()
+                    .is_some_and(|pending| pending.acked),
+            )
+        };
         if failed {
             self.conclude_usage_limit();
         } else if event["subtype"].as_str() == Some("success") {
-            self.record_successful_response();
+            self.record_successful_result(was_open, interrupted);
         }
-        {
-            let mut state = self.state.lock().unwrap();
-            state.turn_had_success = false;
-            // Taken, acked or not, so an interrupt can never leak into the turn
-            // after the one it ended.
-            let stopped = state.pending_interrupt.take();
-            // The turn queued behind an interrupt is running the moment this
-            // result lands, so the flag is handed to it rather than cleared.
-            state.turn_open = stopped.as_ref().is_some_and(|pending| pending.steered);
-            // A result that succeeded clears the error a turn reported —
-            // unless Build has already ended this child over one. A killed
-            // child's last write is still in the pipe after the blow lands,
-            // and a session explained by the last thing that went right is a
-            // crash notice with no crash in it.
-            if failed && !stopped.as_ref().is_some_and(|pending| pending.acked) {
-                state.reported_error = Some(result_error_text(event));
-            } else if !state.closed {
-                state.reported_error = None;
-            }
-            // The context first, so the snapshot that says the turn is over
-            // already says what it cost.
-            self.context.cache_read_tokens +=
-                usage_tokens(&event["usage"], "cache_read_input_tokens");
-            publish_context(&self.status_updates, self.context);
-            publish_status(&self.status_updates, state.live_status());
-        }
+        let failure = self.finish_result(event, failed, usage_refusal);
+        self.context.cache_read_tokens += usage_tokens(&event["usage"], "cache_read_input_tokens");
+        publish_context(&self.status_updates, self.context);
         // Outside the lock, because emitting is the broadcast channel's
         // business and not this session's state. A turn the protocol answered
         // in full leaves nothing to close.
         self.close_open_calls();
+        // Queue the failure before publishing Waiting, so a drain cannot hide
+        // this turn behind a newer consumed dispatch.
+        if let Some(failure) = failure {
+            self.report(failure, None);
+        }
+        self.publish_live_status();
+    }
+
+    fn record_successful_result(&self, was_open: bool, interrupted: bool) {
+        self.record_successful_response();
+        if was_open && !interrupted {
+            publish_completed_turn(&self.status_updates);
+        }
+    }
+
+    fn finish_result(
+        &mut self,
+        event: &Value,
+        failed: bool,
+        usage_refusal: bool,
+    ) -> Option<AgentActivity> {
+        let said = self.assistant_error.take();
+        let mut state = self.state.lock().unwrap();
+        let was_open = state.turn_open;
+        state.turn_had_success = false;
+        let stopped = state.pending_interrupt.take();
+        let interrupted = stopped.as_ref().is_some_and(|pending| pending.acked);
+        let operation_id = state.operation_id.take();
+        state.turn_open = stopped.as_ref().is_some_and(|pending| pending.steered);
+        if state.turn_open {
+            state.operation_id = state.steered_operation_id.take();
+        } else {
+            state.steered_operation_id = None;
+        }
+        if failed && !interrupted {
+            let summary = said.unwrap_or_else(|| {
+                crate::harness::codex_app_server::sanitize_provider_error(&result_error_text(event))
+            });
+            state.reported_error = Some(summary.clone());
+            // Usage limits have their own reset/attention contract. An old
+            // limit does not suppress a different failure on a later turn.
+            if was_open && !usage_refusal {
+                return Some(AgentActivity::TurnFailed {
+                    summary,
+                    operation_id,
+                    episode_id: None,
+                });
+            }
+        } else if !state.closed {
+            state.reported_error = None;
+        }
+        None
     }
 
     /// One message's content blocks, minted in the order the child reported

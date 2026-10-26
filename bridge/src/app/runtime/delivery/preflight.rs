@@ -266,6 +266,9 @@ pub(in crate::app) fn deliver(
         Spawned::Fresh => say.cold.as_str(),
         Spawned::Warm => say.warm.as_str(),
     });
+    if let Some(reason) = timer.lock(state).refuse_blocked_compaction(turn) {
+        return Ok(DeliveryOutcome::Refused(reason));
+    }
     if prompt.is_some_and(|prompt| compact_before_turn(state, turn, spawned, prompt, timer)) {
         return Ok(DeliveryOutcome::Deferred);
     }

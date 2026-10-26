@@ -112,7 +112,7 @@ impl AppState {
     }
 
     /// The running session of one agent, wherever its tab is keyed.
-    pub(super) fn live_agent_session(
+    pub(in crate::app) fn live_agent_session(
         &self,
         owner: &str,
         agent_id: &str,

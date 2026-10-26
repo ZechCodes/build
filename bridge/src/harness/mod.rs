@@ -247,6 +247,13 @@ pub trait Harness: Send + Sync {
         false
     }
 
+    /// Whether a resumed session accepts `/compact` as its first input, before
+    /// opening is observed. Used only for a captured between-turn fallback;
+    /// native policies never schedule a competing Build command.
+    fn compacts_before_opening(&self) -> bool {
+        false
+    }
+
     /// Prepare an immutable policy for this version, value and launch choice.
     /// Unknown versions never acquire native support by inference.
     fn prepare_compaction_policy(

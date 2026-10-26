@@ -752,6 +752,7 @@ fn reported(
             status,
             summary: "Did the thing.".into(),
             message_id: None,
+            failure_kind: None,
         },
     );
     (entity_id, agent_id)
@@ -894,6 +895,7 @@ fn complete_holding_nothing_open_delivers_no_reminder() {
             status: DoneStatus::Completed,
             summary: "Nothing assigned to me.".into(),
             message_id: None,
+            failure_kind: None,
         },
     );
     assert!(reminders(&mut state, &entity_id, &agent_id).is_empty());
@@ -962,6 +964,7 @@ fn a_second_complete_holding_the_same_tasks_says_nothing() {
             status: DoneStatus::Completed,
             summary: "Still done.".into(),
             message_id: None,
+            failure_kind: None,
         },
     );
     assert_eq!(
@@ -1012,6 +1015,7 @@ fn a_complete_holding_a_different_set_reminds_again() {
             status: DoneStatus::Completed,
             summary: "And that one is finished with.".into(),
             message_id: None,
+            failure_kind: None,
         },
     );
     let told = reminders(&mut state, &entity_id, &agent_id);

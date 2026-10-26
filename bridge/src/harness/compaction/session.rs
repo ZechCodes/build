@@ -45,6 +45,9 @@ impl AgentSession for PolicySession {
         }
         self.applied.load(Ordering::Relaxed).then_some(&self.policy)
     }
+    fn admitted_compaction_policy(&self) -> Option<&AppliedCompactionPolicy> {
+        Some(&self.policy)
+    }
     fn observed_compaction_policy(&self) -> Option<&AppliedCompactionPolicy> {
         self.inner.observed_compaction_policy()
     }
@@ -61,7 +64,9 @@ impl AgentSession for PolicySession {
                 .is_some_and(|policy| policy.automatic_due(context_tokens))
     }
     fn turn_choice_support(&self, choice: &ModelChoice) -> TurnChoiceSupport {
-        if self.policy.enforcement == CompactionEnforcement::Native && choice != &self.policy.choice
+        if self.policy.enforcement == CompactionEnforcement::Native
+            && self.policy.translated_trigger.is_some()
+            && choice != &self.policy.choice
         {
             // A translated native trigger is qualified for its launch model.
             // Reopening lets the adapter qualify a different budget first.

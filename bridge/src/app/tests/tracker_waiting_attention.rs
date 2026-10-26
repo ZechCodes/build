@@ -258,6 +258,7 @@ fn waiting_notices_and_reminders() {
             status: DoneStatus::Completed,
             summary: "unrelated turn complete".into(),
             message_id: None,
+            failure_kind: None,
         },
     );
     assert_eq!(

@@ -165,7 +165,7 @@ test("default export initializes policy telemetry before MCP and qualifies ready
   assert.equal(result.records[0].sequence, 1);
   assert.equal(result.records[0].generation, 1);
   assert.equal(result.records.some((record) => record.type === "ready"), true);
-  assert.deepEqual(result.threshold, [{ cancel: true }]);
+  assert.deepEqual(result.threshold, [null]);
   assert.equal(result.records.at(-1).type, "shutdown");
   assert.deepEqual(result.signals, []);
   assert.equal(result.childRunning, false);

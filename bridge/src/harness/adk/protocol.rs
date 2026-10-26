@@ -124,6 +124,10 @@ pub(super) struct ProtocolState {
     pub(super) pending_interrupt: Option<PendingInterrupt>,
     /// The last error the child REPORTED, from a result line that carried one.
     pub(super) reported_error: Option<String>,
+    /// Failure attribution is captured at the input delimiter, before a newer
+    /// dispatch can replace the app's current operation.
+    pub(super) operation_id: Option<String>,
+    pub(super) steered_operation_id: Option<String>,
     /// The last thing the child said on stderr, for a death with no result.
     pub(super) last_stderr_line: Option<String>,
     /// Why Build ended this child before it started — over its `init` line
@@ -175,6 +179,8 @@ impl ProtocolState {
             capabilities: Vec::new(),
             pending_interrupt: None,
             reported_error: None,
+            operation_id: None,
+            steered_operation_id: None,
             last_stderr_line: None,
             start_refused: None,
             tasks: BTreeMap::new(),
@@ -182,6 +188,16 @@ impl ProtocolState {
                 NEXT_SURFACE_GENERATION.fetch_add(1, Ordering::Relaxed),
             ),
             running_version: None,
+        }
+    }
+
+    /// A plain in-turn input joins the current turn, so its latest operation
+    /// owns a terminal failure. Steering waits for the interrupted boundary.
+    pub(super) fn accept_operation(&mut self, operation_id: Option<&str>) {
+        if self.turn_open && self.pending_interrupt.is_some() {
+            self.steered_operation_id = operation_id.map(str::to_string);
+        } else if !self.turn_open || operation_id.is_some() {
+            self.operation_id = operation_id.map(str::to_string);
         }
     }
 
@@ -260,6 +276,11 @@ pub(super) fn publish_usage_limit(
 /// clears the session's old limit even if its status is still `Working`.
 pub(super) fn publish_successful_response(updates: &watch::Sender<SessionStatusSnapshot>) {
     updates.send_modify(|snapshot| *snapshot = snapshot.successful_response());
+}
+
+/// Only a successful terminal result for an open turn is completion evidence.
+pub(super) fn publish_completed_turn(updates: &watch::Sender<SessionStatusSnapshot>) {
+    updates.send_modify(|snapshot| *snapshot = snapshot.completed_turn());
 }
 
 /// What became of one tool call, kept until its result arrives so the answer

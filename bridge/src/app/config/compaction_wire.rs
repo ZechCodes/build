@@ -97,6 +97,7 @@ impl AppState {
         owner: &str,
         agent: &str,
         applied: Option<&AppliedCompactionPolicy>,
+        admitted_between_turn: Option<&AppliedCompactionPolicy>,
     ) -> Value {
         let configured = self
             .resolve_snapshot_compaction_policy(owner, agent, true)
@@ -104,7 +105,13 @@ impl AppState {
         let inherited = self
             .resolve_snapshot_compaction_policy(owner, agent, false)
             .ok();
-        let (enforcement, reason) = match applied {
+        // A pre-init Build gate is known, but it cannot establish an active
+        // provider policy or a pending-change comparison. Never infer native.
+        let enforcement_policy = applied.or_else(|| {
+            admitted_between_turn
+                .filter(|policy| policy.enforcement == CompactionEnforcement::BetweenTurn)
+        });
+        let (enforcement, reason) = match enforcement_policy {
             None => ("unsupported", Some("active_policy_unknown")),
             Some(policy) => (
                 match policy.enforcement {
@@ -121,6 +128,24 @@ impl AppState {
             observation["provider"] = json!(policy.choice.provider);
             observation["qualification"] = json!({"version": policy.capabilities.qualification.version, "evidence": policy.capabilities.qualification.evidence});
             observation["translated_trigger"] = json!(policy.translated_trigger);
+            if let Some(crate::harness::compaction::NativeCompactionSettings::ClaudeWindow(window)) = policy.native_settings {
+                observation["native_window"] = window.map_or(json!("auto"), |window| json!(window));
+                let model_window = self.entity_agents(owner).ok()
+                    .and_then(|agents| agents.resolve(Some(agent)).ok())
+                    .and_then(|agent| agent.active_model.as_deref())
+                    .or(policy.choice.model.as_deref())
+                    .and_then(|model| crate::models::context_window_of(policy.choice.provider, model));
+                let estimated_window = window.zip(model_window).map(|(window, model)| window.min(model));
+                observation["native_trigger"] = json!({
+                    "exact": false,
+                    "formula": "min(native_window, model_window) - min(maxOutput, 20000) - 13000",
+                    "catalog_window_estimate": estimated_window.map(|window| json!({
+                        "min_tokens": window.saturating_sub(33_000),
+                        "max_tokens": window.saturating_sub(13_000)
+                    })),
+                    "reason": "effective model window, output reserve and managed policy are provider-owned; no live native readback"
+                });
+            }
             observation
         });
         let pending = applied

@@ -196,6 +196,10 @@ pub(in crate::app) struct AgentSessionSnapshot {
 
 pub(in crate::app) struct AgentDigestFacts {
     pub compaction: Option<crate::harness::compaction::AppliedCompactionPolicy>,
+    /// Known Build fallback before the child confirms startup. Kept separate
+    /// from applied policy so unopened native settings remain unobserved.
+    pub admitted_between_turn_compaction:
+        Option<crate::harness::compaction::AppliedCompactionPolicy>,
     pub live: bool,
     pub working: bool,
     pub has_terminal: bool,
@@ -783,6 +787,14 @@ impl SessionRegistry {
             .flatten();
         Some(AgentDigestFacts {
             compaction: tab.session.compaction_policy().cloned(),
+            admitted_between_turn_compaction: tab
+                .session
+                .admitted_compaction_policy()
+                .filter(|policy| {
+                    policy.enforcement
+                        == crate::harness::compaction::CompactionEnforcement::BetweenTurn
+                })
+                .cloned(),
             live,
             working,
             has_terminal: tab.session.terminal().is_some(),

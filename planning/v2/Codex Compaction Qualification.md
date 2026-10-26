@@ -1,5 +1,23 @@
 # Codex compaction qualification — #657
 
+## Current native-first contract — #884 (2026-10-26)
+
+Both Codex TUI and app-server delegate automatic compaction to Codex's native
+defaults. Build no longer schedules a second threshold compaction and injects
+no custom native limit/scope. Requested Build tokens are retained as intent;
+they are not a claimed observed native trigger. Exact custom-limit injection
+remains unqualified. Manual compaction and native activity observations remain.
+The fake app-server overflow audit produces one operation-associated failure,
+no automatic wrapper retry, and preserves the thread for manual compaction;
+accepted/refused fake responses are protocol evidence, not live summary proof.
+
+## Historical #657 evidence
+
+The original qualification below records earlier behavior. Statements about
+Build owning/cancelling thresholds or production native being off are superseded
+by the current contract above. Isolated evidence is not rerun for #884.
+
+
 Observed 2026-10-18. Native enforcement remains **unqualified for production**
 for both Codex carriers. Successful isolated runs establish the mechanism on
 0.160.0 with `gpt-6.1-sol`; they do not establish arbitrary launch configuration,

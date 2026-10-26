@@ -13,6 +13,7 @@ use crate::store::PersistedArchivedWorktree;
 use crate::timing::{recording_clock, SLOW_FRAME};
 use serde_json::Value;
 
+mod adk_turn_failures;
 mod provider_recovery;
 mod review_publication;
 mod turn_failures;

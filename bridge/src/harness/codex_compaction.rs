@@ -2,7 +2,8 @@
 //!
 //! Translation revision 1 targets 0.160.0. A mathematical translation requires
 //! an established effective raw model window and zero fallback buffer.
-//! Production promotion remains closed; see the qualification record.
+//! Exact threshold translation remains unqualified; provider native defaults
+//! own automatic compaction without a Build between-turn fallback.
 use crate::compaction::{ResolvedCompactionPolicy, MAX_SAFE_TOKENS};
 use crate::harness::compaction::{
     fallback_policy, AppliedCompactionPolicy, CompactionEnforcement, CompactionLaunchIdentity,
@@ -72,6 +73,7 @@ pub(super) fn prepare<H: Harness + ?Sized>(
     if policy.enforcement == CompactionEnforcement::Unsupported {
         return Ok(policy);
     }
+    policy.enforcement = CompactionEnforcement::Native;
     let reason = if policy.capabilities.qualification.version.as_deref() != Some(VERSION) {
         "codex_version_unqualified"
     } else {
@@ -108,6 +110,10 @@ pub(super) fn thread_config(
         ));
     }
     if policy.enforcement != CompactionEnforcement::Native {
+        return Ok(None);
+    }
+    // No translation means the provider owns its native defaults.
+    if policy.native_settings.is_none() && policy.translated_trigger.is_none() {
         return Ok(None);
     }
     let translation = native_translation(policy)?;

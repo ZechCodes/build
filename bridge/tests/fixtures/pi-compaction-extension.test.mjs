@@ -24,9 +24,9 @@ function fixture(configuration = policy, sink, start = true, receiptReader) {
   };
 }
 
-test("qualified policy cancels threshold only and preserves manual/overflow recovery", async () => {
+test("native threshold, manual and overflow compaction remain provider owned", async () => {
   const f = fixture();
-  assert.deepEqual(await f.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
+  assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
   for (const reason of ["manual", "overflow"]) {
     assert.equal(await f.emit("session_before_compact", { reason }), undefined);
   }
@@ -72,7 +72,7 @@ function identity(configuration = policy) {
   return { owner: configuration.owner, thread_id: configuration.thread_id, launch_id: configuration.launch_id };
 }
 
-test("summary failure, abort and cancelled threshold never report success or raw error", async () => {
+test("summary failure and abort never report success or raw error", async () => {
   const f = fixture();
   await f.emit("session_before_compact", { reason: "threshold" });
   for (const aborted of [true, false]) {
@@ -91,12 +91,12 @@ test("identity and policy remain isolated and immutable after registration", asy
   await first.emit("agent_start");
   await second.emit("agent_start");
   assert.equal(await second.emit("session_before_compact", { reason: "threshold" }), undefined);
-  assert.deepEqual(await first.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
+  assert.equal(await first.emit("session_before_compact", { reason: "threshold" }), undefined);
   assert.equal(first.records.every((r) => r.owner === "agent-a"), true);
   assert.equal(second.records.every((r) => r.owner === "agent-b"), true);
 });
 
-test("context hook failure reports fixed unsupported reason and withdraws cancellation", async () => {
+test("context hook failure reports fixed unsupported reason without cancelling native compaction", async () => {
   const f = fixture();
   f.ctx.getContextUsage = () => { throw new Error("secret provider payload"); };
   await f.emit("agent_start");
@@ -106,7 +106,7 @@ test("context hook failure reports fixed unsupported reason and withdraws cancel
   assert.equal(JSON.stringify(f.records).includes("secret"), false);
 });
 
-test("telemetry write failure withdraws cancellation without stopping Pi", async () => {
+test("telemetry write failure preserves native compaction without stopping Pi", async () => {
   let writes = 0;
   const f = fixture(policy, () => { if (++writes > 1) throw new Error("private filesystem path"); });
   await f.emit("agent_start");
@@ -194,7 +194,7 @@ test("manual failure and abort release idle boundary without success", async () 
 });
 
 
-test("shutdown and reload use fresh generations while old handlers stop cancelling", async () => {
+test("shutdown and reload use fresh observation generations", async () => {
   const first = fixture();
   const firstGeneration = first.records[0].generation;
   assert.equal(Number.isSafeInteger(firstGeneration) && firstGeneration > 0, true);
@@ -205,7 +205,7 @@ test("shutdown and reload use fresh generations while old handlers stop cancelli
   assert.equal(second.records[0].generation, firstGeneration + 1);
   assert.equal(second.records[0].sequence, 1);
   assert.equal(second.records[0].type, "starting");
-  assert.deepEqual(await second.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
+  assert.equal(await second.emit("session_before_compact", { reason: "threshold" }), undefined);
   assert.equal(second.records.every((record) => record.generation === firstGeneration + 1), true);
   await second.emit("session_shutdown");
 });
@@ -235,7 +235,7 @@ test("Pi loader timer handles without unref do not disable telemetry", async () 
   } finally { globalThis.setInterval = timer; }
 });
 
-test("a stalled event loop cannot resume threshold cancellation under an expired lease", async (t) => {
+test("a stalled event loop expires observation without cancelling native compaction", async (t) => {
   let now = 0;
   t.mock.method(performance, "now", () => now);
   const f = fixture();
@@ -245,7 +245,7 @@ test("a stalled event loop cannot resume threshold cancellation under an expired
   assert.equal(f.records.at(-1).type, "unsupported");
   assert.equal(await f.emit("session_before_compact", { reason: "overflow" }), undefined);
   const reopened = fixture();
-  assert.deepEqual(await reopened.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
+  assert.equal(await reopened.emit("session_before_compact", { reason: "threshold" }), undefined);
   await reopened.emit("session_shutdown");
 });
 
@@ -262,7 +262,7 @@ test("native threshold stays available without observer confirmation", async () 
   await f.emit("session_shutdown");
 });
 
-test("foreign, future and starting receipts never authorize threshold cancellation", async () => {
+test("foreign, future and starting receipts leave native compaction available", async () => {
   for (const patch of [{ owner: "foreign" }, { thread_id: "foreign" }, { launch_id: "foreign" }, { generation: 0 }, { sequence: Number.MAX_SAFE_INTEGER }, { status: "starting" }]) {
     let f;
     f = fixture(policy, undefined, true, () => ({ ...receipt(f?.records.at(-1)), ...patch }));
@@ -277,7 +277,7 @@ test("rereading one receipt cannot renew the observer lease while telemetry writ
   let observed;
   const f = fixture(policy, undefined, true, () => observed);
   observed = receipt(f.records.at(-1));
-  assert.deepEqual(await f.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
+  assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
   now = 7000;
   await f.emit("tool_execution_end");
   now = 9000;
@@ -285,11 +285,11 @@ test("rereading one receipt cannot renew the observer lease while telemetry writ
   assert.deepEqual(f.failures, ["telemetry_failed"]);
 });
 
-test("matching unsupported receipt revokes cancellation immediately", async () => {
+test("matching unsupported receipt revokes observation immediately", async () => {
   let observed;
   const f = fixture(policy, undefined, true, () => observed);
   observed = receipt(f.records.at(-1));
-  assert.deepEqual(await f.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
+  assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
   observed.status = "unsupported";
   assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
   assert.deepEqual(f.failures, ["telemetry_failed"]);

@@ -2,7 +2,7 @@
 //!
 //! A turn is where a context grows, so the turn is where it is measured: the
 //! status pump writes down what each turn cost ([`AppState::record_agent_turn_context`]),
-//! and the next warm delivery to an agent whose last turn reached its
+//! and the next eligible delivery to an agent whose last turn reached its
 //! threshold asks the session to `/compact` first. The turn itself waits in
 //! the queue and travels on the drain the session's return to waiting sets
 //! off, so it lands on the compacted context.
@@ -38,7 +38,50 @@ pub(in crate::app) struct CompactionSend {
     instructions: Option<String>,
 }
 
+const BLOCKED_COMPACTION: &str = "Automatic compaction unavailable: ";
+
 impl AppState {
+    /// A managed command disable only blocks input once the fallback threshold
+    /// is reached. Keep one durable failure on this agent's conversation so a
+    /// later wake (or bridge restart) cannot generate another attention row.
+    pub(in crate::app) fn refuse_blocked_compaction(
+        &mut self,
+        turn: &PendingAgentTurn,
+    ) -> Option<String> {
+        let session = self.session_for_turn(turn)?;
+        let policy = session.admitted_compaction_policy()?;
+        let agent = self
+            .entity_agents(&turn.owner)
+            .ok()?
+            .by_id(&turn.agent_id)?;
+        if policy.capabilities.between_turn_compact
+            || !policy.automatic_due(agent.last_context_tokens)
+        {
+            self.clear_managed_compaction_failure(&turn.owner, &turn.agent_id);
+            return None;
+        }
+        let summary = format!(
+            "{BLOCKED_COMPACTION}{}",
+            policy
+                .reason
+                .as_deref()
+                .unwrap_or("managed policy disables the compact command")
+        );
+        let reported = self
+            .agent_conversation(&turn.owner, Some(&turn.agent_id))
+            .ok()?
+            .managed_compaction_failure_reported;
+        if !reported {
+            self.record_agent_compaction_failure(
+                &turn.owner,
+                &turn.agent_id,
+                turn.operation_id.as_deref(),
+                &summary,
+            );
+        }
+        Some(summary)
+    }
+
     fn compaction_generation_is_current(&self, send: &CompactionSend) -> bool {
         self.agent_conversation(&send.owner, Some(&send.agent_id))
             .is_ok_and(|thread| thread.id == send.thread_id)
@@ -63,10 +106,12 @@ impl AppState {
     /// `Some(Some(..))` for one an agent asked for, `Some(None)` for an
     /// automatic one, `None` for none.
     ///
-    /// Only a warm session is compacted: a cold spawn opens a context this
-    /// process has not measured, so there is nothing yet to act on — its first
-    /// turn reports one. Never mid-turn: an agent still working defers the
-    /// turn before it gets here, and an interrupting turn goes as it is. Never
+    /// Warm sessions use their observed policy. A cold Claude managed fallback
+    /// also acts on saved context using its captured admission policy: native
+    /// recovery is disabled, so its first wake must wait for compaction too.
+    /// Other cold sessions remain provider-owned. Never mid-turn: an agent still
+    /// working defers the turn before it gets here, and an interrupting turn goes
+    /// as it is. Never
     /// for a harness that cannot compact, and never ahead of a turn that is
     /// itself a compaction. A compaction an agent asked for goes first once it
     /// is ready; otherwise one is due once the last reported context has
@@ -77,8 +122,7 @@ impl AppState {
         spawned: Spawned,
         prompt: &str,
     ) -> Option<Option<String>> {
-        let eligible = spawned == Spawned::Warm
-            && !turn.interrupt
+        let eligible = !turn.interrupt
             && harness_for(turn.model_choice.provider).compacts_on_command()
             && !is_compaction(prompt);
         let agent = self
@@ -86,12 +130,16 @@ impl AppState {
             .ok()?
             .by_id(&turn.agent_id)
             .filter(|agent| eligible && agent.working_since.is_none())?;
-        if let Some(instructions) = self.compactions.ready(&turn.owner, &turn.agent_id) {
-            return Some(Some(instructions.to_string()));
+        let session = self.session_for_turn(turn)?;
+        if spawned == Spawned::Warm {
+            if let Some(instructions) = self.compactions.ready(&turn.owner, &turn.agent_id) {
+                return Some(Some(instructions.to_string()));
+            }
+            if session.automatic_compaction_due(agent.last_context_tokens) {
+                return Some(None);
+            }
         }
-        self.session_for_turn(turn)?
-            .automatic_compaction_due(agent.last_context_tokens)
-            .then_some(None)
+        managed_resume_compaction_due(session.as_ref(), agent.last_context_tokens).then_some(None)
     }
 
     /// The live session of exactly the agent and conversation `turn` names.
@@ -189,7 +237,22 @@ impl AppState {
     }
 }
 
-/// Ask the warm session behind `turn` to compact when
+/// A captured Claude managed fallback is actionable before init. This does
+/// not promote it to an active provider observation or enable cold scheduling
+/// for a harness whose native compaction remains available.
+fn managed_resume_compaction_due(session: &dyn AgentSession, context: Option<u64>) -> bool {
+    use crate::harness::AgentStatus;
+    matches!(
+        session.status(),
+        AgentStatus::Starting | AgentStatus::Waiting
+    ) && session.admitted_compaction_policy().is_some_and(|policy| {
+        harness_for(policy.choice.provider).compacts_before_opening()
+            && policy.capabilities.between_turn_compact
+            && policy.automatic_due(context)
+    })
+}
+
+/// Ask the eligible session behind `turn` to compact when
 /// [`AppState::compaction_due_before`] says it is due, and say whether it was
 /// asked. When it was, the caller defers `turn` rather than sending it.
 ///

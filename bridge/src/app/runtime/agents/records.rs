@@ -93,6 +93,7 @@ pub(in crate::app) fn record_activity(
             )
             .is_some(),
         AgentActivity::Compaction { completed: true } => {
+            state.clear_managed_compaction_failure(owner, agent_id);
             let landed = state
                 .edit_agent_conversation(owner, agent_id, |thread, _artifact| {
                     let session_id = open_session_id(thread, agent_id);

@@ -1615,7 +1615,9 @@ impl AppState {
             "session_cache_read_tokens": agent.session_cache_read_tokens,
             "max_context_tokens": max_context_tokens,
             "compact_at_tokens": max_context_tokens.unwrap_or(self.compact_above_tokens),
-            "compaction": self.agent_compaction_observation(entity_id, &agent.id, tab.as_ref().and_then(|tab| tab.compaction.as_ref())),
+            "compaction": self.agent_compaction_observation(entity_id, &agent.id,
+                tab.as_ref().and_then(|tab| tab.compaction.as_ref()),
+                tab.as_ref().and_then(|tab| tab.admitted_between_turn_compaction.as_ref())),
             // What to CALL this conversation in a list: the agent's own topic,
             // or — until it sets one — the first line the human opened with.
             // Null for a conversation with neither, which is one nothing has

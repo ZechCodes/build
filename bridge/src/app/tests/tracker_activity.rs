@@ -48,6 +48,7 @@ fn report(status: DoneStatus, summary: &str) -> DoneReport {
         status,
         summary: summary.to_string(),
         message_id: None,
+        failure_kind: None,
     }
 }
 

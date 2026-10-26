@@ -13,7 +13,7 @@ fn choice() -> ModelChoice {
 }
 
 #[test]
-fn pi_compaction_qualifies_only_exact_hook_version_and_keeps_threshold() {
+fn pi_compaction_qualifies_hooks_but_delegates_native_threshold() {
     assert!(PiHarness.compacts_on_command());
     for tokens in [1, 150_000, 200_000, MAX_SAFE_TOKENS] {
         let identity = CompactionLaunchIdentity::new("thread-one");
@@ -28,7 +28,7 @@ fn pi_compaction_qualifies_only_exact_hook_version_and_keeps_threshold() {
                 identity.clone(),
             )
             .unwrap();
-        assert_eq!(policy.enforcement, CompactionEnforcement::BetweenTurn);
+        assert_eq!(policy.enforcement, CompactionEnforcement::Native);
         assert_eq!(policy.requested.tokens, tokens);
         assert_eq!(policy.launch_identity, identity);
         assert_eq!(policy.choice, choice());
@@ -42,7 +42,7 @@ fn pi_compaction_qualifies_only_exact_hook_version_and_keeps_threshold() {
         assert_eq!(policy.native_settings, None);
         assert!(!policy.automatic_due(None));
         assert!(!policy.automatic_due(Some(tokens - 1)));
-        assert!(policy.automatic_due(Some(tokens)));
+        assert!(!policy.automatic_due(Some(tokens)));
     }
 }
 
@@ -159,7 +159,7 @@ fn assert_scoped_launch(
             .launch_identity
             .id
     );
-    assert_eq!(policy["enabled"], true);
+    assert_eq!(policy["enabled"], false);
     assert_eq!(spec.known_session_id.as_deref(), Some(owner));
     assert!(spec
         .args
@@ -246,7 +246,7 @@ fn pi_compaction_spec_rejects_forged_policy_and_identity_before_writing() {
         let policy = options.compaction_policy.as_mut().unwrap();
         match mutation {
             0 => policy.choice.model = Some("another-model".into()),
-            1 => policy.enforcement = CompactionEnforcement::Native,
+            1 => policy.enforcement = CompactionEnforcement::BetweenTurn,
             2 => policy.translated_trigger = Some(150_000),
             3 => policy.launch_identity.id = "../launch".into(),
             4 => policy.launch_identity.thread_id = "".into(),

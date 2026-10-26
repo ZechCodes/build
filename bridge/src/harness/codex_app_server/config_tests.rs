@@ -349,7 +349,7 @@ print(json.dumps({'tail':tail, 'effective':settings, 'launch':launch}))
 // Selected-profile cases exercise preparation only. The pinned config/read probe rejects
 // legacy profile selection; no fake native merge may establish its precedence.
 #[test]
-fn compaction_selected_profile_files_keep_both_public_carriers_on_fallback() {
+fn compaction_selected_profile_files_keep_both_public_carriers_on_native_defaults() {
     for legacy in [true, false] {
         for harness in [
             &crate::harness::codex::CodexHarness as &dyn Harness,
@@ -417,7 +417,7 @@ fn assert_profile_fallback(harness: &dyn Harness, legacy: bool) {
 }
 
 fn assert_profile_policy(policy: &AppliedCompactionPolicy, choice: &crate::models::ModelChoice) {
-    assert_eq!(policy.enforcement, CompactionEnforcement::BetweenTurn);
+    assert_eq!(policy.enforcement, CompactionEnforcement::Native);
     assert_eq!(policy.requested.tokens, 150_000);
     assert_eq!(
         policy.reason.as_deref(),

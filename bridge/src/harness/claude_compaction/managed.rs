@@ -38,20 +38,82 @@ const ENV_KEYS: &[&str] = &[
     "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT",
 ];
 
-pub(super) fn launch_conflict() -> Option<String> {
+#[derive(Clone, Debug, Default)]
+pub(super) struct Observation {
+    pub(super) reason: Option<String>,
+    pub(super) disables_auto: bool,
+    pub(super) disables_command: bool,
+}
+
+#[derive(Default)]
+struct DisableFlags {
+    auto_setting: bool,
+    auto_env: bool,
+    command: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    static LAUNCH_ROOTS: std::cell::RefCell<Option<(PathBuf, PathBuf)>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// Test roots stay on the preparing thread and restore the enclosing scope.
+#[cfg(test)]
+pub(super) struct ScopedLaunchRoots {
+    previous: Option<(PathBuf, PathBuf)>,
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for ScopedLaunchRoots {
+    fn drop(&mut self) {
+        LAUNCH_ROOTS.with(|roots| *roots.borrow_mut() = self.previous.take());
+    }
+}
+
+#[cfg(test)]
+pub(super) fn scoped_launch_roots(system: &Path, config: &Path) -> ScopedLaunchRoots {
+    let previous = LAUNCH_ROOTS.with(|roots| {
+        roots
+            .borrow_mut()
+            .replace((system.to_owned(), config.to_owned()))
+    });
+    ScopedLaunchRoots {
+        previous,
+        _thread_bound: std::marker::PhantomData,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn launch_conflict() -> Observation {
+    // Unscoped unit/child tests never inspect the developer's configuration.
+    // Scoped launch tests use the same source reader as production.
+    let roots = LAUNCH_ROOTS.with(|roots| roots.borrow().clone());
+    roots.map_or_else(Observation::default, |(system, config)| {
+        observe(&system, &config)
+    })
+}
+
+#[cfg(not(test))]
+pub(super) fn launch_conflict() -> Observation {
     if !cfg!(target_os = "linux")
         || std::env::var_os("WSL_DISTRO_NAME").is_some()
         || std::env::var_os("WSL_INTEROP").is_some()
     {
-        return Some("best effort, managed platform policy inspection unverified".into());
+        return Observation {
+            reason: Some("best effort, managed platform policy inspection unverified".into()),
+            ..Observation::default()
+        };
     }
     let config = config_path(
         std::env::var_os("CLAUDE_CONFIG_DIR"),
         std::env::var_os("HOME"),
     );
     match config {
-        Some(config) => inspect(Path::new("/etc/claude-code"), &config),
-        None => Some("best effort, managed policy inspection unverified: config directory unavailable or nonabsolute".into()),
+        Some(config) => observe(Path::new("/etc/claude-code"), &config),
+        None => Observation { reason: Some("best effort, managed policy inspection unverified: config directory unavailable or nonabsolute".into()), ..Observation::default() },
     }
 }
 
@@ -62,8 +124,21 @@ fn config_path(config: Option<OsString>, home: Option<OsString>) -> Option<PathB
         .filter(|path| path.is_absolute())
 }
 
+#[cfg(test)]
 fn inspect(system: &Path, config: &Path) -> Option<String> {
-    let (keys, unreadable) = inspect_sources(system, config);
+    observe(system, config).reason
+}
+
+pub(super) fn observe(system: &Path, config: &Path) -> Observation {
+    let (keys, unreadable, disabled) = inspect_sources(system, config);
+    Observation {
+        reason: inspection_reason(keys, unreadable),
+        disables_auto: disabled.auto_setting || disabled.auto_env || disabled.command,
+        disables_command: disabled.command,
+    }
+}
+
+fn inspection_reason(keys: BTreeSet<&'static str>, unreadable: bool) -> Option<String> {
     if keys.is_empty() {
         return unreadable.then(|| UNREADABLE.into());
     }
@@ -77,26 +152,35 @@ fn inspect(system: &Path, config: &Path) -> Option<String> {
     Some(reason)
 }
 
-fn inspect_sources(system: &Path, config: &Path) -> (BTreeSet<&'static str>, bool) {
+fn inspect_sources(system: &Path, config: &Path) -> (BTreeSet<&'static str>, bool, DisableFlags) {
     let mut keys = BTreeSet::new();
+    let mut disabled = DisableFlags::default();
     let mut budget = MAX_TOTAL_BYTES;
     let mut unreadable = inspect_file(
         &system.join("managed-settings.json"),
         &mut budget,
         &mut keys,
+        &mut disabled,
     )
     .is_err();
     match fragments(&system.join("managed-settings.d")) {
         Ok(paths) => {
             for path in paths {
-                unreadable |= inspect_file(&path, &mut budget, &mut keys).is_err();
+                unreadable |= inspect_file(&path, &mut budget, &mut keys, &mut disabled).is_err();
             }
         }
         Err(()) => unreadable = true,
     }
-    unreadable |=
-        inspect_file(&config.join("remote-settings.json"), &mut budget, &mut keys).is_err();
-    (keys, unreadable)
+    // A raw remote cache does not prove consent/eligibility or the live tier.
+    // Keep its key-name warning, but never schedule a competing fallback from it.
+    unreadable |= inspect_file(
+        &config.join("remote-settings.json"),
+        &mut budget,
+        &mut keys,
+        &mut DisableFlags::default(),
+    )
+    .is_err();
+    (keys, unreadable, disabled)
 }
 
 fn fragments(directory: &Path) -> Result<Vec<PathBuf>, ()> {
@@ -129,6 +213,7 @@ fn inspect_file(
     path: &Path,
     budget: &mut u64,
     keys: &mut BTreeSet<&'static str>,
+    disabled: &mut DisableFlags,
 ) -> Result<(), ()> {
     let Some(bytes) = read_bounded(path, budget)? else {
         return Ok(());
@@ -142,8 +227,17 @@ fn inspect_file(
             .copied()
             .filter(|key| document.contains_key(*key)),
     );
+    if let Some(enabled) = document.get("autoCompactEnabled").and_then(Value::as_bool) {
+        disabled.auto_setting = !enabled;
+    }
     if let Some(env) = document.get("env") {
         let env = env.as_object().ok_or(())?;
+        if let Some(value) = env.get("DISABLE_AUTO_COMPACT") {
+            disabled.auto_env = env_truthy(Some(value));
+        }
+        if let Some(value) = env.get("DISABLE_COMPACT") {
+            disabled.command = env_truthy(Some(value));
+        }
         keys.extend(
             ENV_KEYS
                 .iter()
@@ -152,6 +246,15 @@ fn inspect_file(
         );
     }
     Ok(())
+}
+
+fn env_truthy(value: Option<&Value>) -> bool {
+    value.and_then(Value::as_str).is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn read_bounded(path: &Path, budget: &mut u64) -> Result<Option<Vec<u8>>, ()> {

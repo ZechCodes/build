@@ -1,4 +1,113 @@
-# Claude compaction qualification — #656
+# Claude compaction qualification — #656 / #884
+
+## Current production contract — #884 (2026-10-26)
+
+Native automatic compaction is enabled on Claude ADK and TUI. Build selects a
+native window, not an exact trigger: requested 100k–1M maps directly to that
+window; all other positive requests use `auto`. The child receives matching
+`--autocompact`, settings and environment overrides. Output limits and native
+precomputation defaults remain untouched. There is no competing automatic Build
+scheduler while native remains available. Managed disabling policy is the
+exception: `autoCompactEnabled=false` or truthy `DISABLE_AUTO_COMPACT` /
+`DISABLE_COMPACT` selects `between_turn` at the unchanged requested threshold,
+with the disabling reason on the wire. A window-only override stays Native.
+The child still requests native enablement; managed policy takes precedence.
+Manual `/compact` remains available unless managed policy disables it too.
+When available, the managed fallback compacts a saved reading at or above its
+threshold before the first cold resumed input, including before ADK init;
+below-threshold input proceeds normally.
+
+The disable parser matches 2.1.284 (`1`, `true`, `yes`, `on`, trimmed and case
+insensitive; byte 197482109). Later local fragments overwrite earlier scalar
+and env values. Raw remote cache content does not prove active server policy;
+those conflicts remain observable warnings, not fallback authority.
+`DISABLE_COMPACT` also removes the manual command (byte 206239892). Below the
+requested threshold wakes run normally. At the threshold, Build refuses the
+wake and records one durable failed outcome/attention per unresolved blocking
+episode on the agent conversation, plus the original task/coordinator notice.
+Repeated due wakes do not add failures, send input or attempt an unavailable
+command. A typed marker in bounded Thread metadata commits atomically with the
+failed outcome and survives resident-tail eviction/restart; duplicate checks
+perform no history query or database/read-pool access. Usable managed policy,
+successful compaction or normal turn completion clears it; a later block then
+surfaces fresh attention. A distinct successful-turn counter and the episode's
+launch/counter baseline exclude partial output, failed/interrupted turns,
+duplicate results and older completion observations. Cold ADK checks use captured admission policy before
+init, while active policy remains unknown until opening succeeds. Captured
+BetweenTurn admission supplies top-level enforcement/reason even before init;
+Native admission never promotes active observations. No wrapper replay is built.
+
+The previous qualification rule required an exact requested-token trigger.
+Zech explicitly accepted an inexact provider trigger for #884. Production now
+reports approximately `min(window, model_window) - min(maxOutput,20000) - 13000`,
+with an optional catalog-based range and no exact translated trigger. These are
+estimates, not effective-budget or managed-policy readback. Native defaults
+remain enabled even for unknown versions/models and unrepresentable windows.
+
+| Requested window | Native setting | Approximate trigger with output reserve 20k |
+| --- | --- | --- |
+| 50k | auto | Provider-selected / reactive |
+| 100k | 100k | 67k (model window at least 100k) |
+| 150k | 150k | 117k (model window at least 150k) |
+| 200k | 200k | 167k (model window at least 200k) |
+| 1M | 1M | 967k on 1M models; 167k if clamped to a 200k model |
+| Above 1M / unsafe legacy integer | auto | Provider-selected / reactive |
+
+Lower effective output reserves raise these estimates, up to window minus 13k.
+Managed model remapping, model fallback and policy can change them. New policy
+applies on the next opening; an already-running child is not mutated in place.
+
+The static CLI parser accepts `--autocompact auto` and integer windows
+100000–1000000. CLI `auto` clears the runtime numeric window; the numeric
+settings schema catches the corresponding string `auto` as unset, and an empty
+window environment value is ignored. This delegates default resolution to the
+provider (including clientdata/model defaults), rather than guaranteeing the
+resolved source label is `auto`. Source offsets: bounds 197879173, settings
+schema 198248395, parser 206142620, resolver 206144304, normalization 212330962,
+CLI registration 214424667.
+
+### Why native was disabled, and why #884 changes it
+
+Commit `8f746defa21e27ad4fad9e7cc536c8e508050c92`
+(`feat: normalize Claude compaction per launch with qualified translation`)
+introduced the disable. Its source said: “launch version/model do not bound
+effective output settings, managed policy refresh or native in-turn model
+fallback.” Those uncertainty limits still apply; exactness no longer gates
+native enablement. A fake child cannot qualify live summary success.
+
+### Static reactive recovery evidence
+
+Read-only inspection of the exact 2.1.284 executable below, matching its SHA256,
+shows Build's old DISABLE_AUTO_COMPACT=1 disabled reactive recovery too. No
+installed executable, live provider or bridge was run for #884; no configuration
+or session stores were read. Zero-based byte offsets in its embedded source:
+
+- 206140141: disable guard `vct` gates `Bf`, the auto-compaction predicate.
+- 206144304 / 207000081: window resolution clamps explicit windows to model
+  context; auto mode can defer threshold compaction to reactive handling.
+- 206161686: `wme` recognizes a synthetic API error starting Prompt is too long.
+- 206933172: `Nvr`/`SFn` require auto-compaction enabled, appropriate query
+  source, no abort and remaining reactive allowance. Local mode enables the
+  path; remote mode also depends on its reactive feature flag.
+- 213031400–213034700: successful compaction replaces context and continues the
+  original query. One normal attempt and one conditional deeper pass are
+  bounded; exhaustion surfaces the provider error. Rapid-refill guards apply.
+- 206927705: insufficient conversation groups, blocked hooks, aborts and summary
+  refusals can defeat compaction. There is no promise every fixed prefix fits.
+
+The fake-child reactive test models both a successful boundary/continuation and
+terminal exhaustion, with one original wake and no wrapper replay/compact
+command. The offline app integration test establishes that terminal refusal
+reaches failure activity, task/coordinator notice and unread RunFailed attention.
+On the first wake of an already-over-window resumed session after deployment,
+Claude can attempt native recovery; if it emits a failed terminal result, Build
+surfaces attention. Build does not replay across restart or create a fresh
+handoff continuation; the task explicitly chose native recovery instead.
+
+## Historical #656 qualification (2026-10-18)
+
+The following records the original exact-trigger decision and isolated evidence;
+its production-off statements are superseded by the current contract above.
 
 Observed 2026-10-18. Native enforcement remains **unqualified for production**
 on both Claude carriers. The translator implements the inspected 2.1.284

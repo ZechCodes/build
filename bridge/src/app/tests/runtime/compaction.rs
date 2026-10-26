@@ -197,7 +197,7 @@ impl CompactingAgent {
                 .recording_into(&log)
                 .watching_status(watched),
         );
-        let policy = crate::harness::harness_for(AgentProvider::CodexAppServer)
+        let mut policy = crate::harness::harness_for(AgentProvider::CodexAppServer)
             .prepare_compaction_policy(
                 app.resolve_compaction_policy(RUN, &agent_id).unwrap(),
                 app.entity_agents(RUN)
@@ -215,6 +215,10 @@ impl CompactingAgent {
                 ),
             )
             .unwrap();
+        // This dictated fixture models a harness with manual compaction but
+        // no native automatic mechanism. Real Codex delegates to native.
+        policy.enforcement = crate::harness::compaction::CompactionEnforcement::BetweenTurn;
+        policy.native_settings = None;
         let key = TabKey::agent(&AppState::canonical_root(&root), &agent_id);
         let tab = app.session_registry.test_tab_mut(&key).unwrap();
         tab.session =
@@ -395,23 +399,36 @@ fn only_a_warm_session_is_compacted() {
     );
 }
 
-/// Claude reports its compaction's start through a hook rather than through
-/// `starts_compaction`, and still compacts on `/compact`.
 #[test]
-fn a_claude_session_past_its_threshold_is_compacted() {
-    let agent = CompactingAgent::new().with_context(900_000);
+fn claude_native_policy_never_schedules_wrapper_compaction_even_above_requested_window() {
     for provider in [AgentProvider::ClaudeAdk, AgentProvider::Claude] {
+        let agent = CompactingAgent::new().with_context(900_000);
         let mut turn = agent.turn(false);
         turn.model_choice.provider = provider;
-        let app = agent.state.lock().unwrap();
-
+        let mut app = agent.state.lock().unwrap();
+        let policy = crate::harness::harness_for(provider)
+            .prepare_compaction_policy(
+                app.resolve_compaction_policy(RUN, &agent.agent_id).unwrap(),
+                turn.model_choice.clone(),
+                None,
+                crate::harness::compaction::CompactionLaunchIdentity::new("native-only"),
+            )
+            .unwrap();
+        let key = TabKey::agent(&AppState::canonical_root(&agent.root), &agent.agent_id);
+        let tab = app.session_registry.test_tab_mut(&key).unwrap();
+        tab.session =
+            crate::harness::compaction::PolicySession::attach(Arc::clone(&tab.session), policy);
+        for spawned in [Spawned::Fresh, Spawned::Warm] {
+            assert!(
+                !app.compaction_due_before(&turn, spawned, "wake"),
+                "{provider:?}: native owns compaction"
+            );
+        }
+        app.compactions
+            .request(RUN, &agent.agent_id, "manual focus", false);
         assert!(
-            app.compaction_due_before(&turn, Spawned::Warm, "warm"),
-            "{provider:?} compacts on /compact"
-        );
-        assert!(
-            !app.compaction_due_before(&turn, Spawned::Warm, "/compact focus on the API"),
-            "{provider:?}: a turn that is itself a compaction is not preceded by another"
+            app.compaction_due_before(&turn, Spawned::Warm, "wake"),
+            "explicit manual compaction still works"
         );
     }
 }

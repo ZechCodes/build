@@ -232,7 +232,7 @@ impl AdkSession {
     /// incomplete line, and the reader cannot handle its answer until the
     /// state update is done. Neither a large payload nor a full pipe may hold
     /// the state lock while waiting for the child to read.
-    fn write_turn_line(&self, line: &str) -> Result<(), HarnessError> {
+    fn write_turn_line(&self, line: &str, operation_id: Option<&str>) -> Result<(), HarnessError> {
         let mut stdin = self.stdin.lock().unwrap();
         let pipe = stdin.as_mut().ok_or_else(|| {
             HarnessError::Session("this session has ended — it takes no more turns".to_string())
@@ -251,6 +251,7 @@ impl AdkSession {
             let mut state = self.state.lock().unwrap();
             match pipe.write(b"\n") {
                 Ok(1) => {
+                    state.accept_operation(operation_id);
                     state.open_turn();
                     state.first_turn_at.get_or_insert_with(Instant::now);
                     // A queued steering turn inherits the interrupt's result boundary.
@@ -466,7 +467,7 @@ impl AgentSession for AdkSession {
             },
         })
         .to_string();
-        self.write_turn_line(&line)
+        self.write_turn_line(&line, turn.operation_id.as_deref())
     }
 
     /// Announced by the child in its own `init` line, so the same provider

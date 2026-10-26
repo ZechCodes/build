@@ -65,7 +65,7 @@ pub(super) fn choice(provider: AgentProvider) -> ModelChoice {
 }
 
 #[test]
-fn claude_compaction_fallback_settings_override_inherited_policy_preserve_hooks_and_resume() {
+fn claude_compaction_native_settings_override_inherited_policy_preserve_hooks_and_resume() {
     let root = tempfile::tempdir().unwrap();
     let context = HarnessContext {
         channel: crate::config::Channel::Prod,
@@ -97,11 +97,12 @@ fn claude_compaction_fallback_settings_override_inherited_policy_preserve_hooks_
             let spec = harness.spec(&choice, &options, &context).unwrap();
             let i = spec.args.iter().position(|a| a == "--settings").unwrap();
             let settings: Value = serde_json::from_str(&spec.args[i + 1]).unwrap();
-            assert_eq!(settings["env"]["DISABLE_AUTO_COMPACT"], "1");
+            assert_eq!(settings["env"]["DISABLE_AUTO_COMPACT"], "0");
             assert_eq!(settings["env"]["DISABLE_COMPACT"], "0");
             assert_eq!(settings["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "");
-            assert_eq!(settings["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "");
-            assert_eq!(settings["autoCompactEnabled"], false);
+            assert_eq!(settings["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "150000");
+            assert_eq!(settings["autoCompactEnabled"], true);
+            assert!(settings.get("precomputeCompactionEnabled").is_none());
             assert!(settings["hooks"]["PreCompact"].is_array());
             assert!(settings["env"]
                 .get("CLAUDE_CODE_MAX_OUTPUT_TOKENS")
@@ -146,51 +147,59 @@ pub(super) fn native_policy(
 
 #[test]
 fn claude_compaction_merge_preserves_unrelated_settings_and_hooks() {
-    let original = json!({"hooks":{"PreCompact":[{"sentinel":true}]},"env":{"OTHER":"keep","CLAUDE_CODE_MAX_OUTPUT_TOKENS":"8192","DISABLE_COMPACT":"1"},"otherSetting":42});
+    let original = json!({"hooks":{"PreCompact":[{"sentinel":true}]},"env":{"OTHER":"keep","CLAUDE_CODE_MAX_OUTPUT_TOKENS":"8192","DISABLE_COMPACT":"1"},"otherSetting":42,"precomputeCompactionEnabled":true});
     let mut settings = original.clone();
     let values = ["183000".into(), "".into(), "0".into(), "0".into()];
-    merge_settings(
-        &mut settings,
-        Some(&translate("2.1.284", 150_000, 1_000_000, 20_000).unwrap()),
-        &values,
-    )
-    .unwrap();
+    merge_settings(&mut settings, Some(183_000), &values).unwrap();
     assert_eq!(settings["hooks"], original["hooks"]);
     assert_eq!(settings["env"]["OTHER"], "keep");
     assert_eq!(settings["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "8192");
     assert_eq!(settings["otherSetting"], 42);
+    assert_eq!(settings["precomputeCompactionEnabled"], true);
     assert_eq!(settings["env"]["DISABLE_COMPACT"], "0");
 }
 
 #[test]
-fn claude_compaction_production_is_unqualified_even_for_the_observed_model_and_version() {
+fn claude_compaction_production_uses_native_window_without_exact_trigger_claim() {
     for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
-        for model in [
-            None,
-            Some("claude-haiku-4-5"),
-            Some("claude-opus-5[1m]"),
-            Some("unknown-model"),
-        ] {
-            for version in [None, Some("2.1.284"), Some("2.1.285")] {
-                let mut choice = choice(provider);
-                choice.model = model.map(str::to_owned);
+        for version in [None, Some("2.1.284"), Some("2.1.285")] {
+            for tokens in [
+                1,
+                99_999,
+                100_000,
+                150_000,
+                200_000,
+                1_000_000,
+                1_000_001,
+                u64::MAX,
+            ] {
                 let policy = harness_for(provider)
                     .prepare_compaction_policy(
                         ResolvedCompactionPolicy {
-                            tokens: 150_000,
+                            tokens,
                             source: CompactionSource::Device,
                         },
-                        choice.clone(),
+                        choice(provider),
                         version.map(str::to_owned),
-                        CompactionLaunchIdentity::new("thread"),
+                        CompactionLaunchIdentity::new("native-window"),
                     )
                     .unwrap();
-                assert_eq!(policy.choice, choice);
-                assert_eq!(policy.enforcement, CompactionEnforcement::BetweenTurn);
-                assert!(!policy.capabilities.native_threshold);
-                assert!(policy.native_settings.is_none());
-                assert!(policy.translated_trigger.is_none());
-                assert!(policy.reason.is_some());
+                assert_eq!(policy.requested.tokens, tokens);
+                assert_eq!(policy.enforcement, CompactionEnforcement::Native);
+                assert!(policy.capabilities.native_threshold);
+                assert!(
+                    policy.translated_trigger.is_none(),
+                    "effective trigger is not exact"
+                );
+                let window = (100_000..=1_000_000).contains(&tokens).then_some(tokens);
+                assert_eq!(
+                    policy.native_settings,
+                    Some(NativeCompactionSettings::ClaudeWindow(window))
+                );
+                assert!(
+                    !policy.automatic_due(Some(u64::MAX)),
+                    "Build must never double-compact Claude"
+                );
             }
         }
     }
@@ -213,4 +222,221 @@ fn claude_compaction_refuses_mismatched_native_policy_or_choice() {
     .is_err());
     policy.native_settings = None;
     assert!(native_translation(&policy).is_err());
+}
+
+#[test]
+fn managed_disable_selects_fallback_but_window_override_keeps_native() {
+    for (disabled, command_disabled, expected) in [
+        (false, false, CompactionEnforcement::Native),
+        (true, false, CompactionEnforcement::BetweenTurn),
+        (true, true, CompactionEnforcement::BetweenTurn),
+    ] {
+        let choice = choice(AgentProvider::ClaudeAdk);
+        let harness = harness_for(choice.provider);
+        let policy = prepare_observed(
+            harness,
+            ResolvedCompactionPolicy {
+                tokens: 150_000,
+                source: CompactionSource::Device,
+            },
+            choice,
+            Some("2.1.284".into()),
+            CompactionLaunchIdentity::new("thread"),
+            managed::Observation {
+                reason: Some("managed policy present: test key".into()),
+                disables_auto: disabled,
+                disables_command: command_disabled,
+            },
+        )
+        .unwrap();
+        assert_eq!(policy.enforcement, expected);
+        assert_eq!(policy.capabilities.between_turn_compact, !command_disabled);
+        assert_eq!(policy.automatic_due(Some(150_000)), disabled);
+        assert_eq!(policy.requested.tokens, 150_000);
+        assert!(policy.reason.as_deref().unwrap().contains("managed policy"));
+    }
+}
+fn prepare_managed_launch(
+    provider: AgentProvider,
+    root: &std::path::Path,
+) -> AppliedCompactionPolicy {
+    let harness = harness_for(provider);
+    let selection = choice(provider);
+    let policy = harness
+        .prepare_compaction_policy(
+            ResolvedCompactionPolicy {
+                tokens: 150_000,
+                source: CompactionSource::Device,
+            },
+            selection.clone(),
+            Some("2.1.284".into()),
+            CompactionLaunchIdentity::new("managed-launch"),
+        )
+        .unwrap();
+    let context = HarnessContext {
+        channel: crate::config::Channel::Prod,
+        bridge_exe: "/fake/bridge".into(),
+        mcp_socket: root.join("socket"),
+        state_root: root.join("state"),
+    };
+    let options = SpawnOptions {
+        compaction_policy: Some(policy.clone()),
+        ..SpawnOptions::default()
+    };
+    let spec = harness.spec(&selection, &options, &context).unwrap();
+    let index = spec
+        .args
+        .iter()
+        .position(|arg| arg == "--settings")
+        .unwrap();
+    let settings: Value = serde_json::from_str(&spec.args[index + 1]).unwrap();
+    assert!(settings["hooks"]["PreCompact"].is_array());
+    assert!(
+        !context.state_root.exists(),
+        "spec preparation opens no child"
+    );
+    policy
+}
+
+fn managed_launch_fixture(document: Value) -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("system")).unwrap();
+    std::fs::create_dir(root.path().join("config")).unwrap();
+    std::fs::write(
+        root.path().join("system/managed-settings.json"),
+        document.to_string(),
+    )
+    .unwrap();
+    root
+}
+
+#[test]
+fn claude_managed_files_select_fallback_through_public_prepare_and_both_specs() {
+    for (document, command_disabled, key) in [
+        (
+            serde_json::json!({"autoCompactEnabled":false}),
+            false,
+            "autoCompactEnabled",
+        ),
+        (
+            serde_json::json!({"env":{"DISABLE_AUTO_COMPACT":"true"}}),
+            false,
+            "DISABLE_AUTO_COMPACT",
+        ),
+        (
+            serde_json::json!({"env":{"DISABLE_COMPACT":"on"}}),
+            true,
+            "DISABLE_COMPACT",
+        ),
+    ] {
+        let root = managed_launch_fixture(document);
+        let _roots =
+            managed::scoped_launch_roots(&root.path().join("system"), &root.path().join("config"));
+        for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+            let policy = prepare_managed_launch(provider, root.path());
+            assert_eq!(
+                policy.enforcement,
+                CompactionEnforcement::BetweenTurn,
+                "{key}: {provider:?}"
+            );
+            assert_eq!(policy.requested.tokens, 150_000);
+            assert_eq!(policy.native_settings, None);
+            assert_eq!(policy.translated_trigger, None);
+            assert_eq!(policy.capabilities.between_turn_compact, !command_disabled);
+            assert!(!policy.automatic_due(Some(149_999)));
+            assert!(policy.automatic_due(Some(150_000)));
+            let reason = policy.reason.as_deref().unwrap();
+            assert!(reason.contains("managed policy disables"));
+            assert!(reason.contains(key));
+            assert_eq!(
+                reason.contains("operator must change managed policy"),
+                command_disabled
+            );
+        }
+    }
+}
+
+#[test]
+fn claude_managed_window_and_false_disable_env_keep_public_launch_native() {
+    for document in [
+        serde_json::json!({"autoCompactWindow":100000}),
+        serde_json::json!({"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"100000"}}),
+        serde_json::json!({"env":{"DISABLE_AUTO_COMPACT":"0","DISABLE_COMPACT":"false"}}),
+    ] {
+        let root = managed_launch_fixture(document);
+        let _roots =
+            managed::scoped_launch_roots(&root.path().join("system"), &root.path().join("config"));
+        for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+            let policy = prepare_managed_launch(provider, root.path());
+            assert_eq!(policy.enforcement, CompactionEnforcement::Native);
+            assert_eq!(
+                policy.native_settings,
+                Some(NativeCompactionSettings::ClaudeWindow(Some(150_000)))
+            );
+            assert!(!policy.automatic_due(Some(u64::MAX)));
+        }
+    }
+}
+
+#[test]
+fn claude_managed_sorted_fragment_enable_overrides_base_disable_in_public_launch() {
+    let root = managed_launch_fixture(serde_json::json!({"env":{"DISABLE_AUTO_COMPACT":"1"}}));
+    let fragments = root.path().join("system/managed-settings.d");
+    std::fs::create_dir(&fragments).unwrap();
+    // Create in reverse precedence order: filename sorting determines the winner.
+    std::fs::write(
+        fragments.join("20-enable.json"),
+        r#"{"env":{"DISABLE_AUTO_COMPACT":"0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        fragments.join("10-disable.json"),
+        r#"{"env":{"DISABLE_AUTO_COMPACT":"1"}}"#,
+    )
+    .unwrap();
+    let _roots =
+        managed::scoped_launch_roots(&root.path().join("system"), &root.path().join("config"));
+    for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+        let policy = prepare_managed_launch(provider, root.path());
+        assert_eq!(policy.enforcement, CompactionEnforcement::Native);
+        assert!(!policy.automatic_due(Some(u64::MAX)));
+    }
+}
+
+#[test]
+fn claude_managed_launch_root_scopes_restore_after_nested_panic() {
+    let disabled = managed_launch_fixture(serde_json::json!({"autoCompactEnabled":false}));
+    let enabled = managed_launch_fixture(serde_json::json!({"autoCompactEnabled":true}));
+    let selection = AgentProvider::ClaudeAdk;
+    {
+        let _outer = managed::scoped_launch_roots(
+            &disabled.path().join("system"),
+            &disabled.path().join("config"),
+        );
+        assert_eq!(
+            prepare_managed_launch(selection, disabled.path()).enforcement,
+            CompactionEnforcement::BetweenTurn
+        );
+        let unwound = std::panic::catch_unwind(|| {
+            let _inner = managed::scoped_launch_roots(
+                &enabled.path().join("system"),
+                &enabled.path().join("config"),
+            );
+            assert_eq!(
+                prepare_managed_launch(selection, enabled.path()).enforcement,
+                CompactionEnforcement::Native
+            );
+            panic!("exercise scoped root restoration");
+        });
+        assert!(unwound.is_err());
+        assert_eq!(
+            prepare_managed_launch(selection, disabled.path()).enforcement,
+            CompactionEnforcement::BetweenTurn
+        );
+    }
+    // The default test root is absent, never the developer's HOME/configuration.
+    assert_eq!(
+        prepare_managed_launch(selection, disabled.path()).enforcement,
+        CompactionEnforcement::Native
+    );
 }

@@ -57,7 +57,7 @@ import { readSyncLists } from "./syncLists.js";
 import { App } from "../appState.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
 import { bridgeCapabilities, onSubscriptionHeld, subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
-import { entityDataInvalidatedSince, entityPushedSince, forgetPushes, notePush, pushFence, pushedSince, removedSince } from "./pushFence.js";
+import { entityDataInvalidatedSince, entityChangedSince, forgetPushes, noteEntityCacheChange, notePush, pushFence, pushedSince, removedSince } from "./pushFence.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { cachedRouteEntityId } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
@@ -80,6 +80,7 @@ import {
   mergeCachedTogether,
   readCached,
   recordWriteOf,
+  subscribeCache,
   updateCachedFeed,
   writeCached,
 } from "./localCache.js";
@@ -169,6 +170,7 @@ let visibilityWired = false;
 let stopDeviceWatch = null;
 let stopLandingWatch = null;
 let stopThreadWatch = null;
+let stopCacheWatch = null;
 // Counts the times the sync layer stood down. Every read and push applier
 // belongs to the one it started under, and stops writing when that ends —
 // including across a restart on the same device and session, which would
@@ -1095,18 +1097,18 @@ async function evictRowsThatAreOver(context, view, fence) {
 /** Step 4, the other half: an entity the board has stopped naming altogether
  *  is gone — the row is the board's to list and the board's to remove, so the
  *  row goes with the data. Another device's records are another device's
- *  business, and an entity a push named after the board was read is one the
- *  board had not heard of yet. */
+ *  business. Any newer cache publication can name an owner the captured board
+ *  had not heard of yet, including a data-only push or its delayed read. */
 async function dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence) {
   const named = entitiesTheBoardNames(view);
   const visible = new Set((view.items || []).map(entityIdOf));
   const hiddenRuns = new Set((view.runs || []).map(entityIdOf).filter((id) => id && !visible.has(id)));
-  const pushedEntity = (entityId) => entityPushedSince(addressOf(context, entityId, "row"), fence);
+  const changedEntity = (entityId) => entityChangedSince(addressOf(context, entityId, "row"), fence);
   for (const cachedId of await cachedEntityIds(context.deviceId)) {
     if (!context.active()) return;
     if (!named.has(cachedId)) {
-      if (!pushedEntity(cachedId)) await dropUnnamedEntity({ ...context,
-        active: () => context.active() && !pushedEntity(cachedId) }, cachedId);
+      if (!changedEntity(cachedId)) await dropUnnamedEntity({ ...context,
+        active: () => context.active() && !changedEntity(cachedId) }, cachedId);
     } else if (hiddenRuns.has(cachedId)) {
       await dropOlderHiddenRow(context, cachedId, passStartedAt);
     }
@@ -2470,6 +2472,9 @@ const APPLIERS = [
   ["terminals", applyTerminals],
 ];
 
+// Derived from dispatch itself so regression fixtures must cover new kinds.
+export const syncPushKinds = Object.freeze(APPLIERS.map(([kind]) => kind));
+
 // ─── Standing up and standing down ───────────────────────────────────────────
 
 /** Take the browser-wide sync lock, or queue for it. The holder does the whole
@@ -2539,6 +2544,9 @@ function onVisibilityChange() {
 
 export function startCacheSync() {
   stopCacheSync();
+  stopCacheWatch = subscribeCache({}, (address) => {
+    if (holdingLock && address.deviceId && address.entityId) noteEntityCacheChange(address);
+  });
   stopDeviceWatch = onDeviceStateChanged(considerDevices);
   stopLandingWatch = onSubscriptionHeld(subscriptionLanded);
   stopThreadWatch = subscribeThreadReaders(wakeThreadReads);
@@ -2556,9 +2564,11 @@ function disposeProjectTerminalSubscriptions() {
   projectTerminalSubscriptions.clear();
 }
 
-function disposeThreadWatch() {
+function disposeCacheWatches() {
   stopThreadWatch?.();
   stopThreadWatch = null;
+  stopCacheWatch?.();
+  stopCacheWatch = null;
 }
 
 export function stopCacheSync() {
@@ -2566,7 +2576,7 @@ export function stopCacheSync() {
   stopDeviceWatch = null;
   if (stopLandingWatch) stopLandingWatch();
   stopLandingWatch = null;
-  disposeThreadWatch();
+  disposeCacheWatches();
   for (const held of subscriptions.values()) {
     held.inbox.dispose();
     held.background.dispose();

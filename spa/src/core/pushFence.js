@@ -19,7 +19,7 @@
 
 let pushes = 0;
 const marks = new Map(); // record address → the latest push that touched it
-const entityMarks = new Map(); // entity → the latest push to any of its records
+const entityChanges = new Map(); // entity → its latest cache change or push
 const invalidations = new Map(); // entity data lifetime, independent of board membership
 const removals = new Map(); // entity → the latest push that took it away
 
@@ -33,7 +33,7 @@ export const pushFence = () => pushes;
 export function notePush(address, { removed = false } = {}) {
   pushes += 1;
   marks.set(markKey(address), { at: pushes, removed });
-  entityMarks.set(entityKey(address), pushes);
+  entityChanges.set(entityKey(address), pushes);
   if (removed) removals.set(entityKey(address), pushes);
 }
 
@@ -48,8 +48,13 @@ export const entityDataInvalidatedSince = (address, fence) =>
 /** Whether a push took this record's entity off the board after the fence. */
 export const removedSince = (address, fence) => (removals.get(entityKey(address)) || 0) > fence;
 
-/** A data-only push also names a live owner, even without carrying its row. */
-export const entityPushedSince = (address, fence) => (entityMarks.get(entityKey(address)) || 0) > fence;
+/** Cleanup observes the cache boundary, including merges and reads completing
+ * invalidations. This is separate from per-record push/response ordering. */
+export function noteEntityCacheChange(address) {
+  entityChanges.set(entityKey(address), ++pushes);
+}
+
+export const entityChangedSince = (address, fence) => (entityChanges.get(entityKey(address)) || 0) > fence;
 
 /** What a push did to this record after the fence — wrote it, or took its
  *  entity away — or null where none did. */
@@ -62,7 +67,7 @@ export function pushedSince(address, fence) {
 /** The sync layer stood down: no read it asked will be written. */
 export function forgetPushes() {
   marks.clear();
-  entityMarks.clear();
+  entityChanges.clear();
   removals.clear();
   invalidations.clear();
 }

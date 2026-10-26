@@ -1410,6 +1410,72 @@ describe("a refresh requested during a pass", () => {
     expect((await read("new-owner", "terminals"))?.value?.tabs).toEqual(tabs);
   });
 
+  const cleanupPushCases = {
+    state: ["state-only"], thread: ["thread-append", "thread-trim"],
+    git: ["git-log-only"], tasks: ["tasks-invalidation"],
+    files: ["files-root", "files-paths", "files-truncated"], terminals: ["terminals-only"],
+  };
+
+  it("enumerates cleanup regression fixtures for every dispatched push kind", () => {
+    expect(Object.keys(cleanupPushCases).sort()).toEqual([...sync.syncPushKinds].sort());
+  });
+
+  const cleanupMessage = (sequence) => ({ type: "message", data: { id: `m-${sequence}`, sequence, body: `message ${sequence}` } });
+  const cleanupPayload = (variant) => ({
+    "state-only": { state: branchItem({ run_id: "new-owner", branch: "new-branch" }) },
+    "thread-append": { thread: [{ agent_id: "ag-new", thread_id: "t-new", thread_generation_revision: 1,
+      since_sequence: 2, last_sequence: 3, thread_total: 3, items: [cleanupMessage(3)] }] },
+    "thread-trim": { thread: [{ agent_id: "ag-new", thread_id: "t-new", thread_generation_revision: 1,
+      since_sequence: 2, last_sequence: 2, thread_total: 2, history_start_sequence: 2, items: [] }] },
+    "git-log-only": { git: { log: { commits: [{ hash: "new-commit" }], newest: "new-commit" } } },
+    "tasks-invalidation": { tasks: { task_ids: ["new-task"] } },
+    "files-root": { files: { root: { path: "", entries: [{ name: "new-file" }] } } },
+    "files-paths": { files: { paths: ["new-file"] } },
+    "files-truncated": { files: { truncated: true } },
+    "terminals-only": { terminals: { tabs: [{ term_id: "new-tab" }] } },
+  })[variant];
+  const cleanupRecord = {
+    state: ["row", ""], thread: ["thread", "ag-new"], git: ["log", ""],
+    tasks: ["tracker-tasks", ""], files: ["tree", ""], terminals: ["terminals", ""],
+  };
+  const assertCleanupValue = (kind, variant, value) => {
+    const field = { state: "branch", thread: "items", git: "commits", tasks: "tasks", files: "entries", terminals: "tabs" }[kind];
+    const expected = {
+      "state-only": "new-branch", "thread-append": [cleanupMessage(1), cleanupMessage(2), cleanupMessage(3)],
+      "thread-trim": [cleanupMessage(2)], "git-log-only": [{ hash: "new-commit" }],
+      "tasks-invalidation": [{ id: "new-task", project_id: "new-owner" }],
+      "files-root": [{ name: "new-file" }], "files-paths": [{ name: "new-file" }], "files-truncated": [{ name: "new-file" }],
+      "terminals-only": [{ term_id: "new-tab" }],
+    }[variant];
+    expect(value?.[field]).toEqual(expected);
+  };
+
+  it.each(Object.entries(cleanupPushCases).flatMap(([kind, variants]) => variants.map((variant) => [kind, variant])))
+    ("keeps %s / %s data newer than the held board snapshot", async (kind, variant) => {
+      await boot([branchItem()]);
+      // This owner (and, for tasks, this project) is deliberately absent from
+      // the captured board/project lists. Known owners conceal cleanup races.
+      await cache.writeCached({ deviceId: "dev-1", entityId: "new-owner", kind: "row" }, branchItem({ run_id: "new-owner" }));
+      await cache.writeCached({ deviceId: "dev-1", entityId: "new-owner", kind: "thread", sub: "ag-new" }, {
+        thread_id: "t-new", thread_generation_revision: 1, deliveredSequence: 2, items: [cleanupMessage(1), cleanupMessage(2)], total: 2,
+      });
+      await cache.writeCached({ deviceId: "dev-1", entityId: "new-owner", kind: "tree" }, { path: "", entries: [] });
+      script["tasks.list"] = () => ({ tasks: [{ id: "new-task", project_id: "new-owner" }] });
+      script["fs.tree"] = () => ({ path: "", entries: [{ name: "new-file" }] });
+      const held = holdNextRead("board.list");
+      const refresh = sync.syncDevice("dev-1", "read-state");
+      await held.reading;
+      const inbox = ["state", "thread", "tasks"].includes(kind);
+      const watcher = registeredWatchers.find((watcher) => watcher.id === (inbox ? "s-inbox" : "s-background") && !watcher.disposed);
+      await watcher.onChanges([{ entity_id: "new-owner", ...cleanupPayload(variant) }]);
+      const record = () => read("new-owner", ...cleanupRecord[kind]);
+      const expected = (await record())?.value;
+      assertCleanupValue(kind, variant, expected);
+      held.release();
+      expect(await refresh).toBe(true);
+      expect((await record())?.value).toEqual(expected);
+    });
+
   it("repairs late background coverage without unrelated lists or tasks", async () => {
     await boot([branchItem()]);
     const held = holdNextRead("git.status");

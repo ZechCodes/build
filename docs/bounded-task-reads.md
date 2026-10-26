@@ -119,6 +119,10 @@ manifest; missing indexes are restored selectively, without replaying history.
 Missing/changed maintenance triggers, shared helper views or projection tables first persist
 a repair marker, clear derived rows
 in bounded batches, then restart the backfill. Canonical records remain intact.
+Empty derived tables are recreated with the expected definitions in the same
+transaction that clears obsolete checkpoints and the repair marker. A staged
+definition fingerprint is saved before the first backfill batch, so an interrupted
+migration cannot resume a committed prefix under changed projection rules.
 Batch counts bound row cardinality, not the size of an imported canonical body;
 one legacy record can still be large and must be parsed during migration.
 

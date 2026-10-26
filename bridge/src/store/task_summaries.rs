@@ -221,7 +221,8 @@ fn valid_assignee_choice(value: &Value) -> bool {
 /// rowid checkpoint, so an interrupted migration resumes without restarting.
 pub(super) fn initialize(conn: &mut Connection) -> Result<(), StoreError> {
     let existing: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices','tracker_task_filter_values','tracker_task_summary_identities')",[],|row|row.get(0))?;
-    if existing != 5 {
+    let has_context = has_context_column(conn)?;
+    if existing != 5 || !has_context {
         // Commit repair intent before recreating a missing table: a crash
         // between DDL and reset must not make a partial unit look complete.
         conn.execute(
@@ -230,6 +231,10 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<(), StoreError> {
         )?;
     }
     conn.execute_batch(sql::TABLES)?;
+    if !has_context_column(conn)? {
+        conn.execute_batch("ALTER TABLE tracker_task_summaries ADD COLUMN context TEXT NOT NULL DEFAULT '{}' CHECK(length(CAST(context AS BLOB))<=4096);")?;
+    }
+    drop_projection_triggers(conn)?;
     let rebuilding: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM meta WHERE key='task_summary_rebuild')",
         [],
@@ -243,6 +248,27 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<(), StoreError> {
     migrate_tasks(conn)?;
     migrate_identities(conn)?;
     conn.execute_batch(&sql::triggers())?;
+    Ok(())
+}
+
+fn has_context_column(conn: &Connection) -> Result<bool, StoreError> {
+    let columns = conn
+        .prepare("PRAGMA table_info(tracker_task_summaries)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(columns.iter().any(|name| name == "context"))
+}
+
+fn drop_projection_triggers(conn: &Connection) -> Result<(), StoreError> {
+    let names = conn
+        .prepare(
+            "SELECT name FROM sqlite_schema WHERE type='trigger' AND name LIKE 'tracker_summary_%'",
+        )?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for name in names {
+        conn.execute_batch(&format!("DROP TRIGGER \"{}\"", name.replace('"', "\"\"")))?;
+    }
     Ok(())
 }
 
@@ -317,7 +343,7 @@ fn migrate_tasks(conn: &mut Connection) -> Result<(), StoreError> {
                 .query_map(params![below, through], |r| r.get(0))?
                 .collect::<Result<_, _>>()?;
             for id in ids {
-                tx.execute_batch(&sql::refresh(&format!("'{}'", id.replace('\'', "''"))))?;
+                tx.execute_batch(&sql::rebuild_task(&format!("'{}'", id.replace('\'', "''"))))?;
             }
             Ok(())
         },

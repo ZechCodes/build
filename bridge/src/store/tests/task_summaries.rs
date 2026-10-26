@@ -761,3 +761,181 @@ fn interrupted_projection_repair_resumes_with_all_tables_present_and_old_checkpo
         .unwrap();
     assert_eq!(marker, 0);
 }
+
+fn forbid_projection_writes(conn: &rusqlite::Connection, tables: &[&str]) {
+    for table in tables {
+        for operation in ["INSERT", "UPDATE", "DELETE"] {
+            conn.execute_batch(&format!("CREATE TRIGGER guard_{table}_{operation} BEFORE {operation} ON {table} BEGIN SELECT RAISE(ABORT,'unrelated projection write'); END;")).unwrap();
+        }
+    }
+}
+
+#[test]
+fn history_and_read_marker_changes_do_not_rebuild_choices_or_dependency_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut draft = Task::drafted("/summary", "isolated activity", Actor::User, support::NOW);
+    draft.body = "large unrelated body".repeat(100_000);
+    draft.watched = true;
+    draft.labels = vec!["Unchanged".into()];
+    let task = store.create_tracker_task(draft, &[]).unwrap();
+    let comment = said(&task, "tc-00000000000000000000000001", support::NOW);
+    {
+        let conn = store.connection();
+        forbid_projection_writes(
+            &conn,
+            &[
+                "tracker_task_filter_choices",
+                "tracker_task_filter_values",
+                "tracker_task_dependencies",
+            ],
+        );
+    }
+    store
+        .save_tracker_task_activity(&task, std::slice::from_ref(&comment), &[])
+        .unwrap();
+    assert_matches_history(&store, &task.id);
+    {
+        let conn = store.connection();
+        conn.execute(
+            "UPDATE tracker_tasks SET record=json_set(record,'$.read_through',?1) WHERE id=?2",
+            rusqlite::params![comment.id, task.id],
+        )
+        .unwrap();
+        conn.execute("UPDATE tracker_comments SET record=json_set(record,'$.author.kind','user') WHERE id=?1",[&comment.id]).unwrap();
+    }
+    assert_matches_history(&store, &task.id);
+    store
+        .connection()
+        .execute("DELETE FROM tracker_comments WHERE id=?1", [&comment.id])
+        .unwrap();
+    assert_matches_history(&store, &task.id);
+}
+
+#[test]
+fn review_metadata_patches_do_not_rebuild_activity_choices_or_dependencies() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let task = store
+        .create_tracker_task(
+            Task::drafted("/summary", "metadata", Actor::User, support::NOW),
+            &[],
+        )
+        .unwrap();
+    let conn = store.connection();
+    forbid_projection_writes(
+        &conn,
+        &[
+            "tracker_task_filter_choices",
+            "tracker_task_filter_values",
+            "tracker_task_dependencies",
+            "tracker_task_summary_facts",
+        ],
+    );
+    conn.execute("INSERT INTO reviews(task_id,workspace_id,version,record) VALUES(?1,'workspace',1,?2)",rusqlite::params![task.id,serde_json::json!({"mode":"pull_request","pull_request":{"originating_workspace_id":"workspace","status":"open"}}).to_string()]).unwrap();
+    let reader = ReadTransaction::new(&conn);
+    assert_eq!(
+        reader
+            .list_task_summary_candidates("/summary", None, 1)
+            .unwrap()[0]
+            .row["review_summary"]["status"],
+        "open"
+    );
+    conn.execute("UPDATE reviews SET record=json_set(record,'$.pull_request.status','approved') WHERE task_id=?1",[&task.id]).unwrap();
+    assert_eq!(
+        reader
+            .list_task_summary_candidates("/summary", None, 1)
+            .unwrap()[0]
+            .row["review_summary"]["status"],
+        "approved"
+    );
+    conn.execute("DELETE FROM reviews WHERE task_id=?1", [&task.id])
+        .unwrap();
+    assert!(reader
+        .list_task_summary_candidates("/summary", None, 1)
+        .unwrap()[0]
+        .row
+        .get("review_summary")
+        .is_none());
+}
+
+#[test]
+fn activity_context_backfills_old_card_schema_before_reader_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let task_id;
+    {
+        let store = Store::new(dir.path()).unwrap();
+        let mut task = Task::drafted("/summary", "old card schema", Actor::User, support::NOW);
+        task.watched = true;
+        let task = store.create_tracker_task(task, &[]).unwrap();
+        store
+            .save_tracker_task_activity(
+                &task,
+                &[said(&task, "tc-00000000000000000000000001", support::NOW)],
+                &[],
+            )
+            .unwrap();
+        task_id = task.id;
+    }
+    {
+        let store = Store::new(dir.path()).unwrap();
+        let conn = store.connection();
+        let names=conn.prepare("SELECT name FROM sqlite_schema WHERE type='trigger' AND name LIKE 'tracker_summary_%'").unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+        for name in names {
+            conn.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
+        }
+        conn.execute_batch("ALTER TABLE tracker_task_summaries DROP COLUMN context;")
+            .unwrap();
+    }
+    let store = Store::new(dir.path()).unwrap();
+    assert_matches_history(&store, &task_id);
+    let size: i64 = store
+        .connection()
+        .query_row(
+            "SELECT length(CAST(context AS BLOB)) FROM tracker_task_summaries WHERE task_id=?1",
+            [&task_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(size <= 4096);
+}
+
+#[test]
+fn history_projection_does_not_parse_the_canonical_task_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = Task::drafted("/summary", "isolated source", Actor::User, support::NOW);
+    task.watched = true;
+    let task = store.create_tracker_task(task, &[]).unwrap();
+    let mut conn = store.connection();
+    let tx = conn.transaction().unwrap();
+    // Deliberately make the canonical JSON unreadable inside a rollback-only
+    // transaction, retaining the already-committed compact card context.
+    tx.execute_batch("DROP TRIGGER tracker_summary_task_UPDATE;")
+        .unwrap();
+    tx.execute(
+        "UPDATE tracker_tasks SET record='unreadable canonical JSON' WHERE id=?1",
+        [&task.id],
+    )
+    .unwrap();
+    let comment = said(&task, "tc-00000000000000000000000001", support::NOW);
+    tx.execute(
+        "INSERT INTO tracker_comments(id,task_id,created_at,record) VALUES(?1,?2,?3,?4)",
+        rusqlite::params![
+            comment.id,
+            comment.task_id,
+            comment.created_at,
+            serde_json::to_string(&comment).unwrap()
+        ],
+    )
+    .unwrap();
+    let reader = ReadTransaction::new(&tx);
+    assert_eq!(
+        reader
+            .list_task_summary_candidates("/summary", None, 1)
+            .unwrap()[0]
+            .row["unread_count"],
+        1
+    );
+    tx.rollback().unwrap();
+}

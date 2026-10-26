@@ -50,7 +50,7 @@ limits. #889 gate exits and scanner results are recorded with the final handoff.
 ### #889 gate evidence
 
 Base `c6b1ae4f973dad19d70d6a58c39513e983878ac8`; frozen implementation
-`f73d357279029d335658b23b68ebb6c9df267154`. All executable gates below ran
+`d23799ca0ab196216d8e7254d0ebe84ed700eb55`. All executable gates below ran
 under `nice -n 10` with Node 22.23.4/npm 12.0.2, judged by actual process exits.
 Full command/exit manifest and raw logs are retained in `/tmp/build889-gates/`
 and attached to the handoff. Documentation-only evidence commits follow this
@@ -71,10 +71,12 @@ source without changing code/tests/dependencies.
 
 TDD evidence: `red-fence.log` fails the missing Mermaid wrapper assertion,
 `red-actor-browser.log` fails because two connected image href assignments occur,
-and `red-markers.log` fails the missing hollow UML marker assertion; each exits
-1. The final tests above pass their corresponding regressions. Early development
+`red-markers.log` fails the missing hollow UML marker assertion, and
+`red-label-syntax.log` fails rejection of unsupported Mermaid entity/math syntax;
+each exits 1. The final tests above pass their corresponding regressions. Early development
 startup/timeout failures remain in their separate logs and are not counted as
-assertion-based red evidence. No source changed during the final gates.
+assertion-based red evidence. The final gate batch was repeated after the entity/math policy revision; no
+source changed during that batch. Earlier runs remain in `initial-f73/`.
 
 The production entry changes from 883,249 to 884,840 raw bytes (+1,591),
 293,816 to 294,319 gzip bytes (+503). This small controller cost is separate

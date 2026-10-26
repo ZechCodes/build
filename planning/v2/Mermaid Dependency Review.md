@@ -58,7 +58,7 @@ The actor metadata regression first failed with **two connected image href
 assignments to `//evil.test/pixel`** (exit 1), then passed after pre-render rejection.
 Logs and exact gate exits are attached to the implementation handoff.
 
-Final verification at implementation `f73d357279029d335658b23b68ebb6c9df267154`:
+Final verification at implementation `d23799ca0ab196216d8e7254d0ebe84ed700eb55`:
 fresh npm12 locked installs, lint, 372 targeted unit tests, 49 Chromium tests,
 build, Semgrep (200 rules/13 targets/no findings), Gitleaks and diff check all
 exit 0. Production chunk metadata proves all 68 Mermaid-containing chunks stay

@@ -255,7 +255,7 @@ impl ManagedBlockFixture {
         policy.capabilities.between_turn_compact = false;
         policy.reason =
             Some("managed policy DISABLE_COMPACT disables native and manual compaction".into());
-        let observation = app.agent_compaction_observation(&owner, &agent, Some(&policy));
+        let observation = app.agent_compaction_observation(&owner, &agent, Some(&policy), None);
         assert_eq!(observation["enforcement"], "between_turn");
         assert_eq!(observation["reason"], policy.reason.as_deref().unwrap());
         let threshold = policy.requested.tokens;

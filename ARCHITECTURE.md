@@ -1305,7 +1305,9 @@ task/coordinator failure notice. A typed internal marker is stored in the
 bounded Thread metadata in the same owner transaction as the failed outcome;
 duplicate checks use that captured bit, with no history query or database/read
 pool access. The admitted policy is available before ADK init without claiming
-it is an active observation. Later due wakes are refused without more attention
+it is an active observation. Captured admission can expose BetweenTurn
+enforcement/reason before init while `active` remains null; admitted Native
+never becomes an active observation. Later due wakes are refused without more attention
 rows. Usable policy, successful compaction or normal completion clears the
 marker, so a later block gets fresh attention. ADK publishes a distinct
 successful-turn counter only at an authoritative successful result; partial

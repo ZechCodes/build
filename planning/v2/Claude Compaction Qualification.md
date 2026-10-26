@@ -30,8 +30,9 @@ successful compaction or normal turn completion clears it; a later block then
 surfaces fresh attention. A distinct successful-turn counter and the episode's
 launch/counter baseline exclude partial output, failed/interrupted turns,
 duplicate results and older completion observations. Cold ADK checks use captured admission policy before
-init, while active policy remains unknown until opening succeeds. No wrapper
-replay is built.
+init, while active policy remains unknown until opening succeeds. Captured
+BetweenTurn admission supplies top-level enforcement/reason even before init;
+Native admission never promotes active observations. No wrapper replay is built.
 
 The previous qualification rule required an exact requested-token trigger.
 Zech explicitly accepted an inexact provider trigger for #884. Production now

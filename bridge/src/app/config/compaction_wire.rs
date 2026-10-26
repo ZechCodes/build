@@ -97,6 +97,7 @@ impl AppState {
         owner: &str,
         agent: &str,
         applied: Option<&AppliedCompactionPolicy>,
+        admitted_between_turn: Option<&AppliedCompactionPolicy>,
     ) -> Value {
         let configured = self
             .resolve_snapshot_compaction_policy(owner, agent, true)
@@ -104,7 +105,13 @@ impl AppState {
         let inherited = self
             .resolve_snapshot_compaction_policy(owner, agent, false)
             .ok();
-        let (enforcement, reason) = match applied {
+        // A pre-init Build gate is known, but it cannot establish an active
+        // provider policy or a pending-change comparison. Never infer native.
+        let enforcement_policy = applied.or_else(|| {
+            admitted_between_turn
+                .filter(|policy| policy.enforcement == CompactionEnforcement::BetweenTurn)
+        });
+        let (enforcement, reason) = match enforcement_policy {
             None => ("unsupported", Some("active_policy_unknown")),
             Some(policy) => (
                 match policy.enforcement {

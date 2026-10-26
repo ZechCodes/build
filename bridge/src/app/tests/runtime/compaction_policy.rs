@@ -672,6 +672,7 @@ fn claude_native_window_observation_preserves_intent_without_claiming_an_exact_t
             OWNER,
             &fixture.agent,
             Some(&policy),
+            None,
         );
         assert_eq!(observation["configured"]["tokens"], tokens);
         assert_eq!(observation["active"]["tokens"], tokens);
@@ -690,6 +691,65 @@ fn claude_native_window_observation_preserves_intent_without_claiming_an_exact_t
                 observation["active"]["native_trigger"]["catalog_window_estimate"],
                 Value::Null
             );
+        }
+    }
+}
+
+#[test]
+fn cold_agent_wire_reports_admitted_fallback_without_promoting_an_unopened_native_policy() {
+    use crate::harness::compaction::{CompactionEnforcement, PolicySession};
+    let fixture = PolicyLaunch::new(false);
+    let choice = ModelChoice {
+        provider: AgentProvider::ClaudeAdk,
+        ..fixture.choice.clone()
+    };
+    let mut app = fixture.state.lock().unwrap();
+    app.set_agent_model_choice(OWNER, &fixture.agent, choice.clone())
+        .unwrap();
+    for enforcement in [
+        CompactionEnforcement::BetweenTurn,
+        CompactionEnforcement::Native,
+    ] {
+        let mut policy = crate::harness::harness_for(choice.provider)
+            .prepare_compaction_policy(
+                crate::compaction::ResolvedCompactionPolicy {
+                    tokens: 200_000,
+                    source: CompactionSource::Device,
+                },
+                choice.clone(),
+                None,
+                crate::harness::compaction::CompactionLaunchIdentity::new("cold-wire"),
+            )
+            .unwrap();
+        policy.enforcement = enforcement;
+        policy.reason = Some("best effort, managed policy present: DISABLE_COMPACT".into());
+        if enforcement == CompactionEnforcement::BetweenTurn {
+            policy.capabilities.between_turn_compact = false;
+            policy.native_settings = None;
+        }
+        insert_agent_tab(
+            &mut app,
+            &fixture.key.root,
+            OWNER,
+            &fixture.agent,
+            DictatedSession::reporting(AgentStatus::Starting),
+        );
+        let tab = app.session_registry.test_tab_mut(&fixture.key).unwrap();
+        tab.session = PolicySession::attach(Arc::clone(&tab.session), policy);
+        assert!(tab.session.compaction_policy().is_none());
+        let wire = app.agent_list(&json!({"entity_id": OWNER})).unwrap();
+        let observation = &wire["agents"][0]["compaction"];
+        assert_eq!(observation["active"], Value::Null);
+        assert_eq!(observation["pending_change"], Value::Null);
+        if enforcement == CompactionEnforcement::BetweenTurn {
+            assert_eq!(observation["enforcement"], "between_turn");
+            assert_eq!(
+                observation["reason"],
+                "best effort, managed policy present: DISABLE_COMPACT"
+            );
+        } else {
+            assert_eq!(observation["enforcement"], "unsupported");
+            assert_eq!(observation["reason"], "active_policy_unknown");
         }
     }
 }

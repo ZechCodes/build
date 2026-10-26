@@ -53,10 +53,47 @@ struct DisableFlags {
 }
 
 #[cfg(test)]
+thread_local! {
+    static LAUNCH_ROOTS: std::cell::RefCell<Option<(PathBuf, PathBuf)>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// Test roots stay on the preparing thread and restore the enclosing scope.
+#[cfg(test)]
+pub(super) struct ScopedLaunchRoots {
+    previous: Option<(PathBuf, PathBuf)>,
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for ScopedLaunchRoots {
+    fn drop(&mut self) {
+        LAUNCH_ROOTS.with(|roots| *roots.borrow_mut() = self.previous.take());
+    }
+}
+
+#[cfg(test)]
+pub(super) fn scoped_launch_roots(system: &Path, config: &Path) -> ScopedLaunchRoots {
+    let previous = LAUNCH_ROOTS.with(|roots| {
+        roots
+            .borrow_mut()
+            .replace((system.to_owned(), config.to_owned()))
+    });
+    ScopedLaunchRoots {
+        previous,
+        _thread_bound: std::marker::PhantomData,
+    }
+}
+
+#[cfg(test)]
 pub(super) fn launch_conflict() -> Observation {
-    // Unit/child tests never inspect the developer's configuration. Managed
-    // policy inspection itself is covered below against temporary roots.
-    Observation::default()
+    // Unscoped unit/child tests never inspect the developer's configuration.
+    // Scoped launch tests use the same source reader as production.
+    let roots = LAUNCH_ROOTS.with(|roots| roots.borrow().clone());
+    roots.map_or_else(Observation::default, |(system, config)| {
+        observe(&system, &config)
+    })
 }
 
 #[cfg(not(test))]

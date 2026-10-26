@@ -271,3 +271,275 @@ fn profile_statement_cost(root: &std::path::Path, task: &Task) {
         );
     }
 }
+
+// Supplementary cases deliberately change projection inputs on every write.
+// The original fixture functions above remain the unchanged comparison series.
+struct MetadataFixture {
+    root: tempfile::TempDir,
+    task: Task,
+    prefix: &'static str,
+    initial_history: usize,
+    sample: usize,
+}
+
+impl MetadataFixture {
+    fn new(huge: bool, prefix: &'static str) -> (Self, Store) {
+        assert_api_version(prefix);
+        let setup = Instant::now();
+        let cpu = thread_cpu_micros();
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path()).unwrap();
+        let mut task = Task::drafted(
+            "/summary",
+            if huge { "huge history" } else { "small task" },
+            Actor::User,
+            NOW,
+        );
+        task.id = if huge {
+            "task-00000000000000000000000001"
+        } else {
+            "task-00000000000000000000000002"
+        }
+        .into();
+        task.body = if huge {
+            "body must never enter summary".repeat(100_000)
+        } else {
+            "a small task body".into()
+        };
+        task.watched = true;
+        let task = store.create_tracker_task(task, &[]).unwrap();
+        drop(store);
+        let mut connection = Connection::open(root.path().join("build.db")).unwrap();
+        remove_projection(&connection);
+        let initial_history = if huge { ENTRIES } else { 0 };
+        let tx = connection.transaction().unwrap();
+        let mut insert = tx
+            .prepare(
+                "INSERT INTO tracker_comments(id,task_id,created_at,record) VALUES(?1,?2,?3,?4)",
+            )
+            .unwrap();
+        let mut history_body_bytes = 0;
+        for number in 0..initial_history {
+            let body = if number == 0 {
+                "large timeline payload".repeat(100_000)
+            } else {
+                "a note".into()
+            };
+            history_body_bytes += body.len();
+            let note = comment(&task, number, body);
+            insert
+                .execute(params![
+                    note.id,
+                    note.task_id,
+                    note.created_at,
+                    serde_json::to_string(&note).unwrap()
+                ])
+                .unwrap();
+        }
+        drop(insert);
+        tx.commit().unwrap();
+        drop(connection);
+        let store = Store::new(root.path()).unwrap();
+        let task = store.load_tracker_task(&task.id).unwrap().unwrap();
+        println!(
+            "{prefix} profile={} tasks=1 history_entries={initial_history} task_body_bytes={} history_body_bytes={history_body_bytes} total_body_bytes={} setup_us={} setup_cpu_us={} measured_writes=20",
+            if cfg!(debug_assertions) { "debug" } else { "release" },
+            task.body.len(), task.body.len() + history_body_bytes,
+            setup.elapsed().as_micros(), thread_cpu_micros() - cpu
+        );
+        (
+            Self {
+                root,
+                task,
+                prefix,
+                initial_history,
+                sample: 0,
+            },
+            store,
+        )
+    }
+
+    fn write(&mut self, phase: &str, cycle: usize, save: impl FnOnce(&Task, &TaskComment)) {
+        let sample = self.sample;
+        self.task.title = format!("Actual metadata change {sample:03}");
+        self.task.labels = vec![format!("metadata-{sample:03}")];
+        self.task.status = if sample % 2 == 0 {
+            "in_progress"
+        } else {
+            "in_review"
+        }
+        .into();
+        self.task.updated_at = format!("2026-01-01T02:00:{sample:02}Z");
+        let note = comment(&self.task, 300_000 + sample, "a note".into());
+        let started = Instant::now();
+        let cpu = thread_cpu_micros();
+        save(&self.task, &note);
+        let elapsed = started.elapsed();
+        let cpu_us = thread_cpu_micros() - cpu;
+        println!(
+            "{} phase={phase} cycle={cycle} sample={sample} history_entries_before={} task_body_bytes={} status={} write_us={} write_cpu_us={cpu_us} write_hwm={}",
+            self.prefix, self.initial_history + sample, self.task.body.len(), self.task.status,
+            elapsed.as_micros(), high_water_kib()
+        );
+        self.sample += 1;
+    }
+
+    fn verify_metadata(&self, store: &Store) {
+        let actual = store.load_tracker_task(&self.task.id).unwrap().unwrap();
+        assert_eq!(actual.title, self.task.title);
+        assert_eq!(actual.labels, self.task.labels);
+        assert_eq!(actual.status, self.task.status);
+        assert_eq!(actual.updated_at, self.task.updated_at);
+        assert_eq!(actual.body, self.task.body);
+    }
+}
+
+fn store_metadata_series(huge: bool, prefix: &'static str) {
+    let (mut fixture, store) = MetadataFixture::new(huge, prefix);
+    let save = |task: &Task, note: &TaskComment| {
+        store
+            .save_tracker_task_activity(task, std::slice::from_ref(note), &[])
+            .unwrap();
+    };
+    for sample in 0..5 {
+        fixture.write(if sample == 0 { "first" } else { "warm" }, 0, save);
+    }
+    for cycle in 0..5 {
+        // Independent DDL invalidates the real Store writer's cached bytecode.
+        // Setup is outside the write timer and leaves the installed schema intact.
+        let connection = Connection::open(fixture.root.path().join("build.db")).unwrap();
+        let before: i64 = connection
+            .query_row("PRAGMA schema_version", [], |row| row.get(0))
+            .unwrap();
+        let started = Instant::now();
+        let cpu = thread_cpu_micros();
+        connection.execute_batch("CREATE TABLE bounded_perf_invalidation(id INTEGER); DROP TABLE bounded_perf_invalidation;").unwrap();
+        let setup_us = started.elapsed().as_micros();
+        let setup_cpu_us = thread_cpu_micros() - cpu;
+        let after: i64 = connection
+            .query_row("PRAGMA schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_ne!(before, after);
+        drop(connection);
+        println!("{prefix} invalidation_cycle={cycle} schema_before={before} schema_after={after} invalidation_setup_us={setup_us} invalidation_setup_cpu_us={setup_cpu_us}");
+        for sample in 0..3 {
+            fixture.write(
+                if sample == 0 {
+                    "invalidated_first"
+                } else {
+                    "invalidated_warm"
+                },
+                cycle,
+                save,
+            );
+        }
+    }
+    fixture.verify_metadata(&store);
+}
+
+#[test]
+fn identical_small_metadata_write_fixture() {
+    store_metadata_series(false, "small_metadata_fixture");
+}
+
+#[test]
+fn identical_huge_metadata_write_fixture() {
+    store_metadata_series(true, "huge_metadata_fixture");
+}
+
+// The base Store has no public writer-cache access. These explicitly raw SQL
+// cases probe cache pressure, separately from the public Store measurements.
+const CACHE_UPDATE: &str = "UPDATE tracker_tasks SET
+    project_key = ?2, number = ?3, state = ?4, status = ?5,
+    created_at = ?6, updated_at = ?7, record = ?8
+    WHERE id = ?1 AND (project_key IS NOT ?2 OR number IS NOT ?3 OR state IS NOT ?4
+        OR status IS NOT ?5 OR created_at IS NOT ?6 OR updated_at IS NOT ?7 OR record IS NOT ?8)";
+const CACHE_COMMENT: &str =
+    "INSERT OR IGNORE INTO tracker_comments(id,task_id,created_at,record) VALUES(?1,?2,?3,?4)";
+
+fn cached_sql_write(connection: &mut Connection, task: &Task, note: &TaskComment) {
+    let tx = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let record = serde_json::to_string(task).unwrap();
+    tx.prepare_cached(CACHE_UPDATE)
+        .unwrap()
+        .execute(params![
+            task.id,
+            task.project_path,
+            task.number as i64,
+            task.state.as_str(),
+            task.status,
+            task.created_at,
+            task.updated_at,
+            record,
+        ])
+        .unwrap();
+    tx.prepare_cached(CACHE_COMMENT)
+        .unwrap()
+        .execute(params![
+            note.id,
+            note.task_id,
+            note.created_at,
+            serde_json::to_string(note).unwrap(),
+        ])
+        .unwrap();
+    tx.commit().unwrap();
+}
+
+fn cache_eviction_series(huge: bool, prefix: &'static str) {
+    let (mut fixture, store) = MetadataFixture::new(huge, prefix);
+    drop(store);
+    let mut connection = Connection::open(fixture.root.path().join("build.db")).unwrap();
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
+    connection.set_prepared_statement_cache_capacity(16);
+    println!("{prefix} component=raw_cached_sql statement=changed_only_update cache_capacity=16 pressure_statements=64 store_writer_cache=false");
+    for sample in 0..5 {
+        fixture.write(
+            if sample == 0 { "first" } else { "warm" },
+            0,
+            |task, note| cached_sql_write(&mut connection, task, note),
+        );
+    }
+    for cycle in 0..5 {
+        let started = Instant::now();
+        let cpu = thread_cpu_micros();
+        for number in 0..64_i64 {
+            let value: i64 = connection
+                .prepare_cached(&format!("SELECT {number} AS pressure_{number}"))
+                .unwrap()
+                .query_row([], |row| row.get(0))
+                .unwrap();
+            assert_eq!(value, number);
+        }
+        println!("{prefix} eviction_cycle={cycle} cache_capacity=16 pressure_statements=64 pressure_setup_us={} pressure_setup_cpu_us={}",started.elapsed().as_micros(),thread_cpu_micros()-cpu);
+        for sample in 0..3 {
+            fixture.write(
+                if sample == 0 {
+                    "evicted_first"
+                } else {
+                    "evicted_warm"
+                },
+                cycle,
+                |task, note| cached_sql_write(&mut connection, task, note),
+            );
+        }
+    }
+    drop(connection);
+    // Verification runs outside all write measurements.
+    fixture.verify_metadata(&Store::new(fixture.root.path()).unwrap());
+}
+
+#[test]
+fn identical_small_cache_eviction_fixture() {
+    cache_eviction_series(false, "small_cache_fixture");
+}
+
+#[test]
+fn identical_huge_cache_eviction_fixture() {
+    cache_eviction_series(true, "huge_cache_fixture");
+}

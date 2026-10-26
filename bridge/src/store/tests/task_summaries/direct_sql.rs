@@ -357,6 +357,38 @@ fn raw_task_deletion_refreshes_counterparts_without_foreign_key_cascades() {
 }
 
 #[test]
+fn raw_task_key_change_removes_old_projection_and_refreshes_counterparts() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let [blocker, dependent] = pair(&store);
+    let conn = Connection::open(dir.path().join("build.db")).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE")
+        .unwrap();
+    conn.execute("INSERT INTO tracker_task_dependencies(task_id,waiting_on_task_id,position,task_number) VALUES(?1,?2,0,?3)",params![dependent.id,blocker.id,blocker.number as i64]).unwrap();
+    conn.execute("UPDATE tracker_tasks SET id='task-RenamedCASE',record=json_set(record,'$.id','task-RenamedCASE') WHERE id=?1",[&blocker.id]).unwrap();
+    let old_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tracker_task_summaries WHERE task_id=?1",
+            [&blocker.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_count, 0, "old opaque task key must not retain a card");
+    assert_eq!(card(&conn, "task-RenamedCASE")["id"], "task-RenamedCASE");
+    assert_eq!(card(&conn, &dependent.id)["dependencies"]["blocked"], false);
+    let old_choices: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tracker_task_filter_choices WHERE task_id=?1",
+            [&blocker.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_choices, 0);
+    conn.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(card(&conn, &blocker.id)["id"], blocker.id);
+}
+
+#[test]
 fn raw_identity_owner_mutations_and_rollback_are_immediately_visible() {
     let dir = tempfile::tempdir().unwrap();
     let _store = Store::new(dir.path()).unwrap();

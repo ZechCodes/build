@@ -457,7 +457,7 @@ fn migrate_batches(
         let commit_cpu_started = thread_cpu_us();
         tx.commit()?;
         #[cfg(test)]
-        if counts.0 <= 5 || counts.0 % 10 == 0 || batch_rows < 128 {
+        if counts.0 <= 5 || counts.0.is_multiple_of(10) || batch_rows < 128 {
             eprintln!("task_summary_migration_batch table={table} batch={} below={below} through={through} rows={batch_rows} setup_us={setup_us} apply_us={apply_us} apply_cpu_us={apply_cpu_us} commit_us={} commit_cpu_us={}",counts.0,commit_started.elapsed().as_micros(),thread_cpu_us().saturating_sub(commit_cpu_started));
         }
     }

@@ -218,13 +218,24 @@ fn refresh_task(id: &str) -> String {
         activity=activity::refresh(id),metadata=refresh_metadata(id),choices=choices::refresh(id))
 }
 
-fn refresh_metadata(id: &str) -> String {
-    format!("UPDATE tracker_task_summaries SET record=(SELECT json_patch(json_remove(s.record,'$.review_summary','$.deferred_assignment'),{enrich})
+pub(super) fn refresh_metadata(id: &str) -> String {
+    format!("UPDATE tracker_task_summaries SET record=(SELECT json_set(json_patch(json_remove(s.record,'$.review_summary','$.deferred_assignment'),{enrich}),
+        '$._summary_invalid_metadata_refs',json(CASE WHEN ({invalid}) THEN 'true' ELSE 'false' END))
         FROM tracker_task_summaries s,(SELECT {id} AS id) t WHERE s.task_id=t.id),
         assignment_target=(SELECT CASE WHEN state IN ('waiting','queued','provisioning','failed') THEN
             json_object('kind',substr(json_extract(record,'$.target.kind'),1,32),'agent_id',substr(json_extract(record,'$.target.agent_id'),1,128)) END
             FROM tracker_delivery_intents WHERE task_id={id} AND state<>'cancelled' ORDER BY generation DESC LIMIT 1)
-        WHERE task_id={id};",enrich=enrich_patch())
+        WHERE task_id={id};",enrich=enrich_patch(),invalid=invalid_metadata_refs())
+}
+
+fn invalid_metadata_refs() -> &'static str {
+    r#"EXISTS(SELECT 1 FROM reviews WHERE task_id=t.id AND json_extract(record,'$.mode')='pull_request'
+            AND json_type(record,'$.pull_request')='object'
+            AND (length(CAST(json_extract(record,'$.pull_request.originating_workspace_id') AS BLOB))>128
+                OR length(CAST(json_extract(record,'$.pull_request.latest_published_snapshot_id') AS BLOB))>128))
+        OR COALESCE((SELECT CASE WHEN state IN ('waiting','queued','provisioning','failed') THEN
+            length(CAST(id AS BLOB))>128 OR length(CAST(json_extract(record,'$.target.agent_id') AS BLOB))>128 ELSE 0 END
+            FROM tracker_delivery_intents WHERE task_id=t.id AND state<>'cancelled' ORDER BY generation DESC LIMIT 1),0)"#
 }
 
 pub(super) fn triggers() -> String {

@@ -1116,3 +1116,212 @@ fn chronological_activity_increments_match_replay_across_marks_gaps_and_late_ent
         .unwrap();
     assert_matches_history(&store, &task.id);
 }
+
+#[test]
+fn oversized_metadata_references_fail_explicitly_and_valid_opaque_case_is_preserved() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let task = store
+        .create_tracker_task(
+            Task::drafted("/summary", "metadata refs", Actor::User, support::NOW),
+            &[],
+        )
+        .unwrap();
+    let conn = store.connection();
+    conn.execute("INSERT INTO reviews(task_id,workspace_id,version,record) VALUES(?1,'WorkspaceCASE',1,?2)",rusqlite::params![task.id,serde_json::json!({"mode":"pull_request","pull_request":{"originating_workspace_id":"WorkspaceCASE","latest_published_snapshot_id":"SnapshotCASE","status":"open"}}).to_string()]).unwrap();
+    let reader = ReadTransaction::new(&conn);
+    let rows = reader
+        .list_task_summary_candidates("/summary", None, 1)
+        .unwrap();
+    assert_eq!(
+        rows[0].row["review_summary"]["workspace_id"],
+        "WorkspaceCASE"
+    );
+    assert_eq!(
+        rows[0].row["review_summary"]["latest_published_snapshot_id"],
+        "SnapshotCASE"
+    );
+    assert!(rows[0].row.get("_summary_invalid_metadata_refs").is_none());
+    for field in ["originating_workspace_id", "latest_published_snapshot_id"] {
+        let path = format!("$.pull_request.{field}");
+        conn.execute(
+            "UPDATE reviews SET record=json_set(record,?1,?2) WHERE task_id=?3",
+            rusqlite::params![path, "x".repeat(129), task.id],
+        )
+        .unwrap();
+        assert!(matches!(
+            reader.list_task_summary_candidates("/summary", None, 1),
+            Err(StoreError::TaskSummaryInvalid(_))
+        ));
+        conn.execute(
+            "UPDATE reviews SET record=json_set(record,?1,'ValidCASE') WHERE task_id=?2",
+            rusqlite::params![path, task.id],
+        )
+        .unwrap();
+        assert!(reader
+            .list_task_summary_candidates("/summary", None, 1)
+            .is_ok());
+    }
+    conn.execute("DELETE FROM reviews WHERE task_id=?1", [&task.id])
+        .unwrap();
+    conn.execute("INSERT INTO tracker_delivery_intents(id,task_id,project_key,generation,operation_id,state,record) VALUES('IntentCASE',?1,'/summary',1,'metadata-op','queued',?2)",rusqlite::params![task.id,serde_json::json!({"target":{"kind":"agent","agent_id":"AgentCASE"}}).to_string()]).unwrap();
+    let rows = reader
+        .list_task_summary_candidates("/summary", None, 1)
+        .unwrap();
+    assert_eq!(rows[0].row["deferred_assignment"]["id"], "IntentCASE");
+    assert_eq!(
+        rows[0].assignment_target.as_ref().unwrap()["agent_id"],
+        "AgentCASE"
+    );
+    conn.execute(
+        "UPDATE tracker_delivery_intents SET id=?1 WHERE task_id=?2",
+        rusqlite::params!["x".repeat(129), task.id],
+    )
+    .unwrap();
+    assert!(matches!(
+        reader.list_task_summary_candidates("/summary", None, 1),
+        Err(StoreError::TaskSummaryInvalid(_))
+    ));
+    conn.execute("UPDATE tracker_delivery_intents SET id='IntentCASE',record=json_set(record,'$.target.agent_id',?1) WHERE task_id=?2",rusqlite::params!["x".repeat(129),task.id]).unwrap();
+    assert!(matches!(
+        reader.list_task_summary_candidates("/summary", None, 1),
+        Err(StoreError::TaskSummaryInvalid(_))
+    ));
+    conn.execute(
+        "DELETE FROM tracker_delivery_intents WHERE task_id=?1",
+        [&task.id],
+    )
+    .unwrap();
+    let rows = reader
+        .list_task_summary_candidates("/summary", None, 1)
+        .unwrap();
+    assert!(rows[0].row.get("deferred_assignment").is_none());
+    assert!(rows[0].assignment_target.is_none());
+}
+
+#[test]
+fn metadata_reference_guard_backfills_already_materialized_cards() {
+    let dir = tempfile::tempdir().unwrap();
+    let task_id;
+    {
+        let store = Store::new(dir.path()).unwrap();
+        let task = store
+            .create_tracker_task(
+                Task::drafted("/summary", "old metadata", Actor::User, support::NOW),
+                &[],
+            )
+            .unwrap();
+        task_id = task.id;
+    }
+    {
+        let store = Store::new(dir.path()).unwrap(); // task checkpoint already complete
+        let conn = store.connection();
+        conn.execute("INSERT INTO reviews(task_id,workspace_id,version,record) VALUES(?1,'workspace',1,?2)",rusqlite::params![task_id,serde_json::json!({"mode":"pull_request","pull_request":{"originating_workspace_id":"x".repeat(129),"status":"open"}}).to_string()]).unwrap();
+        conn.execute("UPDATE tracker_task_summaries SET record=json_remove(record,'$._summary_invalid_metadata_refs') WHERE task_id=?1",[&task_id]).unwrap();
+        conn.execute("DELETE FROM meta WHERE key IN ('task_summary_v1_metadata','task_summary_v1_metadata_complete')",[]).unwrap();
+    }
+    let store = Store::new(dir.path()).unwrap();
+    assert!(matches!(
+        store.list_task_summary_candidates("/summary", None, 1),
+        Err(StoreError::TaskSummaryInvalid(_))
+    ));
+}
+
+#[test]
+fn metadata_guard_repair_resumes_failed_batch_and_skips_completed_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut last_id = String::new();
+    {
+        let store = Store::new(dir.path()).unwrap();
+        for number in 0..129 {
+            last_id = store
+                .create_tracker_task(
+                    Task::drafted(
+                        "/summary",
+                        &format!("metadata repair {number}"),
+                        Actor::User,
+                        support::NOW,
+                    ),
+                    &[],
+                )
+                .unwrap()
+                .id;
+        }
+    }
+    {
+        // Complete the ordinary task checkpoint before simulating a metadata-only upgrade.
+        let store = Store::new(dir.path()).unwrap();
+        let conn = store.connection();
+        conn.execute("UPDATE tracker_task_summaries SET record=json_remove(record,'$._summary_invalid_metadata_refs')",[]).unwrap();
+        conn.execute("DELETE FROM meta WHERE key IN ('task_summary_v1_metadata','task_summary_v1_metadata_complete')",[]).unwrap();
+        conn.execute_batch(&format!("CREATE TRIGGER metadata_stop BEFORE UPDATE ON tracker_task_summaries WHEN NEW.task_id='{}' AND json_type(OLD.record,'$._summary_invalid_metadata_refs') IS NULL AND json_type(NEW.record,'$._summary_invalid_metadata_refs') IS NOT NULL BEGIN SELECT RAISE(ABORT,'stop metadata repair'); END",last_id.replace('\'',"''"))).unwrap();
+    }
+    assert!(
+        Store::new(dir.path()).is_err(),
+        "failed metadata repair must not admit a reader pool"
+    );
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
+        let checkpoint: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='task_summary_v1_metadata'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(checkpoint, "128");
+        let repaired: i64 = conn.query_row("SELECT COUNT(*) FROM tracker_task_summaries WHERE json_type(record,'$._summary_invalid_metadata_refs') IS NOT NULL",[],|row|row.get(0)).unwrap();
+        assert_eq!(repaired, 128, "failed batch rolls back as a unit");
+        let complete: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM meta WHERE key='task_summary_v1_metadata_complete')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!complete, "failure cannot publish the complete marker");
+        conn.execute_batch("DROP TRIGGER metadata_stop").unwrap();
+    }
+    let started = std::time::Instant::now();
+    {
+        let store = Store::new(dir.path()).unwrap();
+        eprintln!(
+            "metadata repair resumed startup elapsed={:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            store
+                .list_task_summary_candidates("/summary", None, 2001)
+                .unwrap()
+                .len(),
+            129
+        );
+        let repaired: i64 = store.connection().query_row("SELECT COUNT(*) FROM tracker_task_summaries WHERE json_type(record,'$._summary_invalid_metadata_refs') IS NOT NULL",[],|row|row.get(0)).unwrap();
+        assert_eq!(repaired, 129);
+    }
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
+        let complete: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM meta WHERE key='task_summary_v1_metadata_complete')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(complete);
+        conn.execute_batch("CREATE TRIGGER metadata_rerun BEFORE UPDATE ON tracker_task_summaries BEGIN SELECT RAISE(ABORT,'completed metadata repair ran again'); END").unwrap();
+    }
+    let started = std::time::Instant::now();
+    let store = Store::new(dir.path()).unwrap();
+    eprintln!(
+        "metadata repair completed reopen elapsed={:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        store
+            .list_task_summary_candidates("/summary", None, 2001)
+            .unwrap()
+            .len(),
+        129
+    );
+}

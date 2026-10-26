@@ -116,6 +116,18 @@ impl ReadTransaction<'_> {
                         "legacy task reference exceeds 128 bytes".into(),
                     ));
                 }
+                if row
+                    .get("_summary_invalid_metadata_refs")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                {
+                    return Err(StoreError::TaskSummaryInvalid(
+                        "legacy task metadata reference exceeds 128 bytes".into(),
+                    ));
+                }
+                row.as_object_mut()
+                    .expect("summary is an object")
+                    .remove("_summary_invalid_metadata_refs");
                 row.as_object_mut()
                     .expect("summary is an object")
                     .remove("_summary_invalid_refs");
@@ -247,6 +259,7 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<(), StoreError> {
     }
     migrate_facts(conn, "tracker_comments")?;
     migrate_facts(conn, "tracker_events")?;
+    migrate_metadata(conn)?;
     migrate_tasks(conn)?;
     migrate_identities(conn)?;
     conn.execute_batch(&sql::triggers())?;
@@ -306,6 +319,38 @@ fn reset_table(conn: &mut Connection, table: &str) -> Result<(), StoreError> {
             break;
         }
     }
+    Ok(())
+}
+
+fn migrate_metadata(conn: &mut Connection) -> Result<(), StoreError> {
+    let complete: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM meta WHERE key='task_summary_v1_metadata_complete')",
+        [],
+        |row| row.get(0),
+    )?;
+    if complete {
+        return Ok(());
+    }
+    migrate_batches(
+        conn,
+        "task_summary_v1_metadata",
+        "tracker_task_summaries",
+        |tx, below, through| {
+            let ids=tx.prepare("SELECT task_id FROM tracker_task_summaries WHERE rowid>?1 AND rowid<=?2 AND json_type(record,'$._summary_invalid_metadata_refs') IS NULL")?
+            .query_map(params![below,through],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+            for id in ids {
+                tx.execute_batch(&sql::refresh_metadata(&format!(
+                    "'{}'",
+                    id.replace('\'', "''")
+                )))?;
+            }
+            Ok(())
+        },
+    )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key,value) VALUES('task_summary_v1_metadata_complete','1')",
+        [],
+    )?;
     Ok(())
 }
 

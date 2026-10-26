@@ -42,7 +42,12 @@ impl TaskReadContext {
             .then(|| scan.below.map(|number| page.cursor(&number.to_string())))
             .flatten();
         let rows = scan.rows;
-        let mut answer = json!({"summary":true,"project_id":project_id,"tasks":rows.tasks,"identities":rows.identities,"user_session":self.user_session_json()});
+        let mut answer =
+            json!({"summary":true,"project_id":project_id,"user_session":self.user_session_json()});
+        // Move the already-decoded page instead of serializing every row into
+        // a second Value tree while constructing the response envelope.
+        answer["tasks"] = Value::Array(rows.tasks);
+        answer["identities"] = Value::Object(rows.identities.into_iter().collect());
         if let Some(cursor) = next {
             answer["next_cursor"] = json!(cursor);
         }

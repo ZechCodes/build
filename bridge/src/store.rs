@@ -407,6 +407,7 @@ impl Store {
         tracker::initialize_list_key(&conn)?;
         task_summaries::initialize(&mut conn)?;
         maintenance::configure_incremental_vacuum(&conn)?;
+        tracker::prepare_activity_statements(&conn)?;
         let writer = StoreWriter::new(conn);
         // Recover ambiguous claims without executing any command at startup.
         writer.recover_mutations()?;

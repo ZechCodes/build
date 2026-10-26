@@ -442,21 +442,34 @@ fn finished_tracked_tasks(tx: &Transaction) -> Result<Vec<Task>, StoreError> {
     .collect()
 }
 
+const WRITE_TASK: &str = "INSERT INTO tracker_tasks
+    (id, project_key, number, state, status, created_at, updated_at, record)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    ON CONFLICT(id) DO UPDATE SET
+        project_key = ?2, number = ?3, state = ?4, status = ?5,
+        created_at = ?6, updated_at = ?7, record = ?8";
+const APPEND_COMMENT: &str =
+    "INSERT OR IGNORE INTO tracker_comments (id, task_id, created_at, record)
+    VALUES (?1, ?2, ?3, ?4)";
+const APPEND_EVENT: &str = "INSERT OR IGNORE INTO tracker_events (id, task_id, at, record)
+    VALUES (?1, ?2, ?3, ?4)";
+
+/// Compile the fixed trigger programs before reader/writer admission, keeping
+/// the first activity write from paying a deferred projection setup cost.
+pub(super) fn prepare_activity_statements(conn: &Connection) -> Result<(), StoreError> {
+    for sql in [WRITE_TASK, APPEND_COMMENT, APPEND_EVENT] {
+        drop(conn.prepare_cached(sql)?);
+    }
+    Ok(())
+}
+
 pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
     super::waiting_on::note_task_write(tx, task)?;
     super::delivery_intents::note_task_write(tx, task)?;
     // Projection triggers make statement compilation substantial. Retain the
     // bounded SQLite statement cache across writes instead of compiling every
     // task/history trigger program for each new activity item.
-    tx.prepare_cached(
-        "INSERT INTO tracker_tasks
-             (id, project_key, number, state, status, created_at, updated_at, record)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-         ON CONFLICT(id) DO UPDATE SET
-             project_key = ?2, number = ?3, state = ?4, status = ?5,
-             created_at = ?6, updated_at = ?7, record = ?8",
-    )?
-    .execute(rusqlite::params![
+    tx.prepare_cached(WRITE_TASK)?.execute(rusqlite::params![
         task.id,
         task.project_path,
         task.number as i64,
@@ -478,23 +491,16 @@ pub(super) fn append_activity(
     events: &[TaskEvent],
 ) -> Result<(), StoreError> {
     for comment in comments {
-        tx.prepare_cached(
-            "INSERT OR IGNORE INTO tracker_comments (id, task_id, created_at, record)
-             VALUES (?1, ?2, ?3, ?4)",
-        )?
-        .execute(rusqlite::params![
-            comment.id,
-            comment.task_id,
-            comment.created_at,
-            serde_json::to_string(comment).expect("a comment always serializes"),
-        ])?;
+        tx.prepare_cached(APPEND_COMMENT)?
+            .execute(rusqlite::params![
+                comment.id,
+                comment.task_id,
+                comment.created_at,
+                serde_json::to_string(comment).expect("a comment always serializes"),
+            ])?;
     }
     for event in events {
-        tx.prepare_cached(
-            "INSERT OR IGNORE INTO tracker_events (id, task_id, at, record)
-             VALUES (?1, ?2, ?3, ?4)",
-        )?
-        .execute(rusqlite::params![
+        tx.prepare_cached(APPEND_EVENT)?.execute(rusqlite::params![
             event.id,
             event.task_id,
             event.at,

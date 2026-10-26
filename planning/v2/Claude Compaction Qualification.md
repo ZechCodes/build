@@ -20,9 +20,18 @@ and env values. Raw remote cache content does not prove active server policy;
 those conflicts remain observable warnings, not fallback authority.
 `DISABLE_COMPACT` also removes the manual command (byte 206239892). Below the
 requested threshold wakes run normally. At the threshold, Build refuses the
-wake and records one durable failed outcome/attention per agent conversation,
-plus the original task/coordinator notice. Repeated wakes do not add failures,
-send input or attempt an unavailable command. No wrapper replay is built.
+wake and records one durable failed outcome/attention per unresolved blocking
+episode on the agent conversation, plus the original task/coordinator notice.
+Repeated due wakes do not add failures, send input or attempt an unavailable
+command. A typed marker in bounded Thread metadata commits atomically with the
+failed outcome and survives resident-tail eviction/restart; duplicate checks
+perform no history query or database/read-pool access. Usable managed policy,
+successful compaction or normal turn completion clears it; a later block then
+surfaces fresh attention. A distinct successful-turn counter and the episode's
+launch/counter baseline exclude partial output, failed/interrupted turns,
+duplicate results and older completion observations. Cold ADK checks use captured admission policy before
+init, while active policy remains unknown until opening succeeds. No wrapper
+replay is built.
 
 The previous qualification rule required an exact requested-token trigger.
 Zech explicitly accepted an inexact provider trigger for #884. Production now

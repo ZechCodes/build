@@ -278,6 +278,11 @@ pub(super) fn publish_successful_response(updates: &watch::Sender<SessionStatusS
     updates.send_modify(|snapshot| *snapshot = snapshot.successful_response());
 }
 
+/// Only a successful terminal result for an open turn is completion evidence.
+pub(super) fn publish_completed_turn(updates: &watch::Sender<SessionStatusSnapshot>) {
+    updates.send_modify(|snapshot| *snapshot = snapshot.completed_turn());
+}
+
 /// What became of one tool call, kept until its result arrives so the answer
 /// can be paired to it — or so it can be closed as unanswered when the turn
 /// ends first. A call that was Build's own is remembered too, so that its answer

@@ -1300,9 +1300,18 @@ warnings rather than authority to install a competing scheduler.
 When `DISABLE_COMPACT` also blocks the command, input runs normally below the
 threshold. At or above it, Build refuses the waking delivery without sending
 input or a compact command and records one durable failed outcome/attention
-per agent conversation, with the original task/coordinator failure notice.
-Later wakes are refused without producing more attention rows. No replay is
-scheduled. Tests inspect only temporary fixtures and never home configuration. `planning/v2/Claude Compaction Qualification.md` records the
+per unresolved blocking episode on the agent conversation, with the original
+task/coordinator failure notice. A typed internal marker is stored in the
+bounded Thread metadata in the same owner transaction as the failed outcome;
+duplicate checks use that captured bit, with no history query or database/read
+pool access. The admitted policy is available before ADK init without claiming
+it is an active observation. Later due wakes are refused without more attention
+rows. Usable policy, successful compaction or normal completion clears the
+marker, so a later block gets fresh attention. ADK publishes a distinct
+successful-turn counter only at an authoritative successful result; partial
+model output, failed/interrupted results and duplicate results do not qualify.
+An episode's launch/counter baseline fences older completion observations.
+No replay is scheduled. Tests inspect only temporary fixtures and never home configuration. `planning/v2/Claude Compaction Qualification.md` records the
 original qualification and #884's revised contract and static reactive audit.
 
 Claude's native reactive compaction also depends on automatic compaction being

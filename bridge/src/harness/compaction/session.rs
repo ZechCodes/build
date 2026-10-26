@@ -45,6 +45,9 @@ impl AgentSession for PolicySession {
         }
         self.applied.load(Ordering::Relaxed).then_some(&self.policy)
     }
+    fn admitted_compaction_policy(&self) -> Option<&AppliedCompactionPolicy> {
+        Some(&self.policy)
+    }
     fn observed_compaction_policy(&self) -> Option<&AppliedCompactionPolicy> {
         self.inner.observed_compaction_policy()
     }

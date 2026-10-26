@@ -167,6 +167,9 @@ pub struct SessionStatusSnapshot {
     /// Cumulative successful model responses in this session. A watch receiver
     /// can miss intermediate statuses, but cannot miss this count increasing.
     pub successful_response_count: u64,
+    /// Successful terminal results for open turns, distinct from partial model
+    /// responses. Carriers publish each completed turn at most once.
+    pub successful_turn_count: u64,
     /// The newest turn context the harness reported, carried across status
     /// changes; `None` until it reports one.
     pub context: Option<TurnContext>,
@@ -194,6 +197,7 @@ impl SessionStatusSnapshot {
             last_worked_at,
             usage_limit_count: 0,
             successful_response_count: 0,
+            successful_turn_count: 0,
             context: None,
             context_reset_count: 0,
             usage_limit: None,
@@ -215,6 +219,7 @@ impl SessionStatusSnapshot {
                 last_worked_at,
                 usage_limit_count: self.usage_limit_count,
                 successful_response_count: self.successful_response_count,
+                successful_turn_count: self.successful_turn_count,
                 context: self.context,
                 context_reset_count: self.context_reset_count,
                 usage_limit: self.usage_limit.clone(),
@@ -235,10 +240,20 @@ impl SessionStatusSnapshot {
             last_worked_at: self.last_worked_at.clone(),
             usage_limit_count: self.usage_limit_count.saturating_add(1),
             successful_response_count: self.successful_response_count,
+            successful_turn_count: self.successful_turn_count,
             context: self.context,
             context_reset_count: self.context_reset_count,
             usage_limit: Some(limit),
         }
+    }
+
+    /// Evidence that an open turn reached a successful terminal result. This
+    /// does not change response/usage accounting or the current live status.
+    pub fn completed_turn(&self) -> Self {
+        let mut completed = self.clone();
+        completed.changed_at = status_time();
+        completed.successful_turn_count = self.successful_turn_count.saturating_add(1);
+        completed
     }
 
     /// Evidence that the harness answered a request. This is separate from
@@ -250,6 +265,7 @@ impl SessionStatusSnapshot {
             last_worked_at: self.last_worked_at.clone(),
             usage_limit_count: self.usage_limit_count,
             successful_response_count: self.successful_response_count.saturating_add(1),
+            successful_turn_count: self.successful_turn_count,
             context: self.context,
             context_reset_count: self.context_reset_count,
             usage_limit: None,
@@ -295,6 +311,12 @@ pub trait AgentSession: Send + Sync {
     /// a current setting must never be manufactured into an active snapshot.
     fn compaction_policy(&self) -> Option<&super::compaction::AppliedCompactionPolicy> {
         None
+    }
+
+    /// Immutable launch policy, available before protocol startup. This is
+    /// admission intent, not evidence that the child applied its settings.
+    fn admitted_compaction_policy(&self) -> Option<&super::compaction::AppliedCompactionPolicy> {
+        self.compaction_policy()
     }
 
     /// A carrier's observed capability can withdraw its launch qualification
@@ -759,6 +781,23 @@ mod tests {
         };
         let waiting = working.transition(AgentStatus::Waiting).unwrap();
         assert_eq!(waiting.context, Some(context));
+    }
+
+    #[test]
+    fn successful_turn_count_survives_status_response_and_limit_updates() {
+        let completed = SessionStatusSnapshot::new(AgentStatus::Working).completed_turn();
+        assert_eq!(completed.successful_turn_count, 1);
+        assert_eq!(completed.successful_response_count, 0);
+        let waiting = completed.transition(AgentStatus::Waiting).unwrap();
+        assert_eq!(waiting.successful_turn_count, 1);
+        let answered = waiting.successful_response();
+        assert_eq!(answered.successful_turn_count, 1);
+        let limited = answered.limited(crate::harness::usage_limit::UsageLimited {
+            said: "usage exhausted".into(),
+            resets_at: None,
+        });
+        assert_eq!(limited.successful_turn_count, 1);
+        assert_eq!(limited.completed_turn().successful_turn_count, 2);
     }
 
     #[test]

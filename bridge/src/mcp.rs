@@ -90,6 +90,11 @@ struct SendMessageArgs {
     body: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InternalFailureKind {
+    ManagedCompactionUnavailable,
+}
+
 /// A terminal message — the typed completion event the lifecycle consumes.
 ///
 /// It carries no phase: the session that sent it already is one. A plan
@@ -104,6 +109,9 @@ pub struct DoneReport {
     /// post. Internal correlation only; never part of the MCP wire shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
+    /// Bridge-only attribution. A serialized agent report cannot forge it.
+    #[serde(skip)]
+    pub(crate) failure_kind: Option<InternalFailureKind>,
 }
 
 impl DoneReport {
@@ -112,6 +120,7 @@ impl DoneReport {
             status,
             summary: summary.into(),
             message_id: None,
+            failure_kind: None,
         }
     }
 }

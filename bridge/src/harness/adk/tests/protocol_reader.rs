@@ -1066,3 +1066,38 @@ async fn an_allowed_warning_holds_nothing() {
 
     assert!(status.borrow().usage_limit.is_none());
 }
+
+#[test]
+fn partial_response_then_failed_or_interrupted_result_never_counts_a_successful_turn() {
+    for (interrupted, failed) in [(false, true), (true, true), (true, false)] {
+        let (mut reader, status) = limited_reader();
+        reader.read_line(&quoted_line("Partial model output"));
+        assert_eq!(status.borrow().successful_response_count, 1);
+        assert_eq!(status.borrow().successful_turn_count, 0);
+        if interrupted {
+            reader.state.lock().unwrap().pending_interrupt =
+                Some(super::super::protocol::PendingInterrupt {
+                    request_id: "stop".into(),
+                    acked: true,
+                    steered: false,
+                });
+        }
+        reader.read_line(&json!({ "type":"result", "subtype":if failed { "error_during_execution" } else { "success" }, "is_error":failed, "result":"Request ended" }).to_string());
+        assert_eq!(status.borrow().successful_turn_count, 0);
+        assert!(
+            status.borrow().usage_limit.is_none(),
+            "this is not a usage refusal"
+        );
+    }
+}
+
+#[test]
+fn a_successful_open_turn_counts_once_even_when_its_result_is_duplicated() {
+    let (mut reader, status) = limited_reader();
+    reader.read_line(&quoted_line("Completed normally"));
+    let result = json!({ "type":"result", "subtype":"success", "is_error":false }).to_string();
+    reader.read_line(&result);
+    assert_eq!(status.borrow().successful_turn_count, 1);
+    reader.read_line(&result);
+    assert_eq!(status.borrow().successful_turn_count, 1);
+}

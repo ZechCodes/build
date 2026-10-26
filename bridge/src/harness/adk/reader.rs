@@ -1,7 +1,7 @@
 use super::activity::{spawn_shell_tail_poller, ActivitySlot};
 use super::protocol::{
-    publish_status, publish_successful_response, publish_usage_limit, ProtocolState, RecordedCall,
-    BUILD_MCP_TOOL_PREFIX, SURFACE_TASK_SUBTYPES,
+    publish_completed_turn, publish_status, publish_successful_response, publish_usage_limit,
+    ProtocolState, RecordedCall, BUILD_MCP_TOOL_PREFIX, SURFACE_TASK_SUBTYPES,
 };
 use super::translation::{
     bounded_activity_text, ended_summary, result_error_text, spoken, task_description,
@@ -606,11 +606,21 @@ impl ProtocolReader {
         );
         // Record the result before the status says the turn is over, so a
         // coalesced watch snapshot still carries the right limit or success.
-        let usage_refusal = failed && self.state.lock().unwrap().limit_said_last.is_some();
+        let (usage_refusal, was_open, interrupted) = {
+            let state = self.state.lock().unwrap();
+            (
+                failed && state.limit_said_last.is_some(),
+                state.turn_open,
+                state
+                    .pending_interrupt
+                    .as_ref()
+                    .is_some_and(|pending| pending.acked),
+            )
+        };
         if failed {
             self.conclude_usage_limit();
         } else if event["subtype"].as_str() == Some("success") {
-            self.record_successful_response();
+            self.record_successful_result(was_open, interrupted);
         }
         let failure = self.finish_result(event, failed, usage_refusal);
         self.context.cache_read_tokens += usage_tokens(&event["usage"], "cache_read_input_tokens");
@@ -625,6 +635,13 @@ impl ProtocolReader {
             self.report(failure, None);
         }
         self.publish_live_status();
+    }
+
+    fn record_successful_result(&self, was_open: bool, interrupted: bool) {
+        self.record_successful_response();
+        if was_open && !interrupted {
+            publish_completed_turn(&self.status_updates);
+        }
     }
 
     fn finish_result(

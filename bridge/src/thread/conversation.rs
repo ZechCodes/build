@@ -125,6 +125,10 @@ pub struct Thread {
     /// Monotonic generation of this canonical history, independent of model choices.
     #[serde(default)]
     pub generation_revision: u64,
+    /// Build already recorded the managed-compaction failure for this history
+    /// generation. Kept in the durable skeleton, independent of the loaded tail.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) managed_compaction_failure_reported: bool,
     #[serde(default = "empty_agent")]
     pub agent: AgentIdentity,
     #[serde(default)]

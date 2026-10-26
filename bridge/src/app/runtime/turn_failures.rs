@@ -17,6 +17,9 @@ struct ConsumedOperation {
 pub(in crate::app) struct FailureNoticeLedger {
     consumed: HashMap<String, ConsumedOperation>,
     reported: HashSet<(String, String)>,
+    /// A live session's completed-turn baseline when a managed block begins.
+    /// The durable Thread marker outlives this map; a new launch resets counters.
+    compaction_baselines: HashMap<String, (String, u64)>,
 }
 
 impl FailureNoticeLedger {
@@ -24,7 +27,17 @@ impl FailureNoticeLedger {
         self.consumed.remove(agent_id);
     }
 
+    fn compaction_completion_recovers(&self, agent_id: &str, launch_id: &str, count: u64) -> bool {
+        !self
+            .compaction_baselines
+            .get(agent_id)
+            .is_some_and(|(baseline_launch, baseline)| {
+                baseline_launch == launch_id && count <= *baseline
+            })
+    }
+
     pub(in crate::app) fn forget_agent(&mut self, agent_id: &str) {
+        self.compaction_baselines.remove(agent_id);
         self.forget_consumed(agent_id);
         self.reported.retain(|(agent, _)| agent != agent_id);
     }
@@ -85,6 +98,80 @@ impl AppState {
         operation_id: Option<&str>,
         summary: &str,
     ) {
+        self.record_agent_failure(owner, agent_id, operation_id, summary, None);
+    }
+
+    pub(in crate::app) fn record_agent_compaction_failure(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        operation_id: Option<&str>,
+        summary: &str,
+    ) {
+        let baseline = self
+            .live_agent_session(owner, agent_id)
+            .and_then(|session| {
+                let launch_id = session.compaction_launch_identity()?.id.clone();
+                let status = session.status_changed()?;
+                let count = status.borrow().successful_turn_count;
+                Some((launch_id, count))
+            });
+        if let Some(baseline) = baseline {
+            self.agent_failures
+                .compaction_baselines
+                .insert(agent_id.into(), baseline);
+        }
+        self.record_agent_failure(
+            owner,
+            agent_id,
+            operation_id,
+            summary,
+            Some(crate::mcp::InternalFailureKind::ManagedCompactionUnavailable),
+        );
+    }
+
+    pub(in crate::app) fn clear_managed_compaction_failure_after_turn(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        launch_id: &str,
+        successful_turn_count: u64,
+    ) {
+        if self.agent_failures.compaction_completion_recovers(
+            agent_id,
+            launch_id,
+            successful_turn_count,
+        ) {
+            self.clear_managed_compaction_failure(owner, agent_id);
+        }
+    }
+
+    /// Recovery ends the durable episode on the canonical conversation. The
+    /// already-loaded marker makes a redundant clear require no store access.
+    pub(in crate::app) fn clear_managed_compaction_failure(&mut self, owner: &str, agent_id: &str) {
+        self.agent_failures.compaction_baselines.remove(agent_id);
+        if !self
+            .agent_conversation(owner, Some(agent_id))
+            .is_ok_and(|thread| thread.managed_compaction_failure_reported)
+        {
+            return;
+        }
+        if let Err(error) = self.edit_agent_conversation(owner, agent_id, |thread, _| {
+            thread.managed_compaction_failure_reported = false;
+            Ok(())
+        }) {
+            eprintln!("clear recovered managed-compaction failure: {error}");
+        }
+    }
+
+    fn record_agent_failure(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        operation_id: Option<&str>,
+        summary: &str,
+        failure_kind: Option<crate::mcp::InternalFailureKind>,
+    ) {
         let Ok(thread) = self.agent_conversation(owner, Some(agent_id)) else {
             return;
         };
@@ -125,7 +212,7 @@ impl AppState {
         );
         // A Failed report cannot queue completion Git work; it disarms auto
         // advance and stops this agent's execution clock like an MCP report.
-        self.report_turn_failure(owner, agent_id, summary, newer_turn);
+        self.report_turn_failure(owner, agent_id, summary, newer_turn, failure_kind);
         if let Some(task) = task.as_ref() {
             if let Err(error) = self.comment_terminal_agent_failure(task.clone(), &key, &body) {
                 eprintln!("record provider failure on task {}: {error}", task.id);
@@ -168,8 +255,10 @@ impl AppState {
         agent_id: &str,
         summary: &str,
         newer_turn: bool,
+        failure_kind: Option<crate::mcp::InternalFailureKind>,
     ) {
-        let report = DoneReport::new(DoneStatus::Failed, summary);
+        let mut report = DoneReport::new(DoneStatus::Failed, summary);
+        report.failure_kind = failure_kind;
         if newer_turn {
             // The failed turn still owes its report; the succeeding turn keeps
             // its execution clock and its owner's lifecycle.
@@ -262,4 +351,29 @@ fn operationless_failure_source(thread: &crate::thread::Thread, agent_id: &str) 
         })
         .unwrap_or_default();
     format!("{session}:{sequence}")
+}
+
+#[cfg(test)]
+mod compaction_episode_tests {
+    use super::*;
+
+    #[test]
+    fn compaction_episode_recovery_requires_a_new_success_on_the_same_launch() {
+        let mut ledger = FailureNoticeLedger::default();
+        ledger
+            .compaction_baselines
+            .insert("agent".into(), ("launch".into(), 1));
+        assert!(
+            !ledger.compaction_completion_recovers("agent", "launch", 1),
+            "an older successful result cannot clear the new blocked episode"
+        );
+        assert!(ledger.compaction_completion_recovers("agent", "launch", 2));
+        assert!(
+            ledger.compaction_completion_recovers("agent", "new-launch", 1),
+            "a reopened session starts a new success counter"
+        );
+        ledger.forget_agent("agent");
+        assert!(!ledger.compaction_baselines.contains_key("agent"));
+        assert!(ledger.compaction_completion_recovers("agent", "launch", 1));
+    }
 }

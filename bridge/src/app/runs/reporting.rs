@@ -235,6 +235,15 @@ pub(in crate::app) fn record_report_in_thread(
     orchestration_error: Option<&str>,
 ) {
     let now = now_rfc3339();
+    if report.status == DoneStatus::Completed && orchestration_error.is_none() {
+        thread.managed_compaction_failure_reported = false;
+    }
+    if report.status == DoneStatus::Failed
+        && report.failure_kind
+            == Some(crate::mcp::InternalFailureKind::ManagedCompactionUnavailable)
+    {
+        thread.managed_compaction_failure_reported = true;
+    }
     // A report is a status on the agent's own message: it said this, so there
     // is one record of it and the conversation carries it.
     let (outcome, summary) = match orchestration_error {
@@ -756,5 +765,103 @@ impl AppState {
         if let Err(error) = persisted {
             eprintln!("{task_id}: could not record the abandoned branch {branch}: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod failure_marker_tests {
+    use super::*;
+    use crate::mcp::InternalFailureKind;
+    use crate::thread::{Thread, ThreadItem};
+
+    #[test]
+    fn managed_failure_marker_uses_typed_attribution_and_survives_serialization() {
+        let mut thread = Thread::for_agent("failure-marker-agent");
+        let mut report = DoneReport::new(DoneStatus::Failed, "Managed compaction unavailable");
+        record_report_in_thread(&mut thread, &report, None);
+        assert!(
+            !thread.managed_compaction_failure_reported,
+            "an ordinary failure with the same words cannot claim managed-compaction attribution"
+        );
+        let message_id = thread
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ThreadItem::Message(message) => Some(message.id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let items_before = thread.items.len();
+        report.message_id = Some(message_id);
+        report.failure_kind = Some(InternalFailureKind::ManagedCompactionUnavailable);
+        record_report_in_thread(&mut thread, &report, None);
+        assert!(
+            thread.managed_compaction_failure_reported,
+            "updating an existing outcome must also set the durable marker"
+        );
+        assert_eq!(thread.items.len(), items_before);
+        let reloaded: Thread =
+            serde_json::from_value(serde_json::to_value(&thread).unwrap()).unwrap();
+        assert!(reloaded.managed_compaction_failure_reported);
+        assert!(
+            !Thread::for_agent("failure-marker-agent").managed_compaction_failure_reported,
+            "a fresh history generation starts without the marker"
+        );
+        let mut legacy = serde_json::to_value(&thread).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("managed_compaction_failure_reported");
+        assert!(
+            !serde_json::from_value::<Thread>(legacy)
+                .unwrap()
+                .managed_compaction_failure_reported
+        );
+    }
+
+    #[test]
+    fn completed_report_clears_managed_failure_marker_and_a_new_block_can_mark_it_again() {
+        let mut thread = Thread::for_agent("failure-marker-agent");
+        let mut blocked = DoneReport::new(DoneStatus::Failed, "Managed compaction unavailable");
+        blocked.failure_kind = Some(InternalFailureKind::ManagedCompactionUnavailable);
+        record_report_in_thread(&mut thread, &blocked, None);
+        assert!(thread.managed_compaction_failure_reported);
+        record_report_in_thread(
+            &mut thread,
+            &DoneReport::new(DoneStatus::Failed, "Other failure"),
+            None,
+        );
+        assert!(
+            thread.managed_compaction_failure_reported,
+            "a failed turn has not recovered"
+        );
+        record_report_in_thread(
+            &mut thread,
+            &DoneReport::new(DoneStatus::Completed, "Recovered"),
+            None,
+        );
+        assert!(!thread.managed_compaction_failure_reported);
+        let mut reloaded: Thread =
+            serde_json::from_value(serde_json::to_value(&thread).unwrap()).unwrap();
+        assert!(
+            !reloaded.managed_compaction_failure_reported,
+            "recovery is durable"
+        );
+        record_report_in_thread(&mut reloaded, &blocked, None);
+        assert!(
+            reloaded.managed_compaction_failure_reported,
+            "a later blocking episode must be reported again"
+        );
+    }
+
+    #[test]
+    fn internal_failure_kind_cannot_be_forged_over_report_wire() {
+        let mut report = DoneReport::new(DoneStatus::Failed, "Failed");
+        report.failure_kind = Some(InternalFailureKind::ManagedCompactionUnavailable);
+        let mut wire = serde_json::to_value(&report).unwrap();
+        assert!(wire.get("failure_kind").is_none());
+        wire["failure_kind"] = serde_json::json!("ManagedCompactionUnavailable");
+        let decoded: DoneReport = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded.failure_kind, None);
     }
 }

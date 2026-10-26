@@ -89,6 +89,7 @@ pub(in crate::app) fn spawn_status_pump(
         frame_clock,
         recorded_context: None,
         recorded_context_reset_count: 0,
+        recorded_completed_success_count: 0,
         recorded_limit: super::usage_limits::UsageObservation::default(),
     };
     tokio::spawn(async move {
@@ -118,6 +119,7 @@ struct StatusPump {
     frame_clock: Arc<crate::timing::FrameClock>,
     recorded_context: Option<crate::harness::TurnContext>,
     recorded_context_reset_count: u64,
+    recorded_completed_success_count: u64,
     recorded_limit: super::usage_limits::UsageObservation,
 }
 
@@ -155,6 +157,15 @@ impl StatusPump {
                 self.recorded_context_reset_count = snapshot.context_reset_count;
             }
             record_new_turn_context(app, instance, snapshot, &mut self.recorded_context);
+            record_compaction_recovery(
+                app,
+                instance,
+                snapshot,
+                session
+                    .compaction_launch_identity()
+                    .map_or("", |identity| identity.id.as_str()),
+                &mut self.recorded_completed_success_count,
+            );
             // A limit recorded wants its reset waited for, and one cleared
             // may have left agents to start again: either is a drain.
             let usage_limit_moved = app.record_usage_limit(
@@ -188,6 +199,63 @@ impl StatusPump {
         }
         !ended
     }
+}
+
+fn record_compaction_recovery(
+    app: &mut AppState,
+    instance: &SessionInstance,
+    snapshot: &crate::harness::SessionStatusSnapshot,
+    launch_id: &str,
+    completed_success_count: &mut u64,
+) {
+    if completed_success(snapshot, completed_success_count) {
+        app.clear_managed_compaction_failure_after_turn(
+            &instance.entity_id,
+            &instance.agent_id,
+            launch_id,
+            snapshot.successful_turn_count,
+        );
+    }
+}
+
+/// A completed parent turn may still have background work. Clear only after
+/// the successful terminal result settles to Waiting, never for partial output.
+fn completed_success(snapshot: &crate::harness::SessionStatusSnapshot, recorded: &mut u64) -> bool {
+    if snapshot.status != AgentStatus::Waiting {
+        return false;
+    }
+    let succeeded = snapshot.successful_turn_count > *recorded;
+    *recorded = snapshot.successful_turn_count;
+    succeeded && snapshot.usage_limit.is_none()
+}
+
+#[cfg(test)]
+#[test]
+fn compaction_recovery_does_not_treat_partial_model_output_as_a_successful_turn() {
+    let mut snapshot =
+        crate::harness::SessionStatusSnapshot::new(AgentStatus::Working).successful_response();
+    let mut recorded = 0;
+    assert!(!completed_success(&snapshot, &mut recorded));
+    snapshot.status = AgentStatus::Waiting;
+    assert!(
+        !completed_success(&snapshot, &mut recorded),
+        "a response followed by a non-quota failed or interrupted result has not recovered"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn compaction_recovery_keeps_a_successful_turn_until_normal_turn_completion() {
+    let mut snapshot =
+        crate::harness::SessionStatusSnapshot::new(AgentStatus::Working).successful_response();
+    let mut recorded = 0;
+    assert!(!completed_success(&snapshot, &mut recorded));
+    snapshot = snapshot.completed_turn();
+    assert!(!completed_success(&snapshot, &mut recorded));
+    assert_eq!(recorded, 0);
+    snapshot.status = AgentStatus::Waiting;
+    assert!(completed_success(&snapshot, &mut recorded));
+    assert!(!completed_success(&snapshot, &mut recorded));
 }
 
 /// Whether an agent whose turn just ended has something waiting for it: a

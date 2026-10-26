@@ -44,9 +44,12 @@ impl AppState {
     /// A managed command disable only blocks input once the fallback threshold
     /// is reached. Keep one durable failure on this agent's conversation so a
     /// later wake (or bridge restart) cannot generate another attention row.
-    pub(super) fn refuse_blocked_compaction(&mut self, turn: &PendingAgentTurn) -> Option<String> {
+    pub(in crate::app) fn refuse_blocked_compaction(
+        &mut self,
+        turn: &PendingAgentTurn,
+    ) -> Option<String> {
         let session = self.session_for_turn(turn)?;
-        let policy = session.compaction_policy()?;
+        let policy = session.admitted_compaction_policy()?;
         let agent = self
             .entity_agents(&turn.owner)
             .ok()?
@@ -54,6 +57,7 @@ impl AppState {
         if policy.capabilities.between_turn_compact
             || !policy.automatic_due(agent.last_context_tokens)
         {
+            self.clear_managed_compaction_failure(&turn.owner, &turn.agent_id);
             return None;
         }
         let summary = format!(
@@ -66,16 +70,9 @@ impl AppState {
         let reported = self
             .agent_conversation(&turn.owner, Some(&turn.agent_id))
             .ok()?
-            .items
-            .iter()
-            .any(|item| {
-                matches!(item,
-                crate::thread::ThreadItem::Message(message)
-                    if message.outcome == Some(crate::thread::MessageOutcome::Failed)
-                        && message.body.starts_with(BLOCKED_COMPACTION))
-            });
+            .managed_compaction_failure_reported;
         if !reported {
-            self.record_agent_turn_failure(
+            self.record_agent_compaction_failure(
                 &turn.owner,
                 &turn.agent_id,
                 turn.operation_id.as_deref(),

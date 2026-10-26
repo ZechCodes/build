@@ -343,6 +343,7 @@ mod native_compaction;
 
 mod protocol_reader;
 mod provider;
+mod reactive_compaction;
 mod self_started;
 mod session;
 mod translation;

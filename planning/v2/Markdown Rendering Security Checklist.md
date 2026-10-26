@@ -3,6 +3,23 @@
 **Status:** 100/100 — #889 targeted gates and changed-file scanners passed on 2026-10-26.
 **Verified:** 2026-10-26 (#889; evidence below); 2026-10-22 (post-merge scanner refresh); 2026-10-20 (#695 rich markdown rendering; #701 boundary revisions; #700 production-CSP redirect consent policy); earlier desktop link, credential, persistence and API authentication evidence remains recorded below (#262, #615, #616).
 
+## Mermaid line-break amendment — #897 (2026-10-26)
+
+The pre-render source guard permits only attribute-free `<br>`, `<br/>`, and
+`<br />` (case-insensitive). It removes these spellings only from the validation
+copy; Mermaid receives the original source to produce separate SVG text lines.
+Every other HTML tag, tag attribute, entity, escape and resource syntax remains
+subject to the existing rejection policy. Strict security, `htmlLabels: false`,
+and both SVG rebuild passes remain unchanged. The scoped score stays **100/100**.
+
+`mermaidRenderer.test.js` covers all three spellings and mixed case, plus
+rejection before library invocation of attributed breaks, bold/script markup
+and entity content mixed with valid breaks. The real-library Chromium regression
+uses the exact #887 flowchart from comment `tc-01M5WDTY9K8288DND6RQX08DTN`,
+including cylinder/decision shapes and Yes/No edges, and checks distinct SVG
+text lines. Hostile browser cases retain escaped source, execute no script and
+make no external requests. Gate evidence is recorded on #897.
+
 ## Mermaid boundary amendment — #889 (2026-10-26)
 
 The earlier renderer has **no existing DOM/SVG sanitizer**: its boundary is
@@ -21,7 +38,7 @@ and disposal; measurements live in an owned host removed in `finally`.
 
 Strict output settings alone cannot protect Mermaid's **transient measurement
 DOM**. Before invocation, reject configuration/frontmatter, `%%` directives and
-comments, HTML/entities/escapes/markdown and math labels (including Mermaid `#word;`
+comments, HTML (except attribute-free line-break tags)/entities/escapes/markdown and math labels (including Mermaid `#word;`
 entities and internal entity placeholders), CSS commands, URL functions and
 resource schemes, `@{…}` image/icon metadata, and legacy sequence
 properties/details/links commands including relative/protocol-relative icons.

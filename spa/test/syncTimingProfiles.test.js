@@ -5,14 +5,15 @@ import { appendFileSync } from "node:fs";
 import { hrtime } from "node:process";
 import { setImmediate as immediate } from "node:timers";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBCursor, IDBFactory, IDBIndex, IDBKeyRange } from "fake-indexeddb";
 
 const App = { route: { name: "inbox" }, devices: [{ id: "scale" }] };
 vi.mock("../src/appState.js", () => ({ App }));
 vi.mock("../src/app.js", () => ({ App }));
 let context, watchers, mark;
 vi.mock("../src/core/deviceContexts.js", () => ({
-  contextFor: () => context, liveContexts: () => [context],
+  contextFor: () => context, homeContext: () => context, liveContexts: () => [context],
+  canAnswer: () => true, creationDevice: () => "scale",
   whenGreeted: async (_context, dispatch) => ({ sent: dispatch(() => true), stands: () => true }),
   onDeviceStateChanged: () => () => {},
 }));
@@ -46,7 +47,7 @@ vi.mock("../src/core/syncPhases.js", async (original) => {
 const BASE_LATENCY = { "board.list": 100, "project.list": 100, "workspace.list": 100,
   "thread.page": 500, "thread.activity": 500, "tasks.list": 350, "tasks.columns": 100,
   "git.status": 600, "fs.tree": 200, "term.list": 100, "git.log": 200,
-  "git.unpushed": 400, "git.show": 500, "run.diff": 300, "worktree.diff": 300, "agent.list": 100 };
+  "entity.seen": 100, "git.unpushed": 400, "git.show": 500, "run.diff": 300, "worktree.diff": 300, "agent.list": 100 };
 const EPOCH = Date.parse("2026-10-25T12:00:00Z");
 let sync, cache, diagnostics, idbTasks, feed;
 let metrics;
@@ -63,10 +64,13 @@ vi.doMock("../src/core/cacheLifetime.js", async (original) => {
   const actual = await original();
   return { ...actual, expireWorkspaceData: (...args) => {
     metrics.recentExpiries += 1;
-    return actual.expireWorkspaceData(...args);
+    const started = hrtime.bigint();
+    return actual.expireWorkspaceData(...args).finally(() => {
+      metrics.expiryWallMs += Number(hrtime.bigint() - started) / 1e6;
+    });
   } };
 });
-  metrics = { accountRosterSelections: 0, recentExpiries: 0, idbCallbacks: 0, cacheDrainWallMs: 0 };
+  metrics = emptyMetrics();
   globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
   delete navigator.locks;
   // Date and Diagnostics share logical time. IDB uses real event-loop turns;
@@ -79,6 +83,16 @@ vi.doMock("../src/core/cacheLifetime.js", async (original) => {
     return immediate(() => { try { callback(); } finally { idbTasks -= 1; } });
   });
   vi.stubGlobal("requestIdleCallback", (callback) => { queueMicrotask(callback); return 0; });
+  const continueCursor = IDBCursor.prototype.continue;
+  vi.spyOn(IDBCursor.prototype, "continue").mockImplementation(function (...args) {
+    metrics.cursorContinuations += 1;
+    return continueCursor.apply(this, args);
+  });
+  const openKeyCursor = IDBIndex.prototype.openKeyCursor;
+  vi.spyOn(IDBIndex.prototype, "openKeyCursor").mockImplementation(function (...args) {
+    metrics.indexKeyCursors += 1;
+    return openKeyCursor.apply(this, args);
+  });
   watchers = [];
   App.route = { name: "inbox" };
   cache = await import("../src/core/localCache.js");
@@ -86,8 +100,40 @@ vi.doMock("../src/core/cacheLifetime.js", async (original) => {
   await cache.writeCached({ deviceId: "scale", entityId: "", kind: "project-agents-support" }, { projectWorkers: true });
   sync = await import("../src/core/cacheSync.js");
   ({ syncDiagnostics: diagnostics } = await import("../src/core/syncDiagnostics.js"));
+  const stageStart = diagnostics.stageStart;
+  vi.spyOn(diagnostics, "stageStart").mockImplementation((pass, stage) => {
+    const finish = stageStart(pass, stage), started = hrtime.bigint();
+    return () => {
+      const wallMs = Number(hrtime.bigint() - started) / 1e6;
+      metrics.stageWallMs[stage] = (metrics.stageWallMs[stage] || 0) + wallMs;
+      finish();
+    };
+  });
 });
 afterEach(() => { feed?.stopFeed(); feed = null; sync?.stopCacheSync(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+function emptyMetrics() {
+  return { accountRosterSelections: 0, recentExpiries: 0, idbCallbacks: 0, cacheDrainWallMs: 0,
+    expiryWallMs: 0, cursorContinuations: 0, indexKeyCursors: 0, stageWallMs: {} };
+}
+
+// Seed unrelated stale metadata in one transaction. Use the real replica shape,
+// with no production helper overhead in the measured period.
+async function seedUnrelatedStaleKeys(count) {
+  await new Promise((resolve, reject) => {
+    const request = indexedDB.open("build-cache");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result, transaction = db.transaction("records", "readwrite");
+      transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      const store = transaction.objectStore("records");
+      for (let index = 0; index < count; index += 1) {
+        store.put({ at: EPOCH - 4 * 24 * 60 * 60 * 1000, value: {} }, `unrelated|old-${String(index).padStart(5, "0")}|status|`);
+      }
+    };
+  });
+}
 
 // fake-indexeddb schedules through global setImmediate. Drain its tracked
 // macrotasks plus promise continuations; never estimate a disk delay with sleep.
@@ -122,6 +168,7 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
   };
   const answer = (method, params) => {
     const answers = {
+      "entity.seen": () => ({}),
       "board.list": () => ({ items: rows }),
       "project.list": () => ({ projects: projectRows }),
       "workspace.list": () => ({ workspaces: rows.map((row) => ({ id: row.workspace_id,
@@ -184,7 +231,7 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
       await feed.startFeed();
     },
     nextPeriod() {
-      metrics = { accountRosterSelections: 0, recentExpiries: 0, idbCallbacks: 0, cacheDrainWallMs: 0 };
+      metrics = emptyMetrics();
       rosterLandings.clear(); rowPublications.clear();
       periodStart = now; stageStart = now; stage = "startup"; ringStop = null;
       calls.length = 0; stages.length = 0; passEnds.length = 0; ringTransitions.length = 0;
@@ -223,7 +270,8 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
       }
       const report = { label, clock: "logical RPC ms; real fake-IDB event-loop wall ms (not production disk)",
         rpc: { criticalPathMs: ringStop - periodStart, summedRequestMs: calls.reduce((sum, call) => sum + call.end - call.start, 0) },
-        cache: { ...metrics },
+        cache: { ...metrics, selectionWallMs: metrics.stageWallMs.selection || 0,
+          selectionOtherWallMs: (metrics.stageWallMs.selection || 0) - metrics.expiryWallMs },
         rosterRowPublication: [...rosterLandings].filter(([owner]) => owner === "owner-0").map(([owner, landed]) => {
           const row = rowPublications.get(owner);
           return { owner, logicalMs: row ? row.at - landed.at : null,
@@ -249,12 +297,14 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
 // roster RPC duration and cache operation durations. Task RPC range is observed;
 // other RPC costs use the scale harness constants and agent.list=100ms assumption.
 const profiles = [
-  { label: "report-shape", projects: 8, workspaces: 7, agents: 1, ownerAgents: 1, recent: true,
-    latency: { "tasks.list": (params) => 502 + Number(params.project_id.split("-").at(-1)) * (1936 - 502) / 7 } },
+  ...[0, 1000, 10000].map((staleKeys) => ({ label: `report-shape-stale-${staleKeys}`, staleKeys,
+    projects: 8, workspaces: 7, agents: 1, ownerAgents: 1, recent: true,
+    latency: { "tasks.list": (params) => 502 + Number(params.project_id.split("-").at(-1)) * (1936 - 502) / 7 } })),
   { label: "small-warm", projects: 2, workspaces: 2, agents: 1, ownerAgents: 1 },
   { label: "single-project", projects: 1, workspaces: 1, agents: 1, ownerAgents: 1 },
+  { label: "single-project-markSeen", reporter: true, projects: 1, workspaces: 1, agents: 1, ownerAgents: 1 },
 ];
-it.each(profiles)("#879 profile $label separates logical RPC and actual cache work", async ({ label, ...size }) => {
+it.each(profiles)("#879 profile $label separates logical RPC and actual cache work", async ({ label, staleKeys = 0, reporter = false, ...size }) => {
   const model = fixture({ ...size, tasks: 8, patches: 0 });
   if (size.recent) await cache.writeCached({ deviceId: "scale", entityId: "run-6", kind: "thread", sub: "c-6-0" },
     { thread_id: "thread-6-0", items: [] });
@@ -262,12 +312,22 @@ it.each(profiles)("#879 profile $label separates logical RPC and actual cache wo
   // then introduce one new worker at owner-0 in the measured pass.
   sync.startCacheSync(); await model.finish(`${label}: seed`);
   sync.stopCacheSync(); context.session = {};
+  await seedUnrelatedStaleKeys(staleKeys);
   model.addWorker();
-  await model.observeRows(); await cacheTurns(); model.nextPeriod();
+  await model.observeRows();
+  // The compatibility refresh requires a pre-existing Detail row. The scale
+  // fixture's List digests alone do not retain this row after ownership cleanup.
+  if (reporter) await cache.writeCached({ deviceId: "scale", entityId: "run-0", kind: "row", sub: "" }, model.rows[0]);
+  const markSeen = reporter ? (await import("../src/core/inboxSeen.js")).markSeen : null;
+  await cacheTurns(); model.nextPeriod();
   sync.startCacheSync();
   await model.drive(() => model.calls.length >= 3);
   // A read-state subscriber after list dispatch needs a lists-only successor.
-  const successor = sync.syncDevice("scale", "read-state");
+  const successor = reporter ? (async () => {
+    expect(await markSeen("run-0", "agent-0-0", null, 23, "thread-0-0", "scale")).toBe(true);
+    // This is the same report-accepted callback used by agentRail/inboxView.
+    await feed.refreshFeed("scale", "read-state");
+  })() : sync.syncDevice("scale", "read-state");
   const report = await model.finish(`${label}: measured warm with read-state after list dispatch`);
   await successor;
   expect(report.passEndsMs, "a real lists-only successor retains the ring").toHaveLength(2);
@@ -278,11 +338,21 @@ it.each(profiles)("#879 profile $label separates logical RPC and actual cache wo
   expect(report.rosterRowPublication.every((row) => row.logicalMs === 0)).toBe(true);
   // Baseline scheduler counts through taskFeed row projection. Keep new-worker
   // publication prompt even when the pass's selection strategy changes.
-  expect(report.rosterRowPublication[0].idbCallbacks).toBeLessThanOrEqual(size.projects === 1 ? 15 : 33);
+  // A concurrent markSeen compatibility read adds three IDB callbacks.
+  const publicationCallbacks = size.projects === 1 ? 15 : 33;
+  expect(report.rosterRowPublication[0].idbCallbacks).toBeLessThanOrEqual(publicationCallbacks + (reporter ? 3 : 0));
   // Initial selection and the lists-only successor may scan the account.
   // Each roster completion must update only its owner.
   expect(report.cache.accountRosterSelections).toBe(3);
+  expect(report.verbs["entity.seen"] || 0).toBe(reporter ? 1 : 0);
+  expect(report.verbs["board.list"]).toBe(reporter ? 3 : 2);
   expect(report.cache.recentExpiries).toBe(size.recent ? 2 : 0);
   expect(report.cache.idbCallbacks).toBeGreaterThan(0);
   expect(report.cache.cacheDrainWallMs).toBeGreaterThan(0);
-});
+  expect(report.cache.selectionWallMs).toBeGreaterThan(0);
+  expect(report.cache.selectionOtherWallMs).toBeGreaterThanOrEqual(0);
+  if (size.recent) {
+    expect(report.cache.expiryWallMs).toBeGreaterThan(0);
+    expect(report.cache.cursorContinuations).toBeGreaterThanOrEqual(staleKeys * 2);
+  }
+}, 120000);

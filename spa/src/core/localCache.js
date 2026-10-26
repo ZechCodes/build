@@ -201,7 +201,7 @@ export async function readCachedMany(addresses) {
  * was asked, whose own record is the newer word. An undo can merge into the
  * current value inside the same transaction. `readAddresses` adds canonical
  * records to that snapshot, handed to update as its third argument. */
-function writeFeed(address, update, { observedFeedRows = false, supersededFeedRow, unchanged = [], readAddresses = [] } = {}) {
+function writeFeed(address, update, { observedFeedRows = false, supersededFeedRow, unchanged = [], readAddresses = [], readStateFrom = null } = {}) {
   const key = recordKey(address);
   let changed = false;
   return wroteStore((store) => {
@@ -211,11 +211,13 @@ function writeFeed(address, update, { observedFeedRows = false, supersededFeedRo
     const keys = [key, ...unchanged.map(({ address }) => recordKey(address)), ...readAddresses.map(recordKey)];
     readRecordsInStore(store, keys, ([previous, ...records]) => {
       try {
+        if (readStateFrom && !isReadStateRecord(previous, readStateFrom)) return;
         if (!unchanged.every(({ written }, index) => isCachedWrite(records[index], written))) return;
         const next = update(previous?.value, previous, records.slice(unchanged.length));
         if (next == null) return;
         const { write, ...stamp } = writeStamp();
-        const record = { ...stamp, write, value: feedWithObservations(next, previous, stamp, observedFeedRows, supersededFeedRow) };
+        const record = { ...stamp, write, ...readStateStamp(readStateFrom),
+          value: feedWithObservations(next, previous, stamp, observedFeedRows, supersededFeedRow) };
         changed = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
@@ -437,6 +439,20 @@ export function mergeCachedIfUnwritten(address, written, merge) {
   return mergeRecordAtomically(address, (record) => (isCachedWrite(record, written) ? merge(record?.value) : null));
 }
 
+// Only read-field repairs may share this lineage. Every ordinary writer makes
+// a fresh record without it, so even an identical Detail/push write fences it.
+const readStateBase = (record) => record?.readStateBase || cachedWriteOf(record);
+const readStateStamp = (record) => record ? { readStateBase: readStateBase(record) } : {};
+const isReadStateRecord = (current, before) => isCachedWrite(current, cachedWriteOf(before))
+  || typeof current?.readStateBase === "string" && current.readStateBase === readStateBase(before);
+
+/** Atomic read-field-only repair across competing repairs of the same original
+ * write. `original` is false after a competing repair; callers then require
+ * comparable, monotonic cursors. Any ordinary write ends the lineage. */
+export function mergeCachedReadState(address, before, merge) {
+  return mergeRecordAtomically(address, (record) => merge(record?.value, isCachedWrite(record, cachedWriteOf(before))), false, before);
+}
+
 /** Put records and let go of others in one readwrite transaction, only while
  * `guard.address` is still the write `guard.written` names (`recordWriteOf`,
  * so null is no record) — or always, with no guard. `drop` names the records
@@ -491,7 +507,7 @@ export function writeCachedIfStill({ guard = null, puts = [], drop = null }) {
   });
 }
 
-function mergeRecordAtomically(address, merge, reportCommit = false) {
+function mergeRecordAtomically(address, merge, reportCommit = false, readStateFrom = null) {
   const key = recordKey(address);
   let changed = false;
   return wroteStore((store) => {
@@ -499,9 +515,10 @@ function mergeRecordAtomically(address, merge, reportCommit = false) {
     const request = store.get(key);
     request.onsuccess = () => {
       try {
+        if (readStateFrom && !isReadStateRecord(request.result, readStateFrom)) return;
         const next = merge(request.result);
         if (next == null) return;
-        const record = withBridgeGeneration(address, { ...writeStamp(), value: next });
+        const record = withBridgeGeneration(address, { ...writeStamp(), ...readStateStamp(readStateFrom), value: next });
         changed = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);

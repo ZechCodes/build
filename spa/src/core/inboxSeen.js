@@ -10,7 +10,7 @@ import { verbCall } from "./inboxDevices.js";
 import { contextFor, homeContext } from "./deviceContexts.js";
 import { pushFence, pushedSince } from "./pushFence.js";
 import { captureReadFeed, mergeReadRoster, readStateRows, repairReadFeed, repairReadOwner } from "./readStateRepair.js";
-import { cachedWriteOf, captureCachedRecord, mergeCachedIfUnwritten } from "./localCache.js";
+import { captureCachedRecord, mergeCachedReadState } from "./localCache.js";
 
 // The row holding each entity the feed named, minted with every snapshot.
 let rowsByEntity = new Map();
@@ -96,7 +96,7 @@ async function refreshReadRoster(context, entityId) {
   if (!deviceId || !context.active()) return;
   const address = { deviceId, entityId, kind: "row", sub: "" };
   const [before, captured] = await Promise.all([captureCachedRecord(address), captureReadFeed(deviceId)]);
-  if (!before?.value) {
+  if (!before?.value && !captured.record?.value) {
     void repairReadOwner(context, entityId).catch(() => null);
     return;
   }
@@ -104,11 +104,16 @@ async function refreshReadRoster(context, entityId) {
   if (!context.active()) return;
   const board = await call("board.list", {});
   const row = readStateRows(board).find((candidate) => entityIdOf(candidate) === entityId);
-  if (row) await mergeCachedIfUnwritten(address, cachedWriteOf(before), (held) =>
-    context.active() && !pushedSince(address, fence) ? mergeReadRoster(held, row) : null);
+  await repairSeenRow(context, address, before, row, fence);
   // User-triggered roster writes announce before either background repair.
   void repairReadFeed(context, captured, board, entityId).catch(() => null);
   void repairReadOwner(context, entityId).catch(() => null);
+}
+
+function repairSeenRow(context, address, before, row, fence) {
+  if (!row || !before?.value) return;
+  return mergeCachedReadState(address, before, (held, original) =>
+    context.active() && !pushedSince(address, fence) ? mergeReadRoster(held, row, !original) : null);
 }
 
 /** The row holding an entity, off the index the last snapshot minted. A caller

@@ -1413,6 +1413,53 @@ describe("a refresh requested during a pass", () => {
     expect(syncDiagnostics.report().periods[0].passes).toHaveLength(2);
   });
 
+  it("uses a roster dispatched after the read-state ack, then repairs between passes", async () => {
+    projectWorkersSupported = true;
+    const project = { ...projectList, entity_id: "owner", run_id: "owner" };
+    let unread = 1;
+    const roster = () => ({ entity_id: "owner", pinned_agent_id: "pin", agents: [{ id: "pin", unread_count: unread }] });
+    script["agent.list"] = roster;
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [project]);
+    board = [branchItem({ run_id: "owner", agents: roster().agents })];
+    const lists = holdNextRead("project.list", () => ({ projects: [project] }));
+    sync.startCacheSync();
+    await lists.reading;
+    try {
+      script["entity.seen"] = () => { unread = 0; return {}; };
+      await bridge.call("entity.seen", { entity_id: "owner" });
+      expect(await sync.syncDevice("dev-1", "read-state")).toBe(true);
+      expect(calls("agent.list")).toHaveLength(0);
+    } finally { lists.release(); }
+    await passesSettled(sync, "dev-1");
+    expect(calls("agent.list")).toHaveLength(1);
+    expect((await read("owner", "project-agents")).value.agents[0].unread_count).toBe(0);
+    expect(await sync.syncDevice("dev-1", "read-state")).toBe(true);
+    expect(calls("agent.list")).toHaveLength(2);
+    expect((await read("owner", "project-agents")).value.agents[0].unread_count).toBe(0);
+  });
+
+  it("retains a targeted repair when the read-state ack arrives during an in-flight roster read", async () => {
+    projectWorkersSupported = true;
+    const project = { ...projectList, entity_id: "owner", run_id: "owner" };
+    let unread = 1;
+    const roster = () => ({ entity_id: "owner", pinned_agent_id: "pin", agents: [{ id: "pin", unread_count: unread }] });
+    script["agent.list"] = roster;
+    script["project.list"] = () => ({ projects: [project] });
+    await boot([branchItem({ run_id: "owner", agents: roster().agents })]);
+    const dispatched = holdNextRead("agent.list", roster);
+    const pass = sync.syncDevice("dev-1", "mutation");
+    await dispatched.reading;
+    script["agent.list"] = roster;
+    script["entity.seen"] = () => { unread = 0; return {}; };
+    await bridge.call("entity.seen", { entity_id: "owner" });
+    const repair = sync.syncDevice("dev-1", "read-state");
+    await vi.waitFor(() => expect(calls("board.list")).toHaveLength(3));
+    dispatched.release();
+    expect(await Promise.all([pass, repair])).toEqual([true, true]);
+    expect(calls("agent.list")).toHaveLength(3);
+    expect((await read("owner", "project-agents")).value.agents[0].unread_count).toBe(0);
+  });
+
   it("repairs read state independently of the active pass", async () => {
     await boot([branchItem()]);
     const held = holdNextRead("git.status");

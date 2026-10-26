@@ -128,6 +128,45 @@ it("announces each markSeen row write immediately while project-owner repair is 
     expect(call.mock.calls.filter(([method]) => method === "board.list")).toHaveLength(2);
   } finally {
     repair.resolve({ entity_id: "run-1", pinned_agent_id: "agent-1", agents: roster(12).agents });
+    await vi.waitFor(async () => expect((await readCached({ ...address, kind: "project-agents" }))?.value?.agents[0].read_through_sequence).toBe(12));
     unsubscribe();
   }
+});
+
+it.each(["older-first", "newer-first"])("keeps a newer markSeen row and feed cursor across a competing read repair (%s)", async (order) => {
+  const { refreshReadState } = await import("../src/core/readStateRepair.js");
+  const feedAddress = { ...address, entityId: "", kind: "feed" };
+  await writeCached(address, roster(10));
+  await writeCached(feedAddress, { runs: [roster(10)] });
+  const older = deferred();
+  const newer = deferred();
+  const oldCall = vi.fn(() => older.promise);
+  const first = refreshReadState({ deviceId: "dev-1", call: oldCall, active: () => true, session: {}, requestScope: {} });
+  await vi.waitFor(() => expect(oldCall).toHaveBeenCalled());
+  call.mockImplementation(async (method) => method === "entity.seen" ? { ok: true } : newer.promise);
+  const second = markSeen("run-1", "agent-1", 1, 12, "thread-1", "dev-1");
+  await vi.waitFor(() => expect(call.mock.calls.filter(([method]) => method === "board.list")).toHaveLength(1));
+  if (order === "older-first") {
+    older.resolve({ runs: [roster(11)] });
+    await first;
+    newer.resolve({ runs: [roster(12)] });
+  } else {
+    newer.resolve({ runs: [roster(12)] });
+    await second;
+    await vi.waitFor(async () => expect((await readCached(feedAddress)).value.runs[0].agents[0].read_through_sequence).toBe(12));
+    older.resolve({ runs: [roster(11)] });
+  }
+  await Promise.all([first, second]);
+  expect((await readCached(address)).value.agents[0].read_through_sequence).toBe(12);
+  await vi.waitFor(async () => expect((await readCached(feedAddress)).value.runs[0].agents[0].read_through_sequence).toBe(12));
+});
+
+it("repairs a legacy feed-only owner after markSeen without creating a standalone row", async () => {
+  const feedAddress = { ...address, entityId: "", kind: "feed" };
+  await writeCached(feedAddress, { runs: [roster(10)] });
+  call.mockImplementation(async (method) => method === "entity.seen" ? { ok: true } : { runs: [roster(12)] });
+  expect(await markSeen("run-1", "agent-1", 1, 12, "thread-1", "dev-1")).toBe(true);
+  expect(call.mock.calls.map(([method]) => method)).toEqual(["entity.seen", "board.list"]);
+  await vi.waitFor(async () => expect((await readCached(feedAddress)).value.runs[0].agents[0].unread_count).toBe(0));
+  expect((await readCached(address))?.value).toBeFalsy();
 });

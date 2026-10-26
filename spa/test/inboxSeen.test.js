@@ -9,7 +9,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: () => null, homeCo
 vi.mock("../src/core/localCache.js", () => ({
   captureCachedRecord: (...args) => capture(...args),
   cachedWriteOf: (record) => record?.written || null,
-  mergeCachedIfUnwritten: (...args) => merge(...args),
+  mergeCachedReadState: (address, before, replace) => merge(address, before.written, (held) => replace(held, true)),
 }));
 const { indexRowsByEntity, markSeen } = await import("../src/core/inboxSeen.js");
 

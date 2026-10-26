@@ -427,10 +427,7 @@ function dirsOf(paths) {
  */
 export async function syncDevice(deviceId, reason = "mutation") {
   if (!holdingLock) return false;
-  if (reason === "read-state") {
-    const context = syncContext(contextFor(deviceId));
-    return context ? refreshReadState({ ...context, session: sessionOf(deviceId), capabilities: () => bridgeCapabilities(deviceId) }) : false;
-  }
+  if (reason === "read-state") return repairDeviceReadState(deviceId);
   const session = sessionOf(deviceId);
   const startedIn = lifetime;
   const running = passes.get(deviceId);
@@ -456,6 +453,16 @@ export async function syncDevice(deviceId, reason = "mutation") {
     return resume();
   }
   return startRequestedPass(deviceId, reason);
+}
+
+function repairDeviceReadState(deviceId) {
+  const context = syncContext(contextFor(deviceId));
+  if (!context) return false;
+  const session = sessionOf(deviceId);
+  const running = passes.get(deviceId);
+  const covered = running?.session === session && !running.superseded
+    && readsGroup(running, "rosters") && !running.observed.has("rosters");
+  return refreshReadState({ ...context, session, repairOwners: !covered, capabilities: () => bridgeCapabilities(deviceId) });
 }
 
 function joinRunningPass(deviceId, running, reason) {

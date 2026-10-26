@@ -206,9 +206,6 @@ fn filter_choices_are_indexed_distinct_and_follow_direct_task_updates_and_delete
             .key,
         "zoo"
     );
-    assert!(reader
-        .task_summary_has_label("/summary", &first.id, "BACKEND")
-        .unwrap());
     conn.execute(
         "UPDATE tracker_tasks SET record=json_set(record,'$.labels',json('[\"New\"]')) WHERE id=?1",
         [&first.id],
@@ -580,4 +577,54 @@ fn summary_identity_uses_committed_roster_metadata_and_owner_renames() {
         .task_summary_identity("agent-summary")
         .unwrap()
         .is_none());
+}
+
+#[test]
+fn assignee_projection_and_choices_preserve_tagged_filter_values_and_opaque_ids() {
+    use crate::tracker::Assignee;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let assignees = [
+        None,
+        Some(Assignee::User),
+        Some(Assignee::ProjectAgent),
+        Some(Assignee::Agent {
+            agent_id: "user".into(),
+        }),
+        Some(Assignee::Agent {
+            agent_id: "none".into(),
+        }),
+        Some(Assignee::Agent {
+            agent_id: "AgentCASE".into(),
+        }),
+        Some(Assignee::Agent {
+            agent_id: "agentcase".into(),
+        }),
+    ];
+    for (i, assignee) in assignees.into_iter().enumerate() {
+        let mut task = Task::drafted(
+            "/summary",
+            &format!("holder-{i}"),
+            Actor::User,
+            support::NOW,
+        );
+        task.assignee = assignee.clone();
+        store.create_tracker_task(task, &[]).unwrap();
+        let row = summary(&store, "/summary");
+        assert_eq!(row["assignee"], serde_json::to_value(&assignee).unwrap());
+        assert_eq!(row["created_by"], serde_json::json!({"kind":"user"}));
+    }
+    let choices = store
+        .list_task_filter_choices("/summary", "assignee", None, 100)
+        .unwrap();
+    assert_eq!(choices.len(), 7);
+    let keys = choices
+        .iter()
+        .map(|choice| choice.key.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(keys.len(), 7);
+    for choice in choices {
+        assert_eq!(choice.key, serde_json::to_string(&choice.value).unwrap());
+        assert!(choice.value == serde_json::json!("none") || choice.value.is_object());
+    }
 }

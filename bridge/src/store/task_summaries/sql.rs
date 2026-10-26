@@ -98,9 +98,9 @@ pub(super) fn insert_facts(table: &str, predicate: &str) -> String {
 fn base_record() -> String {
     let actor = |field: &str| {
         format!(
-            "CASE WHEN json_type(t.record,'$.{field}')='object' THEN json_object(
-        'kind',substr(json_extract(t.record,'$.{field}.kind'),1,32),
-        'agent_id',substr(json_extract(t.record,'$.{field}.agent_id'),1,128)) END"
+            "CASE WHEN json_type(t.record,'$.{field}')='object' THEN CASE WHEN json_extract(t.record,'$.{field}.kind')='agent'
+            THEN json_object('kind','agent','agent_id',substr(json_extract(t.record,'$.{field}.agent_id'),1,128))
+            ELSE json_object('kind',substr(json_extract(t.record,'$.{field}.kind'),1,32)) END END"
         )
     };
     format!(
@@ -228,10 +228,16 @@ fn refresh_choices(id: &str) -> String {
             SELECT project_key,'state',state,id,json_quote(state) FROM tracker_tasks WHERE id={id};
         INSERT OR IGNORE INTO tracker_task_filter_choices(project_key,dimension,choice_key,task_id,value)
             SELECT project_key,'assignee',
-                CASE json_extract(record,'$.assignee.kind') WHEN 'user' THEN 'user' WHEN 'project_agent' THEN 'project_agent'
-                    WHEN 'agent' THEN json_extract(record,'$.assignee.agent_id') ELSE 'none' END,
-                id,json_quote(CASE json_extract(record,'$.assignee.kind') WHEN 'user' THEN 'user' WHEN 'project_agent' THEN 'project_agent'
-                    WHEN 'agent' THEN json_extract(record,'$.assignee.agent_id') ELSE 'none' END)
+                CASE json_extract(record,'$.assignee.kind')
+                    WHEN 'user' THEN json_object('kind','user')
+                    WHEN 'project_agent' THEN json_object('kind','project_agent')
+                    WHEN 'agent' THEN json_object('agent_id',json_extract(record,'$.assignee.agent_id'),'kind','agent')
+                    ELSE json_quote('none') END,
+                id,CASE json_extract(record,'$.assignee.kind')
+                    WHEN 'user' THEN json_object('kind','user')
+                    WHEN 'project_agent' THEN json_object('kind','project_agent')
+                    WHEN 'agent' THEN json_object('agent_id',json_extract(record,'$.assignee.agent_id'),'kind','agent')
+                    ELSE json_quote('none') END
             FROM tracker_tasks WHERE id={id};"#
     )
 }

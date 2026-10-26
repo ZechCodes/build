@@ -52,15 +52,6 @@ impl Store {
         ReadTransaction::new(&self.connection())
             .list_task_filter_choices(project, dimension, after, limit)
     }
-
-    pub fn task_summary_has_label(
-        &self,
-        project: &str,
-        task: &str,
-        label: &str,
-    ) -> Result<bool, StoreError> {
-        ReadTransaction::new(&self.connection()).task_summary_has_label(project, task, label)
-    }
 }
 
 impl ReadTransaction<'_> {
@@ -182,23 +173,6 @@ impl ReadTransaction<'_> {
             })
         })
         .collect()
-    }
-
-    /// Exact label membership remains independent of the bounded display row.
-    pub fn task_summary_has_label(
-        &self,
-        project: &str,
-        task: &str,
-        label: &str,
-    ) -> Result<bool, StoreError> {
-        self.connection()
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM tracker_task_filter_choices
-             WHERE project_key=?1 AND dimension='label' AND choice_key=?2 AND task_id=?3)",
-                params![project, label.to_ascii_lowercase(), task],
-                |r| r.get(0),
-            )
-            .map_err(StoreError::from)
     }
 }
 

@@ -116,14 +116,20 @@ Completed projections retain a SQL-definition fingerprint, installed-object mani
 and SQLite schema generation. Intact reopens skip projection DDL, backfill and
 eager write-program preparation. An unrelated schema change only revalidates the
 manifest; missing indexes are restored selectively, without replaying history.
-Missing/changed maintenance triggers or missing projection tables first persist
+Missing/changed maintenance triggers, shared helper views or projection tables first persist
 a repair marker, clear derived rows
 in bounded batches, then restart the backfill. Canonical records remain intact.
 Batch counts bound row cardinality, not the size of an imported canonical body;
 one legacy record can still be large and must be parsed during migration.
 
-Mutation triggers update cards, compact activity facts, dependency counterpart
-counts, and refcounted distinct choices in the writer's transaction. A normal
+Persistent mutation triggers update cards, compact activity facts, dependency counterpart
+counts, and refcounted distinct choices in the writer's transaction, including
+writes from independent raw SQLite connections. Small source triggers share
+keyed SQL definitions and typed task context; no commit-time queue or connection
+registration is required. Derived changes are visible to subsequent statements
+inside that transaction and roll back with the canonical mutation. Reparenting
+refreshes both old and new endpoints. These helper definitions participate in
+the schema fingerprint and conservative repair before reader admission. A normal
 chronological history append updates retained counters and session times from
 the new fact; history edits, removals, late activity and watch-floor changes use
 the exact compact-fact derivation. Page reads use neither path. Performance

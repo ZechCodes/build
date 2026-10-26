@@ -114,9 +114,12 @@ export async function seedChatMenu({ theme, bigCounts, resetCapable = false, hol
   });
 }
 
-/** Every animation on the page has ended, but for the ones that never do. */
-export const settled = (page) => page.waitForFunction(() => document.getAnimations()
-  .every((animation) => animation.effect?.getTiming().iterations === Infinity), null, { timeout: 5000 });
+/** Include queued menu reveals, which have no Animation until their turn. */
+export async function settled(page) {
+  await page.evaluate(async () => { await window.__layoutModules?.motion?.motionSettled(); });
+  await page.waitForFunction(() => document.getAnimations()
+    .every((animation) => animation.effect?.getTiming().iterations === Infinity), null, { timeout: 5000 });
+}
 
 /** The rail on the page, its menu's controls painted and its motion settled.
  *  Keep the app module handle while the fixture loads the remaining modules. */
@@ -126,7 +129,7 @@ export async function mountChatMenu(page, basePath, label, seed, { preserveDocum
   await page.evaluate(() => { window.__appModule = window.__layoutModules.app; delete window.__layoutModules; });
   await loadBrowserModules(page, {
     rail: "src/core/agentRail.js", cache: "src/core/localCache.js", feed: "src/core/taskFeed.js",
-    merge: "src/core/feedMerge.js", events: "src/core/changeEvents.js",
+    merge: "src/core/feedMerge.js", events: "src/core/changeEvents.js", motion: "src/core/motion.js",
   }, basePath);
   await page.evaluate(() => { window.__layoutModules.app = window.__appModule; });
   await page.evaluate(seedChatMenu, seed);

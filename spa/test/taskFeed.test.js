@@ -13,7 +13,7 @@ import { projectAgentEntries } from "../src/core/inboxProjectAgent.js";
 import { watchedWorkspaceEntries } from "../src/core/inbox.js";
 
 const syncDevice = vi.fn(async () => true);
-vi.mock("../src/core/cacheSync.js", () => ({ syncDevice: (deviceId) => syncDevice(deviceId), routeChanged: () => {} }));
+vi.mock("../src/core/cacheSync.js", () => ({ syncDevice: (...args) => syncDevice(...args), routeChanged: () => {} }));
 
 let App;
 let subscribeFeed, refreshFeed, startFeed, stopFeed, joinFeed, dropFeedDevice, dropFeedProject;
@@ -501,7 +501,7 @@ describe("asking the feed to refresh", () => {
 
     await refreshFeed();
 
-    expect(syncDevice).toHaveBeenCalledWith("dev-1");
+    expect(syncDevice).toHaveBeenCalledWith("dev-1", "mutation");
     expect(call).not.toHaveBeenCalled();
   });
 
@@ -513,7 +513,7 @@ describe("asking the feed to refresh", () => {
 
     await refreshFeed("dev-b");
 
-    expect(syncDevice.mock.calls).toEqual([["dev-b"]]);
+    expect(syncDevice.mock.calls).toEqual([["dev-b", "mutation"]]);
   });
 });
 

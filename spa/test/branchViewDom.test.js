@@ -287,7 +287,7 @@ describe("the branch surface", () => {
     expect(document.querySelector("#tabbody .gitpane")).toBeNull();
     answerInit();
     try {
-      await vi.waitFor(() => expect(refresh).toHaveBeenCalledWith("dev-1"));
+      await vi.waitFor(() => expect(refresh).toHaveBeenCalledWith("dev-1", "mutation"));
       expect(bridge.call.mock.calls.filter(([method]) => method === "project.list")).toHaveLength(1);
     } finally {
       refresh.mockRestore();

@@ -3829,6 +3829,9 @@ gate attachment display.
   history survives partial successors. Mutations after dispatch retain a full
   refresh; connection requests join the existing session baseline. The current
   pass finishes before its successor starts, with continuous ring ownership.
+  Snapshot cleanup retains unnamed owners touched by any newer record push,
+  including terminal-only delivery, and rechecks that fence after its cache
+  reads. A later authoritative snapshot can collect an owner still absent.
   Stopping sync or replacing the session discards queued
   work and prevents the old pass from sending remaining reads; replies already
   in flight stay fenced from writing. Coordinated diff reads replace inactive

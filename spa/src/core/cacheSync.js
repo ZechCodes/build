@@ -57,7 +57,7 @@ import { readSyncLists } from "./syncLists.js";
 import { App } from "../appState.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
 import { bridgeCapabilities, onSubscriptionHeld, subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
-import { entityDataInvalidatedSince, forgetPushes, notePush, pushFence, pushedSince, removedSince } from "./pushFence.js";
+import { entityDataInvalidatedSince, entityPushedSince, forgetPushes, notePush, pushFence, pushedSince, removedSince } from "./pushFence.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { cachedRouteEntityId } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
@@ -1101,11 +1101,12 @@ async function dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence
   const named = entitiesTheBoardNames(view);
   const visible = new Set((view.items || []).map(entityIdOf));
   const hiddenRuns = new Set((view.runs || []).map(entityIdOf).filter((id) => id && !visible.has(id)));
-  const pushedRow = (entityId) => pushedSince(addressOf(context, entityId, "row"), fence);
+  const pushedEntity = (entityId) => entityPushedSince(addressOf(context, entityId, "row"), fence);
   for (const cachedId of await cachedEntityIds(context.deviceId)) {
     if (!context.active()) return;
     if (!named.has(cachedId)) {
-      if (!pushedRow(cachedId)) await dropUnnamedEntity(context, cachedId);
+      if (!pushedEntity(cachedId)) await dropUnnamedEntity({ ...context,
+        active: () => context.active() && !pushedEntity(cachedId) }, cachedId);
     } else if (hiddenRuns.has(cachedId)) {
       await dropOlderHiddenRow(context, cachedId, passStartedAt);
     }

@@ -1368,6 +1368,48 @@ describe("a refresh requested during a pass", () => {
     expect(calls("tasks.list")).toHaveLength(2);
   });
 
+  it.each(["mutation", "read-state"])("keeps terminal-only pushes newer than %s cleanup's board read", async (reason) => {
+    await boot([branchItem()]);
+    const held = holdNextRead("board.list");
+    const refresh = sync.syncDevice("dev-1", reason);
+    await held.reading;
+    const background = registeredWatchers.find((watcher) => watcher.id === "s-background" && !watcher.disposed);
+    const tabs = [{ term_id: "new-tab" }];
+    await background.onChanges([{ entity_id: "new-owner", terminals: { tabs } }]);
+    expect((await read("new-owner", "terminals"))?.value?.tabs).toEqual(tabs);
+    held.release();
+    expect(await refresh).toBe(true);
+    expect((await read("new-owner", "terminals"))?.value?.tabs).toEqual(tabs);
+
+    // Protection belongs to this snapshot only. A later authoritative board
+    // that still omits the owner can collect it without another push.
+    await sync.syncDevice("dev-1", reason);
+    expect(await read("new-owner", "terminals")).toBeUndefined();
+  });
+
+  it("rechecks a terminal push after unnamed-owner cleanup's cache read", async () => {
+    await boot([branchItem()]);
+    await cache.writeCached({ deviceId: "dev-1", entityId: "new-owner", kind: "terminals" }, { tabs: [] });
+    const original = cache.cachedSubKeys;
+    let release;
+    let started;
+    const reading = new Promise((resolve) => { started = resolve; });
+    const subkeys = vi.spyOn(cache, "cachedSubKeys").mockImplementation((deviceId, entityId, kind) => {
+      if (entityId !== "new-owner") return original(deviceId, entityId, kind);
+      subkeys.mockRestore();
+      started();
+      return new Promise((resolve) => { release = () => resolve([]); });
+    });
+    const refresh = sync.syncDevice("dev-1", "read-state");
+    await reading;
+    const background = registeredWatchers.find((watcher) => watcher.id === "s-background" && !watcher.disposed);
+    const tabs = [{ term_id: "during-cleanup" }];
+    await background.onChanges([{ entity_id: "new-owner", terminals: { tabs } }]);
+    release();
+    expect(await refresh).toBe(true);
+    expect((await read("new-owner", "terminals"))?.value?.tabs).toEqual(tabs);
+  });
+
   it("repairs late background coverage without unrelated lists or tasks", async () => {
     await boot([branchItem()]);
     const held = holdNextRead("git.status");

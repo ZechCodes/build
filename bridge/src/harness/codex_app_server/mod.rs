@@ -16,6 +16,8 @@ use crate::pty::HarnessSpec;
 mod connection;
 mod diagnostics;
 mod errors;
+// Shared provider-text rules keep ADK failure notices as safe as Codex notices.
+pub(crate) use errors::sanitize_error as sanitize_provider_error;
 mod limits;
 mod observation;
 mod policy;

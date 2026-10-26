@@ -306,6 +306,10 @@ async fn a_result_closes_every_call_its_turn_left_open() {
         },
         "the turn ended over the call, and nothing is fabricated about it"
     );
+    assert!(matches!(
+        next_activity(&mut activity).await,
+        AgentActivity::TurnFailed { .. }
+    ));
 
     wait_for_status(&session, AgentStatus::Waiting);
     session.send_turn(&Turn::new("try the other one")).unwrap();

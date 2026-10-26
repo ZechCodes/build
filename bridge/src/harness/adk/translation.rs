@@ -180,6 +180,9 @@ pub(super) fn result_error_text(event: &Value) -> String {
         .trim();
     match reported.is_empty() {
         false => one_line(reported, TOOL_SUMMARY_LIMIT),
+        true if event["subtype"].as_str() == Some("success") => {
+            "Claude Code turn failed without saying why".to_string()
+        }
         true => event["subtype"]
             .as_str()
             .unwrap_or("the session failed without saying why")

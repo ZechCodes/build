@@ -5,6 +5,83 @@ const OVERFLOW: &str = r#"{"type":"assistant","error":"invalid_request","message
 const FAILED_RESULT: &str = r#"{"type":"result","subtype":"success","is_error":true,"duration_ms":40,"result":"Prompt is too long"}"#;
 
 #[test]
+fn a_refused_turn_retains_its_operation_and_ignores_duplicate_results() {
+    let (mut reader, mut activity) = reader_and_what_it_reports();
+    reader.read_line(INIT);
+    {
+        let mut state = reader.state.lock().unwrap();
+        state.open_turn();
+        state.operation_id = Some("overflow-wake".into());
+    }
+    reader.read_line(OVERFLOW);
+    let result = r#"{"type":"result","subtype":"success","is_error":true}"#;
+    reader.read_line(result);
+    reader.read_line(result);
+    let failures: Vec<_> = reports_already_sent(&mut activity)
+        .into_iter()
+        .filter_map(|report| match report.activity {
+            AgentActivity::TurnFailed {
+                summary,
+                operation_id,
+                ..
+            } => Some((summary, operation_id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        failures,
+        vec![("Prompt is too long".into(), Some("overflow-wake".into()))]
+    );
+}
+
+#[test]
+fn an_acked_interruption_hands_failure_identity_to_the_steered_turn() {
+    let (mut reader, mut activity) = reader_and_what_it_reports();
+    reader.read_line(INIT);
+    {
+        let mut state = reader.state.lock().unwrap();
+        state.open_turn();
+        state.operation_id = Some("interrupted-operation".into());
+        state.steered_operation_id = Some("steering-operation".into());
+        state.pending_interrupt = Some(super::super::protocol::PendingInterrupt {
+            request_id: "stop".into(),
+            acked: true,
+            steered: true,
+        });
+    }
+    reader.read_line(FAILED_RESULT);
+    assert!(!reports_already_sent(&mut activity)
+        .iter()
+        .any(|report| matches!(report.activity, AgentActivity::TurnFailed { .. })));
+    reader.read_line(OVERFLOW);
+    reader.read_line(FAILED_RESULT);
+    assert!(reports_already_sent(&mut activity)
+        .iter()
+        .any(|report| matches!(&report.activity,
+        AgentActivity::TurnFailed { operation_id: Some(id), .. } if id == "steering-operation")));
+}
+
+#[test]
+fn usage_limits_keep_their_reset_contract_without_a_generic_failure() {
+    let (mut reader, mut activity) = reader_and_what_it_reports();
+    reader.read_line(INIT);
+    reader.state.lock().unwrap().open_turn();
+    let mut refusal: Value = serde_json::from_str(OVERFLOW).unwrap();
+    refusal["error"] = json!("rate_limit");
+    reader.read_line(&refusal.to_string());
+    reader.read_line(FAILED_RESULT);
+    assert!(!reports_already_sent(&mut activity)
+        .iter()
+        .any(|report| matches!(report.activity, AgentActivity::TurnFailed { .. })));
+    reader.state.lock().unwrap().open_turn();
+    reader.read_line(OVERFLOW);
+    reader.read_line(FAILED_RESULT);
+    assert!(reports_already_sent(&mut activity)
+        .iter()
+        .any(|report| matches!(report.activity, AgentActivity::TurnFailed { .. })));
+}
+
+#[test]
 fn overflow_success_subtype_is_a_failed_turn_on_every_wake() {
     let (sender, mut activity) = broadcast::channel(ACTIVITY_BACKLOG);
     let (mut reader, watched) = reader_and_its_status(Arc::new(Mutex::new(Some(sender))));

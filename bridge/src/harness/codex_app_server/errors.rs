@@ -243,7 +243,7 @@ fn explicit_transient_hint(text: &str) -> bool {
 /// Persist only the human prefix before a structure or key/value delimiter,
 /// redacting credentials before bounding. Provider payload text never follows
 /// the fixed marker, including when this sanitizer is called again.
-pub(super) fn sanitize_error(text: &str) -> String {
+pub(crate) fn sanitize_error(text: &str) -> String {
     let prefix = human_message_prefix(text);
     let normalized: String = prefix
         .chars()

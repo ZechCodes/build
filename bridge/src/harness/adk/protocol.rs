@@ -124,6 +124,10 @@ pub(super) struct ProtocolState {
     pub(super) pending_interrupt: Option<PendingInterrupt>,
     /// The last error the child REPORTED, from a result line that carried one.
     pub(super) reported_error: Option<String>,
+    /// Failure attribution is captured at the input delimiter, before a newer
+    /// dispatch can replace the app's current operation.
+    pub(super) operation_id: Option<String>,
+    pub(super) steered_operation_id: Option<String>,
     /// The last thing the child said on stderr, for a death with no result.
     pub(super) last_stderr_line: Option<String>,
     /// Why Build ended this child before it started — over its `init` line
@@ -175,6 +179,8 @@ impl ProtocolState {
             capabilities: Vec::new(),
             pending_interrupt: None,
             reported_error: None,
+            operation_id: None,
+            steered_operation_id: None,
             last_stderr_line: None,
             start_refused: None,
             tasks: BTreeMap::new(),

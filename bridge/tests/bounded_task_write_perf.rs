@@ -378,7 +378,7 @@ impl MetadataFixture {
         let sample = self.sample;
         self.task.title = format!("Actual metadata change {sample:03}");
         self.task.labels = vec![format!("metadata-{sample:03}")];
-        self.task.status = if sample % 2 == 0 {
+        self.task.status = if sample.is_multiple_of(2) {
             "in_progress"
         } else {
             "in_review"

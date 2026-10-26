@@ -24,23 +24,24 @@ fn summary_list_defaults_and_legacy_shape_are_independent() {
     assert!(summary["next_cursor"].is_string());
     assert!(summary["identities"].is_object());
     for row in summary["tasks"].as_array().unwrap() {
-        for omitted in [
-            "body",
-            "attachments",
-            "timeline",
-            "dependencies",
-            "identities",
-        ] {
-            assert!(row.get(omitted).is_none(), "{row}");
-        }
-        assert!(row["links"].get("commits").is_none());
-        assert_eq!(row["project_id"], project);
+        assert_lightweight_row(row, &project);
     }
     let legacy = answer(&mut app, "tasks.list", json!({"project_id":project}));
     assert_eq!(legacy["tasks"].as_array().unwrap().len(), 105);
     assert!(legacy["tasks"][0]["body"].is_string());
     assert!(legacy.get("summary").is_none());
     assert!(legacy.get("identities").is_none());
+}
+
+fn assert_lightweight_row(row: &Value, project: &str) {
+    for omitted in ["body", "attachments", "timeline", "identities"] {
+        assert!(row.get(omitted).is_none(), "{row}");
+    }
+    assert!(row["links"].get("commits").is_none());
+    assert!(row["dependencies"]["blocked"].is_boolean());
+    assert!(row["dependencies"].get("waiting_on").is_none());
+    assert!(row["dependencies"].get("blocks").is_none());
+    assert_eq!(row["project_id"], project);
 }
 
 #[test]
@@ -191,6 +192,7 @@ fn bounded_summary_cursors_cannot_cross_projects_stores_or_modes() {
 fn seed_summary_tasks(root: &Path, project: &str, from: usize, through: usize) {
     let mut connection = rusqlite::Connection::open(root.join("store/build.db")).unwrap();
     let tx = connection.transaction().unwrap();
+    let mut insert=tx.prepare("INSERT INTO tracker_tasks(id,project_key,number,state,status,created_at,updated_at,record) VALUES(?1,?2,?3,'open','backlog',?4,?4,?5)").unwrap();
     for number in from..=through {
         let mut task = crate::tracker::Task::drafted(
             project,
@@ -201,68 +203,18 @@ fn seed_summary_tasks(root: &Path, project: &str, from: usize, through: usize) {
         task.number = number as u64;
         task.labels = vec!["duplicate".into(), format!("label-{:03}", number % 130)];
         task.body = "body omitted from every summary".repeat(200);
-        tx.execute("INSERT INTO tracker_tasks(id,project_key,number,state,status,created_at,updated_at,record) VALUES(?1,?2,?3,'open','backlog',?4,?4,?5)",rusqlite::params![task.id,project,task.number as i64,task.created_at,serde_json::to_string(&task).unwrap()]).unwrap();
-    }
-    tx.commit().unwrap();
-}
-
-#[test]
-fn summary_fixture_timings_and_bytes_remain_bounded_while_app_and_writer_are_held() {
-    use std::time::{Duration, Instant};
-    for count in [1, 100, 5000] {
-        let root = tempfile::tempdir().unwrap();
-        let (_repo, app, project) = tracked(root.path());
-        let path = app.tracker_project_path(&project).unwrap();
-        seed_summary_tasks(root.path(), &path, 1, count);
-        let state = app.shared();
-        let handler = AppState::handler(Arc::clone(&state));
-        let held = state.lock().unwrap();
-        // WAL readers must proceed even while a writer has an uncommitted update.
-        let writer = rusqlite::Connection::open(root.path().join("store/build.db")).unwrap();
-        writer
-            .execute_batch(
-                "BEGIN IMMEDIATE; UPDATE meta SET value=value WHERE key='schema_version'",
-            )
+        insert
+            .execute(rusqlite::params![
+                task.id,
+                project,
+                task.number as i64,
+                task.created_at,
+                serde_json::to_string(&task).unwrap()
+            ])
             .unwrap();
-        let (send, receive) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            let mut evidence = Vec::new();
-            for (method, extra) in [
-                ("tasks.list", json!({"summary":true})),
-                ("tasks.list", json!({"summary":true,"limit":500})),
-                ("tasks.list", json!({"summary":true,"labels":["absent"]})),
-                ("tasks.filterChoices", json!({"dimension":"label"})),
-            ] {
-                let mut params = extra;
-                params["project_id"] = json!(project);
-                let started = Instant::now();
-                let response = handler.call(
-                    SessionSender::detached("bounded-timing"),
-                    req(method, params),
-                );
-                let elapsed = started.elapsed();
-                assert_eq!(response["ok"], true, "{response}");
-                let bytes = serde_json::to_vec(&response["result"]).unwrap().len();
-                let rows = response["result"]["tasks"].as_array().map_or(0, Vec::len);
-                evidence.push((method, elapsed, bytes, rows));
-            }
-            send.send(evidence).unwrap();
-        });
-        let evidence = receive.recv_timeout(Duration::from_secs(5));
-        writer.execute_batch("ROLLBACK").unwrap();
-        drop(held);
-        worker.join().unwrap();
-        for (method, elapsed, bytes, rows) in
-            evidence.expect("bounded SQL reads must finish while both locks are held")
-        {
-            println!("bounded_task_read fixture={count} method={method} elapsed_us={} bytes={bytes} rows={rows}",elapsed.as_micros());
-            assert!(
-                elapsed < Duration::from_millis(100),
-                "{method} fixture={count} took {elapsed:?}"
-            );
-            assert!(bytes <= 1_048_576);
-        }
     }
+    drop(insert);
+    tx.commit().unwrap();
 }
 
 #[test]
@@ -353,4 +305,48 @@ fn oversized_summary_errors_without_publishing_a_partial_page_or_cursor() {
         .unwrap()
         .iter()
         .any(|row| row["id"] == id));
+}
+
+#[test]
+fn server_multi_selections_match_tagged_assignees_without_case_folding_ids() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let path = app.tracker_project_path(&project).unwrap();
+    seed_summary_tasks(root.path(), &path, 1, 3);
+    let connection = rusqlite::Connection::open(root.path().join("store/build.db")).unwrap();
+    for (number, assignee, status, labels) in [
+        (1, json!({"kind":"user"}), "in_review", json!(["API"])),
+        (
+            2,
+            json!({"kind":"agent","agent_id":"AgentA"}),
+            "done",
+            json!(["ui"]),
+        ),
+        (
+            3,
+            json!({"kind":"agent","agent_id":"agenta"}),
+            "backlog",
+            json!(["API"]),
+        ),
+    ] {
+        connection.execute("UPDATE tracker_tasks SET status=?1,record=json_set(record,'$.status',?1,'$.assignee',json(?2),'$.labels',json(?3)) WHERE number=?4",rusqlite::params![status,assignee.to_string(),labels.to_string(),number]).unwrap();
+    }
+    let params = json!({"project_id":project,"summary":true,"states":["open","closed"],"statuses":["In review","done"],"labels":["api","UI"],"assignees":[{"kind":"user"},{"kind":"agent","agent_id":"AgentA"}]});
+    let result = answer(&mut app, "tasks.list", params);
+    let numbers: Vec<u64> = result["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(numbers, vec![2, 1]);
+    assert!(result["identities"]["AgentA"].is_object());
+    assert!(result["identities"].get("agenta").is_none());
+    let exact = answer(
+        &mut app,
+        "tasks.list",
+        json!({"project_id":project,"summary":true,"assignee":{"kind":"agent","agent_id":"agenta"}}),
+    );
+    assert_eq!(exact["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(exact["tasks"][0]["number"], 3);
 }

@@ -939,3 +939,94 @@ fn history_projection_does_not_parse_the_canonical_task_record() {
     );
     tx.rollback().unwrap();
 }
+
+#[test]
+fn failed_migration_keeps_only_committed_batches_and_resumes_before_reader_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let task_id;
+    let repaired_record;
+    {
+        let store = Store::new(dir.path()).unwrap();
+        let mut task = Task::drafted("/summary", "resume batches", Actor::User, support::NOW);
+        task.watched = true;
+        let task = store.create_tracker_task(task, &[]).unwrap();
+        task_id = task.id.clone();
+        let mut connection = store.connection();
+        remove_summary_projection(&connection);
+        let tx = connection.transaction().unwrap();
+        let mut insert = tx
+            .prepare(
+                "INSERT INTO tracker_comments(id,task_id,created_at,record) VALUES(?1,?2,?3,?4)",
+            )
+            .unwrap();
+        let mut fixed = String::new();
+        for number in 0..256 {
+            let note = said(&task, &format!("tc-{number:026}"), "2026-01-01T01:00:00Z");
+            let raw = serde_json::to_string(&note).unwrap();
+            let saved = if number == 129 {
+                fixed = raw.clone();
+                "not-json".to_string()
+            } else {
+                raw
+            };
+            insert
+                .execute(rusqlite::params![
+                    note.id,
+                    note.task_id,
+                    note.created_at,
+                    saved
+                ])
+                .unwrap();
+        }
+        repaired_record = fixed;
+        drop(insert);
+        tx.commit().unwrap();
+    }
+    assert!(
+        Store::new(dir.path()).is_err(),
+        "a partial migration must not publish a read pool"
+    );
+    let connection = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
+    let checkpoint: String = connection
+        .query_row(
+            "SELECT value FROM meta WHERE key='task_summary_v1_tracker_comments'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(checkpoint, "128");
+    let committed: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM tracker_task_summary_facts",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        committed, 128,
+        "the failed second batch must roll back atomically"
+    );
+    connection
+        .execute(
+            "UPDATE tracker_comments SET record=?1 WHERE id=?2",
+            rusqlite::params![repaired_record, format!("tc-{:026}", 129)],
+        )
+        .unwrap();
+    drop(connection);
+    let recovered = Store::new(dir.path()).unwrap();
+    let row = summary(&recovered, "/summary");
+    assert_eq!(row["unread_count"], 256);
+    assert_eq!(
+        recovered.load_tracker_timeline(&task_id).unwrap().len(),
+        256
+    );
+    let count: i64 = recovered
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM tracker_task_summary_facts",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 256, "resume cannot duplicate the committed prefix");
+}

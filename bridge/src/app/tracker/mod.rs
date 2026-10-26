@@ -12,9 +12,9 @@
 //! [`refs`].
 
 mod activity;
-mod bounded_pages;
 mod agent_files;
 mod attachments;
+mod bounded_pages;
 pub(in crate::app) use attachments::read_task_attachment;
 mod closure_context;
 mod comments;
@@ -148,7 +148,8 @@ impl AppState {
     }
 
     pub(crate) fn tasks_filter_choices(&self, params: &Value) -> Result<Value, String> {
-        self.task_read_context().tasks_filter_choices(self.tracker_store()?, params)
+        self.task_read_context()
+            .tasks_filter_choices(self.tracker_store()?, params)
     }
 
     pub(crate) fn tasks_get(&self, params: &Value) -> Result<Value, String> {

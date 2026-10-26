@@ -169,8 +169,10 @@ impl TaskReadContext {
         let status = edits::optional_status(params, "status")?;
         let assignee = edits::optional_assignee_filter(params)?;
         let label = crate::app::optional_nonempty_string(params, "label")?;
-        let selections = super::selections::TaskSelections::parse(params)?;
-        let canonical = selections.plural.then(|| selections.canonical());
+        let selections = super::selections::has_plural(params)
+            .then(|| super::selections::TaskSelections::parse(params))
+            .transpose()?;
+        let canonical = selections.as_ref().map(|selection| selection.canonical());
         let key = source.tracker_list_key().stored()?;
         let page = pages::PageAsk::parse(
             params,
@@ -198,7 +200,17 @@ impl TaskReadContext {
                     take: page.rows_to_keep(),
                     scan: scan.or_else(|| page.rows_to_scan()),
                 },
-                |task, target| selections.matches_task(task, target),
+                |task, target| match &selections {
+                    Some(selections) => selections.matches_task(task, target),
+                    None => {
+                        assignee.matches(task, target)
+                            && label.is_none_or(|label| {
+                                task.labels
+                                    .iter()
+                                    .any(|one| one.eq_ignore_ascii_case(label))
+                            })
+                    }
+                },
             )
             .stored()?;
         let mut tasks = stretch.tasks;

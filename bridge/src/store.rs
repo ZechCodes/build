@@ -92,10 +92,10 @@ mod schema;
 mod source_sync;
 mod task_observation;
 mod task_rename;
-mod tracker;
 mod task_summaries;
-pub use task_summaries::{TaskFilterChoice, TaskSummaryCandidate, MAX_SUMMARY_CANDIDATES};
+mod tracker;
 pub(crate) use task_observation::{TrackerTaskObservation, TrackerTaskPublication};
+pub use task_summaries::{TaskFilterChoice, TaskSummaryCandidate, MAX_SUMMARY_CANDIDATES};
 mod waiting_on;
 pub use waiting_on::{DependencyDigest, DependencySummary, DependentsPage, WaitingOnPage};
 mod terminal_attention;
@@ -472,8 +472,8 @@ impl Store {
     }
     /// Fixture access to the actual writer mutex; production readers cannot
     /// obtain this guard.
-    #[cfg(test)]
-    pub(crate) fn writer_for_test(&self) -> std::sync::MutexGuard<'_, Connection> {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn writer_for_test(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.connection()
     }
 

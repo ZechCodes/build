@@ -875,8 +875,8 @@ impl AppState {
     }
 
     /// Clone the attached Store so fixtures hold its actual writer mutex.
-    #[cfg(test)]
-    pub(crate) fn attached_store_for_test(&self) -> Option<Store> {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn attached_store_for_test(&self) -> Option<Store> {
         self.store.clone()
     }
 

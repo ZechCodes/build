@@ -8,7 +8,6 @@ pub(super) struct TaskSelections {
     pub statuses: Vec<String>,
     pub labels: Vec<String>,
     assignees: Vec<AssigneeFilter>,
-    pub plural: bool,
 }
 
 impl TaskSelections {
@@ -42,9 +41,6 @@ impl TaskSelections {
             statuses,
             labels,
             assignees,
-            plural: ["states", "statuses", "labels", "assignees"]
-                .iter()
-                .any(|key| params.get(key).is_some()),
         })
     }
 
@@ -96,6 +92,12 @@ impl TaskSelections {
                     .iter()
                     .any(|want| labels.iter().any(|label| label.eq_ignore_ascii_case(want))))
     }
+}
+
+pub(super) fn has_plural(params: &Value) -> bool {
+    ["states", "statuses", "labels", "assignees"]
+        .iter()
+        .any(|key| params.get(key).is_some())
 }
 
 fn selection<T>(

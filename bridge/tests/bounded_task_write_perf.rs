@@ -27,6 +27,21 @@ fn remove_projection(connection: &Connection) {
             .execute_batch(&format!("DROP TRIGGER {trigger}"))
             .unwrap();
     }
+    // A pre-summary store has no helpers referring to projection tables.
+    let views: Vec<String> = connection
+        .prepare(
+            "SELECT name FROM sqlite_schema WHERE type='view' AND name LIKE 'tracker_summary_%'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for view in views {
+        connection
+            .execute_batch(&format!("DROP VIEW \"{}\"", view.replace('"', "\"\"")))
+            .unwrap();
+    }
     let tables: Vec<String> = connection.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name LIKE 'tracker_task_summar%' OR name LIKE 'tracker_task_filter_%')").unwrap()
         .query_map([],|row|row.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
     for table in tables {

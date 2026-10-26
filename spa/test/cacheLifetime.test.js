@@ -62,7 +62,7 @@ describe("the 72 h expiry", () => {
     await writeAt(address("", "feed"), { items: [] }, NOW - 100 * HOUR);
     await writeAt(address("", "projects"), [], NOW - 100 * HOUR);
 
-    await lifetime.expireWorkspaceData("dev-1", "ws-1", NOW);
+    await lifetime.expireWorkspacesData("dev-1", ["ws-1"], NOW);
 
     expect(await held(address("ws-1", "status"))).toBe(false);
     expect(await held(address("ws-1", "thread", "agent-1"))).toBe(false);
@@ -77,7 +77,7 @@ describe("the 72 h expiry", () => {
   it("leaves a neighbouring workspace's stale data alone", async () => {
     await writeAt(address("ws-1", "status"), {}, NOW - 100 * HOUR);
     await writeAt(address("ws-2", "status"), {}, NOW - 100 * HOUR);
-    await lifetime.expireWorkspaceData("dev-1", "ws-1", NOW);
+    await lifetime.expireWorkspacesData("dev-1", ["ws-1"], NOW);
     expect(await held(address("ws-2", "status"))).toBe(true);
   });
 
@@ -86,14 +86,14 @@ describe("the 72 h expiry", () => {
     cache.subscribeCache({ deviceId: "dev-1", entityId: "ws-1" }, (changed) => heard.push(changed.kind));
     await writeAt(address("ws-1", "status"), {}, NOW - 100 * HOUR);
     await writeAt(address("ws-1", "log"), {}, NOW);
-    const dropped = await lifetime.expireWorkspaceData("dev-1", "ws-1", NOW);
+    const { dropped } = await lifetime.expireWorkspacesData("dev-1", ["ws-1"], NOW);
     expect(dropped.map((one) => one.kind)).toEqual(["status"]);
     expect(heard).toEqual(["status", "log", "status"]); // the two writes, then the drop
   });
 
   it("does nothing, and asks for nothing, when a workspace holds no stale data", async () => {
     await writeAt(address("ws-1", "status"), {}, NOW);
-    expect(await lifetime.expireWorkspaceData("dev-1", "ws-1", NOW)).toEqual([]);
+    expect(await lifetime.expireWorkspacesData("dev-1", ["ws-1"], NOW)).toEqual({ dropped: [], kept: [address("ws-1", "status")] });
     expect(await held(address("ws-1", "status"))).toBe(true);
   });
 });
@@ -182,7 +182,7 @@ describe("what a sweep reads", () => {
     await writeAt(address("ws-1", "status"), {}, NOW);
     const watch = await watchBodyReads();
 
-    await lifetime.expireWorkspaceData("dev-1", "ws-1", NOW);
+    await lifetime.expireWorkspacesData("dev-1", ["ws-1"], NOW);
     await lifetime.evictWorkspaceData("dev-1", "ws-1");
 
     watch.stop();

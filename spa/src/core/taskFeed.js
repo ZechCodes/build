@@ -276,7 +276,7 @@ export function dropFeedProject(deviceId, projectKey) {
 /** Ask for a pass now (after adding a project, adopting, …) — every live
  *  device, or just the one named. The pass is the sync layer's; what it writes
  *  comes back here as an announcement, the same way a push does. */
-export function refreshFeed(deviceId = null) {
+export function refreshFeed(deviceId = null, reason = "mutation") {
   const ids = deviceId === null ? liveContexts().map((context) => context.deviceId) : [deviceId];
-  return Promise.all(ids.map((id) => syncDevice(id)));
+  return Promise.all(ids.map((id) => syncDevice(id, reason)));
 }

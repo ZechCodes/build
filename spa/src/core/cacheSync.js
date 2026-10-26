@@ -31,10 +31,12 @@
 // the bridge holds them is pushed (#142). A subscription that lands after the
 // pass's reads were asked — a device with nothing cached reads at once, and a
 // subscribe can outlast the wait — leaves a gap behind it, so its landing is
-// followed by another pass (`subscriptionLanded`). A push can overtake the
+// followed by a repair of already-read subscription records
+// (`subscriptionLanded`). A push can overtake the
 // read it followed, so a read never writes over a record a push wrote after it
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
+import { discoverRosterThreads, discoverSyncOwnership, emptySyncDiscovery, queueSuccessor, readsSyncGroup as readsGroup, requiredSuccessorGroups, syncReadGroup } from "./syncSuccessors.js";
 import { syncDiagnostics } from "./syncDiagnostics.js";
 import { isRestoringInPlace } from "./connectionStatusModel.js";
 import { threadHistoryStart, trimThreadHistory } from "./threadRetention.js";
@@ -330,7 +332,14 @@ const callWhileActive = (context, method, params, envelope, scope = context.read
   priority: () => threadReadIsVisible(context, scope) ? {}
     : foregroundPlanner(context)?.priorityForRead(scope, envelope) || envelope,
   before: () => beforeBackgroundRead(context, scope),
-  load: (priority) => context.call(method, params, priority),
+  load: (priority) => {
+    const group = syncReadGroup(method);
+    if (group && context.syncTurn) {
+      context.syncTurn.observed.add(group);
+      observedReadGroups.get(context.deviceId)?.add(group);
+    }
+    return context.call(method, params, priority);
+  },
 });
 
 /** A mounted conversation keeps foreground admission between sync passes too. */
@@ -405,24 +414,23 @@ function dirsOf(paths) {
  * workspace worth reading in the order the reader will want them, then the
  * lifetime rules.
  *
- * Re-entrant by device and no more: asks during a pass share one follow-up,
- * which starts after the current pass finishes. Another device's pass is
- * another device's business.
+ * Re-entrant by device: reads still ahead cover a request in this pass.
+ * Already-observed records share one scoped successor; explicit mutations
+ * retain a full successor once reads have begun.
  *
  * Answers whether the pass got all the way through — what the caller needs to
  * know to decide whether this session has been read at all.
  */
-export async function syncDevice(deviceId) {
+export async function syncDevice(deviceId, reason = "mutation") {
   if (!holdingLock) return false;
   const session = sessionOf(deviceId);
   const startedIn = lifetime;
   const running = passes.get(deviceId);
   if (running) {
-    // The current pass may already have read a record changed by this ask.
-    // Every ask during it shares one later pass, and waits for that answer.
+    // Join reads still ahead, or wait for the successor that repairs the
+    // records this request could have changed after they were observed.
     if (running.session === session) {
-      running.again = true;
-      return running.done.then(() => running.next ?? false);
+      return joinRunningPass(deviceId, running, reason);
     }
     // A newer session, though, is a different machine's answer — possibly a
     // different bridge — and the pass out is reading a session that has gone.
@@ -439,7 +447,24 @@ export async function syncDevice(deviceId) {
     }
     return resume();
   }
-  return startPass(deviceId);
+  return startRequestedPass(deviceId, reason);
+}
+
+function joinRunningPass(deviceId, running, reason) {
+  syncDiagnostics.successor(running.diagnostic, reason);
+  const gaps = new Set([...(observedReadGroups.get(deviceId) || [])].filter((group) =>
+    running.observed.has(group) || !readsGroup(running, group)));
+  const queued = queueSuccessor(running, requiredSuccessorGroups(gaps, reason, Boolean(running.groups)));
+  return queued ? running.done.then(() => running.next ?? false) : running.done;
+}
+
+function startRequestedPass(deviceId, reason) {
+  if (readingSessions.get(deviceId) !== sessionOf(deviceId)) return startPass(deviceId);
+  const observed = observedReadGroups.get(deviceId);
+  const groups = reason.startsWith("subscription-") || reason === "read-state"
+    ? requiredSuccessorGroups(observed || new Set(), reason) : null;
+  if (groups?.size === 0) return true;
+  return startPass(deviceId, null, groups);
 }
 
 async function resumeSupersededPass(deviceId, running, session, startedIn) {
@@ -464,6 +489,7 @@ async function restoreDevice(deviceId, session) {
   // restart. The bridge behind it may be new, so reads from the old path may
   // neither answer nor be shared with this path's baseline.
   restoredScopes.set(deviceId, { session, scope: {} });
+  observedReadGroups.delete(deviceId);
   const previous = passes.get(deviceId);
   if (previous) {
     previous.superseded = true;
@@ -497,8 +523,8 @@ const sessionOf = (deviceId) => contextFor(deviceId)?.session ?? null;
 /** Run one pass and hold it where the next ask can find it. The promise never
  *  rejects: a pass that threw is a pass that did not finish, and the caller's
  *  question is only ever whether it got all the way through. */
-function startPass(deviceId, connection = null) {
-  const turn = { connection, session: sessionOf(deviceId), superseded: false, reading: false, again: false, next: null, done: null };
+function startPass(deviceId, connection = null, groups = null) {
+  const turn = { groups, observed: new Set(), successorGroups: undefined, connection, session: sessionOf(deviceId), superseded: false, reading: false, again: false, next: null, done: null };
   turn.done = (async () => {
     try {
       return await orderedSync(deviceId, turn);
@@ -511,6 +537,7 @@ function startPass(deviceId, connection = null) {
     }
   })();
   passes.set(deviceId, turn);
+  if (!groups || readingSessions.get(deviceId) !== turn.session) observedReadGroups.set(deviceId, new Set());
   if (connectionRequested(deviceId) && liveContexts().some((context) => context.deviceId === deviceId && connectedForSync(context))) {
     turn.connection = { active: syncContext(contextFor(deviceId)).ownerActive };
     connectionPeriods.set(deviceId, turn.connection);
@@ -529,7 +556,7 @@ function finishPass(deviceId, turn) {
   if (passes.get(deviceId) !== turn) return;
   passes.delete(deviceId);
   if (turn.again && !turn.superseded && holdingLock && sessionOf(deviceId) === turn.session) {
-    turn.next = startPass(deviceId, turn.connection);
+    turn.next = startPass(deviceId, turn.connection, turn.successorGroups);
   } else finishConnectionPass(deviceId, turn);
   updateConnectionSync();
 }
@@ -559,16 +586,16 @@ async function orderedSync(deviceId, turn) {
   const passStartedAt = Date.now();
   const fence = pushFence();
   diagnosticStage(turn, "lists");
-  const lists = await readLists(context, fence);
+  const { lists, beforeLists } = await passLists(context, turn, fence);
   if (!lists || !context.active()) return false;
-  const { before, ownership } = lists;
   const view = { ...lists.view, projects: await projectsWithAgentRosters(context.deviceId, lists.view.projects) };
   diagnosticStage(turn, "selection");
   const pass = await workspacesToRead(context, view);
+  const discovery = syncDiscovery(beforeLists?.view, view);
   const phases = createSyncPhases({
-    context, pass, view, route: () => App.route,
+    context, pass, view, route: () => App.route, readGroups: turn.groups, discovery,
     stage: (name) => diagnosticStage(turn, name),
-    projectRosterReads: projectRosterReads(context, view, pass),
+    projectRosterReads: projectRosterReads(context, view, pass, discovery),
     sourceTerminalReads: lists.sourceTerminalReads,
     entityContext: (id) => whileOnBoard(context, id, fence),
     readers: workspaceReaders,
@@ -583,20 +610,36 @@ async function orderedSync(deviceId, turn) {
   // keeping the completed pass's foreground planner alive.
   turn.phases = null;
   turn.foreground = null;
+  return finishOrderedSync({ context, turn, view, lists, passStartedAt, fence,
+    recovery, recoveryRevision, diffRecovery, filesRecovered });
+}
+
+async function passLists(context, turn, fence) {
+  const beforeLists = turn.groups ? await heldSyncLists(context) : null;
+  return { beforeLists, lists: readsGroup(turn, "lists") ? await readLists(context, fence) : beforeLists };
+}
+
+async function finishOrderedSync({ context, turn, view, lists, passStartedAt, fence,
+  recovery, recoveryRevision, diffRecovery, filesRecovered }) {
+  const { deviceId } = context;
   diagnosticStage(turn, "cleanup");
-  await evictRowsThatAreOver(context, view, fence);
-  await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
+  if (readsGroup(turn, "lists")) {
+    await evictRowsThatAreOver(context, view, fence);
+    await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
+  }
   if (!context.active()) return false;
-  if (filesRecovered && fileRecoveries.get(deviceId) === recovery && recovery.revision === recoveryRevision) recovery.complete = true;
-  diffRecovery.complete = true;
-  // The reader may have walked off while the pass read, and on a cold cache
-  // the workspace they stand in had no row to resolve until the lists landed.
+  completePassRecovery(context, turn, recovery, recoveryRevision, diffRecovery, filesRecovered);
   diagnosticStage(turn, "route");
   await refollowRoute(deviceId);
-  // The pass's row writes and evictions must finish before observing changes
-  // to ownership for cleanup. This work never holds up the sync result.
-  void pruneReadDrafts(context, before, ownership).catch(() => {});
+  // Detached draft pruning retains the same ownership/session fences.
+  if (readsGroup(turn, "lists")) void pruneReadDrafts(context, lists.before, lists.ownership).catch(() => {});
   return true;
+}
+
+function completePassRecovery(context, turn, recovery, revision, diffRecovery, filesRecovered) {
+  if (!readsGroup(turn, "checkout")) return;
+  if (filesRecovered && fileRecoveries.get(context.deviceId) === recovery && recovery.revision === revision) recovery.complete = true;
+  diffRecovery.complete = true;
 }
 
 /** Recovery belongs to a sync lifetime, session and restored path. Ordinary
@@ -658,6 +701,28 @@ const whileOnBoard = (context, entityId, fence) => ({
     && !entityDataInvalidatedSince(addressOf(context, entityId, "row"), fence),
 });
 
+function syncDiscovery(before, after) {
+  const discovery = emptySyncDiscovery();
+  if (!before) return discovery;
+  discoverSyncOwnership(discovery, before, after,
+    [...(before.runs || []), ...projectRosterRows(before)], [...(after.runs || []), ...projectRosterRows(after)]);
+  const knownDirectories = new Set(projectTerminalScopes(before.projects).map(directoryCacheId));
+  for (const scope of projectTerminalScopes(after.projects)) {
+    const id = directoryCacheId(scope);
+    if (!knownDirectories.has(id)) discovery.checkout.add(id);
+  }
+  return discovery;
+}
+
+/** Scoped repairs reuse authoritative ownership records; they never turn a
+ * missing cached list into an authoritative empty remote response. */
+async function heldSyncLists(context) {
+  const [feed, projects, workspaces] = await Promise.all(["feed", "projects", "workspaces"].map((kind) => heldValue(context, "", kind)));
+  if (!feed || !projects) return null;
+  return { view: { ...feed, projects: await projectsWithAgentRosters(context.deviceId, projects), workspaces: workspaces || [] },
+    sourceTerminalReads: await projectTerminalReads(context) };
+}
+
 /** Step 1: the three lists, written as they land so the inbox paints before
  *  any workspace has been read. A device whose bridge does not serve
  *  workspaces still has a board. */
@@ -703,18 +768,19 @@ async function refreshProjectAgents(context, projects, entityId = null, afterWri
       afterWrite: async (roster) => {
         await reconcileConversationGenerations(context, roster.entity_id, roster.agents);
         await writeSurfaces(context, roster.entity_id, roster.agents);
-        if (context.active()) await afterWrite();
+        if (context.active()) await afterWrite(roster);
       } }).catch(() => null)));
 }
 
 /** Roster jobs join the planner before sending. Their cache writes expand the
  * current pass, so workers discovered on boot receive histories in this pass. */
-function projectRosterReads(context, view, pass) {
+function projectRosterReads(context, view, pass, discovery) {
   if (!bridgeCapabilities(context.deviceId).agents?.projectWorkers) return [];
   return view.projects.filter((project) => project.entity_id || project.run_id).map((project) => ({
     entityId: project.entity_id || project.run_id,
     projectId: project.project_id || project.id,
-    read: () => refreshProjectAgents(context, view.projects, project.entity_id || project.run_id, async () => {
+    read: () => refreshProjectAgents(context, view.projects, project.entity_id || project.run_id, async (roster) => {
+      discoverRosterThreads(discovery, roster.entity_id, pass.rows.get(roster.entity_id)?.agents, roster.agents);
       view.projects = await projectsWithAgentRosters(context.deviceId, view.projects);
       Object.assign(pass, await workspacesToRead(context, view));
     }),
@@ -1575,6 +1641,7 @@ const PASS_SUBSCRIPTIONS = new Set(["s-inbox", "s-background"]);
 /** Per device, the session a pass has started reading: the reads it asks are
  *  covered by whatever the bridge held at the time, and no more. */
 const readingSessions = new Map();
+const observedReadGroups = new Map();
 
 /** The bridge now holds a subscription a pass on this session read without:
  *  whatever changed between that read and this answer was recorded for
@@ -1593,8 +1660,8 @@ function subscriptionLanded(deviceId, subscriptionId) {
     diffRecoveries.delete(deviceId);
   }
   const running = passes.get(deviceId);
-  if (running && !running.reading) return;
-  void syncDevice(deviceId);
+  if (running && !running.reading && !running.groups) return;
+  void syncDevice(deviceId, subscriptionId === "s-inbox" ? "subscription-inbox" : "subscription-background");
 }
 
 /** The active subscription follows the reader: the workspace they are standing
@@ -2456,7 +2523,7 @@ function considerDevices() {
  *  Unmarked, the next thing the device announces asks again. */
 async function syncSessionOnce(deviceId, session) {
   const startedIn = lifetime;
-  if (await requestConnectionPass(deviceId, () => syncDevice(deviceId))) return;
+  if (await requestConnectionPass(deviceId, () => syncDevice(deviceId, "connection"))) return;
   if (startedIn === lifetime && syncedSessions.get(deviceId) === session) syncedSessions.delete(deviceId);
 }
 
@@ -2464,7 +2531,7 @@ async function syncSessionOnce(deviceId, session) {
  *  was away is whatever a pass reads, so every open device gets one. */
 function onVisibilityChange() {
   if (!pageVisible() || !holdingLock) return;
-  for (const context of liveContexts()) void syncDevice(context.deviceId);
+  for (const context of liveContexts()) void syncDevice(context.deviceId, "visibility");
 }
 
 export function startCacheSync() {
@@ -2509,6 +2576,7 @@ export function stopCacheSync() {
   syncedSessions.clear();
   restoredScopes.clear();
   readingSessions.clear();
+  observedReadGroups.clear();
   taskReadGenerations.clear();
   // Everything still out stands down before the fences it was held to go.
   lifetime += 1;

@@ -1344,6 +1344,164 @@ describe("a refresh requested during a pass", () => {
     return { reading, release: () => release() };
   };
 
+  it("coalesces a same-session connection request with the active pass", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    const joined = sync.syncDevice("dev-1", "connection");
+    held.release();
+    expect(await Promise.all([first, joined])).toEqual([true, true]);
+    expect(calls("board.list")).toHaveLength(2);
+  });
+
+  it("refreshes only read-state lists already observed by the active pass", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    const joined = sync.syncDevice("dev-1", "read-state");
+    held.release();
+    expect(await Promise.all([first, joined])).toEqual([true, true]);
+    expect(calls("board.list")).toHaveLength(3);
+    expect(calls("git.status")).toHaveLength(2);
+    expect(calls("tasks.list")).toHaveLength(2);
+  });
+
+  it("repairs late background coverage without unrelated lists or tasks", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    const joined = sync.syncDevice("dev-1", "subscription-background");
+    held.release();
+    expect(await Promise.all([first, joined])).toEqual([true, true]);
+    expect(calls("board.list")).toHaveLength(2);
+    expect(calls("tasks.list")).toHaveLength(2);
+    expect(calls("git.status")).toHaveLength(3);
+  });
+
+  it("leaves inbox reads still ahead to the current pass when coverage lands", async () => {
+    await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    const joined = sync.syncDevice("dev-1", "subscription-inbox");
+    held.release();
+    expect(await Promise.all([first, joined])).toEqual([true, true]);
+    expect(calls("board.list")).toHaveLength(3);
+    expect(calls("git.status")).toHaveLength(2);
+    expect(calls("tasks.list")).toHaveLength(2);
+  });
+
+  it("coalesces read-state requests before their list reads have started", async () => {
+    let greet;
+    contexts.get("dev-1").greeted = new Promise((resolve) => { greet = resolve; });
+    board = [branchItem()];
+    sync.startCacheSync();
+    const requested = sync.syncDevice("dev-1", "read-state");
+    greet();
+    expect(await requested).toBe(true);
+    await passesSettled(sync, "dev-1");
+    expect(calls("board.list")).toHaveLength(1);
+  });
+
+  it("preserves earlier background gap history across an inbox-only successor", async () => {
+    let head = "before";
+    script["git.status"] = () => ({ head, status_key: head, files: [] });
+    await boot([branchItem()]);
+    await sync.syncDevice("dev-1", "read-state");
+    const before = { lists: calls("board.list").length, tasks: calls("tasks.list").length };
+    head = "after";
+    for (const listener of subscriptionHeldListeners) listener("dev-1", "s-background");
+    await passesSettled(sync, "dev-1");
+    expect((await read("run-1", "status")).value.head).toBe("after");
+    expect(calls("board.list")).toHaveLength(before.lists);
+    expect(calls("tasks.list")).toHaveLength(before.tasks);
+  });
+
+  it("discovers new inbox work during scoped coverage repair without repeating old checkout work", async () => {
+    await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    board = [...board, branchItem({ run_id: "run-2", worktree_id: "wt-2", branch: "build/new",
+      agents: [{ id: "new-worker", conversation_id: "new-conversation", thread_id: "new-thread" }] })];
+    script["thread.page"] = () => ({ thread_id: "new-thread", items: [{ type: "message",
+      data: { id: "new-message", sequence: 1, role: "user", body: "discovered" } }], has_more: false });
+    for (const listener of subscriptionHeldListeners) listener("dev-1", "s-inbox");
+    held.release();
+    await first;
+    await passesSettled(sync, "dev-1");
+    expect(paramsOf("git.status").filter((params) => params.run_id === "run-1")).toHaveLength(2);
+    expect(paramsOf("git.status").filter((params) => params.run_id === "run-2")).toHaveLength(1);
+    expect(paramsOf("thread.page").filter((params) => params.thread_id === "new-thread")).toHaveLength(1);
+    expect((await read("run-2", "thread", "new-conversation")).value.items[0].data.body).toBe("discovered");
+    expect(calls("tasks.list")).toHaveLength(2);
+  });
+
+  it("keeps the connection ring continuous while late inbox coverage repairs only observed reads", async () => {
+    board = [branchItem()];
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" };
+    const ring = [];
+    const unsubscribe = sync.subscribeConnectionSync((active) => ring.push(active));
+    const held = holdNextRead("git.status");
+    sync.startCacheSync();
+    await held.reading;
+    for (const listener of subscriptionHeldListeners) listener("dev-1", "s-inbox");
+    held.release();
+    await passesSettled(sync, "dev-1");
+    await settle();
+    expect(ring).toEqual([false, true, false]);
+    expect(calls("board.list")).toHaveLength(2);
+    expect(calls("git.status")).toHaveLength(1);
+    expect(calls("tasks.list")).toHaveLength(1);
+    unsubscribe();
+  });
+
+  it("reads a replacement generation discovered by a scoped inbox repair", async () => {
+    const agent = { id: "worker", conversation_id: "conversation", thread_id: "old-thread", thread_generation_revision: 1 };
+    script["thread.page"] = (params) => ({ thread_id: params.thread_id, thread_last_sequence: 1,
+      items: [{ type: "message", data: { id: params.thread_id, sequence: 1, role: "user", body: params.thread_id } }], has_more: false });
+    await boot([branchItem({ agents: [agent] })], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    board = [branchItem({ agents: [{ ...agent, thread_id: "new-thread", thread_generation_revision: 2 }] })];
+    for (const listener of subscriptionHeldListeners) listener("dev-1", "s-inbox");
+    held.release();
+    await first;
+    await passesSettled(sync, "dev-1");
+    expect(paramsOf("thread.page").filter((params) => params.thread_id === "new-thread")).toHaveLength(1);
+    expect((await read("run-1", "thread", "conversation")).value).toMatchObject({ thread_id: "new-thread", thread_generation_revision: 2 });
+  });
+
+  it("warms a new project's roster, workers and tasks discovered by list-only repair", async () => {
+    projectWorkersSupported = true;
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: true });
+    let projects = [{ project_id: "p1", name: "build" }];
+    script["project.list"] = () => ({ projects });
+    const agents = [{ id: "pin-2", conversation_id: "pin-conversation", thread_id: "pin-thread" },
+      { id: "worker-2", conversation_id: "worker-conversation", thread_id: "worker-thread" }];
+    script["agent.list"] = () => ({ entity_id: "owner-2", pinned_agent_id: "pin-2", agents });
+    script["thread.page"] = (params) => ({ thread_id: params.thread_id, items: [], has_more: false });
+    await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    projects = [...projects, { project_id: "p2", name: "new", entity_id: "owner-2" }];
+    board = [...board, { entity_id: "owner-2", project_id: "p2", agents: [agents[0]] }];
+    for (const listener of subscriptionHeldListeners) listener("dev-1", "s-inbox");
+    held.release();
+    await first;
+    await passesSettled(sync, "dev-1");
+    expect(paramsOf("agent.list")).toContainEqual({ entity_id: "owner-2", include_project_workers: true });
+    expect(paramsOf("thread.page").filter((params) => params.thread_id === "worker-thread")).toHaveLength(1);
+    expect(paramsOf("tasks.list").filter((params) => params.project_id === "p2")).toHaveLength(1);
+    expect(paramsOf("tasks.list").filter((params) => params.project_id === "p1")).toHaveLength(2);
+    expect(paramsOf("git.status").filter((params) => params.run_id === "run-1")).toHaveLength(2);
+  });
+
   it("reads a mutation made after project.list in one non-overlapping follow-up", async () => {
     let gitEnabled = false;
     script["project.list"] = () => ({ projects: [{ project_id: "p1", name: "build", git_enabled: gitEnabled }] });

@@ -152,6 +152,7 @@ function syncSnapshotText(name, snapshot) {
 function syncPassText(pass) {
   return [
     `Pass ${syncSpan(pass.start, pass.end)}`,
+    ...(Object.keys(pass.successorRequests || {}).length ? [`  Successor requests ${syncCounts(pass.successorRequests)}`] : []),
     ...(pass.stages || []).map((stage) => `  ${stage.stage} ${syncSpan(stage.start, stage.end)}`),
     `  ${syncSnapshotText("Capture", pass.snapshot?.capture)}`,
     `  ${syncSnapshotText("Drain", pass.snapshot?.drain)}`,

@@ -1,12 +1,17 @@
 // A pass gives the open conversation and checkout the wire, then fills the
 // inbox, and only then warms checkout records nobody is looking at. Route
 // intent is resolved between reads, never captured for the entire pass.
+import { discoveredThreadKey } from "./syncSuccessors.js";
 import { routedEntityId } from "./inbox.js";
 import { visibleTreePaths, visibleWorkingDiff, visibleSyncThread, visibleSyncReads } from "./syncVisibleScopes.js";
 import { cachedSubKeys } from "./localCache.js";
 import { requestPriorityFields } from "./readRequests.js";
 import { drainBackgroundStreams } from "./syncBackgroundStreams.js";
 
+const readsGroup = (state, group) => !state.readGroups || state.readGroups.has(group);
+const entityReadsGroup = (state, group, entityId) => readsGroup(state, group) || state.discovery?.[group]?.has(entityId);
+const readsThread = (state, entityId, agent) => readsGroup(state, "threads")
+  || state.discovery?.threads?.has(discoveredThreadKey(entityId, agent));
 const keyOf = (entityId, kind, sub = "") => JSON.stringify([entityId, kind, sub]);
 const projectIds = (view) => (view.projects || []).map((project) => project.project_id || project.id).filter(Boolean);
 
@@ -31,7 +36,7 @@ function conversationFor(route, entityId, rows, deviceId) {
 
 function scopeJobs(state, entityId, priority, paths) {
   const row = state.pass.rows.get(entityId);
-  if (!row) return [];
+  if (!row || !entityReadsGroup(state, "checkout", entityId)) return [];
   const scope = state.readers.scope(row);
   const job = (kind, sub, read) => ({ key: keyOf(entityId, kind, sub), read: () => read(state.entityContext(entityId), entityId, row, priority) });
   const jobs = [];
@@ -54,6 +59,7 @@ const threadJob = (state, entityId, agent, priority) => ({
 const SOURCE_ORDER = ["status", "tree", "terminals", "log", "unpushed", "diff"];
 function sourceJobs(state, diffOnly = false) {
   return visibleSyncReads(state.context.deviceId)
+    .filter(({ key }) => entityReadsGroup(state, "checkout", key.entityId))
     .filter(({ key }) => !state.pass.rows.has(key.entityId))
     .filter(({ key }) => !diffOnly || key.kind === "diff")
     .sort((one, two) => SOURCE_ORDER.indexOf(one.key.kind) - SOURCE_ORDER.indexOf(two.key.kind))
@@ -70,6 +76,7 @@ function foregroundRosterJobs(state, route) {
   // project's owner makes its complete roster a foreground dependency.
   const owner = routedEntityId(route, state.view);
   return (state.projectRosterReads || [])
+    .filter((job) => entityReadsGroup(state, "rosters", job.entityId))
     .filter((job) => job.projectId === route.projectId && (route.name === "project" || job.entityId === owner))
     .map(rosterJob);
 }
@@ -78,23 +85,28 @@ function foregroundJobs(state) {
   const route = state.route();
   const routed = route.deviceId === state.context.deviceId;
   const jobs = routed ? [...foregroundRosterJobs(state, route), ...routedJobs(state, route)] : [];
-  for (const entityId of foregroundDiffEntities(state)) {
+  for (const entityId of foregroundDiffEntities(state).filter((id) => entityReadsGroup(state, "checkout", id))) {
     const row = state.pass.rows.get(entityId);
     if (!state.readers.scope(row)) continue;
     jobs.push({ key: keyOf(entityId, "diff"),
       read: () => state.readers.visibleDiff(state.entityContext(entityId), entityId, row, "foreground") });
   }
   if (routed || state.context.recoverWorkingDiff) jobs.push(...sourceJobs(state, !routed));
-  if (routed && route.projectId && projectIds(state.view).includes(route.projectId)) {
+  if (foregroundTasks(state, route, routed)) {
     jobs.push({ key: keyOf(route.projectId, "tasks-first"), read: () => state.tasks.first(route.projectId) });
   }
   return jobs;
 }
 
+function foregroundTasks(state, route, routed) {
+  return routed && route.projectId && entityReadsGroup(state, "tasks", route.projectId)
+    && projectIds(state.view).includes(route.projectId);
+}
+
 function routedJobs(state, route) {
   const entityId = routedEntityId(route, state.view);
   const conversation = conversationFor(route, entityId, state.pass.rows, state.context.deviceId);
-  const jobs = conversation ? [threadJob(state, conversation.entityId, conversation.agent, "foreground")] : [];
+  const jobs = conversation && readsThread(state, conversation.entityId, conversation.agent) ? [threadJob(state, conversation.entityId, conversation.agent, "foreground")] : [];
   jobs.push(...scopeJobs(state, entityId, "foreground",
     new Set(["", ...visibleTreePaths(state.context.deviceId, entityId)])));
   return jobs;
@@ -187,7 +199,7 @@ async function beforeBackgroundRead(state, scope) {
 // conversation's repair and push continuations. Discover each roster on entry.
 async function readInboxThreads(state, entityId) {
   await drainBackgroundStreams({
-    items: state.pass.rows.get(entityId)?.agents || [],
+    items: (state.pass.rows.get(entityId)?.agents || []).filter((agent) => readsThread(state, entityId, agent)),
     active: state.context.active,
     read: async (agent) => {
       await state.foreground();
@@ -202,7 +214,7 @@ async function readInbox(state) {
     await state.foreground();
     await readInboxThreads(state, entityId);
   }
-  for (const projectId of projectIds(state.view)) {
+  for (const projectId of projectIds(state.view).filter((id) => entityReadsGroup(state, "tasks", id))) {
     await state.foreground();
     if (!state.context.active()) return;
     state.done.add(keyOf(projectId, "tasks-first"));
@@ -222,12 +234,12 @@ async function readBackgroundEntity(state, entityId) {
 }
 
 async function readBackground(state) {
-  const reads = (state.sourceTerminalReads || []).map(({ entityId, read }) => async () => {
+  const reads = (state.sourceTerminalReads || []).filter(({ entityId }) => entityReadsGroup(state, "checkout", entityId)).map(({ entityId, read }) => async () => {
     await state.foreground();
     await takeJob(state, { key: keyOf(entityId, "terminals"), read });
     return true;
   });
-  reads.push(...state.pass.order.map((entityId) => () => readBackgroundEntity(state, entityId)));
+  reads.push(...state.pass.order.filter((id) => entityReadsGroup(state, "checkout", id)).map((entityId) => () => readBackgroundEntity(state, entityId)));
   const recovered = await drainBackgroundStreams({
     items: reads,
     active: state.context.active,
@@ -253,7 +265,7 @@ export function createSyncPhases(options) {
       stage("foreground");
       await state.foreground();
       stage("rosters");
-      await Promise.all((state.projectRosterReads || []).map((read) => takeJob(state, rosterJob(read))));
+      await Promise.all((state.projectRosterReads || []).filter((read) => entityReadsGroup(state, "rosters", read.entityId)).map((read) => takeJob(state, rosterJob(read))));
       stage("foreground");
       await state.foreground();
       stage("inbox");

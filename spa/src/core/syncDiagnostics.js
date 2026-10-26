@@ -13,6 +13,7 @@ const VERBS = new Set([
 ]);
 const KINDS = new Set(["rpc", "board", "projects", "workspaces", "agents", "tasks", "tasks-first", "tasks-rest",
   "terminals", "status", "log", "unpushed", "tree", "file", "patch", "diff", "thread", "reviews", "row", "feed"]);
+const SUCCESSOR_REASONS = new Set(["mutation", "read-state", "visibility", "connection", "subscription-inbox", "subscription-background"]);
 const OUTCOMES = new Set(["reply", "path-timeout", "answer-timeout", "admission-cancel"]);
 export const SYNC_DIAGNOSTIC_ITEM_LIMIT = 32;
 const QUEUE_COUNTS = ["bodyRunning", "bodyPending", "backgroundRunning", "backgroundPending", "catchupRunning", "catchupPending", "captured", "drained"];
@@ -98,7 +99,7 @@ export function createSyncDiagnostics({ now = () => performance.now() } = {}) {
     if (!current) return null;
     const token = {};
     const record = { start: offset(time(), current), end: null, stages: [],
-      snapshot: { capture: null, drain: null }, selected: { ...counters(null, SELECTED_COUNTS), heldBodies: null } };
+      successorRequests: {}, snapshot: { capture: null, drain: null }, selected: { ...counters(null, SELECTED_COUNTS), heldBodies: null } };
     passes.set(token, { period: current, record });
     current.passCount += 1;
     current.passes.push(record);
@@ -134,6 +135,13 @@ export function createSyncDiagnostics({ now = () => performance.now() } = {}) {
     for (const key of SELECTED_COUNTS) {
       if (Object.hasOwn(values || {}, key)) pass.record.selected[key] = count(values[key]);
     }
+  }
+
+  function successor(token, reason) {
+    const pass = passes.get(token);
+    if (!pass || !SUCCESSOR_REASONS.has(reason)) return;
+    const counts = pass.record.successorRequests;
+    counts[reason] = count((counts[reason] || 0) + 1);
   }
 
   function itemQueued(verb, kind) {
@@ -208,7 +216,7 @@ export function createSyncDiagnostics({ now = () => performance.now() } = {}) {
     if (active) ring(true);
   }
 
-  return { ring, passStart, passEnd, stageStart, snapshot, selected, itemQueued,
+  return { ring, passStart, passEnd, stageStart, snapshot, selected, successor, itemQueued,
     itemStart: (token) => milestone(token, "start"), itemReceipt: (token) => milestone(token, "receipt"),
     itemSettled, deviceState, registerSqlCredits, report, clear };
 }

@@ -88,6 +88,7 @@ fn identical_huge_history_write_fixture() {
         .prepare("INSERT INTO tracker_comments(id,task_id,created_at,record) VALUES(?1,?2,?3,?4)")
         .unwrap();
     let mut history_body_bytes = 0;
+    let mut history_record_bytes = 0;
     for number in 0..ENTRIES {
         let body = if number == 0 {
             "large timeline payload".repeat(100_000)
@@ -96,19 +97,17 @@ fn identical_huge_history_write_fixture() {
         };
         history_body_bytes += body.len();
         let note = comment(&task, number, body);
+        let record = serde_json::to_string(&note).unwrap();
+        history_record_bytes += record.len();
         insert
-            .execute(params![
-                note.id,
-                note.task_id,
-                note.created_at,
-                serde_json::to_string(&note).unwrap()
-            ])
+            .execute(params![note.id, note.task_id, note.created_at, record])
             .unwrap();
     }
     drop(insert);
     tx.commit().unwrap();
     drop(connection);
     println!("huge_fixture profile={} tasks=1 history_entries={ENTRIES} task_body_bytes={} history_body_bytes={history_body_bytes} total_body_bytes={} seed_us={} before_startup_hwm={}",if cfg!(debug_assertions){"debug"}else{"release"},task.body.len(),task.body.len()+history_body_bytes,seed_started.elapsed().as_micros(),high_water_kib());
+    println!("huge_fixture task_record_bytes={} history_record_bytes={history_record_bytes} append_record_bytes={}", serde_json::to_vec(&task).unwrap().len(), serde_json::to_vec(&comment(&task, 100_000, "a note".into())).unwrap().len());
     let started = Instant::now();
     let cpu = thread_cpu_micros();
     let store = Store::new(root.path()).unwrap();

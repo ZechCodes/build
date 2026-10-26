@@ -308,6 +308,49 @@ fn oversized_summary_errors_without_publishing_a_partial_page_or_cursor() {
 }
 
 #[test]
+fn invalid_metadata_summary_fails_without_success_cursor_then_recovers() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let path = app.tracker_project_path(&project).unwrap();
+    seed_summary_tasks(root.path(), &path, 1, 3);
+    let connection = rusqlite::Connection::open(root.path().join("store/build.db")).unwrap();
+    let id: String = connection
+        .query_row(
+            "SELECT task_id FROM tracker_task_summaries WHERE number=2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let imported = json!({"mode":"pull_request","pull_request":{"originating_workspace_id":"x".repeat(129),"status":"open"}});
+    connection
+        .execute(
+            "INSERT INTO reviews(task_id,workspace_id,version,record) VALUES(?1,'workspace',1,?2)",
+            rusqlite::params![id, imported.to_string()],
+        )
+        .unwrap();
+    let params = json!({"project_id":project,"summary":true,"limit":3});
+    for _ in 0..2 {
+        let error = app.handle(req("tasks.list", params.clone()));
+        assert_eq!(error["ok"], false, "{error}");
+        assert_eq!(error["error_code"], "unavailable");
+        assert_eq!(error["retryable"], false);
+        assert!(error.get("result").is_none());
+        assert!(error.get("next_cursor").is_none());
+    }
+    connection
+        .execute("DELETE FROM reviews WHERE task_id=?1", [&id])
+        .unwrap();
+    let repaired = answer(&mut app, "tasks.list", params);
+    assert_eq!(repaired["tasks"].as_array().unwrap().len(), 3);
+    assert!(repaired["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["id"] == id));
+    assert!(repaired.get("next_cursor").is_none());
+}
+
+#[test]
 fn server_multi_selections_match_tagged_assignees_without_case_folding_ids() {
     let root = tempfile::tempdir().unwrap();
     let (_repo, mut app, project) = tracked(root.path());

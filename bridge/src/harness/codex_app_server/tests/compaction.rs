@@ -29,6 +29,61 @@ fn compaction_answered() -> SessionEvent {
     correlated(compact_thread(), Ok(json!({})))
 }
 
+fn assert_overflow_failure(effects: &[SessionEffect]) {
+    let failures: Vec<_> = effects
+        .iter()
+        .filter_map(|effect| match effect {
+            SessionEffect::Report(report) => match &report.activity {
+                AgentActivity::TurnFailed {
+                    operation_id,
+                    summary,
+                    ..
+                } => Some((operation_id.as_deref(), summary.as_str())),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        failures,
+        vec![(
+            Some("overflow-operation"),
+            "Your input exceeds the context window of this model"
+        )]
+    );
+}
+
+fn settle_overflow_compaction(state: CodexSessionState, compact_succeeds: bool) -> StateTransition {
+    if compact_succeeds {
+        let answered = apply(state, compaction_answered());
+        assert!(answered.effects.is_empty());
+        let started = apply(
+            answered.state,
+            SessionEvent::TurnStarted("compact-turn".into()),
+        );
+        assert_eq!(started.state.queued_turn_count(), 1);
+        apply(started.state, turn_completed("compact-turn", None))
+    } else {
+        let refused = apply(
+            state,
+            correlated(
+                compact_thread(),
+                Err(RpcError {
+                    code: -32600,
+                    message: "cannot compact this thread".into(),
+                    data: None,
+                }),
+            ),
+        );
+        assert!(
+            matches!(refused.effects.first(), Some(SessionEffect::Report(report))
+                if matches!(&report.activity, AgentActivity::TaskUpdate { summary }
+                    if summary.contains("cannot compact this thread")))
+        );
+        refused
+    }
+}
+
 /// Simulated provider protocol only: accepting `/compact` here does not prove
 /// that a live provider can compact an overflowing thread.
 #[test]
@@ -52,28 +107,7 @@ fn context_window_failure_reports_once_without_retry_and_allows_manual_compactio
         let failed = apply(working.state, overflow());
         assert_eq!(failed.state.live_status(), Some(AgentStatus::Waiting));
         assert_eq!(failed.state.session_id().as_deref(), Some(THREAD_ID));
-        let failures: Vec<_> = failed
-            .effects
-            .iter()
-            .filter_map(|effect| match effect {
-                SessionEffect::Report(report) => match &report.activity {
-                    AgentActivity::TurnFailed {
-                        operation_id,
-                        summary,
-                        ..
-                    } => Some((operation_id.as_deref(), summary.as_str())),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            failures,
-            vec![(
-                Some("overflow-operation"),
-                "Your input exceeds the context window of this model"
-            )]
-        );
+        assert_overflow_failure(&failed.effects);
         assert!(!failed.effects.contains(&SessionEffect::Close));
         assert!(!failed
             .effects
@@ -104,34 +138,7 @@ fn context_window_failure_reports_once_without_retry_and_allows_manual_compactio
         assert!(queued.effects.is_empty());
         assert_eq!(queued.state.queued_turn_count(), 1);
 
-        let settled = if compact_succeeds {
-            let answered = apply(queued.state, compaction_answered());
-            assert!(answered.effects.is_empty());
-            let started = apply(
-                answered.state,
-                SessionEvent::TurnStarted("compact-turn".into()),
-            );
-            assert_eq!(started.state.queued_turn_count(), 1);
-            apply(started.state, turn_completed("compact-turn", None))
-        } else {
-            let refused = apply(
-                queued.state,
-                correlated(
-                    compact_thread(),
-                    Err(RpcError {
-                        code: -32600,
-                        message: "cannot compact this thread".into(),
-                        data: None,
-                    }),
-                ),
-            );
-            assert!(
-                matches!(refused.effects.first(), Some(SessionEffect::Report(report))
-                if matches!(&report.activity, AgentActivity::TaskUpdate { summary }
-                    if summary.contains("cannot compact this thread")))
-            );
-            refused
-        };
+        let settled = settle_overflow_compaction(queued.state, compact_succeeds);
         let requests: Vec<_> = settled
             .effects
             .iter()

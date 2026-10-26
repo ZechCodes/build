@@ -503,6 +503,33 @@ fn unchanged_task_activity_save_avoids_rewriting_the_canonical_task() {
 }
 
 #[test]
+fn task_metadata_changes_reuse_retained_activity_until_context_inputs_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let [mut task, _] = pair(&store);
+    let note = said(&task, "tc-00000000000000000000000106", support::NOW);
+    store
+        .save_tracker_task_activity(&task, std::slice::from_ref(&note), &[])
+        .unwrap();
+    let conn = Connection::open(dir.path().join("build.db")).unwrap();
+    conn.execute_batch("CREATE TRIGGER reject_counter_replay BEFORE UPDATE OF unread_count,unread_agent_comments,unread_mentions,session_started_ms,last_activity_ms,done_at ON tracker_task_summary_context BEGIN SELECT RAISE(ABORT,'unrelated counter replay'); END;").unwrap();
+    task.title = "changed title".into();
+    task.updated_at = "2026-01-02T00:00:00Z".into();
+    task.body = "new unrelated payload".repeat(1000);
+    task.labels = vec!["Changed".into()];
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    assert_eq!(card(&conn, &task.id)["title"], "changed title");
+    assert_eq!(card(&conn, &task.id)["unread_count"], 1);
+    history_parity(&store, &task.id);
+    conn.execute_batch("DROP TRIGGER reject_counter_replay")
+        .unwrap();
+    task.read_through = Some(note.id);
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    assert_eq!(card(&conn, &task.id)["unread_count"], 0);
+    history_parity(&store, &task.id);
+}
+
+#[test]
 fn shared_helper_view_changes_reconcile_missed_writes_before_admission() {
     let dir = tempfile::tempdir().unwrap();
     let task = {

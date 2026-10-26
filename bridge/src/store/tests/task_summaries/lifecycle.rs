@@ -60,6 +60,7 @@ fn changed_definition_fingerprint_invalidates_completed_and_partial_backfill_che
             conn.execute("UPDATE tracker_task_summaries SET record=json_set(record,'$.title','old derivation') WHERE task_id=?1",[&task.id]).unwrap();
             conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('task_summary_v1_definition','old-definition')",[]).unwrap();
             if partial {
+                conn.execute("INSERT OR REPLACE INTO meta(key,value) SELECT 'task_summary_v1_tasks',CAST(MAX(rowid) AS TEXT) FROM tracker_tasks",[]).unwrap();
                 // A failed later batch can leave a valid committed prefix and
                 // row checkpoints, but no final ready stamp.
                 conn.execute("DELETE FROM meta WHERE key='task_summary_v1_ready'", [])

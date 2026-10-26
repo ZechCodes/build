@@ -194,7 +194,7 @@
                 },
                 "translated_trigger": null
               },
-              "enforcement": "between_turn",
+              "enforcement": "native",
               "reason": "codex_model_window_buffer_and_profile_unqualified",
               "pending_change": true
             }

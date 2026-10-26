@@ -93,6 +93,8 @@ mod source_sync;
 mod task_observation;
 mod task_rename;
 mod tracker;
+mod task_summaries;
+pub use task_summaries::{TaskFilterChoice, TaskSummaryCandidate, MAX_SUMMARY_CANDIDATES};
 pub(crate) use task_observation::{TrackerTaskObservation, TrackerTaskPublication};
 mod waiting_on;
 pub use waiting_on::{DependencyDigest, DependencySummary, DependentsPage, WaitingOnPage};
@@ -126,6 +128,8 @@ pub use tracker::{TaskFilter, TaskSeek, TaskStretch};
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("invalid task summary data: {0}")]
+    TaskSummaryInvalid(String),
     #[error("invalid retention policy: {0}")]
     RetentionInvalid(String),
     #[error("mutation journal: {0}")]
@@ -265,7 +269,7 @@ pub enum StoreError {
 /// 17 adds explicit assignment delivery intents and coordinator notice receipts.
 /// 18 adds the durable mutation journal, reservations and confirmation outbox.
 /// 19 adds durable conversation retention boundaries.
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -401,6 +405,7 @@ impl Store {
             )?;
         }
         tracker::initialize_list_key(&conn)?;
+        task_summaries::initialize(&mut conn)?;
         maintenance::configure_incremental_vacuum(&conn)?;
         let writer = StoreWriter::new(conn);
         // Recover ambiguous claims without executing any command at startup.

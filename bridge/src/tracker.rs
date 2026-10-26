@@ -9,6 +9,8 @@
 //! and nothing else. Everything here is namespaced `tracker_*` in the store and
 //! `tasks.*` on the wire so the two can never be reached for each other.
 
+pub(crate) mod summary;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

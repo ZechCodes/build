@@ -7,8 +7,10 @@
 
 import { entityIdOf } from "./entityId.js";
 import { verbCall } from "./inboxDevices.js";
-import { homeContext } from "./deviceContexts.js";
-import { cachedWriteOf, captureCachedRecord, mergeCachedIfUnwritten } from "./localCache.js";
+import { contextFor, homeContext } from "./deviceContexts.js";
+import { pushFence, pushedSince } from "./pushFence.js";
+import { captureReadFeed, mergeReadRoster, readStateRows, repairReadFeed, repairReadOwner } from "./readStateRepair.js";
+import { captureCachedRecord, mergeCachedReadState } from "./localCache.js";
 
 // The row holding each entity the feed named, minted with every snapshot.
 let rowsByEntity = new Map();
@@ -40,13 +42,14 @@ export async function markSeen(entityId, agentId, readFromSequence = null, readT
   if (!entityId) return false;
   const row = seenRow(entityId, deviceId);
   const call = verbCall(row);
+  const context = readContext(seenDeviceId(row), call);
   try {
     await call("entity.seen", seenParams(entityId, agentId, readFromSequence, readThroughSequence, threadId));
   } catch {
     return false;
   }
   // The report was accepted even if this compatibility read cannot finish.
-  await queueRosterRefresh(call, seenDeviceId(row), entityId).catch(() => null);
+  await queueRosterRefresh(context, entityId).catch(() => null);
   return true;
 }
 
@@ -62,54 +65,55 @@ const seenParams = (entityId, agentId, floor, read, threadId) => ({
 
 // Each pull takes its cache fence after the prior pull has written. Otherwise
 // the older fallback write can make the newer read lose its own write fence.
-function queueRosterRefresh(call, deviceId, entityId) {
+function queueRosterRefresh(context, entityId) {
+  const { deviceId } = context;
   const key = JSON.stringify([deviceId, entityId]);
-  const previous = rosterRefreshes.get(key) || Promise.resolve();
-  const refresh = previous.catch(() => null).then(() => refreshReadRoster(call, deviceId, entityId));
-  rosterRefreshes.set(key, refresh);
+  const held = rosterRefreshes.get(key);
+  const previous = held?.context.session === context.session && held?.context.requestScope === context.requestScope
+    ? held?.refresh : null;
+  const refresh = (previous || Promise.resolve()).catch(() => null).then(() => refreshReadRoster(context, entityId));
+  const next = { context, refresh };
+  rosterRefreshes.set(key, next);
   return refresh.finally(() => {
-    if (rosterRefreshes.get(key) === refresh) rosterRefreshes.delete(key);
+    if (rosterRefreshes.get(key) === next) rosterRefreshes.delete(key);
   });
 }
 
-const rosterIdentity = (row) => JSON.stringify((row.agents || []).map((agent) =>
-  [agent.id, agent.conversation_id, agent.thread_id]));
-
-const ROW_READ_FIELDS = ["needs_attention", "unread", "unread_count", "unread_reason", "attention"];
-const AGENT_READ_FIELDS = ["unread_count", "unread_reason", "read_through_sequence"];
-
-function mergeReadFields(held, incoming, fields) {
-  const next = { ...held };
-  for (const field of fields) {
-    if (Object.hasOwn(incoming, field)) next[field] = incoming[field];
-  }
-  return next;
-}
-
-/** `runs` can carry List digests, so only read-related fields can replace
- *  a pushed Detail row. Leave an identical value unwritten and unannounced. */
-function mergeReadRoster(held, incoming) {
-  if (!held || rosterIdentity(held) !== rosterIdentity(incoming)) return null;
-  const next = mergeReadFields(held, incoming, ROW_READ_FIELDS);
-  if (Array.isArray(held.agents)) {
-    next.agents = held.agents.map((agent, index) => mergeReadFields(agent, incoming.agents[index], AGENT_READ_FIELDS));
-  }
-  return JSON.stringify(next) === JSON.stringify(held) ? null : next;
+function readContext(deviceId, call) {
+  const context = contextFor(deviceId);
+  const session = context?.session;
+  const requestScope = context?.cacheScope;
+  return { deviceId, call, session, requestScope, capabilities: () => context?.adapter?.capabilities,
+    active: () => !context || contextFor(deviceId) === context && context.session === session
+      && context.cacheScope === requestScope && context.active() };
 }
 
 /** Older bridges emit only a board revision after a read. Refresh the exact
  *  cached roster the badges use, including owners absent from inbox items.
  *  An intervening cache write or generation change always wins. */
-async function refreshReadRoster(call, deviceId, entityId) {
-  if (!deviceId) return;
+async function refreshReadRoster(context, entityId) {
+  const { deviceId, call } = context;
+  if (!deviceId || !context.active()) return;
   const address = { deviceId, entityId, kind: "row", sub: "" };
-  const before = await captureCachedRecord(address);
-  if (!before?.value) return;
+  const [before, captured] = await Promise.all([captureCachedRecord(address), captureReadFeed(deviceId)]);
+  if (!before?.value && !captured.record?.value) {
+    void repairReadOwner(context, entityId).catch(() => null);
+    return;
+  }
+  const fence = pushFence();
+  if (!context.active()) return;
   const board = await call("board.list", {});
-  const rows = [...(board.items || []), ...(board.runs || []), ...(board.plans || []), ...(board.external_worktrees || [])];
-  const row = rows.find((candidate) => entityIdOf(candidate) === entityId);
-  if (!row) return;
-  await mergeCachedIfUnwritten(address, cachedWriteOf(before), (held) => mergeReadRoster(held, row));
+  const row = readStateRows(board).find((candidate) => entityIdOf(candidate) === entityId);
+  await repairSeenRow(context, address, before, row, fence);
+  // User-triggered roster writes announce before either background repair.
+  void repairReadFeed(context, captured, board, entityId).catch(() => null);
+  void repairReadOwner(context, entityId).catch(() => null);
+}
+
+function repairSeenRow(context, address, before, row, fence) {
+  if (!row || !before?.value) return;
+  return mergeCachedReadState(address, before, (held, original) =>
+    context.active() && !pushedSince(address, fence) ? mergeReadRoster(held, row, !original) : null);
 }
 
 /** The row holding an entity, off the index the last snapshot minted. A caller

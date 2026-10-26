@@ -3822,13 +3822,29 @@ gate attachment display.
   resume the same cursor and removal spans across phases (`syncTaskPhases.js`),
   sharing a session-fenced queue with coalesced push reads. Same-session refresh
   requests join reads still ahead in the pass. Requests after dispatch share a
-  successor: read-state refreshes repeat ownership lists, late inbox coverage
-  repairs observed lists/rosters/threads/tasks, and late background coverage
+  successor: late inbox coverage repairs observed lists/rosters/threads/tasks,
+  and late background coverage
   repairs checkout/file/terminal reads. Newly discovered owners, conversations,
   projects and checkout identities receive their own additional reads. Coverage
   history survives partial successors. Mutations after dispatch retain a full
   refresh; connection requests join the existing session baseline. The current
   pass finishes before its successor starts, with continuous ring ownership.
+  Read-state repair (`readStateRepair.js`) runs outside the pass and its ring:
+  accepted read reports write and announce the exact cached row immediately,
+  then repair feed badge fields and complete project-owner rosters separately.
+  Background repairs coalesce without delaying another report or mutation.
+  They never rerun ownership lists, selection or cleanup. Read-state repair
+  uses upcoming roster reads only when their dispatch follows the read-state
+  acknowledgement; already dispatched reads retain a targeted repair. Read-only
+  badge writes share their original record's lineage and merge comparable
+  cursors monotonically, so an older repair cannot fence out a newer accepted
+  mark. Any ordinary record write ends that lineage and retains its full fence.
+  Selection itself waits on cache work, with no RPCs. Recent expiry intersects one bulk stale
+  index-key read with bounded per-entity primary-key reads, then deletes all
+  selected expired data in the same readwrite transaction. The surviving keys
+  answer which Recent owners still hold data; cached bodies are never cloned
+  for expiry. The activity predicate runs inside that transaction on every
+  retry, and only committed deletions announce changes.
   Snapshot cleanup retains unnamed owners touched by any newer cache change
   and rechecks that fence after its cache reads. A sync-lifetime cache listener
   observes the actual changed owner, including thread/log merges and delayed
@@ -4192,6 +4208,8 @@ Each pass also counts successor requests by an allowlisted reason: mutation,
 read-state, visibility, connection, subscription-inbox or subscription-background.
 These counters record requests even when their work is coalesced into the pass;
 they are not a count of successor passes.
+The six-value enum is retained; targeted read-state repairs no longer request
+a pass and therefore do not add successor requests.
 
 `cacheSync.js` stamps ring, pass, stage and finite queue capture/drain boundaries.
 The held-body count is reserved as null until a cheap synchronous source exists;

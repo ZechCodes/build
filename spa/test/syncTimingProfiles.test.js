@@ -5,14 +5,15 @@ import { appendFileSync } from "node:fs";
 import { hrtime } from "node:process";
 import { setImmediate as immediate } from "node:timers";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBCursor, IDBFactory, IDBIndex, IDBKeyRange } from "fake-indexeddb";
 
 const App = { route: { name: "inbox" }, devices: [{ id: "scale" }] };
 vi.mock("../src/appState.js", () => ({ App }));
 vi.mock("../src/app.js", () => ({ App }));
 let context, watchers, mark;
 vi.mock("../src/core/deviceContexts.js", () => ({
-  contextFor: () => context, liveContexts: () => [context],
+  contextFor: () => context, homeContext: () => context, liveContexts: () => [context],
+  canAnswer: () => true, creationDevice: () => "scale",
   whenGreeted: async (_context, dispatch) => ({ sent: dispatch(() => true), stands: () => true }),
   onDeviceStateChanged: () => () => {},
 }));
@@ -46,7 +47,7 @@ vi.mock("../src/core/syncPhases.js", async (original) => {
 const BASE_LATENCY = { "board.list": 100, "project.list": 100, "workspace.list": 100,
   "thread.page": 500, "thread.activity": 500, "tasks.list": 350, "tasks.columns": 100,
   "git.status": 600, "fs.tree": 200, "term.list": 100, "git.log": 200,
-  "git.unpushed": 400, "git.show": 500, "run.diff": 300, "worktree.diff": 300, "agent.list": 100 };
+  "entity.seen": 100, "git.unpushed": 400, "git.show": 500, "run.diff": 300, "worktree.diff": 300, "agent.list": 100 };
 const EPOCH = Date.parse("2026-10-25T12:00:00Z");
 let sync, cache, diagnostics, idbTasks, feed;
 let metrics;
@@ -61,12 +62,33 @@ vi.doMock("../src/core/projectAgentsCache.js", async (original) => {
 });
 vi.doMock("../src/core/cacheLifetime.js", async (original) => {
   const actual = await original();
-  return { ...actual, expireWorkspaceData: (...args) => {
-    metrics.recentExpiries += 1;
-    return actual.expireWorkspaceData(...args);
+  return { ...actual, expireWorkspacesData: (...args) => {
+    metrics.recentExpiries += args[1].length;
+    metrics.expiryBatches += Number(args[1].length > 0);
+    const started = hrtime.bigint(), callbacks = metrics.idbCallbacks, cursors = metrics.cursorContinuations;
+    return actual.expireWorkspacesData(...args).finally(() => {
+      metrics.expiryWallMs += Number(hrtime.bigint() - started) / 1e6;
+      metrics.expiryIdbCallbacks += metrics.idbCallbacks - callbacks;
+      metrics.expiryCursorContinuations += metrics.cursorContinuations - cursors;
+    });
   } };
 });
-  metrics = { accountRosterSelections: 0, recentExpiries: 0, idbCallbacks: 0, cacheDrainWallMs: 0 };
+vi.doMock("../src/core/readStateRepair.js", async (original) => {
+  const actual = await original();
+  const wrap = (name) => (...args) => {
+    metrics.repairRequests += 1;
+    const started = hrtime.bigint(), callbacks = metrics.idbCallbacks;
+    const repairContext = { ...args[0], call: (method, params, envelope = {}) =>
+      args[0].call(method, params, { ...envelope, profileRepair: true }) };
+    return actual[name](repairContext, ...args.slice(1)).finally(() => {
+      metrics.repairWindowWallMs += Number(hrtime.bigint() - started) / 1e6;
+      metrics.repairWindowIdbCallbacks += metrics.idbCallbacks - callbacks;
+    });
+  };
+  return { ...actual, refreshReadState: wrap("refreshReadState"),
+    repairReadFeed: wrap("repairReadFeed"), repairReadOwner: wrap("repairReadOwner") };
+});
+  metrics = emptyMetrics();
   globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
   delete navigator.locks;
   // Date and Diagnostics share logical time. IDB uses real event-loop turns;
@@ -79,6 +101,16 @@ vi.doMock("../src/core/cacheLifetime.js", async (original) => {
     return immediate(() => { try { callback(); } finally { idbTasks -= 1; } });
   });
   vi.stubGlobal("requestIdleCallback", (callback) => { queueMicrotask(callback); return 0; });
+  const continueCursor = IDBCursor.prototype.continue;
+  vi.spyOn(IDBCursor.prototype, "continue").mockImplementation(function (...args) {
+    metrics.cursorContinuations += 1;
+    return continueCursor.apply(this, args);
+  });
+  const openKeyCursor = IDBIndex.prototype.openKeyCursor;
+  vi.spyOn(IDBIndex.prototype, "openKeyCursor").mockImplementation(function (...args) {
+    metrics.indexKeyCursors += 1;
+    return openKeyCursor.apply(this, args);
+  });
   watchers = [];
   App.route = { name: "inbox" };
   cache = await import("../src/core/localCache.js");
@@ -86,8 +118,42 @@ vi.doMock("../src/core/cacheLifetime.js", async (original) => {
   await cache.writeCached({ deviceId: "scale", entityId: "", kind: "project-agents-support" }, { projectWorkers: true });
   sync = await import("../src/core/cacheSync.js");
   ({ syncDiagnostics: diagnostics } = await import("../src/core/syncDiagnostics.js"));
+  const stageStart = diagnostics.stageStart;
+  vi.spyOn(diagnostics, "stageStart").mockImplementation((pass, stage) => {
+    const finish = stageStart(pass, stage), started = hrtime.bigint();
+    return () => {
+      const wallMs = Number(hrtime.bigint() - started) / 1e6;
+      metrics.stageWallMs[stage] = (metrics.stageWallMs[stage] || 0) + wallMs;
+      finish();
+    };
+  });
 });
 afterEach(() => { feed?.stopFeed(); feed = null; sync?.stopCacheSync(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+function emptyMetrics() {
+  return { accountRosterSelections: 0, recentExpiries: 0, idbCallbacks: 0, cacheDrainWallMs: 0,
+    expiryWallMs: 0, expiryBatches: 0, expiryIdbCallbacks: 0, expiryCursorContinuations: 0,
+    cursorContinuations: 0, indexKeyCursors: 0, stageWallMs: {},
+    repairRequests: 0, repairWindowWallMs: 0, repairWindowIdbCallbacks: 0 };
+}
+
+// Seed unrelated stale metadata in one transaction. Use the real replica shape,
+// with no production helper overhead in the measured period.
+async function seedUnrelatedStaleKeys(count) {
+  await new Promise((resolve, reject) => {
+    const request = indexedDB.open("build-cache");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result, transaction = db.transaction("records", "readwrite");
+      transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      const store = transaction.objectStore("records");
+      for (let index = 0; index < count; index += 1) {
+        store.put({ at: EPOCH - 4 * 24 * 60 * 60 * 1000, value: {} }, `unrelated|old-${String(index).padStart(5, "0")}|status|`);
+      }
+    };
+  });
+}
 
 // fake-indexeddb schedules through global setImmediate. Drain its tracked
 // macrotasks plus promise continuations; never estimate a disk delay with sleep.
@@ -122,6 +188,11 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
   };
   const answer = (method, params) => {
     const answers = {
+      "entity.seen": () => {
+        const row = rows.find((row) => row.run_id === params.entity_id);
+        if (row) row.agents = row.agents.map((agent) => ({ ...agent, unread_count: 0, read_through_sequence: params.read_through_sequence }));
+        return {};
+      },
       "board.list": () => ({ items: rows }),
       "project.list": () => ({ projects: projectRows }),
       "workspace.list": () => ({ workspaces: rows.map((row) => ({ id: row.workspace_id,
@@ -151,9 +222,11 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
   context = { deviceId: "scale", session: {}, greeted: Promise.resolve(), active: () => true };
   context.cacheScope = { deviceId: "scale", active: context.active };
   context.rpc = (method, params = {}, envelope = {}) => new Promise((resolve) => {
-    expect(ringActive, `${method} must run inside the connection ring`).toBe(true);
-    const duration = typeof latency[method] === "function" ? latency[method](params) : latency[method] ?? BASE_LATENCY[method];
-    const call = { method, stage, start: now, end: now + duration,
+    const repair = envelope.profileRepair === true || method === "entity.seen"
+      || (method === "board.list" && calls.some((call) => call.method === "board.list"));
+    if (!repair) expect(ringActive, `${method} must run inside the connection ring`).toBe(true);
+    const duration = repair && method === "board.list" && latency.repairBoard !== undefined ? latency.repairBoard : typeof latency[method] === "function" ? latency[method](params) : latency[method] ?? BASE_LATENCY[method];
+    const call = { method, repair, ringAtDispatch: ringActive, stage, start: now, end: now + duration,
       priority: envelope.priority || "foreground" };
     calls.push(call);
     pending.push({ ...call, resolve: () => {
@@ -184,7 +257,7 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
       await feed.startFeed();
     },
     nextPeriod() {
-      metrics = { accountRosterSelections: 0, recentExpiries: 0, idbCallbacks: 0, cacheDrainWallMs: 0 };
+      metrics = emptyMetrics();
       rosterLandings.clear(); rowPublications.clear();
       periodStart = now; stageStart = now; stage = "startup"; ringStop = null;
       calls.length = 0; stages.length = 0; passEnds.length = 0; ringTransitions.length = 0;
@@ -209,12 +282,17 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
       }
       throw new Error("simulation exceeded RPC budget");
     },
-    async finish(label) {
+    async finish(label, completion = Promise.resolve()) {
+      let complete = false;
+      void completion.then(() => { complete = true; });
       await this.drive(() => ringStop !== null);
+      const ringCallbacks = metrics.idbCallbacks;
+      const ringWallMs = { ...metrics.stageWallMs };
+      await this.drive(() => complete && pending.length === 0);
       mark("finished");
       expect(ringTransitions, "the ring spans all conversations and chained passes").toEqual([true, false]);
       const period = diagnostics.report().periods.at(-1);
-      expect(period.stop).toBe(now - periodStart);
+      expect(period.stop).toBe(ringStop - periodStart);
       for (const call of calls.filter(({ method }) => method === "thread.page")) {
         const wanted = call.priority === "foreground" ? "foreground" : "inbox";
         const containing = period.passes.flatMap((pass) => pass.stages).filter(({ stage, start, end }) =>
@@ -222,8 +300,16 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
         expect(containing, `${call.priority} thread RPC belongs to its Diagnostics stage`).toHaveLength(1);
       }
       const report = { label, clock: "logical RPC ms; real fake-IDB event-loop wall ms (not production disk)",
+        repair: { requests: metrics.repairRequests, rpcCount: calls.filter((call) => call.repair).length,
+          rpcAfterRing: calls.filter((call) => call.repair && !call.ringAtDispatch).length,
+          completionAfterRingMs: now - ringStop, idbCallbacksAfterRing: metrics.idbCallbacks - ringCallbacks,
+          windowIdbCallbacks: metrics.repairWindowIdbCallbacks,
+          windowWallMs: metrics.repairWindowWallMs,
+          note: "repair window counters include concurrent pass work; after-ring callbacks are disjoint" },
+        ringCache: { idbCallbacks: ringCallbacks, stageWallMs: ringWallMs },
         rpc: { criticalPathMs: ringStop - periodStart, summedRequestMs: calls.reduce((sum, call) => sum + call.end - call.start, 0) },
-        cache: { ...metrics },
+        cache: { ...metrics, selectionWallMs: metrics.stageWallMs.selection || 0,
+          selectionOtherWallMs: (metrics.stageWallMs.selection || 0) - metrics.expiryWallMs },
         rosterRowPublication: [...rosterLandings].filter(([owner]) => owner === "owner-0").map(([owner, landed]) => {
           const row = rowPublications.get(owner);
           return { owner, logicalMs: row ? row.at - landed.at : null,
@@ -249,12 +335,16 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
 // roster RPC duration and cache operation durations. Task RPC range is observed;
 // other RPC costs use the scale harness constants and agent.list=100ms assumption.
 const profiles = [
-  { label: "report-shape", projects: 8, workspaces: 7, agents: 1, ownerAgents: 1, recent: true,
-    latency: { "tasks.list": (params) => 502 + Number(params.project_id.split("-").at(-1)) * (1936 - 502) / 7 } },
+  ...[0, 1000, 10000].map((staleKeys) => ({ label: `report-shape-stale-${staleKeys}`, staleKeys,
+    projects: 8, workspaces: 7, agents: 1, ownerAgents: 1, recent: true,
+    latency: { "tasks.list": (params) => 502 + Number(params.project_id.split("-").at(-1)) * (1936 - 502) / 7 } })),
   { label: "small-warm", projects: 2, workspaces: 2, agents: 1, ownerAgents: 1 },
   { label: "single-project", projects: 1, workspaces: 1, agents: 1, ownerAgents: 1 },
+  { label: "single-project-markSeen", reporter: true, projects: 1, workspaces: 1, agents: 1, ownerAgents: 1 },
+  { label: "single-project-delayed-repair", delayed: true, projects: 1, workspaces: 1, agents: 1, ownerAgents: 1,
+    latency: { repairBoard: 6000 } },
 ];
-it.each(profiles)("#879 profile $label separates logical RPC and actual cache work", async ({ label, ...size }) => {
+it.each(profiles)("#881 profile $label separates logical RPC and actual cache work", async ({ label, staleKeys = 0, reporter = false, delayed = false, ...size }) => {
   const model = fixture({ ...size, tasks: 8, patches: 0 });
   if (size.recent) await cache.writeCached({ deviceId: "scale", entityId: "run-6", kind: "thread", sub: "c-6-0" },
     { thread_id: "thread-6-0", items: [] });
@@ -262,27 +352,55 @@ it.each(profiles)("#879 profile $label separates logical RPC and actual cache wo
   // then introduce one new worker at owner-0 in the measured pass.
   sync.startCacheSync(); await model.finish(`${label}: seed`);
   sync.stopCacheSync(); context.session = {};
+  await seedUnrelatedStaleKeys(staleKeys);
   model.addWorker();
-  await model.observeRows(); await cacheTurns(); model.nextPeriod();
+  await model.observeRows();
+  // The compatibility refresh requires a pre-existing Detail row. The scale
+  // fixture's List digests alone do not retain this row after ownership cleanup.
+  if (reporter) await cache.writeCached({ deviceId: "scale", entityId: "run-0", kind: "row", sub: "" }, model.rows[0]);
+  const markSeen = reporter ? (await import("../src/core/inboxSeen.js")).markSeen : null;
+  await cacheTurns(); model.nextPeriod();
   sync.startCacheSync();
   await model.drive(() => model.calls.length >= 3);
-  // A read-state subscriber after list dispatch needs a lists-only successor.
-  const successor = sync.syncDevice("scale", "read-state");
-  const report = await model.finish(`${label}: measured warm with read-state after list dispatch`);
+  // Explicit read-state requests repair badges outside ordered sync. Actual
+  // markSeen callers already schedule their feed repair without another pass.
+  const successor = reporter ? (async () => {
+    expect(await markSeen("run-0", "agent-0-0", null, 23, "thread-0-0", "scale")).toBe(true);
+    const row = await cache.readCached({ deviceId: "scale", entityId: "run-0", kind: "row", sub: "" });
+    expect(row.value.agents[0].read_through_sequence).toBe(23);
+  })() : sync.syncDevice("scale", "read-state");
+  const report = await model.finish(`${label}: measured warm with ${reporter ? "markSeen" : "read-state"} after list dispatch`, successor);
   await successor;
-  expect(report.passEndsMs, "a real lists-only successor retains the ring").toHaveLength(2);
-  expect(report.verbs["agent.list"], "rosters are still ahead when read-state subscribes").toBe(size.projects);
+  expect(report.passEndsMs, "read marks never start a successor pass").toHaveLength(1);
+  expect(report.ringMs).toBe(size.projects === 8 ? 24152 : size.projects === 2 ? 4500 : 3050);
+  expect(Object.values(report.verbs).reduce((sum, count) => sum + count, 0)).toBe(reporter ? 16 : size.projects === 8 ? 79 : size.projects === 2 ? 25 : 15);
+  expect(report.verbs["agent.list"], "roster reads dispatched after the read-state ack already cover its owner marks").toBe(size.projects);
   expect(report.verbs["tasks.list"]).toBe(size.projects);
   expect(report.verbs["thread.page"]).toBe(size.workspaces * size.agents + size.projects * size.ownerAgents + 1);
   expect(report.rosterRowPublication).toHaveLength(1);
   expect(report.rosterRowPublication.every((row) => row.logicalMs === 0)).toBe(true);
   // Baseline scheduler counts through taskFeed row projection. Keep new-worker
   // publication prompt even when the pass's selection strategy changes.
-  expect(report.rosterRowPublication[0].idbCallbacks).toBeLessThanOrEqual(size.projects === 1 ? 15 : 33);
-  // Initial selection and the lists-only successor may scan the account.
-  // Each roster completion must update only its owner.
-  expect(report.cache.accountRosterSelections).toBe(3);
-  expect(report.cache.recentExpiries).toBe(size.recent ? 2 : 0);
+  expect(report.rosterRowPublication[0].idbCallbacks).toBeLessThanOrEqual(reporter ? 25 : size.projects === 1 ? 15 : 33);
+  // Account selection happens once; targeted repairs never select the account.
+  expect(report.cache.accountRosterSelections).toBe(1);
+  expect(report.verbs["entity.seen"] || 0).toBe(reporter ? 1 : 0);
+  expect(report.verbs["board.list"]).toBe(2);
+  expect(report.verbs["project.list"]).toBe(1);
+  expect(report.verbs["workspace.list"]).toBe(1);
+  expect(report.cache.recentExpiries).toBe(size.recent ? 1 : 0);
+  expect(report.cache.expiryBatches).toBe(size.recent ? 1 : 0);
   expect(report.cache.idbCallbacks).toBeGreaterThan(0);
   expect(report.cache.cacheDrainWallMs).toBeGreaterThan(0);
-});
+  expect(report.cache.selectionWallMs).toBeGreaterThan(0);
+  expect(report.cache.selectionOtherWallMs).toBeGreaterThanOrEqual(0);
+  if (size.recent) {
+    expect(report.cache.expiryWallMs).toBeGreaterThan(0);
+    expect(report.cache.expiryCursorContinuations).toBe(0);
+    expect(report.cache.indexKeyCursors).toBe(0);
+  }
+  if (delayed) {
+    expect(report.repair.completionAfterRingMs).toBeGreaterThan(0);
+    expect(report.repair.idbCallbacksAfterRing).toBeGreaterThan(0);
+  }
+}, 120000);

@@ -168,7 +168,7 @@ describe("replica lifetime never reaches a draft", () => {
     await store.writeUiRecord(DRAFT, { body: "keep me" });
     await cache.writeCached(REPLICA, { head: "abc" });
     await lifetime.evictWorkspaceData("dev-1", "conv-1");
-    await lifetime.expireWorkspaceData("dev-1", "conv-1", Date.now() + 365 * 24 * 3600 * 1000);
+    await lifetime.expireWorkspacesData("dev-1", ["conv-1"], Date.now() + 365 * 24 * 3600 * 1000);
     expect(await cache.readCached(REPLICA)).toBeUndefined();
     expect((await store.readUiRecord(DRAFT)).value).toEqual({ body: "keep me" });
   });
@@ -181,7 +181,7 @@ describe("replica lifetime never reaches a draft", () => {
     await cache.writeCached(REPLICA, { head: "abc" });
     await cache.evictEntity("dev-1", "conv-1");
     await lifetime.evictWorkspaceData("dev-1", "conv-1");
-    await lifetime.expireWorkspaceData("dev-1", "conv-1", Date.now() + 365 * 24 * 3600 * 1000);
+    await lifetime.expireWorkspacesData("dev-1", ["conv-1"], Date.now() + 365 * 24 * 3600 * 1000);
     await cache.deleteCached([DRAFT]);
     expect(Object.keys(await rawRecords("build-cache"))).toEqual([DRAFT_KEY]);
     await store.adoptCachedUiRecords();

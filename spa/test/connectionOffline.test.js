@@ -80,7 +80,7 @@ const {
   syncHome,
 } = await import("../src/connection.js");
 const { initDevicePicker, paintDevicePicker, stopWatchingPresence } = await import("../src/devices.js");
-const { clearMemoryCacheRecords, DEVICES_ADDRESS, writeCached } = await import("./memoryCache.js");
+const { clearMemoryCacheRecords, DEVICES_ADDRESS, readCached, writeCached } = await import("./memoryCache.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { startCacheSync, stopCacheSync, syncDevice } = await import("../src/core/cacheSync.js");
 const { dispatchChangeEvent } = await import("../src/core/changeEvents.js");
@@ -537,6 +537,25 @@ async function loseTheLink(deviceId) {
 }
 
 describe("per-device connections", () => {
+  it("completes the ordered pass through selection on the memory cache", async () => {
+    await connectEveryDevice();
+    await paintFeed();
+    await expect(syncDevice("dev-a", "mutation")).resolves.toBe(true);
+  });
+
+  it("publishes the accepted read cursor through the memory cache", async () => {
+    const { markSeen } = await import("../src/core/inboxSeen.js");
+    const row = (cursor) => ({ kind: "branch", run_id: "dev-a-row", project_id: "proj-1",
+      agents: [{ id: "agent-a", read_through_sequence: cursor, unread_count: 12 - cursor }] });
+    boardRows.set("dev-a", row(10));
+    await connectEveryDevice();
+    const address = { deviceId: "dev-a", entityId: "dev-a-row", kind: "row", sub: "" };
+    await writeCached(address, row(10));
+    boardRows.set("dev-a", row(12));
+    await expect(markSeen("dev-a-row", "agent-a", null, 12, "", "dev-a")).resolves.toBe(true);
+    expect((await readCached(address)).value.agents[0].read_through_sequence).toBe(12);
+  });
+
   it("makes a paired client hint available after hello without sending it to an unknown bridge", async () => {
     const pinnedKey = "pinned-dev-a-key";
     App.devices.find((device) => device.id === "dev-a").transport_public_key_b64 = pinnedKey;

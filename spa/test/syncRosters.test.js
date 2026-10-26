@@ -70,12 +70,13 @@ afterEach(async () => {
 });
 
 it("expires Recent once and projects roster records once per pass", async () => {
-  const expires = vi.spyOn(lifetime, "expireWorkspaceData");
+  const expires = vi.spyOn(lifetime, "expireWorkspacesData");
   const agents = await import("../src/core/projectAgentsCache.js");
   const projectRosters = vi.spyOn(agents, "projectsWithAgentRosters");
   sync.startCacheSync();
   await passesSettled(sync, "dev-1");
-  expect(expires.mock.calls.filter(([, entityId]) => entityId === "recent")).toHaveLength(1);
+  expect(expires.mock.calls.map(([deviceId, entityIds]) => [deviceId, entityIds]))
+    .toEqual([["dev-1", ["recent"]]]);
   expect(projectRosters).toHaveBeenCalledTimes(1);
   expect(rpc.mock.calls.filter(([method]) => method === "thread.page").map(([, params]) => params.agent_id))
     .toEqual(expect.arrayContaining([worker.id, ...projects.map((project) => pin(project.entity_id).id)]));

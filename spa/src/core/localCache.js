@@ -201,7 +201,7 @@ export async function readCachedMany(addresses) {
  * was asked, whose own record is the newer word. An undo can merge into the
  * current value inside the same transaction. `readAddresses` adds canonical
  * records to that snapshot, handed to update as its third argument. */
-function writeFeed(address, update, { observedFeedRows = false, supersededFeedRow, unchanged = [], readAddresses = [] } = {}) {
+function writeFeed(address, update, { observedFeedRows = false, supersededFeedRow, unchanged = [], readAddresses = [], readStateFrom = null } = {}) {
   const key = recordKey(address);
   let changed = false;
   return wroteStore((store) => {
@@ -211,11 +211,13 @@ function writeFeed(address, update, { observedFeedRows = false, supersededFeedRo
     const keys = [key, ...unchanged.map(({ address }) => recordKey(address)), ...readAddresses.map(recordKey)];
     readRecordsInStore(store, keys, ([previous, ...records]) => {
       try {
+        if (readStateFrom && !isReadStateRecord(previous, readStateFrom)) return;
         if (!unchanged.every(({ written }, index) => isCachedWrite(records[index], written))) return;
         const next = update(previous?.value, previous, records.slice(unchanged.length));
         if (next == null) return;
         const { write, ...stamp } = writeStamp();
-        const record = { ...stamp, write, value: feedWithObservations(next, previous, stamp, observedFeedRows, supersededFeedRow) };
+        const record = { ...stamp, write, ...readStateStamp(readStateFrom),
+          value: feedWithObservations(next, previous, stamp, observedFeedRows, supersededFeedRow) };
         changed = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
@@ -437,6 +439,20 @@ export function mergeCachedIfUnwritten(address, written, merge) {
   return mergeRecordAtomically(address, (record) => (isCachedWrite(record, written) ? merge(record?.value) : null));
 }
 
+// Only read-field repairs may share this lineage. Every ordinary writer makes
+// a fresh record without it, so even an identical Detail/push write fences it.
+const readStateBase = (record) => record?.readStateBase || cachedWriteOf(record);
+const readStateStamp = (record) => record ? { readStateBase: readStateBase(record) } : {};
+const isReadStateRecord = (current, before) => isCachedWrite(current, cachedWriteOf(before))
+  || typeof current?.readStateBase === "string" && current.readStateBase === readStateBase(before);
+
+/** Atomic read-field-only repair across competing repairs of the same original
+ * write. `original` is false after a competing repair; callers then require
+ * comparable, monotonic cursors. Any ordinary write ends the lineage. */
+export function mergeCachedReadState(address, before, merge) {
+  return mergeRecordAtomically(address, (record) => merge(record?.value, isCachedWrite(record, cachedWriteOf(before))), false, before);
+}
+
 /** Put records and let go of others in one readwrite transaction, only while
  * `guard.address` is still the write `guard.written` names (`recordWriteOf`,
  * so null is no record) — or always, with no guard. `drop` names the records
@@ -491,7 +507,7 @@ export function writeCachedIfStill({ guard = null, puts = [], drop = null }) {
   });
 }
 
-function mergeRecordAtomically(address, merge, reportCommit = false) {
+function mergeRecordAtomically(address, merge, reportCommit = false, readStateFrom = null) {
   const key = recordKey(address);
   let changed = false;
   return wroteStore((store) => {
@@ -499,9 +515,10 @@ function mergeRecordAtomically(address, merge, reportCommit = false) {
     const request = store.get(key);
     request.onsuccess = () => {
       try {
+        if (readStateFrom && !isReadStateRecord(request.result, readStateFrom)) return;
         const next = merge(request.result);
         if (next == null) return;
-        const record = withBridgeGeneration(address, { ...writeStamp(), value: next });
+        const record = withBridgeGeneration(address, { ...writeStamp(), ...readStateStamp(readStateFrom), value: next });
         changed = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
@@ -653,26 +670,52 @@ export async function cachedAddresses(prefixAddress) {
   return keys.map((key) => addressOfParts(partsOfKey(key)));
 }
 
-/** Every address under a prefix last written before a moment, oldest first —
- *  what the expiry sweep drops. Walked over the write-time index's keys and
- *  bounded to the stale end of it, so a sweep reads neither the bodies it is
- *  dropping nor the ones it is keeping. */
-export async function cachedAddressesWrittenBefore(prefixAddress, writtenBefore) {
-  const prefix = `${keyOfParts(addressParts(prefixAddress))}|`;
-  const stale = [];
-  await inStore("readonly", (store) => {
-    stale.length = 0;
-    const walk = store.index(AT_INDEX).openKeyCursor(IDBKeyRange.upperBound(writtenBefore, true));
-    walk.onsuccess = () => {
-      const cursor = walk.result;
-      if (!cursor) return;
-      const key = String(cursor.primaryKey);
-      if (key.startsWith(prefix)) stale.push(addressOfParts(partsOfKey(key)));
-      cursor.continue();
-    };
+/** Expire several prefixes together without cloning bodies or one callback
+ * per stale account record. The existing time index and bounded primary-key
+ * reads intersect inside one exclusive transaction, so a refreshed record
+ * cannot be deleted using an age observed before its write. */
+export async function expireCachedPrefixes(prefixAddresses, writtenBefore, { still = () => true, keep = () => false } = {}) {
+  const prefixes = [...new Set(prefixAddresses.map((address) => `${keyOfParts(addressParts(address))}|`))];
+  let result = { dropped: [], kept: [] };
+  if (!prefixes.length) return result;
+  const committed = await wroteStore((store) => {
+    result = { dropped: [], kept: [] };
+    readExpiryKeys(store, prefixes, writtenBefore, (stale, selected) => {
+      try {
+        if (still()) result = expireSelectedKeys(store, stale, selected, keep);
+      } catch (error) {
+        abortForError(store, error);
+      }
+    });
     return null;
   });
-  return stale;
+  if (!committed) return { dropped: [], kept: [] };
+  for (const address of result.dropped) announce(addressParts(address));
+  return result;
+}
+
+function readExpiryKeys(store, prefixes, writtenBefore, ready) {
+  const stale = store.index(AT_INDEX).getAllKeys(IDBKeyRange.upperBound(writtenBefore, true));
+  const selected = prefixes.map((prefix) => store.getAllKeys(prefixRange(prefix)));
+  let waiting = selected.length + 1;
+  const done = () => {
+    if (--waiting === 0) ready(stale.result, selected.flatMap((request) => request.result));
+  };
+  for (const request of [stale, ...selected]) request.onsuccess = done;
+}
+
+function expireSelectedKeys(store, stale, selected, keep) {
+  const remaining = new Set(selected);
+  const dropped = [];
+  for (const key of stale) {
+    if (!remaining.has(key) || isUiRecordKey(key)) continue;
+    const address = addressOfParts(partsOfKey(key));
+    if (keep(address)) continue;
+    store.delete(key);
+    remaining.delete(key);
+    dropped.push(address);
+  }
+  return { dropped, kept: [...remaining].map((key) => addressOfParts(partsOfKey(key))) };
 }
 
 /** Every record under an address prefix: its full address, when it was

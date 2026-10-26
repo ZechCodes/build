@@ -6,6 +6,8 @@ use serde_json::json;
 use std::time::Instant;
 
 const ENTRIES: usize = 10_000;
+const REOPEN_SAMPLES: usize = 5;
+const WRITES_PER_REOPEN: usize = 3;
 const NOW: &str = "2026-01-01T00:00:00Z";
 
 fn comment(task: &Task, number: usize, body: String) -> TaskComment {
@@ -59,12 +61,8 @@ fn thread_cpu_micros() -> u64 {
     time.tv_sec as u64 * 1_000_000 + time.tv_nsec as u64 / 1_000
 }
 
-#[test]
-fn identical_huge_history_write_fixture() {
-    println!(
-        "huge_fixture api_version={}",
-        build_bridge::api::API_VERSION
-    );
+fn assert_api_version(fixture: &str) {
+    println!("{fixture} api_version={}", build_bridge::api::API_VERSION);
     if let Ok(expected) = std::env::var("TASK890_EXPECTED_API") {
         assert_eq!(
             build_bridge::api::API_VERSION,
@@ -72,6 +70,49 @@ fn identical_huge_history_write_fixture() {
             "the comparison must link the expected checkout, not a shared cached library"
         );
     }
+}
+
+fn completed_reopen_samples(
+    root: &std::path::Path,
+    task_id: &str,
+    fixture: &str,
+    history_entries: usize,
+) {
+    for reopen_sample in 0..REOPEN_SAMPLES {
+        let started = Instant::now();
+        let cpu = thread_cpu_micros();
+        let store = Store::new(root).unwrap();
+        println!(
+            "{fixture} migrated_reopen_us={} migrated_reopen_cpu_us={} completed_reopen_sample={reopen_sample} reopen_hwm={}",
+            started.elapsed().as_micros(),
+            thread_cpu_micros() - cpu,
+            high_water_kib()
+        );
+        let task = store.load_tracker_task(task_id).unwrap().unwrap();
+        for sample in 0..WRITES_PER_REOPEN {
+            let offset = reopen_sample * WRITES_PER_REOPEN + sample;
+            let note = comment(&task, 100_005 + offset, "a note".into());
+            let kind = if sample == 0 { "first" } else { "warm" };
+            let started = Instant::now();
+            let cpu = thread_cpu_micros();
+            store
+                .save_tracker_task_activity(&task, &[note], &[])
+                .unwrap();
+            println!(
+                "{fixture} completed_reopen_sample={reopen_sample} post_reopen_append_sample={sample} post_reopen_write_kind={kind} history_entries_before={} post_reopen_write_us={} post_reopen_write_cpu_us={} append_hwm={}",
+                history_entries + offset,
+                started.elapsed().as_micros(),
+                thread_cpu_micros() - cpu,
+                high_water_kib()
+            );
+        }
+        drop(store);
+    }
+}
+
+#[test]
+fn identical_huge_history_write_fixture() {
+    assert_api_version("huge_fixture");
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path()).unwrap();
     let mut task = Task::drafted("/summary", "huge history", Actor::User, NOW);
@@ -131,14 +172,63 @@ fn identical_huge_history_write_fixture() {
         profile_statement_cost(root.path(), &task);
     }
     drop(store);
-    let started = Instant::now();
+    completed_reopen_samples(root.path(), &task.id, "huge_fixture", ENTRIES + 5);
+}
+
+#[test]
+fn identical_small_task_write_fixture() {
+    assert_api_version("small_fixture");
+    let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path()).unwrap();
+    let mut task = Task::drafted("/summary", "small task", Actor::User, NOW);
+    task.id = "task-00000000000000000000000002".into();
+    task.body = "a small task body".into();
+    task.watched = true;
+    let task = store.create_tracker_task(task, &[]).unwrap();
+    drop(store);
+    let connection = Connection::open(root.path().join("build.db")).unwrap();
+    remove_projection(&connection);
+    drop(connection);
     println!(
-        "huge_fixture migrated_reopen_us={} reopen_hwm={}",
-        started.elapsed().as_micros(),
+        "small_fixture profile={} tasks=1 history_entries=0 task_body_bytes={} history_body_bytes=0 total_body_bytes={} before_startup_hwm={}",
+        if cfg!(debug_assertions) { "debug" } else { "release" },
+        task.body.len(),
+        task.body.len(),
         high_water_kib()
     );
-    assert!(store.load_tracker_task(&task.id).unwrap().is_some());
+    println!(
+        "small_fixture task_record_bytes={} history_record_bytes=0 append_record_bytes={}",
+        serde_json::to_vec(&task).unwrap().len(),
+        serde_json::to_vec(&comment(&task, 100_000, "a note".into()))
+            .unwrap()
+            .len()
+    );
+    let started = Instant::now();
+    let cpu = thread_cpu_micros();
+    let store = Store::new(root.path()).unwrap();
+    println!(
+        "small_fixture startup_us={} startup_cpu_us={} startup_hwm={}",
+        started.elapsed().as_micros(),
+        thread_cpu_micros() - cpu,
+        high_water_kib()
+    );
+    let task = store.load_tracker_task(&task.id).unwrap().unwrap();
+    for sample in 0..5 {
+        let note = comment(&task, 100_000 + sample, "a note".into());
+        let started = Instant::now();
+        let cpu = thread_cpu_micros();
+        store
+            .save_tracker_task_activity(&task, &[note], &[])
+            .unwrap();
+        println!(
+            "small_fixture append_sample={sample} history_entries_before={sample} append_us={} append_cpu_us={} append_hwm={}",
+            started.elapsed().as_micros(),
+            thread_cpu_micros() - cpu,
+            high_water_kib()
+        );
+    }
+    drop(store);
+    completed_reopen_samples(root.path(), &task.id, "small_fixture", 5);
 }
 
 fn profile_statement_cost(root: &std::path::Path, task: &Task) {

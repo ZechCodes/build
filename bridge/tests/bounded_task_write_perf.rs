@@ -378,12 +378,8 @@ impl MetadataFixture {
         let sample = self.sample;
         self.task.title = format!("Actual metadata change {sample:03}");
         self.task.labels = vec![format!("metadata-{sample:03}")];
-        self.task.status = if sample.is_multiple_of(2) {
-            "in_progress"
-        } else {
-            "in_review"
-        }
-        .into();
+        // The Store preserves workflow status without a move event. This
+        // fixture changes ordinary metadata; workflow transitions are separate.
         self.task.updated_at = format!("2026-01-01T02:00:{sample:02}Z");
         let note = comment(&self.task, 300_000 + sample, "a note".into());
         let started = Instant::now();

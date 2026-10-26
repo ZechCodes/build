@@ -45,75 +45,83 @@ fn metadata_reparent_refreshes_old_and_new_cards_for_owned_and_raw_writers() {
         let external = Connection::open(dir.path().join("build.db")).unwrap();
         let owned = store.connection();
         let conn = if raw { &external } else { &owned };
-        conn.execute(
-            "INSERT INTO reviews(task_id,workspace_id,version,record) VALUES(?1,'workspace',1,?2)",
-            params![
-                first.id,
-                json!({"mode":"pull_request","pull_request":{"status":"open"}}).to_string()
-            ],
-        )
-        .unwrap();
-        assert_eq!(card(conn, &first.id)["review_summary"]["status"], "open");
-        let before = [card(conn, &first.id), card(conn, &second.id)];
-        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
-        conn.execute(
-            "UPDATE reviews SET task_id=?1 WHERE task_id=?2",
-            params![second.id, first.id],
-        )
-        .unwrap();
-        assert!(
-            card(conn, &first.id).get("review_summary").is_none(),
-            "OLD review endpoint, raw={raw}"
-        );
-        assert_eq!(card(conn, &second.id)["review_summary"]["status"], "open");
-        conn.execute_batch("ROLLBACK").unwrap();
-        assert_eq!([card(conn, &first.id), card(conn, &second.id)], before);
-        conn.execute(
-            "UPDATE reviews SET task_id=?1 WHERE task_id=?2",
-            params![second.id, first.id],
-        )
-        .unwrap();
-        assert!(card(conn, &first.id).get("review_summary").is_none());
-        assert_eq!(card(conn, &second.id)["review_summary"]["status"], "open");
-        conn.execute("DELETE FROM reviews", []).unwrap();
-        conn.execute("INSERT INTO tracker_delivery_intents(id,task_id,project_key,generation,operation_id,state,record) VALUES('intent',?1,'/summary',1,'operation','queued',?2)",params![first.id,json!({"target":{"kind":"agent","agent_id":"CaseSensitive"}}).to_string()]).unwrap();
-        assert_eq!(
-            card(conn, &first.id)["deferred_assignment"]["target"]["agent_id"],
-            "CaseSensitive"
-        );
-        let before = [card(conn, &first.id), card(conn, &second.id)];
-        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
-        conn.execute(
-            "UPDATE tracker_delivery_intents SET task_id=?1 WHERE task_id=?2",
-            params![second.id, first.id],
-        )
-        .unwrap();
-        assert!(
-            card(conn, &first.id).get("deferred_assignment").is_none(),
-            "OLD delivery endpoint, raw={raw}"
-        );
-        assert_eq!(
-            card(conn, &second.id)["deferred_assignment"]["target"]["agent_id"],
-            "CaseSensitive"
-        );
-        conn.execute_batch("ROLLBACK").unwrap();
-        assert_eq!([card(conn, &first.id), card(conn, &second.id)], before);
-        conn.execute(
-            "UPDATE tracker_delivery_intents SET task_id=?1 WHERE task_id=?2",
-            params![second.id, first.id],
-        )
-        .unwrap();
-        assert!(card(conn, &first.id).get("deferred_assignment").is_none());
-        assert_eq!(
-            card(conn, &second.id)["deferred_assignment"]["target"]["agent_id"],
-            "CaseSensitive"
-        );
-        conn.execute("UPDATE tracker_delivery_intents SET state='cancelled'", [])
-            .unwrap();
-        assert!(card(conn, &second.id).get("deferred_assignment").is_none());
-        conn.execute("DELETE FROM tracker_delivery_intents", [])
-            .unwrap();
+        assert_review_reparenting(conn, &first, &second, raw);
+        assert_delivery_reparenting(conn, &first, &second, raw);
     }
+}
+
+fn assert_review_reparenting(conn: &Connection, first: &Task, second: &Task, raw: bool) {
+    conn.execute(
+        "INSERT INTO reviews(task_id,workspace_id,version,record) VALUES(?1,'workspace',1,?2)",
+        params![
+            first.id,
+            json!({"mode":"pull_request","pull_request":{"status":"open"}}).to_string()
+        ],
+    )
+    .unwrap();
+    assert_eq!(card(conn, &first.id)["review_summary"]["status"], "open");
+    let before = [card(conn, &first.id), card(conn, &second.id)];
+    conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+    conn.execute(
+        "UPDATE reviews SET task_id=?1 WHERE task_id=?2",
+        params![second.id, first.id],
+    )
+    .unwrap();
+    assert!(
+        card(conn, &first.id).get("review_summary").is_none(),
+        "OLD review endpoint, raw={raw}"
+    );
+    assert_eq!(card(conn, &second.id)["review_summary"]["status"], "open");
+    conn.execute_batch("ROLLBACK").unwrap();
+    assert_eq!([card(conn, &first.id), card(conn, &second.id)], before);
+    conn.execute(
+        "UPDATE reviews SET task_id=?1 WHERE task_id=?2",
+        params![second.id, first.id],
+    )
+    .unwrap();
+    assert!(card(conn, &first.id).get("review_summary").is_none());
+    assert_eq!(card(conn, &second.id)["review_summary"]["status"], "open");
+    conn.execute("DELETE FROM reviews", []).unwrap();
+}
+
+fn assert_delivery_reparenting(conn: &Connection, first: &Task, second: &Task, raw: bool) {
+    conn.execute("INSERT INTO tracker_delivery_intents(id,task_id,project_key,generation,operation_id,state,record) VALUES('intent',?1,'/summary',1,'operation','queued',?2)",params![first.id,json!({"target":{"kind":"agent","agent_id":"CaseSensitive"}}).to_string()]).unwrap();
+    assert_eq!(
+        card(conn, &first.id)["deferred_assignment"]["target"]["agent_id"],
+        "CaseSensitive"
+    );
+    let before = [card(conn, &first.id), card(conn, &second.id)];
+    conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+    conn.execute(
+        "UPDATE tracker_delivery_intents SET task_id=?1 WHERE task_id=?2",
+        params![second.id, first.id],
+    )
+    .unwrap();
+    assert!(
+        card(conn, &first.id).get("deferred_assignment").is_none(),
+        "OLD delivery endpoint, raw={raw}"
+    );
+    assert_eq!(
+        card(conn, &second.id)["deferred_assignment"]["target"]["agent_id"],
+        "CaseSensitive"
+    );
+    conn.execute_batch("ROLLBACK").unwrap();
+    assert_eq!([card(conn, &first.id), card(conn, &second.id)], before);
+    conn.execute(
+        "UPDATE tracker_delivery_intents SET task_id=?1 WHERE task_id=?2",
+        params![second.id, first.id],
+    )
+    .unwrap();
+    assert!(card(conn, &first.id).get("deferred_assignment").is_none());
+    assert_eq!(
+        card(conn, &second.id)["deferred_assignment"]["target"]["agent_id"],
+        "CaseSensitive"
+    );
+    conn.execute("UPDATE tracker_delivery_intents SET state='cancelled'", [])
+        .unwrap();
+    assert!(card(conn, &second.id).get("deferred_assignment").is_none());
+    conn.execute("DELETE FROM tracker_delivery_intents", [])
+        .unwrap();
 }
 
 #[test]
@@ -315,6 +323,10 @@ fn raw_task_import_bulk_choices_and_dependency_endpoints_are_synchronous() {
         .unwrap();
     assert_eq!(refs, 3);
     conn.execute("DELETE FROM tracker_tasks", []).unwrap();
+    assert_empty_projection_tables(&conn);
+}
+
+fn assert_empty_projection_tables(conn: &Connection) {
     for table in [
         "tracker_task_summaries",
         "tracker_task_summary_facts",

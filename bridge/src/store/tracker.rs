@@ -442,12 +442,14 @@ fn finished_tracked_tasks(tx: &Transaction) -> Result<Vec<Task>, StoreError> {
     .collect()
 }
 
-const WRITE_TASK: &str = "INSERT INTO tracker_tasks
+const INSERT_TASK: &str = "INSERT INTO tracker_tasks
     (id, project_key, number, state, status, created_at, updated_at, record)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-    ON CONFLICT(id) DO UPDATE SET
-        project_key = ?2, number = ?3, state = ?4, status = ?5,
-        created_at = ?6, updated_at = ?7, record = ?8";
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
+const UPDATE_TASK: &str = "UPDATE tracker_tasks SET
+    project_key = ?2, number = ?3, state = ?4, status = ?5,
+    created_at = ?6, updated_at = ?7, record = ?8
+    WHERE id = ?1 AND (project_key IS NOT ?2 OR number IS NOT ?3 OR state IS NOT ?4
+        OR status IS NOT ?5 OR created_at IS NOT ?6 OR updated_at IS NOT ?7 OR record IS NOT ?8)";
 const APPEND_COMMENT: &str =
     "INSERT OR IGNORE INTO tracker_comments (id, task_id, created_at, record)
     VALUES (?1, ?2, ?3, ?4)";
@@ -457,10 +459,8 @@ const APPEND_EVENT: &str = "INSERT OR IGNORE INTO tracker_events (id, task_id, a
 pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
     super::waiting_on::note_task_write(tx, task)?;
     super::delivery_intents::note_task_write(tx, task)?;
-    // Projection triggers make statement compilation substantial. Retain the
-    // bounded SQLite statement cache across writes instead of compiling every
-    // task/history trigger program for each new activity item.
-    tx.prepare_cached(WRITE_TASK)?.execute(rusqlite::params![
+    let record = serde_json::to_string(task).expect("a task always serializes");
+    let fields = rusqlite::params![
         task.id,
         task.project_path,
         task.number as i64,
@@ -468,8 +468,21 @@ pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), St
         task.status,
         task.created_at,
         task.updated_at,
-        serde_json::to_string(task).expect("a task always serializes"),
-    ])?;
+        record,
+    ];
+    // An activity append often carries the same task. Compare once before an
+    // UPDATE materializes OLD and runs its programs; retain that statement in
+    // the bounded cache without compiling the INSERT branch on every reopen.
+    let updated = tx.prepare_cached(UPDATE_TASK)?.execute(fields)?;
+    if updated == 0
+        && !tx
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM tracker_tasks WHERE id=?1)")?
+            .query_row([&task.id], |row| row.get::<_, bool>(0))?
+    {
+        // UPDATE has already acquired the transaction's write lock, so a raw
+        // second writer cannot insert this id between the check and INSERT.
+        tx.prepare_cached(INSERT_TASK)?.execute(fields)?;
+    }
     Ok(())
 }
 

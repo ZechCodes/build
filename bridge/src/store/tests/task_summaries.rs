@@ -889,6 +889,11 @@ fn activity_context_backfills_old_card_schema_before_reader_admission() {
         for name in names {
             conn.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
         }
+        // The legacy shape predates shared helper views as well as context.
+        let views=conn.prepare("SELECT name FROM sqlite_schema WHERE type='view' AND name GLOB 'tracker_summary_*'").unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+        for name in views {
+            conn.execute_batch(&format!("DROP VIEW {name}")).unwrap();
+        }
         conn.execute_batch("ALTER TABLE tracker_task_summaries DROP COLUMN context;")
             .unwrap();
     }

@@ -3,6 +3,8 @@ use crate::tracker::{Actor, Task};
 
 #[path = "task_summaries/direct_sql.rs"]
 mod direct_sql;
+#[path = "task_summaries/lifecycle.rs"]
+mod lifecycle;
 
 #[test]
 fn bounded_summary_omits_task_payload_and_carries_watch_count() {

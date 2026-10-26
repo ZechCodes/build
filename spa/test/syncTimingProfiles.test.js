@@ -62,13 +62,31 @@ vi.doMock("../src/core/projectAgentsCache.js", async (original) => {
 });
 vi.doMock("../src/core/cacheLifetime.js", async (original) => {
   const actual = await original();
-  return { ...actual, expireWorkspaceData: (...args) => {
-    metrics.recentExpiries += 1;
-    const started = hrtime.bigint();
-    return actual.expireWorkspaceData(...args).finally(() => {
+  return { ...actual, expireWorkspacesData: (...args) => {
+    metrics.recentExpiries += args[1].length;
+    metrics.expiryBatches += Number(args[1].length > 0);
+    const started = hrtime.bigint(), callbacks = metrics.idbCallbacks, cursors = metrics.cursorContinuations;
+    return actual.expireWorkspacesData(...args).finally(() => {
       metrics.expiryWallMs += Number(hrtime.bigint() - started) / 1e6;
+      metrics.expiryIdbCallbacks += metrics.idbCallbacks - callbacks;
+      metrics.expiryCursorContinuations += metrics.cursorContinuations - cursors;
     });
   } };
+});
+vi.doMock("../src/core/readStateRepair.js", async (original) => {
+  const actual = await original();
+  const wrap = (name) => (...args) => {
+    metrics.repairRequests += 1;
+    const started = hrtime.bigint(), callbacks = metrics.idbCallbacks;
+    const repairContext = { ...args[0], call: (method, params, envelope = {}) =>
+      args[0].call(method, params, { ...envelope, profileRepair: true }) };
+    return actual[name](repairContext, ...args.slice(1)).finally(() => {
+      metrics.repairWindowWallMs += Number(hrtime.bigint() - started) / 1e6;
+      metrics.repairWindowIdbCallbacks += metrics.idbCallbacks - callbacks;
+    });
+  };
+  return { ...actual, refreshReadState: wrap("refreshReadState"),
+    repairReadFeed: wrap("repairReadFeed"), repairReadOwner: wrap("repairReadOwner") };
 });
   metrics = emptyMetrics();
   globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
@@ -114,7 +132,9 @@ afterEach(() => { feed?.stopFeed(); feed = null; sync?.stopCacheSync(); vi.useRe
 
 function emptyMetrics() {
   return { accountRosterSelections: 0, recentExpiries: 0, idbCallbacks: 0, cacheDrainWallMs: 0,
-    expiryWallMs: 0, cursorContinuations: 0, indexKeyCursors: 0, stageWallMs: {} };
+    expiryWallMs: 0, expiryBatches: 0, expiryIdbCallbacks: 0, expiryCursorContinuations: 0,
+    cursorContinuations: 0, indexKeyCursors: 0, stageWallMs: {},
+    repairRequests: 0, repairWindowWallMs: 0, repairWindowIdbCallbacks: 0 };
 }
 
 // Seed unrelated stale metadata in one transaction. Use the real replica shape,
@@ -168,7 +188,11 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
   };
   const answer = (method, params) => {
     const answers = {
-      "entity.seen": () => ({}),
+      "entity.seen": () => {
+        const row = rows.find((row) => row.run_id === params.entity_id);
+        if (row) row.agents = row.agents.map((agent) => ({ ...agent, unread_count: 0, read_through_sequence: params.read_through_sequence }));
+        return {};
+      },
       "board.list": () => ({ items: rows }),
       "project.list": () => ({ projects: projectRows }),
       "workspace.list": () => ({ workspaces: rows.map((row) => ({ id: row.workspace_id,
@@ -198,9 +222,11 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
   context = { deviceId: "scale", session: {}, greeted: Promise.resolve(), active: () => true };
   context.cacheScope = { deviceId: "scale", active: context.active };
   context.rpc = (method, params = {}, envelope = {}) => new Promise((resolve) => {
-    expect(ringActive, `${method} must run inside the connection ring`).toBe(true);
-    const duration = typeof latency[method] === "function" ? latency[method](params) : latency[method] ?? BASE_LATENCY[method];
-    const call = { method, stage, start: now, end: now + duration,
+    const repair = envelope.profileRepair === true || method === "entity.seen"
+      || (method === "board.list" && calls.some((call) => call.method === "board.list"));
+    if (!repair) expect(ringActive, `${method} must run inside the connection ring`).toBe(true);
+    const duration = repair && method === "board.list" && latency.repairBoard !== undefined ? latency.repairBoard : typeof latency[method] === "function" ? latency[method](params) : latency[method] ?? BASE_LATENCY[method];
+    const call = { method, repair, ringAtDispatch: ringActive, stage, start: now, end: now + duration,
       priority: envelope.priority || "foreground" };
     calls.push(call);
     pending.push({ ...call, resolve: () => {
@@ -256,12 +282,17 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
       }
       throw new Error("simulation exceeded RPC budget");
     },
-    async finish(label) {
+    async finish(label, completion = Promise.resolve()) {
+      let complete = false;
+      void completion.then(() => { complete = true; });
       await this.drive(() => ringStop !== null);
+      const ringCallbacks = metrics.idbCallbacks;
+      const ringWallMs = { ...metrics.stageWallMs };
+      await this.drive(() => complete && pending.length === 0);
       mark("finished");
       expect(ringTransitions, "the ring spans all conversations and chained passes").toEqual([true, false]);
       const period = diagnostics.report().periods.at(-1);
-      expect(period.stop).toBe(now - periodStart);
+      expect(period.stop).toBe(ringStop - periodStart);
       for (const call of calls.filter(({ method }) => method === "thread.page")) {
         const wanted = call.priority === "foreground" ? "foreground" : "inbox";
         const containing = period.passes.flatMap((pass) => pass.stages).filter(({ stage, start, end }) =>
@@ -269,6 +300,13 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
         expect(containing, `${call.priority} thread RPC belongs to its Diagnostics stage`).toHaveLength(1);
       }
       const report = { label, clock: "logical RPC ms; real fake-IDB event-loop wall ms (not production disk)",
+        repair: { requests: metrics.repairRequests, rpcCount: calls.filter((call) => call.repair).length,
+          rpcAfterRing: calls.filter((call) => call.repair && !call.ringAtDispatch).length,
+          completionAfterRingMs: now - ringStop, idbCallbacksAfterRing: metrics.idbCallbacks - ringCallbacks,
+          windowIdbCallbacks: metrics.repairWindowIdbCallbacks,
+          windowWallMs: metrics.repairWindowWallMs,
+          note: "repair window counters include concurrent pass work; after-ring callbacks are disjoint" },
+        ringCache: { idbCallbacks: ringCallbacks, stageWallMs: ringWallMs },
         rpc: { criticalPathMs: ringStop - periodStart, summedRequestMs: calls.reduce((sum, call) => sum + call.end - call.start, 0) },
         cache: { ...metrics, selectionWallMs: metrics.stageWallMs.selection || 0,
           selectionOtherWallMs: (metrics.stageWallMs.selection || 0) - metrics.expiryWallMs },
@@ -303,8 +341,10 @@ const profiles = [
   { label: "small-warm", projects: 2, workspaces: 2, agents: 1, ownerAgents: 1 },
   { label: "single-project", projects: 1, workspaces: 1, agents: 1, ownerAgents: 1 },
   { label: "single-project-markSeen", reporter: true, projects: 1, workspaces: 1, agents: 1, ownerAgents: 1 },
+  { label: "single-project-delayed-repair", delayed: true, projects: 1, workspaces: 1, agents: 1, ownerAgents: 1,
+    latency: { repairBoard: 6000 } },
 ];
-it.each(profiles)("#879 profile $label separates logical RPC and actual cache work", async ({ label, staleKeys = 0, reporter = false, ...size }) => {
+it.each(profiles)("#881 profile $label separates logical RPC and actual cache work", async ({ label, staleKeys = 0, reporter = false, delayed = false, ...size }) => {
   const model = fixture({ ...size, tasks: 8, patches: 0 });
   if (size.recent) await cache.writeCached({ deviceId: "scale", entityId: "run-6", kind: "thread", sub: "c-6-0" },
     { thread_id: "thread-6-0", items: [] });
@@ -322,37 +362,45 @@ it.each(profiles)("#879 profile $label separates logical RPC and actual cache wo
   await cacheTurns(); model.nextPeriod();
   sync.startCacheSync();
   await model.drive(() => model.calls.length >= 3);
-  // A read-state subscriber after list dispatch needs a lists-only successor.
+  // Explicit read-state requests repair badges outside ordered sync. Actual
+  // markSeen callers already schedule their feed repair without another pass.
   const successor = reporter ? (async () => {
     expect(await markSeen("run-0", "agent-0-0", null, 23, "thread-0-0", "scale")).toBe(true);
-    // This is the same report-accepted callback used by agentRail/inboxView.
-    await feed.refreshFeed("scale", "read-state");
+    const row = await cache.readCached({ deviceId: "scale", entityId: "run-0", kind: "row", sub: "" });
+    expect(row.value.agents[0].read_through_sequence).toBe(23);
   })() : sync.syncDevice("scale", "read-state");
-  const report = await model.finish(`${label}: measured warm with read-state after list dispatch`);
+  const report = await model.finish(`${label}: measured warm with ${reporter ? "markSeen" : "read-state"} after list dispatch`, successor);
   await successor;
-  expect(report.passEndsMs, "a real lists-only successor retains the ring").toHaveLength(2);
-  expect(report.verbs["agent.list"], "rosters are still ahead when read-state subscribes").toBe(size.projects);
+  expect(report.passEndsMs, "read marks never start a successor pass").toHaveLength(1);
+  expect(report.ringMs).toBe(size.projects === 8 ? 24152 : size.projects === 2 ? 4500 : 3050);
+  expect(Object.values(report.verbs).reduce((sum, count) => sum + count, 0)).toBe(reporter ? 16 : size.projects === 8 ? 79 : size.projects === 2 ? 25 : 15);
+  expect(report.verbs["agent.list"], "roster reads dispatched after the read-state ack already cover its owner marks").toBe(size.projects);
   expect(report.verbs["tasks.list"]).toBe(size.projects);
   expect(report.verbs["thread.page"]).toBe(size.workspaces * size.agents + size.projects * size.ownerAgents + 1);
   expect(report.rosterRowPublication).toHaveLength(1);
   expect(report.rosterRowPublication.every((row) => row.logicalMs === 0)).toBe(true);
   // Baseline scheduler counts through taskFeed row projection. Keep new-worker
   // publication prompt even when the pass's selection strategy changes.
-  // A concurrent markSeen compatibility read adds three IDB callbacks.
-  const publicationCallbacks = size.projects === 1 ? 15 : 33;
-  expect(report.rosterRowPublication[0].idbCallbacks).toBeLessThanOrEqual(publicationCallbacks + (reporter ? 3 : 0));
-  // Initial selection and the lists-only successor may scan the account.
-  // Each roster completion must update only its owner.
-  expect(report.cache.accountRosterSelections).toBe(3);
+  expect(report.rosterRowPublication[0].idbCallbacks).toBeLessThanOrEqual(reporter ? 25 : size.projects === 1 ? 15 : 33);
+  // Account selection happens once; targeted repairs never select the account.
+  expect(report.cache.accountRosterSelections).toBe(1);
   expect(report.verbs["entity.seen"] || 0).toBe(reporter ? 1 : 0);
-  expect(report.verbs["board.list"]).toBe(reporter ? 3 : 2);
-  expect(report.cache.recentExpiries).toBe(size.recent ? 2 : 0);
+  expect(report.verbs["board.list"]).toBe(2);
+  expect(report.verbs["project.list"]).toBe(1);
+  expect(report.verbs["workspace.list"]).toBe(1);
+  expect(report.cache.recentExpiries).toBe(size.recent ? 1 : 0);
+  expect(report.cache.expiryBatches).toBe(size.recent ? 1 : 0);
   expect(report.cache.idbCallbacks).toBeGreaterThan(0);
   expect(report.cache.cacheDrainWallMs).toBeGreaterThan(0);
   expect(report.cache.selectionWallMs).toBeGreaterThan(0);
   expect(report.cache.selectionOtherWallMs).toBeGreaterThanOrEqual(0);
   if (size.recent) {
     expect(report.cache.expiryWallMs).toBeGreaterThan(0);
-    expect(report.cache.cursorContinuations).toBeGreaterThanOrEqual(staleKeys * 2);
+    expect(report.cache.expiryCursorContinuations).toBe(0);
+    expect(report.cache.indexKeyCursors).toBe(0);
+  }
+  if (delayed) {
+    expect(report.repair.completionAfterRingMs).toBeGreaterThan(0);
+    expect(report.repair.idbCallbacksAfterRing).toBeGreaterThan(0);
   }
 }, 120000);

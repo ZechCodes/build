@@ -87,9 +87,23 @@ pub(super) fn insert_facts(table: &str, predicate: &str) -> String {
     };
     format!("INSERT OR REPLACE INTO tracker_task_summary_facts(task_id,id,ulid,at,ts,unread,activity,watched,done_move,agent_comment,mentions)
         SELECT task_id,id,CASE WHEN instr(id,'-')>0 THEN substr(id,instr(id,'-')+1) ELSE id END,
-            {at},CAST(ROUND((julianday({at})-2440587.5)*86400000) AS INTEGER),
+            {at},{timestamp},
             COALESCE(({unread}),0),COALESCE(({activity}),0),COALESCE(({watched}),0),COALESCE(({done_move}),0),COALESCE(({agent_comment}),0),COALESCE(({mentions}),0)
-        FROM {table} WHERE {predicate};")
+        FROM {table} WHERE {predicate};",timestamp=timestamp_millis(at))
+}
+
+// SQLite's date parser rounds fractions to milliseconds. Rust's
+// message_millis truncates nanoseconds, including towards zero before 1970.
+// Parse a whole second and the decimal fraction separately to agree exactly.
+fn timestamp_millis(at: &str) -> String {
+    let zone = format!("CASE WHEN substr({at},-1)='Z' THEN 'Z' ELSE substr({at},-6) END");
+    let second = format!("unixepoch(substr({at},1,19)||({zone}))");
+    let fraction=format!("substr({at},instr({at},'.')+1,length({at})-instr({at},'.')-CASE WHEN substr({at},-1)='Z' THEN 1 ELSE 6 END)");
+    format!(
+        "CASE WHEN instr({at},'.')=0 THEN unixepoch({at})*1000 ELSE
+        ({second})*1000+CAST(substr(({fraction})||'000',1,3) AS INTEGER)+
+        CASE WHEN ({second})<0 AND substr(({fraction}),4) GLOB '*[1-9]*' THEN 1 ELSE 0 END END"
+    )
 }
 
 /// Preserve valid bounded fields; legacy oversized strings are capped and

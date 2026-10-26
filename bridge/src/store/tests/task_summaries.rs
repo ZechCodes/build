@@ -276,7 +276,7 @@ fn migration_reduces_huge_histories_before_reader_admission_and_reads_stay_small
         let tx = conn.transaction().unwrap();
         {
             let mut insert=tx.prepare("INSERT INTO tracker_comments(id,task_id,created_at,record) VALUES(?1,?2,?3,?4)").unwrap();
-            for i in 0..4096 {
+            for i in 0..10_000 {
                 let mut comment = said(&task, &format!("tc-{i:026}"), "2026-01-01T01:00:00.123Z");
                 if i == 0 {
                     comment.body = "large timeline payload".repeat(100_000);
@@ -297,8 +297,9 @@ fn migration_reduces_huge_histories_before_reader_admission_and_reads_stay_small
     let store = Store::new(dir.path()).unwrap();
     let migration_elapsed = migration_started.elapsed();
     let row = summary(&store, "/summary");
-    assert_eq!(row["unread_count"], 4096);
+    assert_eq!(row["unread_count"], 10_000);
     assert_matches_history(&store, &task_id);
+    let changes_before = store.connection().total_changes();
     let started = std::time::Instant::now();
     let mut bytes = 0;
     for _ in 0..100 {
@@ -307,6 +308,11 @@ fn migration_reduces_huge_histories_before_reader_admission_and_reads_stay_small
         assert!(bytes < 4096);
     }
     let read_elapsed = started.elapsed();
+    assert_eq!(
+        store.connection().total_changes(),
+        changes_before,
+        "steady-state pages cannot enqueue or perform migration writes"
+    );
     let task = store.load_tracker_task(&task_id).unwrap().unwrap();
     let started = std::time::Instant::now();
     store
@@ -321,12 +327,17 @@ fn migration_reduces_huge_histories_before_reader_admission_and_reads_stay_small
         )
         .unwrap();
     let mutation_elapsed = started.elapsed();
-    eprintln!("summary fixture: 4096 history entries + multi-MiB task/comment; migration={migration_elapsed:?}, 100 reads={read_elapsed:?}, bytes={bytes}, append={mutation_elapsed:?}");
+    eprintln!("summary fixture: 10000 history entries + multi-MiB task/comment; migration={migration_elapsed:?}, 100 reads={read_elapsed:?}, bytes={bytes}, append={mutation_elapsed:?}");
     // An independent reader has the same already-materialized count.
-    assert_eq!(summary(&store, "/summary")["unread_count"], 4097);
+    assert_eq!(summary(&store, "/summary")["unread_count"], 10_001);
     drop(store);
+    let started = std::time::Instant::now();
     let reopened = Store::new(dir.path()).unwrap();
-    assert_eq!(summary(&reopened, "/summary")["unread_count"], 4097);
+    eprintln!(
+        "summary fixture: already-migrated reopen={:?}",
+        started.elapsed()
+    );
+    assert_eq!(summary(&reopened, "/summary")["unread_count"], 10_001);
 }
 
 #[test]
@@ -509,7 +520,12 @@ fn missing_projection_rebuilds_even_when_completed_migration_checkpoints_remain(
         conn.execute_batch("DROP TABLE tracker_task_summaries;")
             .unwrap();
     }
+    let started = std::time::Instant::now();
     let store = Store::new(dir.path()).unwrap();
+    eprintln!(
+        "missing task-summary component: startup rebuild={:?}",
+        started.elapsed()
+    );
     assert_eq!(summary(&store, "/summary")["unread_count"], 1);
     assert_matches_history(&store, &task_id);
     let choices = store
@@ -626,5 +642,29 @@ fn assignee_projection_and_choices_preserve_tagged_filter_values_and_opaque_ids(
     for choice in choices {
         assert_eq!(choice.key, serde_json::to_string(&choice.value).unwrap());
         assert!(choice.value == serde_json::json!("none") || choice.value.is_object());
+    }
+}
+
+#[test]
+fn activity_millisecond_projection_matches_nanosecond_timestamp_truncation_and_offsets() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut draft = Task::drafted("/summary", "precise time", Actor::User, support::NOW);
+    draft.watched = true;
+    let task = store.create_tracker_task(draft, &[]).unwrap();
+    for (i, at) in [
+        "2026-01-01T00:00:00.123500000Z",
+        "2026-01-01T00:00:00.999999999Z",
+        "2026-01-01T00:01:00.1Z",
+        "2026-01-01T02:00:00.000999999+01:30",
+        "1969-12-31T23:59:59.999999999Z",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        store
+            .save_tracker_task_activity(&task, &[said(&task, &format!("tc-{i:026}"), at)], &[])
+            .unwrap();
+        assert_matches_history(&store, &task.id);
     }
 }

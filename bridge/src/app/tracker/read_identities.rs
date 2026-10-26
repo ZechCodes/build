@@ -171,7 +171,7 @@ impl TaskIdentityContext {
         task
     }
 
-    fn identity(&self, id: &str, durable: &TaskAgentIdentity) -> TaskAgentIdentity {
+    pub(super) fn identity(&self, id: &str, durable: &TaskAgentIdentity) -> TaskAgentIdentity {
         let mut identity = durable.clone();
         if let Some(live) = self.live.get(id) {
             // Only association and availability are observations. Durable

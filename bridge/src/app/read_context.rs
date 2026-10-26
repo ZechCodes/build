@@ -299,6 +299,7 @@ impl ReadService {
             .map_err(task_error)?;
         let answer = match method {
             "tasks.list" => context.tasks.tasks_list(read, params),
+            "tasks.filterChoices" => context.tasks.tasks_filter_choices(read, params),
             "tasks.get" => context.tasks.tasks_get(read, params),
             "tasks.waiting_on.blocks" => context.tasks.tasks_waiting_on_blocks(read, params),
             _ => return Err(ApiError::unknown_method(method)),

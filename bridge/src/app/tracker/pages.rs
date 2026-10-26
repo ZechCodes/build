@@ -64,12 +64,16 @@ pub(super) struct ListFilter<'a> {
     pub status: Option<&'a str>,
     pub assignee: &'a AssigneeFilter,
     pub label: Option<&'a str>,
+    pub selections: Option<&'a Value>,
 }
 
 impl ListFilter<'_> {
     /// A digest of the filter, stable across restarts and releases of the
     /// bridge, which a cursor carries so it can only continue its own list.
     fn digest(&self) -> String {
+        if let Some(selections) = self.selections {
+            return digest_of(&json!(["selections", selections]));
+        }
         digest_of(&json!([
             self.state.map(TaskState::as_str),
             self.status,

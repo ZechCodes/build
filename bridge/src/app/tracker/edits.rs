@@ -243,18 +243,6 @@ pub(super) fn close(write: &mut TaskWrite, actor: &Actor, reason: Option<String>
     write.event(actor, TaskEventKind::Closed, payload, now);
 }
 
-/// Whether a task carries the label a filter asked for, case-insensitively —
-/// labels are deduped that way, so they are matched that way.
-pub(super) fn carries_label(task: &Task, label: Option<&str>) -> bool {
-    match label {
-        None => true,
-        Some(label) => task
-            .labels
-            .iter()
-            .any(|carried| carried.eq_ignore_ascii_case(label)),
-    }
-}
-
 /// What an `assignee` filter asked for. `any` and `none` are words rather than
 /// shapes because neither names an assignee.
 #[derive(Debug, Default, PartialEq, Eq)]

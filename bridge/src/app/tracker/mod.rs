@@ -50,6 +50,7 @@ mod reminder;
 mod reviews;
 mod said;
 mod selections;
+mod summaries;
 mod tools;
 mod tracking;
 mod views;
@@ -146,8 +147,8 @@ impl AppState {
             .tasks_list(self.tracker_store()?, params)
     }
 
-    pub(crate) fn tasks_filter_choices(&self, _params: &Value) -> Result<Value, String> {
-        Err("not implemented".into())
+    pub(crate) fn tasks_filter_choices(&self, params: &Value) -> Result<Value, String> {
+        self.task_read_context().tasks_filter_choices(self.tracker_store()?, params)
     }
 
     pub(crate) fn tasks_get(&self, params: &Value) -> Result<Value, String> {

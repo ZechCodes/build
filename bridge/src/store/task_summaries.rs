@@ -312,7 +312,7 @@ fn projection_objects(conn: &Connection) -> Result<BTreeMap<String, String>, Sto
     let mut statement = conn.prepare(
         "SELECT name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND
         (name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices',
-            'tracker_task_filter_values','tracker_task_summary_identities')
+            'tracker_task_filter_values','tracker_task_summary_identities','tracker_task_summary_context')
         OR name GLOB 'tracker_summary_*' OR name GLOB 'tracker_summaries_*' OR name GLOB 'tracker_choices_*')"
     )?;
     let objects = statement
@@ -333,18 +333,27 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<bool, StoreError> {
     if revalidate_projection(conn, &definition.fingerprint)? {
         return Ok(true);
     }
-    let existing: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices','tracker_task_filter_values','tracker_task_summary_identities')",[],|row|row.get(0))?;
+    let changed_definition: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM meta WHERE
+        (key='task_summary_v1_ready' AND value NOT LIKE ?1 || ':%')
+        OR (key='task_summary_v1_definition' AND value<>?1))",
+        [&definition.fingerprint],
+        |row| row.get(0),
+    )?;
+    if changed_definition {
+        require_projection_rebuild(conn)?;
+    }
+    let existing: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices','tracker_task_filter_values','tracker_task_summary_identities','tracker_task_summary_context')",[],|row|row.get(0))?;
     let has_context = has_context_column(conn)?;
-    if existing != 5 || !has_context {
+    if existing != 6 || !has_context {
         // Commit repair intent before recreating a missing table: a crash
         // between DDL and reset must not make a partial unit look complete.
         require_projection_rebuild(conn)?;
     }
-    conn.execute_batch(sql::TABLES)?;
-    if !has_context_column(conn)? {
-        conn.execute_batch("ALTER TABLE tracker_task_summaries ADD COLUMN context TEXT NOT NULL DEFAULT '{}' CHECK(length(CAST(context AS BLOB))<=4096);")?;
-    }
     drop_projection_triggers(conn)?;
+    drop_projection_views(conn)?;
+    // The v1 fact index used this name before it became a keyed helper view.
+    conn.execute_batch("DROP INDEX IF EXISTS tracker_summary_activity")?;
     let rebuilding: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM meta WHERE key='task_summary_rebuild')",
         [],
@@ -352,7 +361,16 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<bool, StoreError> {
     )?;
     if rebuilding {
         reset_projection(conn)?;
+    } else {
+        conn.execute_batch(sql::TABLES)?;
     }
+    conn.execute_batch(&sql::helpers())?;
+    // Persist the input definition before any batch checkpoint. A later
+    // binary must not resume a partially built projection with different rules.
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key,value) VALUES('task_summary_v1_definition',?1)",
+        [&definition.fingerprint],
+    )?;
     migrate_facts(conn, "tracker_comments")?;
     migrate_facts(conn, "tracker_events")?;
     migrate_metadata(conn)?;
@@ -400,7 +418,7 @@ fn has_context_column(conn: &Connection) -> Result<bool, StoreError> {
 fn drop_projection_triggers(conn: &Connection) -> Result<(), StoreError> {
     let names = conn
         .prepare(
-            "SELECT name FROM sqlite_schema WHERE type='trigger' AND name LIKE 'tracker_summary_%'",
+            "SELECT name FROM sqlite_schema WHERE type='trigger' AND (name GLOB 'tracker_summary_*' OR name GLOB 'tracker_choices_*')",
         )?
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -410,21 +428,49 @@ fn drop_projection_triggers(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+fn drop_projection_views(conn: &Connection) -> Result<(), StoreError> {
+    let names = conn
+        .prepare(
+            "SELECT name FROM sqlite_schema WHERE type='view' AND name GLOB 'tracker_summary_*'",
+        )?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for name in names {
+        conn.execute_batch(&format!("DROP VIEW \"{}\"", name.replace('"', "\"\"")))?;
+    }
+    Ok(())
+}
+
 fn reset_projection(conn: &mut Connection) -> Result<(), StoreError> {
     #[cfg(test)]
     let _phase = MigrationPhase::new("reset_projection");
-    for table in [
+    let tables = [
         "tracker_task_filter_choices",
         "tracker_task_filter_values",
         "tracker_task_summary_facts",
         "tracker_task_summaries",
+        "tracker_task_summary_context",
         "tracker_task_summary_identities",
-    ] {
-        reset_table(conn, table)?;
+    ];
+    for table in tables {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if exists {
+            reset_table(conn, table)?;
+        }
     }
-    // Rows are fully reset before dropping progress. Clearing the durable
-    // repair marker and old migration checkpoints shares one commit.
+    // Drop only empty tables after bounded row deletion. Recreate the exact
+    // schema as well as its data: IF NOT EXISTS cannot fix an altered table's
+    // columns or constraints. DDL, checkpoints and repair intent share one
+    // commit so interruption always resumes the bounded reset or migration.
     let tx = conn.transaction()?;
+    for table in tables {
+        tx.execute_batch(&format!("DROP TABLE IF EXISTS {table}"))?;
+    }
+    tx.execute_batch(sql::TABLES)?;
     tx.execute(
         "DELETE FROM meta WHERE key LIKE 'task_summary_v1_%' OR key='task_summary_rebuild'",
         [],

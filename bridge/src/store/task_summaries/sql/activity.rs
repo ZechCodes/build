@@ -1,4 +1,4 @@
-//! History-derived patches use only bounded context and compact fact columns.
+//! Typed retained activity state; keyed views own the full and append derivations.
 
 pub(super) fn context() -> &'static str {
     r#"json_object('watched',COALESCE(json_extract(t.record,'$.watched'),0),
@@ -11,78 +11,91 @@ pub(super) fn context() -> &'static str {
         'invalid_assignee',COALESCE(length(CAST(json_extract(t.record,'$.assignee.agent_id') AS BLOB))>128,0))"#
 }
 
+const RESULT_COLUMNS: &str = "unread_count,unread_agent_comments,unread_mentions,session_started_ms,last_activity_ms,done_at";
+
 pub(super) fn refresh(id: &str) -> String {
-    refresh_when(id, "1")
+    format!(
+        "UPDATE tracker_task_summary_context SET ({RESULT_COLUMNS})=(SELECT {RESULT_COLUMNS}
+        FROM tracker_summary_activity WHERE task_id={id}) WHERE task_id={id};"
+    )
 }
 
-fn refresh_when(id: &str, predicate: &str) -> String {
-    format!("UPDATE tracker_task_summaries SET record=(SELECT json_set(json_patch(t.card,{stats}),'$.done_at',
-        CASE WHEN t.status='done' THEN COALESCE(t.done_at,
-            (SELECT at FROM tracker_task_summary_facts WHERE task_id=t.id AND done_move=1 ORDER BY at DESC,id DESC LIMIT 1),t.created_at) END)
-        FROM (WITH ctx AS MATERIALIZED (SELECT task_id AS id,record AS card,
-            json_extract(context,'$.watched') AS watched,json_extract(context,'$.read_ulid') AS read_ulid,
-            json_extract(context,'$.watch_ulid') AS watch_ulid,
-            json_extract(context,'$.session_start') AS session_start,json_extract(context,'$.session_last') AS session_last,
-            json_extract(context,'$.done_at') AS done_at,json_extract(context,'$.status') AS status,
-            json_extract(context,'$.created_at') AS created_at FROM tracker_task_summaries WHERE task_id={id}) SELECT * FROM ctx) t)
-        WHERE task_id={id} AND ({predicate});",stats=stats_patch())
+pub(super) fn views() -> String {
+    format!(
+        "CREATE VIEW IF NOT EXISTS tracker_summary_activity AS {full};
+        CREATE VIEW IF NOT EXISTS tracker_summary_append AS {append};",
+        full = full(),
+        append = append()
+    )
 }
 
-/// A chronological append needs one new fact and the retained card, never a
-/// replay of the history prefix. Watch-floor changes and late activity retain
-/// the full compact-fact derivation used for edits and removals.
-pub(super) fn inserted(id: &str, fact: &str) -> String {
-    let safe=format!("EXISTS(SELECT 1 FROM tracker_task_summary_facts f WHERE f.task_id={id} AND f.id={fact} AND f.watched=0
-        AND (COALESCE(json_extract(context,'$.watched'),0)<>1 OR f.activity=0 OR f.ts IS NULL
-            OR json_extract(record,'$.last_activity_ms') IS NULL OR f.ts>=json_extract(record,'$.last_activity_ms')))");
-    format!("UPDATE tracker_task_summaries SET record=(SELECT json_set(json_patch(t.card,{stats}),'$.done_at',
-        CASE WHEN t.status='done' THEN COALESCE(t.done_at,
-            (SELECT at FROM tracker_task_summary_facts WHERE task_id=t.id AND done_move=1 ORDER BY at DESC,id DESC LIMIT 1),t.created_at) END)
-        FROM (WITH ctx AS MATERIALIZED (SELECT s.task_id AS id,s.record AS card,
-            json_extract(s.context,'$.watched') AS watched,json_extract(s.context,'$.read_ulid') AS read_ulid,
-            json_extract(s.context,'$.watch_ulid') AS watch_ulid,json_extract(s.context,'$.done_at') AS done_at,
-            json_extract(s.context,'$.status') AS status,json_extract(s.context,'$.created_at') AS created_at,
-            f.ulid,f.ts,f.unread,f.agent_comment,f.mentions,f.activity
-            FROM tracker_task_summaries s JOIN tracker_task_summary_facts f ON f.task_id=s.task_id
-            WHERE s.task_id={id} AND f.id={fact}) SELECT * FROM ctx) t)
-        WHERE task_id={id} AND ({safe});
-        {fallback}",stats=increment_patch(),fallback=refresh_when(id,&format!("NOT ({safe})")))
+fn done_at() -> &'static str {
+    "CASE WHEN c.status='done' THEN COALESCE(c.input_done_at,
+        (SELECT at FROM tracker_task_summary_facts WHERE task_id=c.task_id AND done_move=1 ORDER BY at DESC,id DESC LIMIT 1),c.created_at) END"
 }
 
-fn increment_patch() -> &'static str {
-    r#"CASE WHEN t.watched=1 THEN json_patch(json_object(
-        'unread_agent_comments',COALESCE(json_extract(t.card,'$.unread_agent_comments'),0)+(t.agent_comment=1 AND t.ulid>COALESCE(t.read_ulid,'')),
-        'unread_mentions',COALESCE(json_extract(t.card,'$.unread_mentions'),0)+(t.mentions=1 AND t.ulid>COALESCE(t.read_ulid,'')),
-        'unread_count',COALESCE(json_extract(t.card,'$.unread_count'),0)+(t.unread=1 AND t.ulid>COALESCE(t.read_ulid,'') AND
-            t.ulid>COALESCE(t.watch_ulid,(SELECT MAX(ulid) FROM tracker_task_summary_facts WHERE task_id=t.id AND watched=1),''))),
-        CASE WHEN t.activity=1 AND t.ts IS NOT NULL THEN json_object(
-            'session_started_ms',CASE WHEN json_extract(t.card,'$.session_started_ms') IS NULL
-                OR json_extract(t.card,'$.last_activity_ms') IS NULL
-                OR t.ts-json_extract(t.card,'$.last_activity_ms')>=28800000 THEN t.ts
-                ELSE json_extract(t.card,'$.session_started_ms') END,
-            'last_activity_ms',t.ts) ELSE json('{}') END) ELSE json('{}') END"#
+fn full() -> String {
+    format!(
+        r#"SELECT c.task_id,
+        CASE WHEN c.watched=1 THEN (SELECT COUNT(*) FROM tracker_task_summary_facts f WHERE f.task_id=c.task_id AND f.unread=1
+            AND f.ulid>COALESCE(c.read_ulid,'') AND f.ulid>COALESCE(c.watch_ulid,
+                (SELECT MAX(ulid) FROM tracker_task_summary_facts WHERE task_id=c.task_id AND watched=1),'')) ELSE 0 END unread_count,
+        CASE WHEN c.watched=1 THEN (SELECT COUNT(*) FROM tracker_task_summary_facts f WHERE f.task_id=c.task_id AND f.agent_comment=1
+            AND f.ulid>COALESCE(c.read_ulid,'')) ELSE 0 END unread_agent_comments,
+        CASE WHEN c.watched=1 THEN (SELECT COUNT(*) FROM tracker_task_summary_facts f WHERE f.task_id=c.task_id AND f.mentions=1
+            AND f.ulid>COALESCE(c.read_ulid,'')) ELSE 0 END unread_mentions,
+        CASE WHEN c.watched=1 THEN (SELECT COALESCE(MAX(CASE WHEN prev IS NOT NULL AND ts-prev>=28800000 THEN ts END),
+            c.session_start,MIN(ts)) FROM (SELECT ts,LAG(ts) OVER (ORDER BY ts) prev FROM (
+                SELECT c.session_last ts UNION SELECT ts FROM tracker_task_summary_facts WHERE task_id=c.task_id AND activity=1
+                    AND ts>COALESCE(c.session_last,-9223372036854775808)) WHERE ts IS NOT NULL)) END session_started_ms,
+        CASE WHEN c.watched=1 THEN (SELECT MAX(ts) FROM (SELECT c.session_last ts UNION ALL
+            SELECT ts FROM tracker_task_summary_facts WHERE task_id=c.task_id AND activity=1
+                AND ts>COALESCE(c.session_last,-9223372036854775808))) END last_activity_ms,
+        {done} done_at FROM tracker_task_summary_context c"#,
+        done = done_at()
+    )
 }
 
-fn stats_patch() -> &'static str {
-    r#"CASE WHEN t.watched=1 THEN json_object(
-        'unread_agent_comments',(SELECT COUNT(*) FROM tracker_task_summary_facts f WHERE f.task_id=t.id AND f.agent_comment=1
-            AND f.ulid>COALESCE(t.read_ulid,'')),
-        'unread_mentions',(SELECT COUNT(*) FROM tracker_task_summary_facts f WHERE f.task_id=t.id AND f.mentions=1
-            AND f.ulid>COALESCE(t.read_ulid,'')),
-        'unread_count',(SELECT COUNT(*) FROM tracker_task_summary_facts f WHERE f.task_id=t.id AND f.unread=1
-            AND f.ulid>COALESCE(t.read_ulid,'')
-            AND f.ulid>COALESCE(t.watch_ulid,
-                (SELECT MAX(ulid) FROM tracker_task_summary_facts WHERE task_id=t.id AND watched=1),'')),
-        'session_started_ms',(SELECT COALESCE(MAX(CASE WHEN prev IS NOT NULL AND ts-prev>=28800000 THEN ts END),
-            t.session_start,MIN(ts)) FROM (
-            SELECT ts,LAG(ts) OVER (ORDER BY ts) prev FROM (
-                SELECT t.session_last ts
-                UNION SELECT ts FROM tracker_task_summary_facts WHERE task_id=t.id AND activity=1
-                    AND ts>COALESCE(t.session_last,-9223372036854775808)
-            ) WHERE ts IS NOT NULL)),
-        'last_activity_ms',(SELECT MAX(ts) FROM (
-            SELECT t.session_last ts
-            UNION ALL SELECT ts FROM tracker_task_summary_facts WHERE task_id=t.id AND activity=1
-                AND ts>COALESCE(t.session_last,-9223372036854775808)))
-        ) ELSE json('{}') END"#
+fn append() -> String {
+    "SELECT task_id,id fact_id,ulid,ts,unread,activity,agent_comment,mentions FROM tracker_task_summary_facts WHERE watched=0".to_string()
+}
+
+fn append_update() -> String {
+    // Read the retained values from the UPDATE target itself. A derived view
+    // joining the same context table would perform another lookup and expand
+    // its arithmetic again during trigger compilation.
+    format!(r#"UPDATE tracker_task_summary_context SET
+        unread_count=c.unread_count+(c.watched=1 AND f.unread=1 AND f.ulid>COALESCE(c.read_ulid,'') AND
+            f.ulid>COALESCE(c.watch_ulid,(SELECT MAX(ulid) FROM tracker_task_summary_facts WHERE task_id=c.task_id AND watched=1),'')),
+        unread_agent_comments=c.unread_agent_comments+(c.watched=1 AND f.agent_comment=1 AND f.ulid>COALESCE(c.read_ulid,'')),
+        unread_mentions=c.unread_mentions+(c.watched=1 AND f.mentions=1 AND f.ulid>COALESCE(c.read_ulid,'')),
+        session_started_ms=CASE WHEN c.watched=1 THEN CASE WHEN f.activity=1 AND f.ts IS NOT NULL THEN
+            CASE WHEN c.session_started_ms IS NULL OR c.last_activity_ms IS NULL OR f.ts-c.last_activity_ms>=28800000 THEN f.ts ELSE c.session_started_ms END
+            ELSE c.session_started_ms END END,
+        last_activity_ms=CASE WHEN c.watched=1 THEN CASE WHEN f.activity=1 AND f.ts IS NOT NULL THEN f.ts ELSE c.last_activity_ms END END,
+        done_at={done} FROM tracker_summary_append f WHERE c.task_id=NEW.task_id AND f.task_id=NEW.task_id AND f.fact_id=NEW.fact_id
+            AND (c.watched<>1 OR f.activity=0 OR f.ts IS NULL OR c.last_activity_ms IS NULL OR f.ts>=c.last_activity_ms);"#,
+        done=done_at()).replace("c.","tracker_task_summary_context.")
+}
+
+pub(super) fn triggers() -> String {
+    format!("CREATE VIEW IF NOT EXISTS tracker_summary_apply_activity AS SELECT CAST(NULL AS TEXT) task_id WHERE 0;
+        CREATE VIEW IF NOT EXISTS tracker_summary_apply_append AS SELECT CAST(NULL AS TEXT) task_id,CAST(NULL AS TEXT) fact_id WHERE 0;
+        CREATE VIEW IF NOT EXISTS tracker_summary_apply_card AS SELECT CAST(NULL AS TEXT) task_id WHERE 0;
+        CREATE TRIGGER IF NOT EXISTS tracker_summary_apply_activity_run INSTEAD OF INSERT ON tracker_summary_apply_activity BEGIN
+            {refresh} INSERT INTO tracker_summary_apply_card VALUES(NEW.task_id); END;
+        CREATE TRIGGER IF NOT EXISTS tracker_summary_apply_card_run INSTEAD OF INSERT ON tracker_summary_apply_card BEGIN {patch} END;
+        CREATE TRIGGER IF NOT EXISTS tracker_summary_apply_append_run INSTEAD OF INSERT ON tracker_summary_apply_append BEGIN
+            {append}
+            INSERT INTO tracker_summary_apply_activity SELECT NEW.task_id WHERE changes()=0;
+            INSERT INTO tracker_summary_apply_card VALUES(NEW.task_id); END;
+",refresh=refresh("NEW.task_id"),patch=patch_card("NEW.task_id"),append=append_update())
+}
+
+pub(super) fn patch_card(id: &str) -> String {
+    format!("UPDATE tracker_task_summaries SET record=(SELECT CASE WHEN c.watched=1 THEN json_set(tracker_task_summaries.record,
+        '$.unread_count',c.unread_count,'$.unread_agent_comments',c.unread_agent_comments,'$.unread_mentions',c.unread_mentions,
+        '$.session_started_ms',c.session_started_ms,'$.last_activity_ms',c.last_activity_ms,'$.done_at',c.done_at)
+        ELSE json_set(json_remove(tracker_task_summaries.record,'$.unread_count','$.unread_agent_comments','$.unread_mentions','$.session_started_ms','$.last_activity_ms'),
+            '$.done_at',c.done_at) END FROM tracker_task_summary_context c WHERE c.task_id={id}) WHERE task_id={id};")
 }

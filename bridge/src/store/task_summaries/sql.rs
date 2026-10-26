@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS tracker_task_summary_facts (
     PRIMARY KEY(task_id,id)
 );
 CREATE INDEX IF NOT EXISTS tracker_summary_unread ON tracker_task_summary_facts(task_id,ulid) WHERE unread=1;
-CREATE INDEX IF NOT EXISTS tracker_summary_activity ON tracker_task_summary_facts(task_id,ts) WHERE activity=1;
+CREATE INDEX IF NOT EXISTS tracker_summary_activity_facts ON tracker_task_summary_facts(task_id,ts) WHERE activity=1;
 CREATE INDEX IF NOT EXISTS tracker_summary_watched ON tracker_task_summary_facts(task_id,ulid) WHERE watched=1;
 CREATE INDEX IF NOT EXISTS tracker_summary_done ON tracker_task_summary_facts(task_id,at,id) WHERE done_move=1;
 CREATE TABLE IF NOT EXISTS tracker_task_summary_identities (
@@ -28,6 +28,16 @@ CREATE TABLE IF NOT EXISTS tracker_task_summaries (
     assignment_target TEXT CHECK(assignment_target IS NULL OR length(CAST(assignment_target AS BLOB))<=1024),
     identities TEXT NOT NULL CHECK(length(CAST(identities AS BLOB))<=8192),
     context TEXT NOT NULL DEFAULT '{}' CHECK(length(CAST(context AS BLOB))<=4096)
+);
+CREATE TABLE IF NOT EXISTS tracker_task_summary_context (
+    task_id TEXT PRIMARY KEY, watched INTEGER NOT NULL,
+    read_ulid TEXT, watch_ulid TEXT, session_start INTEGER, session_last INTEGER,
+    input_done_at TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL,
+    unread_count INTEGER NOT NULL DEFAULT 0, unread_agent_comments INTEGER NOT NULL DEFAULT 0,
+    unread_mentions INTEGER NOT NULL DEFAULT 0, session_started_ms INTEGER, last_activity_ms INTEGER, done_at TEXT,
+    CHECK(length(CAST(read_ulid AS BLOB))<=128), CHECK(length(CAST(watch_ulid AS BLOB))<=128),
+    CHECK(length(CAST(input_done_at AS BLOB))<=64),CHECK(length(CAST(status AS BLOB))<=128),
+    CHECK(length(CAST(created_at AS BLOB))<=64),CHECK(length(CAST(done_at AS BLOB))<=64)
 );
 CREATE INDEX IF NOT EXISTS tracker_summaries_number ON tracker_task_summaries(project_key,number DESC);
 CREATE TABLE IF NOT EXISTS tracker_task_filter_choices (
@@ -57,7 +67,7 @@ CREATE TRIGGER IF NOT EXISTS tracker_choices_delete AFTER DELETE ON tracker_task
 END;
 "#;
 
-pub(super) fn insert_facts(table: &str, predicate: &str) -> String {
+fn fact_view(table: &str) -> String {
     let (at, unread, activity, watched, done_move) = if table == "tracker_comments" {
         (
             "created_at",
@@ -91,11 +101,15 @@ pub(super) fn insert_facts(table: &str, predicate: &str) -> String {
     } else {
         ("0", "json_extract(record,'$.kind')='created' AND json_extract(record,'$.actor.kind')='agent' AND (json_extract(record,'$.mentions_user')=1 OR json_extract(record,'$.notifies_user')=1)")
     };
-    format!("INSERT OR REPLACE INTO tracker_task_summary_facts(task_id,id,ulid,at,ts,unread,activity,watched,done_move,agent_comment,mentions)
-        SELECT task_id,id,CASE WHEN instr(id,'-')>0 THEN substr(id,instr(id,'-')+1) ELSE id END,
-            {at},{timestamp},
-            COALESCE(({unread}),0),COALESCE(({activity}),0),COALESCE(({watched}),0),COALESCE(({done_move}),0),COALESCE(({agent_comment}),0),COALESCE(({mentions}),0)
-        FROM {table} WHERE {predicate};",timestamp=timestamp_millis(at))
+    let name = if table == "tracker_comments" {
+        "comment"
+    } else {
+        "event"
+    };
+    format!("CREATE VIEW IF NOT EXISTS tracker_summary_{name}_facts AS SELECT rowid source_rowid,task_id,id,CASE WHEN instr(id,'-')>0 THEN substr(id,instr(id,'-')+1) ELSE id END ulid,
+            {at} at,{timestamp} ts,
+            COALESCE(({unread}),0) unread,COALESCE(({activity}),0) activity,COALESCE(({watched}),0) watched,COALESCE(({done_move}),0) done_move,COALESCE(({agent_comment}),0) agent_comment,COALESCE(({mentions}),0) mentions
+        FROM {table};",timestamp=timestamp_millis(at))
 }
 
 // SQLite's date parser rounds fractions to milliseconds. Rust's
@@ -199,10 +213,67 @@ fn enrich_patch() -> &'static str {
             FROM tracker_delivery_intents WHERE task_id=t.id AND state<>'cancelled' ORDER BY generation DESC LIMIT 1),'{}'))"#
 }
 
+const FACT_COLUMNS: &str =
+    "task_id,id,ulid,at,ts,unread,activity,watched,done_move,agent_comment,mentions";
+
+fn fact_insert(table: &str, predicate: &str) -> String {
+    let view = if table == "tracker_comments" {
+        "tracker_summary_comment_facts"
+    } else {
+        "tracker_summary_event_facts"
+    };
+    format!("INSERT INTO tracker_task_summary_facts({FACT_COLUMNS}) SELECT {FACT_COLUMNS} FROM {view} WHERE {predicate}",predicate=predicate.replace("rowid","source_rowid"))
+}
+
+pub(super) fn insert_facts(table: &str, predicate: &str) -> String {
+    let fields = [
+        "ulid",
+        "at",
+        "ts",
+        "unread",
+        "activity",
+        "watched",
+        "done_move",
+        "agent_comment",
+        "mentions",
+    ];
+    let set = fields
+        .iter()
+        .map(|f| format!("{f}=excluded.{f}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let changed = fields
+        .iter()
+        .map(|f| format!("{f} IS NOT excluded.{f}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!(
+        "{} ON CONFLICT(task_id,id) DO UPDATE SET {set} WHERE {changed};",
+        fact_insert(table, predicate)
+    )
+}
+
+pub(super) fn helpers() -> String {
+    format!("{comment}{event}
+        CREATE VIEW IF NOT EXISTS tracker_summary_task AS SELECT id task_id,project_key,number,state,status,created_at,updated_at,record FROM tracker_tasks;
+        CREATE VIEW IF NOT EXISTS tracker_summary_metadata AS SELECT t.task_id,{patch} patch,({invalid}) invalid_refs,
+            (SELECT CASE WHEN state IN ('waiting','queued','provisioning','failed') THEN
+                json_object('kind',substr(json_extract(record,'$.target.kind'),1,32),'agent_id',substr(json_extract(record,'$.target.agent_id'),1,128)) END
+                FROM tracker_delivery_intents WHERE task_id=t.id AND state<>'cancelled' ORDER BY generation DESC LIMIT 1) assignment_target
+            FROM (SELECT task_id,task_id id FROM tracker_task_summaries) t;
+        CREATE VIEW IF NOT EXISTS tracker_summary_dependencies AS SELECT task_id,{dependencies} record FROM tracker_task_summaries;
+        CREATE VIEW IF NOT EXISTS tracker_summary_identity AS {identity};
+        {activity}{choices}",comment=fact_view("tracker_comments"),event=fact_view("tracker_events"),
+        patch=enrich_patch(),invalid=invalid_metadata_refs(),dependencies=dependencies("tracker_task_summaries.task_id"),
+        identity=identity_rows(),activity=activity::views(),choices=choices::view())
+}
+
 pub(super) fn rebuild_task(id: &str) -> String {
     format!(
-        "{}{}",
+        "{}{}{}{}",
         refresh_task(id),
+        refresh_followup(id),
+        activity::patch_card(id),
         refresh_dependencies(&format!("task_id={id}"))
     )
 }
@@ -210,22 +281,92 @@ pub(super) fn rebuild_task(id: &str) -> String {
 fn refresh_task(id: &str) -> String {
     format!("INSERT INTO tracker_task_summaries(task_id,project_key,number,record,assignment_target,identities,context)
         SELECT t.id,t.project_key,t.number,{base},NULL,{identities},{context}
-        FROM (WITH parsed AS MATERIALIZED (SELECT id,project_key,number,state,status,created_at,updated_at,jsonb(record) AS record
-            FROM tracker_tasks WHERE id={id}) SELECT * FROM parsed) t WHERE true
+        FROM (WITH parsed AS MATERIALIZED (SELECT task_id id,project_key,number,state,status,created_at,updated_at,jsonb(record) record
+            FROM tracker_summary_task WHERE task_id={id}) SELECT * FROM parsed) t WHERE true
         ON CONFLICT(task_id) DO UPDATE SET project_key=excluded.project_key,number=excluded.number,
-            record=excluded.record,assignment_target=excluded.assignment_target,identities=excluded.identities,context=excluded.context;
-        {activity}{metadata}{choices}",base=base_record(),identities=identities(),context=activity::context(),
-        activity=activity::refresh(id),metadata=refresh_metadata(id),choices=choices::refresh(id))
+            record=excluded.record,assignment_target=NULL,identities=excluded.identities,context=excluded.context;",
+        base=base_record(),identities=identities(),context=activity::context())
+}
+
+fn refresh_context(id: &str) -> String {
+    let inputs = [
+        "watched",
+        "read_ulid",
+        "watch_ulid",
+        "session_start",
+        "session_last",
+        "input_done_at",
+        "status",
+        "created_at",
+    ];
+    let changed = inputs
+        .iter()
+        .map(|field| format!("{field} IS NOT excluded.{field}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!("INSERT INTO tracker_task_summary_context(task_id,watched,read_ulid,watch_ulid,session_start,session_last,input_done_at,status,created_at)
+        SELECT task_id,CASE WHEN json_extract(context,'$.watched')=1 THEN 1 ELSE 0 END,
+            json_extract(context,'$.read_ulid'),json_extract(context,'$.watch_ulid'),json_extract(context,'$.session_start'),
+            json_extract(context,'$.session_last'),json_extract(context,'$.done_at'),json_extract(context,'$.status'),json_extract(context,'$.created_at')
+            FROM tracker_task_summaries WHERE task_id={id}
+        ON CONFLICT(task_id) DO UPDATE SET watched=excluded.watched,read_ulid=excluded.read_ulid,watch_ulid=excluded.watch_ulid,
+            session_start=excluded.session_start,session_last=excluded.session_last,input_done_at=excluded.input_done_at,status=excluded.status,created_at=excluded.created_at
+        WHERE {changed};")
+}
+
+fn refresh_followup(id: &str) -> String {
+    format!(
+        "{}{}{}{}",
+        refresh_context(id),
+        activity::refresh(id),
+        refresh_metadata(id),
+        choices::refresh(id)
+    )
+}
+
+fn apply(name: &str, id: &str) -> String {
+    format!("INSERT INTO tracker_summary_apply_{name}(task_id) VALUES({id});")
+}
+
+// These empty views are synchronous SQL entry points, not stored work. Their
+// persistent INSTEAD OF triggers run inside the canonical caller's statement,
+// including independent writers; no callback registration or drain is needed.
+fn shared_programs() -> String {
+    let task = format!(
+        "{}{}{}{}{}{}",
+        refresh_task("NEW.task_id"),
+        refresh_context("NEW.task_id"),
+        // changes() observes the immediately preceding context statement in
+        // this trigger frame. Unchanged inputs retain valid numeric state.
+        "INSERT INTO tracker_summary_apply_activity SELECT NEW.task_id WHERE changes()<>0;",
+        apply("card", "NEW.task_id"),
+        apply("metadata", "NEW.task_id"),
+        apply("choices", "NEW.task_id")
+    );
+    let delete="INSERT INTO tracker_summary_apply_dependencies SELECT task_id FROM tracker_task_summaries
+            WHERE task_id IN (SELECT task_id FROM tracker_task_dependencies WHERE waiting_on_task_id=NEW.task_id);
+        DELETE FROM tracker_task_summaries WHERE task_id=NEW.task_id;
+        DELETE FROM tracker_task_summary_context WHERE task_id=NEW.task_id;
+        DELETE FROM tracker_task_summary_facts WHERE task_id=NEW.task_id;
+        DELETE FROM tracker_task_filter_choices WHERE task_id=NEW.task_id;".to_string();
+    let definitions = [
+        ("task", task),
+        ("delete", delete),
+        ("metadata", refresh_metadata("NEW.task_id")),
+        ("choices", choices::refresh("NEW.task_id")),
+        ("dependencies", refresh_dependencies("task_id=NEW.task_id")),
+        ("identity", refresh_identities("a.id=NEW.task_id")),
+    ];
+    definitions.into_iter().map(|(name,body)|format!("CREATE VIEW IF NOT EXISTS tracker_summary_apply_{name} AS SELECT CAST(NULL AS TEXT) task_id WHERE 0;
+        CREATE TRIGGER IF NOT EXISTS tracker_summary_apply_{name}_run INSTEAD OF INSERT ON tracker_summary_apply_{name} BEGIN {body} END;"))
+        .collect::<Vec<_>>().join("\n")
 }
 
 pub(super) fn refresh_metadata(id: &str) -> String {
-    format!("UPDATE tracker_task_summaries SET record=(SELECT json_set(json_patch(json_remove(s.record,'$.review_summary','$.deferred_assignment'),{enrich}),
-        '$._summary_invalid_metadata_refs',json(CASE WHEN ({invalid}) THEN 'true' ELSE 'false' END))
-        FROM tracker_task_summaries s,(SELECT {id} AS id) t WHERE s.task_id=t.id),
-        assignment_target=(SELECT CASE WHEN state IN ('waiting','queued','provisioning','failed') THEN
-            json_object('kind',substr(json_extract(record,'$.target.kind'),1,32),'agent_id',substr(json_extract(record,'$.target.agent_id'),1,128)) END
-            FROM tracker_delivery_intents WHERE task_id={id} AND state<>'cancelled' ORDER BY generation DESC LIMIT 1)
-        WHERE task_id={id};",enrich=enrich_patch(),invalid=invalid_metadata_refs())
+    format!("UPDATE tracker_task_summaries SET (record,assignment_target)=(SELECT
+        json_set(json_patch(json_remove(tracker_task_summaries.record,'$.review_summary','$.deferred_assignment'),m.patch),
+            '$._summary_invalid_metadata_refs',json(CASE WHEN m.invalid_refs THEN 'true' ELSE 'false' END)),m.assignment_target
+        FROM tracker_summary_metadata m WHERE m.task_id=tracker_task_summaries.task_id) WHERE task_id={id};")
 }
 
 fn invalid_metadata_refs() -> &'static str {
@@ -239,7 +380,10 @@ fn invalid_metadata_refs() -> &'static str {
 }
 
 pub(super) fn triggers() -> String {
-    let mut sql = task_triggers();
+    let mut sql = helpers();
+    sql.push_str(&shared_programs());
+    sql.push_str(&task_triggers());
+    sql.push_str(&activity::triggers());
     for table in ["tracker_comments", "tracker_events"] {
         sql.push_str(&history_triggers(table));
     }
@@ -248,59 +392,75 @@ pub(super) fn triggers() -> String {
     }
     sql.push_str(&edge_triggers());
     sql.push_str(&identity_triggers());
+
     sql
 }
 
 fn task_triggers() -> String {
-    let task = refresh_task("NEW.id");
-    let dependencies=refresh_dependencies("task_id=NEW.id OR task_id IN (SELECT task_id FROM tracker_task_dependencies WHERE waiting_on_task_id=NEW.id)");
+    let task = apply("task", "NEW.id");
+    let delete = apply("delete", "OLD.id");
+    let dependencies="INSERT INTO tracker_summary_apply_dependencies SELECT task_id FROM tracker_task_summaries WHERE task_id=NEW.id OR task_id IN (SELECT task_id FROM tracker_task_dependencies WHERE waiting_on_task_id=NEW.id);";
     format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_task_INSERT AFTER INSERT ON tracker_tasks BEGIN {task}{dependencies} END;
         CREATE TRIGGER IF NOT EXISTS tracker_summary_task_UPDATE AFTER UPDATE ON tracker_tasks
-        WHEN OLD.record IS NOT NEW.record OR OLD.project_key IS NOT NEW.project_key OR OLD.number IS NOT NEW.number
-            OR OLD.state IS NOT NEW.state OR OLD.status IS NOT NEW.status OR OLD.created_at IS NOT NEW.created_at OR OLD.updated_at IS NOT NEW.updated_at
+        WHEN OLD.id IS NEW.id AND (OLD.record IS NOT NEW.record OR OLD.project_key IS NOT NEW.project_key OR OLD.number IS NOT NEW.number
+            OR OLD.state IS NOT NEW.state OR OLD.status IS NOT NEW.status OR OLD.created_at IS NOT NEW.created_at OR OLD.updated_at IS NOT NEW.updated_at)
         BEGIN {task} END;
+        CREATE TRIGGER IF NOT EXISTS tracker_summary_task_key AFTER UPDATE OF id ON tracker_tasks WHEN OLD.id IS NOT NEW.id
+        BEGIN {delete}{task}{dependencies} END;
         CREATE TRIGGER IF NOT EXISTS tracker_summary_task_dependencies AFTER UPDATE OF state,status ON tracker_tasks
-            WHEN OLD.state IS NOT NEW.state OR OLD.status IS NOT NEW.status BEGIN {dependencies} END;
-        CREATE TRIGGER IF NOT EXISTS tracker_summary_task_delete AFTER DELETE ON tracker_tasks BEGIN
-            DELETE FROM tracker_task_summaries WHERE task_id=OLD.id;
-            DELETE FROM tracker_task_summary_facts WHERE task_id=OLD.id;
-            DELETE FROM tracker_task_filter_choices WHERE task_id=OLD.id; END;")
+            WHEN OLD.id IS NEW.id AND (OLD.state IS NOT NEW.state OR OLD.status IS NOT NEW.status) BEGIN {dependencies} END;
+        CREATE TRIGGER IF NOT EXISTS tracker_summary_task_delete AFTER DELETE ON tracker_tasks BEGIN {delete} END;")
 }
 
 fn history_triggers(table: &str) -> String {
-    let mut sql = String::new();
-    for operation in ["INSERT", "UPDATE", "DELETE"] {
-        let prefix = if operation == "DELETE" { "OLD" } else { "NEW" };
-        let id = format!("{prefix}.task_id");
-        let removed = if operation == "INSERT" { "NEW" } else { "OLD" };
-        let insert = if operation == "DELETE" {
-            String::new()
-        } else {
-            insert_facts(table, "id=NEW.id")
-        };
-        let refresh = if operation == "INSERT" {
-            activity::inserted(&id, "NEW.id")
-        } else {
-            activity::refresh(&id)
-        };
-        sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_{table}_{operation} AFTER {operation} ON {table} BEGIN
-            DELETE FROM tracker_task_summary_facts WHERE task_id={removed}.task_id AND id={removed}.id;
-            {insert}{refresh} END;"));
-    }
-    sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_{table}_reparent AFTER UPDATE OF task_id ON {table}
-        WHEN OLD.task_id<>NEW.task_id BEGIN DELETE FROM tracker_task_summary_facts WHERE task_id=OLD.task_id AND id=OLD.id; {} END;",activity::refresh("OLD.task_id")));
-    sql
+    let kind = if table == "tracker_comments" {
+        "comment"
+    } else {
+        "event"
+    };
+    let insert = format!("{};", fact_insert(table, "id=NEW.fact_id"));
+    let (at, paths) = if table == "tracker_comments" {
+        (
+            "created_at",
+            "'$.author.kind','$.mentions_user','$.notifies_user'",
+        )
+    } else {
+        ("at","'$.kind','$.actor.kind','$.payload.by','$.payload.waiting_on','$.payload.to','$.mentions_user','$.notifies_user'")
+    };
+    // Capture replacement state before mutating facts. The source-owned routine
+    // maintains facts and counters immediately without derived-table triggers,
+    // whose DELETE/INSERT conflict policies otherwise duplicate compiled work.
+    format!("CREATE VIEW IF NOT EXISTS tracker_summary_apply_{kind} AS SELECT
+            CAST(NULL AS TEXT) task_id,CAST(NULL AS TEXT) fact_id,CAST(NULL AS TEXT) old_task_id,
+            CAST(NULL AS TEXT) old_fact_id,CAST(NULL AS INTEGER) replace_existing WHERE 0;
+        CREATE TRIGGER IF NOT EXISTS tracker_summary_apply_{kind}_run INSTEAD OF INSERT ON tracker_summary_apply_{kind} BEGIN
+            DELETE FROM tracker_task_summary_facts WHERE (task_id=NEW.task_id AND id=NEW.fact_id)
+                OR (task_id=NEW.old_task_id AND id=NEW.old_fact_id);
+            {insert}
+            INSERT INTO tracker_summary_apply_activity SELECT NEW.task_id WHERE NEW.replace_existing=1 AND NEW.task_id IS NOT NULL
+                UNION SELECT NEW.old_task_id WHERE NEW.old_task_id IS NOT NULL;
+            INSERT INTO tracker_summary_apply_append SELECT NEW.task_id,NEW.fact_id WHERE NEW.replace_existing=0; END;
+        CREATE TRIGGER IF NOT EXISTS tracker_summary_{table}_INSERT AFTER INSERT ON {table} BEGIN
+            INSERT INTO tracker_summary_apply_{kind} SELECT NEW.task_id,NEW.id,NULL,NULL,
+                EXISTS(SELECT 1 FROM tracker_task_summary_facts WHERE task_id=NEW.task_id AND id=NEW.id); END;
+        CREATE TRIGGER IF NOT EXISTS tracker_summary_{table}_UPDATE AFTER UPDATE ON {table}
+        WHEN OLD.task_id IS NOT NEW.task_id OR OLD.id IS NOT NEW.id OR OLD.{at} IS NOT NEW.{at}
+            OR json_extract(OLD.record,{paths}) IS NOT json_extract(NEW.record,{paths})
+        BEGIN INSERT INTO tracker_summary_apply_{kind} VALUES(NEW.task_id,NEW.id,OLD.task_id,OLD.id,1); END;
+        CREATE TRIGGER IF NOT EXISTS tracker_summary_{table}_DELETE AFTER DELETE ON {table} BEGIN
+            INSERT INTO tracker_summary_apply_{kind} VALUES(NULL,NULL,OLD.task_id,OLD.id,1); END;")
 }
 
 fn metadata_triggers(table: &str) -> String {
     let mut sql = String::new();
     for operation in ["INSERT", "UPDATE", "DELETE"] {
-        let id = if operation == "DELETE" {
-            "OLD.task_id"
-        } else {
-            "NEW.task_id"
+        let select = match operation {
+            "INSERT" => "SELECT NEW.task_id",
+            "DELETE" => "SELECT OLD.task_id",
+            _ => "SELECT OLD.task_id UNION SELECT NEW.task_id",
         };
-        sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_{table}_{operation} AFTER {operation} ON {table} BEGIN {} END;",refresh_metadata(id)));
+        sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_{table}_{operation} AFTER {operation} ON {table} BEGIN
+            INSERT INTO tracker_summary_apply_metadata {select}; END;"));
     }
     sql
 }
@@ -315,7 +475,8 @@ fn edge_triggers() -> String {
                 "task_id IN (NEW.task_id,NEW.waiting_on_task_id,OLD.task_id,OLD.waiting_on_task_id)"
             }
         };
-        sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_edges_{operation} AFTER {operation} ON tracker_task_dependencies BEGIN {} END;",refresh_dependencies(predicate)));
+        sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_edges_{operation} AFTER {operation} ON tracker_task_dependencies BEGIN
+            INSERT INTO tracker_summary_apply_dependencies SELECT task_id FROM tracker_task_summaries WHERE {predicate}; END;"));
     }
     sql
 }
@@ -329,31 +490,34 @@ fn dependencies(id: &str) -> String {
 }
 
 fn refresh_dependencies(predicate: &str) -> String {
-    format!("UPDATE tracker_task_summaries SET record=json_set(record,'$.dependencies',{}) WHERE {predicate};",dependencies("tracker_task_summaries.task_id"))
+    format!("UPDATE tracker_task_summaries SET record=json_set(record,'$.dependencies',
+        json((SELECT record FROM tracker_summary_dependencies d WHERE d.task_id=tracker_task_summaries.task_id))) WHERE {predicate};")
+}
+
+fn identity_rows() -> &'static str {
+    "SELECT a.rowid source_rowid,a.id,a.owner_id,json_object('agent_id',a.id,'name',substr(json_extract(a.record,'$.name'),1,128),
+        'project_role',substr(json_extract(a.record,'$.project_role'),1,64),'ordinal',a.ordinal,
+        'provider',substr(COALESCE(json_extract(a.record,'$.choice.provider'),'claude'),1,64),
+        'workspace_id',NULL,'workspace_name',CASE WHEN json_extract(a.record,'$.project_role') IS NULL
+            THEN substr(json_extract(r.record,'$.worktree_name'),1,128) END,'available',json('false')) record
+        FROM agents a LEFT JOIN implementations r ON r.id=a.owner_id WHERE length(CAST(a.id AS BLOB))<=128"
 }
 
 /// Owner metadata is parsed on writes only. Reads seek a bounded identity row.
 pub(super) fn refresh_identities(predicate: &str) -> String {
-    format!("INSERT INTO tracker_task_summary_identities(agent_id,record)
-        SELECT a.id,json_object('agent_id',a.id,'name',substr(json_extract(a.record,'$.name'),1,128),
-            'project_role',substr(json_extract(a.record,'$.project_role'),1,64),'ordinal',a.ordinal,
-            'provider',substr(COALESCE(json_extract(a.record,'$.choice.provider'),'claude'),1,64),
-            'workspace_id',NULL,'workspace_name',CASE WHEN json_extract(a.record,'$.project_role') IS NULL
-                THEN substr(json_extract(r.record,'$.worktree_name'),1,128) END,'available',json('false'))
-        FROM agents a LEFT JOIN implementations r ON r.id=a.owner_id
-        WHERE length(CAST(a.id AS BLOB))<=128 AND ({predicate})
-        ON CONFLICT(agent_id) DO UPDATE SET record=excluded.record;")
+    format!("INSERT INTO tracker_task_summary_identities(agent_id,record) SELECT a.id,a.record FROM tracker_summary_identity a WHERE {predicate}
+        ON CONFLICT(agent_id) DO UPDATE SET record=excluded.record WHERE record IS NOT excluded.record;",predicate=predicate.replace("a.rowid","a.source_rowid"))
 }
 
 fn identity_triggers() -> String {
-    let mut sql = String::new();
-    for operation in ["INSERT", "UPDATE"] {
-        sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_identity_{operation} AFTER {operation} ON agents BEGIN {} END;",refresh_identities("a.id=NEW.id")));
-    }
-    sql.push_str(
-        "CREATE TRIGGER IF NOT EXISTS tracker_summary_identity_delete AFTER DELETE ON agents BEGIN
-        DELETE FROM tracker_task_summary_identities WHERE agent_id=OLD.id; END;",
-    );
+    let insert = apply("identity", "NEW.id");
+    let mut sql=format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_identity_INSERT AFTER INSERT ON agents BEGIN {insert} END;
+        CREATE TRIGGER IF NOT EXISTS tracker_summary_identity_UPDATE AFTER UPDATE ON agents
+        WHEN OLD.id IS NOT NEW.id OR OLD.owner_id IS NOT NEW.owner_id OR OLD.ordinal IS NOT NEW.ordinal
+            OR json_extract(OLD.record,'$.name','$.project_role','$.choice.provider') IS NOT json_extract(NEW.record,'$.name','$.project_role','$.choice.provider')
+        BEGIN DELETE FROM tracker_task_summary_identities WHERE agent_id=OLD.id AND OLD.id<>NEW.id; {insert} END;
+        CREATE TRIGGER IF NOT EXISTS tracker_summary_identity_delete AFTER DELETE ON agents BEGIN
+            DELETE FROM tracker_task_summary_identities WHERE agent_id=OLD.id; END;");
     for owner in ["implementations", "tasks"] {
         sql.push_str(&owner_identity_triggers(owner));
     }
@@ -368,7 +532,23 @@ fn owner_identity_triggers(owner: &str) -> String {
         } else {
             "NEW.id"
         };
-        sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_identity_{owner}_{operation} AFTER {operation} ON {owner} BEGIN {} END;",refresh_identities(&format!("a.owner_id={id}"))));
+        let guard = if operation == "UPDATE" {
+            "WHEN OLD.id IS NOT NEW.id OR json_extract(OLD.record,'$.worktree_name') IS NOT json_extract(NEW.record,'$.worktree_name')"
+        } else {
+            ""
+        };
+        let predicate = if operation == "UPDATE" {
+            "a.owner_id IN (OLD.id,NEW.id)".to_string()
+        } else {
+            format!("a.owner_id={id}")
+        };
+        let predicate = predicate.replace("a.owner_id", "owner_id");
+        sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_identity_{owner}_{operation} AFTER {operation} ON {owner} {guard} BEGIN
+            INSERT INTO tracker_summary_apply_identity SELECT id FROM agents WHERE {predicate}; END;"));
     }
     sql
 }
+
+#[cfg(test)]
+#[path = "sql/tests.rs"]
+mod tests;

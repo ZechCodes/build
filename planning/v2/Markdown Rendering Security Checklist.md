@@ -1,7 +1,52 @@
 # Markdown rendering security checklist
 
-**Status:** 100/100 — post-merge combined scanners passed on 2026-10-22.
+**Status:** 100/100 baseline; #889 validation refresh recorded below before handoff.
 **Verified:** 2026-10-22 (post-merge scanner refresh); 2026-10-20 (#695 rich markdown rendering; #701 boundary revisions; #700 production-CSP redirect consent policy); earlier desktop link, credential, persistence and API authentication evidence remains recorded below (#262, #615, #616).
+
+## Mermaid boundary amendment — #889 (2026-10-26)
+
+The earlier renderer has **no existing DOM/SVG sanitizer**: its boundary is
+escape-first fixed markup. Mermaid fences retain that escaped source and add
+only a fixed `md-code-block md-mermaid` wrapper synchronously. A document-level
+controller lazily enhances complete fences on every cached surface. The
+original code remains available, with a fixed small error on invalid/refused
+source. Ordinary/unfinished fences and inline/plain modes keep their old behavior.
+
+`mermaidRenderer.js` pins `securityLevel: "strict"`, global/flowchart
+`htmlLabels: false`, no auto-start, suppressed error diagrams, 16,384 source
+units and 200 edges. All library initialize/render operations share one serial
+queue. The 32-entry source/theme cache holds only independently sanitized SVG;
+every mount gets fresh local IDs. Mounts guard source/theme changes, detachment
+and disposal; measurements live in an owned host removed in `finally`.
+
+Strict output settings alone cannot protect Mermaid's **transient measurement
+DOM**. Before invocation, reject configuration/frontmatter, `%%` directives and
+comments, HTML/entities/escapes/markdown labels, CSS commands, URL functions and
+resource schemes, `@{…}` image/icon metadata, and legacy sequence
+properties/details/links commands including relative/protocol-relative icons.
+The actor metadata Chromium regression originally recorded two image href
+assignments while connected (red exit 1). It now checks zero href/src assignments
+and zero requests, including during parser errors and subsequent valid rendering.
+
+`mermaidSvg.js` parses XML off-DOM and rebuilds only SVG geometry, groups, text,
+titles/descriptions, markers and clips. No HTML/foreignObject, scripts, events,
+images/use, links, CSS stylesheets, arbitrary classes or external references can
+survive. Only validated numeric/enum presentation values become attributes;
+fixed semantic classes preserve filled shapes, dashed messages and themed pie
+palettes. Unique local marker/clip targets are remapped for every insertion;
+malformed, oversized or deeply nested SVG fails closed. Thus controls 2–5 and 7
+below now cover two explicit boundaries: escaped source plus an independently
+rebuilt SVG vocabulary, rather than arbitrary source markup.
+
+Evidence: `markdownMermaid.test.js`, `markdownMermaidMount.test.js`,
+`mermaidRenderer.test.js`, `mermaidSvg.test.js`, and real pinned-library
+`browser/markdownMermaid.test.js`. The Chromium suite checks common diagram
+semantics, both themes, lazy library requests, invalid-source retention and zero
+hostile resource requests/assignments. See [dependency review](Mermaid%20Dependency%20Review.md)
+for exact version, release-age enforcement, existing audit advisories and syntax
+limits. #889 gate exits and scanner results are recorded with the final handoff.
+
+## Earlier controls and evidence
 
 Checklist rendering re-verified 2026-10-03 (#347): checklist list items have the
 fixed `task-item` class and a native input with only fixed checkbox type/class,

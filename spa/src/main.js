@@ -24,6 +24,7 @@ import { startUserPresence } from "./core/userPresence.js";
 import { installWindowControlsOverlay } from "./core/windowControlsOverlay.js";
 import { installMarkdownNavigation } from "./core/markdownNavigation.js";
 import { installMarkdownTableFocus } from "./core/markdownTableFocus.js";
+import { installMarkdownMermaid } from "./core/markdownMermaid.js";
 import { installMarkdownImages } from "./core/markdownImages.js";
 
 initBuildChannel();
@@ -31,6 +32,7 @@ installWindowControlsOverlay();
 installMarkdownNavigation();
 installMarkdownTableFocus();
 installMarkdownImages();
+installMarkdownMermaid();
 
 // Before anything renders: index.html's inline stamp beat the first paint, this
 // takes ownership of the same attribute and keeps following the OS while the

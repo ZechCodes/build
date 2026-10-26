@@ -4624,6 +4624,30 @@ compact “D” corner bubble and the accessible description “Dev build”.
 when `connectionStatus.js` creates it; connection transitions retain that node.
 Production builds have neither the bubble nor its description.
 
+### Mermaid fences (#889)
+
+The shared markdown fence reader emits escaped source for complete `mermaid`
+fences. `markdownMermaid.js`, installed once at boot, progressively enhances
+cached DOM paints; ordinary code blocks and unfinished streaming fences remain
+unchanged. It imports `mermaidRenderer.js` lazily, which dynamically loads the
+pinned Mermaid library only after source-policy validation. No connection state
+or bridge API participates. The controller follows `data-theme`, fences stale
+async completions, and preserves source plus a quiet error on failure.
+
+Mermaid uses strict security and text-only labels, but its live measurement DOM
+makes final-output sanitization alone insufficient. Authored configuration,
+HTML/entities/escapes, custom styles, links, image/icon metadata and legacy
+sequence actor properties/details are rejected before rendering. An owned
+measurement container is always removed. Global render/configuration calls are
+serialized; up to 32 source/theme results are cached. `mermaidSvg.js` rebuilds
+geometry/text into a narrow SVG vocabulary, removes CSS and resource-bearing
+constructs, remaps local IDs per mounted copy and emits only fixed semantic
+classes styled with application tokens. The SPA previously had no DOM sanitizer;
+its synchronous markdown boundary remains escape-first. See the
+[dependency review](planning/v2/Mermaid%20Dependency%20Review.md) and
+[markdown security checklist](planning/v2/Markdown%20Rendering%20Security%20Checklist.md)
+for deliberate syntax limits and regression evidence.
+
 ### Theming
 
 Tokens are CSS custom properties in `spa/src/styles.css`: `:root` holds the light

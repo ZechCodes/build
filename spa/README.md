@@ -178,3 +178,18 @@ add a 320px narrow-screen check, verify the timing table fits all three columns,
 exercise local scrolling for genuinely wide tables/code, and keep loaded images
 inside the message. See the Markdown Rendering
 Security Checklist for the fixed output vocabulary and adversarial evidence.
+
+## Mermaid diagrams
+
+Complete `mermaid` fences in shared markdown render as local diagrams. The
+library loads lazily, follows light/dark theme, and enhances cached documents
+without a connection. Invalid or deliberately unsupported syntax retains its
+escaped code and a small “Diagram unavailable” message.
+
+Only text labels are supported: configuration/frontmatter, `%%` comments and
+directives, HTML/entities/escapes, markdown labels, custom CSS, links and
+image/icon or legacy sequence actor metadata are refused before rendering. No
+diagram can load an authored image or stylesheet. Output SVG is rebuilt through
+a narrow allowlist and uses application colors. See the
+[dependency/security review](../planning/v2/Mermaid%20Dependency%20Review.md) for
+the exact dependency, limits, audit findings and transient-DOM protections.

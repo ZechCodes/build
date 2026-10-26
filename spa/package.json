@@ -27,6 +27,7 @@
     "ghostty-web": "^0.4.0",
     "libsodium-wrappers": "^0.7.15",
     "lucide-static": "^1.28.0",
+    "mermaid": "12.2.0",
     "prismjs": "^1.30.0"
   },
   "devDependencies": {

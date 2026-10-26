@@ -39,6 +39,7 @@ export function readFence(lines, at) {
   // readable through the linear escaped path rather than blocking a repaint.
   const highlighted = source.length <= 4096 ? highlightCode(source, language) : esc(source);
   const pre = `<pre class="md-code"><code${attribute}>${highlighted}</code></pre>`;
-  const html = opening.label ? `<div class="md-code-block"><div class="md-code-label">${esc(opening.label)}</div>${pre}</div>` : pre;
+  const blockClass = opening.label.toLowerCase() === "mermaid" && next < lines.length ? "md-code-block md-mermaid" : "md-code-block";
+  const html = opening.label ? `<div class="${blockClass}"><div class="md-code-label">${esc(opening.label)}</div>${pre}</div>` : pre;
   return { html, next: Math.min(next + 1, lines.length) };
 }

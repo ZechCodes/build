@@ -929,7 +929,14 @@
     "selection_semantics": "OR within a dimension; AND across dimensions. Scalar and plural forms together are invalid, even for null or empty values.",
     "cursor_binding": "Store, project, summary mode and canonical selections; equivalent case/order/duplicate selections reuse a cursor.",
     "sparse_pages": "An empty tasks array with next_cursor is valid; continue until next_cursor is absent.",
-    "truncation": "Oversized legacy records remain present with bounded display data and summary_truncated:true; filters still match complete stored memberships.",
-    "max_selections_per_dimension": 100
+    "truncation": "Display-only title, workspace navigation and tracker lists may be capped with summary_truncated:true. Invalid stored labels or oversized opaque IDs are explicit errors; tasks are never silently omitted or retried at the same cursor.",
+    "max_selections_per_dimension": 100,
+    "max_result_bytes": 1048576,
+    "max_row_with_identity_bytes": 65536,
+    "max_shared_identities": 1000,
+    "candidate_multiplier": 4,
+    "candidate_lookahead": 1,
+    "max_candidate_chunk": 32,
+    "max_cursor_bytes": 2048
   }
 }

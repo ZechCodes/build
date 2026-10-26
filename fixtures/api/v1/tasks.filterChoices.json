@@ -87,5 +87,9 @@
         "next_cursor": "opaque-label-scan-continuation"
       }
     }
-  ]
+  ],
+  "max_result_bytes": 1048576,
+  "max_choice_bytes": 65536,
+  "max_cursor_bytes": 2048,
+  "candidate_lookahead": 1
 }

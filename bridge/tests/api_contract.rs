@@ -84,6 +84,13 @@ fn bounded_task_reads_are_additive_and_independently_advertised() {
     assert_eq!(summary["default_limit"], 100);
     assert_eq!(summary["max_limit"], 500);
     assert_eq!(summary["empty_selection"], "invalid_params");
+    assert_eq!(summary["max_result_bytes"], 1_048_576);
+    assert_eq!(summary["max_row_with_identity_bytes"], 65_536);
+}
+
+#[test]
+fn summary_examples_preserve_lightweight_rows_and_sparse_continuations() {
+    let fixture = read_json(&fixtures_root().join("v1/tasks.list.json"));
     let examples: Vec<_> = fixture["examples"]
         .as_array()
         .unwrap()
@@ -98,13 +105,7 @@ fn bounded_task_reads_are_additive_and_independently_advertised() {
         assert_eq!(example["result"]["summary"], true);
         assert!(example["result"]["identities"].is_object());
         for row in example["result"]["tasks"].as_array().unwrap() {
-            for field in ["body", "attachments", "identities", "timeline"] {
-                assert!(row.get(field).is_none(), "summary exposes {field}");
-            }
-            for field in ["waiting_on", "blocks"] {
-                assert!(row["dependencies"].get(field).is_none());
-            }
-            assert!(row["dependencies"]["blocked"].is_boolean());
+            assert_summary_row_shape(row);
         }
     }
     assert!(examples.iter().any(
@@ -114,6 +115,22 @@ fn bounded_task_reads_are_additive_and_independently_advertised() {
     assert!(examples
         .iter()
         .any(|example| example["result"]["tasks"][0]["summary_truncated"] == true));
+}
+
+fn assert_summary_row_shape(row: &Value) {
+    for field in ["body", "attachments", "identities", "timeline"] {
+        assert!(row.get(field).is_none(), "summary exposes {field}");
+    }
+    for field in ["waiting_on", "blocks"] {
+        assert!(row["dependencies"].get(field).is_none());
+    }
+    assert!(row["dependencies"]["blocked"].is_boolean());
+}
+
+#[test]
+fn malformed_summary_pages_never_fall_back_to_legacy_empty_lists() {
+    let fixture = read_json(&fixtures_root().join("v1/tasks.list.json"));
+    let examples = fixture["examples"].as_array().unwrap();
     let (_, list_handler) = v1::methods()
         .iter()
         .find(|(name, _)| *name == "tasks.list")
@@ -134,6 +151,10 @@ fn bounded_task_reads_are_additive_and_independently_advertised() {
         list_handler.round_trip_result(&malformed).is_err(),
         "summary identities cannot fall through to legacy empty rows"
     );
+}
+
+#[test]
+fn filter_choices_are_bounded_and_keep_state_status_label_and_assignee_separate() {
     let choices = read_json(&fixtures_root().join("v1/tasks.filterChoices.json"));
     assert_eq!(choices["since"], "3.26.0");
     assert_eq!(choices["default_limit"], 100);

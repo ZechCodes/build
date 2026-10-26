@@ -36,13 +36,23 @@ body, attachments, full repository or conversation links, timeline, dependency
 expansions or identity dictionaries.
 `tasks.get` remains the detail read.
 
-Candidate work and serialized bytes are bounded independently of the requested
-row count. Consequently a page may contain fewer than `limit` rows, including
-an empty `tasks` array with a continuation. Keep reading until `next_cursor`
-is absent. An oversized imported record still occupies its task position:
-bounded display data carries `summary_truncated:true`, while filtering uses
-the complete stored memberships. Do not interpret a truncated summary as the
-complete task detail.
+Each serialized result is at most 1,048,576 bytes. The reader reserves 16,384
+bytes for envelope metadata and limits each row plus its identity input to
+65,536 bytes. A page scans at most `4 * limit` candidate rows plus one lookahead
+(default 401, maximum 2,001), fetched in chunks of at most 32. A byte stop does
+not decode every remaining candidate. The shared identity dictionary holds at
+most 1,000 entries, using at most two creator/assignee references per accepted
+row; it does not load a project's full agent roster.
+
+These work and byte bounds may produce fewer than `limit` rows, including an
+empty `tasks` array with a continuation. Keep reading until `next_cursor` is
+absent. Display-only fields can be capped with `summary_truncated:true`: the
+title to 1,024 Unicode characters, workspace navigation to 20 IDs, and tracker
+lists to 32 references. Valid label sets retain all 20 labels of at most 40
+UTF-8 bytes each. Opaque IDs retain their exact spelling. Invalid stored labels
+or oversized opaque IDs produce explicit errors, as does an individual row
+that exceeds the byte cap. A task is never silently omitted or retried forever
+at the same cursor. A truncated summary does not replace complete task detail.
 
 Calls with `summary` absent or false retain their legacy rows and existing
 `tasks.listPaged` behavior, including an unbounded list when `limit` is absent.
@@ -78,9 +88,15 @@ cursor bound to store, project and dimension. Its result is
 status/state slugs, or assignee filter values. The string `none` represents
 unassigned tasks. Empty choices pages with continuation are valid: continue
 until `next_cursor` is absent. Display order is server ordering, not task order.
+The choice query reads at most `limit + 1` distinct indexed values. A single
+choice over 65,536 bytes produces an explicit error. Its serialized result has
+the same 1,048,576-byte cap. Both APIs reject cursors over 2,048 encoded bytes;
+the internal seek position is capped at 512 bytes.
 
 Both reads use the existing SQL lane outside the app lock. Summary and choice
 records are materialized on writes so serving a page does not decode each task's
-history. The shared contract witnesses live in `fixtures/api/v1/tasks.list.json`
+history. Persisted projection checks cap each summary record at 32,768 bytes,
+its identity input at 8,192 bytes and its assignment target at 1,024 bytes.
+The shared contract witnesses live in `fixtures/api/v1/tasks.list.json`
 and `fixtures/api/v1/tasks.filterChoices.json`; historical legacy examples remain
 alongside the new summary examples.

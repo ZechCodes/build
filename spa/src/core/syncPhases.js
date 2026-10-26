@@ -183,12 +183,24 @@ async function beforeBackgroundRead(state, scope) {
   }
 }
 
-async function readInbox(state) {
-  for (const entityId of state.pass.order) {
-    for (const agent of state.pass.rows.get(entityId)?.agents || []) {
+// Keep the entity boundary: a later roster must not compete with the current
+// conversation's repair and push continuations. Discover each roster on entry.
+async function readInboxThreads(state, entityId) {
+  await drainBackgroundStreams({
+    items: state.pass.rows.get(entityId)?.agents || [],
+    active: state.context.active,
+    read: async (agent) => {
       await state.foreground();
       await takeJob(state, threadJob(state, entityId, agent, "background"));
-    }
+      return true;
+    },
+  });
+}
+
+async function readInbox(state) {
+  for (const entityId of state.pass.order) {
+    await state.foreground();
+    await readInboxThreads(state, entityId);
   }
   for (const projectId of projectIds(state.view)) {
     await state.foreground();

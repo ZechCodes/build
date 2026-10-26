@@ -91,5 +91,23 @@
   "max_result_bytes": 1048576,
   "max_choice_bytes": 65536,
   "max_cursor_bytes": 2048,
-  "candidate_lookahead": 1
+  "candidate_lookahead": 1,
+  "refusals": [
+    {
+      "params": {
+        "project_id": "proj-1",
+        "dimension": "label"
+      },
+      "reply": {
+        "id": "r-bounded-read",
+        "ok": false,
+        "error_code": "unavailable",
+        "retryable": false,
+        "error": "filter choice exceeds 65536 bytes; repair the stored choice before continuing"
+      },
+      "note": "Oversized stored data is an explicit unavailable error. The refusal has no result or continuation and cannot silently omit a task."
+    }
+  ],
+  "max_stored_choice_bytes": 1024,
+  "max_stored_choice_key_bytes": 512
 }

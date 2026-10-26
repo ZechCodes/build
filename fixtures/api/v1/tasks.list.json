@@ -938,5 +938,21 @@
     "candidate_lookahead": 1,
     "max_candidate_chunk": 32,
     "max_cursor_bytes": 2048
-  }
+  },
+  "refusals": [
+    {
+      "params": {
+        "project_id": "proj-1",
+        "summary": true
+      },
+      "reply": {
+        "id": "r-bounded-read",
+        "ok": false,
+        "error_code": "unavailable",
+        "retryable": false,
+        "error": "task summary exceeds 65536 bytes; repair the stored row before continuing"
+      },
+      "note": "Oversized stored data is an explicit unavailable error. The refusal has no result or continuation and cannot silently omit a task."
+    }
+  ]
 }

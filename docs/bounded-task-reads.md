@@ -18,7 +18,7 @@ is descending project task number. Pass the opaque `next_cursor` back as
 to the store, project, summary mode and canonical selections; it cannot cross
 devices, projects, modes or changed selections. Equivalent selection order,
 duplicates, normalized label case and recognized status display aliases do not
-change that binding. Agent IDs remain exact and case-sensitive. Clients must treat
+change that binding. Agent IDs remain exact and case-sensitive. Clients treat
 cursors as opaque rather than parse, synthesize or persist their internals.
 
 The response contains `project_id`, `summary:true`, `tasks`, a shared
@@ -27,8 +27,8 @@ task identity, number, title, state, status, labels, priority, assignee,
 creator, creation/update/closure/Done times, watch and unread/activity summaries,
 compact dependency counts, read/watch/dismissal cursors, and Needs you counters,
 attachment count, bounded agent trackers and workspace/parent navigation
-references, and optional review and deferred assignment summaries. `done_at` and `closed_at` use explicit
-nulls when absent. `watched` is always present; unread/activity fields appear
+references, and optional review and deferred assignment summaries. `done_at`
+and `closed_at` use explicit nulls when absent. `watched` is always present; unread/activity fields appear
 only where applicable. Needs you counters count unread agent comments and
 mentions after the read marker, preserving the existing attention semantics
 independently of the watch-start floor used by `unread_count`. Rows carry no
@@ -51,8 +51,10 @@ title to 1,024 Unicode characters, workspace navigation to 20 IDs, and tracker
 lists to 32 references. Valid label sets retain all 20 labels of at most 40
 UTF-8 bytes each. Opaque IDs retain their exact spelling. Invalid stored labels
 or oversized opaque IDs produce explicit errors, as does an individual row
-that exceeds the byte cap. A task is never silently omitted or retried forever
-at the same cursor. A truncated summary does not replace complete task detail.
+that exceeds the byte cap. These stored-data failures use `unavailable` with
+`retryable:false`, no `result`, and no continuation. A task is never silently omitted or retried
+forever at the same cursor. A truncated summary does not replace complete
+task detail.
 
 Calls with `summary` absent or false retain their legacy rows and existing
 `tasks.listPaged` behavior, including an unbounded list when `limit` is absent.
@@ -89,7 +91,9 @@ status/state slugs, or assignee filter values. The string `none` represents
 unassigned tasks. Empty choices pages with continuation are valid: continue
 until `next_cursor` is absent. Display order is server ordering, not task order.
 The choice query reads at most `limit + 1` distinct indexed values. A single
-choice over 65,536 bytes produces an explicit error. Its serialized result has
+choice over 65,536 bytes produces an explicit error. Store reads additionally
+reject choice values over 1,024 bytes, keys over 512 bytes, and imported label
+choices over the valid 40-byte limit. Its serialized result has
 the same 1,048,576-byte cap. Both APIs reject cursors over 2,048 encoded bytes;
 the internal seek position is capped at 512 bytes.
 

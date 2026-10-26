@@ -893,7 +893,16 @@ const CONFLICT: [&str; 9] = [
 /// A word in the request is not one this bridge knows, or a value is out of
 /// shape. `unknown <thing>` otherwise reads as a missing entity, and half of
 /// these are about a word rather than a thing.
-const INVALID: [&str; 31] = [
+const INVALID: [&str; 40] = [
+    "invalid cursor",
+    "invalid task cursor",
+    "states must contain",
+    "statuses must contain",
+    "labels must contain",
+    "assignees must contain",
+    "cannot be supplied together",
+    "unknown field in assignee filter",
+    "assignee agent_id must",
     "a task cannot wait on itself",
     "waiting_on",
     "reverse cursor",
@@ -901,7 +910,7 @@ const INVALID: [&str; 31] = [
     "retry_deferred_id",
     "only the current failed",
     "delivery intent",
-    "unknown assignee kind:",
+    "unknown assignee kind",
     "operation_id exceeds",
     "operation_id contains",
     "assignee: name a kind",
@@ -933,7 +942,14 @@ const INVALID: [&str; 31] = [
 /// The store is not there, or a reference did not survive its fencing. Neither
 /// is the caller's fault in a way retrying would fix, and neither is a missing
 /// entity.
-const UNAVAILABLE: [&str; 1] = ["tasks need a durable store"];
+const UNAVAILABLE: [&str; 6] = [
+    "tasks need a durable store",
+    "task summary exceeds",
+    "filter choice exceeds",
+    "invalid task summary",
+    "invalid summary identity",
+    "bounded task response exceeds",
+];
 
 /// Name the refusal this family raised, where the sentence says what
 /// [`ApiError::classify`] cannot read from its general rules. Anything
@@ -1213,6 +1229,36 @@ fn tasks_columns(
 mod tests {
     use super::super::testing::fixture_round_trips;
     use super::*;
+
+    #[test]
+    fn bounded_read_refusals_are_typed() {
+        for message in [
+            "invalid cursor: restart this list with its original filters",
+            "invalid task cursor",
+            "states must contain 1 to 100 selections",
+            "statuses must contain 1 to 100 selections",
+            "labels must contain 1 to 100 selections",
+            "assignees must contain 1 to 100 selections",
+            "state and states cannot be supplied together",
+            "unknown field in assignee filter",
+            "unknown assignee kind",
+            "assignee agent_id must contain 1 to 128 bytes",
+        ] {
+            let error = refine(ApiError::classify(message.into()));
+            assert_eq!(error.code(), "invalid_params", "{message}");
+        }
+        for message in [
+            "task summary exceeds 65536 bytes; repair the stored row before continuing",
+            "filter choice exceeds 65536 bytes; repair the stored choice before continuing",
+            "invalid task summary: legacy task labels exceed supported summary limits",
+            "invalid task summary data: legacy task reference exceeds 128 bytes",
+            "bounded task response exceeds 1048576 bytes",
+        ] {
+            let error = refine(ApiError::classify(message.into()));
+            assert_eq!(error.code(), "unavailable", "{message}");
+            assert!(!error.retryable());
+        }
+    }
 
     #[test]
     fn every_fixture_holds_to_the_types_this_family_declares() {

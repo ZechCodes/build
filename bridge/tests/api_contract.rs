@@ -173,6 +173,24 @@ fn filter_choices_are_bounded_and_keep_state_status_label_and_assignee_separate(
 }
 
 #[test]
+fn oversized_task_read_fixtures_are_errors_without_success_or_continuation() {
+    for method in ["tasks.list", "tasks.filterChoices"] {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        let refusal = &fixture["refusals"][0]["reply"];
+        let message = refusal["error"].as_str().unwrap();
+        assert_eq!(
+            refusal,
+            &build_bridge::api::ApiError::unavailable(message)
+                .into_reply(serde_json::json!("r-bounded-read"))
+        );
+        assert_eq!(refusal["ok"], false);
+        assert_eq!(refusal["retryable"], false);
+        assert!(refusal.get("result").is_none());
+        assert!(refusal.get("next_cursor").is_none());
+    }
+}
+
+#[test]
 fn task_summary_params_preserve_legacy_nulls_and_reject_ambiguous_selections() {
     let (_, handler) = v1::methods()
         .iter()

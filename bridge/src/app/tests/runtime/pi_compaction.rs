@@ -100,21 +100,18 @@ if outcome == 'overflow':
     emit('context', tokens=None)
     stage('compacted')
 wait('settle')
-emit('settled')
-stage('settled')
-line = capture()
 if outcome != 'overflow':
-    assert line.strip() == '/compact', repr(line)
-    emit('compaction', completed=False, reason='manual')
+    emit('compaction', completed=False, reason='threshold')
     stage('compact-requested')
     wait('complete')
     if outcome == 'success':
-        emit('compaction', completed=True, reason='manual')
+        emit('compaction', completed=True, reason='threshold')
     else:
-        emit('compaction', completed=False, failed=True, reason='manual', outcome=outcome)
+        emit('compaction', completed=False, failed=True, reason='threshold', outcome=outcome)
     emit('context', tokens=None if outcome == 'success' else 200000)
-    emit('settled')
-    line = capture()
+emit('settled')
+stage('settled')
+line = capture()
 assert line.strip() == 'queued follow-up', repr(line)
 emit('working')
 stage('follow-up')
@@ -265,7 +262,7 @@ async fn start_and_queue(agent: &CompactingAgent, session: &dyn AgentSession, di
     .expect("extension readiness reaches status watch");
     assert_eq!(
         session.compaction_policy().unwrap().enforcement,
-        CompactionEnforcement::BetweenTurn
+        CompactionEnforcement::Native
     );
     session.send_turn(&Turn::new("long tool loop")).unwrap();
     reached(directory, "working").await;
@@ -330,24 +327,20 @@ async fn assert_delivered_once(
     agent: &CompactingAgent,
     session: &dyn AgentSession,
     directory: &Path,
-    compacted: bool,
+    remaining_context: Option<u64>,
 ) {
     reached(directory, "follow-up").await;
     deliver_pending_agent_turns(&agent.state);
     assert_eq!(agent.still_queued(), 0);
-    let expected = if compacted {
-        "long tool loop\n/compact\nqueued follow-up\n"
-    } else {
-        "long tool loop\nqueued follow-up\n"
-    };
+    let expected = "long tool loop\nqueued follow-up\n";
     assert_eq!(
         std::fs::read_to_string(directory.join("stdin.txt")).unwrap(),
         expected
     );
     assert_eq!(
         agent.agent().last_context_tokens,
-        None,
-        "the consumed threshold reading cannot recursively schedule compaction"
+        remaining_context,
+        "native failure retains context; only successful compaction clears it"
     );
     assert!(
         !session.automatic_compaction_due(Some(200_000)),
@@ -356,7 +349,7 @@ async fn assert_delivered_once(
     assert_eq!(session.epitaph(), None);
 }
 
-async fn fallback(outcome: &str) {
+async fn native_threshold(outcome: &str) {
     let directory = tempfile::tempdir().unwrap();
     let agent = CompactingAgent::without_background_services().with_context(199_999);
     let (session, key) = launch(&agent, directory.path(), outcome);
@@ -367,7 +360,13 @@ async fn fallback(outcome: &str) {
     assert_open(&agent, session.0.as_ref(), &key);
     assert_eq!(completed_compactions(&agent), 0);
     release(directory.path(), "complete");
-    assert_delivered_once(&agent, session.0.as_ref(), directory.path(), true).await;
+    assert_delivered_once(
+        &agent,
+        session.0.as_ref(),
+        directory.path(),
+        (outcome != "success").then_some(200_000),
+    )
+    .await;
     let telemetry = session.0.status_changed().unwrap();
     assert_eq!(
         telemetry
@@ -392,14 +391,14 @@ async fn fallback(outcome: &str) {
 }
 
 #[tokio::test]
-async fn pi_fallback_waits_for_settled_then_compacts_and_delivers_follow_up_once() {
-    fallback("success").await;
+async fn pi_native_threshold_compacts_without_wrapper_command_then_delivers_follow_up_once() {
+    native_threshold("success").await;
 }
 
 #[tokio::test]
 async fn pi_summary_failure_abort_and_cancel_deliver_follow_up_without_success() {
     for outcome in ["failed", "aborted", "cancelled"] {
-        fallback(outcome).await;
+        native_threshold(outcome).await;
     }
 }
 
@@ -430,7 +429,7 @@ async fn pi_overflow_recovery_preserves_the_open_turn_and_clears_stale_context()
     assert_eq!(compaction_history(&agent), ["Compacted"]);
     assert_open(&agent, session.0.as_ref(), &key);
     release(directory.path(), "settle");
-    assert_delivered_once(&agent, session.0.as_ref(), directory.path(), false).await;
+    assert_delivered_once(&agent, session.0.as_ref(), directory.path(), None).await;
     release(directory.path(), "new-context");
     reached(directory.path(), "new-context-recorded").await;
     wait_for(Duration::from_secs(5), || {
@@ -582,8 +581,7 @@ async fn pi_failed_generation_invalidates_persistence_once_across_repeated_healt
     reached(directory.path(), "recovered").await;
     wait_for(Duration::from_secs(5), || {
         (agent.agent().last_context_tokens == Some(200_000)
-            && session.0.compaction_policy().unwrap().enforcement
-                == CompactionEnforcement::BetweenTurn)
+            && session.0.compaction_policy().unwrap().enforcement == CompactionEnforcement::Native)
             .then_some(())
     })
     .await

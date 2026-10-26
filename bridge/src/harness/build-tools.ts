@@ -189,7 +189,7 @@ function compactionTelemetryChannel(configuration, sink, onFailure = () => {}, r
  */
 export function registerCompactionTelemetry(pi, configuration, sink, onFailure = () => {}, receiptReader) {
   validateCompactionPolicy(configuration);
-  const { owner, enabled } = configuration;
+  const { owner } = configuration;
   const channel = compactionTelemetryChannel(configuration, sink, onFailure, receiptReader);
   const { emit, unsupported } = channel;
   let workGeneration = 0;
@@ -243,7 +243,6 @@ export function registerCompactionTelemetry(pi, configuration, sink, onFailure =
     on("agent_settled", (_event, ctx) => settle(ctx));
     on("session_before_compact", (event, ctx) => {
       context(ctx);
-      if (enabled && event.reason === "threshold" && channel.confirmed()) return { cancel: true };
       workGeneration += 1;
       emit({ type: "working" });
       emit({ type: "compaction", completed: false, reason: compactionReason(event) });

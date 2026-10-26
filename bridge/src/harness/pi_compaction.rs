@@ -1,6 +1,5 @@
-//! Pi's version-qualified between-turn contract. Native threshold injection
-//! remains unqualified; the extension cancels only native threshold attempts
-//! while this fallback owns the policy, preserving overflow recovery.
+//! Pi owns automatic threshold and overflow compaction. Qualified hooks
+//! observe its lifecycle and preserve manual compaction controls.
 use std::path::Path;
 
 use crate::compaction::{ResolvedCompactionPolicy, MAX_SAFE_TOKENS};
@@ -38,6 +37,7 @@ pub(super) fn prepare<H: Harness + ?Sized>(
         return Ok(policy);
     }
     let reason = if qualified {
+        policy.enforcement = CompactionEnforcement::Native;
         "pi_native_threshold_injection_unqualified"
     } else {
         policy.enforcement = CompactionEnforcement::Unsupported;

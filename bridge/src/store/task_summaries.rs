@@ -3,7 +3,7 @@
 //! Histories are reduced on writes, never decoded while serving a card page.
 
 use super::{ReadTransaction, Store, StoreError};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -26,6 +26,13 @@ pub struct TaskFilterChoice {
 }
 
 impl Store {
+    pub fn task_summary_identity(
+        &self,
+        agent: &str,
+    ) -> Result<Option<crate::tracker::TaskAgentIdentity>, StoreError> {
+        ReadTransaction::new(&self.connection()).task_summary_identity(agent)
+    }
+
     pub fn list_task_summary_candidates(
         &self,
         project: &str,
@@ -57,6 +64,24 @@ impl Store {
 }
 
 impl ReadTransaction<'_> {
+    /// Bounded durable identity from this request's snapshot. The materialized
+    /// row is independent of owner record size and conversation history.
+    pub fn task_summary_identity(
+        &self,
+        agent: &str,
+    ) -> Result<Option<crate::tracker::TaskAgentIdentity>, StoreError> {
+        let raw: Option<String> = self
+            .connection()
+            .query_row(
+                "SELECT record FROM tracker_task_summary_identities WHERE agent_id=?1",
+                [agent],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| super::tracker::decode(&raw, "tracker_task_summary_identities", agent))
+            .transpose()
+    }
+
     /// Seeks one immutable number range. No task bodies, timeline records,
     /// rosters, or dependency expansion are touched by this read.
     pub fn list_task_summary_candidates(
@@ -180,23 +205,38 @@ impl ReadTransaction<'_> {
 /// Startup precedes reader admission. Every transaction advances a durable
 /// rowid checkpoint, so an interrupted migration resumes without restarting.
 pub(super) fn initialize(conn: &mut Connection) -> Result<(), StoreError> {
-    let existing: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices','tracker_task_filter_values')",[],|row|row.get(0))?;
+    let existing: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices','tracker_task_filter_values','tracker_task_summary_identities')",[],|row|row.get(0))?;
     conn.execute_batch(sql::TABLES)?;
-    if existing != 4 {
+    if existing != 5 {
         // Projection tables form one versioned unit. Canonical task/history
         // rows remain authoritative if a repair restores only some tables.
         // Reset every checkpoint rather than admitting a partial projection.
         conn.execute_batch(
             "DELETE FROM tracker_task_filter_choices; DELETE FROM tracker_task_filter_values;
-            DELETE FROM tracker_task_summary_facts; DELETE FROM tracker_task_summaries;
+            DELETE FROM tracker_task_summary_facts; DELETE FROM tracker_task_summaries; DELETE FROM tracker_task_summary_identities;
             DELETE FROM meta WHERE key LIKE 'task_summary_v1_%';",
         )?;
     }
     migrate_facts(conn, "tracker_comments")?;
     migrate_facts(conn, "tracker_events")?;
     migrate_tasks(conn)?;
+    migrate_identities(conn)?;
     conn.execute_batch(&sql::triggers())?;
     Ok(())
+}
+
+fn migrate_identities(conn: &mut Connection) -> Result<(), StoreError> {
+    migrate_batches(
+        conn,
+        "task_summary_v1_agents",
+        "agents",
+        |tx, below, through| {
+            tx.execute_batch(&sql::refresh_identities(&format!(
+                "a.rowid>{below} AND a.rowid<={through}"
+            )))?;
+            Ok(())
+        },
+    )
 }
 
 fn migrate_facts(conn: &mut Connection, table: &str) -> Result<(), StoreError> {

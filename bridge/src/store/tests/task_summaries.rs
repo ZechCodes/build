@@ -251,7 +251,7 @@ fn remove_summary_projection(conn: &rusqlite::Connection) {
     }
     conn.execute_batch(
         "DROP TABLE tracker_task_summaries; DROP TABLE tracker_task_summary_facts;
-        DROP TABLE tracker_task_filter_choices; DROP TABLE tracker_task_filter_values;
+        DROP TABLE tracker_task_filter_choices; DROP TABLE tracker_task_filter_values; DROP TABLE tracker_task_summary_identities;
         DELETE FROM meta WHERE key LIKE 'task_summary_v1_%';
         UPDATE meta SET value='19' WHERE key='schema_version';",
     )
@@ -520,4 +520,64 @@ fn missing_projection_rebuilds_even_when_completed_migration_checkpoints_remain(
         .unwrap();
     assert_eq!(choices.len(), 1);
     assert_eq!(choices[0].value, "Restored");
+}
+
+#[test]
+fn summary_identity_uses_committed_roster_metadata_and_owner_renames() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut conn = store.connection();
+    // Only identity fields matter to this projection. A large unrelated owner
+    // field proves the read need not fetch or parse the owner record.
+    let owner =
+        serde_json::json!({"worktree_name":"Original workspace","goal":"large".repeat(100_000)});
+    conn.execute("INSERT INTO implementations(id,created_at,updated_at,record) VALUES('run-summary',?1,?1,?2)",rusqlite::params![support::NOW,owner.to_string()]).unwrap();
+    let agent = serde_json::json!({"id":"agent-summary","name":"Original name","choice":{"provider":"codex_app_server"},"project_role":null});
+    conn.execute(
+        "INSERT INTO agents(id,owner_id,ordinal,record) VALUES('agent-summary','run-summary',2,?1)",
+        [agent.to_string()],
+    )
+    .unwrap();
+    {
+        let tx = conn.transaction().unwrap();
+        tx.execute("UPDATE agents SET record=json_set(record,'$.name','Uncommitted name') WHERE id='agent-summary'",[]).unwrap();
+        assert_eq!(
+            ReadTransaction::new(&tx)
+                .task_summary_identity("agent-summary")
+                .unwrap()
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Uncommitted name")
+        );
+        tx.rollback().unwrap();
+    }
+    let reader = ReadTransaction::new(&conn);
+    let identity = reader
+        .task_summary_identity("agent-summary")
+        .unwrap()
+        .unwrap();
+    assert_eq!(identity.name.as_deref(), Some("Original name"));
+    assert_eq!(identity.provider.as_deref(), Some("codex_app_server"));
+    assert_eq!(
+        identity.workspace_name.as_deref(),
+        Some("Original workspace")
+    );
+    conn.execute("UPDATE agents SET record=json_set(record,'$.name','Committed name') WHERE id='agent-summary'",[]).unwrap();
+    conn.execute("UPDATE implementations SET record=json_set(record,'$.worktree_name','Renamed workspace') WHERE id='run-summary'",[]).unwrap();
+    let identity = reader
+        .task_summary_identity("agent-summary")
+        .unwrap()
+        .unwrap();
+    assert_eq!(identity.name.as_deref(), Some("Committed name"));
+    assert_eq!(
+        identity.workspace_name.as_deref(),
+        Some("Renamed workspace")
+    );
+    conn.execute("DELETE FROM agents WHERE id='agent-summary'", [])
+        .unwrap();
+    assert!(reader
+        .task_summary_identity("agent-summary")
+        .unwrap()
+        .is_none());
 }

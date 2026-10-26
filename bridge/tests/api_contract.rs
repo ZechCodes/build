@@ -114,6 +114,26 @@ fn bounded_task_reads_are_additive_and_independently_advertised() {
     assert!(examples
         .iter()
         .any(|example| example["result"]["tasks"][0]["summary_truncated"] == true));
+    let (_, list_handler) = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "tasks.list")
+        .unwrap();
+    let mut malformed = examples
+        .iter()
+        .find(|example| example["result"]["tasks"] == serde_json::json!([]))
+        .unwrap()["result"]
+        .clone();
+    malformed["summary"] = Value::Bool(false);
+    assert!(
+        list_handler.round_trip_result(&malformed).is_err(),
+        "summary discriminator cannot fall through to legacy empty rows"
+    );
+    malformed["summary"] = Value::Bool(true);
+    malformed.as_object_mut().unwrap().remove("identities");
+    assert!(
+        list_handler.round_trip_result(&malformed).is_err(),
+        "summary identities cannot fall through to legacy empty rows"
+    );
     let choices = read_json(&fixtures_root().join("v1/tasks.filterChoices.json"));
     assert_eq!(choices["since"], "3.26.0");
     assert_eq!(choices["default_limit"], 100);
@@ -1827,7 +1847,19 @@ fn project_task_identities_document_purpose_after_worker_removal() {
     for method in ["tasks.get", "tasks.list"] {
         let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
         assert_eq!(fixture["project_identities"]["since"], "3.21.0", "{method}");
-        let example = fixture["examples"].as_array().unwrap().last().unwrap();
+        let example = fixture["examples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|example| {
+                let task = if method == "tasks.get" {
+                    &example["result"]["task"]
+                } else {
+                    &example["result"]["tasks"][0]
+                };
+                task["identities"]["project-removed-worker"].is_object()
+            })
+            .expect("removed project worker identity example");
         let task = if method == "tasks.get" {
             &example["result"]["task"]
         } else {

@@ -648,10 +648,23 @@ pub struct TaskAttachmentBytes {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(untagged)]
+#[serde(untagged, try_from = "Value")]
 pub enum TasksList {
     Summaries(TaskSummaries),
     Legacy(LegacyTasksList),
+}
+
+impl TryFrom<Value> for TasksList {
+    type Error = String;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        if value.get("summary").is_some() {
+            serde_json::from_value(value).map(Self::Summaries)
+        } else {
+            serde_json::from_value(value).map(Self::Legacy)
+        }
+        .map_err(|error| error.to_string())
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]

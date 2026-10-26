@@ -17,7 +17,8 @@ is descending project task number. Pass the opaque `next_cursor` back as
 `cursor` to continue with the same project and selections. A cursor is bound
 to the store, project, summary mode and canonical selections; it cannot cross
 devices, projects, modes or changed selections. Equivalent selection order,
-duplicates and normalized case do not change that binding. Clients must treat
+duplicates, normalized label case and recognized status display aliases do not
+change that binding. Agent IDs remain exact and case-sensitive. Clients must treat
 cursors as opaque rather than parse, synthesize or persist their internals.
 
 The response contains `project_id`, `summary:true`, `tasks`, a shared
@@ -25,13 +26,14 @@ The response contains `project_id`, `summary:true`, `tasks`, a shared
 task identity, number, title, state, status, labels, priority, assignee,
 creator, creation/update/closure/Done times, watch and unread/activity summaries,
 compact dependency counts, read/watch/dismissal cursors, and Needs you counters,
-attachment count, bounded agent trackers and workspace/parent navigation references, and optional
-review and deferred assignment summaries. `done_at` and `closed_at` use explicit
+attachment count, bounded agent trackers and workspace/parent navigation
+references, and optional review and deferred assignment summaries. `done_at` and `closed_at` use explicit
 nulls when absent. `watched` is always present; unread/activity fields appear
-only where applicable. Needs you counters count unread agent comments and mentions
-after the read marker, preserving the existing attention semantics independently
-of the watch-start floor used by `unread_count`. Rows carry no body, attachments, full repository or
-conversation links, timeline, dependency expansions or identity dictionaries.
+only where applicable. Needs you counters count unread agent comments and
+mentions after the read marker, preserving the existing attention semantics
+independently of the watch-start floor used by `unread_count`. Rows carry no
+body, attachments, full repository or conversation links, timeline, dependency
+expansions or identity dictionaries.
 `tasks.get` remains the detail read.
 
 Candidate work and serialized bytes are bounded independently of the requested
@@ -55,8 +57,8 @@ The legacy response does not acquire `summary` or shared `identities` fields.
 | Category | `label` | `labels` | Case-insensitive labels |
 | Assignee | `assignee` | `assignees` | Existing assignee objects, `none`, `any` |
 
-Selections are ORed within a dimension and ANDed across dimensions. Omit a
-dimension for no restriction. Empty plural arrays, null plural selections,
+Each plural dimension holds 1 to 100 selections. Selections are ORed within a
+dimension and ANDed across dimensions. Omit a dimension for no restriction. Empty plural arrays, null plural selections,
 invalid members, and both scalar and plural keys for one dimension are
 `invalid_params`; the latter includes a scalar null alongside a plural key.
 Legacy scalar nulls by themselves retain their previous meaning. Status and

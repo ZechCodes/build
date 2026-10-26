@@ -13,6 +13,10 @@ CREATE INDEX IF NOT EXISTS tracker_summary_unread ON tracker_task_summary_facts(
 CREATE INDEX IF NOT EXISTS tracker_summary_activity ON tracker_task_summary_facts(task_id,ts) WHERE activity=1;
 CREATE INDEX IF NOT EXISTS tracker_summary_watched ON tracker_task_summary_facts(task_id,ulid) WHERE watched=1;
 CREATE INDEX IF NOT EXISTS tracker_summary_done ON tracker_task_summary_facts(task_id,at,id) WHERE done_move=1;
+CREATE TABLE IF NOT EXISTS tracker_task_summary_identities (
+    agent_id TEXT PRIMARY KEY,
+    record TEXT NOT NULL CHECK(length(CAST(record AS BLOB))<=4096)
+);
 CREATE TABLE IF NOT EXISTS tracker_task_summaries (
     task_id TEXT PRIMARY KEY, project_key TEXT NOT NULL, number INTEGER NOT NULL,
     record TEXT NOT NULL CHECK(length(CAST(record AS BLOB)) <= 32768),
@@ -241,6 +245,7 @@ pub(super) fn triggers() -> String {
         sql.push_str(&metadata_triggers(table));
     }
     sql.push_str(&edge_triggers());
+    sql.push_str(&identity_triggers());
     sql
 }
 
@@ -263,13 +268,14 @@ fn history_triggers(table: &str) -> String {
     for operation in ["INSERT", "UPDATE", "DELETE"] {
         let prefix = if operation == "DELETE" { "OLD" } else { "NEW" };
         let id = format!("{prefix}.task_id");
+        let removed = if operation == "INSERT" { "NEW" } else { "OLD" };
         let insert = if operation == "DELETE" {
             String::new()
         } else {
             insert_facts(table, "id=NEW.id")
         };
         sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_{table}_{operation} AFTER {operation} ON {table} BEGIN
-            DELETE FROM tracker_task_summary_facts WHERE task_id={id} AND id={prefix}.id;
+            DELETE FROM tracker_task_summary_facts WHERE task_id={removed}.task_id AND id={removed}.id;
             {insert}{refresh} END;",refresh=refresh(&id)));
     }
     sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_{table}_reparent AFTER UPDATE OF task_id ON {table}
@@ -315,4 +321,45 @@ fn dependencies(id: &str) -> String {
 
 fn refresh_dependencies(predicate: &str) -> String {
     format!("UPDATE tracker_task_summaries SET record=json_set(record,'$.dependencies',{}) WHERE {predicate};",dependencies("tracker_task_summaries.task_id"))
+}
+
+/// Owner metadata is parsed on writes only. Reads seek a bounded identity row.
+pub(super) fn refresh_identities(predicate: &str) -> String {
+    format!("INSERT INTO tracker_task_summary_identities(agent_id,record)
+        SELECT a.id,json_object('agent_id',a.id,'name',substr(json_extract(a.record,'$.name'),1,128),
+            'project_role',substr(json_extract(a.record,'$.project_role'),1,64),'ordinal',a.ordinal,
+            'provider',substr(COALESCE(json_extract(a.record,'$.choice.provider'),'claude'),1,64),
+            'workspace_id',NULL,'workspace_name',CASE WHEN json_extract(a.record,'$.project_role') IS NULL
+                THEN substr(json_extract(r.record,'$.worktree_name'),1,128) END,'available',json('false'))
+        FROM agents a LEFT JOIN implementations r ON r.id=a.owner_id
+        WHERE length(CAST(a.id AS BLOB))<=128 AND ({predicate})
+        ON CONFLICT(agent_id) DO UPDATE SET record=excluded.record;")
+}
+
+fn identity_triggers() -> String {
+    let mut sql = String::new();
+    for operation in ["INSERT", "UPDATE"] {
+        sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_identity_{operation} AFTER {operation} ON agents BEGIN {} END;",refresh_identities("a.id=NEW.id")));
+    }
+    sql.push_str(
+        "CREATE TRIGGER IF NOT EXISTS tracker_summary_identity_delete AFTER DELETE ON agents BEGIN
+        DELETE FROM tracker_task_summary_identities WHERE agent_id=OLD.id; END;",
+    );
+    for owner in ["implementations", "tasks"] {
+        sql.push_str(&owner_identity_triggers(owner));
+    }
+    sql
+}
+
+fn owner_identity_triggers(owner: &str) -> String {
+    let mut sql = String::new();
+    for operation in ["INSERT", "UPDATE", "DELETE"] {
+        let id = if operation == "DELETE" {
+            "OLD.id"
+        } else {
+            "NEW.id"
+        };
+        sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_identity_{owner}_{operation} AFTER {operation} ON {owner} BEGIN {} END;",refresh_identities(&format!("a.owner_id={id}"))));
+    }
+    sql
 }

@@ -104,3 +104,23 @@ its identity input at 8,192 bytes and its assignment target at 1,024 bytes.
 The shared contract witnesses live in `fixtures/api/v1/tasks.list.json`
 and `fixtures/api/v1/tasks.filterChoices.json`; historical legacy examples remain
 alongside the new summary examples.
+
+## Projection lifecycle
+
+Store startup builds or repairs projections before opening its reader pool and
+before creating the shared app mutex. Startup time is separate from page latency;
+the first page never queues a hidden projection rebuild. Backfill checkpoints
+commit with batches of at most 128 canonical rows. A failed batch rolls back its
+facts and checkpoint together; restart resumes after the last committed batch.
+Missing projection components first persist a repair marker, clear derived rows
+in bounded batches, then restart the backfill. Canonical records remain intact.
+Batch counts bound row cardinality, not the size of an imported canonical body;
+one legacy record can still be large and must be parsed during migration.
+
+Mutation triggers update cards, compact activity facts, dependency counterpart
+counts, and refcounted distinct choices in the writer's transaction. A normal
+chronological history append updates retained counters and session times from
+the new fact; history edits, removals, late activity and watch-floor changes use
+the exact compact-fact derivation. Page reads use neither path. Performance
+evidence must report initial migration, subsequent startup, writes and actual
+carrier reads separately.

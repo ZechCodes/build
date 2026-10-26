@@ -107,8 +107,12 @@ impl crate::harness::AgentSession for OpeningSession {
         *self.0.lock().unwrap() = crate::harness::AgentStatus::Ended { code: None };
     }
     fn backdate_last_output(&self, _: std::time::Duration) {}
-    fn turn_choice_support(&self, _: &ModelChoice) -> crate::harness::TurnChoiceSupport {
-        crate::harness::TurnChoiceSupport::Native
+    fn turn_choice_support(&self, choice: &ModelChoice) -> crate::harness::TurnChoiceSupport {
+        if choice.model.as_deref() == Some("carrier-unsupported-model") {
+            crate::harness::TurnChoiceSupport::RestartRequired
+        } else {
+            crate::harness::TurnChoiceSupport::Native
+        }
     }
 }
 
@@ -146,32 +150,48 @@ fn an_async_opening_installs_no_policy_until_the_protocol_accepts_it() {
 }
 
 #[test]
-fn translated_native_model_changes_need_requalification_but_delegation_keeps_its_snapshot() {
+fn native_model_change_delegation_preserves_carrier_support_and_exact_trigger_requalification() {
     use crate::harness::{AgentStatus, TurnChoiceSupport};
     use std::sync::{Arc, Mutex};
     let mut policy = applied(AgentProvider::CodexAppServer, 150_000, None);
+    policy.enforcement = CompactionEnforcement::Native;
     let changed = ModelChoice {
-        model: Some("a-different-model".into()),
+        model: Some("carrier-supported-model".into()),
         ..policy.choice.clone()
     };
-    let inner = Arc::new(OpeningSession(Arc::new(Mutex::new(AgentStatus::Waiting))));
-    let fallback = PolicySession::attach(inner.clone(), policy.clone());
-    assert_eq!(
-        fallback.turn_choice_support(&changed),
-        TurnChoiceSupport::Native
-    );
-    assert_eq!(fallback.compaction_policy(), Some(&policy));
-    policy.enforcement = CompactionEnforcement::Native;
-    policy.translated_trigger = Some(150_000);
-    let native = PolicySession::attach(inner, policy.clone());
-    assert_eq!(
-        native.turn_choice_support(&policy.choice),
-        TurnChoiceSupport::Native
-    );
-    assert_eq!(
-        native.turn_choice_support(&changed),
-        TurnChoiceSupport::RestartRequired
-    );
+    let unsupported = ModelChoice {
+        model: Some("carrier-unsupported-model".into()),
+        ..policy.choice.clone()
+    };
+    for translated_trigger in [None, Some(150_000)] {
+        policy.translated_trigger = translated_trigger;
+        let inner = Arc::new(OpeningSession(Arc::new(Mutex::new(AgentStatus::Waiting))));
+        let session = PolicySession::attach(inner, policy.clone());
+        assert_eq!(session.compaction_policy(), Some(&policy));
+        assert_eq!(
+            session.turn_choice_support(&policy.choice),
+            TurnChoiceSupport::Native
+        );
+        assert_eq!(
+            session.turn_choice_support(&changed),
+            if translated_trigger.is_some() {
+                TurnChoiceSupport::RestartRequired
+            } else {
+                TurnChoiceSupport::Native
+            },
+            "only an exact translated trigger requires model requalification"
+        );
+        assert_eq!(
+            session.turn_choice_support(&unsupported),
+            TurnChoiceSupport::RestartRequired,
+            "delegated native compaction must preserve the carrier's model restriction"
+        );
+        assert_eq!(
+            session.compaction_policy(),
+            Some(&policy),
+            "a choice probe never replaces the admitted policy"
+        );
+    }
 }
 
 #[test]

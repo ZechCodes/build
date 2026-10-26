@@ -1,7 +1,7 @@
 # Markdown rendering security checklist
 
-**Status:** 100/100 baseline; #889 validation refresh recorded below before handoff.
-**Verified:** 2026-10-22 (post-merge scanner refresh); 2026-10-20 (#695 rich markdown rendering; #701 boundary revisions; #700 production-CSP redirect consent policy); earlier desktop link, credential, persistence and API authentication evidence remains recorded below (#262, #615, #616).
+**Status:** 100/100 — #889 targeted gates and changed-file scanners passed on 2026-10-26.
+**Verified:** 2026-10-26 (#889; evidence below); 2026-10-22 (post-merge scanner refresh); 2026-10-20 (#695 rich markdown rendering; #701 boundary revisions; #700 production-CSP redirect consent policy); earlier desktop link, credential, persistence and API authentication evidence remains recorded below (#262, #615, #616).
 
 ## Mermaid boundary amendment — #889 (2026-10-26)
 
@@ -45,6 +45,42 @@ semantics, both themes, lazy library requests, invalid-source retention and zero
 hostile resource requests/assignments. See [dependency review](Mermaid%20Dependency%20Review.md)
 for exact version, release-age enforcement, existing audit advisories and syntax
 limits. #889 gate exits and scanner results are recorded with the final handoff.
+
+### #889 gate evidence
+
+Base `c6b1ae4f973dad19d70d6a58c39513e983878ac8`; frozen implementation
+`f73d357279029d335658b23b68ebb6c9df267154`. All executable gates below ran
+under `nice -n 10` with Node 22.23.4/npm 12.0.2, judged by actual process exits.
+Full command/exit manifest and raw logs are retained in `/tmp/build889-gates/`
+and attached to the handoff. Documentation-only evidence commits follow this
+source without changing code/tests/dependencies.
+
+| Gate | Actual exit / evidence |
+| --- | --- |
+| `npm ci --prefix transport/js --ignore-scripts` | 0; `final-install-transport.log` |
+| SPA `npm ci --legacy-peer-deps` | 0; `final-install-spa.log` |
+| SPA `npm run lint` | 0; `lint.log` |
+| SPA `npx vitest run test/markdown*.test.js test/mermaid*.test.js test/theme.test.js test/themeDom.test.js test/complexityRatchet.test.js` | 0; 26 files, 372 tests; `vitest.log` |
+| SPA `npx vitest run test/browser/markdown*.test.js` | 0; 9 files, 49 Chromium tests; `browser.log` |
+| SPA `npm run build` | 0; `build.log` |
+| Built bundle graph + offline production Chromium probe | 0; `production-graph.log` and `verify-production.mjs`; boot and lazy diagram render, zero page errors; all 68 Mermaid-containing chunks excluded from initial static imports |
+| `semgrep --config auto --error --jobs 2` over changed tracked JS/CSS files | 0; 200 rules, 13 targets, zero findings; `semgrep.log`, `semgrep-files.txt` |
+| `gitleaks git --no-banner --redact --log-opts='<base>..HEAD' .` | 0; zero leaks; `gitleaks.log`; repeated after final documentation commit |
+| `git diff --check <base>..HEAD` | 0; `diff-check.log`; repeated after final documentation commit |
+
+TDD evidence: `red-fence.log` fails the missing Mermaid wrapper assertion,
+`red-actor-browser.log` fails because two connected image href assignments occur,
+and `red-markers.log` fails the missing hollow UML marker assertion; each exits
+1. The final tests above pass their corresponding regressions. Early development
+startup/timeout failures remain in their separate logs and are not counted as
+assertion-based red evidence. No source changed during the final gates.
+
+The production entry changes from 883,249 to 884,840 raw bytes (+1,591),
+293,816 to 294,319 gzip bytes (+503). This small controller cost is separate
+from the lazy Mermaid runtime. The large-chunk and existing libsodium/browser
+externalization warnings remain non-failing; built runtime behavior was checked.
+The full unrelated SPA suite and live deployment/pairing were deliberately not
+run; scope was the required affected suites and offline production assets.
 
 ## Earlier controls and evidence
 

@@ -39,7 +39,7 @@ and markdown labels; authored CSS commands, resource URLs and URL functions;
 image/icon `@{…}` metadata; and sequence `properties`/`details`/`links`/`link`
 commands (including legacy actor icon forms and relative/protocol-relative
 resources). Plain structural arrows such as `<|--` remain supported. Sources
-over 16,384 UTF-16 units and diagrams over 200 edges also fall back. These
+over 16,384 UTF-16 units and Mermaid’s graph edge limit is set to 200. Limit violations fall back. These
 restrictions produce the original escaped source with a small fixed error;
 there is no image-consent override or automatic resource loading for diagrams.
 
@@ -56,3 +56,14 @@ image href/src instrumentation through the transient measurement phase.
 The actor metadata regression first failed with **two connected image href
 assignments to `//evil.test/pixel`** (exit 1), then passed after pre-render rejection.
 Logs and exact gate exits are attached to the implementation handoff.
+
+Final verification at implementation `f73d357279029d335658b23b68ebb6c9df267154`:
+fresh npm12 locked installs, lint, 372 targeted unit tests, 49 Chromium tests,
+build, Semgrep (200 rules/13 targets/no findings), Gitleaks and diff check all
+exit 0. Production chunk metadata proves all 68 Mermaid-containing chunks stay
+outside the initial static graph. Offline Chromium boots the built app and
+renders a diagram through the built lazy chunk with zero page errors. Entry
+size is 884,840 bytes versus baseline 883,249 (+1,591 raw; +503 gzip). The
+change adds a small controller to initial JS; the library itself remains lazy.
+Exact commands and raw logs accompany the handoff and the
+[security checklist](Markdown%20Rendering%20Security%20Checklist.md).

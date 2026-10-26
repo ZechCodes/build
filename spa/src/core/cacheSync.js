@@ -36,6 +36,7 @@
 // read it followed, so a read never writes over a record a push wrote after it
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
+import { refreshReadState } from "./readStateRepair.js";
 import { discoverRosterThreads, discoverSyncOwnership, emptySyncDiscovery, queueSuccessor, readsSyncGroup as readsGroup, requiredSuccessorGroups, syncReadGroup } from "./syncSuccessors.js";
 import { syncDiagnostics } from "./syncDiagnostics.js";
 import { updateRosterSelection } from "./syncRosterSelection.js";
@@ -97,7 +98,7 @@ import {
   filePageReader,
   filePagesReadable,
   evictWorkspaceData,
-  expireWorkspaceData,
+  expireWorkspacesData,
   isWorkspaceDataKind,
   withinBytes,
 } from "./cacheLifetime.js";
@@ -426,6 +427,10 @@ function dirsOf(paths) {
  */
 export async function syncDevice(deviceId, reason = "mutation") {
   if (!holdingLock) return false;
+  if (reason === "read-state") {
+    const context = syncContext(contextFor(deviceId));
+    return context ? refreshReadState({ ...context, session: sessionOf(deviceId), capabilities: () => bridgeCapabilities(deviceId) }) : false;
+  }
   const session = sessionOf(deviceId);
   const startedIn = lifetime;
   const running = passes.get(deviceId);
@@ -464,7 +469,7 @@ function joinRunningPass(deviceId, running, reason) {
 function startRequestedPass(deviceId, reason) {
   if (readingSessions.get(deviceId) !== sessionOf(deviceId)) return startPass(deviceId);
   const observed = observedReadGroups.get(deviceId);
-  const groups = reason.startsWith("subscription-") || reason === "read-state"
+  const groups = reason.startsWith("subscription-")
     ? requiredSuccessorGroups(observed || new Set(), reason) : null;
   if (groups?.size === 0) return true;
   return startPass(deviceId, null, groups);
@@ -1066,16 +1071,16 @@ async function workspacesToRead(context, view) {
  *  A row whose data all expired is left cold — the reader has not been near it
  *  for three days, and a push will fill it if they go back. */
 async function recentStillHoldingData(context, items, seen) {
-  const kept = [];
+  const recent = [];
   for (const entry of inboxEntries({ items }).recent) {
     const entityId = entry.entityId;
     if (!entityId || seen.has(entityId) || !context.active()) continue;
     seen.add(entityId);
-    await expireWorkspaceData(context.deviceId, entityId, Date.now(), context.active);
-    const left = await cachedAddresses({ deviceId: context.deviceId, entityId });
-    if (left.some((address) => isWorkspaceDataKind(address.kind))) kept.push(entityId);
+    recent.push(entityId);
   }
-  return kept;
+  const { kept } = await expireWorkspacesData(context.deviceId, recent, Date.now(), context.active);
+  const holdingData = new Set(kept.filter((address) => isWorkspaceDataKind(address.kind)).map((address) => address.entityId));
+  return recent.filter((entityId) => holdingData.has(entityId));
 }
 
 /** Step 4: a row the board still lists but whose work is over keeps nothing.

@@ -5,7 +5,7 @@ const route = vi.fn();
 const capture = vi.fn();
 const merge = vi.fn();
 vi.mock("../src/core/inboxDevices.js", () => ({ verbCall: (row) => { route(row); return call; } }));
-vi.mock("../src/core/deviceContexts.js", () => ({ homeContext: () => ({ deviceId: "dev-1" }) }));
+vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: () => null, homeContext: () => ({ deviceId: "dev-1" }) }));
 vi.mock("../src/core/localCache.js", () => ({
   captureCachedRecord: (...args) => capture(...args),
   cachedWriteOf: (record) => record?.written || null,

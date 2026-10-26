@@ -1355,7 +1355,65 @@ describe("a refresh requested during a pass", () => {
     expect(calls("board.list")).toHaveLength(2);
   });
 
-  it("refreshes only read-state lists already observed by the active pass", async () => {
+  it("repairs read state without lists, selection, ownership cleanup or a sync pass", async () => {
+    await boot([branchItem()]);
+    const before = bridge.call.mock.calls.length;
+    const stale = { deviceId: "dev-1", entityId: "unlisted-owner", kind: "terminals" };
+    await cache.writeCached(stale, { tabs: [] });
+    const held = holdNextRead("board.list");
+    const repair = sync.syncDevice("dev-1", "read-state");
+    await held.reading;
+    expect(sync.passInFlight("dev-1")).toBeNull();
+    held.release();
+    expect(await repair).toBe(true);
+    expect(bridge.call.mock.calls.slice(before).map(([method]) => method)).toEqual(["board.list"]);
+    expect(await cache.readCached(stale)).toBeDefined();
+  });
+
+  it("lets the connection ring settle while a targeted repair is held", async () => {
+    board = [branchItem()];
+    const foreground = holdNextRead("git.status");
+    const ring = [];
+    const unsubscribe = sync.subscribeConnectionSync((value) => ring.push(value));
+    sync.startCacheSync();
+    await foreground.reading;
+    const boardRead = holdNextRead("board.list");
+    const repair = sync.syncDevice("dev-1", "read-state");
+    await boardRead.reading;
+    foreground.release();
+    await passesSettled(sync, "dev-1");
+    expect(ring.at(-1)).toBe(false);
+    expect(sync.passInFlight("dev-1")).toBeNull();
+    boardRead.release();
+    expect(await repair).toBe(true);
+    expect(ring).toEqual([false, true, false]);
+    unsubscribe();
+  });
+
+  it("keeps a genuine mutation successor immediate and labelled mutation during a held read repair", async () => {
+    const { syncDiagnostics } = await import("../src/core/syncDiagnostics.js");
+    board = [branchItem()];
+    const foreground = holdNextRead("git.status");
+    sync.startCacheSync();
+    await foreground.reading;
+    const boardRead = holdNextRead("board.list");
+    const repair = sync.syncDevice("dev-1", "read-state");
+    await boardRead.reading;
+    const mutation = sync.syncDevice("dev-1", "mutation");
+    foreground.release();
+    expect(await mutation).toBe(true);
+    expect(calls("project.list")).toHaveLength(2);
+    expect(calls("git.status")).toHaveLength(2);
+    const period = syncDiagnostics.report().periods[0];
+    expect(period.passes).toHaveLength(2);
+    expect(period.passes[0].successorRequests).toEqual({ mutation: 1 });
+    expect(period.stop).toEqual(expect.any(Number));
+    boardRead.release();
+    expect(await repair).toBe(true);
+    expect(syncDiagnostics.report().periods[0].passes).toHaveLength(2);
+  });
+
+  it("repairs read state independently of the active pass", async () => {
     await boot([branchItem()]);
     const held = holdNextRead("git.status");
     const first = sync.syncDevice("dev-1");
@@ -1364,11 +1422,13 @@ describe("a refresh requested during a pass", () => {
     held.release();
     expect(await Promise.all([first, joined])).toEqual([true, true]);
     expect(calls("board.list")).toHaveLength(3);
+    expect(calls("project.list")).toHaveLength(2);
+    expect(calls("workspace.list")).toHaveLength(2);
     expect(calls("git.status")).toHaveLength(2);
     expect(calls("tasks.list")).toHaveLength(2);
   });
 
-  it.each(["mutation", "read-state"])("keeps terminal-only pushes newer than %s cleanup's board read", async (reason) => {
+  it.each(["mutation"])("keeps terminal-only pushes newer than %s cleanup's board read", async (reason) => {
     await boot([branchItem()]);
     const held = holdNextRead("board.list");
     const refresh = sync.syncDevice("dev-1", reason);
@@ -1400,7 +1460,7 @@ describe("a refresh requested during a pass", () => {
       started();
       return new Promise((resolve) => { release = () => resolve([]); });
     });
-    const refresh = sync.syncDevice("dev-1", "read-state");
+    const refresh = sync.syncDevice("dev-1", "mutation");
     await reading;
     const background = registeredWatchers.find((watcher) => watcher.id === "s-background" && !watcher.disposed);
     const tabs = [{ term_id: "during-cleanup" }];
@@ -1446,7 +1506,7 @@ describe("a refresh requested during a pass", () => {
       return request;
     };
     try {
-      expect(await sync.syncDevice("dev-1", "read-state")).toBe(true);
+      expect(await sync.syncDevice("dev-1", "mutation")).toBe(true);
       await writer;
       expect(queued).toBe(true);
       expect(events.slice(0, 2)).toEqual(["writer queued", "writer committed"]);
@@ -1513,7 +1573,7 @@ describe("a refresh requested during a pass", () => {
       script["tasks.list"] = () => ({ tasks: [{ id: "new-task", project_id: "new-owner" }] });
       script["fs.tree"] = () => ({ path: "", entries: [{ name: "new-file" }] });
       const held = holdNextRead("board.list");
-      const refresh = sync.syncDevice("dev-1", "read-state");
+      const refresh = sync.syncDevice("dev-1", "mutation");
       await held.reading;
       const inbox = ["state", "thread", "tasks"].includes(kind);
       const watcher = registeredWatchers.find((watcher) => watcher.id === (inbox ? "s-inbox" : "s-background") && !watcher.disposed);
@@ -1552,7 +1612,7 @@ describe("a refresh requested during a pass", () => {
     expect(calls("tasks.list")).toHaveLength(2);
   });
 
-  it("coalesces read-state requests before their list reads have started", async () => {
+  it("does not turn a read-state request before greeting into a sync pass", async () => {
     let greet;
     contexts.get("dev-1").greeted = new Promise((resolve) => { greet = resolve; });
     board = [branchItem()];
@@ -1561,7 +1621,7 @@ describe("a refresh requested during a pass", () => {
     greet();
     expect(await requested).toBe(true);
     await passesSettled(sync, "dev-1");
-    expect(calls("board.list")).toHaveLength(1);
+    expect(calls("board.list")).toHaveLength(2);
   });
 
   it("preserves earlier background gap history across an inbox-only successor", async () => {

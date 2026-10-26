@@ -5,8 +5,9 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 const call = vi.fn();
+let activeContext = null;
 vi.mock("../src/core/inboxDevices.js", () => ({ verbCall: () => call }));
-vi.mock("../src/core/deviceContexts.js", () => ({ homeContext: () => ({ deviceId: "dev-1" }) }));
+vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: () => activeContext, homeContext: () => ({ deviceId: "dev-1" }) }));
 const { markSeen } = await import("../src/core/inboxSeen.js");
 const { cachedWriteOf, readCached, subscribeCache, wipeCache, writeCached } = await import("../src/core/localCache.js");
 const { stampRow } = await import("../src/core/feedMerge.js");
@@ -23,6 +24,7 @@ const deferred = () => {
 };
 beforeEach(async () => {
   call.mockReset();
+  activeContext = null;
   await wipeCache();
 });
 afterEach(async () => { await wipeCache(); });
@@ -93,6 +95,39 @@ it("keeps the write stamp and sends no announcement when the pushed read roster 
     expect.soft(cachedWriteOf(after)).toBe(cachedWriteOf(before));
     expect.soft(announce).not.toHaveBeenCalled();
   } finally {
+    unsubscribe();
+  }
+});
+
+it("announces each markSeen row write immediately while project-owner repair is held", async () => {
+  activeContext = { session: {}, cacheScope: {}, active: () => true,
+    adapter: { capabilities: { agents: { projectWorkers: true } } } };
+  await writeCached(address, roster(10));
+  await writeCached({ ...address, kind: "project-agents" }, {
+    entity_id: "run-1", pinned_agent_id: "agent-1", agents: roster(10).agents,
+  });
+  const repair = deferred();
+  let cursor = 11;
+  call.mockImplementation(async (method) => {
+    if (method === "entity.seen") return { ok: true };
+    if (method === "board.list") return { runs: [roster(cursor)] };
+    return repair.promise;
+  });
+  const announce = vi.fn();
+  const unsubscribe = subscribeCache(address, announce);
+  try {
+    await expect(markSeen("run-1", "agent-1", 1, 11, "thread-1", "dev-1")).resolves.toBe(true);
+    await vi.waitFor(() => expect(call.mock.calls.filter(([method]) => method === "agent.list")).toHaveLength(1));
+    expect((await readCached(address)).value.agents[0].read_through_sequence).toBe(11);
+    expect(announce).toHaveBeenCalledTimes(1);
+    cursor = 12;
+    await expect(markSeen("run-1", "agent-1", 1, 12, "thread-1", "dev-1")).resolves.toBe(true);
+    expect((await readCached(address)).value.agents[0].read_through_sequence).toBe(12);
+    expect(announce).toHaveBeenCalledTimes(2);
+    expect(call.mock.calls.filter(([method]) => method === "entity.seen")).toHaveLength(2);
+    expect(call.mock.calls.filter(([method]) => method === "board.list")).toHaveLength(2);
+  } finally {
+    repair.resolve({ entity_id: "run-1", pinned_agent_id: "agent-1", agents: roster(12).agents });
     unsubscribe();
   }
 });

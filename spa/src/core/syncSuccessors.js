@@ -14,7 +14,7 @@ export function syncReadGroup(method) {
 
 export function requiredSuccessorGroups(observed, reason, scoped = false) {
   if (reason === "connection") return new Set();
-  if (reason === "read-state") return new Set(observed.has("lists") ? ["lists"] : []);
+  if (reason === "read-state") return new Set();
   if (reason === "subscription-inbox") return new Set(INBOX_GROUPS.filter((group) => observed.has(group)));
   if (reason === "subscription-background") return new Set(observed.has("checkout") ? ["checkout"] : []);
   return observed.size || scoped ? null : new Set();

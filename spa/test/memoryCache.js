@@ -68,6 +68,11 @@ export const readCached = async (address) => records.get(recordKey(address));
 
 export const readCachedMany = async (addresses) => addresses.map((address) => records.get(recordKey(address)));
 export const cachedWriteOf = (record) => record?.write;
+export const isCachedWrite = (record, written) => typeof written === "string" && record?.write === written;
+const readStateBase = (record) => record?.readStateBase || cachedWriteOf(record);
+const readStateStamp = (record) => record ? { readStateBase: readStateBase(record) } : {};
+const isReadStateRecord = (current, before) => isCachedWrite(current, cachedWriteOf(before))
+  || typeof current?.readStateBase === "string" && current.readStateBase === readStateBase(before);
 
 export async function captureCachedRecord(address) {
   const key = recordKey(address);
@@ -75,10 +80,39 @@ export async function captureCachedRecord(address) {
   return records.get(key);
 }
 
-export async function writeCached(address, value) {
+function putRecord(address, value, readStateFrom = null, publish = true) {
   const key = recordKey(address);
-  records.set(key, { at: Date.now(), write: `memory:${++writeCount}`, value });
-  announce(partsOfKey(key));
+  records.set(key, { at: Date.now(), write: `memory:${++writeCount}`, ...readStateStamp(readStateFrom), value });
+  if (publish) announce(partsOfKey(key));
+}
+
+export async function writeCached(address, value) {
+  putRecord(address, value);
+}
+
+export async function mergeCachedReadState(address, before, merge) {
+  const held = records.get(recordKey(address));
+  if (!isReadStateRecord(held, before)) return false;
+  const next = merge(held?.value, isCachedWrite(held, cachedWriteOf(before)));
+  if (next == null) return false;
+  putRecord(address, next, before);
+  return true;
+}
+
+export async function expireCachedPrefixes(prefixAddresses, writtenBefore, { still = () => true, keep = () => false } = {}) {
+  const selected = [...new Set(prefixAddresses.flatMap(keysUnder))];
+  const result = { dropped: [], kept: [] };
+  if (!selected.length || !still()) return result;
+  for (const key of selected) {
+    const address = addressOfParts(partsOfKey(key));
+    const stale = records.get(key).at < writtenBefore && !address.kind.startsWith("ui-");
+    if (stale && !keep(address)) result.dropped.push(address);
+    else result.kept.push(address);
+  }
+  // Finish the synchronous transaction before publishing its committed deletes.
+  for (const address of result.dropped) records.delete(recordKey(address));
+  for (const address of result.dropped) announce(addressParts(address));
+  return result;
 }
 
 export async function mergeCached(address, merge) {
@@ -93,14 +127,21 @@ export async function mergeCached(address, merge) {
 export const mergeCachedAtomically = mergeCached;
 
 export async function mergeCachedTogether(addresses, merge) {
-  const next = merge(addresses.map((address) => records.get(recordKey(address))?.value));
-  let changed = false;
+  return mergeRecordsTogether(addresses, (held) => merge(held.map((record) => record?.value)));
+}
+
+export async function mergeCachedRecordsTogether(addresses, merge) {
+  return mergeRecordsTogether(addresses, merge);
+}
+
+function mergeRecordsTogether(addresses, merge) {
+  const next = merge(addresses.map((address) => records.get(recordKey(address))));
+  const changed = addresses.filter((_, index) => next?.[index] != null);
   for (const [index, address] of addresses.entries()) {
-    if (next?.[index] === undefined || next?.[index] === null) continue;
-    await writeCached(address, next[index]);
-    changed = true;
+    if (next?.[index] != null) putRecord(address, next[index], null, false);
   }
-  return changed;
+  for (const address of changed) announce(addressParts(address));
+  return changed.length > 0;
 }
 
 export async function takeCachedCount(address, floor = 0) {
@@ -112,12 +153,13 @@ export async function takeCachedCount(address, floor = 0) {
 
 // The feed's own write path. The rows' observation stamps it keeps are the
 // real cache's business (core/cacheFreshness.js); this double keeps none.
-export async function updateCachedFeed(address, update, { unchanged = [], readAddresses = [] } = {}) {
-  if (unchanged.some((guard) => cachedWriteOf(records.get(recordKey(guard.address))) !== guard.written)) return false;
+export async function updateCachedFeed(address, update, { unchanged = [], readAddresses = [], readStateFrom = null } = {}) {
+  if (unchanged.some((guard) => !isCachedWrite(records.get(recordKey(guard.address)), guard.written))) return false;
   const held = records.get(recordKey(address));
+  if (readStateFrom && !isReadStateRecord(held, readStateFrom)) return false;
   const next = update(held?.value, held, readAddresses.map((dependency) => records.get(recordKey(dependency))));
   if (next === undefined || next === null) return false;
-  await writeCached(address, next);
+  putRecord(address, next, readStateFrom);
   return true;
 }
 

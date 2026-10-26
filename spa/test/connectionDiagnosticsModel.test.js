@@ -211,3 +211,10 @@ it("labels bounded request samples and reserved held counts honestly", () => {
   expect(text).toContain("droppedDetail=99968");
   expect(syncDiagnosticsText({ oldestUnsettledMs: null, oldestUnsettledSampled: true })).toContain("unknown (detail cap)");
 });
+
+it("shows the reasons a running pass received successor requests", () => {
+  const text = syncDiagnosticsText({ periods: [{ start: 0, stop: 20, passes: [{
+    start: 0, end: 20, successorRequests: { "subscription-inbox": 2, mutation: 1 },
+  }] }] });
+  expect(text).toContain("Successor requests subscription-inbox=2 mutation=1");
+});

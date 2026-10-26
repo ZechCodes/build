@@ -37,6 +37,25 @@ describe("sync timing recorder", () => {
     expect(d.report().oldestUnsettledMs).toBeNull();
   });
 
+  it("counts only allowlisted successor reasons and rejects stale pass tokens", () => {
+    const { diagnostics: d } = fixture();
+    d.ring(true);
+    const pass = d.passStart();
+    for (const reason of ["mutation", "read-state", "visibility", "connection", "subscription-inbox", "subscription-background"]) {
+      d.successor(pass, reason);
+      d.successor(pass, reason);
+    }
+    d.successor(pass, "private/path?token=secret");
+    expect(d.report().periods[0].passes[0].successorRequests).toEqual({
+      mutation: 2, "read-state": 2, visibility: 2, connection: 2,
+      "subscription-inbox": 2, "subscription-background": 2,
+    });
+    expect(JSON.stringify(d.report())).not.toContain("secret");
+    d.clear();
+    d.successor(pass, "mutation");
+    expect(d.report().periods[0].passes).toEqual([]);
+  });
+
   it("reports unanswered requests after receipt and includes queued admission age", () => {
     const { diagnostics: d, tick } = fixture();
     d.ring(true);

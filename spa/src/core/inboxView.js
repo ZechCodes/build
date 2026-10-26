@@ -679,7 +679,7 @@ function expandFold(projectKey) {
 /** Opening an entry reads it — every agent on it — and goes where it lives. */
 function openEntry(entry) {
   if (!entry) return;
-  markSeen(entry.entityId).then((seen) => { if (seen) void refreshFeed().catch(() => null); });
+  markSeen(entry.entityId).then((seen) => { if (seen) void refreshFeed(entry.deviceId, "read-state").catch(() => null); });
   if (entry.route) goFromInbox(entry.route);
 }
 

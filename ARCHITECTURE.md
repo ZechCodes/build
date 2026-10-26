@@ -3523,6 +3523,9 @@ Roster pulls use the sync planner and its two shared background wire slots.
 The selected project's roster has foreground authority; unrelated held roster
 replies cannot delay selected thread, Git or task recovery. Landing a complete
 roster extends that pass's conversation jobs before it reads worker histories.
+Account selection and Recent expiry run once per pass; each roster completion
+updates only its owner's selection and diagnostic counts. The roster's cache
+write still publishes immediately, independently of other owners' roster reads.
 State and thread invalidations refresh the complete record through the same
 scheduler. Roster admission captures every named thread generation and checks
 the roster write and those generation records in one transaction; a late
@@ -3817,11 +3820,25 @@ gate attachment display.
   changes interrupt the pending order,
   including while an unrelated background reply is still out. Task pages
   resume the same cursor and removal spans across phases (`syncTaskPhases.js`),
-  sharing a session-fenced queue with coalesced push reads. A refresh requested
-  while the same session's pass is running queues
-  one follow-up pass; all requests during that pass share the follow-up, and
-  their promises settle with its result. The current pass finishes before the
-  follow-up starts. Stopping sync or replacing the session discards queued
+  sharing a session-fenced queue with coalesced push reads. Same-session refresh
+  requests join reads still ahead in the pass. Requests after dispatch share a
+  successor: read-state refreshes repeat ownership lists, late inbox coverage
+  repairs observed lists/rosters/threads/tasks, and late background coverage
+  repairs checkout/file/terminal reads. Newly discovered owners, conversations,
+  projects and checkout identities receive their own additional reads. Coverage
+  history survives partial successors. Mutations after dispatch retain a full
+  refresh; connection requests join the existing session baseline. The current
+  pass finishes before its successor starts, with continuous ring ownership.
+  Snapshot cleanup retains unnamed owners touched by any newer cache change
+  and rechecks that fence after its cache reads. A sync-lifetime cache listener
+  observes the actual changed owner, including thread/log merges and delayed
+  task/file invalidation reads; no applier-specific marking is required for
+  cleanup. Record-level push/response fences remain independent. A later
+  authoritative snapshot can collect an owner still absent. Both whole-owner
+  and task-exempt cleanup evaluate their predicate after a request executes
+  inside the deletion transaction; an earlier queued writer can finish before
+  this check, and no writer interleaves between the check and the deletes.
+  Stopping sync or replacing the session discards queued
   work and prevents the old pass from sending remaining reads; replies already
   in flight stay fenced from writing. Coordinated diff reads replace inactive
   pending loaders so a restarted pass or foreground reader cannot share a
@@ -4171,6 +4188,10 @@ The record uses monotonic offsets, fixed enums and
 numeric counters only. Device summaries are unlabeled; no device/session/entity
 IDs, parameters, paths, bodies or raw errors enter the timing record. Existing
 connection events retain their previous schema.
+Each pass also counts successor requests by an allowlisted reason: mutation,
+read-state, visibility, connection, subscription-inbox or subscription-background.
+These counters record requests even when their work is coalesced into the pass;
+they are not a count of successor passes.
 
 `cacheSync.js` stamps ring, pass, stage and finite queue capture/drain boundaries.
 The held-body count is reserved as null until a cheap synchronous source exists;

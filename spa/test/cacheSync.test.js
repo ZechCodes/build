@@ -1344,6 +1344,322 @@ describe("a refresh requested during a pass", () => {
     return { reading, release: () => release() };
   };
 
+  it("coalesces a same-session connection request with the active pass", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    const joined = sync.syncDevice("dev-1", "connection");
+    held.release();
+    expect(await Promise.all([first, joined])).toEqual([true, true]);
+    expect(calls("board.list")).toHaveLength(2);
+  });
+
+  it("refreshes only read-state lists already observed by the active pass", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    const joined = sync.syncDevice("dev-1", "read-state");
+    held.release();
+    expect(await Promise.all([first, joined])).toEqual([true, true]);
+    expect(calls("board.list")).toHaveLength(3);
+    expect(calls("git.status")).toHaveLength(2);
+    expect(calls("tasks.list")).toHaveLength(2);
+  });
+
+  it.each(["mutation", "read-state"])("keeps terminal-only pushes newer than %s cleanup's board read", async (reason) => {
+    await boot([branchItem()]);
+    const held = holdNextRead("board.list");
+    const refresh = sync.syncDevice("dev-1", reason);
+    await held.reading;
+    const background = registeredWatchers.find((watcher) => watcher.id === "s-background" && !watcher.disposed);
+    const tabs = [{ term_id: "new-tab" }];
+    await background.onChanges([{ entity_id: "new-owner", terminals: { tabs } }]);
+    expect((await read("new-owner", "terminals"))?.value?.tabs).toEqual(tabs);
+    held.release();
+    expect(await refresh).toBe(true);
+    expect((await read("new-owner", "terminals"))?.value?.tabs).toEqual(tabs);
+
+    // Protection belongs to this snapshot only. A later authoritative board
+    // that still omits the owner can collect it without another push.
+    await sync.syncDevice("dev-1", reason);
+    expect(await read("new-owner", "terminals")).toBeUndefined();
+  });
+
+  it("rechecks a terminal push after unnamed-owner cleanup's cache read", async () => {
+    await boot([branchItem()]);
+    await cache.writeCached({ deviceId: "dev-1", entityId: "new-owner", kind: "terminals" }, { tabs: [] });
+    const original = cache.cachedSubKeys;
+    let release;
+    let started;
+    const reading = new Promise((resolve) => { started = resolve; });
+    const subkeys = vi.spyOn(cache, "cachedSubKeys").mockImplementation((deviceId, entityId, kind) => {
+      if (entityId !== "new-owner") return original(deviceId, entityId, kind);
+      subkeys.mockRestore();
+      started();
+      return new Promise((resolve) => { release = () => resolve([]); });
+    });
+    const refresh = sync.syncDevice("dev-1", "read-state");
+    await reading;
+    const background = registeredWatchers.find((watcher) => watcher.id === "s-background" && !watcher.disposed);
+    const tabs = [{ term_id: "during-cleanup" }];
+    await background.onChanges([{ entity_id: "new-owner", terminals: { tabs } }]);
+    release();
+    expect(await refresh).toBe(true);
+    expect((await read("new-owner", "terminals"))?.value?.tabs).toEqual(tabs);
+  });
+
+  it.each([false, true])("atomically retains a queued write during cleanup (task exemption: %s)", async (taskExempt) => {
+    await boot([branchItem()]);
+    const address = { deviceId: "dev-1", entityId: "new-owner", kind: "terminals" };
+    await cache.writeCached(address, { tabs: [] });
+    if (taskExempt) await cache.writeCached({ ...address, kind: "task", sub: "get" }, { id: "kept-task" });
+    const events = [];
+    const tabs = [{ term_id: "queued-before-eviction" }];
+    const prefix = "dev-1|new-owner|";
+    const db = await new Promise((resolve) => {
+      const request = indexedDB.open("build-cache");
+      request.onsuccess = () => resolve(request.result);
+    });
+    const proto = Object.getPrototypeOf(db.transaction("records").objectStore("records"));
+    const originalKeys = proto.getAllKeys;
+    const originalDelete = proto.delete;
+    let writer;
+    let queued = false;
+    // Queue the real writer from the real final read request's success event.
+    // The cleanup guard resumes before that writer commits.
+    proto.getAllKeys = function (range, ...args) {
+      const request = originalKeys.call(this, range, ...args);
+      const target = taskExempt ? prefix : `${prefix}task|`;
+      if (!queued && range?.lower === target) request.addEventListener("success", () => {
+        if (queued) return;
+        queued = true;
+        events.push("writer queued");
+        writer = cache.writeCached(address, { tabs }).then(() => events.push("writer committed"));
+      });
+      return request;
+    };
+    proto.delete = function (key) {
+      const request = originalDelete.call(this, key);
+      if (String(key?.lower || key).startsWith(prefix)) request.addEventListener("success", () => events.push("delete executed"));
+      return request;
+    };
+    try {
+      expect(await sync.syncDevice("dev-1", "read-state")).toBe(true);
+      await writer;
+      expect(queued).toBe(true);
+      expect(events.slice(0, 2)).toEqual(["writer queued", "writer committed"]);
+      expect((await read("new-owner", "terminals"))?.value?.tabs, events.join(" → ")).toEqual(tabs);
+      expect(events).toEqual(["writer queued", "writer committed"]);
+      if (taskExempt) expect((await read("new-owner", "task", "get"))?.value).toEqual({ id: "kept-task" });
+    } finally {
+      proto.getAllKeys = originalKeys;
+      proto.delete = originalDelete;
+      db.close();
+    }
+  });
+
+  const cleanupPushCases = {
+    state: ["state-only"], thread: ["thread-append", "thread-trim"],
+    git: ["git-log-only"], tasks: ["tasks-invalidation"],
+    files: ["files-root", "files-paths", "files-truncated"], terminals: ["terminals-only"],
+  };
+
+  it("enumerates cleanup regression fixtures for every dispatched push kind", () => {
+    expect(Object.keys(cleanupPushCases).sort()).toEqual([...sync.syncPushKinds].sort());
+  });
+
+  const cleanupMessage = (sequence) => ({ type: "message", data: { id: `m-${sequence}`, sequence, body: `message ${sequence}` } });
+  const cleanupPayload = (variant) => ({
+    "state-only": { state: branchItem({ run_id: "new-owner", branch: "new-branch" }) },
+    "thread-append": { thread: [{ agent_id: "ag-new", thread_id: "t-new", thread_generation_revision: 1,
+      since_sequence: 2, last_sequence: 3, thread_total: 3, items: [cleanupMessage(3)] }] },
+    "thread-trim": { thread: [{ agent_id: "ag-new", thread_id: "t-new", thread_generation_revision: 1,
+      since_sequence: 2, last_sequence: 2, thread_total: 2, history_start_sequence: 2, items: [] }] },
+    "git-log-only": { git: { log: { commits: [{ hash: "new-commit" }], newest: "new-commit" } } },
+    "tasks-invalidation": { tasks: { task_ids: ["new-task"] } },
+    "files-root": { files: { root: { path: "", entries: [{ name: "new-file" }] } } },
+    "files-paths": { files: { paths: ["new-file"] } },
+    "files-truncated": { files: { truncated: true } },
+    "terminals-only": { terminals: { tabs: [{ term_id: "new-tab" }] } },
+  })[variant];
+  const cleanupRecord = {
+    state: ["row", ""], thread: ["thread", "ag-new"], git: ["log", ""],
+    tasks: ["tracker-tasks", ""], files: ["tree", ""], terminals: ["terminals", ""],
+  };
+  const assertCleanupValue = (kind, variant, value) => {
+    const field = { state: "branch", thread: "items", git: "commits", tasks: "tasks", files: "entries", terminals: "tabs" }[kind];
+    const expected = {
+      "state-only": "new-branch", "thread-append": [cleanupMessage(1), cleanupMessage(2), cleanupMessage(3)],
+      "thread-trim": [cleanupMessage(2)], "git-log-only": [{ hash: "new-commit" }],
+      "tasks-invalidation": [{ id: "new-task", project_id: "new-owner" }],
+      "files-root": [{ name: "new-file" }], "files-paths": [{ name: "new-file" }], "files-truncated": [{ name: "new-file" }],
+      "terminals-only": [{ term_id: "new-tab" }],
+    }[variant];
+    expect(value?.[field]).toEqual(expected);
+  };
+
+  it.each(Object.entries(cleanupPushCases).flatMap(([kind, variants]) => variants.map((variant) => [kind, variant])))
+    ("keeps %s / %s data newer than the held board snapshot", async (kind, variant) => {
+      await boot([branchItem()]);
+      // This owner (and, for tasks, this project) is deliberately absent from
+      // the captured board/project lists. Known owners conceal cleanup races.
+      await cache.writeCached({ deviceId: "dev-1", entityId: "new-owner", kind: "row" }, branchItem({ run_id: "new-owner" }));
+      await cache.writeCached({ deviceId: "dev-1", entityId: "new-owner", kind: "thread", sub: "ag-new" }, {
+        thread_id: "t-new", thread_generation_revision: 1, deliveredSequence: 2, items: [cleanupMessage(1), cleanupMessage(2)], total: 2,
+      });
+      await cache.writeCached({ deviceId: "dev-1", entityId: "new-owner", kind: "tree" }, { path: "", entries: [] });
+      script["tasks.list"] = () => ({ tasks: [{ id: "new-task", project_id: "new-owner" }] });
+      script["fs.tree"] = () => ({ path: "", entries: [{ name: "new-file" }] });
+      const held = holdNextRead("board.list");
+      const refresh = sync.syncDevice("dev-1", "read-state");
+      await held.reading;
+      const inbox = ["state", "thread", "tasks"].includes(kind);
+      const watcher = registeredWatchers.find((watcher) => watcher.id === (inbox ? "s-inbox" : "s-background") && !watcher.disposed);
+      await watcher.onChanges([{ entity_id: "new-owner", ...cleanupPayload(variant) }]);
+      const record = () => read("new-owner", ...cleanupRecord[kind]);
+      const expected = (await record())?.value;
+      assertCleanupValue(kind, variant, expected);
+      held.release();
+      expect(await refresh).toBe(true);
+      expect((await record())?.value).toEqual(expected);
+    });
+
+  it("repairs late background coverage without unrelated lists or tasks", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    const joined = sync.syncDevice("dev-1", "subscription-background");
+    held.release();
+    expect(await Promise.all([first, joined])).toEqual([true, true]);
+    expect(calls("board.list")).toHaveLength(2);
+    expect(calls("tasks.list")).toHaveLength(2);
+    expect(calls("git.status")).toHaveLength(3);
+  });
+
+  it("leaves inbox reads still ahead to the current pass when coverage lands", async () => {
+    await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    const joined = sync.syncDevice("dev-1", "subscription-inbox");
+    held.release();
+    expect(await Promise.all([first, joined])).toEqual([true, true]);
+    expect(calls("board.list")).toHaveLength(3);
+    expect(calls("git.status")).toHaveLength(2);
+    expect(calls("tasks.list")).toHaveLength(2);
+  });
+
+  it("coalesces read-state requests before their list reads have started", async () => {
+    let greet;
+    contexts.get("dev-1").greeted = new Promise((resolve) => { greet = resolve; });
+    board = [branchItem()];
+    sync.startCacheSync();
+    const requested = sync.syncDevice("dev-1", "read-state");
+    greet();
+    expect(await requested).toBe(true);
+    await passesSettled(sync, "dev-1");
+    expect(calls("board.list")).toHaveLength(1);
+  });
+
+  it("preserves earlier background gap history across an inbox-only successor", async () => {
+    let head = "before";
+    script["git.status"] = () => ({ head, status_key: head, files: [] });
+    await boot([branchItem()]);
+    await sync.syncDevice("dev-1", "read-state");
+    const before = { lists: calls("board.list").length, tasks: calls("tasks.list").length };
+    head = "after";
+    for (const listener of subscriptionHeldListeners) listener("dev-1", "s-background");
+    await passesSettled(sync, "dev-1");
+    expect((await read("run-1", "status")).value.head).toBe("after");
+    expect(calls("board.list")).toHaveLength(before.lists);
+    expect(calls("tasks.list")).toHaveLength(before.tasks);
+  });
+
+  it("discovers new inbox work during scoped coverage repair without repeating old checkout work", async () => {
+    await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    board = [...board, branchItem({ run_id: "run-2", worktree_id: "wt-2", branch: "build/new",
+      agents: [{ id: "new-worker", conversation_id: "new-conversation", thread_id: "new-thread" }] })];
+    script["thread.page"] = () => ({ thread_id: "new-thread", items: [{ type: "message",
+      data: { id: "new-message", sequence: 1, role: "user", body: "discovered" } }], has_more: false });
+    for (const listener of subscriptionHeldListeners) listener("dev-1", "s-inbox");
+    held.release();
+    await first;
+    await passesSettled(sync, "dev-1");
+    expect(paramsOf("git.status").filter((params) => params.run_id === "run-1")).toHaveLength(2);
+    expect(paramsOf("git.status").filter((params) => params.run_id === "run-2")).toHaveLength(1);
+    expect(paramsOf("thread.page").filter((params) => params.thread_id === "new-thread")).toHaveLength(1);
+    expect((await read("run-2", "thread", "new-conversation")).value.items[0].data.body).toBe("discovered");
+    expect(calls("tasks.list")).toHaveLength(2);
+  });
+
+  it("keeps the connection ring continuous while late inbox coverage repairs only observed reads", async () => {
+    board = [branchItem()];
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" };
+    const ring = [];
+    const unsubscribe = sync.subscribeConnectionSync((active) => ring.push(active));
+    const held = holdNextRead("git.status");
+    sync.startCacheSync();
+    await held.reading;
+    for (const listener of subscriptionHeldListeners) listener("dev-1", "s-inbox");
+    held.release();
+    await passesSettled(sync, "dev-1");
+    await settle();
+    expect(ring).toEqual([false, true, false]);
+    expect(calls("board.list")).toHaveLength(2);
+    expect(calls("git.status")).toHaveLength(1);
+    expect(calls("tasks.list")).toHaveLength(1);
+    unsubscribe();
+  });
+
+  it("reads a replacement generation discovered by a scoped inbox repair", async () => {
+    const agent = { id: "worker", conversation_id: "conversation", thread_id: "old-thread", thread_generation_revision: 1 };
+    script["thread.page"] = (params) => ({ thread_id: params.thread_id, thread_last_sequence: 1,
+      items: [{ type: "message", data: { id: params.thread_id, sequence: 1, role: "user", body: params.thread_id } }], has_more: false });
+    await boot([branchItem({ agents: [agent] })], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    board = [branchItem({ agents: [{ ...agent, thread_id: "new-thread", thread_generation_revision: 2 }] })];
+    for (const listener of subscriptionHeldListeners) listener("dev-1", "s-inbox");
+    held.release();
+    await first;
+    await passesSettled(sync, "dev-1");
+    expect(paramsOf("thread.page").filter((params) => params.thread_id === "new-thread")).toHaveLength(1);
+    expect((await read("run-1", "thread", "conversation")).value).toMatchObject({ thread_id: "new-thread", thread_generation_revision: 2 });
+  });
+
+  it("warms a new project's roster, workers and tasks discovered by list-only repair", async () => {
+    projectWorkersSupported = true;
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: true });
+    let projects = [{ project_id: "p1", name: "build" }];
+    script["project.list"] = () => ({ projects });
+    const agents = [{ id: "pin-2", conversation_id: "pin-conversation", thread_id: "pin-thread" },
+      { id: "worker-2", conversation_id: "worker-conversation", thread_id: "worker-thread" }];
+    script["agent.list"] = () => ({ entity_id: "owner-2", pinned_agent_id: "pin-2", agents });
+    script["thread.page"] = (params) => ({ thread_id: params.thread_id, items: [], has_more: false });
+    await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    projects = [...projects, { project_id: "p2", name: "new", entity_id: "owner-2" }];
+    board = [...board, { entity_id: "owner-2", project_id: "p2", agents: [agents[0]] }];
+    for (const listener of subscriptionHeldListeners) listener("dev-1", "s-inbox");
+    held.release();
+    await first;
+    await passesSettled(sync, "dev-1");
+    expect(paramsOf("agent.list")).toContainEqual({ entity_id: "owner-2", include_project_workers: true });
+    expect(paramsOf("thread.page").filter((params) => params.thread_id === "worker-thread")).toHaveLength(1);
+    expect(paramsOf("tasks.list").filter((params) => params.project_id === "p2")).toHaveLength(1);
+    expect(paramsOf("tasks.list").filter((params) => params.project_id === "p1")).toHaveLength(2);
+    expect(paramsOf("git.status").filter((params) => params.run_id === "run-1")).toHaveLength(2);
+  });
+
   it("reads a mutation made after project.list in one non-overlapping follow-up", async () => {
     let gitEnabled = false;
     script["project.list"] = () => ({ projects: [{ project_id: "p1", name: "build", git_enabled: gitEnabled }] });

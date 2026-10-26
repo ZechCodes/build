@@ -274,7 +274,7 @@ fn raw_task_import_bulk_choices_and_dependency_endpoints_are_synchronous() {
         refs, 3,
         "duplicate spellings contribute one membership per task"
     );
-    conn.execute("INSERT INTO tracker_task_dependencies(task_id,waiting_on_task_id,position,task_number) VALUES(?1,?2,0,?3)",params![second.id,first.id,first.number]).unwrap();
+    conn.execute("INSERT INTO tracker_task_dependencies(task_id,waiting_on_task_id,position,task_number) VALUES(?1,?2,0,?3)",params![second.id,first.id,first.number as i64]).unwrap();
     assert_eq!(card(&conn, &second.id)["dependencies"]["blocked"], true);
     assert_eq!(card(&conn, &first.id)["dependencies"]["blocks_count"], 1);
     conn.execute(
@@ -333,7 +333,7 @@ fn raw_task_import_bulk_choices_and_dependency_endpoints_are_synchronous() {
 #[test]
 fn raw_identity_owner_mutations_and_rollback_are_immediately_visible() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
+    let _store = Store::new(dir.path()).unwrap();
     let conn = Connection::open(dir.path().join("build.db")).unwrap();
     conn.execute(
         "INSERT INTO implementations(id,created_at,updated_at,record) VALUES('OwnerCASE',?1,?1,?2)",

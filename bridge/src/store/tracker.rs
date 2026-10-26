@@ -445,24 +445,27 @@ fn finished_tracked_tasks(tx: &Transaction) -> Result<Vec<Task>, StoreError> {
 pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
     super::waiting_on::note_task_write(tx, task)?;
     super::delivery_intents::note_task_write(tx, task)?;
-    tx.execute(
+    // Projection triggers make statement compilation substantial. Retain the
+    // bounded SQLite statement cache across writes instead of compiling every
+    // task/history trigger program for each new activity item.
+    tx.prepare_cached(
         "INSERT INTO tracker_tasks
              (id, project_key, number, state, status, created_at, updated_at, record)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(id) DO UPDATE SET
              project_key = ?2, number = ?3, state = ?4, status = ?5,
              created_at = ?6, updated_at = ?7, record = ?8",
-        rusqlite::params![
-            task.id,
-            task.project_path,
-            task.number as i64,
-            task.state.as_str(),
-            task.status,
-            task.created_at,
-            task.updated_at,
-            serde_json::to_string(task).expect("a task always serializes"),
-        ],
-    )?;
+    )?
+    .execute(rusqlite::params![
+        task.id,
+        task.project_path,
+        task.number as i64,
+        task.state.as_str(),
+        task.status,
+        task.created_at,
+        task.updated_at,
+        serde_json::to_string(task).expect("a task always serializes"),
+    ])?;
     Ok(())
 }
 
@@ -475,28 +478,28 @@ pub(super) fn append_activity(
     events: &[TaskEvent],
 ) -> Result<(), StoreError> {
     for comment in comments {
-        tx.execute(
+        tx.prepare_cached(
             "INSERT OR IGNORE INTO tracker_comments (id, task_id, created_at, record)
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![
-                comment.id,
-                comment.task_id,
-                comment.created_at,
-                serde_json::to_string(comment).expect("a comment always serializes"),
-            ],
-        )?;
+        )?
+        .execute(rusqlite::params![
+            comment.id,
+            comment.task_id,
+            comment.created_at,
+            serde_json::to_string(comment).expect("a comment always serializes"),
+        ])?;
     }
     for event in events {
-        tx.execute(
+        tx.prepare_cached(
             "INSERT OR IGNORE INTO tracker_events (id, task_id, at, record)
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![
-                event.id,
-                event.task_id,
-                event.at,
-                serde_json::to_string(event).expect("an event always serializes"),
-            ],
-        )?;
+        )?
+        .execute(rusqlite::params![
+            event.id,
+            event.task_id,
+            event.at,
+            serde_json::to_string(event).expect("an event always serializes"),
+        ])?;
     }
     super::waiting_on::note_activity(tx, events)?;
     super::delivery_intents::note_activity(tx, events)?;

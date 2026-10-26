@@ -46,6 +46,19 @@ fn high_water_kib() -> String {
         .unwrap_or_else(|| "VmHWM unavailable".into())
 }
 
+fn thread_cpu_micros() -> u64 {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // A valid stack pointer and Linux thread CPU clock; no process state changes.
+    assert_eq!(
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) },
+        0
+    );
+    time.tv_sec as u64 * 1_000_000 + time.tv_nsec as u64 / 1_000
+}
+
 #[test]
 fn identical_huge_history_write_fixture() {
     println!(
@@ -97,20 +110,26 @@ fn identical_huge_history_write_fixture() {
     drop(connection);
     println!("huge_fixture profile={} tasks=1 history_entries={ENTRIES} task_body_bytes={} history_body_bytes={history_body_bytes} total_body_bytes={} seed_us={} before_startup_hwm={}",if cfg!(debug_assertions){"debug"}else{"release"},task.body.len(),task.body.len()+history_body_bytes,seed_started.elapsed().as_micros(),high_water_kib());
     let started = Instant::now();
+    let cpu = thread_cpu_micros();
     let store = Store::new(root.path()).unwrap();
     println!(
-        "huge_fixture startup_us={} startup_hwm={}",
+        "huge_fixture startup_us={} startup_cpu_us={} startup_hwm={}",
         started.elapsed().as_micros(),
+        thread_cpu_micros() - cpu,
         high_water_kib()
     );
     let task = store.load_tracker_task(&task.id).unwrap().unwrap();
     for sample in 0..5 {
         let note = comment(&task, 100_000 + sample, "a note".into());
         let started = Instant::now();
+        let cpu = thread_cpu_micros();
         store
             .save_tracker_task_activity(&task, &[note], &[])
             .unwrap();
-        println!("huge_fixture append_sample={sample} history_entries_before={} append_us={} append_hwm={}",ENTRIES+sample,started.elapsed().as_micros(),high_water_kib());
+        println!("huge_fixture append_sample={sample} history_entries_before={} append_us={} append_cpu_us={} append_hwm={}",ENTRIES+sample,started.elapsed().as_micros(),thread_cpu_micros()-cpu,high_water_kib());
+    }
+    if std::env::var_os("TASK890_PROFILE_SQL").is_some() {
+        profile_statement_cost(root.path(), &task);
     }
     drop(store);
     let started = Instant::now();
@@ -121,4 +140,45 @@ fn identical_huge_history_write_fixture() {
         high_water_kib()
     );
     assert!(store.load_tracker_task(&task.id).unwrap().is_some());
+}
+
+fn profile_statement_cost(root: &std::path::Path, task: &Task) {
+    let mut conn = Connection::open(root.join("build.db")).unwrap();
+    let tx = conn.transaction().unwrap();
+    let sql =
+        "INSERT OR IGNORE INTO tracker_comments(id,task_id,created_at,record) VALUES(?1,?2,?3,?4)";
+    let started = Instant::now();
+    let mut insert = tx.prepare(sql).unwrap();
+    println!(
+        "sql_profile comment_prepare_us={}",
+        started.elapsed().as_micros()
+    );
+    for sample in 0..5 {
+        let note = comment(task, 200_000 + sample, "a note".into());
+        let record = serde_json::to_string(&note).unwrap();
+        let started = Instant::now();
+        insert
+            .execute(params![note.id, note.task_id, note.created_at, record])
+            .unwrap();
+        println!(
+            "sql_profile comment_execute_sample={sample} execute_us={}",
+            started.elapsed().as_micros()
+        );
+    }
+    let started = Instant::now();
+    let mut update = tx
+        .prepare("UPDATE tracker_tasks SET record=record WHERE id=?1")
+        .unwrap();
+    println!(
+        "sql_profile unchanged_task_prepare_us={}",
+        started.elapsed().as_micros()
+    );
+    for sample in 0..5 {
+        let started = Instant::now();
+        update.execute([&task.id]).unwrap();
+        println!(
+            "sql_profile unchanged_task_execute_sample={sample} execute_us={}",
+            started.elapsed().as_micros()
+        );
+    }
 }

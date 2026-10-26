@@ -331,6 +331,32 @@ fn raw_task_import_bulk_choices_and_dependency_endpoints_are_synchronous() {
 }
 
 #[test]
+fn raw_task_deletion_refreshes_counterparts_without_foreign_key_cascades() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let [blocker, dependent] = pair(&store);
+    let conn = Connection::open(dir.path().join("build.db")).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE")
+        .unwrap();
+    conn.execute("INSERT INTO tracker_task_dependencies(task_id,waiting_on_task_id,position,task_number) VALUES(?1,?2,0,?3)",params![dependent.id,blocker.id,blocker.number as i64]).unwrap();
+    assert_eq!(card(&conn, &dependent.id)["dependencies"]["blocked"], true);
+    conn.execute("DELETE FROM tracker_tasks WHERE id=?1", [&blocker.id])
+        .unwrap();
+    // The raw connection retains its canonical dangling edge, whose join has
+    // no unresolved blocker. Projection counts still describe those rows.
+    assert_eq!(
+        card(&conn, &dependent.id)["dependencies"],
+        json!({"blocked":false,"waiting_on_count":1,"blocks_count":0})
+    );
+    conn.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(
+        card(&conn, &dependent.id)["dependencies"]["waiting_on_count"],
+        0
+    );
+    assert_eq!(card(&conn, &blocker.id)["title"], "first");
+}
+
+#[test]
 fn raw_identity_owner_mutations_and_rollback_are_immediately_visible() {
     let dir = tempfile::tempdir().unwrap();
     let _store = Store::new(dir.path()).unwrap();

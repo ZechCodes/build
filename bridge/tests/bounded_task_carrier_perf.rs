@@ -1,5 +1,6 @@
 //! Serial production-profile task-read gate through encrypted carrier admission.
 #![cfg(feature = "testing")]
+mod project_bridge;
 use build_bridge::app::AppState;
 use build_bridge::carrier::testing::{client_request, session_init, ChannelWire};
 use build_bridge::carrier::{FrameIntake, SessionSender};
@@ -187,6 +188,9 @@ impl Fixture {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bounded_reads_carrier_max_and_p99_with_both_locks_held() {
+    let tools = tempfile::tempdir().unwrap();
+    // This standalone test process must never discover installed provider CLIs.
+    std::env::set_var("PATH", project_bridge::private_path(tools.path()));
     for count in [1, 100, 5000] {
         let mut fixture = Fixture::new(count);
         let (release, holder) = fixture.hold_locks();

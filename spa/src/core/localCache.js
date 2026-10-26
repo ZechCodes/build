@@ -596,15 +596,32 @@ async function takeCountInStore(key, floor) {
  *  is why the entity sits second in the key. The `ui-*` records a build
  *  before the UI store left here are skipped until they are carried: every
  *  kind starting `ui-` sorts between the two ranges. */
-export function evictEntity(deviceId, entityId) {
+export function evictEntity(deviceId, entityId, { still = null } = {}) {
   const prefix = `${encodeURIComponent(deviceId)}|${encodeURIComponent(entityId)}|`;
+  let changed = false;
   return wroteStore((store) => {
-    store.delete(IDBKeyRange.bound(prefix, `${prefix}ui-`, false, true));
-    store.delete(IDBKeyRange.bound(`${prefix}ui.`, `${prefix}\uffff`, false, true));
+    changed = false;
+    deleteWhileCurrent(store, prefix, still, () => {
+      store.delete(IDBKeyRange.bound(prefix, `${prefix}ui-`, false, true));
+      store.delete(IDBKeyRange.bound(`${prefix}ui.`, `${prefix}\uffff`, false, true));
+      changed = true;
+    });
     return null;
   }).then((wrote) => {
-    if (wrote) announce([encodeURIComponent(deviceId), encodeURIComponent(entityId)]);
+    if (wrote && changed) announce([encodeURIComponent(deviceId), encodeURIComponent(entityId)]);
   });
+}
+
+/** Transaction creation can precede an earlier writer's commit. Wait for a
+ * request to execute, then check and delete in the same exclusive transaction.
+ * No writer can interleave between that predicate and the deletes. Recovery
+ * retries issue a fresh request and evaluate the predicate again. */
+function deleteWhileCurrent(store, key, still, remove) {
+  if (!still) return remove();
+  const ready = store.getKey(key);
+  ready.onsuccess = () => {
+    if (still()) remove();
+  };
 }
 
 /** Every entity id that holds at least one record on this device. What the
@@ -692,14 +709,19 @@ export async function cachedRecords(prefixAddress) {
 /** Delete named records — one transaction, then one announcement each, so a
  *  surface holding a record that has aged out hears it go. A `ui-*` record is
  *  never a replica's to drop: only its carry removes it. */
-export function deleteCached(addresses) {
+export function deleteCached(addresses, { still = null } = {}) {
   const keys = addresses.map(recordKey).filter((key) => !isUiRecordKey(key));
   if (!keys.length) return Promise.resolve();
+  let changed = false;
   return wroteStore((store) => {
-    for (const key of keys) store.delete(key);
+    changed = false;
+    deleteWhileCurrent(store, keys[0], still, () => {
+      for (const key of keys) store.delete(key);
+      changed = true;
+    });
     return null;
   }).then((wrote) => {
-    if (!wrote) return;
+    if (!wrote || !changed) return;
     for (const key of keys) announce(partsOfKey(key));
   });
 }

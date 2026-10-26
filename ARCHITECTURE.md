@@ -3834,7 +3834,10 @@ gate attachment display.
   observes the actual changed owner, including thread/log merges and delayed
   task/file invalidation reads; no applier-specific marking is required for
   cleanup. Record-level push/response fences remain independent. A later
-  authoritative snapshot can collect an owner still absent.
+  authoritative snapshot can collect an owner still absent. Both whole-owner
+  and task-exempt cleanup evaluate their predicate after a request executes
+  inside the deletion transaction; an earlier queued writer can finish before
+  this check, and no writer interleaves between the check and the deletes.
   Stopping sync or replacing the session discards queued
   work and prevents the old pass from sending remaining reads; replies already
   in flight stay fenced from writing. Coordinated diff reads replace inactive

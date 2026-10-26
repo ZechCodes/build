@@ -1410,6 +1410,56 @@ describe("a refresh requested during a pass", () => {
     expect((await read("new-owner", "terminals"))?.value?.tabs).toEqual(tabs);
   });
 
+  it.each([false, true])("atomically retains a queued write during cleanup (task exemption: %s)", async (taskExempt) => {
+    await boot([branchItem()]);
+    const address = { deviceId: "dev-1", entityId: "new-owner", kind: "terminals" };
+    await cache.writeCached(address, { tabs: [] });
+    if (taskExempt) await cache.writeCached({ ...address, kind: "task", sub: "get" }, { id: "kept-task" });
+    const events = [];
+    const tabs = [{ term_id: "queued-before-eviction" }];
+    const prefix = "dev-1|new-owner|";
+    const db = await new Promise((resolve) => {
+      const request = indexedDB.open("build-cache");
+      request.onsuccess = () => resolve(request.result);
+    });
+    const proto = Object.getPrototypeOf(db.transaction("records").objectStore("records"));
+    const originalKeys = proto.getAllKeys;
+    const originalDelete = proto.delete;
+    let writer;
+    let queued = false;
+    // Queue the real writer from the real final read request's success event.
+    // The cleanup guard resumes before that writer commits.
+    proto.getAllKeys = function (range, ...args) {
+      const request = originalKeys.call(this, range, ...args);
+      const target = taskExempt ? prefix : `${prefix}task|`;
+      if (!queued && range?.lower === target) request.addEventListener("success", () => {
+        if (queued) return;
+        queued = true;
+        events.push("writer queued");
+        writer = cache.writeCached(address, { tabs }).then(() => events.push("writer committed"));
+      });
+      return request;
+    };
+    proto.delete = function (key) {
+      const request = originalDelete.call(this, key);
+      if (String(key?.lower || key).startsWith(prefix)) request.addEventListener("success", () => events.push("delete executed"));
+      return request;
+    };
+    try {
+      expect(await sync.syncDevice("dev-1", "read-state")).toBe(true);
+      await writer;
+      expect(queued).toBe(true);
+      expect(events.slice(0, 2)).toEqual(["writer queued", "writer committed"]);
+      expect((await read("new-owner", "terminals"))?.value?.tabs, events.join(" → ")).toEqual(tabs);
+      expect(events).toEqual(["writer queued", "writer committed"]);
+      if (taskExempt) expect((await read("new-owner", "task", "get"))?.value).toEqual({ id: "kept-task" });
+    } finally {
+      proto.getAllKeys = originalKeys;
+      proto.delete = originalDelete;
+      db.close();
+    }
+  });
+
   const cleanupPushCases = {
     state: ["state-only"], thread: ["thread-append", "thread-trim"],
     git: ["git-log-only"], tasks: ["tasks-invalidation"],

@@ -1159,12 +1159,12 @@ async function dropUnnamedEntity(context, entityId) {
   const taskRecords = await cachedSubKeys(context.deviceId, entityId, TASK_RECORD_KIND);
   if (!context.active()) return;
   if (!taskRecords.length) {
-    await evictEntity(context.deviceId, entityId);
+    await evictEntity(context.deviceId, entityId, { still: context.active });
     return;
   }
   const held = await cachedAddresses({ deviceId: context.deviceId, entityId });
   if (!context.active()) return;
-  await deleteCached(held.filter((address) => address.kind !== TASK_RECORD_KIND));
+  await deleteCached(held.filter((address) => address.kind !== TASK_RECORD_KIND), { still: context.active });
 }
 
 // ─── Step 3: one workspace ───────────────────────────────────────────────────

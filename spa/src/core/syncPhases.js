@@ -183,24 +183,25 @@ async function beforeBackgroundRead(state, scope) {
   }
 }
 
-function inboxThreads(state) {
-  return state.pass.order.flatMap((entityId) =>
-    (state.pass.rows.get(entityId)?.agents || []).map((agent) =>
-      threadJob(state, entityId, agent, "background")));
-}
-
-async function readInbox(state) {
-  // The existing drain supplies two walkers; each RPC still enters the shared
-  // device slots after its foreground barrier, alongside push continuations.
+// Keep the entity boundary: a later roster must not compete with the current
+// conversation's repair and push continuations. Discover each roster on entry.
+async function readInboxThreads(state, entityId) {
   await drainBackgroundStreams({
-    items: inboxThreads(state),
+    items: state.pass.rows.get(entityId)?.agents || [],
     active: state.context.active,
-    read: async (job) => {
+    read: async (agent) => {
       await state.foreground();
-      await takeJob(state, job);
+      await takeJob(state, threadJob(state, entityId, agent, "background"));
       return true;
     },
   });
+}
+
+async function readInbox(state) {
+  for (const entityId of state.pass.order) {
+    await state.foreground();
+    await readInboxThreads(state, entityId);
+  }
   for (const projectId of projectIds(state.view)) {
     await state.foreground();
     if (!state.context.active()) return;

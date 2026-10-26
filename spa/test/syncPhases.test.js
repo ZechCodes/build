@@ -391,9 +391,10 @@ describe("mounted source reads in foreground phases", () => {
 
 describe("parallel Inbox conversations", () => {
   it("waits for all foreground records, then refills only two conversation workers", async () => {
+    route = { name: "inbox", deviceId: "dev-1" };
     const foreground = gate(), background = gate();
-    const thread = readers.thread, status = readers.status;
-    readers.status = async (...args) => { await status(...args); await foreground.promise; };
+    mounted(sourceId, "status", "", () => true, () => foreground.promise);
+    const thread = readers.thread;
     readers.thread = async (...args) => {
       await thread(...args);
       if (args[3] === "background") await background.promise;
@@ -406,14 +407,14 @@ describe("parallel Inbox conversations", () => {
     const whileHeld = events.slice();
     background.release();
     await pass;
-    expect(beforeForeground.map((item) => item.sub)).toEqual(["ag-1-b"]);
+    expect(beforeForeground).toEqual([]);
     expect(whileHeld.filter((item) => item.kind === "thread" && item.priority === "background")
-      .map((item) => item.sub)).toEqual(["ag-1-a", "ag-2-a"]);
+      .map((item) => item.sub)).toEqual(["ag-1-a", "ag-1-b"]);
     expect(whileHeld.some((item) => item.kind === "tasks-rest")).toBe(false);
     expect(events.filter((item) => item.kind === "thread")).toHaveLength(4);
   });
 
-  it("keeps the Inbox diagnostic stage until both workers finish", async () => {
+  it("keeps the Inbox diagnostic stage and later entities behind both workers", async () => {
     route = { name: "inbox" };
     const held = gate(), stages = [];
     readers.thread = async (_context, entityId, agent, priority) => {
@@ -425,7 +426,8 @@ describe("parallel Inbox conversations", () => {
     const beforeRelease = { stages: [...stages], events: [...events] };
     held.release();
     await pass;
-    expect(beforeRelease.events.filter((item) => item.kind === "thread")).toHaveLength(4);
+    expect(beforeRelease.events.filter((item) => item.kind === "thread").map((item) => item.sub))
+      .toEqual(["ag-1-a", "ag-1-b"]);
     expect(beforeRelease.stages.at(-1)).toBe("inbox");
     expect(beforeRelease.events.some((item) => item.kind === "tasks-rest")).toBe(false);
     expect(stages.at(-1)).toBe("background");
@@ -452,4 +454,26 @@ describe("parallel Inbox conversations", () => {
     expect(whileSibling).toEqual({ settled: false, stage: "inbox" });
     expect(events.filter((item) => item.kind === "thread").map((item) => item.sub)).toEqual(["ag-1-a", "ag-1-b"]);
   });
+});
+
+
+it("resolves later entity rosters only after the current entity's workers drain", async () => {
+  route = { name: "inbox" };
+  const held = gate();
+  const rows = new Map([
+    ["first", { agents: [{ id: "first-a" }, { id: "first-b" }] }],
+    ["later", { agents: [{ id: "retired" }] }],
+  ]);
+  readers.scope = () => null;
+  const thread = readers.thread;
+  readers.thread = async (...args) => { await thread(...args); if (args[1] === "first") await held.promise; };
+  const pass = fixture(false, null, { pass: { order: ["first", "later"], rows } }).run();
+  await microtasks();
+  const beforeRelease = events.filter((item) => item.kind === "thread").map((item) => item.sub);
+  rows.set("later", { agents: [{ id: "replacement" }] });
+  held.release();
+  await pass;
+  expect(beforeRelease).toEqual(["first-a", "first-b"]);
+  expect(events.filter((item) => item.kind === "thread").map((item) => item.sub))
+    .toEqual(["first-a", "first-b", "replacement"]);
 });

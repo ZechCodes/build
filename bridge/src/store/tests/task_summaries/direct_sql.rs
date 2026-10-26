@@ -355,6 +355,14 @@ fn raw_identity_owner_mutations_and_rollback_are_immediately_visible() {
         Some("before")
     );
     assert!(identity("agentcase").is_none(), "opaque case-sensitive key");
+    conn.execute_batch("CREATE TRIGGER forbid_transcript_identity_write BEFORE UPDATE ON tracker_task_summary_identities BEGIN SELECT RAISE(ABORT,'transcript-only identity write'); END;").unwrap();
+    conn.execute(
+        "UPDATE agents SET record=json_set(record,'$.conversation_id','new transcript')",
+        [],
+    )
+    .unwrap();
+    conn.execute_batch("DROP TRIGGER forbid_transcript_identity_write")
+        .unwrap();
     conn.execute_batch("BEGIN").unwrap();
     conn.execute(
         "UPDATE implementations SET record=json_set(record,'$.worktree_name','inside')",

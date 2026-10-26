@@ -604,9 +604,10 @@ fn shared_helper_view_changes_reconcile_missed_writes_before_admission() {
 
 #[test]
 fn missing_shared_views_and_typed_context_rebuild_before_readers_are_published() {
-    for (kind, name) in [
-        ("VIEW", "tracker_summary_activity"),
-        ("TABLE", "tracker_task_summary_context"),
+    for (kind, name, changed_shape) in [
+        ("VIEW", "tracker_summary_activity", false),
+        ("TABLE", "tracker_task_summary_context", false),
+        ("TABLE", "tracker_task_summary_context", true),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let task = {
@@ -625,6 +626,10 @@ fn missing_shared_views_and_typed_context_rebuild_before_readers_are_published()
             .unwrap()
             .execute_batch(&format!("DROP {kind} {name}"))
             .unwrap();
+        if changed_shape {
+            Connection::open(dir.path().join("build.db")).unwrap().execute_batch(
+                "CREATE TABLE tracker_task_summary_context(task_id TEXT PRIMARY KEY,watched INTEGER NOT NULL DEFAULT 0)").unwrap();
+        }
         let repaired = Store::new(dir.path()).unwrap();
         assert_eq!(
             card(&repaired.connection(), &task.id)["unread_count"],

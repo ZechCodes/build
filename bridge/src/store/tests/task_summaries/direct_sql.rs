@@ -279,7 +279,7 @@ fn raw_task_import_bulk_choices_and_dependency_endpoints_are_synchronous() {
     assert_eq!(card(&conn, &first.id)["dependencies"]["blocks_count"], 1);
     conn.execute(
         "UPDATE tracker_task_dependencies SET task_id=?1,waiting_on_task_id=?2,task_number=?3",
-        params![first.id, imported.id, imported.number],
+        params![first.id, imported.id, imported.number as i64],
     )
     .unwrap();
     assert_eq!(

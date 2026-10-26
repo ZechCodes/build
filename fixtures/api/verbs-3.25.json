@@ -1,6 +1,6 @@
 {
-  "api_version": "3.24.0",
-  "commit": "266e1aa5",
+  "api_version": "3.25.0",
+  "commit": "c6b1ae4f",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -339,6 +339,7 @@
     "thread.operation",
     "thread.page",
     "thread.post",
+    "thread.retention",
     "thread.revision",
     "threads.leanActivity",
     "threads.newestDeltaPagination",

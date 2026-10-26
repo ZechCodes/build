@@ -27,6 +27,12 @@ use serde_json::Value;
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
         v1_method!("tasks.list", tasks_list, TasksListParams, TasksList),
+        v1_method!(
+            "tasks.filterChoices",
+            tasks_filter_choices,
+            TasksFilterChoicesParams,
+            TasksFilterChoices
+        ),
         v1_method!("tasks.get", tasks_get, TaskIdParams, TaskDetail),
         v1_method!(
             "tasks.create",
@@ -108,8 +114,46 @@ pub struct TaskIdParams {
 
 /// One project's tasks, narrowed. Every filter is optional and they are ANDed.
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(try_from = "Value")]
 pub struct TasksListParams {
+    #[serde(flatten)]
+    pub filters: TasksListFilters,
+}
+
+impl TryFrom<Value> for TasksListParams {
+    type Error = String;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        if value.get("summary").and_then(Value::as_bool) == Some(true) {
+            for name in ["limit", "cursor"] {
+                if value.get(name).is_some_and(Value::is_null) {
+                    return Err(format!("{name} cannot be null in summary mode"));
+                }
+            }
+        }
+        for (scalar, plural) in [
+            ("state", "states"),
+            ("status", "statuses"),
+            ("label", "labels"),
+            ("assignee", "assignees"),
+        ] {
+            if value.get(scalar).is_some() && value.get(plural).is_some() {
+                return Err(format!("provide only one of {scalar} and {plural}"));
+            }
+        }
+        serde_json::from_value(value)
+            .map(|filters| Self { filters })
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct TasksListFilters {
     pub project_id: String,
+    /// Lightweight, bounded pages (3.26.0, `tasks.listSummaries`). Defaults
+    /// to false, preserving legacy tasks.list rows and unbounded reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<bool>,
     /// `open` or `closed`; both when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
@@ -122,14 +166,80 @@ pub struct TasksListParams {
     /// One label, matched the way labels are deduped: case-insensitively.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// OR within one selection, AND across dimensions. An empty selection or
+    /// both scalar and plural forms is invalid; omit the dimension for all.
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub states: Option<Vec<String>>,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub statuses: Option<Vec<String>>,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub labels: Option<Vec<String>>,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assignees: Option<Vec<Value>>,
     /// At most this many tasks, 1 to 500 (1.25.0, `tasks.listPaged`). Absent
-    /// is the whole list.
+    /// is the whole legacy list, or 100 rows when summary is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u64>,
     /// Where the page starts: a `next_cursor` an earlier page of the SAME
     /// filter answered (1.25.0). Absent is the top of the list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+}
+
+/// Distinct facets: category is `label`; workflow column is `status`.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskFilterDimension {
+    Label,
+    Assignee,
+    Status,
+    State,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TasksFilterChoicesParams {
+    pub project_id: String,
+    pub dimension: TaskFilterDimension,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub limit: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TasksFilterChoices {
+    pub project_id: String,
+    pub dimension: TaskFilterDimension,
+    /// Label strings, status/state slugs, or assignee filters (`"none"`
+    /// names unassigned tasks). Choices span the project, independently of
+    /// any task page or selection currently displayed by the client.
+    pub choices: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// One file, filed with a task and BEFORE it.
@@ -538,7 +648,14 @@ pub struct TaskAttachmentBytes {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct TasksList {
+#[serde(untagged)]
+pub enum TasksList {
+    Summaries(TaskSummaries),
+    Legacy(LegacyTasksList),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct LegacyTasksList {
     pub project_id: String,
     pub tasks: Vec<TaskView>,
     /// The user's session on this bridge, device-wide rather than this
@@ -548,6 +665,86 @@ pub struct TasksList {
     /// filter (1.25.0). Present only on a page with more rows after it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+}
+
+/// An explicit discriminator preserves the shape of empty summary pages.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskSummaries {
+    #[serde(deserialize_with = "summary_true")]
+    pub summary: bool,
+    pub project_id: String,
+    pub tasks: Vec<TaskSummaryView>,
+    pub identities: std::collections::BTreeMap<String, crate::tracker::TaskAgentIdentity>,
+    pub user_session: UserSessionView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+fn summary_true<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    if bool::deserialize(deserializer)? {
+        Ok(true)
+    } else {
+        Err(serde::de::Error::custom("summary must be true"))
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskSummaryLinks {
+    pub workspace_ids: Vec<String>,
+    pub parent_task_id: Option<String>,
+}
+
+/// Counts only: graph details use the bounded dependency detail APIs.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskSummaryDependencies {
+    pub blocked: bool,
+    pub waiting_on_count: u64,
+    pub blocks_count: u64,
+}
+
+/// List/card/badge/navigation data only. Detail content stays on tasks.get.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskSummaryView {
+    pub id: String,
+    pub project_id: String,
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub status: String,
+    pub labels: Vec<String>,
+    pub priority: String,
+    pub assignee: Option<Value>,
+    pub created_by: Value,
+    pub created_at: String,
+    pub updated_at: String,
+    pub closed_at: Option<String>,
+    pub done_at: Option<String>,
+    pub watched: bool,
+    pub trackers: Vec<String>,
+    pub links: TaskSummaryLinks,
+    pub attachment_count: u64,
+    pub summary_truncated: bool,
+    pub dependencies: TaskSummaryDependencies,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_through: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_started_after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismissed_through: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread_agent_comments: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread_mentions: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_started_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_summary: Option<crate::reviews::records::ReviewSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_assignment: Option<DeferredAssignmentView>,
 }
 
 /// The user's session: epoch milliseconds, each `null` until there is one.
@@ -898,6 +1095,13 @@ fn proposed_waiting_blocker(
 
 fn tasks_list(app: &mut AppState, params: TasksListParams) -> Result<Answer<TasksList>, ApiError> {
     answer(app.tasks_list(&params.wire())).map_err(refine)
+}
+
+fn tasks_filter_choices(
+    app: &mut AppState,
+    params: TasksFilterChoicesParams,
+) -> Result<Answer<TasksFilterChoices>, ApiError> {
+    answer(app.tasks_filter_choices(&params.wire())).map_err(refine)
 }
 
 fn tasks_get(app: &mut AppState, params: TaskIdParams) -> Result<Answer<TaskDetail>, ApiError> {

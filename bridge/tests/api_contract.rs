@@ -73,7 +73,9 @@ fn bounded_task_reads_are_additive_and_independently_advertised() {
     let advertised = capabilities(false);
     assert!(advertised.contains(&"tasks.listSummaries"));
     assert!(advertised.contains(&"tasks.filterChoices"));
-    assert!(!v1::methods().iter().any(|(name, _)| *name == "tasks.listSummaries"));
+    assert!(!v1::methods()
+        .iter()
+        .any(|(name, _)| *name == "tasks.listSummaries"));
     let fixture = read_json(&fixtures_root().join("v1/tasks.list.json"));
     assert!(fixture["result"].get("summary").is_none());
     assert!(fixture["result"]["tasks"][0].get("body").is_some());
@@ -82,31 +84,93 @@ fn bounded_task_reads_are_additive_and_independently_advertised() {
     assert_eq!(summary["default_limit"], 100);
     assert_eq!(summary["max_limit"], 500);
     assert_eq!(summary["empty_selection"], "invalid_params");
-    let examples: Vec<_> = fixture["examples"].as_array().unwrap().iter()
-        .filter(|example| example["params"]["summary"] == true).collect();
-    assert!(examples.len() >= 3, "summary, sparse continuation and truncation witnesses");
+    let examples: Vec<_> = fixture["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|example| example["params"]["summary"] == true)
+        .collect();
+    assert!(
+        examples.len() >= 3,
+        "summary, sparse continuation and truncation witnesses"
+    );
     for example in &examples {
         assert_eq!(example["result"]["summary"], true);
         assert!(example["result"]["identities"].is_object());
         for row in example["result"]["tasks"].as_array().unwrap() {
-            for field in ["body", "attachments", "identities", "timeline", "dependencies"] {
+            for field in ["body", "attachments", "identities", "timeline"] {
                 assert!(row.get(field).is_none(), "summary exposes {field}");
             }
+            for field in ["waiting_on", "blocks"] {
+                assert!(row["dependencies"].get(field).is_none());
+            }
+            assert!(row["dependencies"]["blocked"].is_boolean());
         }
     }
-    assert!(examples.iter().any(|example| example["result"]["tasks"] == serde_json::json!([])
-        && example["result"]["next_cursor"].is_string()));
-    assert!(examples.iter().any(|example| example["result"]["tasks"][0]["summary_truncated"] == true));
+    assert!(examples.iter().any(
+        |example| example["result"]["tasks"] == serde_json::json!([])
+            && example["result"]["next_cursor"].is_string()
+    ));
+    assert!(examples
+        .iter()
+        .any(|example| example["result"]["tasks"][0]["summary_truncated"] == true));
     let choices = read_json(&fixtures_root().join("v1/tasks.filterChoices.json"));
     assert_eq!(choices["since"], "3.26.0");
     assert_eq!(choices["default_limit"], 100);
     assert_eq!(choices["max_limit"], 500);
-    let (_, handler) = v1::methods().iter().find(|(name, _)| *name == "tasks.filterChoices").unwrap();
+    let (_, handler) = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "tasks.filterChoices")
+        .unwrap();
     for dimension in ["label", "assignee", "status", "state"] {
         let params = serde_json::json!({"project_id":"proj-1", "dimension":dimension});
         assert!(handler.parse_params(&params).is_ok());
     }
-    assert!(handler.parse_params(&serde_json::json!({"project_id":"proj-1", "dimension":"category"})).is_err());
+    assert!(handler
+        .parse_params(&serde_json::json!({"project_id":"proj-1", "dimension":"category"}))
+        .is_err());
+}
+
+#[test]
+fn task_summary_params_preserve_legacy_nulls_and_reject_ambiguous_selections() {
+    let (_, handler) = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "tasks.list")
+        .unwrap();
+    for (scalar, plural) in [
+        ("state", "states"),
+        ("status", "statuses"),
+        ("label", "labels"),
+        ("assignee", "assignees"),
+    ] {
+        let mut params = serde_json::json!({"project_id":"proj-1"});
+        params[scalar] = Value::Null;
+        assert!(
+            handler.parse_params(&params).is_ok(),
+            "legacy null {scalar}"
+        );
+        params[plural] = serde_json::json!([]);
+        assert!(
+            handler.parse_params(&params).is_err(),
+            "ambiguous {scalar}+{plural}"
+        );
+        params.as_object_mut().unwrap().remove(scalar);
+        params[plural] = Value::Null;
+        assert!(
+            handler.parse_params(&params).is_err(),
+            "null selection {plural}"
+        );
+    }
+    for field in ["limit", "cursor"] {
+        let mut params = serde_json::json!({"project_id":"proj-1", "summary":true});
+        params[field] = Value::Null;
+        assert!(
+            handler.parse_params(&params).is_err(),
+            "summary null {field}"
+        );
+        params["summary"] = Value::Bool(false);
+        assert!(handler.parse_params(&params).is_ok(), "legacy null {field}");
+    }
 }
 
 #[test]
@@ -246,7 +310,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.25.0");
+    assert_eq!(API_VERSION, "3.26.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -402,7 +466,7 @@ fn the_harness_inventory_is_announced_with_its_push() {
 #[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.25.0");
+    assert_eq!(API_VERSION, "3.26.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1358,7 +1422,7 @@ fn thread_page_activity_mode_is_typed_and_optional() {
 
 #[test]
 fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
-    assert_eq!(API_VERSION, "3.25.0");
+    assert_eq!(API_VERSION, "3.26.0");
     assert!(capabilities(false).contains(&"threads.leanActivity"));
     let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
     assert_eq!(fixture["lean_activity"]["since"], "3.20.0");
@@ -1541,7 +1605,7 @@ fn project_source_changes_are_announced_with_a_scope_and_an_item() {
 /// accepts. The legacy shape is the pinned coordinator alone.
 #[test]
 fn project_workers_are_announced_with_their_roster_read_and_purposes() {
-    assert_eq!(API_VERSION, "3.25.0");
+    assert_eq!(API_VERSION, "3.26.0");
     let advertised = capabilities(false);
     assert!(advertised.contains(&"agents.projectWorkers"));
     assert!(advertised.contains(&"agent.list"));
@@ -1629,7 +1693,7 @@ fn sync_base_path_precondition_is_announced_and_typed() {
 /// echoes the client's id.
 #[test]
 fn project_worker_assignment_is_announced_with_its_kind_and_operation_id() {
-    assert_eq!(API_VERSION, "3.25.0");
+    assert_eq!(API_VERSION, "3.26.0");
     assert!(capabilities(false).contains(&"tasks.assignProjectAgent"));
     let assign = read_json(&fixtures_root().join("v1/tasks.assign.json"));
     let example = &assign["project_agent_assignment"];

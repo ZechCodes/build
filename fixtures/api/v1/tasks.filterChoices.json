@@ -1,0 +1,91 @@
+{
+  "method": "tasks.filterChoices",
+  "since": "3.26.0",
+  "default_limit": 100,
+  "max_limit": 500,
+  "params": {
+    "project_id": "proj-1",
+    "dimension": "label",
+    "limit": 100
+  },
+  "result": {
+    "project_id": "proj-1",
+    "dimension": "label",
+    "choices": [
+      "bug",
+      "ui"
+    ],
+    "next_cursor": "opaque-label-cursor"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "unavailable",
+    "internal"
+  ],
+  "note": "Project-wide distinct filter values, independent of the current task page or filters. Category means label; status is a column slug and state is open/closed. An empty choices page with next_cursor is valid when the bounded scan has more work. Cursors bind store/project/dimension.",
+  "examples": [
+    {
+      "params": {
+        "project_id": "proj-1",
+        "dimension": "assignee"
+      },
+      "result": {
+        "project_id": "proj-1",
+        "dimension": "assignee",
+        "choices": [
+          "none",
+          {
+            "kind": "user"
+          },
+          {
+            "kind": "agent",
+            "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          }
+        ]
+      }
+    },
+    {
+      "params": {
+        "project_id": "proj-1",
+        "dimension": "status"
+      },
+      "result": {
+        "project_id": "proj-1",
+        "dimension": "status",
+        "choices": [
+          "backlog",
+          "in_progress",
+          "done"
+        ]
+      }
+    },
+    {
+      "params": {
+        "project_id": "proj-1",
+        "dimension": "state"
+      },
+      "result": {
+        "project_id": "proj-1",
+        "dimension": "state",
+        "choices": [
+          "open",
+          "closed"
+        ]
+      }
+    },
+    {
+      "params": {
+        "project_id": "proj-1",
+        "dimension": "label",
+        "cursor": "opaque-label-cursor"
+      },
+      "result": {
+        "project_id": "proj-1",
+        "dimension": "label",
+        "choices": [],
+        "next_cursor": "opaque-label-scan-continuation"
+      }
+    }
+  ]
+}

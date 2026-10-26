@@ -45,23 +45,37 @@ fn changed_choice_triggers_reconcile_missed_memberships_and_restore_maintenance(
 }
 
 #[test]
-fn changed_definition_fingerprint_invalidates_completed_backfill_checkpoints() {
-    let dir = tempfile::tempdir().unwrap();
-    {
-        let store = Store::new(dir.path()).unwrap();
-        let task = store
-            .create_tracker_task(
-                Task::drafted("/summary", "canonical", Actor::User, support::NOW),
-                &[],
-            )
-            .unwrap();
-        let conn = store.connection();
-        conn.execute("UPDATE tracker_task_summaries SET record=json_set(record,'$.title','old derivation') WHERE task_id=?1",[&task.id]).unwrap();
-        conn.execute("UPDATE meta SET value='old-definition:' || (SELECT schema_version FROM pragma_schema_version) WHERE key='task_summary_v1_ready'",[]).unwrap();
+fn changed_definition_fingerprint_invalidates_completed_and_partial_backfill_checkpoints() {
+    for partial in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = Store::new(dir.path()).unwrap();
+            let task = store
+                .create_tracker_task(
+                    Task::drafted("/summary", "canonical", Actor::User, support::NOW),
+                    &[],
+                )
+                .unwrap();
+            let conn = store.connection();
+            conn.execute("UPDATE tracker_task_summaries SET record=json_set(record,'$.title','old derivation') WHERE task_id=?1",[&task.id]).unwrap();
+            conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('task_summary_v1_definition','old-definition')",[]).unwrap();
+            if partial {
+                // A failed later batch can leave a valid committed prefix and
+                // row checkpoints, but no final ready stamp.
+                conn.execute("DELETE FROM meta WHERE key='task_summary_v1_ready'", [])
+                    .unwrap();
+            } else {
+                conn.execute("UPDATE meta SET value='old-definition:' || (SELECT schema_version FROM pragma_schema_version) WHERE key='task_summary_v1_ready'",[]).unwrap();
+            }
+        }
+        let repaired = Store::new(dir.path()).unwrap();
+        assert_eq!(
+            summary(&repaired, "/summary")["title"],
+            "canonical",
+            "partial={partial}"
+        );
+        let conn = repaired.connection();
+        let stale: bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key IN ('task_summary_v1_ready','task_summary_v1_definition') AND value LIKE 'old-definition%')",[],|row|row.get(0)).unwrap();
+        assert!(!stale);
     }
-    let repaired = Store::new(dir.path()).unwrap();
-    assert_eq!(summary(&repaired, "/summary")["title"], "canonical");
-    let conn = repaired.connection();
-    let stale: bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key='task_summary_v1_ready' AND value LIKE 'old-definition:%')",[],|row|row.get(0)).unwrap();
-    assert!(!stale);
 }

@@ -13,7 +13,7 @@
 use super::{Store, StoreError};
 use crate::store::ReadTransaction;
 use crate::tracker::{Task, TaskComment, TaskEvent, TaskState, TimelineEntry};
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 use std::collections::HashMap;
 use std::path::PathBuf;
 

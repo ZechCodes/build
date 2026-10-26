@@ -14,6 +14,11 @@ it("rejects dangerous syntax before loading or rendering measurement DOM", async
   const hostile = [
     '%%{init: {"securityLevel":"loose"}}%%\nflowchart LR\nA-->B',
     '---\nconfig:\n securityLevel: loose\n---\nflowchart LR\nA-->B',
+    'flowchart LR\nA["safe<br onload=alert(1)>unsafe"]',
+    'flowchart LR\nA["safe<br/><b>bold</b>"]',
+    'flowchart LR\nA["safe<br/><script>alert(1)</script>"]',
+    'flowchart LR\nA["safe<br/>&lt;img&gt;"]',
+    'flowchart LR\nA["safe<br/ ><img src=x>"]',
     'flowchart LR\nA[<img src="https://evil.test/x">]',
     'flowchart LR\nA[&lt;img src=x&gt;]',
     'flowchart LR\nA[\\u003cimg]',
@@ -64,4 +69,11 @@ it("evicts old cached renders at the 32-entry bound", async () => {
   for (let index = 0; index < 33; index++) await renderer.renderMermaid(`flowchart LR\nA${index}-->B`, "light");
   await renderer.renderMermaid("flowchart LR\nA0-->B", "light");
   expect(library.render).toHaveBeenCalledTimes(34);
+});
+
+it.each(["<br>", "<br/>", "<br />", "<BR>", "<BR/>", "<Br />"])("allows only the plain line-break tag %s through to strict rendering", async (tag) => {
+  const source = `flowchart LR\nA["First${tag}Second"]`;
+  await renderer.renderMermaid(source, "light");
+  expect(library.render).toHaveBeenCalledWith(expect.any(String), source, expect.any(HTMLElement));
+  expect(library.initialize).toHaveBeenCalledWith(expect.objectContaining({ securityLevel: "strict", htmlLabels: false, flowchart: { htmlLabels: false } }));
 });

@@ -4618,7 +4618,8 @@ async completions, and preserves source plus a quiet error on failure.
 
 Mermaid uses strict security and text-only labels, but its live measurement DOM
 makes final-output sanitization alone insufficient. Authored configuration,
-HTML/entities/escapes, custom styles, links, image/icon metadata and legacy
+HTML (except attribute-free `<br>`, `<br/>`, and `<br />` line breaks, case-insensitive),
+entities/escapes, custom styles, links, image/icon metadata and legacy
 sequence actor properties/details are rejected before rendering. An owned
 measurement container is always removed. Global render/configuration calls are
 serialized; up to 32 source/theme results are cached. `mermaidSvg.js` rebuilds

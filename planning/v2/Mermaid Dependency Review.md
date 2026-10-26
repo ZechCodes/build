@@ -38,7 +38,9 @@ rejects config/frontmatter and `%%` directives/comments; HTML, entities, escapes
 and markdown/math labels (including Mermaid’s `#word;` entities); authored CSS commands, resource URLs and URL functions;
 image/icon `@{…}` metadata; and sequence `properties`/`details`/`links`/`link`
 commands (including legacy actor icon forms and relative/protocol-relative
-resources). Plain structural arrows such as `<|--` remain supported. Sources
+resources). Plain structural arrows such as `<|--` remain supported. As of #897, only
+attribute-free `<br>`, `<br/>`, and `<br />` (case-insensitive) are also
+permitted; Mermaid renders them as SVG text line breaks with HTML labels disabled. Sources
 over 16,384 UTF-16 units are refused; Mermaid’s graph edge limit is set to 200.
 Limit violations fall back. These
 restrictions produce the original escaped source with a small fixed error;

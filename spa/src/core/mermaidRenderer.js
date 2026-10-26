@@ -10,13 +10,17 @@ let sequence = 0;
 const cache = new Map();
 
 // Reject resource-bearing syntax BEFORE Mermaid's temporary measurement DOM.
-// This deliberately supports text labels only. Escapes/entities, HTML/markdown
-// labels, config/frontmatter, custom CSS, clicks and image/icon metadata fall
-// back to source rather than relying on Mermaid's sanitizer for transient DOM.
+// This deliberately supports text labels with plain line-break tags only.
+// Escapes/entities, other HTML/markdown labels, config/frontmatter, custom CSS,
+// clicks and image/icon metadata fall back to source rather than relying on
+// Mermaid's sanitizer for transient DOM.
 export function assertMermaidSource(source) {
   if (source.length > SOURCE_LIMIT) throw new Error("Diagram is too large");
   if (/^\s*---/.test(source) || /%%/.test(source)) throw new Error("Diagram configuration is unsupported");
-  if (/[<&\\`\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|#\w+;|\$\$|ﬂ°|¶ß/.test(source.replace(/<(?=[|.-])/g, ""))) throw new Error("Use plain text diagram labels");
+  // Ignore only attribute-free <br>, <br/> and <br /> for this check.
+  // Pass the original source to Mermaid so it can split SVG text into lines.
+  const textSource = source.replace(/<br(?: ?\/)?>/gi, "").replace(/<(?=[|.-])/g, "");
+  if (/[<&\\`\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|#\w+;|\$\$|ﬂ°|¶ß/.test(textSource)) throw new Error("Use plain text diagram labels");
   if (/(?:^|[;\n])\s*(?:properties|details|links|link)\b/i.test(source) || /\b(?:icon|img|image)["']?\s*:/i.test(source)) throw new Error("Actor metadata is unsupported");
   if (/\b(?:click|classDef|style|linkStyle)\b/i.test(source) || /@\{|\burl\s*\(|(?:https?|javascript|data|file|blob|vbscript)\s*:/i.test(source)) throw new Error("Diagram resources and styling are unsupported");
 }

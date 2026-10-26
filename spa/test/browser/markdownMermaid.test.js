@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { loadBrowserModules, mountLayout, openLayoutSession } from "./layoutHarness.mjs";
+import { syncFlowchart } from "../fixtures/mermaidSyncFlowchart.js";
 let session;
 beforeAll(async () => { session = await openLayoutSession({ plugins: [{ name: "mermaid-test-dependencies", config: () => ({ optimizeDeps: { include: ["mermaid"] } }) }] }); });
 afterAll(async () => { await session?.close(); });
@@ -85,6 +86,9 @@ it("loads no Mermaid runtime for ordinary markdown and rejects hostile transient
     const hostile = [
       '%%{init: {"securityLevel":"loose","themeCSS":"@import url(https://evil.test/config)"}}%%\nflowchart LR\nA-->B',
       '---\nconfig:\n securityLevel: loose\n themeCSS: "@import url(https://evil.test/yaml)"\n---\nflowchart LR\nA-->B',
+      'flowchart LR\nA["safe<br onload=window.pwned=1>unsafe"]',
+      'flowchart LR\nA["safe<br/><b>bold</b>"]',
+      'flowchart LR\nA["safe<br/><script>window.pwned=1</script>"]',
       'flowchart LR\nA["<img src=https://evil.test/html onerror=window.pwned=1>"]',
       'flowchart LR\nA["&lt;img src=https://evil.test/entity&gt;"]',
       'flowchart LR\nA@{ img: "https://evil.test/shape" }',
@@ -150,5 +154,52 @@ it("rejects sequence actor metadata before any transient image href assignment o
       expect(await page.locator("pre").isVisible()).toBe(true);
     }
     expect(resources).toEqual([]);
+  });
+}, 60_000);
+
+it("renders the #887 sync flowchart with multiline labels, cylinder, decision and labelled edges", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await setup(page, basePath);
+    await page.evaluate((source) => window.__setDiagram(source), syncFlowchart);
+    await page.waitForFunction(() => document.querySelector(".md-mermaid > svg") || window.__diagramError, null, { timeout: 30_000 });
+    expect(await page.evaluate(() => window.__diagramError)).toBeNull();
+    const result = await page.evaluate(() => {
+      const svg = document.querySelector(".md-mermaid > svg");
+      const lines = [...svg.querySelectorAll("tspan")].filter((span) => !span.querySelector("tspan")).map((span) => ({ text: span.textContent, y: span.getBoundingClientRect().y }));
+      const shapeFor = (label) => {
+        const text = [...svg.querySelectorAll("text")].find((node) => node.textContent.replace(/\s/g, "").startsWith(label));
+        for (let group = text?.parentElement; group && group !== svg; group = group.parentElement) {
+          const shape = group.querySelector(":scope > polygon, :scope > path.md-svg-shape");
+          if (shape) return shape.localName;
+        }
+        return null;
+      };
+      return { cylinder: shapeFor("Durableeventjournal"), decision: shapeFor("Canwereplaya"), text: svg.textContent, lines, paths: svg.querySelectorAll("path").length, polygons: svg.querySelectorAll("polygon").length, unsafe: svg.querySelectorAll("br, foreignObject, script, [onload], style").length };
+    });
+    for (const label of ["Durable event journal", "numbered changes + deletion records", "Can we replay a", "small retained backlog?", "Yes", "No", "Views redraw from cache"]) expect(result.text.replace(/\s/g, "")).toContain(label.replace(/\s/g, ""));
+    const top = result.lines.find((line) => line.text === " together");
+    const bottom = result.lines.find((line) => line.text === " durable");
+    expect(top).toBeDefined();
+    expect(bottom).toBeDefined();
+    expect(bottom.y).toBeGreaterThan(top.y);
+    expect(result.cylinder).toBe("path");
+    expect(result.decision).toBe("polygon");
+    expect(result.paths).toBeGreaterThan(0);
+    expect(result.polygons).toBeGreaterThan(0);
+    expect(result.unsafe).toBe(0);
+    expect(await page.locator("pre").isHidden()).toBe(true);
+    expect(await page.locator(".md-mermaid-measure").count()).toBe(0);
+  });
+}, 60_000);
+
+it.each(["<br>", "<br/>", "<br />", "<BR>", "<BR/>", "<Br />"])("renders %s as an explicit SVG line break", async (tag) => {
+  await session.withPage(async ({ page, basePath }) => {
+    await setup(page, basePath);
+    await page.evaluate((tag) => window.__setDiagram(`flowchart LR\nA["First${tag}Second"]`), tag);
+    await page.waitForFunction(() => document.querySelector(".md-mermaid > svg") || window.__diagramError, null, { timeout: 30_000 });
+    expect(await page.evaluate(() => window.__diagramError)).toBeNull();
+    const lines = await page.evaluate(() => [...document.querySelectorAll("main svg tspan")].filter((span) => !span.querySelector("tspan")).map((span) => ({ text: span.textContent, y: span.getBoundingClientRect().y })));
+    expect(lines.map((line) => line.text)).toEqual(["First", "Second"]);
+    expect(lines[1].y).toBeGreaterThan(lines[0].y);
   });
 }, 60_000);

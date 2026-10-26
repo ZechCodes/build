@@ -69,6 +69,47 @@ fn api_version_is_what_versions_json_calls_current() {
 }
 
 #[test]
+fn bounded_task_reads_are_additive_and_independently_advertised() {
+    let advertised = capabilities(false);
+    assert!(advertised.contains(&"tasks.listSummaries"));
+    assert!(advertised.contains(&"tasks.filterChoices"));
+    assert!(!v1::methods().iter().any(|(name, _)| *name == "tasks.listSummaries"));
+    let fixture = read_json(&fixtures_root().join("v1/tasks.list.json"));
+    assert!(fixture["result"].get("summary").is_none());
+    assert!(fixture["result"]["tasks"][0].get("body").is_some());
+    let summary = &fixture["summaries"];
+    assert_eq!(summary["since"], "3.26.0");
+    assert_eq!(summary["default_limit"], 100);
+    assert_eq!(summary["max_limit"], 500);
+    assert_eq!(summary["empty_selection"], "invalid_params");
+    let examples: Vec<_> = fixture["examples"].as_array().unwrap().iter()
+        .filter(|example| example["params"]["summary"] == true).collect();
+    assert!(examples.len() >= 3, "summary, sparse continuation and truncation witnesses");
+    for example in &examples {
+        assert_eq!(example["result"]["summary"], true);
+        assert!(example["result"]["identities"].is_object());
+        for row in example["result"]["tasks"].as_array().unwrap() {
+            for field in ["body", "attachments", "identities", "timeline", "dependencies"] {
+                assert!(row.get(field).is_none(), "summary exposes {field}");
+            }
+        }
+    }
+    assert!(examples.iter().any(|example| example["result"]["tasks"] == serde_json::json!([])
+        && example["result"]["next_cursor"].is_string()));
+    assert!(examples.iter().any(|example| example["result"]["tasks"][0]["summary_truncated"] == true));
+    let choices = read_json(&fixtures_root().join("v1/tasks.filterChoices.json"));
+    assert_eq!(choices["since"], "3.26.0");
+    assert_eq!(choices["default_limit"], 100);
+    assert_eq!(choices["max_limit"], 500);
+    let (_, handler) = v1::methods().iter().find(|(name, _)| *name == "tasks.filterChoices").unwrap();
+    for dimension in ["label", "assignee", "status", "state"] {
+        let params = serde_json::json!({"project_id":"proj-1", "dimension":dimension});
+        assert!(handler.parse_params(&params).is_ok());
+    }
+    assert!(handler.parse_params(&serde_json::json!({"project_id":"proj-1", "dimension":"category"})).is_err());
+}
+
+#[test]
 fn every_fixture_has_the_spec_shape() {
     for (method, fixture) in method_fixtures() {
         assert!(fixture["since"].is_string(), "{method}: since");

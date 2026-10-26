@@ -168,6 +168,10 @@ impl Harness for ClaudeHarness {
         true
     }
 
+    fn compacts_before_opening(&self) -> bool {
+        true
+    }
+
     fn prepare_compaction_policy(
         &self,
         requested: crate::compaction::ResolvedCompactionPolicy,

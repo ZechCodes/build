@@ -1413,9 +1413,11 @@ its current observation before declaring automatic compaction due. The common
 ledger and queue deliver deferred input once after compaction settles.
 
 Automatic delivery asks the live session policy whether its last trustworthy
-context reading reached the captured threshold (`>=`). Only an idle warm
-session is eligible; unknown readings and legacy sessions without a snapshot
-never schedule threshold compaction. Native mode never schedules a duplicate
+context reading reached the captured threshold (`>=`). Idle warm sessions are
+eligible. A cold Claude managed fallback with an available compact command also
+uses its captured admission policy and saved reading before its first input,
+even before init. Unknown readings and legacy sessions without a snapshot never
+schedule threshold compaction. Native mode never schedules a duplicate
 Build threshold command. The existing ledger, manual/agent-requested commands,
 queue and consumption receipts retain their behavior. A successful send spends
 its reading once. Failed/cancelled/interrupted native compaction items are not

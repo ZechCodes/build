@@ -96,6 +96,10 @@ impl Harness for AdkHarness {
         ClaudeHarness.compacts_on_command()
     }
 
+    fn compacts_before_opening(&self) -> bool {
+        ClaudeHarness.compacts_before_opening()
+    }
+
     fn prepare_compaction_policy(
         &self,
         requested: crate::compaction::ResolvedCompactionPolicy,

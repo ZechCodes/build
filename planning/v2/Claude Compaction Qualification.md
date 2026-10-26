@@ -13,6 +13,9 @@ exception: `autoCompactEnabled=false` or truthy `DISABLE_AUTO_COMPACT` /
 with the disabling reason on the wire. A window-only override stays Native.
 The child still requests native enablement; managed policy takes precedence.
 Manual `/compact` remains available unless managed policy disables it too.
+When available, the managed fallback compacts a saved reading at or above its
+threshold before the first cold resumed input, including before ADK init;
+below-threshold input proceeds normally.
 
 The disable parser matches 2.1.284 (`1`, `true`, `yes`, `on`, trimmed and case
 insensitive; byte 197482109). Later local fragments overwrite earlier scalar

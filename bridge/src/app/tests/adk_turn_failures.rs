@@ -161,12 +161,103 @@ async fn managed_block_repeat_guard_does_not_wait_for_store_writer_or_read_pool(
     managed_block_scenario(ManagedBlockScenario::BusyStore).await;
 }
 
+#[tokio::test]
+async fn cold_managed_fallback_compacts_saved_context_before_the_first_wake() {
+    for above in [-1_i64, 0, 1] {
+        let fixture =
+            ManagedBlockFixture::new(ManagedBlockScenario::BeforeInitCommandAvailable).await;
+        let turn = {
+            let mut app = fixture.state.lock().unwrap();
+            app.record_agent_turn_context(
+                &fixture.owner,
+                &fixture.agent,
+                crate::harness::TurnContext {
+                    context_tokens: fixture.threshold.checked_add_signed(above).unwrap(),
+                    cache_read_tokens: 0,
+                },
+            );
+            let queued = app.delivery_queue.queued_last().unwrap();
+            PendingAgentTurn {
+                operation_id: queued.operation_id.clone(),
+                root: queued.root.clone(),
+                owner: queued.owner.clone(),
+                agent_id: queued.agent_id.clone(),
+                conversation_id: queued.conversation_id.clone(),
+                model_choice: queued.model_choice.clone(),
+                choice_revision: queued.choice_revision,
+                interrupt: false,
+                phase: "cold-fallback",
+                say: None,
+                wants_catch_up: false,
+                survives_refusal: false,
+            }
+        };
+        assert!(fixture.worker.compaction_policy().is_none());
+        let due = above >= 0;
+        assert_eq!(
+            crate::app::runtime::delivery::compaction::compact_before_turn(
+                &fixture.state,
+                &turn,
+                Spawned::Fresh,
+                "first wake",
+                &a_frame(&fixture.state),
+            ),
+            due,
+            "only a due cold resumed managed fallback compacts before input"
+        );
+        if due {
+            assert_eq!(
+                fixture.state.lock().unwrap().runs[&fixture.owner]
+                    .agents
+                    .by_id(&fixture.agent)
+                    .unwrap()
+                    .last_context_tokens,
+                None
+            );
+            wait_for(Duration::from_secs(5), || {
+                (fixture.worker.status() == AgentStatus::Waiting).then_some(())
+            })
+            .await
+            .expect("cold compact completes");
+        }
+        let expected = if due { 2 } else { 1 };
+        deliver_pending_agent_turns(&fixture.state);
+        let sent = wait_for(Duration::from_secs(5), || {
+            let text = std::fs::read_to_string(&fixture.input).ok()?;
+            (text.lines().count() == expected).then_some(text)
+        })
+        .await
+        .expect("the queued waking assignment follows compaction");
+        let turns: Vec<serde_json::Value> = sent
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        if due {
+            assert_eq!(turns[0]["message"]["content"][0]["text"], "/compact");
+        }
+        assert_ne!(
+            turns.last().unwrap()["message"]["content"][0]["text"],
+            "/compact"
+        );
+        deliver_pending_agent_turns(&fixture.state);
+        assert_eq!(
+            std::fs::read_to_string(&fixture.input)
+                .unwrap()
+                .lines()
+                .count(),
+            expected
+        );
+        fixture.worker.end();
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ManagedBlockScenario {
     Warm,
     BeforeInit,
     HistoricalTail,
     BusyStore,
+    BeforeInitCommandAvailable,
 }
 
 async fn managed_block_scenario(scenario: ManagedBlockScenario) {
@@ -233,7 +324,10 @@ impl ManagedBlockFixture {
             .unwrap()
             .to_string();
         let input = temp.path().join("managed-blocked-input");
-        let cold = matches!(scenario, ManagedBlockScenario::BeforeInit);
+        let cold = matches!(
+            scenario,
+            ManagedBlockScenario::BeforeInit | ManagedBlockScenario::BeforeInitCommandAvailable
+        );
         let session = open_managed_child(&input, &choice, cold).await;
         let mut policy = crate::harness::harness_for(choice.provider)
             .prepare_compaction_policy(
@@ -248,13 +342,17 @@ impl ManagedBlockFixture {
                 ),
             )
             .unwrap();
-        // Exact policy produced when managed DISABLE_COMPACT blocks native AND manual recovery.
+        // Captured managed fallback; only DISABLE_COMPACT also blocks the command.
         policy.enforcement = CompactionEnforcement::BetweenTurn;
         policy.native_settings = None;
         policy.translated_trigger = None;
-        policy.capabilities.between_turn_compact = false;
-        policy.reason =
-            Some("managed policy DISABLE_COMPACT disables native and manual compaction".into());
+        policy.capabilities.between_turn_compact =
+            matches!(scenario, ManagedBlockScenario::BeforeInitCommandAvailable);
+        policy.reason = Some(if policy.capabilities.between_turn_compact {
+            "managed policy DISABLE_AUTO_COMPACT disables native compaction".into()
+        } else {
+            "managed policy DISABLE_COMPACT disables native and manual compaction".into()
+        });
         let observation = app.agent_compaction_observation(&owner, &agent, Some(&policy), None);
         assert_eq!(observation["enforcement"], "between_turn");
         assert_eq!(observation["reason"], policy.reason.as_deref().unwrap());

@@ -338,6 +338,7 @@ fn context() -> HarnessContext {
 }
 
 mod activity;
+mod context_overflow;
 mod native_compaction;
 
 mod protocol_reader;

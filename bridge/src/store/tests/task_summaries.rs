@@ -1117,6 +1117,13 @@ fn chronological_activity_increments_match_replay_across_marks_gaps_and_late_ent
     assert_matches_history(&store, &task.id);
 }
 
+fn assert_invalid_metadata_reference(reader: &ReadTransaction<'_>) {
+    assert!(matches!(
+        reader.list_task_summary_candidates("/summary", None, 1),
+        Err(StoreError::TaskSummaryInvalid(_))
+    ));
+}
+
 #[test]
 fn oversized_metadata_references_fail_explicitly_and_valid_opaque_case_is_preserved() {
     let dir = tempfile::tempdir().unwrap();
@@ -1149,10 +1156,7 @@ fn oversized_metadata_references_fail_explicitly_and_valid_opaque_case_is_preser
             rusqlite::params![path, "x".repeat(129), task.id],
         )
         .unwrap();
-        assert!(matches!(
-            reader.list_task_summary_candidates("/summary", None, 1),
-            Err(StoreError::TaskSummaryInvalid(_))
-        ));
+        assert_invalid_metadata_reference(&reader);
         conn.execute(
             "UPDATE reviews SET record=json_set(record,?1,'ValidCASE') WHERE task_id=?2",
             rusqlite::params![path, task.id],
@@ -1178,15 +1182,9 @@ fn oversized_metadata_references_fail_explicitly_and_valid_opaque_case_is_preser
         rusqlite::params!["x".repeat(129), task.id],
     )
     .unwrap();
-    assert!(matches!(
-        reader.list_task_summary_candidates("/summary", None, 1),
-        Err(StoreError::TaskSummaryInvalid(_))
-    ));
+    assert_invalid_metadata_reference(&reader);
     conn.execute("UPDATE tracker_delivery_intents SET id='IntentCASE',record=json_set(record,'$.target.agent_id',?1) WHERE task_id=?2",rusqlite::params!["x".repeat(129),task.id]).unwrap();
-    assert!(matches!(
-        reader.list_task_summary_candidates("/summary", None, 1),
-        Err(StoreError::TaskSummaryInvalid(_))
-    ));
+    assert_invalid_metadata_reference(&reader);
     conn.execute(
         "DELETE FROM tracker_delivery_intents WHERE task_id=?1",
         [&task.id],

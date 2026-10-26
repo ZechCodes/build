@@ -1030,3 +1030,89 @@ fn failed_migration_keeps_only_committed_batches_and_resumes_before_reader_admis
         .unwrap();
     assert_eq!(count, 256, "resume cannot duplicate the committed prefix");
 }
+
+#[test]
+fn chronological_activity_increments_match_replay_across_marks_gaps_and_late_entries() {
+    use crate::tracker::{TaskEvent, TaskEventKind};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = Task::drafted(
+        "/summary",
+        "incremental parity",
+        Actor::User,
+        "2026-01-01T00:00:00Z",
+    );
+    task.watched = true;
+    task.read_through = Some("tc-00000000000000000000000001".into());
+    task.watch_started_after = Some("te-00000000000000000000000002".into());
+    task.activity_session = Some(crate::session_summary::SessionSummary {
+        session_started_ms: crate::session_summary::message_millis("2026-01-01T00:00:00Z"),
+        last_activity_ms: crate::session_summary::message_millis("2026-01-01T01:00:00Z"),
+    });
+    let mut task = store.create_tracker_task(task, &[]).unwrap();
+    for (i, at) in [
+        "2026-01-01T00:30:00Z",
+        "2026-01-01T01:00:00Z",
+        "2026-01-01T02:00:00Z",
+        "2026-01-01T10:00:00Z",
+        "2026-01-01T09:00:00Z",
+        "2026-01-01T20:00:00Z",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut note = said(&task, &format!("tc-{i:026}"), at);
+        note.mentions_user = true;
+        if i == 3 {
+            note.author = Actor::User;
+        }
+        store
+            .save_tracker_task_activity(&task, &[note], &[])
+            .unwrap();
+        assert_matches_history(&store, &task.id);
+    }
+    // A legacy watch without an explicit cursor changes the effective floor.
+    task.watch_started_after = None;
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    let mut watch = TaskEvent::new(
+        &task.id,
+        Actor::User,
+        TaskEventKind::Watched,
+        serde_json::json!({}),
+        "2026-01-01T21:00:00Z",
+    );
+    watch.id = "te-00000000000000000000000030".into();
+    store
+        .save_tracker_task_activity(&task, &[], &[watch])
+        .unwrap();
+    assert_matches_history(&store, &task.id);
+    store
+        .save_tracker_task_activity(
+            &task,
+            &[said(
+                &task,
+                "tc-00000000000000000000000031",
+                "2026-01-01T22:00:00Z",
+            )],
+            &[],
+        )
+        .unwrap();
+    assert_matches_history(&store, &task.id);
+    task.status = "done".into();
+    task.done_at = None;
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    let mut done = TaskEvent::new(
+        &task.id,
+        Actor::Agent {
+            agent_id: "agent-one".into(),
+        },
+        TaskEventKind::Moved,
+        serde_json::json!({"to":"done","by":"report"}),
+        "2026-01-01T23:00:00Z",
+    );
+    done.id = "te-00000000000000000000000032".into();
+    store
+        .save_tracker_task_activity(&task, &[], &[done])
+        .unwrap();
+    assert_matches_history(&store, &task.id);
+}

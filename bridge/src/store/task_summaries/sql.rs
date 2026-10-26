@@ -267,9 +267,14 @@ fn history_triggers(table: &str) -> String {
         } else {
             insert_facts(table, "id=NEW.id")
         };
+        let refresh = if operation == "INSERT" {
+            activity::inserted(&id, "NEW.id")
+        } else {
+            activity::refresh(&id)
+        };
         sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_{table}_{operation} AFTER {operation} ON {table} BEGIN
             DELETE FROM tracker_task_summary_facts WHERE task_id={removed}.task_id AND id={removed}.id;
-            {insert}{refresh} END;",refresh=activity::refresh(&id)));
+            {insert}{refresh} END;"));
     }
     sql.push_str(&format!("CREATE TRIGGER IF NOT EXISTS tracker_summary_{table}_reparent AFTER UPDATE OF task_id ON {table}
         WHEN OLD.task_id<>NEW.task_id BEGIN DELETE FROM tracker_task_summary_facts WHERE task_id=OLD.task_id AND id=OLD.id; {} END;",activity::refresh("OLD.task_id")));

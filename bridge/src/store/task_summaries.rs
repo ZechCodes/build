@@ -220,6 +220,8 @@ fn valid_assignee_choice(value: &Value) -> bool {
 /// Startup precedes reader admission. Every transaction advances a durable
 /// rowid checkpoint, so an interrupted migration resumes without restarting.
 pub(super) fn initialize(conn: &mut Connection) -> Result<(), StoreError> {
+    #[cfg(test)]
+    let _phase = MigrationPhase::new("initialize");
     let existing: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices','tracker_task_filter_values','tracker_task_summary_identities')",[],|row|row.get(0))?;
     let has_context = has_context_column(conn)?;
     if existing != 5 || !has_context {
@@ -273,6 +275,8 @@ fn drop_projection_triggers(conn: &Connection) -> Result<(), StoreError> {
 }
 
 fn reset_projection(conn: &mut Connection) -> Result<(), StoreError> {
+    #[cfg(test)]
+    let _phase = MigrationPhase::new("reset_projection");
     for table in [
         "tracker_task_filter_choices",
         "tracker_task_filter_values",
@@ -306,6 +310,8 @@ fn reset_table(conn: &mut Connection, table: &str) -> Result<(), StoreError> {
 }
 
 fn migrate_identities(conn: &mut Connection) -> Result<(), StoreError> {
+    #[cfg(test)]
+    let _phase = MigrationPhase::new("migrate_identities");
     migrate_batches(
         conn,
         "task_summary_v1_agents",
@@ -320,6 +326,8 @@ fn migrate_identities(conn: &mut Connection) -> Result<(), StoreError> {
 }
 
 fn migrate_facts(conn: &mut Connection, table: &str) -> Result<(), StoreError> {
+    #[cfg(test)]
+    let _phase = MigrationPhase::new(format!("facts:{table}"));
     let key = format!("task_summary_v1_{table}");
     migrate_batches(conn, &key, table, |tx, below, through| {
         tx.execute_batch(&sql::insert_facts(
@@ -331,6 +339,8 @@ fn migrate_facts(conn: &mut Connection, table: &str) -> Result<(), StoreError> {
 }
 
 fn migrate_tasks(conn: &mut Connection) -> Result<(), StoreError> {
+    #[cfg(test)]
+    let _phase = MigrationPhase::new("migrate_tasks");
     migrate_batches(
         conn,
         "task_summary_v1_tasks",
@@ -350,13 +360,60 @@ fn migrate_tasks(conn: &mut Connection) -> Result<(), StoreError> {
     )
 }
 
+#[cfg(test)]
+fn thread_cpu_us() -> u64 {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // Diagnostic-only Linux thread CPU clock, independent of wall scheduling.
+    if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) } != 0 {
+        return 0;
+    }
+    (time.tv_sec as u64) * 1_000_000 + (time.tv_nsec as u64) / 1000
+}
+
+#[cfg(test)]
+struct MigrationPhase {
+    name: String,
+    started: std::time::Instant,
+    started_cpu_us: u64,
+}
+
+#[cfg(test)]
+impl MigrationPhase {
+    fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            started: std::time::Instant::now(),
+            started_cpu_us: thread_cpu_us(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for MigrationPhase {
+    fn drop(&mut self) {
+        eprintln!(
+            "task_summary_migration phase={} elapsed_us={} cpu_us={}",
+            self.name,
+            self.started.elapsed().as_micros(),
+            thread_cpu_us().saturating_sub(self.started_cpu_us)
+        );
+    }
+}
+
 fn migrate_batches(
     conn: &mut Connection,
     key: &str,
     table: &str,
     apply: impl Fn(&rusqlite::Transaction<'_>, i64, i64) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
+    #[cfg(test)]
+    let mut counts = (0_usize, 0_usize, 0_usize);
     loop {
+        #[cfg(test)]
+        let batch_started = std::time::Instant::now();
         let tx = conn.transaction()?;
         let below: i64 = tx
             .query_row(
@@ -371,9 +428,43 @@ fn migrate_batches(
             tx.commit()?;
             break;
         };
+        #[cfg(test)]
+        let batch_rows = {
+            let rows: i64 = tx.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE rowid>?1 AND rowid<=?2"),
+                params![below, through],
+                |r| r.get(0),
+            )?;
+            let rows = rows as usize;
+            counts = (counts.0 + 1, counts.1 + rows, counts.2.max(rows));
+            rows
+        };
+        #[cfg(test)]
+        let setup_us = batch_started.elapsed().as_micros();
+        #[cfg(test)]
+        let apply_started = std::time::Instant::now();
+        #[cfg(test)]
+        let apply_cpu_started = thread_cpu_us();
         apply(&tx, below, through)?;
+        #[cfg(test)]
+        let apply_us = apply_started.elapsed().as_micros();
+        #[cfg(test)]
+        let apply_cpu_us = thread_cpu_us().saturating_sub(apply_cpu_started);
         tx.execute("INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, through.to_string()])?;
+        #[cfg(test)]
+        let commit_started = std::time::Instant::now();
+        #[cfg(test)]
+        let commit_cpu_started = thread_cpu_us();
         tx.commit()?;
+        #[cfg(test)]
+        if counts.0 <= 5 || counts.0 % 10 == 0 || batch_rows < 128 {
+            eprintln!("task_summary_migration_batch table={table} batch={} below={below} through={through} rows={batch_rows} setup_us={setup_us} apply_us={apply_us} apply_cpu_us={apply_cpu_us} commit_us={} commit_cpu_us={}",counts.0,commit_started.elapsed().as_micros(),thread_cpu_us().saturating_sub(commit_cpu_started));
+        }
     }
+    #[cfg(test)]
+    eprintln!(
+        "task_summary_migration table={table} batches={} rows={} max_batch_rows={}",
+        counts.0, counts.1, counts.2
+    );
     Ok(())
 }

@@ -38,6 +38,7 @@
 
 import { discoverRosterThreads, discoverSyncOwnership, emptySyncDiscovery, queueSuccessor, readsSyncGroup as readsGroup, requiredSuccessorGroups, syncReadGroup } from "./syncSuccessors.js";
 import { syncDiagnostics } from "./syncDiagnostics.js";
+import { updateRosterSelection } from "./syncRosterSelection.js";
 import { isRestoringInPlace } from "./connectionStatusModel.js";
 import { threadHistoryStart, trimThreadHistory } from "./threadRetention.js";
 import { projectTerminalRpc } from "./projectTerminalRpc.js";
@@ -776,15 +777,15 @@ async function refreshProjectAgents(context, projects, entityId = null, afterWri
  * current pass, so workers discovered on boot receive histories in this pass. */
 function projectRosterReads(context, view, pass, discovery) {
   if (!bridgeCapabilities(context.deviceId).agents?.projectWorkers) return [];
-  return view.projects.filter((project) => project.entity_id || project.run_id).map((project) => ({
+  return view.projects.map((project, index) => ({
     entityId: project.entity_id || project.run_id,
     projectId: project.project_id || project.id,
-    read: () => refreshProjectAgents(context, view.projects, project.entity_id || project.run_id, async (roster) => {
+    read: () => refreshProjectAgents(context, [project], project.entity_id || project.run_id, (roster) => {
       discoverRosterThreads(discovery, roster.entity_id, pass.rows.get(roster.entity_id)?.agents, roster.agents);
-      view.projects = await projectsWithAgentRosters(context.deviceId, view.projects);
-      Object.assign(pass, await workspacesToRead(context, view));
+      updateRosterSelection(view, pass, index, roster);
+      syncDiagnostics.selected(context.syncTurn?.diagnostic, pass.selection);
     }),
-  }));
+  })).filter(({ entityId }) => entityId);
 }
 
 async function refreshWorkspaceSummaries(context, view, fence) {
@@ -1053,9 +1054,10 @@ async function workspacesToRead(context, view) {
   const routed = routedEntityId(App.route, view);
   const order = [...new Set([...(routed ? [routed] : []), ...active, ...recent])].filter((id) => rows.has(id));
   const conversations = (ids) => ids.reduce((count, id) => count + (rows.get(id)?.agents || []).length, 0);
-  syncDiagnostics.selected(context.syncTurn?.diagnostic, { active: conversations(activeIds),
-    recent: conversations(recent), projectOwner: conversations(owners) });
-  return { order, rows, routed };
+  const selection = { active: conversations(activeIds), recent: conversations(recent), projectOwner: conversations(owners) };
+  syncDiagnostics.selected(context.syncTurn?.diagnostic, selection);
+  const rosterBaseRows = new Map((view.items || []).map((row) => [entityIdOf(row), row]));
+  return { order, rows, routed, activeIds: new Set(activeIds), selection, rosterBaseRows };
 }
 
 /** The Recent rows worth reading: aged out first, then asked what survived.

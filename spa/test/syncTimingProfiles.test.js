@@ -279,6 +279,10 @@ it.each(profiles)("#879 profile $label separates logical RPC and actual cache wo
   // Baseline scheduler counts through taskFeed row projection. Keep new-worker
   // publication prompt even when the pass's selection strategy changes.
   expect(report.rosterRowPublication[0].idbCallbacks).toBeLessThanOrEqual(size.projects === 1 ? 15 : 33);
+  // Initial selection and the lists-only successor may scan the account.
+  // Each roster completion must update only its owner.
+  expect(report.cache.accountRosterSelections).toBe(3);
+  expect(report.cache.recentExpiries).toBe(size.recent ? 2 : 0);
   expect(report.cache.idbCallbacks).toBeGreaterThan(0);
   expect(report.cache.cacheDrainWallMs).toBeGreaterThan(0);
 });

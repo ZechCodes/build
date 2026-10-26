@@ -3523,6 +3523,9 @@ Roster pulls use the sync planner and its two shared background wire slots.
 The selected project's roster has foreground authority; unrelated held roster
 replies cannot delay selected thread, Git or task recovery. Landing a complete
 roster extends that pass's conversation jobs before it reads worker histories.
+Account selection and Recent expiry run once per pass; each roster completion
+updates only its owner's selection and diagnostic counts. The roster's cache
+write still publishes immediately, independently of other owners' roster reads.
 State and thread invalidations refresh the complete record through the same
 scheduler. Roster admission captures every named thread generation and checks
 the roster write and those generation records in one transaction; a late

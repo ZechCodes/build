@@ -46,13 +46,15 @@ const BASE_LATENCY = { "board.list": 100, "project.list": 100, "workspace.list":
   "git.status": 600, "fs.tree": 200, "term.list": 100, "git.log": 200,
   "git.unpushed": 400, "git.show": 500, "run.diff": 300, "worktree.diff": 300, "agent.list": 100 };
 const EPOCH = Date.parse("2026-10-25T12:00:00Z");
-let sync, cache, idbTasks;
+let sync, cache, diagnostics, idbTasks;
 beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
   delete navigator.locks;
-  // Only Date is faked. IDB uses real event-loop turns; RPCs use the logical clock below.
+  // Date and Diagnostics share logical time. IDB uses real event-loop turns;
+  // RPCs use the logical clock below, with no timer-based network simulation.
   vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(EPOCH);
+  vi.spyOn(performance, "now").mockImplementation(() => Date.now() - EPOCH);
   idbTasks = 0;
   vi.stubGlobal("setImmediate", (callback) => {
     idbTasks += 1;
@@ -65,8 +67,9 @@ beforeEach(async () => {
   // The real greeting records this capability before starting sync.
   await cache.writeCached({ deviceId: "scale", entityId: "", kind: "project-agents-support" }, { projectWorkers: true });
   sync = await import("../src/core/cacheSync.js");
+  ({ syncDiagnostics: diagnostics } = await import("../src/core/syncDiagnostics.js"));
 });
-afterEach(() => { sync.stopCacheSync(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { sync.stopCacheSync(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 // fake-indexeddb schedules through global setImmediate. Drain its tracked
 // macrotasks plus promise continuations; never estimate a disk delay with sleep.
@@ -80,7 +83,7 @@ async function cacheTurns() {
   throw new Error("IDB did not quiesce");
 }
 
-function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projects = 1, ownerAgents = 0, latency = {} } = {}) {
+function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projects = 1, ownerAgents = 0, records = 23, latency = {} } = {}) {
   const projectRows = Array.from({ length: projects }, (_, index) => ({ project_id: `project-${index}`, sources: [],
     ...(ownerAgents ? { entity_id: `owner-${index}` } : {}) }));
   const rows = Array.from({ length: workspaces }, (_, index) => ({
@@ -91,7 +94,7 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
       conversation_id: `c-${index}-${agent}`, thread_id: `thread-${index}-${agent}` })),
   }));
   let now = 0, periodStart = 0, stageStart = 0, stage = "startup", ringActive = false, ringStop = null;
-  const pending = [], calls = [], stages = [], passEnds = [], observedPasses = new Set();
+  const pending = [], calls = [], stages = [], passEnds = [], ringTransitions = [], observedPasses = new Set();
   mark = (next) => {
     if (next === stage) return;
     stages.push({ stage, start: stageStart, end: now });
@@ -106,8 +109,8 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
       "agent.list": () => ({ entity_id: params.entity_id, pinned_agent_id: `${params.entity_id}-agent-0`,
         agents: Array.from({ length: ownerAgents }, (_, index) => ({ id: `${params.entity_id}-agent-${index}`,
           conversation_id: `${params.entity_id}-c-${index}`, thread_id: `${params.entity_id}-t-${index}` })) }),
-      "thread.page": () => ({ thread_id: params.thread_id, thread_last_sequence: 23,
-        items: params.after_sequence ? [] : Array.from({ length: 23 }, (_, index) => ({ type: "message",
+      "thread.page": () => ({ thread_id: params.thread_id, thread_last_sequence: records,
+        items: params.after_sequence ? [] : Array.from({ length: records }, (_, index) => ({ type: "message",
           data: { id: `message-${index}`, sequence: index + 1, role: "user", body: "x".repeat(1024) } })), has_more: false }),
       "tasks.columns": () => ({ columns: [{ id: "backlog", name: "Backlog" }] }),
       "tasks.list": () => {
@@ -128,6 +131,7 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
   context = { deviceId: "scale", session: {}, greeted: Promise.resolve(), active: () => true };
   context.cacheScope = { deviceId: "scale", active: context.active };
   context.rpc = (method, params = {}, envelope = {}) => new Promise((resolve) => {
+    expect(ringActive, `${method} must run inside the connection ring`).toBe(true);
     const duration = typeof latency[method] === "function" ? latency[method](params) : latency[method] ?? BASE_LATENCY[method];
     const call = { method, stage, start: now, end: now + duration,
       priority: envelope.priority || "foreground" };
@@ -138,6 +142,7 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
     } });
   });
   sync.subscribeConnectionSync((active) => {
+    if (ringActive !== active) ringTransitions.push(active);
     if (ringActive && !active) ringStop = now;
     ringActive = active;
   });
@@ -145,7 +150,7 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
     calls, rows,
     nextPeriod() {
       periodStart = now; stageStart = now; stage = "startup"; ringStop = null;
-      calls.length = 0; stages.length = 0; passEnds.length = 0;
+      calls.length = 0; stages.length = 0; passEnds.length = 0; ringTransitions.length = 0;
     },
     push: (items) => watchers.find((entry) => entry.kinds.includes("thread")).onChanges(items),
     async drive(until) {
@@ -170,6 +175,15 @@ function fixture({ workspaces = 40, agents = 5, tasks = 800, patches = 2, projec
     async finish(label) {
       await this.drive(() => ringStop !== null);
       mark("finished");
+      expect(ringTransitions, "the ring spans all conversations and chained passes").toEqual([true, false]);
+      const period = diagnostics.report().periods.at(-1);
+      expect(period.stop).toBe(now - periodStart);
+      for (const call of calls.filter(({ method }) => method === "thread.page")) {
+        const wanted = call.priority === "foreground" ? "foreground" : "inbox";
+        const containing = period.passes.flatMap((pass) => pass.stages).filter(({ stage, start, end }) =>
+          stage === wanted && start <= call.start - periodStart && end >= call.end - periodStart);
+        expect(containing, `${call.priority} thread RPC belongs to its Diagnostics stage`).toHaveLength(1);
+      }
       const report = { label, ringMs: ringStop - periodStart,
         passEndsMs: passEnds.map((time) => time - periodStart), snapshotDrainMs: ringStop - passEnds.at(-1),
         threadResponseBytes: calls.filter((call) => call.method === "thread.page").reduce((sum, call) => sum + call.bytes, 0),
@@ -191,10 +205,10 @@ it("reports empty-cache, fresh-session cached load, and same-session restored pa
   expect(cold.verbs["thread.page"]).toBe(200);
   expect(cold.verbs["tasks.list"]).toBe(8);
   expect(cold.verbs["git.show"]).toBe(80);
-  expect(cold.ringMs).toBe(158900);
+  expect(cold.ringMs).toBe(108900);
   sync.stopCacheSync(); context.session = {}; model.nextPeriod(); sync.startCacheSync();
   const cached = await model.finish("hard refresh equivalent: new in-memory sync lifetime/session, retained IDB");
-  expect(cached.ringMs).toBe(132900);
+  expect(cached.ringMs).toBe(82900);
   expect(cached.verbs["thread.page"]).toBe(200);
   expect(cached.verbs["git.show"]).toBeUndefined();
   expect(cached.threadResponseBytes).toBeLessThan(cold.threadResponseBytes / 10);
@@ -202,7 +216,7 @@ it("reports empty-cache, fresh-session cached load, and same-session restored pa
   const restored = sync.syncRestoredDevice("scale", context.session);
   const restoredReport = await model.finish("same-session syncRestoredDevice with completed previous pass");
   await restored;
-  expect(restoredReport.ringMs).toBe(132900);
+  expect(restoredReport.ringMs).toBe(82900);
 });
 
 it("grounds a 400-conversation first walk in many selected project and workspace rosters", async () => {
@@ -212,7 +226,7 @@ it("grounds a 400-conversation first walk in many selected project and workspace
   expect(result.verbs["agent.list"]).toBe(20);
   expect(result.verbs["thread.page"]).toBe(400);
   expect(result.verbs["tasks.list"]).toBe(20);
-  expect(result.ringMs).toBeGreaterThan(180000);
+  expect(result.ringMs).toBe(165100);
 });
 
 it("keeps selected conversation and checkout data ahead of the long inbox walk", async () => {
@@ -227,7 +241,7 @@ it("keeps selected conversation and checkout data ahead of the long inbox walk",
   expect(firstThread.end).toBe(600);
   expect(model.calls.find((call) => call.method === "git.status").priority).toBe("foreground");
   expect(foreground.ms).toBe(2650);
-  expect(inbox.ms).toBe(99500);
+  expect(inbox.ms).toBe(50000);
   console.log(JSON.stringify({ selectedThreadAnswerMs: firstThread.end,
     foregroundDataMs: foreground.ms, otherThreadWalkMs: inbox.ms,
     note: "cache availability boundaries; DOM paint time is not modeled" }));
@@ -243,7 +257,7 @@ it("reports a chained pass without restarting the ring", async () => {
   expect(result.verbs["board.list"]).toBe(2);
   expect(result.verbs["thread.page"]).toBe(400);
   expect(result.verbs["git.show"]).toBe(80);
-  expect(result.ringMs).toBeGreaterThan(250000);
+  expect(result.ringMs).toBe(191800);
 });
 
 it("separates a short pass from one captured slow push RPC", async () => {
@@ -261,4 +275,38 @@ it("separates a short pass from one captured slow push RPC", async () => {
   console.log(JSON.stringify({ passEndMs: passEnd, snapshotDrainMs: result.ringMs - passEnd }));
   expect(passEnd).toBeLessThan(5000);
   expect(result.ringMs - passEnd).toBeGreaterThan(115000);
+});
+
+
+// Serial baselines were captured with the same fixtures and RPC costs.
+it.each([
+  { label: "98 conversations / thread windows, 2254 message records (synthetic)", workspaces: 14, agents: 7, records: 23, serialMs: 59950, parallelMs: 35450 },
+  { label: "1 conversation, 23 message records", workspaces: 1, agents: 1, records: 23, serialMs: 2450, parallelMs: 2450 },
+  { label: "6 conversations, 138 message records", workspaces: 2, agents: 3, records: 23, serialMs: 4950, parallelMs: 3450 },
+  { label: "2 conversations, 98 message records (synthetic, not prod equivalent)", workspaces: 2, agents: 1, records: 49, serialMs: 2950, parallelMs: 2450 },
+])("reports a small warm profile: $label", async ({ label, serialMs, parallelMs, ...size }) => {
+  const model = fixture({ ...size, tasks: 8, patches: 0 });
+  sync.startCacheSync();
+  await model.finish(`small cold: ${label}`);
+  sync.stopCacheSync(); context.session = {}; model.nextPeriod(); sync.startCacheSync();
+  const warm = await model.finish(`small warm: ${label}`);
+  expect(warm.verbs["thread.page"]).toBe(size.workspaces * size.agents);
+  expect(warm.threadResponseBytes).toBeLessThan(size.workspaces * size.agents * 100);
+  expect(warm.ringMs).toBeLessThanOrEqual(serialMs);
+  expect(warm.ringMs).toBe(parallelMs);
+});
+
+
+it("keeps the ring and Inbox Diagnostics open until the slower concurrent walker completes", async () => {
+  const model = fixture({ workspaces: 1, agents: 2, tasks: 1, patches: 0,
+    latency: { "thread.page": (params) => params.thread_id === "thread-0-0" ? 200 : 900 } });
+  sync.startCacheSync();
+  await model.drive(() => model.now === 300);
+  expect(model.calls.filter(({ method }) => method === "thread.page")).toHaveLength(2);
+  expect(model.stopped).toBeNull();
+  const stages = diagnostics.report().periods[0].passes[0].stages;
+  expect(stages).toContainEqual(expect.objectContaining({ stage: "inbox", end: null }));
+  expect(stages.some(({ stage }) => stage === "background")).toBe(false);
+  expect(model.calls.some(({ method }) => method === "git.status")).toBe(false);
+  await model.finish("uneven workers: 200ms and 900ms thread replies");
 });

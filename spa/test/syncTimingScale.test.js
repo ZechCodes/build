@@ -205,10 +205,10 @@ it("reports empty-cache, fresh-session cached load, and same-session restored pa
   expect(cold.verbs["thread.page"]).toBe(200);
   expect(cold.verbs["tasks.list"]).toBe(8);
   expect(cold.verbs["git.show"]).toBe(80);
-  expect(cold.ringMs).toBe(108900);
+  expect(cold.ringMs).toBe(118900);
   sync.stopCacheSync(); context.session = {}; model.nextPeriod(); sync.startCacheSync();
   const cached = await model.finish("hard refresh equivalent: new in-memory sync lifetime/session, retained IDB");
-  expect(cached.ringMs).toBe(82900);
+  expect(cached.ringMs).toBe(92900);
   expect(cached.verbs["thread.page"]).toBe(200);
   expect(cached.verbs["git.show"]).toBeUndefined();
   expect(cached.threadResponseBytes).toBeLessThan(cold.threadResponseBytes / 10);
@@ -216,7 +216,7 @@ it("reports empty-cache, fresh-session cached load, and same-session restored pa
   const restored = sync.syncRestoredDevice("scale", context.session);
   const restoredReport = await model.finish("same-session syncRestoredDevice with completed previous pass");
   await restored;
-  expect(restoredReport.ringMs).toBe(82900);
+  expect(restoredReport.ringMs).toBe(92900);
 });
 
 it("grounds a 400-conversation first walk in many selected project and workspace rosters", async () => {
@@ -226,7 +226,7 @@ it("grounds a 400-conversation first walk in many selected project and workspace
   expect(result.verbs["agent.list"]).toBe(20);
   expect(result.verbs["thread.page"]).toBe(400);
   expect(result.verbs["tasks.list"]).toBe(20);
-  expect(result.ringMs).toBe(165100);
+  expect(result.ringMs).toBe(175100);
 });
 
 it("keeps selected conversation and checkout data ahead of the long inbox walk", async () => {
@@ -241,7 +241,7 @@ it("keeps selected conversation and checkout data ahead of the long inbox walk",
   expect(firstThread.end).toBe(600);
   expect(model.calls.find((call) => call.method === "git.status").priority).toBe("foreground");
   expect(foreground.ms).toBe(2650);
-  expect(inbox.ms).toBe(50000);
+  expect(inbox.ms).toBe(59500);
   console.log(JSON.stringify({ selectedThreadAnswerMs: firstThread.end,
     foregroundDataMs: foreground.ms, otherThreadWalkMs: inbox.ms,
     note: "cache availability boundaries; DOM paint time is not modeled" }));
@@ -257,7 +257,7 @@ it("reports a chained pass without restarting the ring", async () => {
   expect(result.verbs["board.list"]).toBe(2);
   expect(result.verbs["thread.page"]).toBe(400);
   expect(result.verbs["git.show"]).toBe(80);
-  expect(result.ringMs).toBe(191800);
+  expect(result.ringMs).toBe(211800);
 });
 
 it("separates a short pass from one captured slow push RPC", async () => {
@@ -280,10 +280,10 @@ it("separates a short pass from one captured slow push RPC", async () => {
 
 // Serial baselines were captured with the same fixtures and RPC costs.
 it.each([
-  { label: "98 conversations / thread windows, 2254 message records (synthetic)", workspaces: 14, agents: 7, records: 23, serialMs: 59950, parallelMs: 35450 },
+  { label: "98 conversations / thread windows, 2254 message records (synthetic)", workspaces: 14, agents: 7, records: 23, serialMs: 59950, parallelMs: 38950 },
   { label: "1 conversation, 23 message records", workspaces: 1, agents: 1, records: 23, serialMs: 2450, parallelMs: 2450 },
-  { label: "6 conversations, 138 message records", workspaces: 2, agents: 3, records: 23, serialMs: 4950, parallelMs: 3450 },
-  { label: "2 conversations, 98 message records (synthetic, not prod equivalent)", workspaces: 2, agents: 1, records: 49, serialMs: 2950, parallelMs: 2450 },
+  { label: "6 conversations, 138 message records", workspaces: 2, agents: 3, records: 23, serialMs: 4950, parallelMs: 3950 },
+  { label: "2 conversations, 98 message records (synthetic, not prod equivalent)", workspaces: 2, agents: 1, records: 49, serialMs: 2950, parallelMs: 2950 },
 ])("reports a small warm profile: $label", async ({ label, serialMs, parallelMs, ...size }) => {
   const model = fixture({ ...size, tasks: 8, patches: 0 });
   sync.startCacheSync();

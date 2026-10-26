@@ -670,28 +670,6 @@ export async function cachedAddresses(prefixAddress) {
   return keys.map((key) => addressOfParts(partsOfKey(key)));
 }
 
-/** Every address under a prefix last written before a moment, oldest first —
- *  what the expiry sweep drops. Walked over the write-time index's keys and
- *  bounded to the stale end of it, so a sweep reads neither the bodies it is
- *  dropping nor the ones it is keeping. */
-export async function cachedAddressesWrittenBefore(prefixAddress, writtenBefore) {
-  const prefix = `${keyOfParts(addressParts(prefixAddress))}|`;
-  const stale = [];
-  await inStore("readonly", (store) => {
-    stale.length = 0;
-    const walk = store.index(AT_INDEX).openKeyCursor(IDBKeyRange.upperBound(writtenBefore, true));
-    walk.onsuccess = () => {
-      const cursor = walk.result;
-      if (!cursor) return;
-      const key = String(cursor.primaryKey);
-      if (key.startsWith(prefix)) stale.push(addressOfParts(partsOfKey(key)));
-      cursor.continue();
-    };
-    return null;
-  });
-  return stale;
-}
-
 /** Expire several prefixes together without cloning bodies or one callback
  * per stale account record. The existing time index and bounded primary-key
  * reads intersect inside one exclusive transaction, so a refreshed record

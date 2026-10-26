@@ -488,8 +488,8 @@ describe("the format version", () => {
       await upgraded.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "now" });
       expect((await upgraded.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).value.head).toBe("now");
       // Including the sweeps, which need the index the old format lacks.
-      expect(await upgraded.cachedAddressesWrittenBefore({ deviceId: "dev-1", entityId: "run-1" }, Date.now() + 1))
-        .toEqual([{ deviceId: "dev-1", entityId: "run-1", kind: "status", sub: "" }]);
+      expect(await upgraded.expireCachedPrefixes([{ deviceId: "dev-1", entityId: "run-1" }], Date.now() + 1))
+        .toEqual({ dropped: [{ deviceId: "dev-1", entityId: "run-1", kind: "status", sub: "" }], kept: [] });
     });
   }
 });

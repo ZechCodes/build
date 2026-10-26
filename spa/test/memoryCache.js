@@ -185,12 +185,6 @@ export async function cachedSubKeys(deviceId, entityId, kind) {
 export const cachedAddresses = async (prefixAddress) =>
   keysUnder(prefixAddress).map((key) => addressOfParts(partsOfKey(key)));
 
-export const cachedAddressesWrittenBefore = async (prefixAddress, writtenBefore) =>
-  keysUnder(prefixAddress)
-    .filter((key) => records.get(key).at < writtenBefore)
-    .sort((one, other) => records.get(one).at - records.get(other).at)
-    .map((key) => addressOfParts(partsOfKey(key)));
-
 export const cachedRecords = async (prefixAddress) =>
   keysUnder(prefixAddress).map((key) => ({
     address: addressOfParts(partsOfKey(key)),

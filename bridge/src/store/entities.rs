@@ -475,6 +475,7 @@ impl Store {
             retain_agent_message_times(tx, owner_id, gone)?;
             tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [gone])?;
             tx.execute("DELETE FROM agents WHERE id = ?1", [gone])?;
+            super::task_summaries::identity_remove(tx, gone)?;
         }
 
         let mut upsert_agent = tx.prepare(
@@ -520,6 +521,7 @@ impl Store {
                 agent.ordinal,
                 serde_json::to_string(&skeleton).expect("an agent always serializes")
             ])?;
+            super::task_summaries::identity_refresh(tx, &agent.id)?;
 
             let mut stored: HashMap<i64, i64> = stored_cursors
                 .query_map(
@@ -777,6 +779,7 @@ impl Store {
                 .collect();
             drop(owned);
             for owner in std::iter::once(plan_id.to_string()).chain(runs) {
+                remove_owner_identities(tx, &owner)?;
                 tx.execute(
                     "DELETE FROM inbox_retained_run_messages WHERE run_id = ?1",
                     [&owner],
@@ -880,6 +883,7 @@ impl Store {
     }
     pub fn delete_run(&self, run_id: &str) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            remove_owner_identities(tx, run_id)?;
             tx.execute(
                 "DELETE FROM inbox_retained_run_messages WHERE run_id = ?1",
                 [run_id],
@@ -903,6 +907,7 @@ impl Store {
         project_id: &str,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            remove_owner_identities(tx, run_id)?;
             tx.execute(
                 "INSERT INTO inbox_retained_messages (project_id, ts_ms) \
                  SELECT ?2, ts_ms FROM inbox_retained_run_messages WHERE run_id = ?1",
@@ -1134,7 +1139,7 @@ pub(super) fn write_task(
             serde_json::to_string(&skeleton).expect("a Task always serializes")
         ],
     )?;
-    Ok(())
+    super::task_summaries::owner_refresh(tx, &record.id)
 }
 
 pub(super) fn write_run(
@@ -1156,6 +1161,18 @@ pub(super) fn write_run(
             serde_json::to_string(&skeleton).expect("a run always serializes")
         ],
     )?;
+    super::task_summaries::owner_refresh(tx, &record.id)
+}
+
+/// Capture roster IDs before deleting canonical rows so their bounded identity
+/// projections are removed in the same transaction as the owner.
+fn remove_owner_identities(tx: &rusqlite::Transaction, owner: &str) -> Result<(), StoreError> {
+    let ids = tx.prepare("SELECT id FROM agents WHERE owner_id=?1")?
+        .query_map([owner], |row| row.get::<_,String>(0))?
+        .collect::<Result<Vec<_>,_>>()?;
+    for id in ids {
+        super::task_summaries::identity_remove(tx, &id)?;
+    }
     Ok(())
 }
 

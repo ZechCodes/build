@@ -90,7 +90,12 @@ fn has_admitted_holder(
 /// Retirement and project history deletion share one transaction, so neither
 /// startup nor an off-lock completion can recover an orphaned assignment.
 pub(in crate::store) fn cancel_project(tx: &Transaction, project: &str) -> Result<(), StoreError> {
+    let affected = tx.prepare("SELECT DISTINCT task_id FROM tracker_delivery_intents WHERE project_key=?1 AND state<>'cancelled'")?
+        .query_map([project], |row| row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
     tx.execute("UPDATE tracker_delivery_intents SET state='cancelled', record=json_set(record, '$.state', 'cancelled') WHERE project_key=?1 AND state <> 'cancelled'", [project])?;
     tx.execute("UPDATE tracker_delivery_notices SET state='cancelled', record=json_set(record, '$.state', 'cancelled') WHERE project_key=?1 AND state='queued'", [project])?;
+    for task in affected {
+        crate::store::task_summaries::metadata_refresh(tx, &task)?;
+    }
     Ok(())
 }

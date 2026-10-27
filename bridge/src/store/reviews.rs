@@ -386,7 +386,7 @@ fn write_header(tx: &Transaction, header: &ReviewHeader) -> Result<(), StoreErro
             serde_json::to_string(header).expect("review header serializes")
         ],
     )?;
-    Ok(())
+    super::task_summaries::metadata_refresh(tx, &header.task_id)
 }
 
 fn require_task(tx: &Transaction, task_id: &str) -> Result<Task, StoreError> {

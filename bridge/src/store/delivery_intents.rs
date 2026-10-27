@@ -191,7 +191,7 @@ fn is_ready(conn: &Connection, intent: &DeliveryIntent) -> Result<bool, StoreErr
 
 fn write(conn: &Connection, intent: &DeliveryIntent) -> Result<(), StoreError> {
     conn.execute("INSERT INTO tracker_delivery_intents(id,task_id,project_key,generation,operation_id,state,record) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET state = ?6, record = ?7", params![intent.id,intent.task_id,intent.project_path,intent.generation as i64,intent.operation_id,intent.state,serde_json::to_string(intent).expect("delivery serializes")])?;
-    Ok(())
+    super::task_summaries::metadata_refresh(conn, &intent.task_id)
 }
 
 impl ReadTransaction<'_> {

@@ -326,6 +326,10 @@ impl Store {
                 path: database_path,
                 cause: cause.to_string(),
             })?;
+        // Canonical and projection writes share this one connection. Their
+        // combined working set exceeds rusqlite's default of 16; retain it
+        // rather than compiling the card program on every metadata write.
+        conn.set_prepared_statement_cache_capacity(32);
         // Refuse BEFORE writing anything. A store written by a newer bridge
         // must not receive this build's pragmas or DDL on the way to being
         // rejected — the refusal exists to leave it untouched.

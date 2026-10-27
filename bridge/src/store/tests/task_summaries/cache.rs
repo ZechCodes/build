@@ -19,8 +19,8 @@ unsafe extern "C" fn observe_projection_insert(
     if action == rusqlite::ffi::SQLITE_INSERT && !table.is_null() {
         // SAFETY: SQLite supplies a valid NUL-terminated table name for this
         // callback. The observer owns the atomic until it unregisters below.
-        let is_projection = unsafe { CStr::from_ptr(table) }.to_bytes()
-            == b"tracker_task_summaries";
+        let is_projection =
+            unsafe { CStr::from_ptr(table) }.to_bytes() == b"tracker_task_summaries";
         if is_projection {
             unsafe { &*state.cast::<AtomicUsize>() }.fetch_add(1, Ordering::Relaxed);
         }
@@ -60,11 +60,7 @@ impl Drop for ProjectionPreparations<'_> {
         // SAFETY: the mutex excludes all users while the still-live callback
         // state is removed. The Store outlives this observer.
         let code = unsafe {
-            rusqlite::ffi::sqlite3_set_authorizer(
-                connection.handle(),
-                None,
-                std::ptr::null_mut(),
-            )
+            rusqlite::ffi::sqlite3_set_authorizer(connection.handle(), None, std::ptr::null_mut())
         };
         assert_eq!(code, rusqlite::ffi::SQLITE_OK);
     }

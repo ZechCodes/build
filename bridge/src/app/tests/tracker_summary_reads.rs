@@ -13,7 +13,7 @@ fn summary_list_defaults_and_legacy_shape_are_independent() {
     let root = tempfile::tempdir().unwrap();
     let (_repo, mut app, project) = tracked(root.path());
     let path = app.tracker_project_path(&project).unwrap();
-    seed_summary_tasks(root.path(), &path, 1, 105);
+    seed_summary_tasks(&app, &path, 1, 105);
     let summary = answer(
         &mut app,
         "tasks.list",
@@ -189,10 +189,8 @@ fn bounded_summary_cursors_cannot_cross_projects_stores_or_modes() {
     drop(other_repo);
 }
 
-fn seed_summary_tasks(root: &Path, project: &str, from: usize, through: usize) {
-    let mut connection = rusqlite::Connection::open(root.join("store/build.db")).unwrap();
-    let tx = connection.transaction().unwrap();
-    let mut insert=tx.prepare("INSERT INTO tracker_tasks(id,project_key,number,state,status,created_at,updated_at,record) VALUES(?1,?2,?3,'open','backlog',?4,?4,?5)").unwrap();
+fn seed_summary_tasks(app: &AppState, project: &str, from: usize, through: usize) {
+    let store = app.tracker_store().unwrap();
     for number in from..=through {
         let mut task = crate::tracker::Task::drafted(
             project,
@@ -203,18 +201,9 @@ fn seed_summary_tasks(root: &Path, project: &str, from: usize, through: usize) {
         task.number = number as u64;
         task.labels = vec!["duplicate".into(), format!("label-{:03}", number % 130)];
         task.body = "body omitted from every summary".repeat(200);
-        insert
-            .execute(rusqlite::params![
-                task.id,
-                project,
-                task.number as i64,
-                task.created_at,
-                serde_json::to_string(&task).unwrap()
-            ])
-            .unwrap();
+        let saved = store.create_tracker_task(task, &[]).unwrap();
+        assert_eq!(saved.number, number as u64);
     }
-    drop(insert);
-    tx.commit().unwrap();
 }
 
 #[test]
@@ -222,7 +211,7 @@ fn byte_limited_summary_pages_consume_each_task_exactly_once() {
     let root = tempfile::tempdir().unwrap();
     let (_repo, mut app, project) = tracked(root.path());
     let path = app.tracker_project_path(&project).unwrap();
-    seed_summary_tasks(root.path(), &path, 1, 75);
+    seed_summary_tasks(&app, &path, 1, 75);
     let connection = rusqlite::Connection::open(root.path().join("store/build.db")).unwrap();
     connection
         .execute(
@@ -263,7 +252,7 @@ fn oversized_summary_errors_without_publishing_a_partial_page_or_cursor() {
     let root = tempfile::tempdir().unwrap();
     let (_repo, mut app, project) = tracked(root.path());
     let path = app.tracker_project_path(&project).unwrap();
-    seed_summary_tasks(root.path(), &path, 1, 3);
+    seed_summary_tasks(&app, &path, 1, 3);
     let connection = rusqlite::Connection::open(root.path().join("store/build.db")).unwrap();
     let id: String = connection
         .query_row(
@@ -312,7 +301,7 @@ fn invalid_metadata_summary_fails_without_success_cursor_then_recovers() {
     let root = tempfile::tempdir().unwrap();
     let (_repo, mut app, project) = tracked(root.path());
     let path = app.tracker_project_path(&project).unwrap();
-    seed_summary_tasks(root.path(), &path, 1, 3);
+    seed_summary_tasks(&app, &path, 1, 3);
     let connection = rusqlite::Connection::open(root.path().join("store/build.db")).unwrap();
     let id: String = connection
         .query_row(
@@ -328,6 +317,12 @@ fn invalid_metadata_summary_fails_without_success_cursor_then_recovers() {
             rusqlite::params![id, imported.to_string()],
         )
         .unwrap();
+    // Explicit import followed by public recovery is two setup transactions;
+    // arbitrary independent SQL does not maintain the Rust projection.
+    app.tracker_store()
+        .unwrap()
+        .repair_task_summaries(std::slice::from_ref(&id))
+        .unwrap();
     let params = json!({"project_id":project,"summary":true,"limit":3});
     for _ in 0..2 {
         let error = app.handle(req("tasks.list", params.clone()));
@@ -339,6 +334,10 @@ fn invalid_metadata_summary_fails_without_success_cursor_then_recovers() {
     }
     connection
         .execute("DELETE FROM reviews WHERE task_id=?1", [&id])
+        .unwrap();
+    app.tracker_store()
+        .unwrap()
+        .repair_task_summaries(std::slice::from_ref(&id))
         .unwrap();
     let repaired = answer(&mut app, "tasks.list", params);
     assert_eq!(repaired["tasks"].as_array().unwrap().len(), 3);
@@ -355,8 +354,9 @@ fn server_multi_selections_match_tagged_assignees_without_case_folding_ids() {
     let root = tempfile::tempdir().unwrap();
     let (_repo, mut app, project) = tracked(root.path());
     let path = app.tracker_project_path(&project).unwrap();
-    seed_summary_tasks(root.path(), &path, 1, 3);
+    seed_summary_tasks(&app, &path, 1, 3);
     let connection = rusqlite::Connection::open(root.path().join("store/build.db")).unwrap();
+    connection.execute_batch("BEGIN IMMEDIATE").unwrap();
     for (number, assignee, status, labels) in [
         (1, json!({"kind":"user"}), "in_review", json!(["API"])),
         (
@@ -374,6 +374,21 @@ fn server_multi_selections_match_tagged_assignees_without_case_folding_ids() {
     ] {
         connection.execute("UPDATE tracker_tasks SET status=?1,record=json_set(record,'$.status',?1,'$.assignee',json(?2),'$.labels',json(?3)) WHERE number=?4",rusqlite::params![status,assignee.to_string(),labels.to_string(),number]).unwrap();
     }
+    connection.execute_batch("COMMIT").unwrap();
+    let imported_ids = connection
+        .prepare("SELECT id FROM tracker_tasks WHERE project_key=?1 ORDER BY number")
+        .unwrap()
+        .query_map([&path], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(imported_ids.len(), 3);
+    // Preserve the imported status/opaque IDs exactly, then reconcile in the
+    // explicit public recovery transaction before any API summary read.
+    app.tracker_store()
+        .unwrap()
+        .repair_task_summaries(&imported_ids)
+        .unwrap();
     let params = json!({"project_id":project,"summary":true,"states":["open","closed"],"statuses":["In review","done"],"labels":["api","UI"],"assignees":[{"kind":"user"},{"kind":"agent","agent_id":"AgentA"}]});
     let result = answer(&mut app, "tasks.list", params);
     let numbers: Vec<u64> = result["tasks"]

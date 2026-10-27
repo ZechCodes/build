@@ -112,11 +112,11 @@ before creating the shared app mutex. Startup time is separate from page latency
 the first page never queues a hidden projection rebuild. Backfill checkpoints
 commit with batches of at most 128 canonical rows. A failed batch rolls back its
 facts and checkpoint together; restart resumes after the last committed batch.
-Completed projections retain a SQL-definition fingerprint, installed-object manifest
+Completed projections retain a Rust/SQL-definition fingerprint, installed-object manifest
 and SQLite schema generation. Intact reopens skip projection DDL, backfill and
-eager write-program preparation. An unrelated schema change only revalidates the
+eager maintenance-statement preparation. An unrelated schema change only revalidates the
 manifest; missing indexes are restored selectively, without replaying history.
-Missing/changed maintenance triggers, shared helper views or projection tables first persist
+Missing/changed projection tables or maintenance definitions first persist
 a repair marker, clear derived rows
 in bounded batches, then restart the backfill. Canonical records remain intact.
 Empty derived tables are recreated with the expected definitions in the same
@@ -126,16 +126,35 @@ migration cannot resume a committed prefix under changed projection rules.
 Batch counts bound row cardinality, not the size of an imported canonical body;
 one legacy record can still be large and must be parsed during migration.
 
-Persistent mutation triggers update cards, compact activity facts, dependency counterpart
-counts, and refcounted distinct choices in the writer's transaction, including
-writes from independent raw SQLite connections. Small source triggers share
-keyed SQL definitions and typed task context; no commit-time queue or connection
-registration is required. Derived changes are visible to subsequent statements
-inside that transaction and roll back with the canonical mutation. Reparenting
-refreshes both old and new endpoints. These helper definitions participate in
-the schema fingerprint and conservative repair before reader admission. A normal
-chronological history append updates retained counters and session times from
-the new fact; history edits, removals, late activity and watch-floor changes use
-the exact compact-fact derivation. Page reads use neither path. Performance
-evidence must report initial migration, subsequent startup, writes and actual
+Supported Rust producers maintain cards, compact activity facts, dependency
+counterpart counts, bounded identities, and refcounted distinct choices inside
+the canonical writer transaction. No projection triggers or helper views are
+installed. An upgrade retires legacy projection programs transactionally before
+backfill and reader admission. Maintenance finishes before the producer returns,
+so subsequent statements in the same transaction observe the derived change;
+a failed canonical write or maintenance step rolls both back. A chronological
+history append updates retained counters and session times from the new fact.
+History repair, late activity and watch-floor changes use the exact compact-fact
+derivation. Page reads use neither path.
+
+Independent SQL that bypasses these Rust producers does not automatically
+maintain projections. Import/repair code must call the shared maintenance API
+inside its transaction, refreshing both OLD and NEW endpoints for reparenting
+and capturing neighbors before deletion cascades remove their edge rows. This
+explicit ownership replaces the earlier independent-SQL guarantee by the design
+decision on #887. QA consistency tests compare canonical data with projections;
+future producer paths must participate in that coverage. Performance evidence
+must report initial backfill, subsequent startup, first/warm writes and actual
 carrier reads separately.
+
+| Canonical producer | Maintenance ownership |
+| --- | --- |
+| `tracker::write_tracker_task` | Compact typed task/card/context, choices, own dependency counts; state/status changes refresh dependents. Unchanged saves skip derived work. |
+| `tracker::append_activity` | One fact per inserted comment/event, incremental retained activity/card; duplicate IDs do not increment counts. |
+| `reviews::write_header` | Review metadata on the same task. |
+| `delivery_intents::write` and project cancellation | Deferred assignment metadata for affected task IDs. |
+| `waiting_on::graph::edit` and reconciliation | Own card after timestamp changes and both dependency endpoints after edge edits. |
+| `entities::write_agents`, owner writers and owner deletion | Bounded identity rows, including removed roster members and changed owner names. |
+| `reset_conversation` | Identity refresh after replacing complete agent skeletons. Receipt acknowledgments/delivery-status and retention mutate only transcript fields, which do not enter the identity projection. |
+| Project task-history deletion | Capture tasks and dependency neighbors before deletion; remove cards, facts and memberships, then refresh surviving counterpart counts. |
+| Legacy import and startup migrations | Runtime import uses the common entity producers; task rename and old agent migrations precede projection backfill. Explicit import/repair hooks cover keyed edits, deletion and reparenting. |

@@ -58,6 +58,13 @@ impl Store {
         ReadTransaction::new(&self.connection()).task_summary_identity(agent)
     }
 
+    pub fn task_summary_identity_with_owner(
+        &self,
+        agent: &str,
+    ) -> Result<Option<(crate::tracker::TaskAgentIdentity, Option<String>)>, StoreError> {
+        ReadTransaction::new(&self.connection()).task_summary_identity_with_owner(agent)
+    }
+
     pub fn list_task_summary_candidates(
         &self,
         project: &str,
@@ -86,16 +93,36 @@ impl ReadTransaction<'_> {
         &self,
         agent: &str,
     ) -> Result<Option<crate::tracker::TaskAgentIdentity>, StoreError> {
-        let raw: Option<String> = self
+        Ok(self
+            .task_summary_identity_with_owner(agent)?
+            .map(|(identity, _)| identity))
+    }
+
+    /// The owner path is a separate bounded lookup key, never a full roster or
+    /// owner record. The caller resolves it against its captured workspace map.
+    pub fn task_summary_identity_with_owner(
+        &self,
+        agent: &str,
+    ) -> Result<Option<(crate::tracker::TaskAgentIdentity, Option<String>)>, StoreError> {
+        let raw: Option<(String, Option<String>, bool)> = self
             .connection()
             .query_row(
-                "SELECT record FROM tracker_task_summary_identities WHERE agent_id=?1",
+                "SELECT record,owner_worktree_path,owner_path_invalid
+                 FROM tracker_task_summary_identities WHERE agent_id=?1",
                 [agent],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        raw.map(|raw| super::tracker::decode(&raw, "tracker_task_summary_identities", agent))
-            .transpose()
+        raw.map(|(raw, path, invalid)| {
+            if invalid {
+                return Err(StoreError::TaskSummaryInvalid(
+                    "identity owner worktree path is invalid or exceeds 4096 bytes".into(),
+                ));
+            }
+            super::tracker::decode(&raw, "tracker_task_summary_identities", agent)
+                .map(|identity| (identity, path))
+        })
+        .transpose()
     }
 
     /// Seeks one immutable number range. No task bodies, timeline records,
@@ -270,6 +297,7 @@ fn projection_definition() -> &'static ProjectionDefinition {
         hash.update(include_str!("task_summaries/sql.rs"));
         hash.update(include_str!("task_summaries/sql/activity.rs"));
         hash.update(include_str!("task_summaries/sql/choices.rs"));
+        hash.update(include_str!("../session_summary.rs"));
         ProjectionDefinition {
             fingerprint: format!("{:x}", hash.finalize()),
         }
@@ -348,6 +376,7 @@ fn projection_objects(conn: &Connection) -> Result<BTreeMap<String, String>, Sto
 /// Startup precedes reader admission. Every transaction advances a durable
 /// rowid checkpoint, so an interrupted migration resumes without restarting.
 pub(super) fn initialize(conn: &mut Connection) -> Result<bool, StoreError> {
+    register_timestamp_parser(conn)?;
     #[cfg(test)]
     let _phase = MigrationPhase::new("initialize");
     let definition = projection_definition();
@@ -399,6 +428,27 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<bool, StoreError> {
     migrate_tasks(conn)?;
     migrate_identities(conn)?;
     Ok(true)
+}
+
+/// Configure once when opening a maintenance connection, before statements are
+/// cached. No persistent SQL program or reader needs this producer-only helper.
+pub(super) fn register_timestamp_parser(conn: &Connection) -> Result<(), StoreError> {
+    use rusqlite::functions::FunctionFlags;
+    conn.create_scalar_function(
+        "task_summary_message_millis",
+        1,
+        FunctionFlags::SQLITE_UTF8
+            | FunctionFlags::SQLITE_DETERMINISTIC
+            | FunctionFlags::SQLITE_DIRECTONLY,
+        |context| {
+            Ok(context
+                .get_raw(0)
+                .as_str()
+                .ok()
+                .and_then(crate::session_summary::message_millis))
+        },
+    )?;
+    Ok(())
 }
 
 // Stamp only after the remaining startup maintenance: a first-open VACUUM can

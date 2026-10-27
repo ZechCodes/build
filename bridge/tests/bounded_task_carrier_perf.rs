@@ -239,7 +239,7 @@ impl Fixture {
         params: Value,
     ) -> Result<(Vec<Duration>, usize, usize), String> {
         let mut times = Vec::new();
-        let mut bytes = 0;
+        let mut max_bytes = 0;
         let mut rows = 0;
         for sample in 0..SAMPLES {
             let started = Instant::now();
@@ -253,10 +253,10 @@ impl Fixture {
             if response["ok"] != true {
                 return Err(response.to_string());
             }
-            bytes = serde_json::to_vec(&response["result"]).unwrap().len();
+            max_bytes = max_bytes.max(serde_json::to_vec(&response["result"]).unwrap().len());
             rows = validate_sample(self.count, scenario, &response["result"])?;
         }
-        Ok((times, bytes, rows))
+        Ok((times, max_bytes, rows))
     }
 }
 struct ScenarioResult {
@@ -422,7 +422,10 @@ async fn rejects_early_oversized_sample_when_final_sample_is_small() {
         .await
         .unwrap();
     assert_eq!(samples.0.len(), SAMPLES);
-    assert_eq!(samples.1, expected_bytes, "retain the largest sample, not the last");
+    assert_eq!(
+        samples.1, expected_bytes,
+        "retain the largest sample, not the last"
+    );
     let mut reports = Vec::new();
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         report_results(
@@ -435,7 +438,10 @@ async fn rejects_early_oversized_sample_when_final_sample_is_small() {
             |line| reports.push(line),
         );
     }));
-    assert!(failure.is_err(), "an early oversized result must fail the gate");
+    assert!(
+        failure.is_err(),
+        "an early oversized result must fail the gate"
+    );
     assert!(reports[0].contains(&format!("bytes={expected_bytes}")));
     let message = failure.unwrap_err().downcast::<String>().unwrap();
     assert!(message.contains(&format!("bytes={expected_bytes} exceeds 1048576")));

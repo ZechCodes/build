@@ -164,6 +164,7 @@ fn import_history_bulk_reparent_edits_and_deletes_are_immediate_and_match_replay
     let store = Store::new(dir.path()).unwrap();
     let [first, second] = pair(&store);
     let conn = Connection::open(dir.path().join("build.db")).unwrap();
+    projection::register_timestamp_parser(&conn).unwrap();
     conn.execute_batch("BEGIN IMMEDIATE").unwrap();
     for (number, at) in [
         (1, "2026-01-02T00:00:00.123456789Z"),
@@ -255,6 +256,7 @@ fn import_transaction_readers_observe_atomic_cards_facts_and_choices() {
     let store = Store::new(dir.path()).unwrap();
     let [task, _] = pair(&store);
     let writer = Connection::open(dir.path().join("build.db")).unwrap();
+    projection::register_timestamp_parser(&writer).unwrap();
     let snapshot = Connection::open(dir.path().join("build.db")).unwrap();
     snapshot.execute_batch("BEGIN").unwrap();
     assert_eq!(card(&snapshot, &task.id)["title"], "first");

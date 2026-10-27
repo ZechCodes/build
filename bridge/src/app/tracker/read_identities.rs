@@ -173,16 +173,29 @@ impl TaskIdentityContext {
 
     pub(super) fn identity(&self, id: &str, durable: &TaskAgentIdentity) -> TaskAgentIdentity {
         let mut identity = durable.clone();
+        identity.available = self.live.get(id).is_some_and(|live| live.available);
         if let Some(live) = self.live.get(id) {
             // Only association and availability are observations. Durable
             // names/provider/purpose/ordinal never come from a failed candidate.
             identity.workspace_id = live.workspace_id.clone().or(identity.workspace_id);
             identity.workspace_name = live.workspace_name.clone().or(identity.workspace_name);
-            identity.available = live.available;
         }
         if identity.project_role.is_some() {
             identity.workspace_id = None;
             identity.workspace_name = None;
+        }
+        identity
+    }
+
+    pub(super) fn committed_identity(
+        &self,
+        mut identity: TaskAgentIdentity,
+        owner_worktree_path: Option<&str>,
+    ) -> TaskAgentIdentity {
+        if identity.project_role.is_none() {
+            identity.workspace_id = owner_worktree_path
+                .and_then(|path| self.workspaces.get(Path::new(path)))
+                .cloned();
         }
         identity
     }

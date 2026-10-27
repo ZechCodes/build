@@ -54,7 +54,7 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] 
 libc = "0.2"
 # Safe directory-relative attachment cleanup; already pinned transitively.
 rustix = { version = "=1.1.4", features = ["fs"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "functions"] }
 webrtc = "0.20"
 # The facade webrtc reports TURN and STUN gathering failures through; `rtc.rs`
 # forwards those records, and only those, to stderr.

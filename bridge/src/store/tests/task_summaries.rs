@@ -4,6 +4,8 @@ use crate::tracker::{Actor, Task};
 
 #[path = "task_summaries/cache.rs"]
 mod cache;
+#[path = "task_summaries/identity_owner.rs"]
+mod identity_owner;
 #[path = "task_summaries/import_repair.rs"]
 mod import_repair;
 #[path = "task_summaries/lifecycle.rs"]

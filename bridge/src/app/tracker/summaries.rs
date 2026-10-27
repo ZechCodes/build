@@ -127,9 +127,14 @@ impl TaskReadContext {
                 .map_err(|error| format!("invalid summary identity: {error}"))?
                 .unwrap_or_else(|| super::read_identities::unknown_identity(id));
             let durable = source
-                .task_summary_identity(id)
+                .task_summary_identity_with_owner(id)
                 .stored()?
-                .map(|current| super::identities::retain_known_fields(&retained, current))
+                .map(|(current, owner_path)| {
+                    let current = self
+                        .identities
+                        .committed_identity(current, owner_path.as_deref());
+                    super::identities::retain_known_fields(&retained, current)
+                })
                 .unwrap_or(retained);
             let mut identity = self.identities.identity(id, &durable);
             // Display names can change in the live overlay. IDs stay exact.

@@ -54,7 +54,7 @@ macro_rules! task_queries {
 
 task_queries! {
     tracker_list_key() -> String;
-    task_summary_identity(id: &str) -> Option<crate::tracker::TaskAgentIdentity>;
+    task_summary_identity_with_owner(id: &str) -> Option<(crate::tracker::TaskAgentIdentity, Option<String>)>;
     list_task_summary_candidates(project: &str, below: Option<u64>, limit: usize) -> Vec<TaskSummaryCandidate>;
     list_task_filter_choices(project: &str, dimension: &str, after: Option<&str>, limit: usize) -> Vec<TaskFilterChoice>;
     load_tracker_task(id: &str) -> Option<Task>;

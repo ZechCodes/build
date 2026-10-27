@@ -20,7 +20,9 @@ CREATE INDEX IF NOT EXISTS tracker_summary_watched ON tracker_task_summary_facts
 CREATE INDEX IF NOT EXISTS tracker_summary_done ON tracker_task_summary_facts(task_id,at,id) WHERE done_move=1;
 CREATE TABLE IF NOT EXISTS tracker_task_summary_identities (
     agent_id TEXT PRIMARY KEY,
-    record TEXT NOT NULL CHECK(length(CAST(record AS BLOB))<=4096)
+    record TEXT NOT NULL CHECK(length(CAST(record AS BLOB))<=4096),
+    owner_worktree_path TEXT CHECK(length(CAST(owner_worktree_path AS BLOB))<=4096),
+    owner_path_invalid INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS tracker_task_summaries (
     task_id TEXT PRIMARY KEY, project_key TEXT NOT NULL, number INTEGER NOT NULL,
@@ -94,18 +96,10 @@ pub(super) fn fact_rows(table: &str) -> String {
         FROM {table}",timestamp=timestamp_millis(at))
 }
 
-// SQLite's date parser rounds fractions to milliseconds. Rust's
-// message_millis truncates nanoseconds, including towards zero before 1970.
-// Parse a whole second and the decimal fraction separately to agree exactly.
+// Incremental facts, explicit repair and bounded startup backfill all use the
+// same canonical Rust parser as legacy task activity/session reads.
 fn timestamp_millis(at: &str) -> String {
-    let zone = format!("CASE WHEN substr({at},-1)='Z' THEN 'Z' ELSE substr({at},-6) END");
-    let second = format!("unixepoch(substr({at},1,19)||({zone}))");
-    let fraction=format!("substr({at},instr({at},'.')+1,length({at})-instr({at},'.')-CASE WHEN substr({at},-1)='Z' THEN 1 ELSE 6 END)");
-    format!(
-        "CASE WHEN instr({at},'.')=0 THEN unixepoch({at})*1000 ELSE
-        ({second})*1000+CAST(substr(({fraction})||'000',1,3) AS INTEGER)+
-        CASE WHEN ({second})<0 AND substr(({fraction}),4) GLOB '*[1-9]*' THEN 1 ELSE 0 END END"
-    )
+    format!("task_summary_message_millis({at})")
 }
 
 /// Preserve valid bounded fields; legacy oversized strings are capped and
@@ -143,6 +137,9 @@ fn base_record() -> String {
             length(CAST(json_extract(t.record,'$.dismissed_through') AS BLOB))>128 OR
             length(CAST(json_extract(t.record,'$.assignee.agent_id') AS BLOB))>128 OR
             length(CAST(json_extract(t.record,'$.created_by.agent_id') AS BLOB))>128 OR
+            EXISTS(SELECT 1 FROM json_each(t.record,'$.identities') i
+                WHERE i.key IN (json_extract(t.record,'$.created_by.agent_id'),json_extract(t.record,'$.assignee.agent_id'))
+                AND length(CAST(json_extract(i.value,'$.workspace_id') AS BLOB))>128) OR
             length(CAST(json_extract(t.record,'$.links.parent_task_id') AS BLOB))>128 OR
             EXISTS(SELECT 1 FROM json_each(t.record,'$.trackers') WHERE length(CAST(value AS BLOB))>128) OR
             EXISTS(SELECT 1 FROM json_each(t.record,'$.links.workspace_ids') WHERE length(CAST(value AS BLOB))>128)
@@ -167,11 +164,15 @@ fn base_record() -> String {
 fn identities() -> &'static str {
     // A task may retain identities from its entire timeline. Only references
     // present on this card are projected; the timeline dictionary stays behind.
+    // Opaque navigation IDs are exact at the byte bound. Invalid IDs are left
+    // out of this bounded record and base_record marks the whole card invalid;
+    // readers must refuse it rather than publish an altered navigation target.
     r#"COALESCE((SELECT json_group_object(key,json(value)) FROM (SELECT i.key,json_object(
         'agent_id',substr(i.key,1,128),'name',substr(json_extract(i.value,'$.name'),1,128),
         'project_role',substr(json_extract(i.value,'$.project_role'),1,64),
         'ordinal',json_extract(i.value,'$.ordinal'),
-        'workspace_id',substr(json_extract(i.value,'$.workspace_id'),1,128),
+        'workspace_id',CASE WHEN length(CAST(json_extract(i.value,'$.workspace_id') AS BLOB))<=128
+            THEN json_extract(i.value,'$.workspace_id') END,
         'workspace_name',substr(json_extract(i.value,'$.workspace_name'),1,128),
         'provider',substr(json_extract(i.value,'$.provider'),1,64),
         'available',json(CASE WHEN json_extract(i.value,'$.available')=1 THEN 'true' ELSE 'false' END)) value
@@ -304,14 +305,26 @@ fn identity_rows() -> &'static str {
         'project_role',substr(json_extract(a.record,'$.project_role'),1,64),'ordinal',a.ordinal,
         'provider',substr(COALESCE(json_extract(a.record,'$.choice.provider'),'claude'),1,64),
         'workspace_id',NULL,'workspace_name',CASE WHEN json_extract(a.record,'$.project_role') IS NULL
-            THEN substr(json_extract(r.record,'$.worktree_name'),1,128) END,'available',json('false')) record
+            THEN substr(json_extract(r.record,'$.worktree_name'),1,128) END,'available',json('false')) record,
+        CASE WHEN json_extract(a.record,'$.project_role') IS NULL
+            AND json_type(r.record,'$.worktree_path')='text'
+            AND length(CAST(json_extract(r.record,'$.worktree_path') AS BLOB))<=4096
+            THEN json_extract(r.record,'$.worktree_path') END owner_worktree_path,
+        CASE WHEN json_extract(a.record,'$.project_role') IS NULL AND
+            (json_type(r.record,'$.worktree_path') NOT IN ('text','null')
+             OR length(CAST(json_extract(r.record,'$.worktree_path') AS BLOB))>4096)
+            THEN 1 ELSE 0 END owner_path_invalid
         FROM agents a LEFT JOIN implementations r ON r.id=a.owner_id WHERE length(CAST(a.id AS BLOB))<=128"
 }
 
 /// Owner metadata is parsed on writes only. Reads seek a bounded identity row.
 pub(super) fn refresh_identities(predicate: &str) -> String {
-    format!("INSERT INTO tracker_task_summary_identities(agent_id,record) SELECT a.id,a.record FROM ({rows}) a WHERE {predicate}
-        ON CONFLICT(agent_id) DO UPDATE SET record=excluded.record WHERE record IS NOT excluded.record;",predicate=predicate.replace("a.rowid","a.source_rowid"),rows=identity_rows())
+    format!("INSERT INTO tracker_task_summary_identities(agent_id,record,owner_worktree_path,owner_path_invalid)
+        SELECT a.id,a.record,a.owner_worktree_path,a.owner_path_invalid FROM ({rows}) a WHERE {predicate}
+        ON CONFLICT(agent_id) DO UPDATE SET record=excluded.record,
+            owner_worktree_path=excluded.owner_worktree_path,owner_path_invalid=excluded.owner_path_invalid
+        WHERE record IS NOT excluded.record OR owner_worktree_path IS NOT excluded.owner_worktree_path
+            OR owner_path_invalid IS NOT excluded.owner_path_invalid;",predicate=predicate.replace("a.rowid","a.source_rowid"),rows=identity_rows())
 }
 
 pub(super) use activity::{append_update, patch_card, refresh as refresh_activity};

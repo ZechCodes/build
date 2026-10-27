@@ -125,6 +125,9 @@ definition fingerprint is saved before the first backfill batch, so an interrupt
 migration cannot resume a committed prefix under changed projection rules.
 Batch counts bound row cardinality, not the size of an imported canonical body;
 one legacy record can still be large and must be parsed during migration.
+Automatic table repair covers ordinary rowid tables from supported schemas.
+Externally replacing a derived table with `WITHOUT ROWID` is outside this
+guarantee; startup can fail before reader admission for that unsupported shape.
 
 Supported Rust producers maintain cards, compact activity facts, dependency
 counterpart counts, bounded identities, and refcounted distinct choices inside
@@ -136,6 +139,14 @@ a failed canonical write or maintenance step rolls both back. A chronological
 history append updates retained counters and session times from the new fact.
 History repair, late activity and watch-floor changes use the exact compact-fact
 derivation. Page reads use neither path.
+Fact timestamps use the same Rust RFC3339 parser as legacy activity summaries,
+including lowercase forms and leap seconds. The parser is registered once on
+each maintenance connection; definition changes rebuild previously derived facts.
+Current roster identities carry an internal owner worktree path of at most
+4,096 UTF-8 bytes alongside their bounded identity record. Summary reads seek
+that row and resolve the path through the captured workspace map before retained
+fallback and live availability. Oversized owner paths produce an explicit stored-data
+error; no full roster or owner record is loaded per summary page.
 
 Independent SQL that bypasses these Rust producers does not automatically
 maintain projections. Import/repair code must call the shared maintenance API

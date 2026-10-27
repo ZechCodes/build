@@ -387,6 +387,60 @@ fn reports_and_accepts_exact_latency_and_byte_limits() {
     assert_eq!(reports.len(), 1);
 }
 
+#[tokio::test]
+async fn rejects_early_oversized_sample_when_final_sample_is_small() {
+    let tools = tempfile::tempdir().unwrap();
+    std::env::set_var("PATH", project_bridge::private_path(tools.path()));
+    let mut fixture = Fixture::new(1);
+    let oversized = json!({"tasks":[{"number":1}],"padding":"x".repeat(1_048_576)});
+    let expected_bytes = serde_json::to_vec(&oversized).unwrap().len();
+    let handler = build_bridge::carrier::FrameHandler::new(
+        build_bridge::timing::FrameClock::new(),
+        move |_sender, frame, _timer| {
+            let result = if frame.payload["id"] == 0 {
+                oversized.clone()
+            } else {
+                json!({"tasks":[{"number":1}]})
+            };
+            json!({"id":frame.payload["id"],"ok":true,"result":result})
+        },
+    );
+    let transport = transport::generate_transport_keypair();
+    fixture.intake = FrameIntake::new(handler, transport.clone());
+    fixture.wire = ChannelWire::open();
+    fixture
+        .wire
+        .open_session(
+            &fixture.intake,
+            "bounded-perf",
+            &session_init("bounded-perf", &transport.public_key_b64, &fixture.key),
+        )
+        .unwrap();
+    fixture.wire.outbound.try_recv().unwrap();
+    let samples = fixture
+        .samples(0, "carrier.syntheticBytes", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(samples.0.len(), SAMPLES);
+    assert_eq!(samples.1, expected_bytes, "retain the largest sample, not the last");
+    let mut reports = Vec::new();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        report_results(
+            vec![ScenarioResult {
+                tasks: 1,
+                scenario: 0,
+                method: "carrier.syntheticBytes",
+                result: Ok(samples),
+            }],
+            |line| reports.push(line),
+        );
+    }));
+    assert!(failure.is_err(), "an early oversized result must fail the gate");
+    assert!(reports[0].contains(&format!("bytes={expected_bytes}")));
+    let message = failure.unwrap_err().downcast::<String>().unwrap();
+    assert!(message.contains(&format!("bytes={expected_bytes} exceeds 1048576")));
+}
+
 #[test]
 fn rejects_empty_or_out_of_order_carrier_results_before_timing_aggregation() {
     assert!(validate_sample(3, 0, &json!({"tasks":[]}))

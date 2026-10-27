@@ -12,6 +12,8 @@ mod lifecycle;
 mod producer_reviews;
 #[path = "task_summaries/producer_transactions.rs"]
 mod producer_transactions;
+#[path = "task_summaries/timestamps.rs"]
+mod timestamps;
 
 #[test]
 fn bounded_summary_omits_task_payload_and_carries_watch_count() {

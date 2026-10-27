@@ -278,6 +278,8 @@ mod tracker_inbox_wire;
 mod tracker_list_pages;
 mod tracker_list_reads;
 mod tracker_observation_purity;
+mod tracker_summary_identity_availability;
+mod tracker_summary_identity_bounds;
 mod tracker_summary_reads;
 mod tracker_tools;
 mod tracker_tracking;

@@ -1,5 +1,4 @@
-//! Bounded task cards. The persisted projection is updated by SQLite triggers,
-//! including writes made by lifecycle paths that update task JSON directly.
+//! Bounded task cards maintained by Rust producer hooks in canonical transactions.
 //! Histories are reduced on writes, never decoded while serving a card page.
 
 use super::{ReadTransaction, Store, StoreError};
@@ -9,7 +8,13 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+mod maintenance;
 mod sql;
+pub(super) use maintenance::{
+    dependency_refresh, history_append, history_repair, identity_refresh, identity_remove,
+    metadata_refresh, owner_refresh, task_dependents_refresh, task_refresh, task_remove,
+    task_written, HistoryKind,
+};
 
 /// Hard bound on candidates, including one lookahead row.
 pub const MAX_SUMMARY_CANDIDATES: usize = 2001;
@@ -235,19 +240,19 @@ fn valid_assignee_choice(value: &Value) -> bool {
 // generation. Missing/replaced tables, indexes or triggers invalidate it even
 // when all row checkpoints remain. Row writes do not change schema_version.
 struct ProjectionDefinition {
-    triggers: String,
     fingerprint: String,
 }
 
 fn projection_definition() -> &'static ProjectionDefinition {
     static DEFINITION: OnceLock<ProjectionDefinition> = OnceLock::new();
     DEFINITION.get_or_init(|| {
-        let triggers = sql::triggers();
         let mut hash = Sha256::new();
         hash.update(sql::TABLES);
-        hash.update(&triggers);
+        hash.update(include_str!("task_summaries/maintenance.rs"));
+        hash.update(include_str!("task_summaries/sql.rs"));
+        hash.update(include_str!("task_summaries/sql/activity.rs"));
+        hash.update(include_str!("task_summaries/sql/choices.rs"));
         ProjectionDefinition {
-            triggers,
             fingerprint: format!("{:x}", hash.finalize()),
         }
     })
@@ -289,9 +294,10 @@ fn revalidate_projection(conn: &mut Connection, fingerprint: &str) -> Result<boo
         .iter()
         .filter(|(name, sql)| actual.get(*name) != Some(*sql))
         .collect();
-    if changed
-        .iter()
-        .any(|(_, sql)| !sql.starts_with("CREATE INDEX"))
+    if actual.keys().any(|name| !expected.contains_key(name))
+        || changed
+            .iter()
+            .any(|(_, sql)| !sql.starts_with("CREATE INDEX"))
     {
         require_projection_rebuild(conn)?;
         return Ok(false);
@@ -341,7 +347,11 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<bool, StoreError> {
         |row| row.get(0),
     )?;
     if changed_definition {
-        require_projection_rebuild(conn)?;
+        let tx = conn.transaction()?;
+        require_projection_rebuild(&tx)?;
+        drop_projection_triggers(&tx)?;
+        drop_projection_views(&tx)?;
+        tx.commit()?;
     }
     let existing: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices','tracker_task_filter_values','tracker_task_summary_identities','tracker_task_summary_context')",[],|row|row.get(0))?;
     let has_context = has_context_column(conn)?;
@@ -350,8 +360,11 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<bool, StoreError> {
         // between DDL and reset must not make a partial unit look complete.
         require_projection_rebuild(conn)?;
     }
-    drop_projection_triggers(conn)?;
-    drop_projection_views(conn)?;
+    // Retirement and repair intent commit together before any resumable reset.
+    let tx = conn.transaction()?;
+    drop_projection_triggers(&tx)?;
+    drop_projection_views(&tx)?;
+    tx.commit()?;
     // The v1 fact index used this name before it became a keyed helper view.
     conn.execute_batch("DROP INDEX IF EXISTS tracker_summary_activity")?;
     let rebuilding: bool = conn.query_row(
@@ -364,7 +377,6 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<bool, StoreError> {
     } else {
         conn.execute_batch(sql::TABLES)?;
     }
-    conn.execute_batch(&sql::helpers())?;
     // Persist the input definition before any batch checkpoint. A later
     // binary must not resume a partially built projection with different rules.
     conn.execute(
@@ -376,7 +388,6 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<bool, StoreError> {
     migrate_metadata(conn)?;
     migrate_tasks(conn)?;
     migrate_identities(conn)?;
-    conn.execute_batch(&definition.triggers)?;
     Ok(true)
 }
 
@@ -567,7 +578,7 @@ fn migrate_tasks(conn: &mut Connection) -> Result<(), StoreError> {
                 .query_map(params![below, through], |r| r.get(0))?
                 .collect::<Result<_, _>>()?;
             for id in ids {
-                tx.execute_batch(&sql::rebuild_task(&format!("'{}'", id.replace('\'', "''"))))?;
+                maintenance::task_refresh_unchecked(tx, &id)?;
             }
             Ok(())
         },

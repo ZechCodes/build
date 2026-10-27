@@ -33,6 +33,24 @@ pub struct TaskFilterChoice {
 }
 
 impl Store {
+    /// Reconcile explicitly imported or repaired task endpoints in one commit.
+    /// The caller supplies both OLD and NEW task ids for reparented records,
+    /// plus endpoints of removed dependency edges. Deleted tasks are cleaned up.
+    /// This recovery operation scans those tasks' histories; ordinary appends
+    /// use the incremental producer hooks instead.
+    pub fn repair_task_summaries(&self, task_ids: &[String]) -> Result<(), StoreError> {
+        let task_ids: std::collections::BTreeSet<_> = task_ids.iter().collect();
+        self.in_transaction(|tx| {
+            for id in task_ids {
+                task_refresh(tx, id)?;
+                history_repair(tx, id)?;
+                dependency_refresh(tx, id)?;
+                task_dependents_refresh(tx, id)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn task_summary_identity(
         &self,
         agent: &str,
@@ -346,22 +364,14 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<bool, StoreError> {
         [&definition.fingerprint],
         |row| row.get(0),
     )?;
-    if changed_definition {
-        let tx = conn.transaction()?;
-        require_projection_rebuild(&tx)?;
-        drop_projection_triggers(&tx)?;
-        drop_projection_views(&tx)?;
-        tx.commit()?;
-    }
     let existing: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices','tracker_task_filter_values','tracker_task_summary_identities','tracker_task_summary_context')",[],|row|row.get(0))?;
     let has_context = has_context_column(conn)?;
-    if existing != 6 || !has_context {
-        // Commit repair intent before recreating a missing table: a crash
-        // between DDL and reset must not make a partial unit look complete.
-        require_projection_rebuild(conn)?;
-    }
+    let obsolete_programs:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type IN ('trigger','view') AND (name GLOB 'tracker_summary_*' OR name GLOB 'tracker_choices_*'))",[],|row|row.get(0))?;
     // Retirement and repair intent commit together before any resumable reset.
     let tx = conn.transaction()?;
+    if changed_definition || existing != 6 || !has_context || obsolete_programs {
+        require_projection_rebuild(&tx)?;
+    }
     drop_projection_triggers(&tx)?;
     drop_projection_views(&tx)?;
     tx.commit()?;
@@ -442,7 +452,7 @@ fn drop_projection_triggers(conn: &Connection) -> Result<(), StoreError> {
 fn drop_projection_views(conn: &Connection) -> Result<(), StoreError> {
     let names = conn
         .prepare(
-            "SELECT name FROM sqlite_schema WHERE type='view' AND name GLOB 'tracker_summary_*'",
+            "SELECT name FROM sqlite_schema WHERE type='view' AND (name GLOB 'tracker_summary_*' OR name GLOB 'tracker_choices_*')",
         )?
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;

@@ -62,6 +62,8 @@ pub(super) fn task_refresh_unchecked(conn: &Connection, id: &str) -> Result<(), 
     if let Some(record) = record {
         let task: Task = super::super::tracker::decode(&record, "tracker_tasks", id)?;
         task_written_unchecked(conn, &task)?;
+    } else {
+        task_remove(conn, id)?;
     }
     Ok(())
 }
@@ -213,6 +215,12 @@ pub(crate) fn history_repair(conn: &Connection, task_id: &str) -> Result<(), Sto
         "DELETE FROM tracker_task_summary_facts WHERE task_id=?1",
         task_id,
     )?;
+    let exists: bool = conn
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM tracker_tasks WHERE id=?1)")?
+        .query_row([task_id], |row| row.get(0))?;
+    if !exists {
+        return Ok(());
+    }
     for table in ["tracker_comments", "tracker_events"] {
         keyed(conn, &sql::insert_facts(table, "task_id=?1"), task_id)?;
     }

@@ -2,6 +2,8 @@ use super::super::task_summaries as projection;
 use super::*;
 use crate::tracker::{Actor, Task};
 
+#[path = "task_summaries/cache.rs"]
+mod cache;
 #[path = "task_summaries/import_repair.rs"]
 mod import_repair;
 #[path = "task_summaries/lifecycle.rs"]

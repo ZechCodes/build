@@ -1534,37 +1534,37 @@ fn completed_reopen_preserves_schema_and_does_no_projection_writes() {
 
 #[test]
 fn completed_projection_repairs_missing_indexes_before_admission() {
-    for (kind, name) in [("INDEX", "tracker_summaries_number")] {
-        let dir = tempfile::tempdir().unwrap();
-        let task = {
-            let store = Store::new(dir.path()).unwrap();
-            let mut task = Task::drafted("/summary", "repair schema", Actor::User, support::NOW);
-            task.watched = true;
-            store.create_tracker_task(task, &[]).unwrap()
-        };
-        {
-            let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
-            conn.execute_batch(&format!("DROP {kind} {name}")).unwrap();
-        }
+    let name = "tracker_summaries_number";
+    let dir = tempfile::tempdir().unwrap();
+    let task = {
         let store = Store::new(dir.path()).unwrap();
-        let exists: bool = store
-            .connection()
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1)",
-                [name],
-                |row| row.get(0),
-            )
+        let mut task = Task::drafted("/summary", "repair schema", Actor::User, support::NOW);
+        task.watched = true;
+        store.create_tracker_task(task, &[]).unwrap()
+    };
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
+        conn.execute_batch("DROP INDEX tracker_summaries_number")
             .unwrap();
-        assert!(exists, "required {kind} must be repaired");
-        store
-            .save_tracker_task_activity(
-                &task,
-                &[said(&task, "tc-00000000000000000000000999", support::NOW)],
-                &[],
-            )
-            .unwrap();
-        assert_eq!(summary(&store, "/summary")["unread_count"], 1);
     }
+    let store = Store::new(dir.path()).unwrap();
+    let exists: bool = store
+        .connection()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1)",
+            [name],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(exists, "required index must be repaired");
+    store
+        .save_tracker_task_activity(
+            &task,
+            &[said(&task, "tc-00000000000000000000000999", support::NOW)],
+            &[],
+        )
+        .unwrap();
+    assert_eq!(summary(&store, "/summary")["unread_count"], 1);
 }
 
 #[test]

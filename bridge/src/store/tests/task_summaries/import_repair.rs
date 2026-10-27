@@ -365,23 +365,28 @@ fn import_task_import_bulk_choices_and_dependency_endpoints_are_synchronous() {
         projection::dependency_refresh(&conn, &task.id).unwrap();
     }
     assert_eq!(card(&conn, &imported.id)["dependencies"]["blocks_count"], 0);
+    assert_choice_replacement_and_removal(&conn, [&first, &second, &imported]);
+    conn.execute_batch("COMMIT").unwrap();
+}
+
+fn assert_choice_replacement_and_removal(conn: &Connection, tasks: [&Task; 3]) {
     conn.execute(
         "UPDATE tracker_tasks SET record=json_set(record,'$.labels',json('[\"Replacement\"]'))",
         [],
     )
     .unwrap();
-    for task in [&first, &second, &imported] {
-        projection::task_refresh(&conn, &task.id).unwrap();
+    for task in tasks {
+        projection::task_refresh(conn, &task.id).unwrap();
     }
-    let choices = ReadTransaction::new(&conn)
+    let choices = ReadTransaction::new(conn)
         .list_task_filter_choices("/summary", "label", None, 10)
         .unwrap();
     assert_eq!(choices.len(), 1);
     assert_eq!(choices[0].key, "replacement");
     conn.execute("UPDATE tracker_tasks SET record=record", [])
         .unwrap();
-    for task in [&first, &second, &imported] {
-        projection::task_refresh(&conn, &task.id).unwrap();
+    for task in tasks {
+        projection::task_refresh(conn, &task.id).unwrap();
     }
     let refs: i64 = conn
         .query_row(
@@ -392,11 +397,10 @@ fn import_task_import_bulk_choices_and_dependency_endpoints_are_synchronous() {
         .unwrap();
     assert_eq!(refs, 3);
     conn.execute("DELETE FROM tracker_tasks", []).unwrap();
-    for task in [&first, &second, &imported] {
-        projection::task_remove(&conn, &task.id).unwrap();
+    for task in tasks {
+        projection::task_remove(conn, &task.id).unwrap();
     }
-    assert_empty_projection_tables(&conn);
-    conn.execute_batch("COMMIT").unwrap();
+    assert_empty_projection_tables(conn);
 }
 
 fn assert_empty_projection_tables(conn: &Connection) {

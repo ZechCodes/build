@@ -1,8 +1,9 @@
+use super::super::task_summaries as projection;
 use super::*;
 use crate::tracker::{Actor, Task};
 
-#[path = "task_summaries/direct_sql.rs"]
-mod direct_sql;
+#[path = "task_summaries/import_repair.rs"]
+mod import_repair;
 #[path = "task_summaries/lifecycle.rs"]
 mod lifecycle;
 #[path = "task_summaries/producer_transactions.rs"]
@@ -169,14 +170,38 @@ fn materialized_counts_sessions_completion_match_pure_history_after_mutations() 
     // Direct SQL read/watch updates must share the same hooks as normal writes.
     store
         .connection()
+        .execute_batch("SAVEPOINT import_change")
+        .unwrap();
+    store
+        .connection()
         .execute(
             "UPDATE tracker_tasks SET record=json_set(record,'$.read_through',?1) WHERE id=?2",
             rusqlite::params![comments[0].id, task.id],
         )
         .unwrap();
+    projection::task_refresh(&store.connection(), &task.id).unwrap();
+    projection::history_repair(&store.connection(), &task.id).unwrap();
+    store
+        .connection()
+        .execute_batch("RELEASE import_change")
+        .unwrap();
     assert_matches_history(&store, &task.id);
+    store
+        .connection()
+        .execute_batch("SAVEPOINT import_change")
+        .unwrap();
     store.connection().execute("UPDATE tracker_tasks SET record=json_set(record,'$.watch_started_after',?1,'$.read_through',NULL) WHERE id=?2",rusqlite::params![comments[1].id,task.id]).unwrap();
+    projection::task_refresh(&store.connection(), &task.id).unwrap();
+    projection::history_repair(&store.connection(), &task.id).unwrap();
+    store
+        .connection()
+        .execute_batch("RELEASE import_change")
+        .unwrap();
     assert_matches_history(&store, &task.id);
+    store
+        .connection()
+        .execute_batch("SAVEPOINT import_change")
+        .unwrap();
     store
         .connection()
         .execute(
@@ -184,11 +209,17 @@ fn materialized_counts_sessions_completion_match_pure_history_after_mutations() 
             [&comments[0].id],
         )
         .unwrap();
+    projection::task_refresh(&store.connection(), &task.id).unwrap();
+    projection::history_repair(&store.connection(), &task.id).unwrap();
+    store
+        .connection()
+        .execute_batch("RELEASE import_change")
+        .unwrap();
     assert_matches_history(&store, &task.id);
 }
 
 #[test]
-fn filter_choices_are_indexed_distinct_and_follow_direct_task_updates_and_deletes() {
+fn filter_choices_follow_explicit_task_import_updates_and_deletes() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
     let mut draft = Task::drafted("/summary", "labels", Actor::User, support::NOW);
@@ -213,13 +244,19 @@ fn filter_choices_are_indexed_distinct_and_follow_direct_task_updates_and_delete
             .key,
         "zoo"
     );
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute(
         "UPDATE tracker_tasks SET record=json_set(record,'$.labels',json('[\"New\"]')) WHERE id=?1",
         [&first.id],
     )
     .unwrap();
+    projection::task_refresh(&conn, &first.id).unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute("DELETE FROM tracker_tasks WHERE id=?1", [&second.id])
         .unwrap();
+    projection::task_remove(&conn, &second.id).unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     let page = reader
         .list_task_filter_choices("/summary", "label", None, 500)
         .unwrap();
@@ -359,10 +396,19 @@ fn legacy_oversized_filter_dimensions_fail_explicitly_and_titles_are_bounded() {
     assert_eq!(row["summary_truncated"], true);
     store
         .connection()
+        .execute_batch("SAVEPOINT import_change")
+        .unwrap();
+    store
+        .connection()
         .execute(
             "UPDATE tracker_tasks SET record=json_set(record,'$.labels',json(?1)) WHERE id=?2",
             rusqlite::params![serde_json::json!(["x".repeat(10_000)]).to_string(), task.id],
         )
+        .unwrap();
+    projection::task_refresh(&store.connection(), &task.id).unwrap();
+    store
+        .connection()
+        .execute_batch("RELEASE import_change")
         .unwrap();
     assert!(matches!(
         store.list_task_summary_candidates("/summary", None, 10),
@@ -408,19 +454,50 @@ fn compact_dependencies_follow_edges_and_blocker_lifecycle_without_expansion() {
         serde_json::json!({"blocked":true,"waiting_on_count":1,"blocks_count":0})
     );
     assert_eq!(rows[1].row["dependencies"]["blocks_count"], 1);
+    store
+        .connection()
+        .execute_batch("SAVEPOINT import_change")
+        .unwrap();
     store.connection().execute("UPDATE tracker_tasks SET status='done',record=json_set(record,'$.status','done') WHERE id=?1",[&blocker.id]).unwrap();
+    projection::task_refresh(&store.connection(), &blocker.id).unwrap();
+    projection::task_dependents_refresh(&store.connection(), &blocker.id).unwrap();
+    store
+        .connection()
+        .execute_batch("RELEASE import_change")
+        .unwrap();
     assert_eq!(
         summary(&store, "/summary")["dependencies"]["blocked"],
         false
     );
+    store
+        .connection()
+        .execute_batch("SAVEPOINT import_change")
+        .unwrap();
     store.connection().execute("UPDATE tracker_tasks SET status='backlog',record=json_set(record,'$.status','backlog') WHERE id=?1",[&blocker.id]).unwrap();
+    projection::task_refresh(&store.connection(), &blocker.id).unwrap();
+    projection::task_dependents_refresh(&store.connection(), &blocker.id).unwrap();
+    store
+        .connection()
+        .execute_batch("RELEASE import_change")
+        .unwrap();
     assert_eq!(summary(&store, "/summary")["dependencies"]["blocked"], true);
+    store
+        .connection()
+        .execute_batch("SAVEPOINT import_change")
+        .unwrap();
     store
         .connection()
         .execute(
             "DELETE FROM tracker_task_dependencies WHERE task_id=?1",
             [&dependent.id],
         )
+        .unwrap();
+    projection::task_refresh(&store.connection(), &blocker.id).unwrap();
+    projection::dependency_refresh(&store.connection(), &dependent.id).unwrap();
+    projection::dependency_refresh(&store.connection(), &blocker.id).unwrap();
+    store
+        .connection()
+        .execute_batch("RELEASE import_change")
         .unwrap();
     assert_eq!(
         summary(&store, "/summary")["dependencies"],
@@ -446,7 +523,10 @@ fn projection_rolls_back_with_canonical_write_and_project_deletion_removes_all_m
     {
         let mut conn = store.connection();
         let tx = conn.transaction().unwrap();
+        tx.execute_batch("SAVEPOINT import_change").unwrap();
         tx.execute("UPDATE tracker_tasks SET record=json_set(record,'$.title','rolled back','$.labels',json('[\"Temporary\"]')) WHERE id=?1",[&task.id]).unwrap();
+        projection::task_refresh(&tx, &task.id).unwrap();
+        tx.execute_batch("RELEASE import_change").unwrap();
         let reader = ReadTransaction::new(&tx);
         assert_eq!(
             reader
@@ -551,16 +631,25 @@ fn summary_identity_uses_committed_roster_metadata_and_owner_renames() {
     // field proves the read need not fetch or parse the owner record.
     let owner =
         serde_json::json!({"worktree_name":"Original workspace","goal":"large".repeat(100_000)});
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute("INSERT INTO implementations(id,created_at,updated_at,record) VALUES('run-summary',?1,?1,?2)",rusqlite::params![support::NOW,owner.to_string()]).unwrap();
+    projection::identity_refresh(&conn, "agent-summary").unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     let agent = serde_json::json!({"id":"agent-summary","name":"Original name","choice":{"provider":"codex_app_server"},"project_role":null});
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute(
         "INSERT INTO agents(id,owner_id,ordinal,record) VALUES('agent-summary','run-summary',2,?1)",
         [agent.to_string()],
     )
     .unwrap();
+    projection::identity_refresh(&conn, "agent-summary").unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     {
         let tx = conn.transaction().unwrap();
+        tx.execute_batch("SAVEPOINT import_change").unwrap();
         tx.execute("UPDATE agents SET record=json_set(record,'$.name','Uncommitted name') WHERE id='agent-summary'",[]).unwrap();
+        projection::identity_refresh(&tx, "agent-summary").unwrap();
+        tx.execute_batch("RELEASE import_change").unwrap();
         assert_eq!(
             ReadTransaction::new(&tx)
                 .task_summary_identity("agent-summary")
@@ -583,8 +672,14 @@ fn summary_identity_uses_committed_roster_metadata_and_owner_renames() {
         identity.workspace_name.as_deref(),
         Some("Original workspace")
     );
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute("UPDATE agents SET record=json_set(record,'$.name','Committed name') WHERE id='agent-summary'",[]).unwrap();
+    projection::identity_refresh(&conn, "agent-summary").unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute("UPDATE implementations SET record=json_set(record,'$.worktree_name','Renamed workspace') WHERE id='run-summary'",[]).unwrap();
+    projection::owner_refresh(&conn, "run-summary").unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     let identity = reader
         .task_summary_identity("agent-summary")
         .unwrap()
@@ -594,8 +689,11 @@ fn summary_identity_uses_committed_roster_metadata_and_owner_renames() {
         identity.workspace_name.as_deref(),
         Some("Renamed workspace")
     );
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute("DELETE FROM agents WHERE id='agent-summary'", [])
         .unwrap();
+    projection::identity_remove(&conn, "agent-summary").unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     assert!(reader
         .task_summary_identity("agent-summary")
         .unwrap()
@@ -804,17 +902,32 @@ fn history_and_read_marker_changes_do_not_rebuild_choices_or_dependency_rows() {
     assert_matches_history(&store, &task.id);
     {
         let conn = store.connection();
+        conn.execute_batch("SAVEPOINT import_change").unwrap();
         conn.execute(
             "UPDATE tracker_tasks SET record=json_set(record,'$.read_through',?1) WHERE id=?2",
             rusqlite::params![comment.id, task.id],
         )
         .unwrap();
+        projection::task_refresh(&conn, &task.id).unwrap();
+        conn.execute_batch("RELEASE import_change").unwrap();
+        conn.execute_batch("SAVEPOINT import_change").unwrap();
         conn.execute("UPDATE tracker_comments SET record=json_set(record,'$.author.kind','user') WHERE id=?1",[&comment.id]).unwrap();
+        projection::history_repair(&conn, &task.id).unwrap();
+        conn.execute_batch("RELEASE import_change").unwrap();
     }
     assert_matches_history(&store, &task.id);
     store
         .connection()
+        .execute_batch("SAVEPOINT import_change")
+        .unwrap();
+    store
+        .connection()
         .execute("DELETE FROM tracker_comments WHERE id=?1", [&comment.id])
+        .unwrap();
+    projection::history_repair(&store.connection(), &task.id).unwrap();
+    store
+        .connection()
+        .execute_batch("RELEASE import_change")
         .unwrap();
     assert_matches_history(&store, &task.id);
 }
@@ -839,7 +952,10 @@ fn review_metadata_patches_do_not_rebuild_activity_choices_or_dependencies() {
             "tracker_task_summary_facts",
         ],
     );
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute("INSERT INTO reviews(task_id,workspace_id,version,record) VALUES(?1,'workspace',1,?2)",rusqlite::params![task.id,serde_json::json!({"mode":"pull_request","pull_request":{"originating_workspace_id":"workspace","status":"open"}}).to_string()]).unwrap();
+    projection::metadata_refresh(&conn, &task.id).unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     let reader = ReadTransaction::new(&conn);
     assert_eq!(
         reader
@@ -848,7 +964,10 @@ fn review_metadata_patches_do_not_rebuild_activity_choices_or_dependencies() {
             .row["review_summary"]["status"],
         "open"
     );
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute("UPDATE reviews SET record=json_set(record,'$.pull_request.status','approved') WHERE task_id=?1",[&task.id]).unwrap();
+    projection::metadata_refresh(&conn, &task.id).unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     assert_eq!(
         reader
             .list_task_summary_candidates("/summary", None, 1)
@@ -856,8 +975,11 @@ fn review_metadata_patches_do_not_rebuild_activity_choices_or_dependencies() {
             .row["review_summary"]["status"],
         "approved"
     );
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute("DELETE FROM reviews WHERE task_id=?1", [&task.id])
         .unwrap();
+    projection::metadata_refresh(&conn, &task.id).unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     assert!(reader
         .list_task_summary_candidates("/summary", None, 1)
         .unwrap()[0]
@@ -923,8 +1045,6 @@ fn history_projection_does_not_parse_the_canonical_task_record() {
     let tx = conn.transaction().unwrap();
     // Deliberately make the canonical JSON unreadable inside a rollback-only
     // transaction, retaining the already-committed compact card context.
-    tx.execute_batch("DROP TRIGGER tracker_summary_task_UPDATE;")
-        .unwrap();
     tx.execute(
         "UPDATE tracker_tasks SET record='unreadable canonical JSON' WHERE id=?1",
         [&task.id],
@@ -941,6 +1061,8 @@ fn history_projection_does_not_parse_the_canonical_task_record() {
         ],
     )
     .unwrap();
+    projection::history_append(&tx, projection::HistoryKind::Comment, &task.id, &comment.id)
+        .unwrap();
     let reader = ReadTransaction::new(&tx);
     assert_eq!(
         reader
@@ -1147,7 +1269,10 @@ fn oversized_metadata_references_fail_explicitly_and_valid_opaque_case_is_preser
         )
         .unwrap();
     let conn = store.connection();
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute("INSERT INTO reviews(task_id,workspace_id,version,record) VALUES(?1,'WorkspaceCASE',1,?2)",rusqlite::params![task.id,serde_json::json!({"mode":"pull_request","pull_request":{"originating_workspace_id":"WorkspaceCASE","latest_published_snapshot_id":"SnapshotCASE","status":"open"}}).to_string()]).unwrap();
+    projection::metadata_refresh(&conn, &task.id).unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     let reader = ReadTransaction::new(&conn);
     let rows = reader
         .list_task_summary_candidates("/summary", None, 1)
@@ -1163,24 +1288,36 @@ fn oversized_metadata_references_fail_explicitly_and_valid_opaque_case_is_preser
     assert!(rows[0].row.get("_summary_invalid_metadata_refs").is_none());
     for field in ["originating_workspace_id", "latest_published_snapshot_id"] {
         let path = format!("$.pull_request.{field}");
+        conn.execute_batch("SAVEPOINT import_change").unwrap();
         conn.execute(
             "UPDATE reviews SET record=json_set(record,?1,?2) WHERE task_id=?3",
             rusqlite::params![path, "x".repeat(129), task.id],
         )
         .unwrap();
+        projection::metadata_refresh(&conn, &task.id).unwrap();
+        conn.execute_batch("RELEASE import_change").unwrap();
         assert_invalid_metadata_reference(&reader);
+        conn.execute_batch("SAVEPOINT import_change").unwrap();
         conn.execute(
             "UPDATE reviews SET record=json_set(record,?1,'ValidCASE') WHERE task_id=?2",
             rusqlite::params![path, task.id],
         )
         .unwrap();
+        projection::metadata_refresh(&conn, &task.id).unwrap();
+        conn.execute_batch("RELEASE import_change").unwrap();
         assert!(reader
             .list_task_summary_candidates("/summary", None, 1)
             .is_ok());
     }
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute("DELETE FROM reviews WHERE task_id=?1", [&task.id])
         .unwrap();
+    projection::metadata_refresh(&conn, &task.id).unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute("INSERT INTO tracker_delivery_intents(id,task_id,project_key,generation,operation_id,state,record) VALUES('IntentCASE',?1,'/summary',1,'metadata-op','queued',?2)",rusqlite::params![task.id,serde_json::json!({"target":{"kind":"agent","agent_id":"AgentCASE"}}).to_string()]).unwrap();
+    projection::metadata_refresh(&conn, &task.id).unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     let rows = reader
         .list_task_summary_candidates("/summary", None, 1)
         .unwrap();
@@ -1189,19 +1326,28 @@ fn oversized_metadata_references_fail_explicitly_and_valid_opaque_case_is_preser
         rows[0].assignment_target.as_ref().unwrap()["agent_id"],
         "AgentCASE"
     );
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute(
         "UPDATE tracker_delivery_intents SET id=?1 WHERE task_id=?2",
         rusqlite::params!["x".repeat(129), task.id],
     )
     .unwrap();
+    projection::metadata_refresh(&conn, &task.id).unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     assert_invalid_metadata_reference(&reader);
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute("UPDATE tracker_delivery_intents SET id='IntentCASE',record=json_set(record,'$.target.agent_id',?1) WHERE task_id=?2",rusqlite::params!["x".repeat(129),task.id]).unwrap();
+    projection::metadata_refresh(&conn, &task.id).unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     assert_invalid_metadata_reference(&reader);
+    conn.execute_batch("SAVEPOINT import_change").unwrap();
     conn.execute(
         "DELETE FROM tracker_delivery_intents WHERE task_id=?1",
         [&task.id],
     )
     .unwrap();
+    projection::metadata_refresh(&conn, &task.id).unwrap();
+    conn.execute_batch("RELEASE import_change").unwrap();
     let rows = reader
         .list_task_summary_candidates("/summary", None, 1)
         .unwrap();
@@ -1370,7 +1516,7 @@ fn completed_reopen_preserves_schema_and_does_no_projection_writes() {
         conn.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
         schema,
-        "completed projection must preserve its trigger programs"
+        "completed projection must preserve its schema"
     );
     drop(conn);
     let store = Store::new(dir.path()).unwrap();
@@ -1385,11 +1531,8 @@ fn completed_reopen_preserves_schema_and_does_no_projection_writes() {
 }
 
 #[test]
-fn completed_projection_repairs_missing_triggers_and_indexes_before_admission() {
-    for (kind, name) in [
-        ("TRIGGER", "tracker_summary_tracker_comments_INSERT"),
-        ("INDEX", "tracker_summaries_number"),
-    ] {
+fn completed_projection_repairs_missing_indexes_before_admission() {
+    for (kind, name) in [("INDEX", "tracker_summaries_number")] {
         let dir = tempfile::tempdir().unwrap();
         let task = {
             let store = Store::new(dir.path()).unwrap();
@@ -1443,77 +1586,7 @@ fn unrelated_schema_change_revalidates_without_replaying_completed_history() {
     }
     let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
     conn.execute_batch("CREATE TABLE unrelated_migration(id TEXT); CREATE TRIGGER forbid_replay BEFORE INSERT ON tracker_task_summary_facts BEGIN SELECT RAISE(ABORT,'completed history replayed'); END;").unwrap();
-    let trigger_sql: String = conn
-        .query_row(
-            "SELECT sql FROM sqlite_schema WHERE name='tracker_summary_tracker_comments_INSERT'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
     drop(conn);
     let store = Store::new(dir.path()).unwrap();
-    let conn = store.connection();
-    assert_eq!(
-        conn.query_row(
-            "SELECT sql FROM sqlite_schema WHERE name='tracker_summary_tracker_comments_INSERT'",
-            [],
-            |row| row.get::<_, String>(0)
-        )
-        .unwrap(),
-        trigger_sql
-    );
-    drop(conn);
     assert_eq!(summary(&store, "/summary")["title"], "no replay");
-}
-
-#[test]
-fn missing_maintenance_trigger_reconciles_canonical_mutations_before_admission() {
-    for trigger in [
-        "tracker_summary_tracker_comments_UPDATE",
-        "tracker_summary_task_UPDATE",
-    ] {
-        let dir = tempfile::tempdir().unwrap();
-        let task = {
-            let store = Store::new(dir.path()).unwrap();
-            let mut task = Task::drafted("/summary", "missed mutation", Actor::User, support::NOW);
-            task.watched = true;
-            task.labels = vec!["before".into()];
-            let task = store.create_tracker_task(task, &[]).unwrap();
-            store
-                .save_tracker_task_activity(
-                    &task,
-                    &[said(&task, "tc-00000000000000000000000999", support::NOW)],
-                    &[],
-                )
-                .unwrap();
-            task
-        };
-        {
-            let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
-            conn.execute_batch(&format!("DROP TRIGGER {trigger}"))
-                .unwrap();
-            if trigger.ends_with("comments_UPDATE") {
-                conn.execute("UPDATE tracker_comments SET record=json_set(record,'$.author',json('{\"kind\":\"user\"}')) WHERE task_id=?1",[&task.id]).unwrap();
-            } else {
-                conn.execute("UPDATE tracker_tasks SET record=json_set(record,'$.labels',json('[\"after\"]')) WHERE id=?1",[&task.id]).unwrap();
-            }
-        }
-        let store = Store::new(dir.path()).unwrap();
-        assert_matches_history(&store, &task.id);
-        let choices = store
-            .list_task_filter_choices("/summary", "label", None, 10)
-            .unwrap();
-        let expected = if trigger.ends_with("comments_UPDATE") {
-            "before"
-        } else {
-            "after"
-        };
-        assert_eq!(
-            choices
-                .iter()
-                .map(|choice| choice.key.as_str())
-                .collect::<Vec<_>>(),
-            vec![expected]
-        );
-    }
 }

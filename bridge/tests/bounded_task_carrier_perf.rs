@@ -7,7 +7,7 @@ use build_bridge::carrier::{FrameIntake, SessionSender};
 use build_bridge::harness::HarnessContext;
 use build_bridge::tracker::{Actor, Task};
 use build_bridge::transport;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -30,10 +30,7 @@ fn repository(root: &Path) -> std::path::PathBuf {
         .unwrap();
     std::fs::canonicalize(path).unwrap()
 }
-fn seed(root: &Path, project: &str, count: usize) {
-    let mut connection = Connection::open(root.join("store/build.db")).unwrap();
-    let tx = connection.transaction().unwrap();
-    let mut insert=tx.prepare("INSERT INTO tracker_tasks(id,project_key,number,state,status,created_at,updated_at,record) VALUES(?1,?2,?3,'open','backlog',?4,?4,?5)").unwrap();
+fn seed(store: &build_bridge::store::Store, project: &str, count: usize) {
     for number in 1..=count {
         let mut task = Task::drafted(
             project,
@@ -44,19 +41,87 @@ fn seed(root: &Path, project: &str, count: usize) {
         task.number = number as u64;
         task.labels = vec!["duplicate".into(), format!("label-{:03}", number % 130)];
         task.body = "body omitted from every summary".repeat(200);
-        insert
-            .execute(params![
-                task.id,
-                project,
-                number as i64,
-                task.created_at,
-                serde_json::to_string(&task).unwrap()
-            ])
-            .unwrap();
+        let saved = store.create_tracker_task(task, &[]).unwrap();
+        assert_eq!(saved.number, number as u64);
     }
-    drop(insert);
-    tx.commit().unwrap();
 }
+
+fn assert_materialized_fixture(store: &build_bridge::store::Store, project: &str, count: usize) {
+    let mut below = None;
+    let mut remaining = count as u64;
+    loop {
+        let rows = store
+            .list_task_summary_candidates(project, below, 2001)
+            .unwrap();
+        if rows.is_empty() {
+            break;
+        }
+        for row in &rows {
+            assert_eq!(
+                row.row["number"], remaining,
+                "carrier fixture must contain every materialized task in descending order"
+            );
+            remaining -= 1;
+        }
+        below = rows.last().unwrap().row["number"].as_u64();
+    }
+    assert_eq!(
+        remaining, 0,
+        "carrier fixture must materialize all {count} canonical tasks"
+    );
+    let choices = store
+        .list_task_filter_choices(project, "label", None, 500)
+        .unwrap();
+    assert_eq!(
+        choices.len(),
+        count.min(130) + 1,
+        "carrier fixture distinct labels must include the shared duplicate membership"
+    );
+}
+
+fn validate_sample(count: usize, scenario: usize, result: &Value) -> Result<usize, String> {
+    if scenario == 3 {
+        let choices = result["choices"]
+            .as_array()
+            .ok_or("filter choices result has no choice array")?;
+        let expected = std::iter::once("duplicate".to_string())
+            .chain((1..=count.min(130)).map(|number| format!("label-{:03}", number % 130)))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .take(100)
+            .map(Value::String)
+            .collect::<Vec<_>>();
+        if choices != &expected {
+            return Err(format!("filter choices cardinality/content mismatch: expected {} choices, got {}: {choices:?}",expected.len(),choices.len()));
+        }
+        return Ok(choices.len());
+    }
+    let tasks = result["tasks"]
+        .as_array()
+        .ok_or("summary result has no task array")?;
+    let expected = match scenario {
+        0 => count.min(100),
+        1 => count.min(500),
+        2 => 0,
+        _ => return Err(format!("unknown carrier scenario {scenario}")),
+    };
+    if tasks.len() != expected {
+        return Err(format!(
+            "summary cardinality mismatch: expected {expected} tasks, got {}",
+            tasks.len()
+        ));
+    }
+    for (offset, task) in tasks.iter().enumerate() {
+        if task["number"].as_u64() != Some((count - offset) as u64) {
+            return Err(format!(
+                "summary order mismatch at row {offset}: {}",
+                task["number"]
+            ));
+        }
+    }
+    Ok(tasks.len())
+}
+
 struct Fixture {
     root: tempfile::TempDir,
     state: Arc<Mutex<AppState>>,
@@ -65,6 +130,7 @@ struct Fixture {
     wire: ChannelWire,
     key: String,
     project: String,
+    count: usize,
 }
 impl Fixture {
     fn new(count: usize) -> Self {
@@ -80,13 +146,19 @@ impl Fixture {
                 .with_task_store(root.path().join("store"))
                 .unwrap();
         let project = app.add_project(repo.clone(), "main".into());
+        let store = app.attached_store_for_test().unwrap();
         let started = Instant::now();
-        seed(root.path(), repo.to_str().unwrap(), count);
+        seed(&store, repo.to_str().unwrap(), count);
         println!(
             "carrier_setup tasks={count} seed_us={}",
             started.elapsed().as_micros()
         );
-        let store = app.attached_store_for_test().unwrap();
+        let started = Instant::now();
+        assert_materialized_fixture(&store, repo.to_str().unwrap(), count);
+        println!(
+            "carrier_setup tasks={count} fixture_validation_us={}",
+            started.elapsed().as_micros()
+        );
         let started = Instant::now();
         let state = app.shared();
         println!(
@@ -117,6 +189,7 @@ impl Fixture {
             wire,
             key,
             project,
+            count,
         }
     }
     fn hold_locks(&self) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
@@ -181,7 +254,7 @@ impl Fixture {
                 return Err(response.to_string());
             }
             bytes = serde_json::to_vec(&response["result"]).unwrap().len();
-            rows = response["result"]["tasks"].as_array().map_or(0, Vec::len);
+            rows = validate_sample(self.count, scenario, &response["result"])?;
         }
         Ok((times, bytes, rows))
     }
@@ -312,6 +385,33 @@ fn reports_and_accepts_exact_latency_and_byte_limits() {
         |line| reports.push(line),
     );
     assert_eq!(reports.len(), 1);
+}
+
+#[test]
+fn rejects_empty_or_out_of_order_carrier_results_before_timing_aggregation() {
+    assert!(validate_sample(3, 0, &json!({"tasks":[]}))
+        .unwrap_err()
+        .contains("expected 3 tasks"));
+    assert!(validate_sample(3, 3, &json!({"choices":[]}))
+        .unwrap_err()
+        .contains("expected 4 choices"));
+    assert!(validate_sample(
+        3,
+        0,
+        &json!({"tasks":[{"number":1},{"number":2},{"number":3}]})
+    )
+    .unwrap_err()
+    .contains("order mismatch"));
+    assert_eq!(validate_sample(3, 2, &json!({"tasks":[]})).unwrap(), 0);
+    assert_eq!(
+        validate_sample(
+            3,
+            3,
+            &json!({"choices":["duplicate","label-001","label-002","label-003"]})
+        )
+        .unwrap(),
+        4
+    );
 }
 
 #[tokio::test]

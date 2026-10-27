@@ -314,6 +314,38 @@ fn reports_and_accepts_exact_latency_and_byte_limits() {
     assert_eq!(reports.len(), 1);
 }
 
+#[tokio::test]
+async fn seeded_carrier_fixture_has_materialized_tasks_and_choices() {
+    let tools = tempfile::tempdir().unwrap();
+    std::env::set_var("PATH", project_bridge::private_path(tools.path()));
+    let fixture = Fixture::new(3);
+    let project = std::fs::canonicalize(fixture.root.path().join("repo")).unwrap();
+    let rows = fixture
+        .store
+        .list_task_summary_candidates(project.to_str().unwrap(), None, 10)
+        .unwrap();
+    assert_eq!(
+        rows.len(),
+        3,
+        "carrier fixture must populate materialized task cards"
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.row["number"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![3, 2, 1]
+    );
+    let choices = fixture
+        .store
+        .list_task_filter_choices(project.to_str().unwrap(), "label", None, 500)
+        .unwrap();
+    assert_eq!(
+        choices.len(),
+        4,
+        "shared duplicate label plus three distinct task labels"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bounded_reads_carrier_max_and_p99_with_both_locks_held() {
     let tools = tempfile::tempdir().unwrap();

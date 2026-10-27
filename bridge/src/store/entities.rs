@@ -1167,9 +1167,10 @@ pub(super) fn write_run(
 /// Capture roster IDs before deleting canonical rows so their bounded identity
 /// projections are removed in the same transaction as the owner.
 fn remove_owner_identities(tx: &rusqlite::Transaction, owner: &str) -> Result<(), StoreError> {
-    let ids = tx.prepare("SELECT id FROM agents WHERE owner_id=?1")?
-        .query_map([owner], |row| row.get::<_,String>(0))?
-        .collect::<Result<Vec<_>,_>>()?;
+    let ids = tx
+        .prepare("SELECT id FROM agents WHERE owner_id=?1")?
+        .query_map([owner], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
     for id in ids {
         super::task_summaries::identity_remove(tx, &id)?;
     }

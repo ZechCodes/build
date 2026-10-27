@@ -502,7 +502,11 @@ pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), St
     if updated != 0 || before.is_none() {
         super::task_summaries::task_written(tx, task)?;
         let after = (task.state.as_str(), task.status.as_str());
-        if before.as_ref().map(|(state, status)| (state.as_str(), status.as_str())) != Some(after) {
+        if before
+            .as_ref()
+            .map(|(state, status)| (state.as_str(), status.as_str()))
+            != Some(after)
+        {
             super::task_summaries::task_dependents_refresh(tx, &task.id)?;
         }
     }
@@ -518,7 +522,8 @@ pub(super) fn append_activity(
     events: &[TaskEvent],
 ) -> Result<(), StoreError> {
     for comment in comments {
-        let inserted = tx.prepare_cached(APPEND_COMMENT)?
+        let inserted = tx
+            .prepare_cached(APPEND_COMMENT)?
             .execute(rusqlite::params![
                 comment.id,
                 comment.task_id,
@@ -526,7 +531,12 @@ pub(super) fn append_activity(
                 serde_json::to_string(comment).expect("a comment always serializes"),
             ])?;
         if inserted != 0 {
-            super::task_summaries::history_append(tx, super::task_summaries::HistoryKind::Comment, &comment.task_id, &comment.id)?;
+            super::task_summaries::history_append(
+                tx,
+                super::task_summaries::HistoryKind::Comment,
+                &comment.task_id,
+                &comment.id,
+            )?;
         }
     }
     for event in events {
@@ -537,7 +547,12 @@ pub(super) fn append_activity(
             serde_json::to_string(event).expect("an event always serializes"),
         ])?;
         if inserted != 0 {
-            super::task_summaries::history_append(tx, super::task_summaries::HistoryKind::Event, &event.task_id, &event.id)?;
+            super::task_summaries::history_append(
+                tx,
+                super::task_summaries::HistoryKind::Event,
+                &event.task_id,
+                &event.id,
+            )?;
         }
     }
     super::waiting_on::note_activity(tx, events)?;

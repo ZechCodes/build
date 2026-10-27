@@ -255,7 +255,7 @@ fn valid_assignee_choice(value: &Value) -> bool {
 }
 
 // Bind completion to both the code's SQL definition and SQLite's schema
-// generation. Missing/replaced tables, indexes or triggers invalidate it even
+// generation. Missing/replaced projection tables or indexes invalidate it even
 // when all row checkpoints remain. Row writes do not change schema_version.
 struct ProjectionDefinition {
     fingerprint: String,
@@ -289,8 +289,8 @@ fn projection_complete(conn: &Connection, fingerprint: &str) -> Result<bool, Sto
 
 // An unrelated schema migration invalidates the cheap generation check, but
 // must not replay canonical history. Compare the saved installed definitions
-// and repair only missing/changed indexes. Missing maintenance triggers may
-// have missed canonical writes, so they require conservative data repair.
+// and repair only missing/changed indexes. Changed tables or obsolete SQL
+// programs require conservative data repair before readers are admitted.
 fn revalidate_projection(conn: &mut Connection, fingerprint: &str) -> Result<bool, StoreError> {
     let previous: Option<String> = conn
         .query_row(

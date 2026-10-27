@@ -1,4 +1,4 @@
-//! Typed retained activity state; keyed views own the full and append derivations.
+//! Retained activity state with keyed full and incremental write derivations.
 
 pub(in crate::store::task_summaries) fn context() -> &'static str {
     r#"json_object('watched',COALESCE(json_extract(t.record,'$.watched'),0),
@@ -49,9 +49,8 @@ fn full() -> String {
 }
 
 pub(in crate::store::task_summaries) fn append_update() -> String {
-    // Read the retained values from the UPDATE target itself. A derived view
-    // joining the same context table would perform another lookup and expand
-    // its arithmetic again during trigger compilation.
+    // Read retained values from the UPDATE target and seek one fact by its
+    // primary key. Older or watch-changing entries use the full derivation.
     format!(r#"UPDATE tracker_task_summary_context SET
         unread_count=c.unread_count+(c.watched=1 AND f.unread=1 AND f.ulid>COALESCE(c.read_ulid,'') AND
             f.ulid>COALESCE(c.watch_ulid,(SELECT MAX(ulid) FROM tracker_task_summary_facts WHERE task_id=c.task_id AND watched=1),'')),

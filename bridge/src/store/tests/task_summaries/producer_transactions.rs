@@ -288,3 +288,113 @@ fn native_delivery_changes_and_projection_failure_remain_atomic() {
         .is_none());
     assert_matches_history(&store, &task.id);
 }
+#[test]
+fn public_repair_batch_is_atomic_and_rebuilds_canonical_history_without_duplicate_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let tasks = ["first", "second"].map(|title| {
+        let mut task = Task::drafted("/summary", title, Actor::User, support::NOW);
+        task.watched = true;
+        store.create_tracker_task(task, &[]).unwrap()
+    });
+    let conn = store.connection();
+    let before: Vec<String> = conn
+        .prepare("SELECT record FROM tracker_task_summaries ORDER BY task_id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+    for (i, task) in tasks.iter().enumerate() {
+        conn.execute(
+            "UPDATE tracker_tasks SET record=json_set(record,'$.title',?1) WHERE id=?2",
+            rusqlite::params![format!("imported-{i}"), task.id],
+        )
+        .unwrap();
+        let note = said(task, &format!("tc-{:026}", i + 900), support::NOW);
+        conn.execute(
+            "INSERT INTO tracker_comments(id,task_id,created_at,record) VALUES(?1,?2,?3,?4)",
+            rusqlite::params![
+                note.id,
+                note.task_id,
+                note.created_at,
+                serde_json::to_string(&note).unwrap()
+            ],
+        )
+        .unwrap();
+    }
+    conn.execute_batch("COMMIT").unwrap();
+    conn.execute_batch(&format!("CREATE TRIGGER reject_repair BEFORE UPDATE ON tracker_task_summaries WHEN NEW.task_id='{}' BEGIN SELECT RAISE(ABORT,'second repair fails'); END;",tasks[1].id)).unwrap();
+    drop(conn);
+    let ids = tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>();
+    assert!(store.repair_task_summaries(&ids).is_err());
+    let conn = store.connection();
+    let after: Vec<String> = conn
+        .prepare("SELECT record FROM tracker_task_summaries ORDER BY task_id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "failed second repair must roll back first task's projection too"
+    );
+    conn.execute_batch("DROP TRIGGER reject_repair").unwrap();
+    drop(conn);
+    store.repair_task_summaries(&ids).unwrap();
+    store.repair_task_summaries(&ids).unwrap();
+    let rows = store
+        .list_task_summary_candidates("/summary", None, 10)
+        .unwrap();
+    for (i, task) in tasks.iter().enumerate() {
+        let row = &rows
+            .iter()
+            .find(|row| row.row["id"] == task.id)
+            .unwrap()
+            .row;
+        assert_eq!(row["title"], format!("imported-{i}"));
+        assert_eq!(
+            row["unread_count"], 1,
+            "repeating explicit repair must not double count"
+        );
+        let facts: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM tracker_task_summary_facts WHERE task_id=?1",
+                [&task.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(facts, 1);
+    }
+}
+
+#[test]
+fn typed_task_maintenance_keeps_compact_fields_and_attachment_count_exact() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = Task::drafted("/summary", "compact fields", Actor::User, support::NOW);
+    task.labels = vec!["One".into(), "Two".into()];
+    task.attachments = (0..2)
+        .map(|i| crate::thread::MessageAttachment {
+            name: format!("file-{i}"),
+            path: format!(".build/attachments/file-{i}"),
+            mime: "text/plain".into(),
+            size: 1024,
+        })
+        .collect();
+    let mut task = store.create_tracker_task(task, &[]).unwrap();
+    let row = summary(&store, "/summary");
+    assert_eq!(row["attachment_count"], 2);
+    assert_eq!(row["labels"], serde_json::json!(task.labels));
+    assert!(row.get("attachments").is_none());
+    task.attachments.pop();
+    task.title = "updated compact fields".into();
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    let row = summary(&store, "/summary");
+    assert_eq!(row["attachment_count"], 1);
+    assert_eq!(row["title"], task.title);
+    assert!(row.get("attachments").is_none());
+}

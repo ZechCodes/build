@@ -1,6 +1,6 @@
 use super::*;
 use crate::reviews::model::*;
-use crate::tracker::{Actor, Task};
+use crate::tracker::Actor;
 use std::collections::BTreeMap;
 
 const NOW: &str = "2026-10-08T00:00:00Z";

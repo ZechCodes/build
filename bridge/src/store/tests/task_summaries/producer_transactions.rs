@@ -91,6 +91,13 @@ fn store_roster_owner_changes_and_deletion_keep_identity_consistent() {
         .connection()
         .execute_batch("DROP TRIGGER reject_identity")
         .unwrap();
+    run.agents.clear();
+    run.worktree_name = "after".into();
+    store.save_run(&run).unwrap();
+    assert!(
+        store.task_summary_identity(&agent_id).unwrap().is_none(),
+        "removing the last roster member must remove its identity"
+    );
     store.delete_run(&run.id).unwrap();
     assert!(store.task_summary_identity(&agent_id).unwrap().is_none());
 }
@@ -325,10 +332,19 @@ fn public_repair_batch_is_atomic_and_rebuilds_canonical_history_without_duplicat
         .unwrap();
     }
     conn.execute_batch("COMMIT").unwrap();
-    conn.execute_batch(&format!("CREATE TRIGGER reject_repair BEFORE UPDATE ON tracker_task_summaries WHEN NEW.task_id='{}' BEGIN SELECT RAISE(ABORT,'second repair fails'); END;",tasks[1].id)).unwrap();
+    let mut ordered_ids = tasks
+        .iter()
+        .map(|task| task.id.as_str())
+        .collect::<Vec<_>>();
+    ordered_ids.sort_unstable();
+    conn.execute_batch(&format!("CREATE TRIGGER reject_repair BEFORE UPDATE ON tracker_task_summaries WHEN NEW.task_id='{}' BEGIN SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM tracker_task_summaries WHERE task_id='{}' AND json_extract(record,'$.title') GLOB 'imported-*') THEN RAISE(ABORT,'first repair was not applied') END; SELECT RAISE(ABORT,'second repair fails'); END;",ordered_ids[1],ordered_ids[0])).unwrap();
     drop(conn);
     let ids = tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>();
-    assert!(store.repair_task_summaries(&ids).is_err());
+    let error = store.repair_task_summaries(&ids).unwrap_err();
+    assert!(
+        error.to_string().contains("second repair fails"),
+        "first task must be visibly repaired before failure on the second: {error}"
+    );
     let conn = store.connection();
     let after: Vec<String> = conn
         .prepare("SELECT record FROM tracker_task_summaries ORDER BY task_id")
@@ -397,4 +413,68 @@ fn typed_task_maintenance_keeps_compact_fields_and_attachment_count_exact() {
     assert_eq!(row["attachment_count"], 1);
     assert_eq!(row["title"], task.title);
     assert!(row.get("attachments").is_none());
+}
+
+#[test]
+fn native_blocker_lifecycle_refreshes_counterparts_and_rolls_back_on_projection_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut tasks = ["blocker", "dependent"].map(|title| {
+        let mut task = Task::drafted("/summary", title, Actor::User, support::NOW);
+        task.watched = true;
+        store.create_tracker_task(task, &[]).unwrap()
+    });
+    let [blocker, dependent] = &mut tasks;
+    store
+        .edit_waiting_on(
+            "/summary",
+            &dependent.id,
+            std::slice::from_ref(&blocker.id),
+            &[],
+            &Actor::User,
+            support::NOW,
+        )
+        .unwrap();
+    let dependency = |id: &str| {
+        store
+            .list_task_summary_candidates("/summary", None, 10)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.row["id"] == id)
+            .unwrap()
+            .row["dependencies"]
+            .clone()
+    };
+    assert_eq!(dependency(&dependent.id)["blocked"], true);
+    assert_eq!(dependency(&blocker.id)["blocks_count"], 1);
+    let before = store.load_tracker_task(&blocker.id).unwrap().unwrap();
+    let before_card = dependency(&dependent.id);
+    store.connection().execute_batch(&format!("CREATE TRIGGER reject_counterpart BEFORE UPDATE ON tracker_task_summaries WHEN NEW.task_id='{}' BEGIN SELECT RAISE(ABORT,'counterpart projection failure'); END;",dependent.id)).unwrap();
+    blocker.state = crate::tracker::TaskState::Closed;
+    blocker.closed_at = Some(support::NOW.into());
+    assert!(store.save_tracker_task_activity(blocker, &[], &[]).is_err());
+    assert_eq!(
+        store.load_tracker_task(&blocker.id).unwrap().unwrap(),
+        before
+    );
+    assert_eq!(dependency(&dependent.id), before_card);
+    store
+        .connection()
+        .execute_batch("DROP TRIGGER reject_counterpart")
+        .unwrap();
+    store.save_tracker_task_activity(blocker, &[], &[]).unwrap();
+    assert_eq!(dependency(&dependent.id)["blocked"], false);
+    assert_eq!(dependency(&dependent.id)["waiting_on_count"], 1);
+    store
+        .edit_waiting_on(
+            "/summary",
+            &dependent.id,
+            &[],
+            std::slice::from_ref(&blocker.id),
+            &Actor::User,
+            support::NOW,
+        )
+        .unwrap();
+    assert_eq!(dependency(&dependent.id)["waiting_on_count"], 0);
+    assert_eq!(dependency(&blocker.id)["blocks_count"], 0);
 }

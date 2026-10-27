@@ -6,6 +6,8 @@ use crate::tracker::{Actor, Task};
 mod import_repair;
 #[path = "task_summaries/lifecycle.rs"]
 mod lifecycle;
+#[path = "task_summaries/producer_reviews.rs"]
+mod producer_reviews;
 #[path = "task_summaries/producer_transactions.rs"]
 mod producer_transactions;
 

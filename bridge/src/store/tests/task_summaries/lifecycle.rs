@@ -104,3 +104,41 @@ fn upgrades_real_dc310_programs_before_any_supported_producer_is_admitted() {
     assert_eq!(summary(&store, "/summary")["unread_count"], 2);
     assert_matches_history(&store, &task.id);
 }
+#[test]
+fn partial_dc310_program_install_without_markers_invalidates_legacy_checkpoints() {
+    let dir = tempfile::tempdir().unwrap();
+    let task = {
+        let store = Store::new(dir.path()).unwrap();
+        store
+            .create_tracker_task(
+                Task::drafted(
+                    "/summary",
+                    "canonical after partial upgrade",
+                    Actor::User,
+                    support::NOW,
+                ),
+                &[],
+            )
+            .unwrap()
+    };
+    let conn = Connection::open(dir.path().join("build.db")).unwrap();
+    conn.execute_batch(DC310_TABLES).unwrap();
+    conn.execute_batch(DC310_PROGRAMS).unwrap();
+    conn.execute("UPDATE tracker_task_summaries SET record=json_set(record,'$.title','stale legacy prefix') WHERE task_id=?1",[&task.id]).unwrap();
+    conn.execute("INSERT OR REPLACE INTO meta(key,value) SELECT 'task_summary_v1_tasks',CAST(MAX(rowid) AS TEXT) FROM tracker_tasks",[]).unwrap();
+    conn.execute(
+        "DELETE FROM meta WHERE key IN ('task_summary_v1_ready','task_summary_v1_definition')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let store = Store::new(dir.path()).unwrap();
+    assert_eq!(
+        summary(&store, "/summary")["title"],
+        task.title,
+        "old programs imply legacy data even if fingerprint markers were never committed"
+    );
+    let conn = store.connection();
+    let programs:i64=conn.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type IN ('trigger','view') AND (name GLOB 'tracker_summary_*' OR name GLOB 'tracker_choices_*')",[],|row|row.get(0)).unwrap();
+    assert_eq!(programs, 0);
+}

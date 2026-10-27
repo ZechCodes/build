@@ -156,3 +156,135 @@ fn explicit_import_repair_restores_consistency_after_an_unsupported_raw_write() 
         store.load_tracker_task(&task.id).unwrap().unwrap().title
     );
 }
+#[test]
+fn import_repair_of_a_missing_task_removes_its_card_facts_and_memberships() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = Task::drafted("/summary", "removed import", Actor::User, support::NOW);
+    task.labels = vec!["Last membership".into()];
+    task.watched = true;
+    let task = store.create_tracker_task(task, &[]).unwrap();
+    store
+        .save_tracker_task_activity(
+            &task,
+            &[said(&task, "tc-00000000000000000000000970", support::NOW)],
+            &[],
+        )
+        .unwrap();
+    let mut conn = store.connection();
+    let tx = conn.transaction().unwrap();
+    tx.execute("DELETE FROM tracker_tasks WHERE id=?1", [&task.id])
+        .unwrap();
+    projection::task_refresh(&tx, &task.id).unwrap();
+    for table in [
+        "tracker_task_summaries",
+        "tracker_task_summary_context",
+        "tracker_task_summary_facts",
+        "tracker_task_filter_choices",
+        "tracker_task_filter_values",
+    ] {
+        let count: i64 = tx
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "missing task repair retained {table}");
+    }
+    tx.rollback().unwrap();
+    drop(conn);
+    assert_matches_history(&store, &task.id);
+    assert_eq!(summary(&store, "/summary")["unread_count"], 1);
+}
+
+#[test]
+fn native_delivery_changes_and_projection_failure_remain_atomic() {
+    use crate::store::DeliveryIntent;
+    use crate::tracker::{Assignee, TaskEvent, TaskEventKind};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = store
+        .create_tracker_task(
+            Task::drafted("/summary", "delivery", Actor::User, support::NOW),
+            &[],
+        )
+        .unwrap();
+    task.watched = true;
+    task.assignee = Some(Assignee::Agent {
+        agent_id: "AgentCASE".into(),
+    });
+    let intent = DeliveryIntent {
+        id: String::new(),
+        task_id: task.id.clone(),
+        project_path: task.project_path.clone(),
+        generation: 0,
+        target: serde_json::json!({"kind":"agent","agent_id":"AgentCASE"}),
+        actor: Actor::User,
+        sender: None,
+        note: None,
+        operation_id: String::new(),
+        state: "queued".into(),
+        reservation: serde_json::Value::Null,
+        admitted: None,
+        error: None,
+    };
+    let assigned = TaskEvent::new(
+        &task.id,
+        Actor::User,
+        TaskEventKind::Assigned,
+        serde_json::json!({}),
+        support::NOW,
+    );
+    let intent = store
+        .accept_delivery_intent(&task, &[assigned], intent)
+        .unwrap();
+    assert_eq!(
+        summary(&store, "/summary")["deferred_assignment"]["target"]["agent_id"],
+        "AgentCASE"
+    );
+    assert_eq!(
+        summary(&store, "/summary")["deferred_assignment"]["state"],
+        intent.state
+    );
+    assert_matches_history(&store, &task.id);
+    let before = summary(&store, "/summary");
+    store.connection().execute_batch("CREATE TRIGGER reject_metadata BEFORE UPDATE ON tracker_task_summaries BEGIN SELECT RAISE(ABORT,'delivery metadata failed'); END;").unwrap();
+    assert!(store
+        .fail_delivery_intent(&intent.id, intent.generation, "must rollback")
+        .is_err());
+    assert_eq!(
+        store
+            .load_delivery_intent(&intent.id)
+            .unwrap()
+            .unwrap()
+            .state,
+        intent.state
+    );
+    assert_eq!(summary(&store, "/summary"), before);
+    store
+        .connection()
+        .execute_batch("DROP TRIGGER reject_metadata")
+        .unwrap();
+    store
+        .fail_delivery_intent(&intent.id, intent.generation, "failed")
+        .unwrap();
+    assert_eq!(
+        summary(&store, "/summary")["deferred_assignment"]["state"],
+        "failed"
+    );
+    assert_eq!(
+        summary(&store, "/summary")["deferred_assignment"]["error"],
+        "failed"
+    );
+    assert_matches_history(&store, &task.id);
+    let retried = store.retry_delivery_intent(&intent.id).unwrap();
+    assert_eq!(
+        summary(&store, "/summary")["deferred_assignment"]["state"],
+        retried.state
+    );
+    task.assignee = None;
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    assert!(summary(&store, "/summary")
+        .get("deferred_assignment")
+        .is_none());
+    assert_matches_history(&store, &task.id);
+}

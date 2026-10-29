@@ -1601,3 +1601,6 @@ fn unrelated_schema_change_revalidates_without_replaying_completed_history() {
 
 #[path = "task_summaries/query_projection.rs"]
 mod query_projection;
+
+#[path = "task_summaries/query_attention.rs"]
+mod query_attention;

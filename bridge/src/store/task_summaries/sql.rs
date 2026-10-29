@@ -88,7 +88,7 @@ pub(super) fn fact_rows(table: &str) -> String {
     let (agent_comment, mentions) = if table == "tracker_comments" {
         ("json_extract(record,'$.author.kind')='agent'", "json_extract(record,'$.author.kind')='agent' AND (json_extract(record,'$.mentions_user')=1 OR json_extract(record,'$.notifies_user')=1)")
     } else {
-        ("0", "json_extract(record,'$.kind')='created' AND json_extract(record,'$.actor.kind')='agent' AND (json_extract(record,'$.mentions_user')=1 OR json_extract(record,'$.notifies_user')=1)")
+        ("0", "json_extract(record,'$.kind')='created' AND json_extract(record,'$.actor.kind')='agent' AND json_extract(record,'$.mentions_user')=1")
     };
     let meaningful = if table == "tracker_comments" {
         "1".to_string()

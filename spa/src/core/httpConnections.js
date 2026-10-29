@@ -108,7 +108,7 @@ export async function httpEndpointFor(deviceId, isCurrent) {
   if (preference?.selected !== "http") throw httpFailure("scope_ended");
   const current = () => held.current() && isCurrent() && held.preferences.forDevice(deviceId) === preference;
   const candidate = prepared.get(deviceId);
-  const ready = candidate?.identity.familyId === preference.familyId ? candidate : null;
+  const ready = matchesPreference(candidate?.identity, preference) ? candidate : null;
   if (ready) prepared.delete(deviceId);
   let endpoint;
   const api = native();
@@ -122,6 +122,9 @@ export async function httpEndpointFor(deviceId, isCurrent) {
   endpoint.close = () => { endpoints.delete(endpoint); close(); };
   return endpoint;
 }
+
+const matchesPreference = (identity, preference) => identity?.familyId === preference.familyId
+  && identity.origin === preference.origin && identity.endpointEpoch === preference.endpointEpoch;
 
 async function nativeEndpoint(api, ready, preference, current) {
   const identity = ready?.identity || desktopHttpValue(await api.resume(preference));

@@ -54,4 +54,22 @@ describe("HTTP greeting subscribes before refresh", () => {
     expect(refresh).toHaveBeenCalledOnce();
     await flush(); accept({}); dispose.dispose();
   });
+
+  it("cannot release a replacement through an old opening's subscription completion", async () => {
+    let finishOld;
+    let oldCurrent = true;
+    const oldReady = vi.fn(); const nextReady = vi.fn(); const refresh = vi.fn();
+    const watcher = watchChanges({ deviceId: "device", scope: "all", kinds: ["state"], refresh });
+    const oldGreeting = greetBridge((method) => method === "session.hello" ? Promise.resolve(greeting) : new Promise((resolve) => { finishOld = resolve; }), {
+      deviceId: "device", isCurrent: () => oldCurrent, beforeRefresh: oldReady,
+    });
+    await flush(); oldCurrent = false;
+    const nextGreeting = greetBridge(async (method) => method === "session.hello" ? greeting : {}, { deviceId: "device", beforeRefresh: nextReady });
+    await flush(); finishOld({});
+    await Promise.all([oldGreeting, nextGreeting]);
+    expect(oldReady).not.toHaveBeenCalled();
+    expect(nextReady).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledOnce();
+    watcher.dispose();
+  });
 });

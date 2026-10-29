@@ -22,10 +22,14 @@ export function createBrowserHttpEndpoint({ grant, fetchImpl = fetch, isCurrent 
   const active = () => !closed && isCurrent() && monotonic() < hardDeadline;
   const check = () => { if (!active()) throw httpFailure("scope_ended"); };
 
-  const headers = (extra = {}) => ({ ...jsonHeaders, Authorization: `Bearer ${grant.token()}`, ...extra });
+  const headers = (extra = {}, hasBody = true) => {
+    const value = { ...jsonHeaders, Authorization: `Bearer ${grant.token()}`, ...extra };
+    if (!hasBody) delete value["Content-Type"];
+    return value;
+  };
   const deleteQuietly = (path, extra) => {
     try {
-      const heldHeaders = headers(extra);
+      const heldHeaders = headers(extra, false);
       void fetchImpl(origin + path, { method: "DELETE", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer",
         headers: heldHeaders, signal: AbortSignal.timeout(1000), cache: "no-store" }).catch(() => {});
     } catch { /* Teardown cannot restore expired authority. */ }
@@ -55,7 +59,7 @@ export function createBrowserHttpEndpoint({ grant, fetchImpl = fetch, isCurrent 
       let response;
       try {
         response = await fetchImpl(origin + path, { method, credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store",
-          headers: headers(extra), signal: requestSignal, ...withBody(encoded) });
+          headers: headers(extra, encoded !== undefined), signal: requestSignal, ...withBody(encoded) });
       } catch { throw httpFailure("network", true); }
       if (response.status === 401 || response.status === 403) { lose(); throw httpFailure("authentication"); }
       const value = await boundedJson(response, maxBytes);
@@ -102,7 +106,7 @@ export function createBrowserHttpEndpoint({ grant, fetchImpl = fetch, isCurrent 
     stream = { binding: binding.subscription_id, close: stop };
     const read = async () => {
       const response = await fetchImpl(origin + path, { method: "GET", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store", signal,
-        headers: headers({ Accept: "text/event-stream", "X-Build-Session": opening.session_id }) });
+        headers: headers({ Accept: "text/event-stream", "X-Build-Session": opening.session_id }, false) });
       activity();
       await readTransientEvents(response, async (event) => {
         check();

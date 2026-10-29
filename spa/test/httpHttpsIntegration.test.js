@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import manifest from "../../fixtures/api/http/resource-manifest.json";
 
 const execute = promisify(execFile);
 
@@ -29,7 +30,7 @@ describe("real HTTPS REST/SSE client witness", () => {
         if (request.headers.authorization !== "Bearer fixture-device-bearer") return json({ error: "auth", error_code: "unauthorized" }, 401);
         if (request.url === "/v1/sessions" && request.method === "POST") {
           const id = `session-${++next}`;
-          const opening = { session_id: id, opening_generation: id, greeting, grant_expires_at: new Date(Date.now() + 30000).toISOString(), transport: { resource_manifest_version: 1, operation_ids: ["ping", "update"], terminal: "webrtc", durable_events: false } };
+          const opening = { session_id: id, opening_generation: id, greeting, grant_expires_at: new Date(Date.now() + 30000).toISOString(), transport: { ...manifest.transport, terminal: "webrtc", durable_events: false } };
           sessions.set(id, { opening }); return json(opening, 201);
         }
         if (request.url.startsWith("/v1/sessions/") && request.method === "DELETE") {
@@ -50,6 +51,17 @@ describe("real HTTPS REST/SSE client witness", () => {
         }
         if (request.method === "DELETE" && request.url.startsWith("/v1/subscriptions/")) { held.stream?.end(); response.writeHead(204); return response.end(); }
         if (request.headers["x-build-subscription"] !== held.binding) return json({ error: "binding", error_code: "stream_replaced" }, 409);
+        if (request.url === "/v1/session-greetings") {
+          if (held.activated) return json({ error: "duplicate activation", error_code: "conflict" }, 409);
+          held.activated = true;
+          return json({ ok: true, result: greeting, bridge_epoch: "epoch" });
+        }
+        if (!held.activated) return json({ error: "activation ordering", error_code: "conflict" }, 409);
+        if (request.url === manifest.operations.find((operation) => operation.method === "changes.subscribe").path) {
+          held.subscribed = true;
+          return json({ ok: true, result: {}, bridge_epoch: "epoch" });
+        }
+        if (!held.subscribed) return json({ error: "subscription ordering", error_code: "conflict" }, 409);
         if (request.url === "/v1/tasks/t") {
           effects += 1;
           if (body.lose) { response.destroy(); return; }
@@ -68,6 +80,8 @@ describe("real HTTPS REST/SSE client witness", () => {
       expect(directDiscovery.headers.authorization).toBeUndefined();
       expect(directDiscovery.headers.cookie).toBeUndefined();
       expect(requests.filter((request) => request.path === "/v1/subscriptions")).toHaveLength(4);
+      expect(requests.filter((request) => request.path === "/v1/session-greetings")).toHaveLength(3);
+      expect(requests.find((request) => request.path === "/v1/health").headers["content-type"]).toBeUndefined();
       const before = requests.length;
       const untrusted = await execute(process.execPath, [witness, origin, "untrusted"], { env: { ...process.env, NODE_EXTRA_CA_CERTS: "" }, timeout: 10000 });
       expect(untrusted.stdout).toContain("untrusted TLS refused");

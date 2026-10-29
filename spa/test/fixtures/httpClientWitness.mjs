@@ -4,6 +4,7 @@ import { createBridgeDiscovery } from "../../src/core/httpDiscovery.js";
 import { createBrowserHttpEndpoint } from "../../src/core/httpBrowserEndpoint.js";
 import { createHttpRoutes } from "../../src/core/httpRoutes.js";
 import { openHttpSession } from "../../src/core/httpSession.js";
+import { readFileSync } from "node:fs";
 
 const [origin, mode] = process.argv.slice(2);
 if (mode === "untrusted") {
@@ -15,10 +16,7 @@ if (mode === "untrusted") {
   console.log("untrusted TLS refused");
   process.exit(0);
 }
-const routes = createHttpRoutes({ version: 1, operations: [
-  { method: "ping", operationId: "ping", verb: "GET", path: "/v1/health", pathParams: [], queryParams: [], body: "remaining" },
-  { method: "tasks.update", operationId: "update", verb: "PATCH", path: "/v1/tasks/{task_id}", pathParams: ["task_id"], queryParams: [], body: "remaining" },
-] });
+const routes = createHttpRoutes(JSON.parse(readFileSync(new URL("../../../fixtures/api/http/resource-manifest.json", import.meta.url), "utf8")));
 const discovery = createBridgeDiscovery({ issuer: origin, accountId: "account" });
 let received = 0;
 for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -31,6 +29,9 @@ for (let attempt = 0; attempt < 4; attempt += 1) {
     continue;
   }
   const session = await openHttpSession({ endpoint, routes, onPush: () => { received += 1; } });
+  assert.equal((await session.rawCall("session.hello", { client: { api_range: ">=3.24.0 <4.0.0" }, changes: "subscriptions" })).api_version, "3.24.0");
+  await session.rawCall("session.hello"); // No duplicate producer activation.
+  await session.rawCall("changes.subscribe", { subscription_id: "fixture", scope: { kind: "all" }, kinds: ["state"], mode: "realtime" });
   session.allowRefresh();
   if (attempt === 0) {
     assert.equal((await session.rawCall("tasks.update", { task_id: "t", title: "success" })).effects, 1);

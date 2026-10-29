@@ -8,7 +8,8 @@ const validPending = (pending, accountId, issuer, now) => pending && pending.acc
 const validMint = (mint, accountId, issuer, origin, now) => mint && mint.issuer === issuer
   && mint.account_id === accountId && mint.origin === origin && alive(mint.expires_at, now);
 const validMintFields = (mint) => [mint.device_id, mint.endpoint_epoch, mint.family_id, mint.access_token].every(nonempty)
-  && !/[\r\n]/.test(mint.access_token) && typeof mint.scope === "string" && mint.scope.split(" ").includes("bridge:read");
+  && !/[\r\n]/.test(mint.access_token) && hasClientScopes(mint.scope);
+const hasClientScopes = (scope) => typeof scope === "string" && ["bridge:read", "bridge:write"].every((required) => scope.split(" ").includes(required));
 const sameBinding = (mint, identity) => mint.device_id === identity.deviceId && mint.origin === identity.origin
   && mint.endpoint_epoch === identity.endpointEpoch && mint.family_id === identity.familyId;
 

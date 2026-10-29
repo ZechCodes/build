@@ -21,6 +21,23 @@ const make = (changes = {}) => {
 const open = (endpoint, options = {}) => openHttpSession({ endpoint, routes: createHttpRoutes(manifest), ...options });
 
 describe("HTTP session adapter and fences", () => {
+  it("activates producers once through the actual hello resource after stream readiness", async () => {
+    const helloRoute = { method: "session.hello", operationId: "hello", verb: "POST", path: "/v1/session-greetings", pathParams: [], queryParams: [], body: "remaining" };
+    const { endpoint } = make({
+      open: vi.fn().mockResolvedValue({ ...opening, transport: { ...opening.transport, operation_ids: [...opening.transport.operation_ids, "hello"] } }),
+      request: vi.fn().mockResolvedValue({ ok: true, result: greeting, bridge_epoch: "epoch" }),
+    });
+    const session = await openHttpSession({ endpoint, routes: createHttpRoutes({ ...manifest, operations: [...manifest.operations, helloRoute] }) });
+    expect(endpoint.request).not.toHaveBeenCalled();
+    const first = session.rawCall("session.hello", { changes: "subscriptions" });
+    const second = session.rawCall("session.hello", { changes: "subscriptions" });
+    expect(first).toBe(second);
+    expect(await first).toEqual(greeting);
+    expect(endpoint.request).toHaveBeenCalledOnce();
+    expect(endpoint.request.mock.calls[0][2].subscriptionId).toBe("stream");
+    session.close();
+    await expect(session.rawCall("session.hello")).rejects.toMatchObject({ uncertain: false });
+  });
   it("requires a complete authenticated resource inventory before streaming", async () => {
     for (const transport of [undefined, { ...opening.transport, operation_ids: ["ping"] }, { ...opening.transport, resource_manifest_version: 2 }]) {
       const { endpoint } = make({ open: vi.fn().mockResolvedValue({ ...opening, transport }) });

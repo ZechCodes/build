@@ -31,6 +31,7 @@ describe("account-bound Add by URL", () => {
   it.each([
     { account_id: "another" }, { issuer: "https://other.example" }, { origin: "https://attacker.example" },
     { expires_at: 999 }, { device_id: "" }, { access_token: "" },
+    { scope: "bridge:read" },
   ])("refuses mismatched or invalid minted authority %j", async (change) => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(json(pending)).mockResolvedValueOnce(json({ proof: "proof" }))
       .mockResolvedValueOnce(json({ ...mint, ...change }));

@@ -80,6 +80,7 @@ const {
 } = await import("../src/core/deviceContexts.js");
 const {
   chooseCreationDevice,
+  chooseDeviceTransport,
   connectDevice,
   deviceRecoverySnapshot,
   stopWatchingForWake,
@@ -2070,6 +2071,21 @@ describe("a machine a page stands on, which the account calls offline", () => {
 });
 
 describe("explicit HTTP selection with independent relay presence", () => {
+  it("retires the HTTP lifetime before an explicit WebRTC choice", async () => {
+    http.selected.add("dev-a");
+    http.open.mockImplementation(async (deviceId) => {
+      const session = fakeSession(deviceId); session.transport = "http";
+      const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
+      return adoptDeviceSession(session);
+    });
+    await connectDevice("dev-a");
+    const previous = lastSession("dev-a");
+    await chooseDeviceTransport("dev-a", { transport: "webrtc" });
+    expect(previous.close).toHaveBeenCalledOnce();
+    expect(http.selected.has("dev-a")).toBe(false);
+    expect(openedFor("dev-a")).toHaveLength(1);
+    expect(contextFor("dev-a").session).not.toBe(previous);
+  });
   it("keeps healthy HTTP through relay flapping and shares one dial", async () => {
     http.selected.add("dev-a");
     devices = [longGone("dev-a", "Laptop")]; App.devices = devices;

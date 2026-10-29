@@ -53,6 +53,7 @@ export function openAddByUrl(onDone = () => {}, { challengeId, services = defaul
     identityBox.replaceChildren();
     const name = document.createElement("p"); name.textContent = verified.name || verified.deviceId;
     const details = document.createElement("p"); details.className = "dim";
+    details.style.overflowWrap = "anywhere";
     details.textContent = `${verified.origin} · Device ${verified.deviceId}${verified.fingerprint ? ` · ${verified.fingerprint}` : ""}`;
     const note = document.createElement("p"); note.className = "dim";
     note.textContent = "Use HTTPS for views and actions. The terminal uses WebRTC separately and may be unavailable. This choice is saved for this device.";

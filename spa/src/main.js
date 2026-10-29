@@ -26,8 +26,11 @@ import { installMarkdownNavigation } from "./core/markdownNavigation.js";
 import { installMarkdownTableFocus } from "./core/markdownTableFocus.js";
 import { installMarkdownMermaid } from "./core/markdownMermaid.js";
 import { installMarkdownImages } from "./core/markdownImages.js";
-import { restoreHttpConnections } from "./core/httpConnections.js";
+import { configureHttpManifest, restoreHttpConnections } from "./core/httpConnections.js";
 import { resumeAddByUrl } from "./sheets/addByUrl.js";
+import httpManifest from "../../fixtures/api/http/resource-manifest.json";
+
+configureHttpManifest(httpManifest);
 
 initBuildChannel();
 installWindowControlsOverlay();

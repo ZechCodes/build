@@ -31,6 +31,7 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
   let opening;
   let adapter = null;
   let hello = false;
+  let greetingCall = null;
   let gateRelease;
   const gate = new Promise((resolve) => { gateRelease = resolve; });
   let refreshRelease;
@@ -95,14 +96,13 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
   }
 
   const awaitRefresh = async (method, options) => {
-    if (!["ping", "changes.subscribe", "changes.unsubscribe"].includes(method)) {
+    if (!["session.hello", "ping", "changes.subscribe", "changes.unsubscribe"].includes(method)) {
       await httpRequest(() => refreshGate, { signal: optionsOf(options)?.signal, timeoutMs: 0, isCurrent: current });
       check();
     }
   };
-  const rawCall = async (method, params = {}, options = {}) => {
+  const wireCall = async (method, params = {}, options = {}) => {
     check();
-    if (method === "session.hello") return opening.greeting;
     await awaitRefresh(method, options);
     const route = routes.request(method, params);
     const heldOptions = optionsOf(options) || {};
@@ -132,6 +132,16 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
     } finally {
       controllers.delete(controller);
     }
+  };
+
+  const rawCall = (method, params, options) => {
+    try { check(); } catch (error) { return Promise.reject(error); }
+    if (method !== "session.hello") return wireCall(method, params, options);
+    if (!routes.has(method)) return Promise.resolve(opening.greeting);
+    // This opening never rebinds a stream. Its producer activation is one
+    // correlated resource request, even when two greeting readers join it.
+    greetingCall ||= wireCall(method, params, options);
+    return greetingCall;
   };
 
   return {

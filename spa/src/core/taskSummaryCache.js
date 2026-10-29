@@ -38,8 +38,11 @@ function validatePage(ticket, page) {
   if (page.tasks.some((task) => typeof task?.id !== "string" || !task.id)) throw new Error("Invalid task summary identity");
   validateBasis(page);
   for (const task of page.tasks) validateQueryFields(ticket.filters || {}, task);
-  const next = page.next_cursor;
-  if (next != null && (typeof next !== "string" || !next || next === ticket.cursor)) throw new Error("Invalid summary continuation");
+  validateContinuation(ticket.cursor, page.next_cursor);
+}
+
+function validateContinuation(cursor, next) {
+  if (next != null && (typeof next !== "string" || !next || next === cursor)) throw new Error("Invalid summary continuation");
 }
 
 function validateBasis(page) {

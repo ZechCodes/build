@@ -186,6 +186,8 @@ describe("bound clear codec", () => {
   it("keeps independent exact sequence counters and application payloads", () => {
     const left = createClearCodec(token(4));
     const right = createClearCodec(token(4));
+    expect(left.bindingId).toBe(token(4));
+    expect(() => { left.bindingId = token(8); }).toThrow();
     expect(right.decode(left.encode({ text: "🦀" }))).toEqual({ frame_type: "data", payload: { text: "🦀" } });
     expect(left.encode({}).seq).toBe(2);
     expect(left.decode(right.encode(null, "close"))).toEqual({ frame_type: "close", payload: null });

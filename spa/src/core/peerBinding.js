@@ -181,6 +181,7 @@ export function createClearCodec(bindingId) {
   let closed = false;
   const ensureOpen = () => { if (closed) fail("clear codec closed"); };
   return {
+    get bindingId() { return bindingId; },
     encode(payload, frameType = "data") {
       ensureOpen();
       const frame = { protocol: DTLS_JSON_PROTOCOL, binding_id: bindingId, seq: outgoing, frame_type: frameType, payload };

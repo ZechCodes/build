@@ -16,11 +16,12 @@ export const tokens = (suffix = "rotated") => ({
 export const response = (payload, ok = true) => ({ ok, json: async () => payload });
 let sequence = 0;
 
-export async function launch(t, { stored = "fixture-refresh-saved", available = true, fetch, userData, openExternal, safeStorage = {}, clearStorageData, clearCache, removeSavedToken, showMessageBox, loadURL } = {}) {
+export async function launch(t, { stored = "fixture-refresh-saved", available = true, fetch, userData, openExternal, safeStorage = {}, clearStorageData, clearCache, removeSavedToken, showMessageBox, loadURL, bridgeFetch } = {}) {
+  if (bridgeFetch) t.mock.method(globalThis, "fetch", bridgeFetch);
   const directory = userData || mkdtempSync(join(tmpdir(), "desktop-main-auth-"));
   const path = join(directory, "refresh-token.enc");
   if (stored && !userData) writeFileSync(path, `encrypted:${stored}`, { mode: 0o600 });
-  const calls = { browser: [], fetch: [], windows: [], dialogs: [], timers: [], cleanup: [], quitEvents: [], reportWindows: [], partitions: [] };
+  const calls = { browser: [], fetch: [], windows: [], dialogs: [], timers: [], cleanup: [], quitEvents: [], reportWindows: [], partitions: [], ipc: new Map(), bridgeEvents: [] };
   const app = new EventEmitter();
   Object.assign(app, {
     isPackaged: false,
@@ -42,6 +43,8 @@ export async function launch(t, { stored = "fixture-refresh-saved", available = 
       this.actions = [];
       this.webContents = new EventEmitter();
       this.webContents.id = calls.windows.length + 1;
+      this.webContents.mainFrame = { url: "https://getbuild.ing/app/desktop" };
+      this.webContents.send = (...args) => calls.bridgeEvents.push(args);
       this.webContents.setWindowOpenHandler = (handler) => { this.webContents.openWindow = handler; };
       calls.windows.push(this);
     }
@@ -91,6 +94,7 @@ export async function launch(t, { stored = "fixture-refresh-saved", available = 
       calls.dialogs.push(options);
       return showMessageBox ? showMessageBox(options, parentOptions ? parentOrOptions : undefined) : { response: calls.dialogResponse ?? 1 };
     } },
+    ipcMain: { handle: (channel, handler) => calls.ipc.set(channel, handler) },
     Menu: { buildFromTemplate: (template) => template, setApplicationMenu: (menu) => { calls.menu = menu; } },
     net: { fetch: async (url, options) => {
       return fetchInSession(defaultState, url, options);
@@ -136,13 +140,17 @@ export async function launch(t, { stored = "fixture-refresh-saved", available = 
         const resolved = nextResolve(specifier, context);
         return { ...resolved, url: `${resolved.url}?test=${id}` };
       }
+      if (specifier === "./bridge-http-resources.json") return { url: `stub:bridge-manifest-${id}`, shortCircuit: true };
       if (specifier === "electron") return { url: `stub:electron-${id}`, shortCircuit: true };
       return nextResolve(specifier, context);
     },
     load(url, context, nextLoad) {
+      // Main auth/IPC tests exercise lifecycle only. Production manifest parity
+      // is checked separately against the independently reviewed #915 artifact.
+      if (url === `stub:bridge-manifest-${id}`) return { format: "json", shortCircuit: true, source: '{"version":1,"operations":[]}' };
       if (url === `stub:electron-${id}`) return {
         format: "module", shortCircuit: true,
-        source: `export const { app, BrowserWindow, BaseWindow, safeStorage, dialog, Menu, net, session, shell } = globalThis.${key};`,
+        source: `export const { app, BrowserWindow, BaseWindow, safeStorage, dialog, Menu, net, session, shell, ipcMain } = globalThis.${key};`,
       };
       const loaded = nextLoad(url, context);
       if (url === new URL(`../../src/main.mjs?test=${id}`, import.meta.url).href) {

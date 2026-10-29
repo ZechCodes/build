@@ -100,7 +100,7 @@ function projectAgentsOf(feed) {
 const projectRostersOf = (feed) => new Map((feed?.projects || []).filter((project) => project.projectRoster)
   .map((project) => [project.projectKey, project.projectRoster]));
 
-const taskSources = ({ tasks = {}, tasksComplete = {}, taskLookups = {} }) => ({ tasks, tasksComplete, taskLookups });
+const taskSources = ({ tasks = {}, taskLookups = {}, taskRowReads = {} }) => ({ tasks, taskLookups, taskRowReads });
 
 export function referenceTables({ feed = null, ...taskOptions } = {}) {
   const workspaces = (feed?.workspaces || []).filter((workspace) => workspace.projectKey).map(workspaceEntry);
@@ -171,21 +171,29 @@ function projectAgentTarget(tables, id, here, identities) {
   return projectAgent(tables, id, { place: here, identities });
 }
 
-function foundTask(tables, here, number, point) {
-  if (point?.status === "found") return point.task;
-  return tables.tasks[here.projectKey]?.find((task) => Number(task.number) === Number(number));
+function pointIsNewer(tables, here, number, point) {
+  const listedRead = tables.taskRowReads[here.projectKey]?.[number];
+  const pointRead = point?.published_result_read_order;
+  return Number.isSafeInteger(listedRead) && listedRead > 0 && Number.isSafeInteger(pointRead) && pointRead > listedRead;
+}
+
+function preferredTask(tables, here, number, point, listed) {
+  // Unknown read clocks cannot revoke a known positive or roll its title back.
+  if (listed?.id && !pointIsNewer(tables, here, number, point)) return listed;
+  if (point?.status === "missing") return null;
+  return point?.status === "found" ? point.task : listed;
 }
 
 function taskTarget(tables, here, number) {
   if (!here) return undefined;
   const point = tables.taskLookups[here.projectKey]?.[number];
-  if (point?.status === "missing") return null;
-  const found = foundTask(tables, here, number, point);
-  if (found?.id) return { deviceId: here.deviceId, projectId: here.projectId, taskId: found.id, title: found.title || "" };
-  // A loaded list, cursor exhaustion, or unversioned page union cannot prove
-  // absence. Only an authoritative point miss above can do that.
-  return undefined;
+  const listed = tables.tasks[here.projectKey]?.find((task) => Number(task.number) === Number(number));
+  const found = preferredTask(tables, here, number, point, listed);
+  return found === null ? null : taskPlace(here, found);
 }
+
+const taskPlace = (here, found) => found?.id
+  ? { deviceId: here.deviceId, projectId: here.projectId, taskId: found.id, title: found.title || "" } : undefined;
 
 /**
  * The resolver core/markdownLinks.js asks, over the tables above, for a reader

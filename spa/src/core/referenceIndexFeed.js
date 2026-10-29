@@ -3,7 +3,7 @@
 import { deviceKey } from "./deviceKey.js";
 import { readCached, readCachedMany, subscribeCache } from "./localCache.js";
 import { tasksAddress } from "./trackerCache.js";
-import { readsAddress } from "./taskReadOrder.js";
+import { lastSayIn, readsAddress } from "./taskReadOrder.js";
 import { taskLookupAddress } from "./taskAggregateReads.js";
 import { subscribeTaskReferenceDemand } from "./taskReferenceDemand.js";
 import { holdReferenceSources } from "./referenceIndex.js";
@@ -11,11 +11,11 @@ import { holdReferenceSources } from "./referenceIndex.js";
 export function feedReferenceIndex({ subscribeFeed }) {
   let feed = null;
   let stopped = false;
-  const tasks = {}, tasksComplete = {}, taskLookups = {};
+  const tasks = {}, taskLookups = {}, taskRowReads = {};
   const watched = new Map();
   const points = new Map();
   const publish = () => {
-    if (!stopped) holdReferenceSources({ feed, tasks: { ...tasks }, tasksComplete: { ...tasksComplete }, taskLookups: { ...taskLookups } });
+    if (!stopped) holdReferenceSources({ feed, tasks: { ...tasks }, taskLookups: { ...taskLookups }, taskRowReads: { ...taskRowReads } });
   };
 
   function watch(project) {
@@ -31,8 +31,9 @@ export function feedReferenceIndex({ subscribeFeed }) {
       if (stopped || !watched.has(key) || read !== serial) return;
       if (Array.isArray(record?.tasks)) tasks[key] = record.tasks;
       else delete tasks[key];
-      // Legacy stretches carry no coherent basis/session proof.
-      tasksComplete[key] = false;
+      const rowRead = lastSayIn(note?.value);
+      taskRowReads[key] = Object.fromEntries((record?.tasks || []).map((row) => [row.number,
+        cached?.accepted ? 0 : rowRead(row)]));
       publish();
     };
     const unsubscribes = [subscribeCache(address, () => void reread()), subscribeCache(readsAddress(address), () => void reread())];
@@ -52,7 +53,7 @@ export function feedReferenceIndex({ subscribeFeed }) {
       if (stopped || !points.has(key) || read !== serial) return;
       const result = record?.value?.result;
       if (!result) return; // Refusal, reservation and cache failure retain known answers.
-      taskLookups[owner] = { ...taskLookups[owner], [number]: result };
+      taskLookups[owner] = { ...taskLookups[owner], [number]: { ...result, published_result_read_order: record.value.published_result_read_order } };
       publish();
     };
     points.set(key, { owner, number, unsubscribe: () => { serial += 1; unsubscribe(); } });

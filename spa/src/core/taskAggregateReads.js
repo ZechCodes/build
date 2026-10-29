@@ -88,14 +88,14 @@ function reserve(address, generation, accept) {
   return mergeCachedRecordsTogether([address], ([record]) => {
     const held = record?.value;
     if (!accept() || held?.generation >= generation) return null;
-    return [{ generation, result: held?.result ?? null }];
+    return [{ generation, result: held?.result ?? null, published_result_read_order: held?.published_result_read_order ?? null }];
   });
 }
 
 function publish(address, generation, result, accept) {
   return mergeCachedRecordsTogether([address], ([record]) => {
     if (!accept() || record?.value?.generation !== generation) return null;
-    return [{ generation, result }];
+    return [{ generation, result, published_result_read_order: generation }];
   });
 }
 

@@ -10,49 +10,92 @@ import { onBridgeGreeted } from "./changeEvents.js";
 import { taskMutationEpoch, taskMutationsPending, subscribeTaskMutations } from "./taskMutationFence.js";
 import { trailingRead } from "./trailingRead.js";
 
-const MAX_TEXT_NODES = 256;
+const MAX_DOM_NODES = 256;
+const MAX_SOURCE_ROWS = 256;
+const MAX_DEPTH = 32;
 const MAX_TEXT_BYTES = 16_384;
-const MAX_NODE_CHARS = 4096;
+const MAX_PART_CHARS = 4096;
 const encoder = new TextEncoder();
-
+const protectedTags = new Set(["CODE", "PRE", "A"]);
 const taskNumbersIn = (text) => referencesIn(text).filter((reference) => reference.kind === "task"
   && Number.isSafeInteger(reference.number) && reference.number > 0).map((reference) => reference.number);
 
 function* contentParts(content) {
-  yield content.body || "";
-  for (const row of (content.rows || []).slice(0, MAX_TEXT_NODES)) if (row.type === "comment") yield row.body;
-}
-
-function boundedContentKey(content) {
-  if (typeof content === "string") return content;
-  const parts = [];
-  let bytes = 0;
-  for (const part of contentParts(content)) {
-    if (parts.length === MAX_TEXT_NODES) break;
-    const text = String(part || "").slice(0, MAX_NODE_CHARS);
-    bytes += encoder.encode(text).length;
-    if (bytes > MAX_TEXT_BYTES) break;
-    parts.push(text);
+  yield { kind: "body", text: content.body || "" };
+  for (const row of (content.rows || []).slice(0, MAX_SOURCE_ROWS)) {
+    if (row.type === "comment") yield { kind: "comment", id: row.key, text: row.body };
   }
-  return JSON.stringify(parts);
 }
 
-function admittedNumbers(host) {
-  const numbers = new Set();
-  let nodes = 0, bytes = 0;
-  for (const body of host.querySelectorAll(".task-page-body.markdown,.task-comment-body.markdown")) {
-    const walker = host.ownerDocument.createTreeWalker(body, 4); // SHOW_TEXT
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (++nodes > MAX_TEXT_NODES) return [...numbers];
-      const text = node.data.slice(0, MAX_NODE_CHARS);
-      bytes += encoder.encode(text).length;
-      if (bytes > MAX_TEXT_BYTES) return [...numbers];
-      if (node.parentElement?.closest("code,pre,a")) continue;
-      for (const number of taskNumbersIn(text)) {
-        numbers.add(number);
-        if (numbers.size === 4) return [...numbers];
-      }
-    }
+function commentIdSize(id) {
+  if (typeof id !== "string" || id.length > 128 || !id.isWellFormed()) return null;
+  // These distinct raw IDs can normalize to the same HTML attribute. Leave
+  // both sides unadmitted rather than infer a canonical identity from the DOM.
+  if (/[\0\r\n\ufffd]/u.test(id)) return null;
+  const size = encoder.encode(id).length;
+  return size > 0 && size <= 128 ? size : null;
+}
+
+function sourcePartSize(part) {
+  if (typeof part.text !== "string" || part.text.length > MAX_PART_CHARS) return null;
+  const idSize = part.kind === "comment" ? commentIdSize(part.id) : 0;
+  return idSize === null ? null : idSize + encoder.encode(part.text).length;
+}
+
+// Admit only complete bounded source parts. Truncating a part for its identity
+// while scanning beyond that prefix in its rendered DOM would miss retargets.
+function sourceAdmission(content) {
+  const parts = [], comments = new Set();
+  let bytes = 0, body = false;
+  for (const part of contentParts(content)) {
+    const size = sourcePartSize(part);
+    if (size === null || bytes + size > MAX_TEXT_BYTES) continue;
+    bytes += size;
+    parts.push([part.kind, part.id, part.text]);
+    if (part.kind === "body") body = true;
+    else comments.add(part.id);
+  }
+  return { key: JSON.stringify(parts), body, comments };
+}
+
+function scopeAt(node, parent, admission) {
+  const commentId = node.getAttribute("data-comment-id") ?? parent.commentId;
+  let inBody = parent.inBody;
+  if (node.classList.contains("markdown")) {
+    if (node.classList.contains("task-page-body")) inBody = admission.body;
+    if (node.classList.contains("task-comment-body")) inBody = commentId?.length <= 128 && admission.comments.has(commentId);
+  }
+  return { inBody, commentId };
+}
+
+function nextFrame(frame, stack, context) {
+  const { node, depth } = frame;
+  if (node.nextSibling) stack.push({ ...frame, node: node.nextSibling });
+  if (node.firstChild && depth < MAX_DEPTH && !protectedTags.has(node.tagName)) {
+    return { node: node.firstChild, depth: depth + 1, ...context };
+  }
+  return stack.pop();
+}
+
+function collectNumbers(node, numbers, budget) {
+  const text = node.data.slice(0, MAX_PART_CHARS);
+  budget.bytes += encoder.encode(text).length;
+  if (budget.bytes > MAX_TEXT_BYTES) return;
+  for (const number of taskNumbersIn(text)) {
+    numbers.add(number);
+    if (numbers.size === 4) return;
+  }
+}
+
+function admittedNumbers(host, admission) {
+  const numbers = new Set(), stack = [], budget = { bytes: 0 };
+  let frame = { node: host.firstChild, depth: 0, inBody: false, commentId: null };
+  for (let visited = 0; frame?.node && visited < MAX_DOM_NODES; visited += 1) {
+    const { node } = frame;
+    const context = node.nodeType === 1 ? scopeAt(node, frame, admission) : frame;
+    if (node.nodeType === 3 && frame.inBody) collectNumbers(node, numbers, budget);
+    if (numbers.size === 4 || budget.bytes > MAX_TEXT_BYTES) break;
+    frame = nextFrame(frame, stack, context);
   }
   return [...numbers];
 }
@@ -93,8 +136,9 @@ export function mountTaskReferenceLookups(host, { deviceId, projectId, context =
   function stopTurn() { current?.reader.dispose(); current?.release(); }
 
   function update(content) {
-    const key = boundedContentKey(content);
-    if (disposed || current?.key === key) return Promise.resolve(false);
+    if (disposed) return Promise.resolve(false);
+    const admission = sourceAdmission(content), key = admission.key;
+    if (current?.key === key) return Promise.resolve(false);
     stopTurn();
     const turn = { key, numbers: [], release: () => {}, stands: () => false };
     current = turn;
@@ -109,7 +153,7 @@ export function mountTaskReferenceLookups(host, { deviceId, projectId, context =
     // once, with the content token captured before any point request can finish.
     return Promise.resolve().then(() => {
       if (disposed || current !== turn) return false;
-      turn.numbers = admittedNumbers(host);
+      turn.numbers = admittedNumbers(host, admission);
       turn.release = admitTaskReferenceLookups({ deviceId, projectId }, turn.numbers);
       return turn.run(false);
     }).catch(() => false);

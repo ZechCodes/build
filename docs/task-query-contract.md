@@ -61,6 +61,55 @@ is one bounded summary or explicit null for a confirmed miss; identities are
 shared and bounded as in summary pages. The complete serialized result is at most
 65,536 bytes, excluding the RPC and encryption envelopes. An unknown project is an error, rather than a task miss.
 
+## Canonical markers and structural facts
+
+`tasks.counts` and `tasks.listAttention` include the `opaque-marker-v1` domain
+at wire 3.27.0, without a separate capability. Raw canonical read-through,
+watch-start and dismissal markers support at most 128 UTF-8 bytes, including
+embedded NUL. This counts bytes, not characters: 64 copies of `é` are 128
+bytes; adding one ASCII byte makes that marker unsupported. Exactly 128 bytes
+are supported and 129 are refused. Markers are existing stored fields, not new
+request selector parameters. Missing/None/JSON null preserve canonical absence;
+an empty string is supported at zero bytes and remains a present empty floor.
+Absent `watch_started_after` uses the latest watched-fact fallback; a present
+empty value bypasses that fallback. Read/dismiss markers likewise preserve
+None versus present empty under canonical comparison behavior. No trimming,
+whitespace normalization, case folding or NUL removal is performed.
+Canonical write acceptance and legacy read
+behavior are preserved; this boundary applies to the new bounded responses.
+
+Producers materialize conservative whole-project invalidity from canonical
+markers, independently of bounded display summaries. Before any successful
+`tasks.counts` response or `tasks.list` page with `attention_rule`, the read checks
+that invalidity in the same transaction and projection basis. An unsupported
+marker on an excluded task or beyond the candidate window still refuses the
+dependent response. Counts refuses as a whole because its mandatory
+`watched_unread_total` depends on these markers. Independent task lists without
+attention selection and point lookup retain their existing validation. This
+check never drains the project or its history at request time.
+
+The refusal is `error_code:"unavailable"`, `retryable:false`, with details
+`{reason:"task_query_marker_unsupported",scope:"project_markers",project_id,
+domain:"opaque-marker-v1",max_bytes:128,operation}`. Operation is `tasks.counts`
+or `tasks.list`. It carries no result or cursor. Preserve cached rows, totals
+and continuation; do not label the response empty or exhausted, automatically
+retry, or traverse pages to bypass the refusal. After canonical data correction,
+an explicit fresh request can install authoritative data again.
+
+Marker invalidity, aggregate/attention facts and projection generation commit
+and roll back together. Correction, removal and explicit repair clear the
+appropriate project invalidity in the new basis; stale continuations still obey
+the ordinary basis restart contract. Shared fixtures cover 128/129-byte ASCII
+and Unicode boundaries, embedded NUL, off-page refusal, rollback and repair.
+
+Canonical structural facts drive exact predicates, not truncated display
+assignee IDs, status/label strings or relation arrays. Bounded typed source facts
+restore supported canonical assignee/status/label data before predicates and
+output; ordinary string serialization preserves embedded NUL. An overlong raw
+status uses a nonnormalized sentinel with `summary_truncated:true`, rather than
+colliding with a supported normalized workflow status. Display truncation cannot
+create an exact membership or substitute for a canonical marker validity check.
+
 ## Ordering and static streams
 
 Number is descending and remains the default. Updated orders by supported update

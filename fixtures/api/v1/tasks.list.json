@@ -1148,6 +1148,28 @@
         "error_code": "invalid_params",
         "retryable": false
       }
+    },
+    {
+      "params": {
+        "project_id": "proj-1",
+        "summary": true,
+        "attention_rule": "legacy"
+      },
+      "reply": {
+        "id": "r-marker-domain",
+        "ok": false,
+        "error": "task_query_marker_unsupported:{\"reason\":\"task_query_marker_unsupported\",\"scope\":\"project_markers\",\"project_id\":\"proj-1\",\"domain\":\"opaque-marker-v1\",\"max_bytes\":128,\"operation\":\"tasks.list\"}",
+        "error_code": "unavailable",
+        "retryable": false,
+        "details": {
+          "reason": "task_query_marker_unsupported",
+          "scope": "project_markers",
+          "project_id": "proj-1",
+          "domain": "opaque-marker-v1",
+          "max_bytes": 128,
+          "operation": "tasks.list"
+        }
+      }
     }
   ],
   "exact_queries": {
@@ -1446,6 +1468,102 @@
       "unknown": "Absent/null/empty timestamps map to Unknown rather than Unsupported. Other nonempty invalid/outside-domain values map to Unsupported.",
       "fraction_note": "1..9 digits are the deterministic native-producer extension beyond normative ECMA three-digit milliseconds.",
       "validation": "31 known shared fixtures match Node 22.23.4/26.12.1 and Chromium 152.0.7977.82; 13 browser-accepted strings intentionally refused. See docs/task-query-timestamp-domain.md."
+    },
+    "canonical_marker_domain": {
+      "name": "opaque-marker-v1",
+      "since": "3.27.0",
+      "max_bytes": 128,
+      "measurement": "UTF-8 bytes of raw canonical read/watch-start/dismiss marker, not Unicode scalar count or display projection length. Embedded NUL is supported and counted as one UTF-8 byte.",
+      "canonical_writes": "Canonical write acceptance and legacy behavior are preserved. This is an explicit bounded-read domain, not a write validation restriction.",
+      "validity_scope": "Materialized conservative whole-project marker invalidity, read in the same transaction/basis before any dependent success, including markers on excluded/off-page tasks. No request-time catalogue drain.",
+      "affected_operations": [
+        "tasks.counts",
+        "tasks.list with attention_rule asked or legacy"
+      ],
+      "independent_operations": "Number/updated/priority/anchor list ordering without attention_rule retains existing validation; tasks.lookup retains existing validation. Counts fails as a whole because watched_unread_total is part of every response.",
+      "capabilities": "Existing tasks.counts and tasks.listAttention at wire 3.27.0 include this explicit domain; no additional capability.",
+      "examples": [
+        {
+          "name": "ASCII 128-byte boundary",
+          "marker": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "utf8_bytes": 128,
+          "supported": true
+        },
+        {
+          "name": "ASCII 129-byte boundary",
+          "marker": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "utf8_bytes": 129,
+          "supported": false
+        },
+        {
+          "name": "Unicode 128-byte boundary",
+          "marker": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+          "utf8_bytes": 128,
+          "supported": true
+        },
+        {
+          "name": "Unicode 129-byte boundary",
+          "marker": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9a",
+          "utf8_bytes": 129,
+          "supported": false
+        },
+        {
+          "name": "embedded NUL",
+          "marker": "read\u0000marker",
+          "utf8_bytes": 11,
+          "supported": true
+        },
+        {
+          "name": "canonical absence",
+          "marker": null,
+          "supported": true,
+          "meaning": "None; preserve absence and canonical fallback where defined"
+        },
+        {
+          "name": "present empty marker",
+          "marker": "",
+          "utf8_bytes": 0,
+          "supported": true,
+          "meaning": "Some(empty); preserve present empty floor and bypass watch-start None fallback"
+        },
+        {
+          "name": "whitespace remains exact",
+          "marker": " \t ",
+          "utf8_bytes": 3,
+          "supported": true
+        }
+      ],
+      "fences": [
+        {
+          "name": "same basis",
+          "steps": [
+            "Import or canonical write stores an overlong marker.",
+            "Commit marker invalidity and its projection generation atomically.",
+            "Dependent count/attention read in that basis refuses before success, even if the task is excluded or outside its candidate window."
+          ]
+        },
+        {
+          "name": "rollback",
+          "steps": [
+            "Attempt marker change and projected count/attention invalidity update.",
+            "Roll back canonical mutation, projection facts and generation together.",
+            "A read of the previous basis keeps its previous supported/refused outcome."
+          ]
+        },
+        {
+          "name": "repair",
+          "steps": [
+            "Correct or remove the overlong canonical marker through a supported producer or explicit repair.",
+            "Atomically clear project invalidity and advance projection generation.",
+            "Explicit fresh dependent read can return authoritative counts/attention again; an old continuation obeys ordinary basis restart rules."
+          ]
+        }
+      ],
+      "client_refusal": "Preserve cached rows, totals and cursor. No result or cursor accompanies refusal. Do not interpret as empty/exhausted, automatically retry, or drain pages; retry explicitly after data correction.",
+      "stored_fields_only": "These markers are stored canonical fields, not new request selector parameters.",
+      "absence_and_empty": "Missing/None/JSON null preserve canonical absence. Empty string is supported at zero bytes and remains a PRESENT empty floor; no trimming, case-folding, NUL removal or whitespace normalization.",
+      "watch_start_fallback": "Absent/null watch_started_after uses latest watched-fact fallback; present empty watch_started_after bypasses fallback and compares as an empty floor.",
+      "read_and_dismiss": "Canonical read/dismiss None remains absent; Some(empty string) remains present empty, following canonical comparison behavior."
     }
   }
 }

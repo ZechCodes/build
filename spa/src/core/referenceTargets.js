@@ -177,7 +177,21 @@ function pointIsNewer(tables, here, number, point) {
   return Number.isSafeInteger(listedRead) && listedRead > 0 && Number.isSafeInteger(pointRead) && pointRead > listedRead;
 }
 
+function fresherBody(left, right) {
+  const leftAt = Date.parse(left.updated_at), rightAt = Date.parse(right.updated_at);
+  if (!Number.isFinite(leftAt) || !Number.isFinite(rightAt) || leftAt === rightAt) return null;
+  return leftAt > rightAt ? left : right;
+}
+
+function sameTaskContent(point, listed) {
+  if (point?.status !== "found") return null;
+  if (!listed?.id || point.task?.id !== listed.id) return null;
+  return fresherBody(point.task, listed);
+}
+
 function preferredTask(tables, here, number, point, listed) {
+  const content = sameTaskContent(point, listed);
+  if (content) return content;
   // Unknown read clocks cannot revoke a known positive or roll its title back.
   if (listed?.id && !pointIsNewer(tables, here, number, point)) return listed;
   if (point?.status === "missing") return null;

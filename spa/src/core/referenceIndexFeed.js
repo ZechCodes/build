@@ -8,6 +8,26 @@ import { taskLookupAddress } from "./taskAggregateReads.js";
 import { subscribeTaskReferenceDemand } from "./taskReferenceDemand.js";
 import { holdReferenceSources } from "./referenceIndex.js";
 
+const positiveRead = (read) => Number.isSafeInteger(read) && read > 0 ? read : 0;
+
+function rowAuthority(cached, note) {
+  const own = note?.rows || {};
+  const spanRead = lastSayIn({ stretches: note?.stretches || [] });
+  const catalogueRead = positiveRead(cached?.value?.read_order);
+  return (row) => {
+    if (cached?.accepted) return 0;
+    const explicit = positiveRead(own[row.id]);
+    const span = spanRead(row);
+    // An unnoted rewrite cannot inherit an older span's observation. Explicit
+    // per-ID notes remain independent of a later unrelated catalogue maximum.
+    const coherentSpan = catalogueRead > 0 && catalogueRead <= span ? span : 0;
+    // Losing a newer span's lineage must not move a positive backward to an
+    // older explicit note and resurrect a point miss between those reads.
+    if (!coherentSpan && span > explicit) return 0;
+    return Math.max(explicit, coherentSpan);
+  };
+}
+
 export function feedReferenceIndex({ subscribeFeed }) {
   let feed = null;
   let stopped = false;
@@ -31,9 +51,8 @@ export function feedReferenceIndex({ subscribeFeed }) {
       if (stopped || !watched.has(key) || read !== serial) return;
       if (Array.isArray(record?.tasks)) tasks[key] = record.tasks;
       else delete tasks[key];
-      const rowRead = lastSayIn(note?.value);
-      taskRowReads[key] = Object.fromEntries((record?.tasks || []).map((row) => [row.number,
-        cached?.accepted ? 0 : rowRead(row)]));
+      const rowRead = rowAuthority(cached, note?.value);
+      taskRowReads[key] = Object.fromEntries((record?.tasks || []).map((row) => [row.number, rowRead(row)]));
       publish();
     };
     const unsubscribes = [subscribeCache(address, () => void reread()), subscribeCache(readsAddress(address), () => void reread())];

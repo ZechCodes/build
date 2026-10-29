@@ -71,16 +71,27 @@ for their own rows and do not certify other task numbers missing. Only an
 accepted point result with `status:"missing"` can supply a confirmed miss.
 
 List rows and per-row read notes are read together through `readCachedMany`.
-A row's observation clock comes only from `taskReadOrder.lastSayIn(note)(row)`;
-a whole-list maximum from an unrelated row action does not age every row
-forward. Accepted overlay rows and rows without their own proof have unknown
-clocks. Point publication stores local `published_result_read_order`; reserving
+A row's observation clock uses its explicit per-ID note, or a span-derived
+`taskReadOrder.lastSayIn` observation only when the catalogue's positive safe
+`read_order` does not exceed that span's read. A later unnoted catalogue rewrite
+cannot borrow an inherited old span's proof. Explicit per-ID notes remain
+independent of a later unrelated row action's whole-list maximum. If an
+explicit note predates a span whose lineage is now unproved, the row becomes
+unknown rather than falling backward to that older note and resurrecting an
+intervening stale point miss. Accepted overlay rows and rows without coherent
+lineage have unknown clocks. Point publication stores local `published_result_read_order`; reserving
 a later refresh preserves the previous result's clock, including when refresh
 fails. These are local request clocks, not parsed or ordered server bases.
 
-A proved newer point result may replace an older positive or confirm its
-absence. A newer listed positive/title defeats an older point. Where the
-relative clocks are unknown, the known positive is retained. Refusal retains
+A proved newer point existence result may replace an older logical identity
+or confirm its absence. Body/title freshness is separate: when both found rows
+name the same exact task ID and have comparable valid `updated_at` timestamps,
+the newer content is retained regardless of a later membership read that kept
+an older body. The timestamp comparison follows the existing legacy page
+folding convention; it supplies no absence proof. Different task IDs sharing a
+number never borrow one another's timestamp authority. Source clocks and the
+unknown-clock positive policy continue deciding that identity choice. Where
+relative existence clocks are unknown, the known positive is retained. Refusal retains
 cached point results and never schedules a retry by itself. Missing-result
 freshness is tested through actual per-row action writes, an unrelated #99
 action, and a failed refresh reservation.
@@ -100,7 +111,11 @@ integers.
 source-pinned `cacheNewTask` shapes, no-note and mixed/interrupted spans,
 transient demand churn, and atomic cache snapshots. `referenceLookupFreshness`
 covers old misses/found titles, unknown clocks, retained publication clocks,
-unrelated row actions and newer authoritative misses. `taskReferenceLookups`
+unrelated row actions and newer authoritative misses. Additional real-cache
+fixtures preserve a T14 point title when `foldTasksPage` retains a T13 body
+under a later read, reject inherited-span proof after a `cacheNewTask`-shaped
+unnoted rewrite, and distinguish same-ID content freshness from different-ID
+existence authority. `taskReferenceLookups`
 uses the actual mounted task page to prove four links without result-driven
 fanout, off-page unknown-to-confirmed-missing paint, and the unsafe-number
 boundary. It also covers source/DOM/ID budgets, protected content, pending

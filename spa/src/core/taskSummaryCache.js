@@ -108,31 +108,38 @@ const changedContinuationBasis = (held, ticket, page) => ticket.cursor !== null 
 
 function preserveMarks(held, task) {
   const next = { ...task };
-  let behind = false;
   for (const field of ["read_through", "watch_started_after", "dismissed_through"]) {
     const mark = newerTaskMarker(held?.[field], next[field]);
-    if (isPresentTaskMarker(mark) && mark !== next[field]) behind = true;
     if (isPresentTaskMarker(mark)) next[field] = mark;
   }
-  if (behind) for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) {
+  if (compareTaskMarkers(counterFloor(held), counterFloor(task)) > 0) for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) {
     if (Object.hasOwn(held, field)) next[field] = held[field];
   }
   return next;
 }
+
+const counterFloor = (task) => newerTaskMarker(task?.read_through, task?.watch_started_after);
 
 const markerFields = ["read_through", "watch_started_after", "dismissed_through"];
 const strongerMarks = (held, incoming) => markerFields.some((field) => compareTaskMarkers(incoming[field], held?.[field]) > 0);
 const coversMarks = (held, incoming) => markerFields.every((field) =>
   compareTaskMarkers(incoming[field], held?.[field]) >= 0);
 
-function markerAuthority(held, incoming) {
+function markerAuthority(held, incoming, read) {
   const before = held?.task;
   const olderContent = Date.parse(incoming.updated_at) < Date.parse(before?.updated_at);
   const stronger = strongerMarks(before, incoming);
-  const stale = olderContent && stronger || held?.needs_unread_refresh && (olderContent || !coversMarks(before, incoming));
+  const stale = olderContent && stronger || countersOvertaken(held, incoming, read)
+    || needsCounterRefresh(held, incoming, olderContent);
   const source = olderContent ? Object.fromEntries(markerFields.map((field) => [field, incoming[field]])) : incoming;
   return { source: stronger ? source : before, stale: Boolean(stale) };
 }
+
+const needsCounterRefresh = (held, incoming, olderContent) => held?.needs_unread_refresh
+  && (olderContent || !coversMarks(held.task, incoming));
+
+const countersOvertaken = (held, incoming, read) => !olderRow(held, incoming, read)
+  && compareTaskMarkers(counterFloor(held?.task), counterFloor(incoming)) > 0;
 
 const olderRow = (held, task, read) => held?.read_order > read || Date.parse(held?.task?.updated_at) > Date.parse(task.updated_at);
 
@@ -145,7 +152,7 @@ function summaryValue(held, task, read) {
   // Marks and their paired counters have their own authority, independently
   // of ordinary row request order. Preserve held fields while accepting a
   // stronger incoming mark, including an older dispatch's read report.
-  const authority = markerAuthority(held, task);
+  const authority = markerAuthority(held, task, read);
   const next = preserveMarks(authority.source, preserveMarks(before, reviewed));
   return { task: next, read_order: Math.max(read, held?.read_order || 0), needs_unread_refresh: authority.stale };
 }

@@ -1,0 +1,15 @@
+[package]
+name = "bridge-http-runtime-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[test]]
+name = "runtime"
+path = "../http_runtime.rs"
+
+[dependencies]
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time", "macros", "rt", "test-util"] }

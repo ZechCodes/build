@@ -35,8 +35,8 @@ const sameText = (left, right) =>
 // (core/referenceIndex.js). It is only caches: the feed, and the task lists
 // the tracker has written.
 //
-// Each answer is one of three things. A place is a link. `null` means the list
-// that would hold it is held and it is not in it: the reader is told so
+// Each answer is one of three things. A place is a link. For tasks, `null`
+// requires an authoritative bounded point miss: the reader is told so
 // (core/markdownLinks.js). `undefined` means nothing here can tell — no
 // project to read `#42` in, a task list never read — and the reference is left
 // as the words that were typed, exactly as before there was an index.
@@ -182,7 +182,9 @@ function taskTarget(tables, here, number) {
   if (point?.status === "missing") return null;
   const found = foundTask(tables, here, number, point);
   if (found?.id) return { deviceId: here.deviceId, projectId: here.projectId, taskId: found.id, title: found.title || "" };
-  return Array.isArray(tables.tasks[here.projectKey]) && tables.tasksComplete[here.projectKey] !== false ? null : undefined;
+  // A loaded list, cursor exhaustion, or unversioned page union cannot prove
+  // absence. Only an authoritative point miss above can do that.
+  return undefined;
 }
 
 /**

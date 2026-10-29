@@ -1,26 +1,12 @@
 // Cache-only reference sources. Point records are read only for explicitly
 // admitted mounted content; this feed never discovers or dispatches lookups.
 import { deviceKey } from "./deviceKey.js";
-import { readCached, subscribeCache } from "./localCache.js";
-import { readTasksRecord, tasksAddress } from "./trackerCache.js";
+import { readCached, readCachedMany, subscribeCache } from "./localCache.js";
+import { tasksAddress } from "./trackerCache.js";
 import { readsAddress } from "./taskReadOrder.js";
 import { taskLookupAddress } from "./taskAggregateReads.js";
 import { subscribeTaskReferenceDemand } from "./taskReferenceDemand.js";
 import { holdReferenceSources } from "./referenceIndex.js";
-
-// Only explicit full-read provenance or uninterrupted page coverage can prove
-// absence. Local actions can create one-row catalogues without page stretches.
-function completeTaskList(record, reads) {
-  if (record?.catalog_complete === true) return true;
-  const spans = reads?.stretches || [];
-  if (!spans.length) return false;
-  let through = Infinity;
-  for (const span of [...spans].sort((left, right) => right.above - left.above)) {
-    if (span.above < through) return false;
-    through = Math.min(through, span.through);
-  }
-  return through === -Infinity;
-}
 
 export function feedReferenceIndex({ subscribeFeed }) {
   let feed = null;
@@ -40,11 +26,13 @@ export function feedReferenceIndex({ subscribeFeed }) {
     let serial = 0;
     const reread = async () => {
       const read = ++serial;
-      const [record, note] = await Promise.all([readTasksRecord(deviceId, projectId), readCached(readsAddress(address))]);
+      const [cached, note] = await readCachedMany([address, readsAddress(address)]);
+      const record = cached?.value;
       if (stopped || !watched.has(key) || read !== serial) return;
       if (Array.isArray(record?.tasks)) tasks[key] = record.tasks;
       else delete tasks[key];
-      tasksComplete[key] = completeTaskList(record, note?.value);
+      // Legacy stretches carry no coherent basis/session proof.
+      tasksComplete[key] = false;
       publish();
     };
     const unsubscribes = [subscribeCache(address, () => void reread()), subscribeCache(readsAddress(address), () => void reread())];
@@ -67,16 +55,25 @@ export function feedReferenceIndex({ subscribeFeed }) {
       taskLookups[owner] = { ...taskLookups[owner], [number]: result };
       publish();
     };
-    points.set(key, () => { serial += 1; unsubscribe(); });
+    points.set(key, { owner, number, unsubscribe: () => { serial += 1; unsubscribe(); } });
     const unsubscribe = subscribeCache(address, () => void reread());
     void reread();
   }
 
   const unsubscribeDemand = subscribeTaskReferenceDemand((demands) => {
     const wanted = new Set(demands.flatMap(({ scope, numbers }) => numbers.map((number) => JSON.stringify(taskLookupAddress(scope, number)))));
-    for (const [key, unsubscribe] of points) {
-      if (!wanted.has(key)) { unsubscribe(); points.delete(key); }
+    let removed = false;
+    for (const [key, point] of points) {
+      if (wanted.has(key)) continue;
+      point.unsubscribe();
+      points.delete(key);
+      const retained = { ...taskLookups[point.owner] };
+      delete retained[point.number];
+      if (Object.keys(retained).length) taskLookups[point.owner] = retained;
+      else delete taskLookups[point.owner];
+      removed = true;
     }
+    if (removed) publish();
     for (const { scope, numbers } of demands) for (const number of numbers) watchPoint(scope, number);
   });
   const unsubscribeFeed = subscribeFeed((next) => {
@@ -91,7 +88,7 @@ export function feedReferenceIndex({ subscribeFeed }) {
     unsubscribeFeed();
     unsubscribeDemand();
     watched.forEach((unsubscribe) => unsubscribe());
-    points.forEach((unsubscribe) => unsubscribe());
+    points.forEach((point) => point.unsubscribe());
     watched.clear();
     points.clear();
   };

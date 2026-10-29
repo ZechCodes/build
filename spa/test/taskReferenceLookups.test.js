@@ -238,3 +238,21 @@ it("leaves NUL and literal replacement-character comment identities unadmitted w
   await follower.update({ body: "", rows: [{ type: "comment", key: "raw\ufffdid", body: "#44" }] });
   expect(lookupCalls()).toHaveLength(1);
 });
+
+it("keeps adjacent above-safe JSON task numbers unknown instead of linking the old consumer's numeric alias", async () => {
+  const firstRaw = "9007199254740992", secondRaw = "9007199254740993";
+  const first = JSON.parse(firstRaw), second = JSON.parse(secondRaw);
+  expect(first).toBe(second); // Actual Node JSON/Number loss, not an invented fixture coercion.
+  const aliased = { id: "wrong-adjacent-task", number: first, title: "Wrong adjacent task" };
+  expect([aliased].find((row) => Number(row.number) === Number(secondRaw))?.id).toBe(aliased.id);
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([aliased]));
+  const held = task({ id: "own-number-domain", project_id: scope.projectId, body: `See #${secondRaw}.`, watched: false });
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, held.id, tracker.taskRecord(held, []));
+  const { mountTaskPage } = await import("../src/core/trackerTaskPage.js");
+  page = mountTaskPage(host, { ...scope, projectKey, taskId: held.id, callRpc: live.context.rpc,
+    catalog: () => ({ providers: [] }), feed: () => ({ projects: [], workspaces: [], items: [] }) });
+  await vi.waitFor(() => expect(host.querySelector('.task-page-body')?.textContent).toContain(secondRaw));
+  expect(host.querySelector('.task-page-body a.md-ref')).toBeNull();
+  expect(host.querySelector('.task-page-body .md-ref-missing')).toBeNull();
+  expect(lookupCalls()).toHaveLength(0);
+});

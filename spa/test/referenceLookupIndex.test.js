@@ -152,3 +152,9 @@ it("does not combine interrupted or mixed-generation legacy spans into missing p
   await cache.writeCached(note, { stretches: [{ above: Infinity, through: 50, read: 101 }], rows: {} });
   expect(resolve(1)).toBeUndefined();
 });
+
+it("rejects unsupported task-number values before legacy Number coercion or point-table lookup", () => {
+  index.holdReferenceSources({ tasks: { [projectKey]: [task, { id: "alias", number: JSON.parse("9007199254740992") }] } });
+  for (const number of [0, -1, 1.5, NaN, Infinity, "42", JSON.parse("9007199254740993")]) expect(resolve(number)).toBeUndefined();
+  expect(resolve(42)?.taskId).toBe(task.id);
+});

@@ -35,6 +35,158 @@ request-changes findings until repairs, regressions and fresh independent
 exact-head reviews establish otherwise. The original timestamp-domain and
 search exclusions remain in force.
 
+## Subsequent independent review: two new P2 findings
+
+At exact head `484537214`, independent Astra review closed the original `0d3`
+timestamp and assignee findings after the canonical-source repair, and requested
+changes for **two new, separate P2 findings**. The source repair is now frozen in `fa8a4ff9b`; the two findings remain
+review-open here. Prior full-suite/release successes do not establish the
+missing guarantees.
+The original findings, failed attempts and repair evidence above/below remain
+historical evidence rather than being erased or relabeled.
+
+### Actual meaningful-history work
+
+At `484537214`, `bridge/src/store/task_summaries/query_projection.rs:205–206`
+combined `?9 IS NULL OR f.ulid>?9` inside the meaningful-history EXISTS. An index
+name alone did not prove a bounded range: the actual production INSERT could
+seek only `task_id` and scan the task's meaningful history when a high dismissal
+floor excluded all entries. This affects ordinary maintained legacy-attention
+facts, rather than just a standalone equivalent SELECT.
+
+The added `query_projection::cost_tests` executes the exact shared
+`QUERY_FACT_REFRESH` production statement, forces the eligible watched/unread
+comment branch, records SQLite `StatementStatus::VmStep`, and checks membership
+as well as physical work. `/tmp/task900-refresh-cost-red.log` records **1 passed,
+1 failed**: at 50,000 meaningful facts the high floor consumed **250,241 VM
+steps**, versus **245** with no floor. At 10,000 facts the high floor consumed
+50,241 steps; `009999` consumed 50,242 steps when the first survivor lay after a
+long excluded prefix. The failing plan sought the partial meaningful index by
+`task_id` only. This is a reproducible production-path work defect; the NULL
+versus empty semantic test already passed and must remain intact.
+
+The working repair extracts the exact production INSERT as `QUERY_FACT_REFRESH`
+and splits NULL-floor EXISTS from non-NULL `f.ulid>?9` EXISTS using CASE, both
+against `tracker_summary_meaningful`. The cost assertion covers histories 10,
+10,000 and 50,000 with None, empty, middle and high floors, requires fewer than
+1,000 VM steps and a plan containing the ULID range, and verifies expected
+attention membership. `/tmp/task900-refresh-cost-green.log` now records **2/2
+passed, exit 0** (owner-confirmed): all 12 combinations used **247–250 VM
+steps**, and EXPLAIN includes `(task_id=? AND ulid>?)`. This supersedes the RED
+physical-work result for the measured statement; source commit `fa8a4ff9b` is frozen; broader gates and independent review
+remain pending.
+
+### Filter-choice aliases and round-trip membership
+
+At `484537214`, `sql/choices.rs::desired` read labels/status from display record
+fields (lines 63–76), and `assignee` read display assignee (lines 90 onward).
+The already-repaired list selector used exact canonical cells, so a shortened
+choice could name a different task group or fail assignee validation. Choices
+are part of the predicate contract: offered values must round-trip through the
+same canonical selector, without aliasing a NUL prefix/suffix identity.
+
+The working repair reads bounded canonical `labels_json`, status, assignee
+kind/ID and `pending_present` from `tracker_task_query_sources`, preserving the
+existing choice refcount delta machinery and invalid-label/source refusals.
+Pending-only tasks produce the scalar `"any"` choice rather than inventing exact
+target-agent membership or the `"none"` choice. Task/metadata producer order must
+refresh canonical pending facts before choices, and repair/rebuild must remove
+old materialized prefix aliases without rewriting canonical task records.
+
+One additional resource edge accompanies exact IDs: a legal opaque agent ID of
+128 bytes can expand during JSON serialization (for example NUL requires an
+escape). The previous `list_task_filter_choices` key cap was 512 bytes at
+`task_summaries.rs:241,258`. The exact serialized assignee-object key and opaque
+cursor position now use a **1,024-byte bounded assignee-key/position admission**;
+this is not permission to widen the 128-byte ID domain or silently shorten an
+escaped key. Other choice keys remain capped at 512 bytes, values at 1,024
+bytes, and the complete encoded cursor retains its unchanged 2,048-byte cap.
+`BoundedPage::position` admits the complete authenticated position up to 1,024
+bytes; `list_task_filter_choices` applies the larger key bound only to assignee.
+
+The extra boundary regression
+`maximum_opaque_agent_choice_pages_and_round_trips_without_restricting_ids`
+first failed against the old 512-byte key bound: **0 passed, 1 failed, exit 101**,
+`/tmp/task900-choice-key-bound-red.log`. The repaired final choice RPC group
+passed **5/5, exit 0**, `/tmp/task900-choice-key-bound-green.log` (owner-confirmed).
+Its actual three limit-1 pages contain a 127-NUL-byte ID, a 128-NUL-byte ID and
+`zzzz`, with exact selection for each. Complete serialized key/cursor sizes are:
+
+| Raw ID bytes | Serialized key bytes | Complete encoded next-cursor bytes |
+| --- | --- | --- |
+| 127 | 792 | 1,303 |
+| 128 | 798 | 1,312 |
+| 4 (`zzzz`) | 34 | No continuation |
+
+Both nonterminal cursors are below the unchanged 2,048-byte complete-cursor cap.
+These are measured encoded cursors, not estimates of an unencoded position.
+
+Observed new tests against pre-fix producers:
+
+- `/tmp/task900-choice-rpc-red.log`: **1 passed, 3 failed**. The existing
+  normalized-status vocabulary/validation case passed; exact labels, exact
+  assignee choices and pending-only Any cases failed.
+- `/tmp/task900-choice-store-red.log`: **0 passed, 2 failed**, including stale
+  prefix-choice rebuild and reassignment/deletion behavior.
+
+Exact new regression names, inspected in the working source:
+
+| Scope | Regression | Current evidence |
+| --- | --- | --- |
+| Actual production SQL work | `query_projection::cost_tests::actual_query_refresh_meaningful_floor_is_an_index_range_with_bounded_vm_steps` | RED above; final focused cost run 2/2, exit 0; 247–250 steps |
+| NULL versus empty dismissal | `query_projection::cost_tests::actual_query_refresh_distinguishes_null_floor_from_explicit_empty_floor` | Passed in initial run and final focused cost run 2/2, exit 0 |
+| RPC labels | `tracker_query_choice_roundtrip::label_choices_round_trip_nul_suffix_prefix_and_normal_counterparts` | RED above; RPC 4/4 or store 2/2 GREEN as applicable, exits 0 |
+| RPC assignee choices | `tracker_query_choice_roundtrip::assignee_choices_round_trip_full_opaque_ids_without_prefix_aliases` | RPC 4/4 GREEN, then boundary-inclusive RPC 5/5 GREEN, exits 0 |
+| Existing status vocabulary | `tracker_query_choice_roundtrip::status_choices_keep_existing_normalized_vocabulary_and_validation` | Passed in initial and final four-case RPC runs, exit 0 |
+| Pending-only Any lifecycle | `tracker_query_choice_roundtrip::pending_only_any_choice_disappears_on_cancel_without_becoming_exact_target_membership` | RED above; RPC 4/4 or store 2/2 GREEN as applicable, exits 0 |
+| Store canonical choice deltas | `query_choices::canonical_choices_preserve_opaque_labels_and_assignees_after_reassignment` | RED above; RPC 4/4 or store 2/2 GREEN as applicable, exits 0 |
+| Stale-choice rebuild/canonical bytes | `query_choices::canonical_choice_upgrade_removes_old_prefix_aliases_and_preserves_status_validation` | RED above; RPC 4/4 or store 2/2 GREEN as applicable, exits 0 |
+
+Completed focused logs are `/tmp/task900-choice-rpc-green.log` (**4 passed, 0
+failed**) and `/tmp/task900-choice-store-green.log` (**2 passed, 0 failed**), both
+with owner-confirmed exit **0**. These precede the additional worst-case escaped
+key regression. The later boundary-inclusive RPC run above separately verifies
+that larger-key path. No tests were executed by this document author.
+
+The final frozen-source focused reruns are owner-confirmed exit **0**:
+`/tmp/task900-choice-store-final-green.log` (**2/2**),
+`/tmp/task900-refresh-cost-final-green.log` (**2/2**, again 247–250 VM steps),
+and `/tmp/task900-choice-invalid-final-green.log` (**1/1**,
+`invalid_filter_choices_fail_before_returning_an_unusable_page`). The
+boundary-inclusive RPC log above is **5/5**. These outcomes belong to the
+integrated working source subsequently frozen in `fa8a4ff9b`; they are not a
+clean-head complete-suite or fresh-review claim. Fingerprint ownership already
+includes the changed choices, maintenance and query-projection definitions;
+the stale-alias reopen case passes with canonical record bytes unchanged.
+
+### Pending-only Any consumer boundary
+
+The source-backed consumer audit found no active shipped caller consuming
+`tasks.filterChoices` in fetched SPA menus. The active
+`spa/src/core/trackerTasksPane.js` menus use `filterOptions(state.all)` (line 284)
+and dispatch `tasks.list` (lines 459/482). Shipped `sqlReadCredits` references are
+an allowlist, not a fetch consumer. The frozen #891 `taskFilterChoices` reader is
+exported but has no production source importer; self/tests do not establish
+runtime activation. This is a source comparison, not a claim that existing
+legacy paint semantics already match pending assignment.
+
+The local Node witness `/tmp/task900-choice-ui-witness.log` records an actual
+`"Anyone assigned"` option whose value and dispatch are `"any"`, and accepted
+#891 query identity `assignees:["any"]`. It also records the incompatibility:
+legacy client-side paint produced `paintAny:[]` and `paintNone:["pending"]`.
+The lead authorized the canonical pending-only Any backend direction after this
+call-graph/witness evidence; no silent legacy-helper parity or consumer
+activation is inferred. The explicit #891 activation gap is
+#891/c/tc-01M64A9D058M2B7EMP3N30G6YM. It requires consumer integration evidence
+and review for the visible difference before enabling the bounded path.
+
+| Additional source-to-predicate dependency | Repair boundary | Verification status |
+| --- | --- | --- |
+| Canonical dismissal suffix → meaningful-history EXISTS | Separate NULL/no-floor branch from indexed non-NULL ULID range in the actual production INSERT; preserve canonical empty-floor behavior | New P2 remains review-open; production-path RED and focused GREEN recorded; Source `fa8a4ff9b` frozen; broader gates/review pending |
+| Canonical labels/status/assignee → materialized filter choices | Read bounded structural source cells, not display strings; every offered value round-trips through canonical list matching | New P2 remains review-open; RPC/store RED and focused GREEN recorded; escaped-key focused GREEN recorded; Source `fa8a4ff9b` frozen; broader gates/review pending |
+| Canonical pending presence → Any/None choice | Refresh choices after source metadata, on cancel/rearm/repair/reassignment/deletion; no target-agent membership | Backend direction authorized; focused lifecycle regression passed; #891 activation review pending |
+| Legal 128-byte opaque ID → serialized choice key/position | Bound complete JSON key and opaque position at 1,024 bytes without shrinking/capping the ID | Boundary-inclusive RPC 5/5 passed; full cursor cap unchanged; Source `fa8a4ff9b` frozen; broader gates/review pending |
+
 ## Source-to-predicate map
 
 All line references in this table are at `0d3e81643`, relative to `bridge/src/`.

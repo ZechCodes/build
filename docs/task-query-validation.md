@@ -223,3 +223,69 @@ Final independent scope/code/Astra dispositions cover the entire expanded
 repair and documentation delta and are recorded on task #900, together with
 the final pre-push Gitleaks result and exact handoff head. This ledger does not
 self-approve either Astra finding or authorize #891 consumer activation.
+
+## Second withdrawn candidate: production refresh and choice round trips
+
+Independent Sol scope and separate code inspection approved exact
+`48453721493ef03af2eb26bf60124b72d0040396` against the original exact base,
+without rerunning gates. Independent Astra reviewer `/root/astra_final_review`
+(gpt-6-astra) then requested changes on that same head. The original pair of
+canonical timestamp/assignee findings was closed by that inspection; two new
+P2 findings remained. The handoff is withdrawn again. These dispositions must
+not be merged into an approval of a later production descendant.
+
+First, the actual query-fact refresh statement used an OR around the dismissal
+floor, preventing an indexed meaningful-history range seek. New tests execute
+the exact production INSERT, with its bindings, after forcing the eligible
+legacy-attention branch. Histories of 10, 10,000 and 50,000 entries test absent,
+present-empty, intermediate and high dismissal floors, plus a separate empty
+history-ID suffix control. The RED run exited **101**, **1 passed, 1 failed**
+(`/tmp/task900-refresh-cost-red.log`). At 50,000 entries the high-floor case
+used **250,241 VM steps**, versus **245** without a floor; its actual query plan
+did not seek an `ulid` range. Both physical work and selected attention results
+must pass on the fixed statement; merely adding CASE syntax is insufficient.
+
+Second, exact canonical selection and display-derived filter choices disagreed.
+The actual RPC choice-to-selection RED run exited **101**, **1 passed, 3 failed**
+(`/tmp/task900-choice-rpc-red.log`); Store choice regressions exited **101**,
+**0 passed, 2 failed** (`/tmp/task900-choice-store-red.log`). Fixtures retain
+sole NUL-bearing labels/agent IDs, collisions with ordinary prefixes,
+disappearance/reassignment and stale-database repair. Pending-only tasks must
+advertise the existing `any` selector, never an exact pending-target assignment
+or `none`; same-task pending/assigned/unassigned transitions remain covered.
+
+Source audit at exact base `12b8` and candidate `484` found no active remote
+choice consumer applying the incompatible local filter: the shipped RPC name
+occurs only in SQL-credit admission, and tracker menus derive from `state.all`.
+At frozen #891 checkpoint `5a04b2658204ad794fb97910e9412d88aa0aca86`, the new
+remote reader has no production importer. This resolves the identified
+base-scoped exposure, not future activation. Current local `any`/`none` behavior
+still differs for pending-only tasks. #891's rendered-choice, dispatch, display
+and dual current-consumer/canonical review gate is separately recorded at
+`#891/c/tc-01M64A9D058M2B7EMP3N30G6YM`; backend RPC tests do not satisfy it.
+
+The fixed focused runs exited **0**: five actual RPC cases, two Store choice
+cases, two actual production-statement cost cases and the existing invalid-choice
+guard. Final logs are `/tmp/task900-choice-key-bound-green.log`,
+`/tmp/task900-choice-store-final-green.log`,
+`/tmp/task900-refresh-cost-final-green.log` and
+`/tmp/task900-choice-invalid-final-green.log`. The same debug test executable
+has SHA-256 `c14e6d0ff43155944998389818d708895f6cb7ed09128cb0bb7b72e071d44293`;
+its source is committed as `fa8a4ff9b` (with new tests first compiled in the
+working tree). The actual statement uses **247–250 VM steps** for all twelve
+history/floor combinations; EXPLAIN shows the covering meaningful index and
+`task_id=? AND ulid>?` in the present-floor branch. The null/empty result
+distinction is separately asserted.
+
+A further RED run (`/tmp/task900-choice-key-bound-red.log`) exited **101**:
+a valid 128-byte NUL-bearing agent ID exceeded the old 512-byte escaped choice
+key bound. The repair keeps raw IDs at 128 UTF-8 bytes, expands only assignee
+keys and cursor positions to 1,024 bytes, and retains value/response/envelope
+limits. The executable three-page, limit-one RPC test compares exact selections
+for 127-NUL and 128-NUL prefix-colliding IDs and an ordinary ID. Full encoded
+cursors, after JSON escaping and base64, measure **1,303** and **1,312 bytes**,
+below the unchanged 2,048-byte envelope cap; their inner keys are 792/798 bytes.
+
+Fresh production-descendant full gates, matched cost evidence and independent
+scope/code/Astra review remain pending. Earlier read latency cohorts retain
+their named source identities; no sample is rerun to improve its observed margin.

@@ -41,6 +41,35 @@ waiting, queued, provisioning and failed deferred assignment states. `held`
 means an assignee exists, or an undelivered target exists. These are static
 facts; no persisted working task status is introduced.
 
+## Canonical filter choices and consumer activation
+
+Filter-choice labels, statuses and assignees are materialized from the same
+bounded canonical source facts used by exact selectors, rather than their
+truncated display projections. Exact agent selection reads only the task's
+canonical `assignee`; a pending deferred assignment contributes only to the
+existing `any` assignee selection. A pending assignment is excluded from `none`
+and does not manufacture an exact assigned-agent choice.
+
+An opaque agent ID remains limited to 128 raw UTF-8 bytes. Its escaped JSON
+assignee choice key and encoded value may each occupy up to 1,024 bytes;
+other choice keys remain limited to 512 bytes. This distinction supports
+canonical IDs containing NUL or other escaped characters without changing the
+raw ID domain. `BoundedPage` permits positions up to 1,024 bytes; the complete
+encoded cursor remains capped at 2,048 bytes. The existing 1 MiB result cap and
+maximum page limit of 500 remain unchanged. There is no new wire schema,
+capability or selector.
+
+The #891 activation gate is recorded at
+#891/c/tc-01M64A9D058M2B7EMP3N30G6YM: consumers must integrate and verify this
+canonical choice contract before enabling the new paths. Source audits of base
+`12b8` and candidate `484` found no active remote filter-choice consumer; that
+is evidence for those inspected revisions, not proof about a future base.
+Focused actual-RPC boundary tests passed 5/5: a 127-NUL ID uses 127 raw bytes,
+a 792-byte choice key and a 1,303-byte cursor; a 128-NUL ID uses 128 raw bytes,
+a 798-byte choice key and a 1,312-byte cursor. The witness covers three
+limit-one pages, prefix collisions and exact selection. This is focused
+boundary evidence, not a claim that the final full validation gate has passed.
+
 ## Counts and lookup
 
 `tasks.counts {project_id,agent_ids?:string[]}` accepts at most 100 entries,

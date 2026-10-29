@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generatedBy": "scripts/http-resource-manifest.mjs",
-  "schemaLimitation": "Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links and verified wire fixtures are authoritative examples, not inferred schemas. Runtime uses the existing typed normalization and authorization.",
+  "schemaLimitation": "Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links and verified wire fixtures are authoritative examples, not inferred schemas. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
   "headers": {
     "session": "X-Build-Session",
     "subscription": "X-Build-Subscription",

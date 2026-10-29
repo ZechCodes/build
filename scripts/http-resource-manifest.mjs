@@ -62,7 +62,7 @@ const headers = {
   session: "X-Build-Session", subscription: "X-Build-Subscription", requestId: "X-Build-Request-Id",
   priority: "X-Build-Priority", operationId: "Idempotency-Key", after: "X-Build-After",
 };
-const limitation = "Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links and verified wire fixtures are authoritative examples, not inferred schemas. Runtime uses the existing typed normalization and authorization.";
+const limitation = "Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links and verified wire fixtures are authoritative examples, not inferred schemas. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.";
 const manifest = {
   version: 1, generatedBy: "scripts/http-resource-manifest.mjs", schemaLimitation: limitation,
   headers, terminal: "webrtc", durable_events: false,
@@ -98,7 +98,7 @@ function routeSpec(op) {
   }
   return {
     operationId: op.operationId, security: [{deviceBearer:[]}], parameters,
-    description: `Maps only to ${op.method}. Remaining JSON fields retain their existing semantics; unknown fields are validated by the typed registry. ${limitation}`,
+    description: `Maps only to ${op.method}. Remaining JSON fields retain their existing semantics. ${declarations.has(op.method) ? "Registered v1 parameters, including unknown fields, are validated by the existing typed registry." : "Legacy normalization preserves unknown fields and existing default/optional semantics; #908 owns the shared execution extraction and object-shape checks. Domain checks remain with the existing handler; full typed normalization is not claimed."} ${limitation}`,
     "x-build-method": op.method, "x-build-contract": {...op.contract, ...(fixture ? {fixture: fixturePath} : {})},
     "x-build-request-max-bytes":op.requestMaxBytes, "x-build-response-max-bytes":op.responseMaxBytes,
     "x-build-requires-events":op.requires_events,

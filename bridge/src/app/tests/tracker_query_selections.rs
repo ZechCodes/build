@@ -204,8 +204,8 @@ fn anchor_order_returns_authoritative_fallback_comparator_only_in_its_query() {
         .save_tracker_task_activity(&later, &[], &[])
         .unwrap();
     let mut absent = seed(&app, &project, false, "high");
-    absent.created_at = "invalid".into();
-    absent.updated_at = "invalid".into();
+    absent.created_at = "".into();
+    absent.updated_at = "".into();
     app.tracker_store()
         .unwrap()
         .save_tracker_task_activity(&absent, &[], &[])
@@ -221,5 +221,140 @@ fn anchor_order_returns_authoritative_fallback_comparator_only_in_its_query() {
         list(&mut app, &project, json!({"order":"number"}))["tasks"][0]
             .get("order_anchor_ms")
             .is_none()
+    );
+}
+
+fn unsupported(app: &mut AppState, project: &str, extra: Value, field: &str) {
+    let mut params = json!({"project_id":project,"summary":true});
+    params
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    let response = app.handle(req("tasks.list", params.clone()));
+    assert_eq!(response["ok"], false, "{response}");
+    assert_eq!(response["error_code"], "unavailable", "{response}");
+    assert_eq!(response["retryable"], false);
+    assert_eq!(
+        response["details"],
+        json!({"reason":"task_query_timestamp_unsupported","scope":"project_order","order":params.get("order").cloned().unwrap_or(json!("number")),"project_id":project,"domain":"ecmascript-iso-v1","field":field})
+    );
+}
+#[test]
+fn timestamp_gate_checks_whole_project_beyond_candidate_budget_and_clears_on_correction() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let mut bad = seed(&app, &project, false, "low");
+    bad.updated_at = "1999-12-31 23:00:00".into();
+    bad.created_at = "1999-12-31 23:00:00".into();
+    app.tracker_store()
+        .unwrap()
+        .save_tracker_task_activity(&bad, &[], &[])
+        .unwrap();
+    for _ in 0..12 {
+        seed(&app, &project, true, "urgent");
+    }
+    unsupported(
+        &mut app,
+        &project,
+        json!({"order":"updated","limit":1,"assignee":{"kind":"agent","agent_id":"AgentA"}}),
+        "updated_at",
+    );
+    unsupported(
+        &mut app,
+        &project,
+        json!({"order":"anchor","limit":1,"tracker_agent_id":"absent"}),
+        "anchor_fallback",
+    );
+    // Supported primitives stay usable despite a refusal in another order.
+    assert_eq!(
+        list(&mut app, &project, json!({"order":"number","limit":1}))["tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        list(&mut app, &project, json!({"order":"priority","limit":1}))["tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let counts = app.handle(req("tasks.counts", json!({"project_id":project})));
+    assert_eq!(counts["result"]["unfinished_open_count"], 13);
+    let lookup = app.handle(req(
+        "tasks.lookup",
+        json!({"project_id":project,"number":bad.number}),
+    ));
+    assert_eq!(lookup["result"]["task"]["id"], bad.id);
+    bad.updated_at = "1999-12-31T23:00:00Z".into();
+    bad.created_at = bad.updated_at.clone();
+    app.tracker_store()
+        .unwrap()
+        .save_tracker_task_activity(&bad, &[], &[])
+        .unwrap();
+    assert!(list(&mut app, &project, json!({"order":"updated","limit":1}))["tasks"].is_array());
+    assert_eq!(
+        list(&mut app, &project, json!({"order":"anchor","limit":1}))["tasks"][0]["id"],
+        bad.id
+    );
+}
+#[test]
+fn done_timestamp_gate_is_project_wide_and_delete_clears_it() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let mut bad = seed(&app, &project, false, "low");
+    bad.status = "done".into();
+    bad.done_at = Some("October 1, 2026".into());
+    app.tracker_store()
+        .unwrap()
+        .save_tracker_task_activity(&bad, &[], &[])
+        .unwrap();
+    unsupported(
+        &mut app,
+        &project,
+        json!({"done_since":0,"tracker_agent_id":"absent"}),
+        "done_at",
+    );
+    unsupported(
+        &mut app,
+        &project,
+        json!({"order":"priority","done_since":0}),
+        "done_at",
+    );
+    assert_eq!(
+        list(&mut app, &project, json!({}))["tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    bad.status = "backlog".into();
+    app.tracker_store()
+        .unwrap()
+        .save_tracker_task_activity(&bad, &[], &[])
+        .unwrap();
+    assert_eq!(
+        list(&mut app, &project, json!({"done_since":0}))["tasks"],
+        json!([])
+    );
+    bad.status = "done".into();
+    app.tracker_store()
+        .unwrap()
+        .save_tracker_task_activity(&bad, &[], &[])
+        .unwrap();
+    unsupported(&mut app, &project, json!({"done_since":0}), "done_at");
+    let path = app.tracker_project_path(&project).unwrap();
+    app.tracker_store()
+        .unwrap()
+        .delete_tracker_tasks_of_project(&path, |_| Ok(()))
+        .unwrap();
+    assert_eq!(
+        list(
+            &mut app,
+            &project,
+            json!({"order":"updated","done_since":0})
+        )["tasks"],
+        json!([])
     );
 }

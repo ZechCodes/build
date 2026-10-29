@@ -50,6 +50,16 @@ impl TaskQueryOrder {
     }
 }
 impl Store {
+    pub fn task_query_unsupported_domain(
+        &self,
+        project: &str,
+        order: TaskQueryOrder,
+        done_since: bool,
+    ) -> Result<Option<String>, StoreError> {
+        ReadTransaction::new(&self.connection())
+            .task_query_unsupported_domain(project, order, done_since)
+    }
+
     pub fn task_summary_by_number(
         &self,
         project: &str,
@@ -77,6 +87,37 @@ impl Store {
     }
 }
 impl ReadTransaction<'_> {
+    /// Conservative project-wide validity is a pair of partial-index point
+    /// seeks, independent of row filters and of the candidate scan window.
+    pub fn task_query_unsupported_domain(
+        &self,
+        project: &str,
+        order: TaskQueryOrder,
+        done_since: bool,
+    ) -> Result<Option<String>, StoreError> {
+        let required = match order {
+            TaskQueryOrder::Updated => Some(("updated", "updated_at")),
+            TaskQueryOrder::Anchor => Some(("anchor", "anchor_fallback")),
+            _ => None,
+        };
+        if let Some((flag, field)) = required {
+            if self.task_query_has_invalid(project, flag)? {
+                return Ok(Some(field.into()));
+            }
+        }
+        if done_since && self.task_query_has_invalid(project, "done")? {
+            return Ok(Some("done_at".into()));
+        }
+        Ok(None)
+    }
+    fn task_query_has_invalid(&self, project: &str, flag: &str) -> Result<bool, StoreError> {
+        // flag is one of the three fixed internal literals above, never input.
+        let sql=format!("SELECT EXISTS(SELECT 1 FROM tracker_task_query_facts INDEXED BY tracker_task_query_invalid_{flag} WHERE project_key=?1 AND invalid_{flag}=1)");
+        Ok(self
+            .connection()
+            .query_row(&sql, [project], |row| row.get(0))?)
+    }
+
     pub fn task_summary_by_number(
         &self,
         project: &str,
@@ -217,9 +258,85 @@ mod tests {
             .execute_batch(super::super::query_projection::TABLES)
             .unwrap();
         for (number, sort) in [(1, 10), (2, 10), (3, 20), (4, i64::MAX)] {
-            connection.execute("INSERT INTO tracker_task_query_facts VALUES(?1,'p',?2,?3,?3,?2,NULL,1,1,1,0,0,0,0,NULL,NULL,0,NULL)",params![format!("t{number}"),number,sort]).unwrap();
+            connection.execute("INSERT INTO tracker_task_query_facts(task_id,project_key,number,updated_ms,anchor_ms,priority_rank,done_ms,unfinished,watched,attention_asked,attention_legacy,blocked,held,undelivered,review_mode,assignee_agent_id,unread_total,contribution_agent) VALUES(?1,'p',?2,?3,?3,?2,NULL,1,1,1,0,0,0,0,NULL,NULL,0,NULL)",params![format!("t{number}"),number,sort]).unwrap();
         }
         connection
+    }
+    #[test]
+    fn project_timestamp_gate_uses_partial_indexes_and_ignores_unrelated_domains() {
+        let connection = fixture();
+        connection.execute("UPDATE tracker_task_query_facts SET invalid_updated=1,invalid_anchor=1,invalid_done=1 WHERE task_id='t1'",[]).unwrap();
+        let source = ReadTransaction::new(&connection);
+        for (order, cutoff, want) in [
+            (TaskQueryOrder::Updated, false, Some("updated_at")),
+            (TaskQueryOrder::Anchor, false, Some("anchor_fallback")),
+            (TaskQueryOrder::Number, true, Some("done_at")),
+            (TaskQueryOrder::Priority, true, Some("done_at")),
+            (TaskQueryOrder::Number, false, None),
+            (TaskQueryOrder::Priority, false, None),
+        ] {
+            assert_eq!(
+                source
+                    .task_query_unsupported_domain("p", order, cutoff)
+                    .unwrap()
+                    .as_deref(),
+                want
+            );
+            assert_eq!(
+                source
+                    .task_query_unsupported_domain("other", order, cutoff)
+                    .unwrap(),
+                None
+            );
+        }
+        for flag in ["updated", "anchor", "done"] {
+            let sql=format!("EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM tracker_task_query_facts INDEXED BY tracker_task_query_invalid_{flag} WHERE project_key=?1 AND invalid_{flag}=1)");
+            let mut statement = connection.prepare(&sql).unwrap();
+            let detail = statement
+                .query_map(["p"], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .join(";");
+            assert!(
+                detail.contains("SEARCH tracker_task_query_facts USING")
+                    && detail.contains(&format!(
+                        "INDEX tracker_task_query_invalid_{flag} (project_key=?)"
+                    )),
+                "{detail}"
+            );
+            assert!(
+                !detail.contains("SCAN tracker_task_query_facts"),
+                "{detail}"
+            );
+        }
+        connection.execute_batch("BEGIN; UPDATE tracker_task_query_facts SET invalid_updated=0,invalid_anchor=0,invalid_done=0 WHERE task_id='t1';").unwrap();
+        assert_eq!(
+            source
+                .task_query_unsupported_domain("p", TaskQueryOrder::Updated, true)
+                .unwrap(),
+            None
+        );
+        connection.execute_batch("ROLLBACK;").unwrap();
+        assert_eq!(
+            source
+                .task_query_unsupported_domain("p", TaskQueryOrder::Updated, true)
+                .unwrap()
+                .as_deref(),
+            Some("updated_at")
+        );
+        connection
+            .execute(
+                "DELETE FROM tracker_task_query_facts WHERE task_id='t1'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            source
+                .task_query_unsupported_domain("p", TaskQueryOrder::Anchor, true)
+                .unwrap(),
+            None
+        );
     }
     #[test]
     fn point_lookup_never_decodes_a_neighbor_and_supports_max_number() {

@@ -57,6 +57,7 @@ task_queries! {
     task_counts(project: &str, agents: &[String]) -> Vec<crate::store::TaskCounts>;
     tracker_list_key() -> String;
     task_query_basis() -> String;
+    task_query_unsupported_domain(project: &str, order: TaskQueryOrder, done_since: bool) -> Option<String>;
     list_task_query_candidates(project: &str, order: TaskQueryOrder, after: Option<TaskQueryPosition>, limit: usize) -> Vec<(TaskSummaryCandidate, TaskQueryPosition)>;
     task_query_matches(id: &str, filter: &TaskQueryFilter) -> bool;
     task_summary_identity_with_owner(id: &str) -> Option<(crate::tracker::TaskAgentIdentity, Option<String>)>;

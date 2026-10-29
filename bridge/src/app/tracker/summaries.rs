@@ -35,6 +35,15 @@ impl TaskReadContext {
         let below = position
             .map(|position| summary_position(&position, &basis))
             .transpose()?;
+        if let Some(field) = source
+            .task_query_unsupported_domain(project, query.order, query.filter.done_since.is_some())
+            .stored()?
+        {
+            return Err(format!(
+                "task_query_timestamp_unsupported:{}",
+                json!({"reason":"task_query_timestamp_unsupported","scope":"project_order","order":query.order,"project_id":project_id,"domain":"ecmascript-iso-v1","field":field})
+            ));
+        }
         let mut scan = SummaryScan::new(page.limit, below);
         self.scan_summaries(source, project, &project_id, &filters, &query, &mut scan)?;
         let next = scan

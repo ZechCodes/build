@@ -3,7 +3,8 @@
 Base: `fd2341443e0ffb88cdad7e4c9bb73ff53eb16269` (reviewed contracts), with source
 base `12b8f869bd94e259666df69f1a8c0cde5c695982`. The controlling architecture is
 [the frozen review](../Bridge%20Dual%20Transport%20Architecture%20Review.md), plus
-the #916 desktop parent-credential qualification. This document describes the
+the #916 desktop parent-credential qualification, #922 authenticated allocation
+disposition and #923 login transaction ownership disposition. This document describes the
 owned authority modules, not listener/client readiness or deployment approval.
 
 ## Integration boundary
@@ -18,6 +19,8 @@ an approved paired identity and its configured approving issuer. The default
 issuer applies only to identities written before `approved_by` existed. The key
 never enters Debug output. It exposes fixed-purpose signing methods:
 
+- `registration_challenge_assertion(now)` signs only the fixed paired issuer's
+  challenge audience; it authorizes nonce allocation, not endpoint changes.
 - `discovery_proof(challenge_id, nonce, now)` signs configured origin/epoch/issuer,
   device identity, and the fixed hosted completion audience.
 - `registration_proof(challenge_id, nonce, previous_epoch, enabled, now)` signs
@@ -25,8 +28,10 @@ never enters Debug output. It exposes fixed-purpose signing methods:
 - `introspection_assertion(token_hash, now)` signs the SHA-256 bearer digest and
   fixed introspection audience. It cannot sign caller-supplied claims/audiences.
 
-All three assertions use EdDSA compact JWS, distinct explicit `typ`, random `jti`,
-30-second lifetime and the existing paired Ed25519 seed. The hosted verifier
+All four assertions use EdDSA compact JWS, distinct explicit `typ`, random `jti`,
+a declared lifetime of at most 30 seconds and the existing paired Ed25519 seed.
+The hosted JOSE validator explicitly allows at most five seconds clock skew;
+replay records remain through `exp+5`, with no widened tolerance. The hosted verifier
 selects the stored paired public key; it rejects extra JOSE header fields,
 algorithm changes and wrong purpose/audience/time. Replay records are consumed
 atomically with authority changes and retained through expiry plus five-second
@@ -71,7 +76,7 @@ These credentials are used only on the configured hosted origin.
 
 | Request | JSON response / behavior |
 | --- | --- |
-| `POST /api/devices/{device}/http-endpoint/challenge` with `{}` | `{challenge_id, nonce, expires_at}`; no account credential; paired-device registration proof required on the next request |
+| `POST /api/devices/{device}/http-endpoint/challenge` with `{proof}` | `{challenge_id, nonce, expires_at}`; fixed `build-http-registration-challenge+jwt` assertion from the paired key; later endpoint change still needs its separate registration proof |
 | `POST /api/devices/{device}/http-endpoint` with `{proof}` | `{origin, endpoint_epoch, enabled}` |
 | `POST /api/bridge-discovery/challenges` with `{origin}` | `{challenge_id, nonce, origin, account_id, expires_at, issuer, resume_url}` |
 | `GET /api/bridge-discovery/challenges/{id}` | Same pending payload; same authenticated account/client only |
@@ -102,6 +107,58 @@ logout tombstones the old signed-cookie client binding to prevent replayed cooki
 state minting fresh authority. Loaded CSP cannot be retracted; authority expiry
 and closed client handles enforce revocation, not replacing a policy header.
 
+## Browser login identity and transaction ownership — #923
+
+Browser authority requires an unpredictable active `BridgeHttpClient` identity
+established at authentication completion. Missing/pre-binding legacy cookie state
+cannot acquire it on an ordinary request; reauthentication is required for bridge
+HTTP. A legacy or revoked session can still render the cached app shell with its
+baseline CSP, without acquiring bridge API authority or a selected bridge origin.
+
+The supported `after_login` hook classifies the trusted resolved handler callable
+against this pinned inventory, not its URL, posted method, object attachment or
+`is_new_user` flag:
+
+| Resolved completion | Identity transaction owner |
+| --- | --- |
+| Build `complete_primary_method_registration`; Skrift `complete_primary_method_auth` | Same attached request AsyncSession; add/flush only; framework commit at `auth.py:657/762` |
+| Skrift `oauth_callback`, `complete_second_factor_verification`, `dummy_login_submit`, `verify_email_claim` | Owned private identity transaction, after the framework's existing account commit |
+
+The borrowed path requires the user attachment to equal the configured request
+unit of work. It never commits, closes or rolls back that session. User/enrollment
+or sign-count changes and the new client identity commit together through the
+framework after its later `after_user_created` and `login_redirect` hooks.
+Independent observers must see nothing until that normal commit. The owned path
+locks and verifies the already persisted user, commits only the identity, and
+does not commit unrelated caller work such as dummy role assignment. Detached
+persisted users are accepted only on a known owned completion. Pending-factor
+transitions mint no browser identity until final authentication promotion.
+
+Unknown/replaced handler contexts, missing/mismatched borrowed sessions, or a
+runtime dependency version outside Skrift `0.2.0a10`, Litestar `2.24.0`, Advanced
+Alchemy `1.11.0` fail closed. Upgrades require re-auditing the inventory and commit
+positions. The pinned wheel SHA-256 is
+`265c7486dc49b47fbe37d3e3f6be20bb35e9cd348d21183e08ccf24fb1bae36d`.
+
+`BrowserLoginGuard` is configured through Skrift's existing user-middleware
+extension, inside session middleware (`asgi.py:1166`). It covers the known
+completion's whole response lifetime, including Build's remaining invite work.
+It clears scope session state on escaping failures/cancellation, or before an
+error response-start reaches session cookie serialization. It also preserves a
+failure marker while Litestar's inner exception handler sends a converted error:
+Python's active handled exception remains visible during that awaited send, so
+a success-shaped custom error response cannot bypass the guard. No database
+transaction is performed by this guard. It never turns errors into success.
+The hook refuses to mint if the guard is absent.
+
+Before response-start, failures must issue no authenticated cookie. On borrowed
+precommit failure the framework owns rollback/close for account/enrollment/client;
+on post-commit paths an account and possibly unused identity row may remain, but
+no authenticated response carries that failed identity. There is no compensating
+account deletion. A disconnect after a successful commit cannot undo it or recall
+already transmitted headers. External passkey credential verification remains
+Skrift's responsibility; transaction-seam fixture tests do not establish it.
+
 ## Desktop parent credential qualification
 
 Skrift 0.2.0a10's access JWTs expose a verified `jti` and expiry, but omit the
@@ -131,18 +188,27 @@ Full native TLS/listener and execution integration remain #911/#913 gates.
   published 2026-01-27 and not yanked on 2026-10-29. This version fixes the upstream
   [authorization type-confusion advisory](https://github.com/Keats/jsonwebtoken/security/advisories/GHSA-h395-gr6q-cpjc).
   [Source/features](https://docs.rs/crate/jsonwebtoken/10.3.0/source/Cargo.toml).
-- `aws-lc-rs =1.17.0`: same provider version as the frozen production Cargo lock.
-  Its library imports the existing seed/public pair and serializes PKCS#8 for JOSE;
-  no handwritten ASN.1, custom signature scheme, new RNG or extra provider.
+- `aws-lc-rs =1.17.0`: the version matches the frozen production lock, but the
+  feature graph changes. Baseline resolved features are `aws-lc-sys, prebuilt-nasm`;
+  the JOSE graph adds `alloc, default, ring-io, ring-sig-verify`. The default
+  compatibility verification feature introduces ISC-licensed `untrusted =0.7.1`
+  alongside baseline `untrusted =0.9.0`. This is an explicit dependency/feature
+  delta requiring independent review, not an unchanged provider graph. Its
+  library imports the existing seed/public pair and serializes PKCS#8 for JOSE;
+  there is no handwritten ASN.1 or extra crypto provider. The
+  [upstream feature documentation](https://github.com/aws/aws-lc-rs/blob/main/aws-lc-rs/README.md)
+  confirms the compatibility dependency. Captured `cargo metadata --locked`
+  results match both manifests; #911 owns the consolidated production lock.
 - Hosted `PyJWT =2.15.1` uses existing cryptography Ed25519 and explicit validators.
   [Release/provenance](https://pypi.org/project/PyJWT/2.15.1/). `idna =3.18` pins the
   already-locked UTS46 implementation for origin equality with Rust URL parsing.
 - `reqwest =0.13.4` in the harness matches the frozen production lock and disables
   redirects for credentials/assertions. No insecure certificate mode is added.
 
-Cross-language fixtures are `fixtures/bridge-http/device-proofs.json`, emitted
-by the harness `proof_vectors` example using a public fixed test seed. Python
-runs all three through the real PyJWT validators, including purpose/key/claim
+Cross-language fixtures are `fixtures/bridge-http/device-proofs.json` (three
+profiles) and `fixtures/bridge-http/registration-challenge-proof.json` (the fourth
+profile), emitted by the harness examples using a public fixed test seed. Python
+runs all four through the real PyJWT validators, including purpose/key/claim
 substitution negatives. These fixtures contain no deployed credentials.
 
 Run gates under `nice -n 10` and inspect exit codes:
@@ -158,3 +224,79 @@ nice -n 10 uv run --frozen ruff check buildapp
 
 The final task report records actual test counts, scan exits and exact head.
 No deploy, live bridge change, shared-source merge or push is authorized here.
+
+## Authenticated nonce allocation and rollout — #922
+
+UUID-only or unsigned requests cannot consume per-device pending capacity. The
+controller bounds the streamed JSON body to 18,000 bytes before copying chunks;
+the proof validator additionally limits proof strings to 16,000 characters. Under
+one device row lock and transaction, the server validates the current paired
+key/approved device/active owner, spends unique `(device,jti)`, checks the unchanged
+eight-pending/1,024-replay capacities, and allocates a 60-second nonce. A nested
+transaction rolls back proof spend and nonce together on capacity or storage
+failure; outer commit failure also leaves neither durable. Live replay guards
+and pending nonces are never evicted for room. Final registration retains its
+independent proof and predecessor-epoch CAS.
+
+Old registrars sending `{}` fail closed. New registrars rejected by an old hosted
+allocator do not fall back. Lost successful responses require a fresh signed
+proof on a later bounded/backed-off attempt, leaving the abandoned nonce until
+expiry. Both enable and disable use authenticated allocation; local disable
+remains immediate even when hosted registration fails. #911 owns runtime backoff
+and local listener shutdown, which remain integration gates.
+
+Mixed hosted workers do not provide protection through the old unsigned route.
+Every old allocator worker must be drained or routed away before claiming the
+change effective. Legacy capacity recovers within at most 60 seconds after the
+**last** unsigned allocation, not after the first upgraded worker starts. These
+are rollout constraints, not deployment authorization.
+
+The fourth cross-language fixture is stored in RFC7515 flattened JSON form at
+`fixtures/bridge-http/registration-challenge-proof.json`; tests reassemble the
+standard compact JWS and validate it with PyJWT. It uses the same public fixed
+test seed and includes no deployed credentials.
+
+## PostgreSQL author concurrency evidence
+
+`test_bridge_http_postgres.py` uses disposable databases on PostgreSQL 16.15,
+independent physical connections, and observed `pg_blocking_pids` relationships
+before releasing the first transaction. Twelve cases cover one-use discovery,
+unique proof spend, endpoint predecessor CAS, logout/issuance ordering, signed
+allocation capacity races and both statement/commit rollback. Raw logs preserve
+server version and distinct holder/contender/observer PIDs without credentials,
+proofs, tokens or nonces. These are author witnesses, not independent acceptance.
+
+Run against a disposable test-only PostgreSQL service, never a production URL:
+
+```sh
+BRIDGE_HTTP_TEST_POSTGRES_URL='<disposable asyncpg URL>' \
+  nice -n 10 uv run --frozen --project skriftapp python -m pytest \
+  skriftapp/buildapp/test_bridge_http_postgres.py -q -s --disable-warnings
+```
+
+The author service was an isolated `postgres:16-alpine` container with no host
+mounts, a 256 MiB tmpfs, 512 MiB memory, one CPU and loopback-only dynamic port. Image
+ID: `sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea`.
+Tests create/drop unique temporary databases and preserve no application state.
+The opt-in test variable is deliberately separate from application DB settings.
+A missing test URL skips these author cases and cannot count as concurrency
+evidence; the final task report records a run where all twelve executed.
+
+## Corrected author gate attribution
+
+The final hosted source gate at
+`76d9fc1f4ad60572e5e4cd457c429c16a6a9c5e8` exited 0 with 1,169 passed and ten
+baseline skips: nine dev-schema/privilege witnesses require their separate dev
+and admin URLs, and one landing artifact case requires the landing build. All
+twelve #910 PostgreSQL cases executed. The first full aggregate exited 1 solely
+on the unchanged shared-database-wiring ratchet; the session constructor moved
+into `db_test_support.py`, and the corrected full aggregate then exited 0. The
+original failure, focused red/green and corrected full log are preserved as
+task attachments. No ratchet or skip exemption was added.
+
+#923's 37 focused completion/guard cases and the Rust harness's 37 cases passed.
+Ruff, clippy/fmt, Semgrep and committed-range Gitleaks exits are bound to the
+final candidate in its task report and evidence manifest. The subsequent
+documentation-only commit does not alter the tested source tree. Saved review
+snapshots preserve both base and final head; author gates do not establish
+independent acceptance, and imports/release remain held until its disposition.

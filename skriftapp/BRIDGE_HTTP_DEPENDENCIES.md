@@ -36,13 +36,16 @@ that a package can have no undiscovered vulnerability.
 ## Hosted interface
 
 All absolute audiences derive from the configured approving origin, never a request
-Host or a proof's key/URL. All three compact-JWS types use paired-device Ed25519
+Host or a proof's key/URL. All four compact-JWS types use paired-device Ed25519
 keys, `iss=sub=device UUID`, a scalar exact audience, integer `iat/exp`, positive
 lifetime at most 30 seconds, at most five seconds skew and a 16–128 character jti.
-Registration, discovery and introspection types are disjoint.
+Registration allocation, final registration, discovery and introspection types are disjoint.
 
-* `POST /api/devices/{id}/http-endpoint/challenge`, JSON `{}`, returns
-  `{challenge_id, nonce, expires_at}` (Unix seconds, 60 seconds).
+* `POST /api/devices/{id}/http-endpoint/challenge`, JSON `{proof}`, requires
+  fixed `build-http-registration-challenge+jwt` with this exact route audience.
+  Proof/JTI spend, capacity check and nonce creation share one locked transaction.
+  It returns `{challenge_id, nonce, expires_at}` (Unix seconds, 60 seconds).
+  Unsigned callers allocate no state; no old-client fallback exists.
 * `POST /api/devices/{id}/http-endpoint`, `{proof}`, accepts signed registration
   claims `challenge_id, nonce, origin, endpoint_epoch, previous_endpoint_epoch,
   enabled`. Its type is `build-http-registration+jwt`, audience is this exact
@@ -76,8 +79,18 @@ and expire in five minutes at most. Every credential response is no-store.
 
 ## Issuing client and logout boundary
 
-Browser families bind to an unpredictable session value inside the signed hosted
-cookie, scoped to its authenticated account. Successful framework CSRF-protected
+Browser families bind to an unpredictable per-login identity persisted through
+the supported authentication-completion hook before the first authenticated
+cookie. The #923 ownership profile pins Skrift 0.2.0a10/Litestar 2.24.0/Advanced
+Alchemy 1.11.0: primary passkey completions add/flush through the same request
+session and leave its commit to Skrift; the four known post-commit completions
+use an owned private identity transaction. Unknown or mismatched contexts fail
+closed. A configured inner-session response guard clears authentication before
+error cookie serialization and on escaping exceptions/cancellation, including
+later hooks and caller commit failures. Ordinary requests never mint a missing
+identity; legacy cookies must
+reauthenticate before using bridge HTTP. Issuance and introspection require the
+existing active server identity, scoped to its authenticated account. Successful framework CSRF-protected
 logout revokes that binding's families and pending challenges. A durable logout
 tombstone prevents captured pre-logout cookie bindings from reminting HTTP authority.
 
@@ -148,3 +161,19 @@ epoch to register again; previous grants remain revoked. Paired public keys acce
 both existing standard-base64 encodings, with or without trailing padding, under
 strict alphabet validation. A Rust-signed proof verifies against the real bridge's
 unpadded persisted key representation.
+
+## Rust feature graph correction
+
+Pinned `aws-lc-rs =1.17.0` reuses the version but not the baseline feature graph.
+`cargo metadata --locked` resolves baseline `aws-lc-sys, prebuilt-nasm`; the HTTP
+JOSE harness resolves `alloc, aws-lc-sys, default, prebuilt-nasm, ring-io,
+ring-sig-verify`. `jsonwebtoken =10.3.0` enables those defaults and introduces
+ISC-licensed `untrusted =0.7.1` alongside baseline `untrusted =0.9.0`. This is a
+real transitive-package/feature delta, not a no-dependency-change claim. The
+provider remains one aws-lc version, but the actual expanded graph requires
+independent implementation review and #911's consolidated lock evidence. See
+[upstream aws-lc feature descriptions](https://github.com/aws/aws-lc-rs/blob/main/aws-lc-rs/README.md).
+
+#922 further requires every old unsigned allocator worker to leave service before
+protection is claimed. The at-most-60-second legacy capacity recovery is measured
+from the last old-worker allocation. No deployment is part of this task.

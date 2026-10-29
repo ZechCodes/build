@@ -46,8 +46,14 @@ export function createBridgeEventStreams({
           stream.handle.opening.opening_generation
       )
         fail("invalid_stream");
+      validateEpoch(stream, event.data.bridge_epoch);
       stream.ready = true;
     } else if (!stream.ready) fail("invalid_stream");
+  }
+  function validateEpoch(stream, epoch) {
+    identifier(epoch, "invalid_stream");
+    const expected = stream.handle.opening.greeting?.bridge_epoch;
+    if (expected !== undefined && epoch !== expected) fail("invalid_stream");
   }
   function emit(stream, event) {
     check(stream.handle);

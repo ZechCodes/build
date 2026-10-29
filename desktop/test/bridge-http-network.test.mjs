@@ -20,6 +20,8 @@ test("canonical HTTPS origins reject ambiguous URLs before networking", () => {
   assert.equal(canonicalOrigin("https://[::1]:8443"), "https://[::1]:8443");
   for (const url of [
     "http://localhost",
+    "https:host",
+    "https://host:",
     "https://u:p@host",
     "https://host/path",
     "https://host?x",

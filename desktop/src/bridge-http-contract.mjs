@@ -126,11 +126,39 @@ function validateRoute(route) {
   )
     fail("invalid_manifest");
   validateInputLimit(route);
+  validatePlacement(route);
 }
 function validateInputLimit(route) {
   const input = route.requestMaxBytes ?? MAX_JSON_BYTES;
   if (!Number.isSafeInteger(input) || input <= 0 || input > 8 * MAX_JSON_BYTES)
     fail("invalid_manifest");
+}
+function validatePlacement(route) {
+  const query = route.queryParams ?? [];
+  if (!Array.isArray(query) || query.length) fail("invalid_manifest");
+  if (
+    !Array.isArray(route.pathParams) ||
+    !["none", "remaining"].includes(route.body)
+  )
+    fail("invalid_manifest");
+  if (route.body === "remaining" && route.verb === "GET")
+    fail("invalid_manifest");
+}
+function parameterSegment(value) {
+  if (
+    typeof value !== "string" ||
+    !value.length ||
+    value.length > 4096 ||
+    /[\x00-\x1f\x7f]/u.test(value) ||
+    value === "." ||
+    value === ".."
+  )
+    fail("invalid_params");
+  return encodeURIComponent(value);
+}
+function placedBody(route, body) {
+  if (route.body === "none" && Object.keys(body).length) fail("invalid_params");
+  return route.body === "remaining" ? body : undefined;
 }
 export function buildRoute(manifest, operationId, params) {
   object(params);
@@ -140,9 +168,11 @@ export function buildRoute(manifest, operationId, params) {
   if (!route) fail("unsupported_operation");
   validateRoute(route);
   let path = route.path;
-  const body = { ...params };
+  const body = Object.fromEntries(
+    Object.entries(params).filter(([, value]) => value !== undefined),
+  );
   for (const key of route.pathParams) {
-    path = path.replaceAll(`{${key}}`, segment(params[key]));
+    path = path.replaceAll(`{${key}}`, parameterSegment(params[key]));
     delete body[key];
   }
   if (
@@ -153,7 +183,7 @@ export function buildRoute(manifest, operationId, params) {
   return {
     path,
     method: route.verb,
-    body: route.body === "remaining" ? body : undefined,
+    body: placedBody(route, body),
     maxBytes: route.responseMaxBytes,
     maxBody: route.requestMaxBytes ?? MAX_JSON_BYTES,
     requiresEvents: route.requires_events === true,

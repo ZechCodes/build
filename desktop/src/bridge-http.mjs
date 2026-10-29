@@ -235,6 +235,7 @@ export function createBridgeHttp({
   }
   function installOpening(handle, opening, start, previous) {
     compatibleTransport(manifest, opening.transport);
+    identifier(opening.greeting?.bridge_epoch, "invalid_response");
     identifier(opening.session_id, "invalid_response");
     identifier(opening.opening_generation, "invalid_response");
     if (
@@ -248,12 +249,7 @@ export function createBridgeHttp({
       handle.mint.expires_at * 1000,
       Date.now() + Math.max(0, 30000 - (performance.now() - start)),
     );
-    if (
-      !Number.isFinite(deadline) ||
-      deadline <= Date.now() ||
-      !opening.greeting ||
-      typeof opening.greeting !== "object"
-    )
+    if (!Number.isFinite(deadline) || deadline <= Date.now())
       fail("invalid_response");
     clearTimeout(handle.hard);
     clearTimeout(handle.refresh);

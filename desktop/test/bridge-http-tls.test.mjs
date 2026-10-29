@@ -129,7 +129,7 @@ test("real native adapter discovers, opens, streams and calls an explicit resour
     session_id: "session",
     opening_generation: "generation",
     grant_expires_at: new Date(Date.now() + 30000).toISOString(),
-    greeting: { bridge_epoch: 1 },
+    greeting: { bridge_epoch: "epoch" },
     transport: {
       resource_manifest_version: 1,
       operation_ids: ["listProjects"],
@@ -168,7 +168,7 @@ test("real native adapter discovers, opens, streams and calls an explicit resour
             JSON.stringify({
               subscription_id: "subscription",
               opening_generation: "generation",
-              bridge_epoch: 1,
+              bridge_epoch: "epoch",
               durable: false,
               recovery: "current_state_refresh",
             }) +
@@ -184,7 +184,7 @@ test("real native adapter discovers, opens, streams and calls an explicit resour
           id: "request",
           ok: true,
           result: { projects: ["project"] },
-          bridge_epoch: 1,
+          bridge_epoch: "epoch",
         });
       if (request.method === "DELETE") {
         response.writeHead(204);
@@ -225,7 +225,7 @@ test("real native adapter discovers, opens, streams and calls an explicit resour
       const opened=await adapter.open(owner,handle,'1');assert.equal(opened.opening_generation,'generation');
       const {stream}=await adapter.subscribe(owner,handle,{kind:'application'});assert.equal(typeof stream,'string');
       assert.deepEqual(await received,{method:'changes',params:{project_id:'project'}});
-      assert.deepEqual(await adapter.request(owner,handle,'listProjects',{}, {requestId:'request'}),{id:'request',ok:true,result:{projects:['project']},bridge_epoch:1});
+      assert.deepEqual(await adapter.request(owner,handle,'listProjects',{}, {requestId:'request'}),{id:'request',ok:true,result:{projects:['project']},bridge_epoch:"epoch"});
       await adapter.close(owner,handle);
       await assert.rejects(adapter.open(owner,handle,'1'),{code:'invalid_handle'});
     } finally {adapter.clear();}

@@ -14,6 +14,7 @@ function originInput(value) {
   if (
     typeof value !== "string" ||
     value.length > 2048 ||
+    !/^https:\/\//iu.test(value) ||
     value.trim() !== value ||
     /[\\\s]/u.test(value)
   )
@@ -44,7 +45,8 @@ function validateAuthority(value, url) {
     authority.includes("/") ||
     authority.includes("?") ||
     authority.includes("#") ||
-    url.port === "0"
+    url.port === "0" ||
+    authority.endsWith(":")
   )
     refuse("invalid_origin");
   if (url.hostname.endsWith(".")) refuse("invalid_origin");

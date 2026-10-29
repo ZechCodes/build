@@ -29,6 +29,13 @@ test("write metadata preserves absent versus empty dependencies and rejects broa
   assert.throws(() => requestOptions({ requestId: "bad\r\nHeader: value" }), {
     code: "invalid_options",
   });
+  assert.equal(
+    requestOptions({ requestId: "x".repeat(128) })["X-Build-Request-Id"].length,
+    128,
+  );
+  assert.throws(() => requestOptions({ requestId: "x".repeat(129) }), {
+    code: "invalid_options",
+  });
   assert.throws(() => requestOptions({ requestId: "emoji-😀" }), {
     code: "invalid_options",
   });
@@ -58,4 +65,40 @@ test("route maxima are trusted manifest limits; renderer cannot replace paths or
   assert.throws(() => buildRoute({ operations }, "https://evil.test", {}), {
     code: "unsupported_operation",
   });
+});
+
+test("unsupported query placement fails closed; path/body mapping never drops parameters", () => {
+  const base = {
+    operationId: "read",
+    verb: "GET",
+    path: "/v1/items/{item}",
+    pathParams: ["item"],
+    queryParams: [],
+    body: "none",
+    responseMaxBytes: 1024,
+  };
+  assert.throws(
+    () =>
+      buildRoute(
+        { operations: [{ ...base, queryParams: ["cursor", "limit"] }] },
+        "read",
+        { item: "x", cursor: "a & b", limit: 25 },
+      ),
+    { code: "invalid_manifest" },
+  );
+  assert.throws(
+    () =>
+      buildRoute({ operations: [base] }, "read", { item: "x", cursor: "next" }),
+    { code: "invalid_params" },
+  );
+  const read = buildRoute({ operations: [base] }, "read", { item: "x & y" });
+  assert.equal(read.path, "/v1/items/x%20%26%20y");
+  assert.equal(read.body, undefined);
+  const query = buildRoute(
+    { operations: [{ ...base, verb: "POST", body: "remaining" }] },
+    "read",
+    { item: "x", cursor: "a & b", limit: 25 },
+  );
+  assert.equal(query.path, "/v1/items/x");
+  assert.deepEqual(query.body, { cursor: "a & b", limit: 25 });
 });

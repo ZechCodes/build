@@ -20,7 +20,7 @@ const opening = () => ({
   session_id: "session",
   opening_generation: "generation",
   grant_expires_at: new Date(Date.now() + 30000).toISOString(),
-  greeting: { capabilities: [] },
+  greeting: { capabilities: [], bridge_epoch: "epoch" },
   transport: {
     resource_manifest_version: 1,
     operation_ids: ["listTasks"],
@@ -313,7 +313,7 @@ test("stream local flow control bounds unacknowledged events and fences post-ove
   await new Promise(setImmediate);
   const emit = (data) => controller.enqueue(new TextEncoder().encode(data));
   emit(
-    'event: hello\ndata: {"durable":false,"subscription_id":"subscription","recovery":"current_state_refresh","opening_generation":"generation","bridge_epoch":1}\n\n',
+    'event: hello\ndata: {"durable":false,"subscription_id":"subscription","recovery":"current_state_refresh","opening_generation":"generation","bridge_epoch":"epoch"}\n\n',
   );
   await new Promise(setImmediate);
   h.bridge.ack(h.owner, stream, 1);
@@ -355,7 +355,7 @@ test("resource calls capture application stream handle and cannot run requires-e
   await new Promise(setImmediate);
   controller.enqueue(
     new TextEncoder().encode(
-      'event: hello\ndata: {"durable":false,"subscription_id":"subscription","recovery":"current_state_refresh","opening_generation":"generation","bridge_epoch":1}\n\n',
+      'event: hello\ndata: {"durable":false,"subscription_id":"subscription","recovery":"current_state_refresh","opening_generation":"generation","bridge_epoch":"epoch"}\n\n',
     ),
   );
   await new Promise(setImmediate);
@@ -551,7 +551,7 @@ test("unacknowledged stream closes after local stalled-delivery deadline and exp
   await new Promise(setImmediate);
   controller.enqueue(
     new TextEncoder().encode(
-      'event: hello\ndata: {"subscription_id":"subscription","durable":false,"recovery":"current_state_refresh","opening_generation":"generation"}\n\n',
+      'event: hello\ndata: {"subscription_id":"subscription","durable":false,"recovery":"current_state_refresh","opening_generation":"generation","bridge_epoch":"epoch"}\n\n',
     ),
   );
   await new Promise(setImmediate);
@@ -586,7 +586,7 @@ test("byte cap bounds multibyte SSE output independently of event count", async 
   await new Promise(setImmediate);
   const send = (value) => controller.enqueue(new TextEncoder().encode(value));
   send(
-    'event: hello\ndata: {"subscription_id":"subscription","durable":false,"recovery":"current_state_refresh","opening_generation":"generation"}\n\n',
+    'event: hello\ndata: {"subscription_id":"subscription","durable":false,"recovery":"current_state_refresh","opening_generation":"generation","bridge_epoch":"epoch"}\n\n',
   );
   for (let i = 0; i < 3; i++)
     send(

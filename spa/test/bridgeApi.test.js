@@ -112,7 +112,7 @@ describe("adapter selection", () => {
       bodies: { pages: false, mediaRawPages: false },
       reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
-      tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
+      tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, counts: false, lookup: false, listWatched: false, listAttention: false, listLinkedWorkspace: false, listTracked: false, listReviewMode: false, listOrder: false, listReadiness: false, listExcludeAssignee: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
       compaction: { harnessThresholds: false },
       conversations: { settings: true, reset: false },
       github: { repos: false },
@@ -428,6 +428,20 @@ describe("tasks.listPaged", () => {
 });
 
 describe("bounded task read capabilities", () => {
+  it("maps each query capability independently without version inference", () => {
+    const names = ["counts", "lookup", "listWatched", "listAttention", "listLinkedWorkspace", "listTracked",
+      "listReviewMode", "listOrder", "listReadiness", "listExcludeAssignee"];
+    for (const enabled of names) {
+      const tasks = v1.capabilitiesOf({ api_version: "3.27.0", capabilities: [`tasks.${enabled}`] }).tasks;
+      expect(Object.fromEntries(names.map((name) => [name, tasks[name]]))).toEqual(
+        Object.fromEntries(names.map((name) => [name, name === enabled])),
+      );
+      expect(tasks.listSummaries).toBe(false);
+    }
+    const tasks = v1.capabilitiesOf({ api_version: "3.99.0", capabilities: ["tasks.listSummaries"] }).tasks;
+    expect(Object.fromEntries(names.map((name) => [name, tasks[name]]))).toEqual(Object.fromEntries(names.map((name) => [name, false])));
+  });
+
   it("negotiates summaries independently of legacy paging and filter choices", () => {
     const tasks = (capabilities) => v1.capabilitiesOf({ api_version: "3.26.0", capabilities }).tasks;
     expect(tasks(["tasks.listPaged"])).toMatchObject({ listPaged: true, listSummaries: false, filterChoices: false });

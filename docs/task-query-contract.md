@@ -58,8 +58,8 @@ counts or sums a project catalogue, roster, canonical body, or timeline.
 `tasks.lookup {project_id,number}` accepts a positive task number representable
 by the store. Its result is `{project_id,number,task,identities,basis}`. `task`
 is one bounded summary or explicit null for a confirmed miss; identities are
-shared and bounded as in summary pages. The complete response is at most
-65,536 bytes. An unknown project is an error, rather than a task miss.
+shared and bounded as in summary pages. The complete serialized result is at most
+65,536 bytes, excluding the RPC and encryption envelopes. An unknown project is an error, rather than a task miss.
 
 ## Ordering and static streams
 

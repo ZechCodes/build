@@ -170,9 +170,10 @@ every verb live in `fixtures/api/v1/` and are checked by
 - It answers signaling (`rtc.*`) and attachment writes at once, without
   queueing, so a negotiation never waits behind other work.
 
-The ten SQL-lane methods (`thread.page`, `thread.activity`, `thread.operation`,
+The twelve SQL-lane methods (`thread.page`, `thread.activity`, `thread.operation`,
 `thread.revision`, `tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`,
-`tasks.filterChoices`, `writes.status` and `writes.subscribe`) enter a separate lane
+`tasks.filterChoices`, `tasks.counts`, `tasks.lookup`, `writes.status` and
+`writes.subscribe`) enter a separate lane
 before terminal or write admission. `carrier/sql.rs` owns eight dedicated
 threads and a fair queue with at most 16 waiting callers per session opening.
 Callers waiting for a read connection still count against that bound. Excess

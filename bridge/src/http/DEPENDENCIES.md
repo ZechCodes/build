@@ -17,6 +17,7 @@ Cargo/main/lib integration remains a separate reviewed change.
 | percent-encoding | 2.3.2 | Already locked; requested by resource-route owner for path segment decoding. |
 | jsonwebtoken | 10.3.0; no defaults; aws_lc_rs | Authorization owner selects standard compact EdDSA JWS; no PEM/ASN.1 convenience stack. Its separate review owns proof validation evidence. |
 | aws-lc-rs | 1.17.0 | Existing provider version, also used directly to import the paired Ed25519 seed. See feature expansion below. |
+| rustix | 1.1.4; fs | Already a direct production dependency with these features. The harness now declares it directly for nonblocking OS endpoint-state transaction locks; no additional locked package. |
 
 Tokio stays at 1.52.3, rustls at 0.23.41, reqwest at 0.13.4 and
 rustls-pki-types at 1.14.1. The standalone harness pins the same Tokio/provider
@@ -48,3 +49,17 @@ Application reservations exclude already handed-off TLS/kernel buffers, and
 parsed/normalized/base64 copies coexist within the separate large-work limits.
 No certificate bypass, reverse-proxy trust profile, public deployment, live
 service change or durable sync implementation is part of these dependencies.
+
+Endpoint persistence serializes the whole read/check/write/fsync transaction
+with an exclusive, nonblocking OS lock on a permanent sibling `<record>.lock`.
+The record is atomically renamed; the lock inode is never renamed or unlinked.
+Canonical parent directories make relative and symlinked parent paths share
+ownership across processes. Final-component record/lock symlinks and hard links
+are rejected explicitly. This assumes a trusted state directory and a filesystem
+that supports OS advisory locking; every writer must use this transaction API.
+Contention fails with `HTTP endpoint state is busy`, without reading or writing
+the record. File close, error unwinding and process exit release ownership.
+These synchronous filesystem APIs must run in blocking work, with any caller
+retry bounded there; there is no retry or wait inside lock acquisition. The
+production lifecycle caller remains held with the shared wiring, so its actual
+off-executor behavior is a later integration requirement.

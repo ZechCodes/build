@@ -16,6 +16,7 @@ tokio = { version = "=1.52.3", features = ["sync", "time", "macros", "rt", "test
 rustls = { version = "=0.23.41", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
 aws-lc-rs = "=1.17.0"
 libc = "0.2"
+rustix = { version = "=1.1.4", features = ["fs"] }
 tempfile = "3"
 rcgen = "=0.13.2"
 uuid = { version = "1", features = ["v4"] }

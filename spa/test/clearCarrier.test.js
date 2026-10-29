@@ -332,6 +332,74 @@ describe("allocation-fenced raw writes", () => {
   });
 });
 
+describe("closed raw carrier binding", () => {
+  it("immediately retires a wrapper created after raw close and rejects all traffic", async () => {
+    const channel = new Channel();
+    const raw = openCarrier({ channel });
+    const reason = new Error("already gone");
+    raw.close(reason);
+    const binding = codec();
+    const carrier = bindCarrier(raw, binding);
+    const received = vi.fn();
+    const closed = vi.fn();
+    carrier.onFrame(received);
+    carrier.onClose(closed);
+    expect(carrier.isClosed()).toBe(true);
+    expect(closed).toHaveBeenCalledExactlyOnceWith(reason);
+    channel.deliver({ binding: "app", seq: 1, frame_type: "data", payload: { type: "changes" } });
+    await expect(carrier.sendFrame({ late: true })).rejects.toThrow();
+    expect(received).not.toHaveBeenCalled();
+    expect(binding.decode).not.toHaveBeenCalled();
+    expect(binding.encode).not.toHaveBeenCalled();
+    expect(binding.close).toHaveBeenCalledOnce();
+    carrier.close();
+    expect(closed).toHaveBeenCalledOnce();
+  });
+
+  it("suppresses late raw frames and immediately tells a late close observer once", () => {
+    const channel = new Channel();
+    const raw = openCarrier({ channel });
+    const received = vi.fn();
+    raw.onEnvelope(received);
+    const reason = new Error("closed first");
+    raw.close(reason);
+    const closed = vi.fn();
+    raw.onClose(closed);
+    channel.deliver({ late: true });
+    channel.close();
+    expect(raw.isClosed()).toBe(true);
+    expect(received).not.toHaveBeenCalled();
+    expect(closed).toHaveBeenCalledExactlyOnceWith(reason);
+    expect(raw.peerFrameAt()).toBe(0);
+    expect(raw.peerPartAt()).toBe(0);
+  });
+
+  it("cannot create an active successor after partial retirement closed the physical raw", async () => {
+    const { channel, raw, carrier, rpc } = setup();
+    channel.send = (part) => { channel.sent.push(part); channel.bufferedAmount = DC_BUFFERED_HIGH + 1; };
+    const old = carrier.sendFrame({ text: "x".repeat(CHUNK_BYTES * 2) }).catch((error) => error);
+    await tick();
+    carrier.retire(new Error("partial replaced"));
+    expect(raw.isClosed()).toBe(true);
+    const binding = codec();
+    const successor = bindCarrier(raw, binding);
+    const closed = vi.fn();
+    const received = vi.fn();
+    successor.onClose(closed);
+    successor.onFrame(received);
+    expect(successor.isClosed()).toBe(true);
+    expect(closed).toHaveBeenCalledOnce();
+    channel.deliver({ binding: "app", seq: 1, frame_type: "data", payload: {} });
+    await expect(successor.sendFrame({ fresh: true })).rejects.toThrow();
+    expect(binding.encode).not.toHaveBeenCalled();
+    expect(binding.decode).not.toHaveBeenCalled();
+    expect(received).not.toHaveBeenCalled();
+    expect(await old).toBeInstanceOf(Error);
+    expect(channel.sent).toHaveLength(1);
+    rpc.close();
+  });
+});
+
 describe("bound carrier retirement", () => {
   it("retires a replaced binding without closing the raw channel used by its successor", async () => {
     const { channel, raw, carrier, binding, rpc } = setup();

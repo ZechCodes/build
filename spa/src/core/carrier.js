@@ -35,12 +35,14 @@ export function bindCarrier(raw, codec) {
   const frameListeners = new Set();
   const closeListeners = new Set();
   let ended = false;
+  let endReason = null;
   const lease = new AbortController();
   let stopFrames = () => {};
   let stopClose = () => {};
   const retire = (reason = null) => {
     if (ended) return false;
     ended = true;
+    endReason = reason;
     lease.abort(reason || new Error("the bound channel closed"));
     stopFrames();
     stopClose();
@@ -54,7 +56,7 @@ export function bindCarrier(raw, codec) {
     if (retire(reason)) raw.close(reason);
   };
   stopClose = raw.onClose(retire);
-  stopFrames = raw.onEnvelope((envelope) => {
+  stopFrames = ended ? () => {} : raw.onEnvelope((envelope) => {
     if (ended) return;
     let frame;
     try {
@@ -101,7 +103,11 @@ export function bindCarrier(raw, codec) {
   };
   return {
     onFrame: subscribe(frameListeners),
-    onClose: subscribe(closeListeners),
+    onClose(fn) {
+      if (ended) fn(endReason);
+      else closeListeners.add(fn);
+      return () => closeListeners.delete(fn);
+    },
     // Rebinding a role can reuse its raw channel. Retire only this codec and
     // delivery binding; a stale owner must not close the replacement wire.
     retire,
@@ -194,29 +200,41 @@ function carrierCore(frames) {
   const envelopeListeners = new Set();
   const closeListeners = new Set();
   let ended = false;
+  let endReason = null;
   const subscribe = (listeners) => (fn) => {
-    listeners.add(fn);
+    if (!ended) listeners.add(fn);
     return () => listeners.delete(fn);
   };
   return {
     deliver: (envelope) => {
+      if (ended) return;
       frames.at = Date.now();
       frames.partAt = frames.at;
-      for (const listener of [...envelopeListeners]) listener(envelope);
+      for (const listener of [...envelopeListeners]) {
+        if (ended) break;
+        listener(envelope);
+      }
     },
     /** `reason` travels to the close listeners: a wire that was shut on
      *  purpose says why, and the owner of the link decides what that costs. */
     end: (reason = null) => {
       if (ended) return false;
       ended = true;
+      endReason = reason;
+      envelopeListeners.clear();
       for (const listener of [...closeListeners]) listener(reason);
+      closeListeners.clear();
       return true;
     },
     gone: () => ended,
     interface: {
       isClosed: () => ended,
       onEnvelope: subscribe(envelopeListeners),
-      onClose: subscribe(closeListeners),
+      onClose(fn) {
+        if (ended) fn(endReason);
+        else closeListeners.add(fn);
+        return () => closeListeners.delete(fn);
+      },
       /** When a frame last arrived on any wire of this peer. */
       peerFrameAt: () => frames.at,
       /** When any part of a frame last arrived: a large envelope crosses as
@@ -273,6 +291,7 @@ function channelCarrier(channel, frames) {
   channel.addEventListener("close", () => shutDown());
   channel.addEventListener("error", () => shutDown());
   channel.addEventListener("message", (event) => {
+    if (core.gone()) return;
     // Before reassembly: a part is proof this path reaches the peer even while
     // the envelope it belongs to is still arriving (#123).
     frames.partAt = Date.now();

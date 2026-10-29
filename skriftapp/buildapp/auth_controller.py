@@ -53,6 +53,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import invites
 from buildapp.clock import utc_now
+from buildapp.bridge_http_policy import revoke_browser_client
+from buildapp.desktop_auth import BRIDGE_BINDING_KEY
 from buildapp.email_consent import record_signup_consent
 from buildapp.invite_pages import APP_PATH, claim_outcome_path
 from buildapp.invite_kind import InviteKind
@@ -116,7 +118,10 @@ async def with_page_view(
 class BuildAuthController(AuthController):
     @post("/logout")
     async def logout(self, request: Request) -> Redirect | TemplateResponse:
+        user_id = session_user_id(request)
+        binding = request.session.get(BRIDGE_BINDING_KEY)
         response = await AuthController.logout.fn(self, request)
+        await revoke_browser_client(request, user_id, binding)
         if isinstance(response, Redirect) and response.url == "/":
             return Redirect(path=APP_PATH)
         return response

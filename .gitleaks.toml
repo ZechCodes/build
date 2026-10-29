@@ -45,10 +45,10 @@ regexes = [
   '''9f3c1a0b7e2d4c55''',
   '''3f9a1c0b7e2d4c55''',
   '''5c6d7e8f90123456''',
-  # Public synthetic diff hash from fixtures/api/v1/{git.unpushed,run.diff,
-  # worktree.diff}.json, also copied unchanged into generated HTTP examples.
+  # Public synthetic diff hash from fixtures/api/v1/git.unpushed.json,
+  # also copied unchanged into generated HTTP examples.
   # Matches generic-api-key on diff_key/if_diff_key, never grants access.
-  '''3c1a0b7e2d4c5566''',
+  '''^3c1a0b7e2d4c5566$''',
   # RFC 6455's WebSocket GUID, a public protocol constant: the vendored webrtc
   # crate's example signalling server (bridge/vendor/) hashes it into the
   # handshake's Sec-WebSocket-Accept.

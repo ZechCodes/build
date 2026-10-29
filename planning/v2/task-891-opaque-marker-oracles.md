@@ -1,5 +1,19 @@
 # Task #891 opaque marker oracles
 
+## Visible-difference review matrix
+
+| Change | Previous consumer oracle | Canonical/backend oracle and executable fixture | Compatibility boundary |
+| --- | --- | --- | --- |
+| Opaque unread/watch floors | Legacy prefix regex, truthiness fallback and UTF-16 comparisons | Rust summary/tracking and SQL opaque suffix rules; `taskOpaqueMarkers.test.js`, `taskCountMarkerParity.test.js`, `taskSummaryMarkers.test.js` | Authoritative count consumption requires independent `tasks.counts` support and an accepted response. Unsupported bridges retain legacy badge calculation. The numeric differences below are explicit review inputs. |
+| Pending-only Assigned/Unassigned | Local `any` checks only real assignee; `none` includes pending-only | Canonical `AssigneeFilter`: any includes pending target, none excludes it, exact actor still real assignee only; `trackerFilterPendingSemantics.test.js`, actual pane `trackerPendingChoiceDom.test.js` | Local correction applies consistently to cached preview and existing backend selection; choosing a new capability does not introduce a second predicate. A bridge with no pending assignment data has no new pending-only rows. |
+| ASCII label matching | Local `labels.includes` uses exact case | Existing legacy backend `app/tracker/read.rs` and summary selection use ASCII-insensitive matching; `trackerLabelSourceSemantics.test.js`, actual menu `trackerRemoteChoicesDom.test.js` | The correction is independent of summary/choice capability. Legacy scalar RPC label bytes remain unchanged. `API`/`api` and `API\0v2`/`api\0v2` now match both variants; `É`/`é`, surrounding whitespace, NUL and literal U+FFFD remain distinct. This is an explicit local behavior correction, not a claim that the previous preview agreed. |
+| Mouse/Enter opaque identity | Parsed HTML attribute turns NUL into U+FFFD on click; Enter keeps original string | Actual `mountFilterMenu` and pane fixtures in `filterMenuOpaqueDom.test.js`, `trackerPendingChoiceDom.test.js`, `trackerRemoteChoicesDom.test.js` | Both actions use original in-memory values, independent of bridge support. Display escaping remains; prefix-colliding IDs and literal U+FFFD stay separate from NUL. |
+
+The checkpoint's independent scope review accepted these documented differences
+against their canonical contracts. Separate code and Astra checkpoint review,
+final-head gates, and the full #891 integration/activation disposition remain
+required. This matrix is not full-conversion or deployment approval.
+
 The pure `spa/src/core/taskOpaqueMarkers.js` model has independent current-SPA
 and canonical bridge oracles. The normalized `taskSummaryCache.js` uses it to
 retain exact opaque floors, including present empty values, independently of

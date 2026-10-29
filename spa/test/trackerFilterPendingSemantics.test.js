@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { assigneesOf, filterTasks, taskListParams } from "../src/core/trackerFilters.js";
 import { taskIsHeld } from "../src/core/trackerTaskReadiness.js";
+import { summaryPatch } from "../src/core/taskSummaryProjection.js";
+import { taskRecord, tasksRecord } from "../src/core/trackerCache.js";
 
 const exact = "agent:AgentA\0suffix";
 const actor = { kind: "agent", agent_id: "AgentA\0suffix" };
@@ -156,6 +159,72 @@ describe("pending presence independent of the previous kind-based held consumer"
     const changed = ["null target", "missing kind", "null kind", "empty kind", "false kind", "zero kind"];
     expect(assigned.filter((id) => !previousAssigned.includes(id))).toEqual(changed);
     expect(previousUnassigned.filter((id) => !unassigned.includes(id))).toEqual(changed);
+  });
+});
+
+describe("serialized canonical producer facts", () => {
+  const source = (path) => readFileSync(new URL(`../../bridge/src/${path}`, import.meta.url), "utf8");
+
+  it("pins full list/get serialization of active intent state even for a null target", () => {
+    const read = source("app/tracker/read.rs");
+    expect(read).toContain("extend_task_summary(source, &task, &mut row)?");
+    expect(read).toContain('extend_task_summary(source, &task, &mut answer["task"])?');
+    expect(read).toContain("extend_assignment(source, &task.id, row)");
+    expect(read).toContain('"waiting" | "queued" | "provisioning" | "failed"');
+    expect(read).toContain('"provisioning" => "queued"');
+    expect(read).toContain('row["deferred_assignment"] =\n        json!({"id":intent.id,"target":intent.target,"state":state,"error":intent.error})');
+  });
+
+  it("executes the actual Rust summary producer SQL before testing local pending membership", () => {
+    const sql = source("store/task_summaries/sql.rs");
+    const patch = /fn enrich_patch\(\) -> &'static str \{\s*r#"([\s\S]*?)"#/u.exec(sql)?.[1];
+    expect(patch, "execute the source producer, not a JS rewrite").toBeTypeOf("string");
+    expect(sql).toContain("json_patch(json_remove(tracker_task_summaries.record,'$.review_summary','$.deferred_assignment'),m.patch)");
+    expect(sql).toContain("patch=enrich_patch()");
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec("CREATE TABLE reviews(task_id TEXT,record TEXT,version INTEGER); CREATE TABLE tracker_delivery_intents(id TEXT,task_id TEXT,generation INTEGER,state TEXT,record TEXT)");
+      // This outer merge is the exact refresh_metadata producer expression,
+      // pinned above. Inputs are saved intent records; outputs are serialized
+      // summary rows, so a lost pending-state fact fails before filter checks.
+      const produce = db.prepare(`SELECT json_patch(json_remove(?,'$.review_summary','$.deferred_assignment'),${patch}) AS record FROM (SELECT 'fixture' AS id) t`);
+      const insert = db.prepare("INSERT INTO tracker_delivery_intents VALUES('intent','fixture',1,?,?)");
+      for (const state of [null, "waiting", "queued", "provisioning", "failed", "consumed", "cancelled"]) {
+        for (const target of [null, {}, { kind: "" }, { kind: "\0" }, { kind: "用户\u{10000}" }]) {
+          for (const assignee of [null, actor]) {
+            db.exec("DELETE FROM tracker_delivery_intents");
+            if (state !== null) {
+              insert.run(state, JSON.stringify({
+                id: "intent", task_id: "fixture", project_path: "/fixture", generation: 1,
+                target, actor: { kind: "user" }, sender: null, note: null,
+                operation_id: "operation", state, reservation: {}, admitted: null, error: null,
+              }));
+            }
+            const row = JSON.parse(produce.get(JSON.stringify({ id: "fixture", assignee })).record);
+            const active = ["waiting", "queued", "provisioning", "failed"].includes(state);
+            expect(row.assignee).toEqual(assignee);
+            if (active) {
+              expect(row.deferred_assignment).toBeTypeOf("object");
+              expect(row.deferred_assignment.state).toBe(state === "provisioning" ? "queued" : state);
+            } else {
+              expect(row).not.toHaveProperty("deferred_assignment");
+            }
+            const assigned = assignee !== null || active;
+            // Production cache DTOs also preserve the serialized active-state
+            // fact; target projection must not decide any/none membership.
+            const cached = [row, summaryPatch(null, row), tasksRecord([row]).tasks[0], taskRecord(row).task];
+            for (const task of cached) {
+              expect(task.deferred_assignment?.state).toBe(row.deferred_assignment?.state);
+              expect(filterTasks([task], { assignee: "any" })).toHaveLength(assigned ? 1 : 0);
+              expect(filterTasks([task], { assignee: "none" })).toHaveLength(assigned ? 0 : 1);
+              expect(filterTasks([task], { assignee: exact })).toHaveLength(assignee === null ? 0 : 1);
+            }
+          }
+        }
+      }
+    } finally {
+      db.close();
+    }
   });
 });
 

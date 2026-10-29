@@ -192,6 +192,9 @@ impl TermScreen {
     /// the same words its fellow clients heard, and is not added: a screen
     /// nothing will paint or close again would leave it watching forever.
     fn register(&mut self, term_id: &str, sender: &SessionSender) {
+        if !sender.events_are_live() {
+            return;
+        }
         if let Some(reason) = &self.closed {
             sender.push(closed_payload(term_id, reason));
             return;
@@ -438,6 +441,16 @@ impl ScreenHandle {
     /// acquisition a carry takes to drain it, so an attach is on one screen or
     /// the other and never between them. One lock at a time, all the way down.
     pub fn attach(&self, sender: &SessionSender, viewport: Option<(u16, u16)>) -> AttachSnapshot {
+        let _attachment = self.attachment_gate.lock().unwrap();
+        if !sender.events_are_live() {
+            return self.snapshot();
+        }
+        self.attach_inner(sender, viewport)
+    }
+
+    // The caller owns attachment_gate; terminal child I/O happens before this
+    // method acquires the screen model lock.
+    fn attach_inner(&self, sender: &SessionSender, viewport: Option<(u16, u16)>) -> AttachSnapshot {
         let mut here = self.clone();
         let mut followed = 0;
         loop {
@@ -449,6 +462,9 @@ impl ScreenHandle {
                 match onward {
                     Some(onward) => onward,
                     None => {
+                        if !sender.events_are_live() {
+                            return Self::reading(&screen);
+                        }
                         if let Some((cols, rows)) = viewport {
                             if (screen.cols, screen.rows) != (cols, rows) {
                                 screen.set_size(cols, rows);
@@ -739,12 +755,16 @@ impl TerminalHandle {
     /// render. `viewport` is `None` for a dead tab, whose retained screen is
     /// the last thing its agent painted.
     pub fn attach(&self, sender: &SessionSender, viewport: Option<(u16, u16)>) -> AttachSnapshot {
+        let _attachment = self.screen.attachment_gate.lock().unwrap();
+        if !sender.events_are_live() {
+            return self.screen.snapshot();
+        }
         if let Some((cols, rows)) = viewport {
             if self.screen.size() != (cols, rows) {
                 self.fit_child(cols, rows);
             }
         }
-        self.screen.attach(sender, viewport)
+        self.screen.attach_inner(sender, viewport)
     }
 }
 

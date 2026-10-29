@@ -253,6 +253,9 @@ Shared sessions admit at most 32 unfinished requests per opening. Cancellation
 suppresses queued work and output; running effects and deferred settlement retain
 their request permits and reply-owned budget guards until completion. Event
 replacement fences old producers independently of ordinary request replies.
+Legacy work already admitted to ordinary dispatch retains the original opening
+lifetime when a carrier closes; reads and output keep their exact carrier fence.
+Internal owner close cleanup remains valid after retirement.
 Session expiry/revocation retires the exact opening; the daemon's coalesced
 cleanup pass releases dead producer resources without per-close task spawning.
 

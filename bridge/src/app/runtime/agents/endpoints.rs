@@ -204,7 +204,7 @@ pub(in crate::app) fn agent_start(
 ) -> Result<Value, ScopedEndpointError> {
     let agent = {
         let mut s = timer.lock(state);
-        if !sender.read_is_live() {
+        if !sender.execution_is_live() {
             return Err(ScopedEndpointError::Ended);
         }
         let requested_entity = params
@@ -264,7 +264,7 @@ pub(in crate::app) fn agent_interrupt(
 ) -> Result<Value, ScopedEndpointError> {
     let (entity_id, agent_id, conversation_id, session) = {
         let s = timer.lock(state);
-        if !sender.read_is_live() {
+        if !sender.execution_is_live() {
             return Err(ScopedEndpointError::Ended);
         }
         let entity_id = require_str(params, "entity_id")?;
@@ -322,7 +322,7 @@ pub(in crate::app) fn agent_interrupt(
             Arc::clone(&tab.session),
         )
     };
-    if !sender.read_is_live() {
+    if !sender.execution_is_live() {
         return Err(ScopedEndpointError::Ended);
     }
     session

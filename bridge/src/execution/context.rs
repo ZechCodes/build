@@ -17,6 +17,7 @@ pub struct CallContext {
     reply: Output,
     session_live: Liveness,
     reply_live: Liveness,
+    request_scoped: bool,
     event_live: Liveness,
     scope: Option<u64>,
     request_order: u64,
@@ -53,6 +54,11 @@ impl CallContext {
     pub(crate) fn read_is_live(&self) -> bool {
         self.session_is_open() && (self.reply_live)()
     }
+    /// Legacy admitted work survives one carrier closing while its opening lives.
+    /// Per-request work additionally retains the initiating request's cancellation.
+    pub(crate) fn execution_is_live(&self) -> bool {
+        self.session_is_open() && (!self.request_scoped || (self.reply_live)())
+    }
     pub fn has_events(&self) -> bool {
         self.has_events
     }
@@ -62,13 +68,14 @@ impl CallContext {
     pub(crate) fn logical_subscription_limit(&self) -> Option<usize> {
         self.subscription_limit
     }
-    /// Producer state must never retain one request's response/budget resources.
     /// A pure folded read retains all live interests through worker waits.
     pub(crate) fn for_fold(mut self, callers: Vec<Self>) -> Self {
+        self.request_scoped = true;
         self.reply_live = Arc::new(move || callers.iter().any(Self::read_is_live));
         self
     }
 
+    /// Producer state must never retain one request's response/budget resources.
     pub(crate) fn event_context(&self) -> Self {
         let mut producer = self.clone();
         producer.reply = Arc::new(|_| false);
@@ -104,6 +111,7 @@ impl CallContext {
             reply: send,
             session_live: Arc::new(|| true),
             reply_live: Arc::new(|| true),
+            request_scoped: false,
             event_live: Arc::new(|| true),
             scope: None,
             request_order: 0,
@@ -136,6 +144,7 @@ impl CallContext {
             reply: Arc::new(move |payload| reply.send(payload).is_ok()),
             session_live: Arc::new(move || session.is_live()),
             reply_live: Arc::new(move || reply_live.is_live()),
+            request_scoped: true,
             event_live: Arc::new(move || {
                 event_live.as_ref().is_some_and(|events| events.is_live())
             }),

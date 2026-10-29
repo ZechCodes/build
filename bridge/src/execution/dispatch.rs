@@ -260,7 +260,8 @@ impl FrameHandler {
     }
 
     pub(crate) fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
-        if !sender.read_is_live() {
+        // Only internal teardown dispatches CLOSE after its opening was retired.
+        if frame.frame_type != CLOSE_FRAME_TYPE && !sender.execution_is_live() {
             return crate::api::ApiError::unavailable("request ended before execution")
                 .into_reply(frame.payload.get("id").cloned().unwrap_or(Value::Null));
         }
@@ -635,7 +636,7 @@ impl Dispatcher {
         // Refused here as well as at the handler (`run_handler`): a frame for
         // an ended opening must not so much as open a lane, since the lane
         // would outlive the session whose close already took its lanes away.
-        if !sender.read_is_live() {
+        if !sender.execution_is_live() {
             return;
         }
         if crate::api::effects::is_observation_read(&frame.payload) {
@@ -1171,7 +1172,7 @@ async fn run_handler(
     frame: Frame,
     queued: QueuedFrame,
 ) -> Option<Result<Value, tokio::task::JoinError>> {
-    if !sender.read_is_live() {
+    if !sender.execution_is_live() {
         return None;
     }
     let handler = handler.clone();

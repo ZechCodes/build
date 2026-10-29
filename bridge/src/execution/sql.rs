@@ -402,7 +402,12 @@ impl Work {
         let Some((_, sender)) = self.callers.last() else {
             return;
         };
-        self.job.sender = sender.clone();
+        self.job.sender = sender.clone().for_fold(
+            self.callers
+                .iter()
+                .map(|(_, caller)| caller.clone())
+                .collect(),
+        );
         #[cfg(test)]
         if matches!(lane, ReadLane::Sql) {
             self.measurement.observe(handler, &self.job.frame);

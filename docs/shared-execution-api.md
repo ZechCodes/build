@@ -28,6 +28,10 @@ adapter creates another application execution pool.
   interest and output, while running effects and deferred settlement finish.
   The worker retains the reply sink and its resource guards until actual
   completion. A canceled worker retains its shared opening request permit too.
+  Legacy work already admitted to ordinary dispatch preserves its existing
+  opening lifetime when one carrier closes. Read interest and output still
+  require the exact live carrier; new RequestContext work additionally requires
+  live request interest. Internal owner close cleanup runs after retirement.
 
 ## Authority and output
 
@@ -63,7 +67,11 @@ Producer contexts strip request/reply resources. ChangeBus admission enforces
 eight logical IDs for new session bindings atomically at subscription effect;
 legacy carrier contexts preserve their existing limit behavior. Uploads and
 subscription cleanup compare the exact opening and event binding. Closing a
-binding detaches attachments, not the agent process or PTY.
+binding detaches attachments, not the agent process or PTY. Terminal attachment
+and child viewport effects serialize through a shared attachment gate; the exact
+event proof is checked after acquiring it and again under the screen model lock.
+Child I/O does not hold that model lock. writes.subscribe checks both request
+and exact event liveness under its subscription registration lock.
 
 ## Lifecycle and greeting
 

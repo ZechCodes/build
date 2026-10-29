@@ -28,6 +28,80 @@ export function openCarrier({ socket, channel, sessionId, frames = peerFrames() 
   return channel ? channelCarrier(channel, frames) : relayCarrier(socket, sessionId, frames);
 }
 
+/** Install a role-bound application codec only after peer proof succeeds.
+ * Sequence allocation and handoff share one queue, so canceled calls cannot
+ * leave gaps behind an earlier send that is waiting for channel capacity. */
+export function bindCarrier(raw, codec) {
+  const frameListeners = new Set();
+  const closeListeners = new Set();
+  let ended = false;
+  let writing = Promise.resolve();
+  let stopFrames = () => {};
+  let stopClose = () => {};
+  const retire = (reason = null) => {
+    if (ended) return false;
+    ended = true;
+    stopFrames();
+    stopClose();
+    frameListeners.clear();
+    for (const listener of [...closeListeners]) listener(reason);
+    closeListeners.clear();
+    return true;
+  };
+  const close = (reason = null) => {
+    if (retire(reason)) raw.close(reason);
+  };
+  stopClose = raw.onClose(retire);
+  stopFrames = raw.onEnvelope((envelope) => {
+    if (ended) return;
+    let frame;
+    try {
+      frame = codec.decode(envelope);
+    } catch (error) {
+      close(error);
+      return;
+    }
+    for (const listener of [...frameListeners]) {
+      if (ended) break;
+      listener(frame);
+    }
+  });
+  const send = async (payload, { frameType = "data", assertCurrent = () => {}, onHandoff = () => {} }) => {
+    if (ended || raw.isClosed?.()) throw new Error("the bound channel closed");
+    // Cancellation and scope changes are definitely unsent and leave the
+    // channel usable. Check before the codec allocates its next sequence.
+    assertCurrent();
+    try {
+      const envelope = codec.encode(payload, frameType);
+      onHandoff();
+      await raw.send(envelope);
+    } catch (error) {
+      // Encoding may consume a sequence; writing may transmit partial chunks.
+      // Neither failure can safely resume this exact binding.
+      close(error);
+      throw error;
+    }
+  };
+  const subscribe = (listeners) => (fn) => {
+    if (!ended) listeners.add(fn);
+    return () => listeners.delete(fn);
+  };
+  return {
+    onFrame: subscribe(frameListeners),
+    onClose: subscribe(closeListeners),
+    close,
+    isClosed: () => ended || raw.isClosed?.() === true,
+    peerFrameAt: () => raw.peerFrameAt(),
+    peerPartAt: () => raw.peerPartAt(),
+    peerIsConnected: () => raw.peerIsConnected(),
+    sendFrame(payload, options = {}) {
+      const written = writing.then(() => send(payload, options));
+      writing = written.catch(() => {});
+      return written;
+    },
+  };
+}
+
 /**
  * What a set of wires knows about the path under them — one record, shared by
  * every carrier that belongs to the same peer.
@@ -103,6 +177,7 @@ function carrierCore(frames) {
     },
     gone: () => ended,
     interface: {
+      isClosed: () => ended,
       onEnvelope: subscribe(envelopeListeners),
       onClose: subscribe(closeListeners),
       /** When a frame last arrived on any wire of this peer. */

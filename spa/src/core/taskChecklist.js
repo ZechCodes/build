@@ -4,6 +4,7 @@ import { mergeCachedAtomically } from "./localCache.js";
 import { readTaskRecord, taskAddress } from "./trackerCache.js";
 import { setMarkdownTaskChecked } from "./markdownTasks.js";
 import { readTaskChecklistSupport } from "./taskChecklistSupport.js";
+import { wrapTaskMutationCall } from "./taskMutationFence.js";
 
 async function bodyHash(body) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
@@ -64,35 +65,37 @@ export function createTaskChecklist({ deviceId, projectId, taskId, call, refresh
       if (shared.saving) return false;
       const body = setMarkdownTaskChecked(source, index, checked);
       if (body === null || body === source) return false;
-      move(true);
-      return await withWriteLock(key, shared, async () => {
-        let optimistic = false;
-        try {
-          if (!(await readTaskChecklistSupport(deviceId))) throw new Error("Update this device's bridge to tick task checklists.");
-          const expectedBodyHash = await bodyHash(source);
-          optimistic = await putBody(source, body);
-          if (!optimistic) throw new Error("The checklist changed before it could be saved. Try again.");
-          await call("tasks.update", { task_id: taskId, body, expected_body_hash: expectedBodyHash });
-          return true;
-        } catch (error) {
-          // Other cache writers may already have replaced this body. Revert
-          // only our own value, retaining newer fields and timeline entries.
-          if (optimistic) await putBody(body, source).catch(() => {});
-          onFailure(error);
-          return false;
-        } finally {
+      return await wrapTaskMutationCall(deviceId, "tasks.update", () => {
+        move(true);
+        return withWriteLock(key, shared, async () => {
+          let optimistic = false;
+          try {
+            if (!(await readTaskChecklistSupport(deviceId))) throw new Error("Update this device's bridge to tick task checklists.");
+            const expectedBodyHash = await bodyHash(source);
+            optimistic = await putBody(source, body);
+            if (!optimistic) throw new Error("The checklist changed before it could be saved. Try again.");
+            await call("tasks.update", { task_id: taskId, body, expected_body_hash: expectedBodyHash });
+            return true;
+          } catch (error) {
+            // Other cache writers may already have replaced this body. Revert
+            // only our own value, retaining newer fields and timeline entries.
+            if (optimistic) await putBody(body, source).catch(() => {});
+            onFailure(error);
+            return false;
+          } finally {
+            move(false);
+            release();
+            void refresh();
+          }
+        }).catch((error) => {
+          // A browser can refuse lock admission before the save callback runs.
+          // No body changed, but the pending controls still need settling.
           move(false);
           release();
+          onFailure(error);
           void refresh();
-        }
-      }).catch((error) => {
-        // A browser can refuse lock admission before the save callback runs.
-        // No body changed, but the pending controls still need settling.
-        move(false);
-        release();
-        onFailure(error);
-        void refresh();
-        return false;
+          return false;
+        });
       });
     },
     dispose() {

@@ -52,6 +52,7 @@ import { subscribeReferenceIndex } from "./referenceIndex.js";
 import { mountComposerAttachments } from "./composer.js";
 import { taskAttachmentRefusal } from "./taskAttachments.js";
 import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
+import { wrapTaskMutationCall } from "./taskMutationFence.js";
 import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./watchToggle.js";
 import { notifyCommandFailure } from "./commandRefusal.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
@@ -218,15 +219,17 @@ export function mountTaskPage(host, options) {
     if (!canMarkRead || !state.task || !readerIsHere()) return;
     const through = readThrough(state.rows);
     if (!through || through === markedThrough) return;
-    markedThrough = through;
-    updateUnread();
-    void Promise.resolve()
-      .then(() => state.callRpc("tasks.read_through", { task_id: state.taskId, event_id: through }))
-      .then((answer) => advanceTaskReadThrough(
-        state.deviceId, state.projectId, state.taskId,
-        latestTaskMark(through, answer?.task?.read_through),
-      ))
-      .catch(() => { if (markedThrough === through) markedThrough = ""; });
+    void wrapTaskMutationCall(state.deviceId, "tasks.read_through", () => {
+      markedThrough = through;
+      updateUnread();
+      return Promise.resolve()
+        .then(() => state.callRpc("tasks.read_through", { task_id: state.taskId, event_id: through }))
+        .then((answer) => advanceTaskReadThrough(
+          state.deviceId, state.projectId, state.taskId,
+          latestTaskMark(through, answer?.task?.read_through),
+        ))
+        .catch(() => { if (markedThrough === through) markedThrough = ""; });
+    });
   }
 
   /** The reader reached the end of the timeline, which is the only thing that
@@ -941,7 +944,10 @@ export function mountTaskPage(host, options) {
 
   function wireWatch() {
     const button = host.querySelector(WATCH_BUTTON_SELECTOR);
-    if (button) button.onclick = () => void watch.press();
+    if (button) button.onclick = () => {
+      const method = watch.state().watching ? "tasks.unwatch" : "tasks.watch";
+      void wrapTaskMutationCall(state.deviceId, method, () => watch.press());
+    };
   }
 
   // ---- lifecycle -----------------------------------------------------------

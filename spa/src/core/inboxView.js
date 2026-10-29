@@ -42,6 +42,7 @@ import { readBranchDelete } from "./branchDeleteSupport.js";
 import { projectOptimistic, reconcileOptimistic, subscribeOptimistic } from "./optimistic.js";
 import { patchFeedRow, removeFeedRow } from "./cachedRows.js";
 import { notifyError } from "./notify.js";
+import { wrapTaskMutationCall } from "./taskMutationFence.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { routeProjectKey } from "./deviceKey.js";
@@ -877,20 +878,26 @@ const acting = new Set();
  * outlives a remount and a reload. A bridge that refuses puts back exactly
  * what was there and says so on the row.
  */
-async function optimisticVerb(entry, { write, call, failureSummary }) {
+export async function optimisticVerb(entry, { write, call, failureSummary }) {
   if (acting.has(entry.key)) return;
-  acting.add(entry.key);
-  errors.delete(entry.key);
-  const undo = await write();
-  try {
-    await call();
-  } catch (error) {
-    await undo();
-    showRowError(entry.key, error);
-    notifyError(failureSummary, messageOf(error));
-  } finally {
-    acting.delete(entry.key);
-  }
+  // Fence the intent before its first awaited cache write, and retain that
+  // authority through rollback even when the nested RPC has already settled.
+  return wrapTaskMutationCall(entry.deviceId, "entity.dismiss", async () => {
+    acting.add(entry.key);
+    errors.delete(entry.key);
+    try {
+      const undo = await write();
+      try {
+        await call();
+      } catch (error) {
+        await undo();
+        showRowError(entry.key, error);
+        notifyError(failureSummary, messageOf(error));
+      }
+    } finally {
+      acting.delete(entry.key);
+    }
+  });
 }
 
 let mounted = false;

@@ -39,25 +39,38 @@ function listWithResponse(address, held, task, read) {
   return { columns: [], ...held, read_order: Math.max(held?.read_order || 0, read), tasks: sortTasks(includes ? [...remaining, next] : remaining) };
 }
 
-export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { accept = () => true } = {}) {
+function validateTaskActionOrder(issuedRead) {
+  if (issuedRead !== undefined && (!Number.isSafeInteger(issuedRead) || issuedRead <= 0)) throw new Error("Invalid task action dispatch order");
+}
+
+const olderAction = (note, issuedRead) => (note?.action_read || 0) > issuedRead;
+const actionResponseNote = (held, taskId, read, actionRead, detail) => ({
+  ...(detail ? withWritten(held, [taskId], read) : held), action_read: actionRead,
+});
+
+export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { accept = () => true, issuedRead } = {}) {
   const task = answer?.task;
   if (!task?.id || !accept()) return false;
+  validateTaskActionOrder(issuedRead);
   const listed = (await cachedAddresses({ deviceId, entityId: projectId })).filter((address) => listKinds.has(address.kind));
   const catalogue = tasksAddress(deviceId, projectId);
   if (!listed.some((address) => address.kind === TRACKER_TASKS_KIND)) listed.push(catalogue);
   const addresses = [taskAddress(deviceId, projectId, task.id), ...listed, ...listed.map(readsAddress), taskWaitingOnGenerationAddress(deviceId, projectId), readsAddress(taskAddress(deviceId, projectId, task.id))];
   const read = await nextTaskRead();
+  const actionRead = issuedRead ?? read;
   const summary = summaryTaskMutation({ deviceId, projectId }, task, read, { accept, fullTask: true });
   return mergeCachedRecordsTogether([...addresses, ...summary.addresses], (allRecords) => {
     if (!accept()) return null;
+    const records = allRecords.slice(0, addresses.length);
+    const heldNote = records.at(-1)?.value;
+    if (olderAction(heldNote, actionRead)) return null;
     const normalized = summary.reduce(allRecords.slice(addresses.length));
     if (!normalized) return null;
-    const records = allRecords.slice(0, addresses.length);
     const detail = detailWithResponse(records[0]?.value, answer);
     const lists = listed.map((address, index) => listWithResponse(address, records[index + 1]?.value, task, read));
     const notes = lists.map((list, index) => list ? withWritten(records[listed.length + index + 1]?.value, [task.id], read) : null);
     return [detail, ...lists, ...notes, detail ? nextReverseGeneration(records.at(-2)?.value) : null,
-      detail ? withWritten(records.at(-1)?.value, [task.id], read) : null, ...normalized];
+      actionResponseNote(heldNote, task.id, read, actionRead, detail), ...normalized];
   });
 }
 

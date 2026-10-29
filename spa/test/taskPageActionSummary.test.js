@@ -102,7 +102,7 @@ it("does not let an older same-timestamp watch reply reverse a newer read action
   session.call.mockImplementation((method) => method === "tasks.get" ? Promise.resolve({ task: full(), timeline })
     : method === "tasks.watch" ? watch.promise : read.promise);
   const first = await mount(); first.button().click(); await vi.waitFor(() => expect(count("tasks.watch")).toBe(1));
-  first.page.dispose(); pages = [];
+  first.page.dispose(); first.host.remove(); pages = [];
   observation.carries = true; await mount(); await vi.waitFor(() => expect(count("tasks.read_through")).toBe(1));
   read.resolve({ task: full({ watched: false, read_through: "tc-20" }) });
   await vi.waitFor(async () => expect((await cachedSummary()).task.read_through).toBe("tc-20"));

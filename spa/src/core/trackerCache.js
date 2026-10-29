@@ -438,13 +438,19 @@ export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = 
 
 /** Only an accepted read report may raise the cached floor. Do not touch the
  * timeline, and never accept a synthetic key as a read mark. */
-export const advanceTaskReadThrough = (deviceId, projectId, taskId, mark) => {
+const acceptsTaskReadFloor = (held, note, issuedRead, accept) => accept() && Boolean(held?.task)
+  && !(note?.value?.action_read > issuedRead);
+
+export const advanceTaskReadThrough = (deviceId, projectId, taskId, mark, { accept = () => true, issuedRead } = {}) => {
   if (taskUnreadKey(mark) === null) return Promise.resolve(false);
-  return mergeCachedAtomically(taskAddress(deviceId, projectId, taskId), (held) => {
-    if (!held?.task) return null;
+  const address = taskAddress(deviceId, projectId, taskId);
+  return mergeCachedRecordsTogether([address, readsAddress(address)], ([detail, note]) => {
+    const held = detail?.value;
+    if (!acceptsTaskReadFloor(held, note, issuedRead, accept)) return null;
     const floor = latestTaskMark(held.task.read_through, mark);
     if (floor === held.task.read_through) return null;
-    return { ...held, task: { ...held.task, read_through: floor } };
+    return [{ ...held, task: { ...held.task, read_through: floor } },
+      issuedRead === undefined ? null : { ...note?.value, action_read: issuedRead }];
   });
 };
 

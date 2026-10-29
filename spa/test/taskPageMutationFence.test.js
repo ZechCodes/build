@@ -61,6 +61,7 @@ it("fences before optimistic watch painting and retains pending through refusal 
   button.click();
   expect(taskMutationEpoch(deviceId)).not.toBe(before); expect(taskMutationsPending(deviceId)).toBe(1);
   expect(painted[0]).toEqual({ value: "true", pending: 1 });
+  await vi.waitFor(() => expect(call).toHaveBeenCalledWith("tasks.watch", { task_id: taskId }));
   pending.reject(new Error("watch refused"));
   await vi.waitFor(() => expect(taskMutationsPending(deviceId)).toBe(0));
   expect(painted).toContainEqual({ value: "false", pending: 1 });

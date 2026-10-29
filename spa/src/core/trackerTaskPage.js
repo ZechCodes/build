@@ -54,6 +54,9 @@ import { mountComposerAttachments } from "./composer.js";
 import { taskAttachmentRefusal } from "./taskAttachments.js";
 import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
 import { wrapTaskMutationCall } from "./taskMutationFence.js";
+import { cacheTaskWaitingOnResponse } from "./taskWaitingOnCache.js";
+import { contextFor, deviceContextIdentity } from "./deviceContexts.js";
+import { nextTaskRead } from "./taskReadOrder.js";
 import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./watchToggle.js";
 import { notifyCommandFailure } from "./commandRefusal.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
@@ -76,6 +79,42 @@ import { provenExpiredFailure } from "./writeOperationIntent.js";
 /** Whether one flush of `tasks` items says anything about this task. */
 const namesTask = (items, taskId) =>
   (items || []).some((item) => item.tasks && (item.tasks.truncated || (item.tasks.task_ids || []).includes(taskId)));
+
+function captureTaskAction(state) {
+  const { deviceId, projectId, taskId, callRpc } = state;
+  const captured = { deviceId, projectId, taskId, callRpc, number: state.task?.number,
+    context: contextFor(deviceId), identity: deviceContextIdentity(deviceId), session: deviceSession(deviceId) };
+  return { ...captured, accept: () => sameTaskVisit(state, captured) && currentTaskOwner(captured) };
+}
+
+const sameTaskVisit = (state, captured) => state.deviceId === captured.deviceId && state.projectId === captured.projectId
+  && state.taskId === captured.taskId && state.callRpc === captured.callRpc;
+const currentTaskOwner = ({ deviceId, context, identity, session }) => contextFor(deviceId) === context
+  && deviceContextIdentity(deviceId) === identity && deviceSession(deviceId) === session
+  && (!context || context.active());
+
+function matchingTaskAction(task, authority) {
+  if (task?.id !== authority.taskId || task.project_id !== authority.projectId || task.number !== authority.number) {
+    throw new Error("Expected a matching full task action response");
+  }
+}
+
+/** Acknowledged effects belong to their captured owner even after the page
+ * leaves. Rendering disposal does not revoke account/device/session authority. */
+async function dispatchTaskAction(authority, method, params, readThrough) {
+  const issuedRead = await nextTaskRead();
+  if (!authority.accept()) throw new Error("This task's session changed before sending the action.");
+  const answer = await authority.callRpc(method, params);
+  if (!authority.accept()) throw new Error("This task's session changed while the action was running.");
+  if (answer && Object.hasOwn(answer, "task")) {
+    matchingTaskAction(answer.task, authority);
+    await cacheTaskWaitingOnResponse(authority.deviceId, authority.projectId, { task: answer.task }, { accept: authority.accept, issuedRead });
+  } else if (readThrough !== undefined) {
+    await advanceTaskReadThrough(authority.deviceId, authority.projectId, authority.taskId, readThrough,
+      { accept: authority.accept, issuedRead });
+  }
+  return answer;
+}
 
 /** Mark a routed comment after a cache paint. The row already has a stable ID
  *  for conversation action links; this also moves the task's own scroller. */
@@ -174,7 +213,7 @@ export function mountTaskPage(host, options) {
   const WATCH_UNSUPPORTED = "This bridge does not support watching tasks.";
   const watch = createWatchToggle({
     taskId: state.taskId,
-    call: (method, params) => state.callRpc(method, params),
+    call: (method, params) => dispatchTaskAction(captureTaskAction(state), method, params),
     onChange: (next) => syncWatchButton(host.querySelector(WATCH_BUTTON_SELECTOR), next),
     onFailure: (error) => notifyCommandFailure(
       error, "Could not change whether you are watching this task", WATCH_UNSUPPORTED,
@@ -222,14 +261,10 @@ export function mountTaskPage(host, options) {
     const through = readThrough(state.rows);
     if (!through || through === markedThrough) return;
     void wrapTaskMutationCall(state.deviceId, "tasks.read_through", () => {
+      const authority = captureTaskAction(state);
       markedThrough = through;
       updateUnread();
-      return Promise.resolve()
-        .then(() => state.callRpc("tasks.read_through", { task_id: state.taskId, event_id: through }))
-        .then((answer) => advanceTaskReadThrough(
-          state.deviceId, state.projectId, state.taskId,
-          latestTaskMark(through, answer?.task?.read_through),
-        ))
+      return dispatchTaskAction(authority, "tasks.read_through", { task_id: authority.taskId, event_id: through }, through)
         .catch(() => { if (markedThrough === through) markedThrough = ""; });
     });
   }

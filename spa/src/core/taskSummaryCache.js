@@ -153,25 +153,34 @@ const strongerMarks = (held, incoming) => markerFields.some((field) => compareTa
 const coversMarks = (held, incoming) => markerFields.every((field) =>
   compareTaskMarkers(incoming[field], held?.[field]) >= 0);
 
-function markerAuthority(held, incoming, read) {
+function markerAuthority(held, incoming, read, counters) {
   const before = held?.task;
   const olderContent = Date.parse(incoming.updated_at) < Date.parse(before?.updated_at);
   const stronger = strongerMarks(before, incoming);
   const stale = olderContent && stronger || countersOvertaken(held, incoming, read)
-    || needsCounterRefresh(held, incoming, olderContent);
+    || needsCounterRefresh(held, incoming, olderContent, counters.source)
+    || incompleteActionCounters(held, incoming, counters);
   const source = olderContent ? Object.fromEntries(markerFields.map((field) => [field, incoming[field]])) : incoming;
   return { source: stronger ? source : before, stale: Boolean(stale) };
 }
 
-const needsCounterRefresh = (held, incoming, olderContent) => held?.needs_unread_refresh
-  && (olderContent || !coversMarks(held.task, incoming));
+const completeCounterFields = (task, fields) => fields.every((field) => Number.isSafeInteger(task?.[field]) && task[field] >= 0);
+const completeCounters = (task) => counterFamilies.every(({ fields }) => completeCounterFields(task, fields));
+const needsCounterRefresh = (held, incoming, olderContent, source) => held?.needs_unread_refresh
+  && (olderContent || !coversMarks(held.task, incoming) || !completeCounters(source));
+
+function incompleteActionCounters(held, incoming, { source, fullTask, action }) {
+  if (!action) return false;
+  return counterFamilies.some(({ floor, fields }) => !completeCounterFields(source, fields)
+    && (fullTask || compareTaskMarkers(floor(incoming), floor(held?.task)) > 0));
+}
 
 const countersOvertaken = (held, incoming, read) => !olderRow(held, incoming, read)
   && counterFamilies.some(({ floor }) => compareTaskMarkers(floor(held?.task), floor(incoming)) > 0);
 
 const olderRow = (held, task, read) => held?.read_order > read || Date.parse(held?.task?.updated_at) > Date.parse(task.updated_at);
 
-function summaryValue(held, task, read) {
+function summaryValue(held, task, read, counters = { source: task, fullTask: false, action: false }) {
   const before = held?.task;
   const older = olderRow(held, task, read);
   const reviewed = preserveTaskReviewSummary(before, task, {
@@ -180,7 +189,7 @@ function summaryValue(held, task, read) {
   // Marks and their paired counters have their own authority, independently
   // of ordinary row request order. Preserve held fields while accepting a
   // stronger incoming mark, including an older dispatch's read report.
-  const authority = markerAuthority(held, task, read);
+  const authority = markerAuthority(held, task, read, counters);
   const next = preserveMarks(authority.source, preserveMarks(before, reviewed));
   return { task: next, read_order: Math.max(read, held?.read_order || 0), needs_unread_refresh: next.watched !== false && authority.stale };
 }
@@ -229,7 +238,11 @@ export function summaryTaskMutation(scope, task, read, { accept = () => true, fu
     addresses: [summaryAddress(scope, task.id), invalidationAddress(scope)],
     reduce: ([held, invalidation]) => {
       if (!accept()) return null;
-      const row = summaryValue(held?.value, summaryPatch(held?.value?.task, task, fullTask), read);
+      // Full TaskView omits absent optional floors. Keep that raw absence
+      // visible to marker/counter reconciliation before patching held fields.
+      const source = fullTask ? { read_through: null, watch_started_after: null, dismissed_through: null, ...task } : task;
+      const row = summaryValue(held?.value, summaryPatch(held?.value?.task, source, fullTask), read,
+        { source, fullTask, action: true });
       return [row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) }];
     },
   };

@@ -185,6 +185,7 @@ function preferredTask(tables, here, number, point, listed) {
 }
 
 function taskTarget(tables, here, number) {
+  if (!Number.isSafeInteger(number) || number <= 0) return undefined;
   if (!here) return undefined;
   const point = tables.taskLookups[here.projectKey]?.[number];
   const listed = tables.tasks[here.projectKey]?.find((task) => Number(task.number) === Number(number));

@@ -69,3 +69,13 @@ it("reads exact lookup cache only after explicit demand and follows subsequent p
     await vi.waitFor(() => expect(resolve(42)).toBeNull());
   } finally { release(); }
 });
+
+it("does not treat an action-created one-row legacy catalogue as full-list absence proof", async () => {
+  const actions = await import("../src/core/taskWaitingOnCache.js");
+  await actions.cacheTaskWaitingOnResponse(place.deviceId, place.projectId, {
+    task: { ...task, project_id: place.projectId, state: "open", status: "backlog" },
+  });
+  stop = feedModule.feedReferenceIndex({ subscribeFeed(listener) { listener(feed); return () => {}; } });
+  await vi.waitFor(() => expect(resolve(42)?.taskId).toBe(task.id));
+  expect(resolve(1)).toBeUndefined();
+});

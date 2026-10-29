@@ -126,6 +126,14 @@ bridge/tests/http_resource_legacy.rs characterize the actual old FrameHandler
 seam, with success/compatibility for reads and required/domain refusals for
 agent controls without launching harnesses. They do not claim future Invocation
 validation or successful agent process execution. The SPA coverage
-test scans actual sources,
-including dynamic dispatch sites, without intersecting away unknown methods.
+test scans actual sources without intersecting away unknown methods. It is a
+reviewed lexical inventory, not a whole-program JavaScript dataflow proof.
+Metadata exceptions identify audited literal uses with multiplicity rather than
+whole file/value exclusions. Exact source fingerprints conservatively
+cover RPC-helper/metadata files so changed aliases and producers require an
+explicit inventory review, even when call syntax stays unchanged. This also
+means unrelated semantic edits in those files can require fingerprint review;
+formatting/comment changes can also trigger the guard and must not be used to
+justify blindly refreshing its inventory. New
+or changed helper patterns require coverage review before enabling their views.
 These tests do not claim listener/auth/admission/SSE integration evidence.

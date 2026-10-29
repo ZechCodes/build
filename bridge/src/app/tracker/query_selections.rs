@@ -48,7 +48,7 @@ impl QuerySelections {
             ),
         ] {
             if value.is_some_and(|value| !allowed.contains(&value)) {
-                return Err(format!("invalid {name}"));
+                return Err(format!("{name} must be {}", allowed.join(" or ")));
             }
         }
         for value in [&filter.linked_workspace_id, &filter.tracker_agent_id]
@@ -92,7 +92,7 @@ fn validate_exclusion(value: Option<&Value>) -> Result<(), String> {
                 .as_str()
                 .is_none_or(|id| id.is_empty() || id.len() > 128))
         {
-            return Err("invalid exclude_assignee object".into());
+            return Err("exclude_assignee must be an exact valid assignee object".into());
         }
     }
     Ok(())

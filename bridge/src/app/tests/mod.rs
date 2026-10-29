@@ -308,3 +308,5 @@ mod conversation_watch_baselines;
 mod waiting_on_rpc_mcp_contract;
 
 mod tracker_query_selections;
+
+mod tracker_query_behavior;

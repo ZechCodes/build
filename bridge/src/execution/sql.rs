@@ -16,9 +16,9 @@ use crate::transport::Frame;
 
 mod observations;
 
-pub(super) const SQL_WORKERS: usize = 8;
-pub(super) const SQL_BACKLOG: usize = 16;
-pub(super) const IO_WORKERS: usize = 8;
+pub(crate) const SQL_WORKERS: usize = 8;
+pub(crate) const SQL_BACKLOG: usize = 16;
+pub(crate) const IO_WORKERS: usize = 8;
 
 #[derive(Clone, Copy)]
 enum ReadLane {
@@ -30,7 +30,7 @@ enum ReadLane {
 /// eight dedicated SQL workers. The daemon starts them before accepting reads;
 /// callers outside daemon bootstrap initialize the same full set on first use.
 /// External work never enters this executor.
-pub(super) struct ReadExecutors {
+pub(crate) struct ReadExecutors {
     executor: DedicatedExecutors,
     ready: OnceLock<()>,
     slots: Arc<Semaphore>,
@@ -261,7 +261,7 @@ impl Queue {
         if waiting.closed || !job.sender.read_is_live() {
             return true;
         }
-        let opening = job.sender.still_open.ordinal;
+        let opening = job.sender.opening().diagnostic_id();
         let jobs = waiting.openings.entry(opening).or_default();
         if jobs.len() == SQL_BACKLOG {
             return false;

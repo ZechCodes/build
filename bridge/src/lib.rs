@@ -59,6 +59,7 @@ pub mod config;
 pub mod delivery;
 pub mod diff;
 pub(crate) mod encoding;
+pub mod execution;
 pub(crate) mod fs_scope;
 #[cfg(test)]
 pub mod git_fixture;

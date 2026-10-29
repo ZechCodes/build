@@ -4,7 +4,8 @@ use crate::app::{
     stream_start, term_ack, term_attach, term_create, term_input, term_resize, AppState,
     DeferredNext, DeliveryRunner, PeersSlot,
 };
-use crate::carrier::{FrameHandler, SessionSender};
+use crate::carrier::SessionSender;
+use crate::execution::FrameHandler;
 use crate::orchestrator::OrchestratorError;
 use crate::timing::FrameTimer;
 use crate::transport;

@@ -28,17 +28,12 @@ use crate::timing::WaitTimer;
 use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionInit};
 use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 
-mod dispatch;
 #[cfg(test)]
 mod epoch_tests;
-mod io;
 #[cfg(test)]
 mod observation_tests;
 #[cfg(test)]
 mod snapshot_tests;
-mod sql;
-#[cfg(test)]
-mod sql_measurements;
 #[cfg(test)]
 mod sql_tests;
 #[cfg(any(test, feature = "testing"))]
@@ -47,8 +42,10 @@ pub mod testing;
 #[path = "carrier/timing_tests.rs"]
 mod timing_tests;
 
-use dispatch::Dispatcher;
-pub(crate) use dispatch::PreparedObservation;
+use crate::execution::dispatch::Dispatcher;
+pub(crate) use crate::execution::PreparedObservation;
+#[cfg(test)]
+use crate::execution::sql;
 
 /// One thing bound for a carrier's wire, before any wire wrapper exists: an
 /// encrypted frame for a client session, or the `session_accept` answering an
@@ -228,7 +225,7 @@ impl SessionSender {
             && (self.carrier_id.is_none() || self.carrier_open.load(Ordering::SeqCst))
     }
 
-    fn push_read_reply(&self, payload: Value) {
+    pub(crate) fn push_read_reply(&self, payload: Value) {
         self.push_scoped(payload);
     }
 
@@ -245,7 +242,7 @@ impl SessionSender {
     /// Diagnostic equivalent of push/push_read_reply with an exact seal boundary.
     /// With tracing disabled, use the original path without inspecting payloads.
     #[cfg(test)]
-    fn push_observed(
+    pub(crate) fn push_observed(
         &self,
         payload: Value,
         clock: &crate::timing::FrameClock,
@@ -1325,7 +1322,7 @@ async fn admit_in_order(mut admitted: mpsc::Receiver<Admitted>, dispatcher: Arc<
 /// Handles a decrypted request frame. Receives a [`SessionSender`] (so it can
 /// register the session for server-initiated pushes) and returns the response
 /// payload to send back.
-pub use dispatch::FrameHandler;
+pub use crate::execution::FrameHandler;
 
 #[cfg(test)]
 mod sender_tests {

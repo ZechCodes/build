@@ -1217,6 +1217,17 @@ const UNAVAILABLE: [&str; 7] = [
 ///
 /// [`ApiError::classify`]: crate::api::ApiError::classify
 pub(crate) fn refine(error: ApiError) -> ApiError {
+    if let Some(encoded) = error
+        .message()
+        .strip_prefix("task_query_timestamp_unsupported:")
+    {
+        if let Ok(details) = serde_json::from_str::<Value>(encoded) {
+            return ApiError::Unavailable {
+                message: error.message().to_string(),
+                details: Some(details),
+            };
+        }
+    }
     if error.message().starts_with("task_query_basis_changed") {
         return ApiError::conflict(
             error.message(),
@@ -1509,6 +1520,18 @@ fn tasks_columns(
 mod tests {
     use super::super::testing::fixture_round_trips;
     use super::*;
+
+    #[test]
+    fn unsupported_order_timestamp_preserves_structured_refusal() {
+        let details = serde_json::json!({"reason":"task_query_timestamp_unsupported","scope":"project_order","order":"updated","project_id":"proj-1","domain":"ecmascript-iso-v1","field":"updated_at"});
+        let message = format!("task_query_timestamp_unsupported:{details}");
+        let reply = refine(ApiError::classify(message)).into_reply(serde_json::json!("r-ordered"));
+        assert_eq!(reply["error_code"], "unavailable");
+        assert_eq!(reply["retryable"], false);
+        assert_eq!(reply["details"], details);
+        assert!(reply.get("result").is_none());
+        assert!(reply.get("next_cursor").is_none());
+    }
 
     #[test]
     fn query_basis_change_is_a_restartable_conflict() {

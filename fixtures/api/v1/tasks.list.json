@@ -1112,6 +1112,28 @@
         "error": "task summary exceeds 65536 bytes; repair the stored row before continuing"
       },
       "note": "Oversized stored data is an explicit unavailable error. The refusal has no result or continuation and cannot silently omit a task."
+    },
+    {
+      "params": {
+        "project_id": "proj-1",
+        "summary": true,
+        "order": "updated"
+      },
+      "reply": {
+        "id": "r-ordered",
+        "ok": false,
+        "error": "task_query_timestamp_unsupported:{\"reason\":\"task_query_timestamp_unsupported\",\"scope\":\"project_order\",\"order\":\"updated\",\"project_id\":\"proj-1\",\"domain\":\"ecmascript-iso-v1\",\"field\":\"updated_at\"}",
+        "error_code": "unavailable",
+        "retryable": false,
+        "details": {
+          "reason": "task_query_timestamp_unsupported",
+          "scope": "project_order",
+          "order": "updated",
+          "project_id": "proj-1",
+          "domain": "ecmascript-iso-v1",
+          "field": "updated_at"
+        }
+      }
     }
   ],
   "exact_queries": {
@@ -1358,6 +1380,58 @@
           ]
         }
       ]
+    },
+    "ordered_timestamp_domain": {
+      "name": "ecmascript-iso-v1",
+      "capability": "tasks.listOrder",
+      "accepted": "Complete Gregorian YYYY-MM-DD or signed six-digit expanded year except -000000; date-only UTC. Full uppercase T HH:mm:ss with optional 1..9 fractional digits and mandatory Z or \u00b1HH:mm. Hours 00\u201323, seconds 00\u201359, offset hours 00\u201323/minutes 00\u201359. Fraction truncated to first three digits, padded right; UTC TimeClip inclusive \u00b18.64e15 applied after offset.",
+      "rejected": "Negative-zero year, invalid Gregorian date, lowercase, leap seconds, 24 hour, zone-less datetime, informal dates, fractions outside 1..9 digits, TimeClip overflow. Nonstring values refuse.",
+      "validity_scope": "Conservative project/order validity evaluated before candidate reads in the same transaction/basis. A malformed timestamp in an excluded task or outside the window refuses the affected order/cutoff. Number/priority without done_since and counts/lookup remain available.",
+      "fields": {
+        "updated": "updated_at",
+        "anchor": "anchor_fallback",
+        "done_since": "done_at"
+      },
+      "examples": [
+        {
+          "value": "2026-10-29",
+          "accepted": true,
+          "meaning": "UTC midnight"
+        },
+        {
+          "value": "2026-10-29T12:00:00",
+          "accepted": false,
+          "reason": "zone-less datetime"
+        },
+        {
+          "value": "2026-10-29T12:00:00Z",
+          "accepted": true
+        },
+        {
+          "value": "2026-10-29T08:00:00.123-04:00",
+          "accepted": true
+        },
+        {
+          "value": "not-a-date",
+          "accepted": false
+        },
+        {
+          "value": "2026-10-29T12:00:00.1Z",
+          "accepted": true
+        },
+        {
+          "value": "2026-10-29T12:00:00.123456789Z",
+          "accepted": true
+        },
+        {
+          "value": "2026-10-29T12:00:00.1234567890Z",
+          "accepted": false
+        }
+      ],
+      "client_refusal": "Preserve cached rows/cursor; no automatic retry until corrected data.",
+      "unknown": "Absent/null/empty timestamps map to Unknown rather than Unsupported. Other nonempty invalid/outside-domain values map to Unsupported.",
+      "fraction_note": "1..9 digits are the deterministic native-producer extension beyond normative ECMA three-digit milliseconds.",
+      "validation": "31 known shared fixtures match Node 22.23.4/26.12.1 and Chromium 152.0.7977.82; 13 browser-accepted strings intentionally refused. See docs/task-query-timestamp-domain.md."
     }
   }
 }

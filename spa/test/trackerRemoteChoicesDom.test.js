@@ -103,6 +103,8 @@ it("advances only the chosen menu, including a sparse empty choice page", async 
   await vi.waitFor(() => expect(more("label")?.hidden).toBe(false), { timeout: 10_000 });
   more("label").click();
   await vi.waitFor(() => expect(choiceCalls("label")).toHaveLength(2), { timeout: 10_000 });
+  await vi.waitFor(async () => expect((await choices.readFilterChoices(scope, "label")).next_cursor)
+    .toBe("label-empty-next"), { timeout: 10_000 });
   await vi.waitFor(() => expect(more("label").hidden).toBe(false), { timeout: 10_000 });
   expect(choiceCalls("label")[1][1].cursor).toBe("label-next");
   expect(choiceCalls("assignee")).toHaveLength(1);
@@ -150,6 +152,30 @@ it("retains a selected value after a canonical refresh removes it from the offer
   expect(labels("label")).toContain("remotelabel");
   expect(menu("label").querySelector(".fmenu-press-label").textContent).toBe(nulLabel);
   expect(rows("label").find((row) => row.dataset.key === `option:${nulLabel}`).getAttribute("aria-selected")).toBe("true");
+});
+
+it("uses the remote label representative for every ASCII-equivalent task without folding Unicode or whitespace", async () => {
+  tasks = [task({ id: "upper", number: 4, title: "Upper API", labels: ["API"] }),
+    task({ id: "lower", number: 3, title: "Lower api", labels: ["api"] }),
+    task({ id: "unicode", number: 2, title: "Unicode", labels: ["É"] }),
+    task({ id: "space", number: 1, title: "Whitespace", labels: [" api "] })];
+  remote = async ({ dimension }) => page(dimension, dimension === "label" ? ["API", "É", " api "] : []);
+  const filtered = new Promise(() => {});
+  call.mockImplementation(async (method, params) => {
+    if (method === "tasks.filterChoices") return remote(params);
+    if (method === "tasks.get") return { task: tasks.find(({ id }) => id === params.task_id), timeline: [] };
+    if (method === "tasks.list") return params.label ? filtered : { tasks };
+    return {};
+  });
+  const tracker = await import("../src/core/trackerCache.js");
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks, columns: columns() });
+  await mount(); await open("label");
+  await vi.waitFor(() => expect(labels("label")).toContain("API"), { timeout: 10_000 });
+  rows("label")[labels("label").indexOf("API")].click();
+  await vi.waitFor(() => expect(call).toHaveBeenCalledWith("tasks.list", {
+    project_id: scope.projectId, state: "open", label: "API",
+  }), { timeout: 10_000 });
+  await vi.waitFor(() => expect(titles()).toEqual(["Upper API", "Lower api"]), { timeout: 10_000 });
 });
 
 it("paints cached choices and continuation without a live capability, while admitting no choice RPC", async () => {

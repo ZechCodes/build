@@ -35,7 +35,7 @@ describe.each(["label", "assignee"])("opaque %s choices", (name) => {
       const options = offers(name);
       const changed = start(name, options);
       expect(rows()[index].querySelector(".fmenu-label").textContent)
-        .toBe(options[index].label.replaceAll("\0", "\uFFFD"));
+        .toBe(options[index].label.replaceAll("\0", ""));
       expect(host.querySelector("img")).toBeNull();
 
       rows()[index].click();

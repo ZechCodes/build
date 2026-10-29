@@ -117,7 +117,7 @@ it("advances only the chosen menu, including a sparse empty choice page", async 
 describe.each(["click", "Enter"])("remote opaque choices with %s", (gesture) => {
   it("round-trips a NUL label to dispatch and the selected list", async () => {
     await mount(); await open("label");
-    await vi.waitFor(() => expect(labels("label")).toContain("remotelabel"), { timeout: 10_000 });
+    await vi.waitFor(() => expect(labels("label")).toEqual(["remotelabel", replacementLabel]), { timeout: 10_000 });
     select("label", 0, gesture);
     await vi.waitFor(() => expect(call).toHaveBeenCalledWith("tasks.list", {
       project_id: scope.projectId, state: "open", label: nulLabel,
@@ -143,7 +143,7 @@ describe.each(["click", "Enter"])("remote opaque choices with %s", (gesture) => 
 
 it("retains a selected value after a canonical refresh removes it from the offered page", async () => {
   await mount(); await open("label");
-  await vi.waitFor(() => expect(labels("label")).toContain("remotelabel"), { timeout: 10_000 });
+  await vi.waitFor(() => expect(labels("label")).toEqual(["remotelabel", replacementLabel]), { timeout: 10_000 });
   select("label", 0, "click");
   await vi.waitFor(() => expect(titles()).toEqual(["Task 30"]), { timeout: 10_000 });
   remote = async ({ dimension }) => page(dimension, dimension === "label" ? ["fresh-only"] : []);

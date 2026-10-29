@@ -39,14 +39,20 @@ export async function httpRequest(run, { signal, timeoutMs = 12000, isCurrent = 
     if (timedOut) throw Object.assign(httpFailure("timeout"), { timedOut: true, deadline: "path" });
     if (controller.signal.aborted) throw signal?.reason || new DOMException("Request cancelled", "AbortError");
   };
+  let stopAbort;
+  const cancelled = new Promise((_, reject) => {
+    stopAbort = () => { try { check(); } catch (error) { reject(error); } };
+    controller.signal.addEventListener("abort", stopAbort, { once: true });
+  });
   try {
     check();
-    const result = await run(controller.signal, check);
+    const result = await Promise.race([run(controller.signal, check), cancelled]);
     check();
     return result;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", abort);
+    controller.signal.removeEventListener("abort", stopAbort);
   }
 }
 

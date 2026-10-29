@@ -42,7 +42,7 @@ function lineParser(consume) {
   };
 }
 
-export async function readTransientEvents(response, consume) {
+export async function readTransientEvents(response, consume, onActivity = () => {}) {
   if (!response.ok || response.headers.get("content-type")?.split(";")[0].trim() !== "text/event-stream" || !response.body) {
     throw new Error("Expected an SSE response");
   }
@@ -53,6 +53,7 @@ export async function readTransientEvents(response, consume) {
     while (true) {
       const { value, done } = await reader.read();
       if (done) { await take(decoder.decode()); return; }
+      onActivity();
       await take(decoder.decode(value, { stream: true }));
     }
   } finally {

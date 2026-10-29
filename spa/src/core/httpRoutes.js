@@ -36,7 +36,10 @@ export function createHttpRoutes(manifest) {
         return encodeURIComponent(value);
       });
       if (route.verb === "GET" && Object.keys(body).length) throw httpFailure("protocol");
-      return { operationId: route.operationId, method: route.verb, path, ...(route.verb === "GET" ? {} : { body }) };
+      return { operationId: route.operationId, method: route.verb, path, ...(route.verb === "GET" ? {} : { body }),
+        ...(route.requestMaxBytes ? { requestMaxBytes: route.requestMaxBytes } : {}),
+        ...(route.responseMaxBytes ? { responseMaxBytes: route.responseMaxBytes } : {}),
+      };
     },
   };
 }

@@ -67,6 +67,13 @@ it("deduplicates equivalent actor objects while preserving opaque ID case and se
     { kind: "agent", agent_id: "agenta" }, { kind: "user" }]);
 });
 
+it("deduplicates labels with backend ASCII folding while retaining non-ASCII distinctions", async () => {
+  const rpc = vi.fn().mockResolvedValueOnce(page(["API", "É"], "a"))
+    .mockResolvedValueOnce(page(["api", "é", "UI"]));
+  const view = reader(rpc); await view.refresh(); await view.more();
+  expect((await view.read()).choices).toEqual(["API", "É", "é", "UI"]);
+});
+
 it("coalesces more presses and preserves the cached cursor after a terminal RPC error", async () => {
   const pending = deferred();
   const rpc = vi.fn().mockResolvedValueOnce(page(["api"], "a")).mockImplementationOnce(() => pending.promise)
@@ -119,6 +126,19 @@ it("checks acceptance inside the IndexedDB transaction for reservation and page 
   expect(accepted).toHaveBeenCalled(); expect(await choices.readFilterChoices(scope, "label")).toBeNull();
   const ticket = await choices.beginFilterChoices(scope, "label", 2);
   expect(await choices.landFilterChoices(ticket, page(["rejected"]), { accept: accepted })).toBe(false);
+  expect((await choices.readFilterChoices(scope, "label")).choices).toEqual([]);
+});
+
+it("rechecks a captured account guard after the page transaction has begun", async () => {
+  const ticket = await choices.beginFilterChoices(scope, "label", 1);
+  let accepts = true;
+  const original = IDBObjectStore.prototype.get;
+  const spy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (key) {
+    accepts = false;
+    return original.call(this, key);
+  });
+  expect(await choices.landFilterChoices(ticket, page(["retired"]), { accept: () => accepts })).toBe(false);
+  spy.mockRestore();
   expect((await choices.readFilterChoices(scope, "label")).choices).toEqual([]);
 });
 

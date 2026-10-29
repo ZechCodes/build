@@ -212,3 +212,29 @@ it("does not admit comment refs beyond the bounded source row horizon", async ()
   await follower.update({ body: "", rows });
   expect(lookupCalls()).toHaveLength(0);
 });
+
+it("charges exact comment ID bytes and skips oversized imported identities", async () => {
+  runtime = await import("../src/core/taskReferenceLookups.js");
+  const id = "x".repeat(20_000);
+  host.innerHTML = `<li data-comment-id="${id}"><div class="task-comment-body markdown">#42</div></li>`;
+  const follower = runtime.mountTaskReferenceLookups(host, { ...scope, context: live.context }); running.add(follower);
+  await follower.update({ body: "", rows: [{ type: "comment", key: id, body: "#42" }] });
+  expect(lookupCalls()).toHaveLength(0);
+});
+
+it("leaves NUL and literal replacement-character comment identities unadmitted without conflating their turns", async () => {
+  runtime = await import("../src/core/taskReferenceLookups.js");
+  const pending = deferred(); live.context.rpc.mockImplementationOnce(() => pending.promise);
+  const follower = runtime.mountTaskReferenceLookups(host, { ...scope, context: live.context }); running.add(follower);
+  host.innerHTML = '<li data-comment-id="safe"><div class="task-comment-body markdown">#42</div></li>';
+  void follower.update({ body: "", rows: [{ type: "comment", key: "safe", body: "#42" }] });
+  await vi.waitFor(() => expect(lookupCalls()).toHaveLength(1));
+  host.innerHTML = '<li data-comment-id="raw\u0000id"><div class="task-comment-body markdown">#43</div></li>';
+  await follower.update({ body: "", rows: [{ type: "comment", key: "raw\u0000id", body: "#43" }] });
+  pending.resolve(result(42));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect((await reads.readTaskLookup(scope, 42)).status).toBe("unknown");
+  host.innerHTML = '<li data-comment-id="raw\ufffdid"><div class="task-comment-body markdown">#44</div></li>';
+  await follower.update({ body: "", rows: [{ type: "comment", key: "raw\ufffdid", body: "#44" }] });
+  expect(lookupCalls()).toHaveLength(1);
+});

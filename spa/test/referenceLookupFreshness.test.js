@@ -18,8 +18,8 @@ const start = async (rpc) => {
   release = (await import("../src/core/taskReferenceDemand.js")).admitTaskReferenceLookups(scope, [42]);
   reader = aggregate.createTaskLookupReader({ scope, callRpc: rpc, sessionOf: () => "session", capabilities: () => ({ lookup: true }) });
 };
-const listed = async (title) => tracker.writeTasksRecord(scope.deviceId, scope.projectId,
-  tracker.tasksRecord([{ ...target, title }], [], await order.nextTaskRead()));
+const listed = async (title, number = 42) => (await import("../src/core/taskWaitingOnCache.js")).cacheTaskWaitingOnResponse(
+  scope.deviceId, scope.projectId, { task: { ...target, id: `task-${number}`, number, title, state: "open", status: "backlog" } });
 
 it("does not let an older point miss or a failed refresh erase a newer created/listed positive", async () => {
   const pending = deferred(), rpc = vi.fn().mockResolvedValueOnce(result()).mockImplementationOnce(() => pending.promise);
@@ -47,4 +47,21 @@ it("prefers a newer listed title over an old found point, then accepts a proven 
 it("preserves a known positive when point or positive clocks are unknown", () => {
   index.holdReferenceSources({ tasks: { [projectKey]: [target] }, taskLookups: { [projectKey]: { 42: { status: "missing" } } } });
   expect(resolve()?.taskId).toBe(target.id);
+});
+
+it("does not promote an older row's authority when an unrelated row action raises the list clock", async () => {
+  await listed("Old #42");
+  const rpc = vi.fn().mockResolvedValue(result());
+  await start(rpc); await reader.refresh(42);
+  await vi.waitFor(() => expect(resolve()).toBeNull());
+  await listed("New #99", 99);
+  await vi.waitFor(async () => expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks).toHaveLength(2));
+  expect(resolve()).toBeNull();
+});
+
+it("does not infer per-row authority from a no-note list maximum", async () => {
+  const rpc = vi.fn().mockResolvedValue(result());
+  await start(rpc); await reader.refresh(42);
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([{ ...target, title: "Unproved positive" }], [], 1));
+  await vi.waitFor(() => expect(resolve()?.title).toBe("Unproved positive"));
 });

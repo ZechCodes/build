@@ -47,7 +47,7 @@ it("retains query-local relation and ordering provenance outside normalized enti
 
 it("rejects changed or malformed continuation basis without consuming cursor", async () => {
   const ticket = await land({}, 1, page("B", [row()], "cursor"));
-  await expect(summaries.landSummaryPage({ ...ticket, cursor: "cursor" }, page("C", [], "next"), { read: 2 })).rejects.toThrow();
+  expect(await summaries.landSummaryPage({ ...ticket, cursor: "cursor" }, page("C", [], "next"), { read: 2 })).toBe(false);
   await expect(land({ states: ["open"] }, 3, page(42))).rejects.toThrow();
   expect((await summaries.readSummaryQuery(scope, {})).next_cursor).toBe("cursor");
 });

@@ -36,8 +36,13 @@ export async function beginSummaryQuery(scope, filters, generation, { accept = (
 function validatePage(ticket, page) {
   if (page?.summary !== true || !Array.isArray(page.tasks)) throw new Error("Expected a task summary page");
   if (page.tasks.some((task) => typeof task?.id !== "string" || !task.id)) throw new Error("Invalid task summary identity");
+  validateBasis(page);
   const next = page.next_cursor;
   if (next != null && (typeof next !== "string" || !next || next === ticket.cursor)) throw new Error("Invalid summary continuation");
+}
+
+function validateBasis(page) {
+  if (Object.hasOwn(page, "basis") && (typeof page.basis !== "string" || !page.basis)) throw new Error("Invalid summary basis");
 }
 
 function acceptsPage(held, ticket, accept) {
@@ -55,6 +60,8 @@ function membership(held, ticket, page, ids, identities, read) {
     ids: append(held.ids, ids, first),
     identity_ids: append(held.identity_ids, identities, first),
     row_reads: { ...(first ? {} : held.row_reads), ...Object.fromEntries(ids.map((id) => [id, read])) },
+    row_fields: { ...(first ? {} : held.row_fields), ...Object.fromEntries(page.tasks.map((task) => [task.id, queryFields(task)])) },
+    basis: page.basis,
     next_cursor: page.next_cursor ?? null,
     complete: page.next_cursor == null,
     refreshing: false,
@@ -62,6 +69,27 @@ function membership(held, ticket, page, ids, identities, read) {
     observed_read_order: read,
   };
 }
+
+function queryFields(task) {
+  return Object.fromEntries(["matched_memberships", "order_anchor_ms"]
+    .filter((key) => Object.hasOwn(task, key)).map((key) => [key, task[key]]));
+}
+
+function entityFields(task) {
+  const next = { ...task };
+  delete next.matched_memberships;
+  delete next.order_anchor_ms;
+  return next;
+}
+
+function pageRow(held, task, read, basis) {
+  return { ...summaryValue(held, entityFields(task), read), basis: held?.read_order > read ? held.basis : basis };
+}
+
+const newerObservation = (observation, read, basis) => observation?.read_order > read ? null : { read_order: read, basis };
+const unchangedBasis = (held, other) => Boolean(held.basis && held.basis === other?.basis);
+const invalidatedTicket = (invalidation, ticket) => invalidation?.read_order > ticket.generation;
+const changedContinuationBasis = (held, ticket, page) => ticket.cursor !== null && held.basis !== page.basis;
 
 function preserveMarks(held, task) {
   const next = { ...task };
@@ -121,12 +149,13 @@ export async function landSummaryPage(ticket, page, { read, accept = () => true 
     ...identities.map(([id]) => identityAddress(ticket.scope, id))];
   return mergeCachedRecordsTogether(addresses, ([query, invalidation, observation, ...records]) => {
     const held = query?.value;
-    if (!acceptsPage(held, ticket, accept) || invalidation?.value?.read_order > ticket.generation) return null;
-    const rows = tasks.map((task, index) => summaryValue(records[index]?.value, task, read));
+    if (!acceptsPage(held, ticket, accept) || invalidatedTicket(invalidation?.value, ticket)) return null;
+    if (changedContinuationBasis(held, ticket, page)) return null;
+    const rows = tasks.map((task, index) => pageRow(records[index]?.value, task, read, page.basis));
     const actors = identities.map(([, identity], index) => records[tasks.length + index]?.value?.read_order > read
       ? null : { identity, read_order: read });
     return [membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id), read), null,
-      { read_order: Math.max(read, observation?.value?.read_order || 0) }, ...rows, ...actors];
+      newerObservation(observation?.value, read, page.basis), ...rows, ...actors];
   });
 }
 
@@ -145,8 +174,9 @@ export function writeSummaryTask(scope, task, read, { accept = () => true, fullT
 
 /** Cache-only reconstruction. Loaded membership never claims a project total
  * and an absent entity is never inferred to be deleted by a partial query. */
-const rowsOvertaken = (held, records) => held.ids.some((id, index) =>
-  records[index]?.value?.needs_unread_refresh || (records[index]?.value?.read_order || 0) > (held.row_reads?.[id] || 0));
+const rowOvertaken = (held, row, read) => row?.needs_unread_refresh
+  || (row?.read_order || 0) > read && !unchangedBasis(held, row);
+const rowsOvertaken = (held, records) => held.ids.some((id, index) => rowOvertaken(held, records[index]?.value, held.row_reads?.[id] || 0));
 
 export async function readSummaryQuery(scope, filters) {
   const record = await readCached(summaryQueryAddress(scope, filters));
@@ -158,7 +188,8 @@ export async function readSummaryQuery(scope, filters) {
   ]);
   return { ...held,
     stale: queryOvertaken(held, invalidation?.value, observation?.value) || rowsOvertaken(held, records),
-    tasks: records.slice(0, held.ids.length).map((record) => record?.value?.task).filter(Boolean),
+    tasks: records.slice(0, held.ids.length).flatMap((record, index) => record?.value?.task
+      ? [{ ...record.value.task, ...held.row_fields?.[held.ids[index]] }] : []),
     identities: Object.fromEntries(ids.flatMap((id, index) => {
       const value = records[held.ids.length + index]?.value?.identity;
       return value ? [[id, value]] : [];
@@ -166,6 +197,8 @@ export async function readSummaryQuery(scope, filters) {
   };
 }
 
-const queryOvertaken = (held, invalidation, observation) =>
-  (invalidation?.read_order || 0) > (held.published_generation || 0)
-  || (observation?.read_order || 0) > (held.observed_read_order || 0);
+const queryOvertaken = (held, invalidation, observation) => invalidatedQuery(held, invalidation)
+  || observedNewBasis(held, observation);
+const invalidatedQuery = (held, invalidation) => (invalidation?.read_order || 0) > (held.published_generation || 0);
+const observedNewBasis = (held, observation) => (observation?.read_order || 0) > (held.observed_read_order || 0)
+  && !unchangedBasis(held, observation);

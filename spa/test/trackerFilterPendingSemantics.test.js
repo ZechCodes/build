@@ -209,6 +209,13 @@ describe("serialized canonical producer facts", () => {
             } else {
               expect(row).not.toHaveProperty("deferred_assignment");
             }
+            if (active && assignee === null && target?.kind === "\0") {
+              // SQLite's display substr loses a leading-NUL kind. The raw
+              // held consumer therefore differs after this real projection,
+              // while the producer's active-state presence remains lossless.
+              expect(row.deferred_assignment.target.kind).toBe("");
+              expect(taskIsHeld(row)).toBe(false);
+            }
             const assigned = assignee !== null || active;
             // Production cache DTOs also preserve the serialized active-state
             // fact; target projection must not decide any/none membership.

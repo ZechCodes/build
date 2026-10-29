@@ -140,14 +140,10 @@ export async function launch(t, { stored = "fixture-refresh-saved", available = 
         const resolved = nextResolve(specifier, context);
         return { ...resolved, url: `${resolved.url}?test=${id}` };
       }
-      if (specifier === "./bridge-http-resources.json") return { url: `stub:bridge-manifest-${id}`, shortCircuit: true };
       if (specifier === "electron") return { url: `stub:electron-${id}`, shortCircuit: true };
       return nextResolve(specifier, context);
     },
     load(url, context, nextLoad) {
-      // Main auth/IPC tests exercise lifecycle only. Production manifest parity
-      // is checked separately against the independently reviewed #915 artifact.
-      if (url === `stub:bridge-manifest-${id}`) return { format: "json", shortCircuit: true, source: '{"version":1,"operations":[]}' };
       if (url === `stub:electron-${id}`) return {
         format: "module", shortCircuit: true,
         source: `export const { app, BrowserWindow, BaseWindow, safeStorage, dialog, Menu, net, session, shell, ipcMain } = globalThis.${key};`,

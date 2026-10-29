@@ -82,3 +82,60 @@ test("offline native signout clears local credentials and retires IPC even when 
   assert.equal(requests.filter((r) => r.options.method === "DELETE").length, 1);
   assert.ok(h.calls.quit);
 });
+
+test("main IPC uses the actual packaged manifest for a body-free GET resource", async (t) => {
+  const { default: manifest } = await import(
+    "../src/bridge-http-resources.json",
+    { with: { type: "json" } }
+  );
+  const requests = [];
+  const hosted = bridgeFetch(requests);
+  const h = await launch(t, {
+    bridgeFetch: async (url, options) => {
+      if (url === "https://bridge.test/v1/sessions")
+        return new Response(
+          JSON.stringify({
+            session_id: "session",
+            opening_generation: "generation",
+            grant_expires_at: new Date(Date.now() + 30000).toISOString(),
+            greeting: { bridge_epoch: "epoch" },
+            transport: manifest.transport,
+          }),
+        );
+      if (url === "https://bridge.test/v1/projects") {
+        assert.equal(options.method, "GET");
+        assert.equal(options.body, undefined);
+        return new Response(
+          JSON.stringify({
+            id: "request",
+            ok: true,
+            result: { projects: [] },
+            bridge_epoch: "epoch",
+          }),
+        );
+      }
+      return hosted(url, options);
+    },
+  });
+  const identity = await invoke(h, "resume", [resume]);
+  assert.equal(identity.ok, true);
+  assert.equal(
+    (await invoke(h, "open", [identity.value.handle, "1"])).ok,
+    true,
+  );
+  const result = await invoke(h, "request", [
+    identity.value.handle,
+    "project_list",
+    {},
+    { requestId: "request" },
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    value: {
+      id: "request",
+      ok: true,
+      result: { projects: [] },
+      bridge_epoch: "epoch",
+    },
+  });
+});

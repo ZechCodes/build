@@ -1,0 +1,3066 @@
+{
+  "version": 1,
+  "generatedBy": "scripts/http-resource-manifest.mjs",
+  "schemaLimitation": "Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links and verified wire fixtures are authoritative examples, not inferred schemas. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+  "headers": {
+    "session": "X-Build-Session",
+    "subscription": "X-Build-Subscription",
+    "requestId": "X-Build-Request-Id",
+    "priority": "X-Build-Priority",
+    "operationId": "Idempotency-Key",
+    "after": "X-Build-After"
+  },
+  "terminal": "webrtc",
+  "durable_events": false,
+  "transport": {
+    "resource_manifest_version": 1,
+    "operation_ids": [
+      "agent_add",
+      "agent_choose",
+      "agent_interrupt",
+      "agent_list",
+      "agent_remove",
+      "agent_start",
+      "archived_list",
+      "board_list",
+      "branch_dispatch",
+      "branch_finish",
+      "bridge_check_update",
+      "bridge_install_update",
+      "bridge_stats",
+      "bridge_update_status",
+      "capture_answer",
+      "capture_cancel",
+      "capture_create",
+      "capture_get",
+      "capture_reroute",
+      "changes_subscribe",
+      "changes_unsubscribe",
+      "conversation_reset",
+      "conversation_settings",
+      "conversation_unwatch",
+      "conversation_watch",
+      "entity_dismiss",
+      "entity_mute",
+      "entity_seen",
+      "fs_createDirectory",
+      "fs_createFile",
+      "fs_list",
+      "fs_mkdir",
+      "fs_read",
+      "fs_tree",
+      "fs_uploadAbort",
+      "fs_uploadBegin",
+      "fs_uploadChunk",
+      "fs_uploadFinish",
+      "fs_write",
+      "git_changeset_diff",
+      "git_checkout_ref",
+      "git_commit",
+      "git_diff",
+      "git_discard",
+      "git_fetch",
+      "git_log",
+      "git_merge_abort",
+      "git_pull",
+      "git_push",
+      "git_refs",
+      "git_show",
+      "git_stage",
+      "git_stash",
+      "git_stash_pop",
+      "git_status",
+      "git_unpushed",
+      "github_repos",
+      "harnesses_list",
+      "harnesses_refresh",
+      "models_list",
+      "ping",
+      "project_add_source",
+      "project_create",
+      "project_delete",
+      "project_ensure_conversation",
+      "project_init_git",
+      "project_list",
+      "project_remove_source",
+      "project_set_compaction",
+      "project_set_isolation",
+      "project_set_remote",
+      "project_sync_source",
+      "project_update_source",
+      "push_registerKey",
+      "push_revokeKey",
+      "run_abandon",
+      "run_adopt",
+      "run_diff",
+      "run_git_action",
+      "run_message",
+      "run_request_changes",
+      "session_hello",
+      "settings_get",
+      "settings_set",
+      "task_doc",
+      "task_get",
+      "task_stage_diff",
+      "task_stage_doc",
+      "task_stages",
+      "tasks_assign",
+      "tasks_attach",
+      "tasks_attachment",
+      "tasks_close",
+      "tasks_columns",
+      "tasks_comment",
+      "tasks_create",
+      "tasks_filterChoices",
+      "tasks_get",
+      "tasks_list",
+      "tasks_read_through",
+      "tasks_reopen",
+      "tasks_review_act",
+      "tasks_review_close",
+      "tasks_review_complete",
+      "tasks_review_diff",
+      "tasks_review_get",
+      "tasks_review_merge",
+      "tasks_review_open",
+      "tasks_review_push",
+      "tasks_review_refresh",
+      "tasks_review_reopen",
+      "tasks_review_snapshot",
+      "tasks_review_update",
+      "tasks_unwatch",
+      "tasks_update",
+      "tasks_waiting_on_add",
+      "tasks_waiting_on_blocks",
+      "tasks_waiting_on_remove",
+      "tasks_watch",
+      "term_list",
+      "thread_activity",
+      "thread_attach",
+      "thread_attachment",
+      "thread_operation",
+      "thread_page",
+      "thread_post",
+      "thread_revision",
+      "user_present",
+      "workspace_add_directory",
+      "workspace_create",
+      "workspace_delete",
+      "workspace_ensure_conversation",
+      "workspace_finish",
+      "workspace_get",
+      "workspace_git_init_options",
+      "workspace_init_git",
+      "workspace_list",
+      "workspace_measure_sizes",
+      "workspace_reclaim",
+      "workspace_remove_directory",
+      "workspace_rename",
+      "workspace_retry",
+      "workspace_set_compaction",
+      "workspace_set_locked",
+      "worktree_diff",
+      "writes_status",
+      "writes_subscribe"
+    ],
+    "terminal": "webrtc",
+    "durable_events": false
+  },
+  "operations": [
+    {
+      "method": "agent.add",
+      "operationId": "agent_add",
+      "verb": "POST",
+      "path": "/v1/entities/{entity_id}/agents",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "AgentAddParams",
+        "result": "AgentAdded"
+      }
+    },
+    {
+      "method": "agent.choose",
+      "operationId": "agent_choose",
+      "verb": "PATCH",
+      "path": "/v1/entities/{entity_id}/agents/{agent_id}/model",
+      "pathParams": [
+        "entity_id",
+        "agent_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "AgentChooseParams",
+        "result": "AgentChoice"
+      }
+    },
+    {
+      "method": "agent.interrupt",
+      "operationId": "agent_interrupt",
+      "verb": "POST",
+      "path": "/v1/agent-interruptions",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/app/runtime/agents/endpoints.rs",
+        "params": "legacy normalized by execution::Invocation",
+        "result": "legacy wire result"
+      }
+    },
+    {
+      "method": "agent.list",
+      "operationId": "agent_list",
+      "verb": "POST",
+      "path": "/v1/entities/{entity_id}/agent-queries",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "AgentListParams",
+        "result": "AgentList"
+      }
+    },
+    {
+      "method": "agent.remove",
+      "operationId": "agent_remove",
+      "verb": "DELETE",
+      "path": "/v1/entities/{entity_id}/agents/{agent_id}",
+      "pathParams": [
+        "entity_id",
+        "agent_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "AgentRemoveParams",
+        "result": "AgentRoster"
+      }
+    },
+    {
+      "method": "agent.start",
+      "operationId": "agent_start",
+      "verb": "POST",
+      "path": "/v1/agent-starts",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/app/runtime/agents/endpoints.rs",
+        "params": "legacy normalized by execution::Invocation",
+        "result": "legacy wire result"
+      }
+    },
+    {
+      "method": "archived.list",
+      "operationId": "archived_list",
+      "verb": "GET",
+      "path": "/v1/archives",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "NoParams",
+        "result": "ArchivedListResult"
+      }
+    },
+    {
+      "method": "board.list",
+      "operationId": "board_list",
+      "verb": "GET",
+      "path": "/v1/board",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "NoParams",
+        "result": "BoardListResult"
+      }
+    },
+    {
+      "method": "branch.dispatch",
+      "operationId": "branch_dispatch",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/branch-dispatches",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "BranchDispatchParams",
+        "result": "DispatchedAgentResult"
+      }
+    },
+    {
+      "method": "branch.finish",
+      "operationId": "branch_finish",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/branch-completions",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "BranchFinishParams",
+        "result": "WorkspaceFinishResult"
+      }
+    },
+    {
+      "method": "bridge.check_update",
+      "operationId": "bridge_check_update",
+      "verb": "POST",
+      "path": "/v1/bridge/update-checks",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/updates.rs",
+        "params": "NoParams",
+        "result": "UpdateStatus"
+      }
+    },
+    {
+      "method": "bridge.install_update",
+      "operationId": "bridge_install_update",
+      "verb": "POST",
+      "path": "/v1/bridge/update-installations",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/updates.rs",
+        "params": "InstallParams",
+        "result": "UpdateStatus"
+      }
+    },
+    {
+      "method": "bridge.stats",
+      "operationId": "bridge_stats",
+      "verb": "GET",
+      "path": "/v1/bridge/diagnostics",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/app/rpc.rs",
+        "params": "legacy normalized by execution::Invocation",
+        "result": "legacy wire result"
+      }
+    },
+    {
+      "method": "bridge.update_status",
+      "operationId": "bridge_update_status",
+      "verb": "GET",
+      "path": "/v1/bridge/update-status",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/updates.rs",
+        "params": "NoParams",
+        "result": "UpdateStatus"
+      }
+    },
+    {
+      "method": "capture.answer",
+      "operationId": "capture_answer",
+      "verb": "POST",
+      "path": "/v1/captures/{capture_id}/answers",
+      "pathParams": [
+        "capture_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "CaptureAnswerParams",
+        "result": "Capture"
+      }
+    },
+    {
+      "method": "capture.cancel",
+      "operationId": "capture_cancel",
+      "verb": "DELETE",
+      "path": "/v1/captures/{capture_id}",
+      "pathParams": [
+        "capture_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "CaptureParams",
+        "result": "CaptureCancelled"
+      }
+    },
+    {
+      "method": "capture.create",
+      "operationId": "capture_create",
+      "verb": "POST",
+      "path": "/v1/captures",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "CaptureCreateParams",
+        "result": "Capture"
+      }
+    },
+    {
+      "method": "capture.get",
+      "operationId": "capture_get",
+      "verb": "GET",
+      "path": "/v1/captures/{capture_id}",
+      "pathParams": [
+        "capture_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "CaptureParams",
+        "result": "Capture"
+      }
+    },
+    {
+      "method": "capture.reroute",
+      "operationId": "capture_reroute",
+      "verb": "POST",
+      "path": "/v1/captures/{capture_id}/reroutes",
+      "pathParams": [
+        "capture_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "CaptureRerouteParams",
+        "result": "Capture"
+      }
+    },
+    {
+      "method": "changes.subscribe",
+      "operationId": "changes_subscribe",
+      "verb": "POST",
+      "path": "/v1/change-subscriptions",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": true,
+      "contract": {
+        "source": "bridge/src/api/v1/changes.rs",
+        "params": "SubscriptionSpec<KindNames>",
+        "result": "Subscribed"
+      }
+    },
+    {
+      "method": "changes.unsubscribe",
+      "operationId": "changes_unsubscribe",
+      "verb": "DELETE",
+      "path": "/v1/change-subscriptions/{subscription_id}",
+      "pathParams": [
+        "subscription_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": true,
+      "contract": {
+        "source": "bridge/src/api/v1/changes.rs",
+        "params": "UnsubscribeParams",
+        "result": "Unsubscribed"
+      }
+    },
+    {
+      "method": "conversation.reset",
+      "operationId": "conversation_reset",
+      "verb": "POST",
+      "path": "/v1/entities/{entity_id}/conversation-resets",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "ConversationResetParams",
+        "result": "ConversationReset"
+      }
+    },
+    {
+      "method": "conversation.settings",
+      "operationId": "conversation_settings",
+      "verb": "PATCH",
+      "path": "/v1/entities/{entity_id}/conversation-settings",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "ConversationSettingsParams",
+        "result": "ConversationSettings"
+      }
+    },
+    {
+      "method": "conversation.unwatch",
+      "operationId": "conversation_unwatch",
+      "verb": "DELETE",
+      "path": "/v1/entities/{entity_id}/conversation-watch",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "AgentRemoveParams",
+        "result": "ConversationWatch"
+      }
+    },
+    {
+      "method": "conversation.watch",
+      "operationId": "conversation_watch",
+      "verb": "PUT",
+      "path": "/v1/entities/{entity_id}/conversation-watch",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "AgentRemoveParams",
+        "result": "ConversationWatch"
+      }
+    },
+    {
+      "method": "entity.dismiss",
+      "operationId": "entity_dismiss",
+      "verb": "POST",
+      "path": "/v1/entities/{entity_id}/dismissals",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "EntityDismissParams",
+        "result": "DismissResult"
+      }
+    },
+    {
+      "method": "entity.mute",
+      "operationId": "entity_mute",
+      "verb": "PUT",
+      "path": "/v1/entities/{entity_id}/mute",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "EntityMuteParams",
+        "result": "MuteResult"
+      }
+    },
+    {
+      "method": "entity.seen",
+      "operationId": "entity_seen",
+      "verb": "PUT",
+      "path": "/v1/entities/{entity_id}/read-cursor",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "EntitySeenParams",
+        "result": "Acknowledged"
+      }
+    },
+    {
+      "method": "fs.createDirectory",
+      "operationId": "fs_createDirectory",
+      "verb": "POST",
+      "path": "/v1/files/directories",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "FsCreateDirectoryParams",
+        "result": "FsCreateDirectoryResult"
+      }
+    },
+    {
+      "method": "fs.createFile",
+      "operationId": "fs_createFile",
+      "verb": "POST",
+      "path": "/v1/files/empty-files",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "FsCreateDirectoryParams",
+        "result": "FsCreateDirectoryResult"
+      }
+    },
+    {
+      "method": "fs.list",
+      "operationId": "fs_list",
+      "verb": "POST",
+      "path": "/v1/filesystem/directory-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "FsListParams",
+        "result": "FsListResult"
+      }
+    },
+    {
+      "method": "fs.mkdir",
+      "operationId": "fs_mkdir",
+      "verb": "POST",
+      "path": "/v1/filesystem/directories",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "FsMkdirParams",
+        "result": "FsMkdirResult"
+      }
+    },
+    {
+      "method": "fs.read",
+      "operationId": "fs_read",
+      "verb": "POST",
+      "path": "/v1/files/content-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "FsReadParams",
+        "result": "FsFileResult"
+      }
+    },
+    {
+      "method": "fs.tree",
+      "operationId": "fs_tree",
+      "verb": "POST",
+      "path": "/v1/files/tree-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "FsTreeParams",
+        "result": "FsTreeResult"
+      }
+    },
+    {
+      "method": "fs.uploadAbort",
+      "operationId": "fs_uploadAbort",
+      "verb": "DELETE",
+      "path": "/v1/file-uploads/{upload_id}",
+      "pathParams": [
+        "upload_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": true,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "FsUploadIdParams",
+        "result": "FsUploadAbortResult"
+      }
+    },
+    {
+      "method": "fs.uploadBegin",
+      "operationId": "fs_uploadBegin",
+      "verb": "POST",
+      "path": "/v1/file-uploads",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": true,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "FsUploadBeginParams",
+        "result": "FsUploadBeginResult"
+      }
+    },
+    {
+      "method": "fs.uploadChunk",
+      "operationId": "fs_uploadChunk",
+      "verb": "PUT",
+      "path": "/v1/file-uploads/{upload_id}/chunks",
+      "pathParams": [
+        "upload_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 5657944,
+      "responseMaxBytes": 8388608,
+      "requires_events": true,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "FsUploadChunkParams",
+        "result": "FsUploadChunkResult"
+      }
+    },
+    {
+      "method": "fs.uploadFinish",
+      "operationId": "fs_uploadFinish",
+      "verb": "POST",
+      "path": "/v1/file-uploads/{upload_id}/completions",
+      "pathParams": [
+        "upload_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": true,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "FsUploadIdParams",
+        "result": "FsUploadFinishResult"
+      }
+    },
+    {
+      "method": "fs.write",
+      "operationId": "fs_write",
+      "verb": "PUT",
+      "path": "/v1/files/content",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1463640,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "FsWriteParams",
+        "result": "FsFileResult"
+      }
+    },
+    {
+      "method": "git.changeset_diff",
+      "operationId": "git_changeset_diff",
+      "verb": "POST",
+      "path": "/v1/git/changeset-diff-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "ChangesetDiffParams",
+        "result": "ChangesetDiffResult"
+      }
+    },
+    {
+      "method": "git.checkout_ref",
+      "operationId": "git_checkout_ref",
+      "verb": "POST",
+      "path": "/v1/git/checkouts",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "GitCheckoutRefParams",
+        "result": "StatusPayload"
+      }
+    },
+    {
+      "method": "git.commit",
+      "operationId": "git_commit",
+      "verb": "POST",
+      "path": "/v1/git/commits",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "GitCommitParams",
+        "result": "GitCommitResult"
+      }
+    },
+    {
+      "method": "git.diff",
+      "operationId": "git_diff",
+      "verb": "POST",
+      "path": "/v1/git/diff-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "GitDiffParams",
+        "result": "GitDiffResult"
+      }
+    },
+    {
+      "method": "git.discard",
+      "operationId": "git_discard",
+      "verb": "POST",
+      "path": "/v1/git/discards",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "GitPathsParams",
+        "result": "StatusPayload"
+      }
+    },
+    {
+      "method": "git.fetch",
+      "operationId": "git_fetch",
+      "verb": "POST",
+      "path": "/v1/git/fetches",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "SourceScopeParams",
+        "result": "StatusPayload"
+      }
+    },
+    {
+      "method": "git.log",
+      "operationId": "git_log",
+      "verb": "POST",
+      "path": "/v1/git/log-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "GitLogParams",
+        "result": "GitLogResult"
+      }
+    },
+    {
+      "method": "git.merge_abort",
+      "operationId": "git_merge_abort",
+      "verb": "POST",
+      "path": "/v1/git/merge-aborts",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "SourceScopeParams",
+        "result": "StatusPayload"
+      }
+    },
+    {
+      "method": "git.pull",
+      "operationId": "git_pull",
+      "verb": "POST",
+      "path": "/v1/git/pulls",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "GitPullParams",
+        "result": "StatusPayload"
+      }
+    },
+    {
+      "method": "git.push",
+      "operationId": "git_push",
+      "verb": "POST",
+      "path": "/v1/git/pushes",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "GitPushParams",
+        "result": "StatusPayload"
+      }
+    },
+    {
+      "method": "git.refs",
+      "operationId": "git_refs",
+      "verb": "POST",
+      "path": "/v1/git/ref-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "SourceScopeParams",
+        "result": "RefListResult"
+      }
+    },
+    {
+      "method": "git.show",
+      "operationId": "git_show",
+      "verb": "POST",
+      "path": "/v1/git/commit-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "GitShowParams",
+        "result": "CommitDetail"
+      }
+    },
+    {
+      "method": "git.stage",
+      "operationId": "git_stage",
+      "verb": "POST",
+      "path": "/v1/git/stages",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "GitPathsParams",
+        "result": "StatusPayload"
+      }
+    },
+    {
+      "method": "git.stash",
+      "operationId": "git_stash",
+      "verb": "POST",
+      "path": "/v1/git/stashes",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "SourceScopeParams",
+        "result": "StatusPayload"
+      }
+    },
+    {
+      "method": "git.stash_pop",
+      "operationId": "git_stash_pop",
+      "verb": "POST",
+      "path": "/v1/git/stash-pops",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "SourceScopeParams",
+        "result": "StatusPayload"
+      }
+    },
+    {
+      "method": "git.status",
+      "operationId": "git_status",
+      "verb": "POST",
+      "path": "/v1/git/status-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "GitStatusParams",
+        "result": "GitStatusResult"
+      }
+    },
+    {
+      "method": "git.unpushed",
+      "operationId": "git_unpushed",
+      "verb": "POST",
+      "path": "/v1/git/unpushed-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "GitUnpushedParams",
+        "result": "GitUnpushedResult"
+      }
+    },
+    {
+      "method": "github.repos",
+      "operationId": "github_repos",
+      "verb": "GET",
+      "path": "/v1/github/repositories",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/github.rs",
+        "params": "NoParams",
+        "result": "GithubReposResult"
+      }
+    },
+    {
+      "method": "harnesses.list",
+      "operationId": "harnesses_list",
+      "verb": "GET",
+      "path": "/v1/harnesses",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/harnesses.rs",
+        "params": "NoParams",
+        "result": "HarnessesSnapshot"
+      }
+    },
+    {
+      "method": "harnesses.refresh",
+      "operationId": "harnesses_refresh",
+      "verb": "POST",
+      "path": "/v1/harness-refreshes",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/harnesses.rs",
+        "params": "NoParams",
+        "result": "RefreshReceipt"
+      }
+    },
+    {
+      "method": "models.list",
+      "operationId": "models_list",
+      "verb": "GET",
+      "path": "/v1/models",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "NoParams",
+        "result": "ModelsListResult"
+      }
+    },
+    {
+      "method": "ping",
+      "operationId": "ping",
+      "verb": "GET",
+      "path": "/v1/health",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/carrier.rs",
+        "params": "legacy normalized by execution::Invocation",
+        "result": "legacy wire result"
+      }
+    },
+    {
+      "method": "project.add_source",
+      "operationId": "project_add_source",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/sources",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectAddSourceParams",
+        "result": "ProjectRow"
+      }
+    },
+    {
+      "method": "project.create",
+      "operationId": "project_create",
+      "verb": "POST",
+      "path": "/v1/projects",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectCreateParams",
+        "result": "ProjectRow"
+      }
+    },
+    {
+      "method": "project.delete",
+      "operationId": "project_delete",
+      "verb": "DELETE",
+      "path": "/v1/projects/{project_id}",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectDeleteParams",
+        "result": "ProjectDeleteResult"
+      }
+    },
+    {
+      "method": "project.ensure_conversation",
+      "operationId": "project_ensure_conversation",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/conversation",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectEnsureConversationParams",
+        "result": "ProjectConversation"
+      }
+    },
+    {
+      "method": "project.init_git",
+      "operationId": "project_init_git",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/git-initializations",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectParams",
+        "result": "ProjectRow"
+      }
+    },
+    {
+      "method": "project.list",
+      "operationId": "project_list",
+      "verb": "GET",
+      "path": "/v1/projects",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "NoParams",
+        "result": "ProjectListResult"
+      }
+    },
+    {
+      "method": "project.remove_source",
+      "operationId": "project_remove_source",
+      "verb": "DELETE",
+      "path": "/v1/projects/{project_id}/sources/{source_id}",
+      "pathParams": [
+        "project_id",
+        "source_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectRemoveSourceParams",
+        "result": "ProjectRow"
+      }
+    },
+    {
+      "method": "project.set_compaction",
+      "operationId": "project_set_compaction",
+      "verb": "PUT",
+      "path": "/v1/projects/{project_id}/compaction-policy",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "SetCompactionParams",
+        "result": "ProjectRow"
+      }
+    },
+    {
+      "method": "project.set_isolation",
+      "operationId": "project_set_isolation",
+      "verb": "PUT",
+      "path": "/v1/projects/{project_id}/isolation",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectSetIsolationParams",
+        "result": "ProjectRow"
+      }
+    },
+    {
+      "method": "project.set_remote",
+      "operationId": "project_set_remote",
+      "verb": "PUT",
+      "path": "/v1/projects/{project_id}/remote",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectSetRemoteParams",
+        "result": "ProjectRow"
+      }
+    },
+    {
+      "method": "project.sync_source",
+      "operationId": "project_sync_source",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/sources/{source_id}/synchronizations",
+      "pathParams": [
+        "project_id",
+        "source_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectSyncSourceParams",
+        "result": "SourceSyncRequested"
+      }
+    },
+    {
+      "method": "project.update_source",
+      "operationId": "project_update_source",
+      "verb": "PATCH",
+      "path": "/v1/projects/{project_id}/sources/{source_id}",
+      "pathParams": [
+        "project_id",
+        "source_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectUpdateSourceParams",
+        "result": "ProjectSourceUpdated"
+      }
+    },
+    {
+      "method": "push.registerKey",
+      "operationId": "push_registerKey",
+      "verb": "PUT",
+      "path": "/v1/push-keys/{subscription_id}",
+      "pathParams": [
+        "subscription_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/push.rs",
+        "params": "RegisterKeyParams",
+        "result": "Acknowledged"
+      }
+    },
+    {
+      "method": "push.revokeKey",
+      "operationId": "push_revokeKey",
+      "verb": "DELETE",
+      "path": "/v1/push-keys/{subscription_id}",
+      "pathParams": [
+        "subscription_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/push.rs",
+        "params": "RevokeKeyParams",
+        "result": "Acknowledged"
+      }
+    },
+    {
+      "method": "run.abandon",
+      "operationId": "run_abandon",
+      "verb": "POST",
+      "path": "/v1/runs/{run_id}/abandonments",
+      "pathParams": [
+        "run_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "RunViewParams",
+        "result": "RunView"
+      }
+    },
+    {
+      "method": "run.adopt",
+      "operationId": "run_adopt",
+      "verb": "POST",
+      "path": "/v1/run-adoptions",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "RunAdoptParams",
+        "result": "RunAdoptResult"
+      }
+    },
+    {
+      "method": "run.diff",
+      "operationId": "run_diff",
+      "verb": "POST",
+      "path": "/v1/runs/{run_id}/diff-queries",
+      "pathParams": [
+        "run_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "RunDiffParams",
+        "result": "RunDiffResult"
+      }
+    },
+    {
+      "method": "run.git_action",
+      "operationId": "run_git_action",
+      "verb": "POST",
+      "path": "/v1/runs/{run_id}/git-actions",
+      "pathParams": [
+        "run_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "RunGitActionParams",
+        "result": "RunView"
+      }
+    },
+    {
+      "method": "run.message",
+      "operationId": "run_message",
+      "verb": "POST",
+      "path": "/v1/runs/{run_id}/messages",
+      "pathParams": [
+        "run_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "RunMessageParams",
+        "result": "RunView"
+      }
+    },
+    {
+      "method": "run.request_changes",
+      "operationId": "run_request_changes",
+      "verb": "POST",
+      "path": "/v1/runs/{run_id}/change-requests",
+      "pathParams": [
+        "run_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "RunRequestChangesParams",
+        "result": "RunView"
+      }
+    },
+    {
+      "method": "session.hello",
+      "operationId": "session_hello",
+      "verb": "POST",
+      "path": "/v1/session-greetings",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": true,
+      "contract": {
+        "source": "bridge/src/app/runtime/terminals.rs",
+        "params": "legacy normalized by execution::Invocation",
+        "result": "legacy wire result"
+      }
+    },
+    {
+      "method": "settings.get",
+      "operationId": "settings_get",
+      "verb": "GET",
+      "path": "/v1/settings",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "NoParams",
+        "result": "SettingsResult"
+      }
+    },
+    {
+      "method": "settings.set",
+      "operationId": "settings_set",
+      "verb": "PATCH",
+      "path": "/v1/settings",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "SettingsSetParams",
+        "result": "SettingsResult"
+      }
+    },
+    {
+      "method": "task.doc",
+      "operationId": "task_doc",
+      "verb": "POST",
+      "path": "/v1/planning-tasks/{task_id}/document-queries",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "TaskRefParams",
+        "result": "TaskDocResult"
+      }
+    },
+    {
+      "method": "task.get",
+      "operationId": "task_get",
+      "verb": "POST",
+      "path": "/v1/planning-tasks/{task_id}/detail-queries",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "TaskDetailParams",
+        "result": "TaskView"
+      }
+    },
+    {
+      "method": "task.stage_diff",
+      "operationId": "task_stage_diff",
+      "verb": "POST",
+      "path": "/v1/planning-tasks/{task_id}/stages/{stage_id}/diff-queries",
+      "pathParams": [
+        "task_id",
+        "stage_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "TaskStageDiffParams",
+        "result": "StageDiffResult"
+      }
+    },
+    {
+      "method": "task.stage_doc",
+      "operationId": "task_stage_doc",
+      "verb": "POST",
+      "path": "/v1/planning-tasks/{task_id}/stages/{stage_id}/document-queries",
+      "pathParams": [
+        "task_id",
+        "stage_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "StageRefParams",
+        "result": "StageDocResult"
+      }
+    },
+    {
+      "method": "task.stages",
+      "operationId": "task_stages",
+      "verb": "GET",
+      "path": "/v1/planning-tasks/{task_id}/stages",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/lifecycle.rs",
+        "params": "TaskRefParams",
+        "result": "TaskStagesResult"
+      }
+    },
+    {
+      "method": "tasks.assign",
+      "operationId": "tasks_assign",
+      "verb": "PUT",
+      "path": "/v1/tasks/{task_id}/assignee",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksAssignParams",
+        "result": "TaskAssigned"
+      }
+    },
+    {
+      "method": "tasks.attach",
+      "operationId": "tasks_attach",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/task-attachments",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 7056044,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksAttachParams",
+        "result": "TaskAttachment"
+      }
+    },
+    {
+      "method": "tasks.attachment",
+      "operationId": "tasks_attachment",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/attachment-queries",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksAttachmentParams",
+        "result": "TaskAttachmentBytes"
+      }
+    },
+    {
+      "method": "tasks.close",
+      "operationId": "tasks_close",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/closures",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksCloseParams",
+        "result": "TaskAnswer"
+      }
+    },
+    {
+      "method": "tasks.columns",
+      "operationId": "tasks_columns",
+      "verb": "GET",
+      "path": "/v1/projects/{project_id}/task-columns",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "ProjectIdParams",
+        "result": "TaskColumns"
+      }
+    },
+    {
+      "method": "tasks.comment",
+      "operationId": "tasks_comment",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/comments",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksCommentParams",
+        "result": "TaskComment"
+      }
+    },
+    {
+      "method": "tasks.create",
+      "operationId": "tasks_create",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/tasks",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksCreateParams",
+        "result": "TaskAssigned"
+      }
+    },
+    {
+      "method": "tasks.filterChoices",
+      "operationId": "tasks_filterChoices",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/task-filter-queries",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksFilterChoicesParams",
+        "result": "TasksFilterChoices"
+      }
+    },
+    {
+      "method": "tasks.get",
+      "operationId": "tasks_get",
+      "verb": "GET",
+      "path": "/v1/tasks/{task_id}",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TaskIdParams",
+        "result": "TaskDetail"
+      }
+    },
+    {
+      "method": "tasks.list",
+      "operationId": "tasks_list",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/task-queries",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksListParams",
+        "result": "TasksList"
+      }
+    },
+    {
+      "method": "tasks.read_through",
+      "operationId": "tasks_read_through",
+      "verb": "PUT",
+      "path": "/v1/tasks/{task_id}/read-cursor",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksReadThroughParams",
+        "result": "TaskAnswer"
+      }
+    },
+    {
+      "method": "tasks.reopen",
+      "operationId": "tasks_reopen",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/reopenings",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TaskIdParams",
+        "result": "TaskAnswer"
+      }
+    },
+    {
+      "method": "tasks.review.act",
+      "operationId": "tasks_review_act",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/review-actions",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewActParams",
+        "result": "ReviewResult"
+      }
+    },
+    {
+      "method": "tasks.review.close",
+      "operationId": "tasks_review_close",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/review-closures",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewCloseParams",
+        "result": "ReviewResult"
+      }
+    },
+    {
+      "method": "tasks.review.complete",
+      "operationId": "tasks_review_complete",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/review-completions",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewCompleteParams",
+        "result": "ReviewResult"
+      }
+    },
+    {
+      "method": "tasks.review.diff",
+      "operationId": "tasks_review_diff",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/review-diff-queries",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewDiffParams",
+        "result": "ReviewReadResult"
+      }
+    },
+    {
+      "method": "tasks.review.get",
+      "operationId": "tasks_review_get",
+      "verb": "GET",
+      "path": "/v1/tasks/{task_id}/review",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewGetParams",
+        "result": "ReviewResult"
+      }
+    },
+    {
+      "method": "tasks.review.merge",
+      "operationId": "tasks_review_merge",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/review-merges",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewMergeParams",
+        "result": "ReviewResult"
+      }
+    },
+    {
+      "method": "tasks.review.open",
+      "operationId": "tasks_review_open",
+      "verb": "POST",
+      "path": "/v1/reviews",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewOpenParams",
+        "result": "ReviewOpenResult"
+      }
+    },
+    {
+      "method": "tasks.review.push",
+      "operationId": "tasks_review_push",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/review-pushes",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewPushParams",
+        "result": "ReviewPushResult"
+      }
+    },
+    {
+      "method": "tasks.review.refresh",
+      "operationId": "tasks_review_refresh",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/review-refreshes",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewVersionParams",
+        "result": "ReviewResult"
+      }
+    },
+    {
+      "method": "tasks.review.reopen",
+      "operationId": "tasks_review_reopen",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/review-reopenings",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewVersionParams",
+        "result": "ReviewResult"
+      }
+    },
+    {
+      "method": "tasks.review.snapshot",
+      "operationId": "tasks_review_snapshot",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/review-snapshots",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewSnapshotParams",
+        "result": "ReviewResult"
+      }
+    },
+    {
+      "method": "tasks.review.update",
+      "operationId": "tasks_review_update",
+      "verb": "PATCH",
+      "path": "/v1/tasks/{task_id}/review",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewUpdateParams",
+        "result": "ReviewResult"
+      }
+    },
+    {
+      "method": "tasks.unwatch",
+      "operationId": "tasks_unwatch",
+      "verb": "DELETE",
+      "path": "/v1/tasks/{task_id}/watch",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TaskIdParams",
+        "result": "TaskAnswer"
+      }
+    },
+    {
+      "method": "tasks.update",
+      "operationId": "tasks_update",
+      "verb": "PATCH",
+      "path": "/v1/tasks/{task_id}",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksUpdateParams",
+        "result": "TaskAnswer"
+      }
+    },
+    {
+      "method": "tasks.waiting_on.add",
+      "operationId": "tasks_waiting_on_add",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/dependencies",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksWaitingOnParams",
+        "result": "TaskAnswer"
+      }
+    },
+    {
+      "method": "tasks.waiting_on.blocks",
+      "operationId": "tasks_waiting_on_blocks",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/dependent-queries",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksBlocksParams",
+        "result": "TaskBlocks"
+      }
+    },
+    {
+      "method": "tasks.waiting_on.remove",
+      "operationId": "tasks_waiting_on_remove",
+      "verb": "DELETE",
+      "path": "/v1/tasks/{task_id}/dependencies",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksWaitingOnParams",
+        "result": "TaskAnswer"
+      }
+    },
+    {
+      "method": "tasks.watch",
+      "operationId": "tasks_watch",
+      "verb": "PUT",
+      "path": "/v1/tasks/{task_id}/watch",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TaskIdParams",
+        "result": "TaskAnswer"
+      }
+    },
+    {
+      "method": "term.list",
+      "operationId": "term_list",
+      "verb": "POST",
+      "path": "/v1/terminal-roster-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/app/runtime/terminals.rs",
+        "params": "legacy normalized by execution::Invocation",
+        "result": "legacy wire result"
+      }
+    },
+    {
+      "method": "thread.activity",
+      "operationId": "thread_activity",
+      "verb": "POST",
+      "path": "/v1/entities/{entity_id}/activity-queries",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "ThreadActivityParams",
+        "result": "ActivityPage"
+      }
+    },
+    {
+      "method": "thread.attach",
+      "operationId": "thread_attach",
+      "verb": "POST",
+      "path": "/v1/entities/{entity_id}/attachments",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 7056044,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "ThreadAttachParams",
+        "result": "AttachmentUpload"
+      }
+    },
+    {
+      "method": "thread.attachment",
+      "operationId": "thread_attachment",
+      "verb": "POST",
+      "path": "/v1/entities/{entity_id}/attachment-queries",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "ThreadAttachmentParams",
+        "result": "AttachmentContent"
+      }
+    },
+    {
+      "method": "thread.operation",
+      "operationId": "thread_operation",
+      "verb": "POST",
+      "path": "/v1/entities/{entity_id}/message-operation-queries",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "ThreadOperationParams",
+        "result": "OperationReceipt"
+      }
+    },
+    {
+      "method": "thread.page",
+      "operationId": "thread_page",
+      "verb": "POST",
+      "path": "/v1/entities/{entity_id}/message-queries",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "ThreadPageParams",
+        "result": "ThreadPage"
+      }
+    },
+    {
+      "method": "thread.post",
+      "operationId": "thread_post",
+      "verb": "POST",
+      "path": "/v1/entities/{entity_id}/messages",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "ThreadPostParams",
+        "result": "PostReceipt"
+      }
+    },
+    {
+      "method": "thread.revision",
+      "operationId": "thread_revision",
+      "verb": "POST",
+      "path": "/v1/entities/{entity_id}/revision-queries",
+      "pathParams": [
+        "entity_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/thread.rs",
+        "params": "ThreadRevisionParams",
+        "result": "ThreadRevision"
+      }
+    },
+    {
+      "method": "user.present",
+      "operationId": "user_present",
+      "verb": "POST",
+      "path": "/v1/user-presence",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "NoParams",
+        "result": "UserPresent"
+      }
+    },
+    {
+      "method": "workspace.add_directory",
+      "operationId": "workspace_add_directory",
+      "verb": "POST",
+      "path": "/v1/workspaces/{workspace_id}/directories",
+      "pathParams": [
+        "workspace_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceAddDirectoryParams",
+        "result": "WorkspaceDetail"
+      }
+    },
+    {
+      "method": "workspace.create",
+      "operationId": "workspace_create",
+      "verb": "POST",
+      "path": "/v1/workspaces",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceCreateParams",
+        "result": "WorkspaceRow"
+      }
+    },
+    {
+      "method": "workspace.delete",
+      "operationId": "workspace_delete",
+      "verb": "DELETE",
+      "path": "/v1/workspaces/{workspace_id}",
+      "pathParams": [
+        "workspace_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceIdParams",
+        "result": "WorkspaceDeleteResult"
+      }
+    },
+    {
+      "method": "workspace.ensure_conversation",
+      "operationId": "workspace_ensure_conversation",
+      "verb": "POST",
+      "path": "/v1/workspaces/{workspace_id}/conversation",
+      "pathParams": [
+        "workspace_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceEnsureConversationParams",
+        "result": "WorkspaceConversation"
+      }
+    },
+    {
+      "method": "workspace.finish",
+      "operationId": "workspace_finish",
+      "verb": "POST",
+      "path": "/v1/workspaces/{workspace_id}/completions",
+      "pathParams": [
+        "workspace_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceIdParams",
+        "result": "WorkspaceFinishResult"
+      }
+    },
+    {
+      "method": "workspace.get",
+      "operationId": "workspace_get",
+      "verb": "POST",
+      "path": "/v1/workspaces/{workspace_id}/detail-queries",
+      "pathParams": [
+        "workspace_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceGetParams",
+        "result": "WorkspaceDetail"
+      }
+    },
+    {
+      "method": "workspace.git_init_options",
+      "operationId": "workspace_git_init_options",
+      "verb": "POST",
+      "path": "/v1/workspaces/{workspace_id}/git-initialization-queries",
+      "pathParams": [
+        "workspace_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceSourceParams",
+        "result": "GitInitOptions"
+      }
+    },
+    {
+      "method": "workspace.init_git",
+      "operationId": "workspace_init_git",
+      "verb": "POST",
+      "path": "/v1/workspaces/{workspace_id}/git-initializations",
+      "pathParams": [
+        "workspace_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceInitGitParams",
+        "result": "WorkspaceInitGitResult"
+      }
+    },
+    {
+      "method": "workspace.list",
+      "operationId": "workspace_list",
+      "verb": "POST",
+      "path": "/v1/workspace-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceListParams",
+        "result": "WorkspaceListResult"
+      }
+    },
+    {
+      "method": "workspace.measure_sizes",
+      "operationId": "workspace_measure_sizes",
+      "verb": "POST",
+      "path": "/v1/workspace-size-measurements",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceMeasureSizesParams",
+        "result": "WorkspaceMeasureSizesResult"
+      }
+    },
+    {
+      "method": "workspace.reclaim",
+      "operationId": "workspace_reclaim",
+      "verb": "POST",
+      "path": "/v1/workspaces/{workspace_id}/reclaims",
+      "pathParams": [
+        "workspace_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceIdParams",
+        "result": "WorkspaceDeleteResult"
+      }
+    },
+    {
+      "method": "workspace.remove_directory",
+      "operationId": "workspace_remove_directory",
+      "verb": "DELETE",
+      "path": "/v1/workspaces/{workspace_id}/directories/{directory_id}",
+      "pathParams": [
+        "workspace_id",
+        "directory_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceRemoveDirectoryParams",
+        "result": "WorkspaceDetail"
+      }
+    },
+    {
+      "method": "workspace.rename",
+      "operationId": "workspace_rename",
+      "verb": "PATCH",
+      "path": "/v1/workspaces/{workspace_id}",
+      "pathParams": [
+        "workspace_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceRenameParams",
+        "result": "WorkspaceDetail"
+      }
+    },
+    {
+      "method": "workspace.retry",
+      "operationId": "workspace_retry",
+      "verb": "POST",
+      "path": "/v1/workspaces/{workspace_id}/preparation-retries",
+      "pathParams": [
+        "workspace_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceIdParams",
+        "result": "WorkspaceRow"
+      }
+    },
+    {
+      "method": "workspace.set_compaction",
+      "operationId": "workspace_set_compaction",
+      "verb": "PUT",
+      "path": "/v1/workspaces/{workspace_id}/compaction-policy",
+      "pathParams": [
+        "workspace_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "SetCompactionParams",
+        "result": "WorkspaceDetail"
+      }
+    },
+    {
+      "method": "workspace.set_locked",
+      "operationId": "workspace_set_locked",
+      "verb": "PUT",
+      "path": "/v1/workspaces/{workspace_id}/lock",
+      "pathParams": [
+        "workspace_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/workspace.rs",
+        "params": "WorkspaceSetLockedParams",
+        "result": "WorkspaceRow"
+      }
+    },
+    {
+      "method": "worktree.diff",
+      "operationId": "worktree_diff",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/worktrees/{worktree_id}/diff-queries",
+      "pathParams": [
+        "project_id",
+        "worktree_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/git.rs",
+        "params": "WorktreeDiffParams",
+        "result": "WorktreeDiffResult"
+      }
+    },
+    {
+      "method": "writes.status",
+      "operationId": "writes_status",
+      "verb": "POST",
+      "path": "/v1/operation-status-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/writes.rs",
+        "params": "StatusParams",
+        "result": "StatusResult"
+      }
+    },
+    {
+      "method": "writes.subscribe",
+      "operationId": "writes_subscribe",
+      "verb": "POST",
+      "path": "/v1/operation-subscriptions",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": true,
+      "contract": {
+        "source": "bridge/src/api/v1/writes.rs",
+        "params": "SubscribeParams",
+        "result": "SubscribeResult"
+      }
+    }
+  ],
+  "exclusions": [
+    {
+      "method": "agent.attach",
+      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+    },
+    {
+      "method": "term.create",
+      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+    },
+    {
+      "method": "term.close",
+      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+    },
+    {
+      "method": "term.attach",
+      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+    },
+    {
+      "method": "term.input",
+      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+    },
+    {
+      "method": "term.resize",
+      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+    },
+    {
+      "method": "term.ack",
+      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+    },
+    {
+      "method": "rtc.offer",
+      "reason": "authenticated WebRTC signaling only"
+    },
+    {
+      "method": "rtc.ice",
+      "reason": "authenticated WebRTC signaling only"
+    },
+    {
+      "method": "rtc.close",
+      "reason": "authenticated WebRTC signaling only"
+    },
+    {
+      "method": "stream.start",
+      "reason": "QA-only; never exported by HTTP"
+    },
+    {
+      "method": "stream.events",
+      "reason": "QA-only; never exported by HTTP"
+    },
+    {
+      "method": "stream.state",
+      "reason": "QA-only; never exported by HTTP"
+    }
+  ]
+}

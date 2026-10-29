@@ -141,8 +141,6 @@ function validatePlacement(route) {
     !["none", "remaining"].includes(route.body)
   )
     fail("invalid_manifest");
-  if (route.body === "remaining" && route.verb === "GET")
-    fail("invalid_manifest");
 }
 function parameterSegment(value) {
   if (
@@ -157,8 +155,11 @@ function parameterSegment(value) {
   return encodeURIComponent(value);
 }
 function placedBody(route, body) {
-  if (route.body === "none" && Object.keys(body).length) fail("invalid_params");
-  return route.body === "remaining" ? body : undefined;
+  if (route.body === "none" || route.verb === "GET") {
+    if (Object.keys(body).length) fail("invalid_params");
+    return undefined;
+  }
+  return body;
 }
 export function buildRoute(manifest, operationId, params) {
   object(params);

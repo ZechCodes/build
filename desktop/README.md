@@ -140,5 +140,7 @@ original expiry. Successful remote revocation takes effect at the next bridge
 verification within thirty seconds. Local cleanup proceeds if revocation fails.
 
 Transport/IPC tests use isolated fixtures; HTTPS tests use real loopback TLS
-sockets and a throwaway trusted certificate. Main authentication tests inject a
-minimal test-only resource manifest and do not establish server route parity.
+sockets and a throwaway trusted certificate. Main authentication tests load the reviewed packaged manifest while stubbing
+Electron and hosted authentication. Manifest tests verify all declared operation
+placements and limits, plus source archive inclusion. These checks do not prove
+live bridge handler or hosted authorization behavior.

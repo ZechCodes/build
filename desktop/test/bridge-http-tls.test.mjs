@@ -125,17 +125,17 @@ test("real native adapter discovers, opens, streams and calls an explicit resour
     { stdio: "ignore" },
   );
   const requests = [];
+  const manifestUrl = new URL(
+    "../src/bridge-http-resources.json",
+    import.meta.url,
+  );
+  const resourceManifest = JSON.parse(readFileSync(manifestUrl));
   const opening = {
     session_id: "session",
     opening_generation: "generation",
     grant_expires_at: new Date(Date.now() + 30000).toISOString(),
     greeting: { bridge_epoch: "epoch" },
-    transport: {
-      resource_manifest_version: 1,
-      operation_ids: ["listProjects"],
-      terminal: "webrtc",
-      durable_events: false,
-    },
+    transport: resourceManifest.transport,
   };
   const server = createServer(
     { key: readFileSync(key), cert: readFileSync(cert) },
@@ -179,7 +179,7 @@ test("real native adapter discovers, opens, streams and calls an explicit resour
         );
         return;
       }
-      if (request.url === "/v1/project-queries")
+      if (request.url === "/v1/projects")
         return json({
           id: "request",
           ok: true,
@@ -206,6 +206,7 @@ test("real native adapter discovers, opens, streams and calls an explicit resour
   const source = `
     import assert from 'node:assert/strict';
     import {createBridgeHttp} from ${JSON.stringify(module)};
+    import resourceManifest from ${JSON.stringify(manifestUrl.href)} with {type:"json"};
     const origin=${JSON.stringify(origin)};
     const json=value=>new Response(JSON.stringify(value));
     const nativeFetch=async(url,options)=>{
@@ -219,13 +220,13 @@ test("real native adapter discovers, opens, streams and calls an explicit resour
     const adapter=createBridgeHttp({fetch:nativeFetch,getAuth:()=>({accessToken:'fixture-hosted-token',generation:1}),isOwnerCurrent:o=>o===owner,send:(o,event)=>{
       assert.equal(o,owner);adapter.ack(owner,event.stream,event.sequence);
       if(event.event==='changes')done(event.data);
-    },manifest:{version:1,operations:[{operationId:'listProjects',verb:'POST',path:'/v1/project-queries',pathParams:[],queryParams:[],body:'remaining',requestMaxBytes:1048576,responseMaxBytes:1048576}]}});
+    },manifest:resourceManifest});
     try {
       const {handle}=await adapter.discover(owner,origin);
       const opened=await adapter.open(owner,handle,'1');assert.equal(opened.opening_generation,'generation');
       const {stream}=await adapter.subscribe(owner,handle,{kind:'application'});assert.equal(typeof stream,'string');
       assert.deepEqual(await received,{method:'changes',params:{project_id:'project'}});
-      assert.deepEqual(await adapter.request(owner,handle,'listProjects',{}, {requestId:'request'}),{id:'request',ok:true,result:{projects:['project']},bridge_epoch:"epoch"});
+      assert.deepEqual(await adapter.request(owner,handle,'project_list',{}, {requestId:'request'}),{id:'request',ok:true,result:{projects:['project']},bridge_epoch:"epoch"});
       await adapter.close(owner,handle);
       await assert.rejects(adapter.open(owner,handle,'1'),{code:'invalid_handle'});
     } finally {adapter.clear();}
@@ -245,9 +246,10 @@ test("real native adapter discovers, opens, streams and calls an explicit resour
   });
   for (const request of requests.slice(1))
     assert.equal(request.headers.authorization, "Bearer fixture-device-token");
-  const resource = requests.find(
-    (request) => request.url === "/v1/project-queries",
-  );
+  const resource = requests.find((request) => request.url === "/v1/projects");
+  assert.equal(resource.method, "GET");
+  assert.equal(resource.body, "");
+  assert.equal(resource.headers["content-type"], undefined);
   assert.equal(resource.headers["x-build-session"], "session");
   assert.equal(resource.headers["x-build-subscription"], "subscription");
   assert.equal(resource.headers["x-build-request-id"], "request");

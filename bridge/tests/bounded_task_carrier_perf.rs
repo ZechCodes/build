@@ -266,7 +266,19 @@ struct ScenarioResult {
     result: Result<(Vec<Duration>, usize, usize), String>,
 }
 
-fn report_results(results: Vec<ScenarioResult>, mut emit: impl FnMut(String)) {
+fn report_results(results: Vec<ScenarioResult>, emit: impl FnMut(String)) {
+    report_collected_results(results, None, emit);
+}
+
+fn report_latency_results(results: Vec<ScenarioResult>, emit: impl FnMut(String)) {
+    report_collected_results(results, Some(CEILING), emit);
+}
+
+fn report_collected_results(
+    results: Vec<ScenarioResult>,
+    latency_ceiling: Option<Duration>,
+    mut emit: impl FnMut(String),
+) {
     let mut failures = Vec::new();
     for ScenarioResult {
         tasks,
@@ -294,13 +306,71 @@ fn report_results(results: Vec<ScenarioResult>, mut emit: impl FnMut(String)) {
                 "{method} tasks={tasks} scenario={scenario}: bytes={bytes} exceeds 1048576"
             ));
         }
-        if max > CEILING {
+        if latency_ceiling.is_some_and(|ceiling| max > ceiling) {
             failures.push(format!(
                 "{method} tasks={tasks} scenario={scenario}: max={max:?}, p99={p99:?}"
             ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn correctness_report_accepts_slow_valid_results_for_all_scenarios() {
+    let mut results = Vec::new();
+    for tasks in [1, 100, 5000] {
+        for scenario in 0..4 {
+            results.push(ScenarioResult {
+                tasks,
+                scenario,
+                method: "tasks.list",
+                result: Ok((
+                    vec![CEILING + Duration::from_millis(1); SAMPLES],
+                    1_048_576,
+                    1,
+                )),
+            });
+        }
+    }
+    let mut reports = Vec::new();
+    report_results(results, |line| reports.push(line));
+    assert_eq!(
+        reports.len(),
+        12,
+        "default correctness must report all 1,200 requests"
+    );
+    assert!(reports.iter().all(|line| line.contains("max_us=101000")));
+}
+
+#[test]
+fn correctness_report_rejects_oversized_results_even_when_slow() {
+    let mut reports = Vec::new();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        report_results(
+            vec![ScenarioResult {
+                tasks: 1,
+                scenario: 0,
+                method: "tasks.list",
+                result: Ok((
+                    vec![CEILING + Duration::from_millis(1); SAMPLES],
+                    1_048_577,
+                    1,
+                )),
+            }],
+            |line| reports.push(line),
+        );
+    }));
+    assert!(
+        failure.is_err(),
+        "byte failures must remain nonzero in default correctness"
+    );
+    assert_eq!(reports.len(), 1);
+    let message = failure.unwrap_err().downcast::<String>().unwrap();
+    assert!(message.contains("bytes=1048577 exceeds 1048576"));
+    assert!(
+        !message.contains("max="),
+        "latency is observed by default, not rejected"
+    );
 }
 
 #[test]
@@ -328,7 +398,7 @@ fn reports_all_scenarios_before_rejecting_latency_and_byte_failures() {
     }
     let mut reports = Vec::new();
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        report_results(results, |line| reports.push(line));
+        report_latency_results(results, |line| reports.push(line));
     }));
     assert!(
         failure.is_err(),
@@ -359,7 +429,11 @@ fn reports_protocol_failure_and_later_results_before_aggregate_rejection() {
             tasks: 1,
             scenario: 1,
             method: "tasks.list",
-            result: Ok((vec![CEILING; SAMPLES], 1_048_576, 1)),
+            result: Ok((
+                vec![CEILING + Duration::from_millis(1); SAMPLES],
+                1_048_576,
+                1,
+            )),
         },
     ];
     let mut reports = Vec::new();
@@ -370,12 +444,18 @@ fn reports_protocol_failure_and_later_results_before_aggregate_rejection() {
     assert_eq!(reports.len(), 2);
     assert!(reports[0].contains("request refused"));
     assert!(reports[1].contains("scenario=1"));
+    let message = failure.unwrap_err().downcast::<String>().unwrap();
+    assert!(message.contains("request refused"));
+    assert!(
+        !message.contains("max="),
+        "protocol refusal must be the only failure"
+    );
 }
 
 #[test]
 fn reports_and_accepts_exact_latency_and_byte_limits() {
     let mut reports = Vec::new();
-    report_results(
+    report_latency_results(
         vec![ScenarioResult {
             tasks: 1,
             scenario: 0,
@@ -506,8 +586,7 @@ async fn seeded_carrier_fixture_has_materialized_tasks_and_choices() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bounded_reads_carrier_max_and_p99_with_both_locks_held() {
+async fn collect_carrier_results() -> Vec<ScenarioResult> {
     let tools = tempfile::tempdir().unwrap();
     // This standalone test process must never discover installed provider CLIs.
     std::env::set_var("PATH", project_bridge::private_path(tools.path()));
@@ -534,5 +613,16 @@ async fn bounded_reads_carrier_max_and_p99_with_both_locks_held() {
         release.send(()).unwrap();
         holder.join().unwrap();
     }
-    report_results(results, |line| println!("{line}"));
+    results
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bounded_reads_carrier_contents_and_bytes_with_both_locks_held() {
+    report_results(collect_carrier_results().await, |line| println!("{line}"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "timing: release-profile isolated latency gate; see timing.yml"]
+async fn bounded_reads_carrier_max_and_p99_with_both_locks_held() {
+    report_latency_results(collect_carrier_results().await, |line| println!("{line}"));
 }

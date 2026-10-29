@@ -206,6 +206,39 @@ Opening. It does not require changing the existing session key, minting a new
 hosted account grant or extending a retired Opening. Preserve recovery
 behavior while rejecting every old peer token.
 
+**Pre-answer ICE sequencing (#906 review qualification):** arm a bounded
+candidate queue before `setLocalDescription`, since gathering/trickle can
+start before `rtc.offer` and before the client knows the selected peer token.
+For a pending clear-capable negotiation, hold outbound `rtc.ice` until its
+authenticated answer has selected the codec and authenticated the matching
+peer nonce/token and negotiation generation. Then flush in gathering order,
+including the end-of-candidates marker, tagging clear-mode candidates with
+that selected token/generation. Recheck the current Opening/peer/generation
+before each send; a replaced or cancelled round never flushes into its
+successor. Ordinary ICE restarts use the same gate for the pending generation
+even when the existing peer token is known.
+
+The bridge also holds its new-generation candidate pushes until its
+authenticated answer has been enqueued, then emits them with the matching
+token/generation. If an authenticated candidate push arrives at the SPA
+before that answer is processed, buffer it against the pending negotiation;
+apply it only after the answer's token/generation match and remote SDP is
+installed. Never apply an early candidate to the previous generation.
+
+Each pending direction is capped at **128 candidate objects and 64 KiB of
+serialized UTF-8 candidate data**, including candidates retained by the
+existing relay-hold policy; retain at most one end marker. Queue lifetime
+ends at the existing 15 s setup deadline, without extending it for answer
+arrival or flushing. Overflow, timeout, cancellation, refused answer or peer
+replacement clears that round's queue and fails its setup; do not silently
+drop early candidates or create an unbounded retry queue. Once legacy is
+selected, use the existing candidate shape and relay-hold behavior, without
+new token requirements. Existing legacy-only peers retain their current
+trickle behavior. TDD coverage must deliver candidates synchronously during
+`setLocalDescription`, delay the answer, exercise an early bridge push, then
+prove ordered flush under the selected generation, stale-round suppression,
+both queue caps and unchanged legacy routing.
+
 On replacement, atomically mark old binding noncurrent and cancel its
 challenge/read admission before installing a new one. Queue entries, replies,
 ChangeBus and terminal senders retain Opening + peer allocation + carrier

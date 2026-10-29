@@ -95,10 +95,10 @@ pub(super) fn fact_rows(table: &str) -> String {
     } else {
         "NOT (json_extract(record,'$.kind') IN ('blocked','unblocked','dispatch_deferred','dispatch_failed','dispatched') OR (json_extract(record,'$.kind') IN ('linked','unlinked') AND json_type(record,'$.payload.waiting_on') IS NOT NULL) OR (json_extract(record,'$.kind')='tracked' AND COALESCE(json_extract(record,'$.payload.by'),'')='assignment') OR (json_extract(record,'$.kind')='moved' AND COALESCE(json_extract(record,'$.payload.by'),'') IN ('dispatch','report')) OR (json_extract(record,'$.kind')='untracked' AND COALESCE(json_extract(record,'$.payload.by'),'')='finished'))".to_string()
     };
-    format!("SELECT rowid source_rowid,task_id,id,CASE WHEN instr(id,'-')>0 THEN substr(id,instr(id,'-')+1) ELSE id END ulid,
+    format!("SELECT rowid source_rowid,task_id,id,{suffix} ulid,
             {at} at,{timestamp} ts,
             COALESCE(({unread}),0) unread,COALESCE(({activity}),0) activity,COALESCE(({meaningful}),0) meaningful,COALESCE(({watched}),0) watched,COALESCE(({done_move}),0) done_move,COALESCE(({agent_comment}),0) agent_comment,COALESCE(({mentions}),0) mentions
-        FROM {table}",timestamp=timestamp_millis(at))
+        FROM {table}",timestamp=timestamp_millis(at),suffix=opaque_suffix("id"))
 }
 
 // Incremental facts, explicit repair and bounded startup backfill all use the
@@ -196,7 +196,7 @@ fn enrich_patch() -> &'static str {
                 AND json_type(record,'$.pull_request')='object'),'{}'),
         COALESCE((SELECT CASE WHEN state IN ('waiting','queued','provisioning','failed') THEN
             json_object('deferred_assignment',json_object('id',substr(id,1,128),
-                'target',json_object('kind',substr(json_extract(record,'$.target.kind'),1,32),'agent_id',substr(json_extract(record,'$.target.agent_id'),1,128)),'state',CASE state WHEN 'provisioning' THEN 'queued' ELSE state END,
+                'target',json_object('kind',substr(json_extract(record,'$.target.kind'),1,32),'agent_id',CASE WHEN json_type(record,'$.target.agent_id')='text' AND length(CAST(json_extract(record,'$.target.agent_id') AS BLOB))<=128 THEN json_extract(record,'$.target.agent_id') ELSE substr(json_extract(record,'$.target.agent_id'),1,128) END),'state',CASE state WHEN 'provisioning' THEN 'queued' ELSE state END,
                 'error',substr(json_extract(record,'$.error'),1,512))) ELSE '{}' END
             FROM tracker_delivery_intents WHERE task_id=t.id AND state<>'cancelled' ORDER BY generation DESC LIMIT 1),'{}'))"#
 }
@@ -278,7 +278,7 @@ pub(super) fn refresh_metadata(id: &str) -> String {
             '$._summary_invalid_metadata_refs',json(CASE WHEN m.invalid_refs THEN 'true' ELSE 'false' END)),m.assignment_target
         FROM (SELECT t.task_id,{patch} patch,({invalid}) invalid_refs,
             (SELECT CASE WHEN state IN ('waiting','queued','provisioning','failed') THEN
-                json_object('kind',substr(json_extract(record,'$.target.kind'),1,32),'agent_id',substr(json_extract(record,'$.target.agent_id'),1,128)) END
+                json_object('kind',substr(json_extract(record,'$.target.kind'),1,32),'agent_id',CASE WHEN json_type(record,'$.target.agent_id')='text' AND length(CAST(json_extract(record,'$.target.agent_id') AS BLOB))<=128 THEN json_extract(record,'$.target.agent_id') ELSE substr(json_extract(record,'$.target.agent_id'),1,128) END) END
                 FROM tracker_delivery_intents WHERE task_id=t.id AND state<>'cancelled' ORDER BY generation DESC LIMIT 1) assignment_target
             FROM (SELECT task_id,task_id id FROM tracker_task_summaries WHERE task_id={id}) t) m
         WHERE m.task_id=tracker_task_summaries.task_id) WHERE task_id={id};",patch=enrich_patch(),invalid=invalid_metadata_refs())
@@ -336,3 +336,9 @@ pub(super) fn refresh_identities(predicate: &str) -> String {
 pub(super) use activity::{append_update, patch_card, refresh as refresh_activity};
 
 pub(super) use choices::refresh as refresh_choices;
+
+/// Byte-safe equivalent of canonical summary::when: retain every byte after
+/// the first ASCII hyphen, including NUL and subsequent hyphens.
+pub(super) fn opaque_suffix(value: &str) -> String {
+    format!("CASE WHEN ({value}) IS NULL THEN NULL WHEN length(CAST(({value}) AS BLOB))=0 THEN '' ELSE COALESCE(CAST(substr(CAST(({value}) AS BLOB),instr(CAST(({value}) AS BLOB),x'2d')+1) AS TEXT),'') END")
+}

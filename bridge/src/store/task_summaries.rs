@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 
 mod maintenance;
 mod query_projection;
+mod query_sources;
 mod query_timestamps;
 pub use query_projection::TaskCounts;
 mod query_reads;
@@ -319,6 +320,7 @@ fn projection_definition() -> &'static ProjectionDefinition {
         hash.update(sql::TABLES);
         hash.update(query_projection::TABLES);
         hash.update(include_str!("task_summaries/query_projection.rs"));
+        hash.update(include_str!("task_summaries/query_sources.rs"));
         hash.update(include_str!("task_summaries/query_timestamps.rs"));
         hash.update(include_str!("task_summaries/maintenance.rs"));
         hash.update(include_str!("task_summaries/sql.rs"));
@@ -544,6 +546,7 @@ fn reset_projection(conn: &mut Connection) -> Result<(), StoreError> {
     #[cfg(test)]
     let _phase = MigrationPhase::new("reset_projection");
     let tables = [
+        "tracker_task_query_sources",
         "tracker_task_query_facts",
         "tracker_task_query_memberships",
         "tracker_task_query_counts",

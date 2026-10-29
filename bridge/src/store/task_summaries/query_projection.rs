@@ -1,5 +1,6 @@
 //! Exact query facts and additive counts maintained in canonical transactions.
-use super::query_timestamps::{self, QueryTimestamp};
+use super::query_sources;
+use super::query_timestamps::QueryTimestamp;
 use super::{ReadTransaction, Store, StoreError};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
@@ -13,7 +14,7 @@ CREATE TABLE IF NOT EXISTS tracker_task_query_facts (
  attention_asked INTEGER NOT NULL,attention_legacy INTEGER NOT NULL,blocked INTEGER NOT NULL,
  held INTEGER NOT NULL,undelivered INTEGER NOT NULL,review_mode TEXT,assignee_agent_id TEXT,
  unread_total INTEGER NOT NULL, contribution_agent TEXT,
- invalid_updated INTEGER NOT NULL DEFAULT 0, invalid_anchor INTEGER NOT NULL DEFAULT 0,invalid_done INTEGER NOT NULL DEFAULT 0
+ invalid_updated INTEGER NOT NULL DEFAULT 0, invalid_anchor INTEGER NOT NULL DEFAULT 0,invalid_done INTEGER NOT NULL DEFAULT 0, assignee_kind TEXT, invalid_markers INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS tracker_task_query_number ON tracker_task_query_facts(project_key,number DESC);
 CREATE INDEX IF NOT EXISTS tracker_task_query_updated ON tracker_task_query_facts(project_key,updated_ms DESC,number DESC);
@@ -23,6 +24,15 @@ CREATE INDEX IF NOT EXISTS tracker_task_query_done ON tracker_task_query_facts(p
 CREATE INDEX IF NOT EXISTS tracker_task_query_invalid_updated ON tracker_task_query_facts(project_key) WHERE invalid_updated=1;
 CREATE INDEX IF NOT EXISTS tracker_task_query_invalid_anchor ON tracker_task_query_facts(project_key) WHERE invalid_anchor=1;
 CREATE INDEX IF NOT EXISTS tracker_task_query_invalid_done ON tracker_task_query_facts(project_key) WHERE invalid_done=1;
+CREATE INDEX IF NOT EXISTS tracker_task_query_invalid_markers ON tracker_task_query_facts(project_key) WHERE invalid_markers=1;
+CREATE TABLE IF NOT EXISTS tracker_task_query_sources (
+ task_id TEXT PRIMARY KEY,updated_source TEXT,created_source TEXT,input_done_source TEXT,
+ assignee_kind TEXT,assignee_agent_id TEXT,creator_kind TEXT NOT NULL,creator_agent_id TEXT,status TEXT NOT NULL,status_truncated INTEGER NOT NULL,
+ labels_json TEXT NOT NULL,unfinished INTEGER NOT NULL,in_review INTEGER NOT NULL,status_done INTEGER NOT NULL,
+ read_through TEXT,watch_started_after TEXT,dismissed_through TEXT,dismissed_ulid TEXT,invalid_markers INTEGER NOT NULL,pending_present INTEGER NOT NULL DEFAULT 0,pending_held INTEGER NOT NULL DEFAULT 0,
+ CHECK(length(CAST(updated_source AS BLOB))<=38),CHECK(length(CAST(created_source AS BLOB))<=38),CHECK(length(CAST(input_done_source AS BLOB))<=38),
+ CHECK(length(CAST(creator_agent_id AS BLOB))<=128),CHECK(length(CAST(assignee_agent_id AS BLOB))<=128),CHECK(length(CAST(status AS BLOB))<=128),CHECK(length(CAST(labels_json AS BLOB))<=8192),CHECK(length(CAST(dismissed_ulid AS BLOB))<=128),CHECK(length(CAST(read_through AS BLOB))<=128),CHECK(length(CAST(watch_started_after AS BLOB))<=128),CHECK(length(CAST(dismissed_through AS BLOB))<=128)
+);
 CREATE TABLE IF NOT EXISTS tracker_task_query_memberships (
  task_id TEXT NOT NULL,kind TEXT NOT NULL,value TEXT NOT NULL,project_key TEXT NOT NULL,number INTEGER NOT NULL,
  PRIMARY KEY(task_id,kind,value)
@@ -72,6 +82,11 @@ impl ReadTransaction<'_> {
         if agents.len() > 100 {
             return Err(StoreError::TaskSummaryInvalid(
                 "at most 100 explicit agent buckets supported".into(),
+            ));
+        }
+        if self.task_query_markers_unsupported(project)? {
+            return Err(StoreError::TaskSummaryInvalid(
+                "task query activity markers exceed 128 bytes".into(),
             ));
         }
         let mut statement=self.connection().prepare_cached("SELECT unfinished_open_count,watched_unread_total FROM tracker_task_query_counts WHERE project_key=?1 AND bucket=?2")?;
@@ -127,6 +142,10 @@ fn advance(conn: &Connection) -> Result<(), StoreError> {
 }
 pub(super) fn remove(conn: &Connection, id: &str) -> Result<(), StoreError> {
     contribute(conn, id, -1)?;
+    conn.execute(
+        "DELETE FROM tracker_task_query_sources WHERE task_id=?1",
+        [id],
+    )?;
     let changed = conn.execute(
         "DELETE FROM tracker_task_query_facts WHERE task_id=?1",
         [id],
@@ -153,13 +172,14 @@ pub(super) fn refresh(conn: &Connection, id: &str) -> Result<(), StoreError> {
         .map(|raw| super::super::tracker::decode(&raw, "tracker_task_summaries", id))
         .transpose()?
         .unwrap_or(Value::Null);
-    let updated = timestamp(&record, "updated_at");
-    let anchor = anchor(&record, updated);
-    let done = if record["status"].as_str() == Some("done") {
-        timestamp(&record, "done_at")
-    } else {
-        QueryTimestamp::Unknown
-    };
+    let source = query_sources::load(conn, id)?;
+    let updated = query_sources::parse(source.updated.as_deref());
+    let anchor = anchor(
+        &record,
+        query_sources::parse(source.created.as_deref()),
+        updated,
+    );
+    let done = query_sources::done(conn, id, &source)?;
     let review_mode: Option<String> = conn
         .query_row(
             "SELECT review_mode FROM tracker_task_query_facts WHERE task_id=?1",
@@ -180,20 +200,20 @@ pub(super) fn refresh(conn: &Connection, id: &str) -> Result<(), StoreError> {
  CASE json_extract(record,'$.priority') WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END,
  ?5,unfinished,watched,
  unfinished AND (user_ready OR (watched AND COALESCE(json_extract(record,'$.unread_mentions'),0)>0)),
- unfinished AND (json_extract(record,'$.status')='in_review' OR user_ready OR
+ unfinished AND (?11 OR user_ready OR
  (watched AND COALESCE(json_extract(record,'$.unread_count'),0)>0 AND COALESCE(json_extract(record,'$.unread_agent_comments'),0)>0
  AND EXISTS(SELECT 1 FROM tracker_task_summary_facts f WHERE f.task_id=s.task_id AND f.meaningful=1
- AND f.ulid>COALESCE(substr(json_extract(record,'$.dismissed_through'),instr(json_extract(record,'$.dismissed_through'),'-')+1),'')))),
- blocked,COALESCE(json_extract(record,'$.assignee.kind'),'')<>'' OR (undelivered AND COALESCE(json_extract(record,'$.deferred_assignment.target.kind'),'')<>''),
+ AND (?9 IS NULL OR f.ulid>?9)))),
+ blocked,(?12 IS NOT NULL OR ?15),
  undelivered,?2,
- json_extract(record,'$.assignee.agent_id'),
+ ?13,
  CASE WHEN unfinished THEN COALESCE(json_extract(record,'$.unread_count'),0) ELSE 0 END,
- CASE WHEN json_extract(record,'$.assignee.kind')='agent' THEN json_extract(record,'$.assignee.agent_id') END,?6,?7,?8
- FROM (SELECT *,json_extract(record,'$.state')<>'closed' AND json_extract(record,'$.status')<>'done' unfinished,
+ CASE WHEN ?12='agent' AND length(CAST(?13 AS BLOB))>0 THEN ?13 END,?6,?7,?8,?12,?16
+ FROM (SELECT *,?10 unfinished,
  COALESCE(json_extract(record,'$.watched'),0) watched,COALESCE(json_extract(record,'$.dependencies.blocked'),0) blocked,
- COALESCE(json_extract(record,'$.assignee.kind')='user',0) AND NOT COALESCE(json_extract(record,'$.dependencies.blocked'),0) user_ready,
- COALESCE(json_extract(record,'$.deferred_assignment.state') IN ('waiting','queued','provisioning','failed'),0) undelivered
- FROM tracker_task_summaries WHERE task_id=?1) s"#,params![id,review_mode,millis(updated).unwrap_or(0),millis(anchor).unwrap_or(i64::MAX),millis(done),invalid(updated),invalid(anchor),invalid(done)])?;
+ COALESCE(?12='user',0) AND NOT COALESCE(json_extract(record,'$.dependencies.blocked'),0) user_ready,
+ ?14 undelivered
+ FROM tracker_task_summaries WHERE task_id=?1) s"#,params![id,review_mode,millis(updated).unwrap_or(0),millis(anchor).unwrap_or(i64::MAX),millis(done),invalid(updated),invalid(anchor),invalid(done),source.dismissed_ulid,source.unfinished,source.in_review,source.assignee_kind,source.assignee_agent_id,source.pending_present,source.pending_held,source.invalid_markers])?;
     contribute(conn, id, 1)?;
     advance(conn)
 }
@@ -230,14 +250,7 @@ pub(super) fn refresh_review_mode(conn: &Connection, id: &str) -> Result<(), Sto
     Ok(())
 }
 
-fn timestamp(record: &Value, field: &str) -> QueryTimestamp {
-    match record.get(field) {
-        None | Some(Value::Null) => QueryTimestamp::Unknown,
-        Some(Value::String(value)) => query_timestamps::parse(Some(value)),
-        _ => QueryTimestamp::Unsupported,
-    }
-}
-fn anchor(record: &Value, updated: QueryTimestamp) -> QueryTimestamp {
+fn anchor(record: &Value, created: QueryTimestamp, updated: QueryTimestamp) -> QueryTimestamp {
     let pair = record["session_started_ms"]
         .as_i64()
         .zip(record["last_activity_ms"].as_i64());
@@ -248,7 +261,7 @@ fn anchor(record: &Value, updated: QueryTimestamp) -> QueryTimestamp {
     }) {
         return QueryTimestamp::Known(start);
     }
-    match timestamp(record, "created_at") {
+    match created {
         QueryTimestamp::Unknown => updated,
         other => other,
     }

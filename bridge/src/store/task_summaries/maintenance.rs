@@ -1,7 +1,7 @@
 //! Synchronous producer hooks. Call these on the canonical mutation transaction.
 //! Canonical SQL outside supported producers deliberately has no automatic hook.
 
-use super::{query_projection, sql, StoreError};
+use super::{query_projection, query_sources, sql, StoreError};
 use crate::tracker::Task;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -76,6 +76,7 @@ pub(crate) fn task_written(conn: &Connection, task: &Task) -> Result<(), StoreEr
 }
 
 pub(super) fn task_written_unchecked(conn: &Connection, task: &Task) -> Result<(), StoreError> {
+    query_sources::task_written(conn, task)?;
     let number = i64::try_from(task.number).unwrap_or(i64::MAX);
     let record = compact_task(task).to_string();
     conn.prepare_cached(&statements().task)?.execute(params![
@@ -95,6 +96,7 @@ pub(super) fn task_written_unchecked(conn: &Connection, task: &Task) -> Result<(
     keyed(conn, &statements().metadata, &task.id)?;
     keyed(conn, &statements().dependencies, &task.id)?;
     sql::refresh_choices(conn, &task.id)?;
+    query_sources::metadata_refresh(conn, &task.id)?;
     query_projection::refresh(conn, &task.id)?;
     query_projection::refresh_relations(conn, task)?;
     query_projection::refresh_review_mode(conn, &task.id)
@@ -162,6 +164,7 @@ pub(crate) fn task_dependents_refresh(conn: &Connection, id: &str) -> Result<(),
 pub(crate) fn metadata_refresh(conn: &Connection, id: &str) -> Result<(), StoreError> {
     if ready(conn)? {
         keyed(conn, &statements().metadata, id)?;
+        query_sources::metadata_refresh(conn, id)?;
         query_projection::refresh(conn, id)?;
         query_projection::refresh_review_mode(conn, id)?;
     }

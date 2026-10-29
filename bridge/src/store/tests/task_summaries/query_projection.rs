@@ -245,6 +245,20 @@ fn anchor_order_uses_valid_session_then_created_updated_and_missing() {
             rusqlite::params![task.id, patch.to_string()],
         )
         .unwrap();
+        // This fixture now updates retained canonical timestamp evidence too;
+        // display-only mutations deliberately cannot alter ordered predicates.
+        for (json_key, column) in [
+            ("created_at", "created_source"),
+            ("updated_at", "updated_source"),
+        ] {
+            if let Some(value) = patch.get(json_key).and_then(serde_json::Value::as_str) {
+                conn.execute(
+                    &format!("UPDATE tracker_task_query_sources SET {column}=?2 WHERE task_id=?1"),
+                    rusqlite::params![task.id, value],
+                )
+                .unwrap();
+            }
+        }
         projection::dependency_refresh(&conn, &task.id).unwrap();
         let actual: i64 = conn
             .query_row(

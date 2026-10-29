@@ -1604,3 +1604,6 @@ mod query_projection;
 
 #[path = "task_summaries/query_attention.rs"]
 mod query_attention;
+
+#[path = "task_summaries/query_timestamp_sources.rs"]
+mod query_timestamp_sources;

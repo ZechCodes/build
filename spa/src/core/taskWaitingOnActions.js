@@ -2,6 +2,7 @@
 // cache records, including after a refusal leaves the form's draft intact.
 import { contextFor, whenGreeted } from "./deviceContexts.js";
 import { bridgeCapabilities } from "./changeEvents.js";
+import { nextTaskRead } from "./taskReadOrder.js";
 import { cacheTaskWaitingOnBlocks, cacheTaskWaitingOnResponse, captureTaskWaitingOnBlocksRead } from "./taskWaitingOnCache.js";
 import { readTaskWaitingOnEverSupported, TASK_WAITING_ON_UPDATE, TASK_WAITING_ON_DOWNGRADED } from "./taskWaitingOnSupport.js";
 export { TASK_WAITING_ON_UPDATE };
@@ -20,11 +21,13 @@ export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }
     const assignment = isOrdinaryAssignment(method, params);
     const createsWorkspace = assignment && params.assignee?.kind === "new_workspace";
     const seen = createsWorkspace && await readTaskWaitingOnEverSupported(deviceId);
+    const issuedRead = method === "tasks.waiting_on.blocks" ? undefined : await nextTaskRead();
     // The greeting may change during the cache read. Recheck its authority,
     // then validate and send without another asynchronous gap.
     if (!stands()) throw new Error("This machine's greeting changed before sending. Try again.");
     requireSupport(hasCurrentSupport(deviceId), createsWorkspace, seen, !assignment && options.requiresWaitingOn !== false);
-    return call(method, params);
+    const answer = await call(method, params);
+    return { answer, issuedRead };
   }
 
   async function ask(method, params, options = {}) {
@@ -38,9 +41,9 @@ export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }
       ? await whenGreeted(context, (current) => send(method, params, options, current))
       : { sent: send(method, params, options, stands), stands };
     if (!request) throw new Error("This machine is unavailable. Try again when it returns.");
-    const answer = await request.sent;
+    const { answer, issuedRead } = await request.sent;
     if (!request.stands()) throw new Error("This machine's greeting changed while the request was running. Reload the task before trying again.");
-    const writeOptions = { ...basis, accept: request.stands, cursor: options.cursor };
+    const writeOptions = { ...basis, issuedRead, accept: request.stands, cursor: options.cursor };
     if (method === "tasks.waiting_on.blocks") await cacheTaskWaitingOnBlocks(deviceId, projectId, taskId, answer, writeOptions);
     else await cacheTaskWaitingOnResponse(deviceId, projectId, answer, writeOptions);
     return answer;

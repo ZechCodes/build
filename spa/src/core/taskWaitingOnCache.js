@@ -8,7 +8,7 @@ import {
 } from "./trackerCache.js";
 import { filterTasks, sortTasks } from "./trackerFilters.js";
 import { assigneeKey } from "./trackerModel.js";
-import { summaryTaskMutation } from "./taskSummaryCache.js";
+import { preserveTaskActionMarks, summaryTaskMutation } from "./taskSummaryCache.js";
 import { isPresentTaskMarker, newerTaskMarker } from "./taskOpaqueMarkers.js";
 
 const listKinds = new Set([TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TRACKER_TASKS_PAGE_KIND]);
@@ -16,8 +16,8 @@ const newer = (held, incoming) => Date.parse(held?.updated_at) > Date.parse(inco
 
 const watchFields = ["watch_started_after", "unread_count", "unread_mentions", "unread_agent_comments", "session_started_ms", "last_activity_ms"];
 
-function olderActionTask(held, incoming, read) {
-  const next = { ...held, watched: incoming.watched === true };
+function olderActionTask(held, incoming, read, confirmed) {
+  const next = { ...held, watched: confirmed ? incoming.watched === true : held.watched };
   for (const field of ["read_through", "dismissed_through"]) {
     const marker = newerTaskMarker(held?.[field], incoming[field]);
     if (isPresentTaskMarker(marker)) next[field] = marker;
@@ -29,11 +29,23 @@ function olderActionTask(held, incoming, read) {
   return preserveTaskReviewSummary(held, incoming, { readOrder: read, keepHeld: true, allowMissing: false, baseRow: next });
 }
 
-function detailWithResponse(held, answer, read) {
+function actionTask(held, incoming, read, confirmed) {
+  return newer(held, incoming) ? olderActionTask(held, incoming, read, confirmed) : { ...incoming, watched: incoming.watched === true };
+}
+
+function detailWithResponse(held, answer, read, confirmed) {
   const older = newer(held?.task, answer.task);
-  const task = older ? olderActionTask(held.task, answer.task, read) : answer.task;
+  const task = actionTask(held?.task, answer.task, read, confirmed);
   const timeline = !older && Object.hasOwn(answer, "timeline") ? answer.timeline : held?.timeline;
-  return preserveTaskFloors(held, { ...held, task, timeline: timeline || [] });
+  const detail = preserveTaskFloors(held, { ...held, task, timeline: timeline || [] });
+  // Retain the legacy helper's PR authority, then reconcile the original raw
+  // action markers and paired counters canonically, including empty markers.
+  const raw = { ...detail.task };
+  for (const field of ["read_through", "watch_started_after", "dismissed_through"]) {
+    if (Object.hasOwn(task, field)) raw[field] = task[field];
+    else delete raw[field];
+  }
+  return { ...detail, task: preserveTaskActionMarks(held?.task, raw) };
 }
 
 function queryMatches(address, task) {
@@ -45,10 +57,10 @@ function queryMatches(address, task) {
   return filterTasks([task], filters).length > 0;
 }
 
-function listWithResponse(address, held, task, read) {
+function listWithResponse(address, held, task, read, confirmed) {
   const rows = held?.tasks || [];
   const prior = rows.find((row) => row.id === task.id);
-  const incoming = newer(prior, task) ? olderActionTask(prior, task, read) : task;
+  const incoming = preserveTaskActionMarks(prior, actionTask(prior, task, read, confirmed));
   const includes = queryMatches(address, incoming);
   if (!prior && (!includes || address.kind === TRACKER_TASKS_PAGE_KIND)) return null;
   const remaining = rows.filter((row) => row.id !== task.id);
@@ -60,9 +72,10 @@ function validateTaskActionOrder(issuedRead) {
   if (issuedRead !== undefined && (!Number.isSafeInteger(issuedRead) || issuedRead <= 0)) throw new Error("Invalid task action dispatch order");
 }
 
-const olderAction = (note, issuedRead) => (note?.action_read || 0) > issuedRead;
+const olderAction = (note, issuedRead) => issuedRead === undefined
+  ? Boolean(note?.action_read) : (note?.action_read || 0) > issuedRead;
 const actionResponseNote = (held, taskId, read, actionRead, detail) => ({
-  ...(detail ? withWritten(held, [taskId], read) : held), action_read: actionRead,
+  ...(detail ? withWritten(held, [taskId], read) : held), ...(actionRead === undefined ? {} : { action_read: actionRead }),
 });
 
 export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { accept = () => true, issuedRead } = {}) {
@@ -74,20 +87,20 @@ export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { 
   if (!listed.some((address) => address.kind === TRACKER_TASKS_KIND)) listed.push(catalogue);
   const addresses = [taskAddress(deviceId, projectId, task.id), ...listed, ...listed.map(readsAddress), taskWaitingOnGenerationAddress(deviceId, projectId), readsAddress(taskAddress(deviceId, projectId, task.id))];
   const read = await nextTaskRead();
-  const actionRead = issuedRead ?? read;
-  const summary = summaryTaskMutation({ deviceId, projectId }, task, read, { accept, fullTask: true, confirmedAction: true });
+  const confirmed = issuedRead !== undefined;
+  const summary = summaryTaskMutation({ deviceId, projectId }, task, read, { accept, fullTask: true, confirmedAction: confirmed });
   return mergeCachedRecordsTogether([...addresses, ...summary.addresses], (allRecords) => {
     if (!accept()) return null;
     const records = allRecords.slice(0, addresses.length);
     const heldNote = records.at(-1)?.value;
-    if (olderAction(heldNote, actionRead)) return null;
+    if (olderAction(heldNote, issuedRead)) return null;
     const normalized = summary.reduce(allRecords.slice(addresses.length));
     if (!normalized) return null;
-    const detail = detailWithResponse(records[0]?.value, answer, read);
-    const lists = listed.map((address, index) => listWithResponse(address, records[index + 1]?.value, task, read));
+    const detail = detailWithResponse(records[0]?.value, answer, read, confirmed);
+    const lists = listed.map((address, index) => listWithResponse(address, records[index + 1]?.value, task, read, confirmed));
     const notes = lists.map((list, index) => list ? withWritten(records[listed.length + index + 1]?.value, [task.id], read) : null);
     return [detail, ...lists, ...notes, detail ? nextReverseGeneration(records.at(-2)?.value) : null,
-      actionResponseNote(heldNote, task.id, read, actionRead, detail), ...normalized];
+      actionResponseNote(heldNote, task.id, read, issuedRead, detail), ...normalized];
   });
 }
 

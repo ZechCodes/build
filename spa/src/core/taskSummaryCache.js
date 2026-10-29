@@ -119,7 +119,7 @@ const unchangedBasis = (held, other) => Boolean(held.basis && held.basis === oth
 const invalidatedTicket = (invalidation, ticket) => invalidation?.read_order > ticket.generation;
 const changedContinuationBasis = (held, ticket, page) => ticket.cursor !== null && held.basis !== page.basis;
 
-function preserveMarks(held, task) {
+export function preserveTaskActionMarks(held, task) {
   const next = { ...task };
   for (const field of ["read_through", "watch_started_after", "dismissed_through"]) {
     if (field === "watch_started_after" && next.watched === false) continue;
@@ -145,7 +145,10 @@ const counterFamilies = [
 
 function preserveCounterFamily(next, held, task, floor, fields) {
   if (compareTaskMarkers(floor(held), floor(task)) <= 0) return;
-  for (const field of fields) if (Object.hasOwn(held, field)) next[field] = held[field];
+  for (const field of fields) {
+    if (Object.hasOwn(held, field)) next[field] = held[field];
+    else delete next[field];
+  }
 }
 
 const markerFields = ["read_through", "watch_started_after", "dismissed_through"];
@@ -160,7 +163,7 @@ function markerAuthority(held, incoming, read, counters) {
   const stale = olderContent && stronger || countersOvertaken(held, incoming, read)
     || needsCounterRefresh(held, incoming, olderContent, counters)
     || incompleteActionCounters(held, incoming, counters);
-  const source = olderContent ? Object.fromEntries(markerFields.map((field) => [field, incoming[field]])) : incoming;
+  const source = olderContent ? { ...before, ...Object.fromEntries(markerFields.map((field) => [field, incoming[field]])) } : incoming;
   return { source: stronger ? source : before, stale: Boolean(stale) };
 }
 
@@ -194,7 +197,7 @@ function summaryValue(held, task, read, counters = { source: task, fullTask: fal
   // of ordinary row request order. Preserve held fields while accepting a
   // stronger incoming mark, including an older dispatch's read report.
   const authority = markerAuthority(held, task, read, counters);
-  const next = preserveMarks(authority.source, preserveMarks(before, confirmed));
+  const next = preserveTaskActionMarks(authority.source, preserveTaskActionMarks(before, confirmed));
   return { task: next, read_order: Math.max(read, held?.read_order || 0), needs_unread_refresh: next.watched !== false && authority.stale };
 }
 

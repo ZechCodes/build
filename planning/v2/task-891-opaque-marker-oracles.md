@@ -227,3 +227,41 @@ there is no manufactured red-test claim. The evidence exposes visible
 semantic changes and does not approve them. An explicit scope/code decision and
 Astra disposition remain required before final activation. Navigation's
 project/agent ownership split is outside this project-badge evidence.
+
+## Action-cache raw marker and counter retention
+
+Confirmed task actions now reconcile their full-task response across detail,
+legacy catalogue/query/page rows, and normalized summaries in one transaction.
+This action-cache path uses the canonical optional-marker and UTF-8 suffix
+ordering above even when the device has no summary capability. Ordinary legacy
+reads, unread adapters, and rendering helpers retain their existing behavior.
+This is an explicit action-cache behavior change, not a claim that the previous
+legacy floor helper had canonical parity or a capability-dependent migration.
+
+`taskActionReplicaFloors.test.js` measures these retention differences directly:
+
+| Held / incoming read floor | Action-cache result and paired counters | Previous legacy detail floor helper |
+| --- | --- | --- |
+| Present empty `""` / absent | Retains present empty and held counters | Ignores empty as an unrecognized legacy mark |
+| `tc-20\0` / `te-10\0` | Retains the complete NUL-containing held floor and its counters | Retains that recognized held floor, but did not reconcile its counter family |
+| `tc-\u{10000}` / `te-\uE000` | Retains supplementary held floor and held counters | UTF-16 comparison selected the high-BMP incoming floor |
+| `tc-\uE000` / `te-\u{10000}` | Accepts supplementary incoming floor and incoming counters | UTF-16 comparison retained the high-BMP held floor |
+
+The complete raw marker is retained; suffix equality does not imply marker
+identity. Total unread counters follow the maximum read/watch floor. Mention
+and agent-comment counters follow the read floor independently. Retaining a
+stronger floor with unknown held counters removes weaker incoming counters
+rather than attaching them to that floor. An authoritative unwatch clears the
+watch floor and all watch counter/session lineage. No count arithmetic is used.
+An older content snapshot can advance marker authority while retaining newer
+content and held counters; normalized uncertainty stays latched until a
+complete covering authoritative summary supplies the counter families.
+
+Every supported action owner takes an explicit shared dispatch token after
+admission awaits and immediately before its mutating RPC. The transaction
+checks that token against the per-task action note, so a late older assignment
+or dependency reply cannot reverse a newer unwatch. A compatibility call lacking
+a token may update only before a proved action note exists, never receives
+forced watch authority across older content, and never promotes arrival order
+into dispatch authority. Acceptance refusal and quota failure publish none of
+the detail, list, page, summary, invalidation, or read-note updates.

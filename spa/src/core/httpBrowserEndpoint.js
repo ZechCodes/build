@@ -143,8 +143,8 @@ function resourceHeaders(opening, options) {
   const extra = {
     "X-Build-Session": opening.session_id, "X-Build-Request-Id": options.requestId || crypto.randomUUID(),
     "X-Build-Priority": options.priority === "background" ? "background" : "user",
-    "X-Build-Subscription": options.subscriptionId,
   };
+  if (options.subscriptionId) extra["X-Build-Subscription"] = options.subscriptionId;
   if (options.write) {
     extra["Idempotency-Key"] = options.write.operation_id;
     if (options.write.after !== undefined) extra["X-Build-After"] = JSON.stringify(options.write.after);

@@ -19,7 +19,7 @@ export function createDesktopHttpEndpoint({ api, identity, isCurrent = () => tru
     if (!current()) throw httpFailure("scope_ended");
     return result;
   };
-  const quiet = (name, ...args) => { void Promise.resolve(api[name](...args)).catch(() => {}); };
+  const quiet = (name, ...args) => { try { void Promise.resolve(api[name](...args)).catch(() => {}); } catch { /* Native frame may already be gone. */ } };
   const close = () => {
     if (closed) return;
     closed = true;
@@ -34,6 +34,7 @@ export function createDesktopHttpEndpoint({ api, identity, isCurrent = () => tru
     let sequence = 0;
     let buffered = [];
     let bytes = 0;
+    let count = 0;
     let resolveReady;
     const ready = new Promise((resolve) => { resolveReady = resolve; });
     let applying = Promise.resolve();
@@ -48,15 +49,16 @@ export function createDesktopHttpEndpoint({ api, identity, isCurrent = () => tru
     };
     const enqueue = (message) => {
       if (!current()) return;
-      bytes += new TextEncoder().encode(JSON.stringify(message)).length;
-      if (buffered.length >= 128 || bytes > 1024 * 1024) { lose(); return; }
+      if (stream && message.stream !== stream) return;
+      bytes += messageBytes(message); count += 1;
+      if (count > 128 || bytes > 1024 * 1024) { lose(); return; }
       buffered.push(message);
       if (!stream) return;
       applying = applying.then(async () => {
         const held = buffered.shift();
         if (!held) return;
-        bytes -= new TextEncoder().encode(JSON.stringify(held)).length;
-        await deliver(held);
+        try { await deliver(held); }
+        finally { bytes -= messageBytes(held); count -= 1; }
       }).catch(lose);
     };
     const stopEvents = api.onEvent(enqueue);
@@ -65,7 +67,7 @@ export function createDesktopHttpEndpoint({ api, identity, isCurrent = () => tru
       if (typeof result?.stream !== "string") throw httpFailure("protocol");
       stream = result.stream;
       const early = buffered;
-      buffered = []; bytes = 0;
+      buffered = []; bytes = 0; count = 0;
       subscription = { binding: stream, close() { stopEvents(); quiet("unsubscribe", stream); buffered = []; } };
       for (const message of early) enqueue(message);
       await httpRequest(() => ready, { timeoutMs: 5000, isCurrent: current });
@@ -91,3 +93,5 @@ export function createDesktopHttpEndpoint({ api, identity, isCurrent = () => tru
     subscribe, close,
   };
 }
+
+const messageBytes = (message) => new TextEncoder().encode(JSON.stringify(message)).length;

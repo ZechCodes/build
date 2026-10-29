@@ -68,7 +68,7 @@ async def seed_endpoint(db, user_id, origin, *, enabled=True, approved=True, epo
                     identity_public_key_b64="a", transport_public_key_b64="b", authorization_epoch=1)
     db.add(device)
     await db.flush()
-    endpoint = BridgeHttpEndpoint(device_id=device.id, user_id=user_id, origin=origin,
+    endpoint = BridgeHttpEndpoint(identity_fingerprint="0"*64, device_id=device.id, user_id=user_id, origin=origin,
                                   endpoint_epoch="endpoint-1", authorization_epoch=epoch, enabled=enabled)
     db.add(endpoint)
     await db.flush()
@@ -246,7 +246,7 @@ def test_real_skrift_logout_revokes_only_current_family_after_valid_csrf(skrift_
 
         async def work(db):
             endpoint = await seed_endpoint(db, user, "https://owned.example")
-            families = [BridgeHttpFamily(user_id=user, device_id=endpoint.device_id, client_binding=client_binding,
+            families = [BridgeHttpFamily(issuer="https://testserver.local", user_id=user, device_id=endpoint.device_id, client_binding=client_binding,
                                         origin=endpoint.origin, endpoint_epoch=endpoint.endpoint_epoch,
                                         authorization_epoch=endpoint.authorization_epoch,
                                         scope="bridge:read bridge:write")

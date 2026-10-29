@@ -199,7 +199,7 @@ impl TermScreen {
         self.attached
             .retain(|client| client.sender.session_id() != sender.session_id());
         self.attached.push(AttachedClient {
-            sender: sender.clone(),
+            sender: sender.event_context(),
             acked_cursor: self.total,
             sent_cursor: self.total,
             sent_ack: false,
@@ -497,6 +497,15 @@ impl ScreenHandle {
             .unwrap()
             .attached
             .retain(|client| client.sender.session_id() != session_id);
+    }
+
+    /// Release dead exact event bindings without closing the PTY or screen.
+    pub(crate) fn prune_closed_clients(&self) {
+        self.screen
+            .lock()
+            .unwrap()
+            .attached
+            .retain(|client| client.sender.events_are_live());
     }
 
     /// The pump's write: PTY bytes into the model and the coalescing buffer.

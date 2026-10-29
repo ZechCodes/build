@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use super::AppState;
-use crate::carrier::SessionSender;
 use crate::changes::harnesses_changed_payload;
+use crate::execution::CallContext as SessionSender;
 use crate::harness::inventory::Inventory;
 
 impl AppState {
@@ -27,13 +27,17 @@ impl AppState {
     /// Tell `sender` each time the inventory's revision rises from here on.
     /// The snapshot standing now is the one it will ask for.
     pub(in crate::app) fn subscribe_harnesses_changed(&mut self, sender: &SessionSender) {
+        if !sender.events_are_live() {
+            return;
+        }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
         self.unsubscribe_harnesses_changed(sender.session_id());
         let mut changes = self.harness_inventory.changes();
         changes.mark_unchanged();
-        let sender = sender.clone();
+        let context = sender.event_context();
+        let sender = context.clone();
         let session_id = sender.session_id().to_string();
         let task = runtime.spawn(async move {
             while changes.changed().await.is_ok() {
@@ -43,11 +47,12 @@ impl AppState {
                 }
             }
         });
-        self.harnesses_subscriptions.insert(session_id, task);
+        self.harnesses_subscriptions
+            .insert(session_id, (context, task));
     }
 
     pub(in crate::app) fn unsubscribe_harnesses_changed(&mut self, session_id: &str) {
-        if let Some(task) = self.harnesses_subscriptions.remove(session_id) {
+        if let Some((_, task)) = self.harnesses_subscriptions.remove(session_id) {
             task.abort();
         }
     }

@@ -1,18 +1,10 @@
 //! The changes family: `changes.subscribe` and `changes.unsubscribe` (wire
 //! spec Part 1, step 1.1).
 //!
-//! Two verbs over [`crate::changes::ChangeBus`], whose subject is the session
-//! itself: a subscription is an address to push to, so
-//! every verb here needs the caller's own [`SessionSender`]. [`dispatch`]
-//! deliberately carries only `AppState`, so the frame handler names the
-//! caller for the duration of the call with [`with_session`] and the handlers
-//! read it back. Called with no session named — the synchronous test entry
-//! point, or an internal probe — the verbs refuse `unavailable` rather than
-//! guessing at a subscriber.
-//! Uploads use the same caller context to bind their state to the initiating
-//! encrypted session opening.
-//!
-//! [`dispatch`]: crate::api::v1::dispatch
+//! The subscription belongs to the explicitly supplied application caller.
+//! Synchronous dispatch without a caller refuses `unavailable`; asynchronous
+//! work never inherits caller identity from thread state. Uploads use the same
+//! explicit context to retain the initiating opening.
 //!
 //! The params ARE the wire types: [`SubscriptionSpec`] is what
 //! `changes.subscribe` takes. Subscribe is an
@@ -28,62 +20,29 @@
 use super::Handler;
 use crate::api::ApiError;
 use crate::app::{AppState, WatchAnswer};
-use crate::carrier::SessionSender;
 use crate::changes::{
     is_project_source_entity, Kind, KindNames, Scope, SubscriptionSpec, WatchState,
 };
-use crate::{v1_method, v1_methods};
+use crate::execution::CallContext as SessionSender;
+use crate::{v1_context_method, v1_methods};
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
 
 /// The verbs this family serves.
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
-        v1_method!(
+        v1_context_method!(
             "changes.subscribe",
             changes_subscribe,
             SubscriptionSpec<KindNames>,
             Subscribed
         ),
-        v1_method!(
+        v1_context_method!(
             "changes.unsubscribe",
             changes_unsubscribe,
             UnsubscribeParams,
             Unsubscribed
         ),
     ]
-}
-
-// ------------------------------------------------------- the caller ---
-
-thread_local! {
-    /// Who is asking, for the length of one frame. A thread-local rather than
-    /// a param because the facade's dispatch signature is one shape for every
-    /// verb, and subscriptions and uploads both need the session.
-    static CALLER: RefCell<Option<SessionSender>> = const { RefCell::new(None) };
-}
-
-/// Name the session this frame came from while `run` executes. Nested calls
-/// restore the previous caller, and a panic inside `run` restores it too.
-pub fn with_session<T>(session: &SessionSender, run: impl FnOnce() -> T) -> T {
-    struct Restore(Option<SessionSender>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            CALLER.with(|caller| *caller.borrow_mut() = self.0.take());
-        }
-    }
-    let _restore = Restore(CALLER.with(|caller| caller.borrow_mut().replace(session.clone())));
-    run()
-}
-
-pub(crate) fn caller() -> Result<SessionSender, ApiError> {
-    CALLER
-        .with(|caller| caller.borrow().clone())
-        .ok_or_else(|| {
-            ApiError::unavailable(
-                "no session on this call — this method needs the initiating client",
-            )
-        })
 }
 
 // ---------------------------------------------------------------- params ---
@@ -113,15 +72,18 @@ pub struct Unsubscribed {
 /// Upsert one subscription for the calling session.
 fn changes_subscribe(
     app: &mut AppState,
+    session: &SessionSender,
     params: SubscriptionSpec<KindNames>,
 ) -> Result<Subscribed, ApiError> {
+    if !session.events_are_live() {
+        return Err(ApiError::unavailable("application event binding has ended"));
+    }
     let params = known_kinds(params)?;
-    let session = caller()?;
     check(&params)?;
     app.check_source_subscription(&params.scope, &params.kinds)
         .map_err(ApiError::classify)?;
     let subscription_id = params.id.clone();
-    let outcome = app.changes().subscribe(&session, params.clone());
+    let outcome = app.changes().try_subscribe(session, params.clone())?;
     // The watchers are reconciled with the lock released, and the reply's
     // `watch` is read after that — this typed value is the placeholder the
     // drain replaces (see `AppState::defer_watch`).
@@ -137,11 +99,14 @@ fn changes_subscribe(
 /// is what it asked for either way.
 fn changes_unsubscribe(
     app: &mut AppState,
+    session: &SessionSender,
     params: UnsubscribeParams,
 ) -> Result<Unsubscribed, ApiError> {
-    let session = caller()?;
+    if !session.events_are_live() {
+        return Err(ApiError::unavailable("application event binding has ended"));
+    }
     app.changes()
-        .unsubscribe_one(session.session_id(), &params.subscription_id);
+        .unsubscribe_one_scoped(session, &params.subscription_id);
     app.defer_watch(WatchAnswer::Unsubscribed);
     Ok(Unsubscribed { ok: true })
 }
@@ -243,7 +208,15 @@ mod tests {
     /// refusal with a code and not a subscription nobody can be sent.
     #[test]
     fn a_call_with_no_session_is_unavailable() {
-        let refused = caller().err().expect("no session, no subscription");
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = AppState::new_unrooted(temp.path(), "main", true, "unused.sock");
+        let refused = crate::api::v1::dispatch(
+            &mut app,
+            "changes.unsubscribe",
+            &json!({"subscription_id": "unused"}),
+        )
+        .unwrap()
+        .unwrap_err();
         assert_eq!(refused.code(), "unavailable");
     }
 
@@ -253,22 +226,63 @@ mod tests {
     fn the_family_serves_the_calling_sessions_subscriptions() {
         let bus = ChangeBus::new(Duration::from_millis(250));
         let (sender, _rx, _key) = SessionSender::observable("s-1");
-        with_session(&sender, || {
-            let session = caller().unwrap();
-            assert_eq!(session.session_id(), "s-1");
-            bus.subscribe(&session, focus());
-            bus.subscribe(
-                &session,
-                SubscriptionSpec {
-                    mode: Mode::Batch(Duration::from_secs(30)),
-                    ..focus()
-                },
-            );
-            assert_eq!(bus.list("s-1").len(), 1);
-            bus.unsubscribe_one("s-1", "s-focus");
-            assert!(bus.list("s-1").is_empty());
+        bus.subscribe(&sender, focus());
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                mode: Mode::Batch(Duration::from_secs(30)),
+                ..focus()
+            },
+        );
+        assert_eq!(bus.list("s-1").len(), 1);
+        bus.unsubscribe_one("s-1", "s-focus");
+        assert!(bus.list("s-1").is_empty());
+    }
+
+    #[test]
+    fn explicit_context_keeps_equal_subscription_ids_separate() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = AppState::new_unrooted(temp.path(), "main", true, "unused.sock");
+        let first = SessionSender::legacy(
+            "context-first",
+            crate::execution::session::Opening::new(),
+            std::sync::Arc::new(|_| true),
+        );
+        let second = SessionSender::legacy(
+            "context-second",
+            crate::execution::session::Opening::new(),
+            std::sync::Arc::new(|_| true),
+        );
+        let params = json!({
+            "subscription_id": "shared-id",
+            "scope": { "kind": "all" },
+            "kinds": ["state"],
+            "mode": "realtime"
         });
-        assert!(caller().is_err(), "the caller is only named for the frame");
+        for sender in [&first, &second] {
+            crate::api::v1::dispatch_with_context(
+                &mut app,
+                "changes.subscribe",
+                &params,
+                Some(sender),
+            )
+            .unwrap()
+            .unwrap();
+        }
+        let absent = crate::api::v1::dispatch(&mut app, "changes.subscribe", &params)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(absent.code(), "unavailable");
+        crate::api::v1::dispatch_with_context(
+            &mut app,
+            "changes.unsubscribe",
+            &json!({"subscription_id": "shared-id"}),
+            Some(&first),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(app.changes().list(first.session_id()).is_empty());
+        assert_eq!(app.changes().list(second.session_id()).len(), 1);
     }
 
     /// A board scope carries the feed's own state and nothing else; naming a

@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::app::{off_the_workers, AppState};
-use crate::carrier::SessionSender;
+use crate::execution::CallContext as SessionSender;
 use crate::update::{AdmissionGate, UpdateService, UpdateState, UpdateStatus};
 
 impl AppState {
@@ -72,15 +72,19 @@ impl AppState {
     }
 
     pub(in crate::app) fn subscribe_update_status(&mut self, sender: &SessionSender) {
+        if !sender.events_are_live() {
+            return;
+        }
         let Some(service) = self.update_service() else {
             return;
         };
-        if let Some(previous) = self.update_subscriptions.remove(sender.session_id()) {
+        if let Some((_, previous)) = self.update_subscriptions.remove(sender.session_id()) {
             previous.abort();
         }
         let mut updates = service.subscribe();
         let session_id = sender.session_id().to_string();
-        let sender = sender.clone();
+        let context = sender.event_context();
+        let sender = context.clone();
         let task = tokio::spawn(async move {
             let first = updates.borrow_and_update().clone();
             if !push_status(&sender, &first) {
@@ -93,11 +97,12 @@ impl AppState {
                 }
             }
         });
-        self.update_subscriptions.insert(session_id, task);
+        self.update_subscriptions
+            .insert(session_id, (context, task));
     }
 
     pub(in crate::app) fn unsubscribe_update_status(&mut self, session_id: &str) {
-        if let Some(task) = self.update_subscriptions.remove(session_id) {
+        if let Some((_, task)) = self.update_subscriptions.remove(session_id) {
             task.abort();
         }
     }

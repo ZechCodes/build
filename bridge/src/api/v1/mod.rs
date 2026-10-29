@@ -23,10 +23,10 @@
 //! contract test prevents a fixture verb from lacking a capability.
 //!
 //! NOT here, by design: `session.hello`, `ping`, `bridge.stats`, `term.*`,
-//! `rtc.*`, `agent.attach`, `agent.start` and `agent.interrupt`. Each needs
-//! the caller's own `SessionSender` (somewhere to push to) or the shared
-//! `Arc` (a producer or pump to spawn), which `dispatch` deliberately has no
-//! access to; they stay on the legacy route in `app/rpc.rs::dispatch_frame`.
+//! `rtc.*`, `agent.attach`, `agent.start` and `agent.interrupt`. These retain
+//! their existing session-scoped implementations in `app/rpc.rs`; shared
+//! execution validates their legacy request types before dispatch. Registered
+//! subscriptions and uploads receive explicit caller context through this table.
 //!
 //! The retired planning workflow keeps only its reads (`task.get`,
 //! `task.stages`, `task.doc`, `task.stage_doc`, `task.stage_diff`), for the
@@ -62,6 +62,7 @@ pub mod writes;
 
 use crate::api::ApiError;
 use crate::app::AppState;
+use crate::execution::CallContext;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -71,8 +72,9 @@ use std::sync::OnceLock;
 
 /// One registered verb: how to run it, and how the contract test holds its
 /// fixture to its types.
+#[derive(Clone, Copy)]
 pub struct Handler {
-    call: fn(&mut AppState, &Value) -> Result<Value, ApiError>,
+    call: HandlerCall,
     parse_params: fn(&Value) -> Result<(), String>,
     normalize_params: fn(&Value) -> Result<Value, ApiError>,
     round_trip_result: fn(&Value) -> Result<Value, String>,
@@ -80,6 +82,12 @@ pub struct Handler {
     /// to the drain by [`dispatch`] for a verb that deferred its work, whose
     /// real answer this facade never sees.
     check_result: crate::app::DeferredResultCheck,
+}
+
+#[derive(Clone, Copy)]
+enum HandlerCall {
+    State(fn(&mut AppState, &Value) -> Result<Value, ApiError>),
+    Context(fn(&mut AppState, Option<&CallContext>, &Value) -> Result<Value, ApiError>),
 }
 
 impl Handler {
@@ -131,6 +139,25 @@ macro_rules! v1_method {
     };
 }
 
+/// Register a typed handler that needs the initiating caller explicitly.
+#[macro_export]
+macro_rules! v1_context_method {
+    ($name:literal, $handler:path, $params:ty, $result:ty) => {
+        (
+            $name,
+            $crate::api::v1::Handler::new_context(
+                |app, context, params| {
+                    $crate::api::v1::call_context_typed(app, context, params, $handler)
+                },
+                $crate::api::v1::parse_as::<$params>,
+                $crate::api::v1::normalize_as::<$params>,
+                $crate::api::v1::round_trip_as::<$result>,
+                $crate::api::v1::check_as::<$result>,
+            ),
+        )
+    };
+}
+
 impl Handler {
     #[doc(hidden)]
     pub const fn new(
@@ -141,7 +168,24 @@ impl Handler {
         check_result: crate::app::DeferredResultCheck,
     ) -> Handler {
         Handler {
-            call,
+            call: HandlerCall::State(call),
+            parse_params,
+            normalize_params,
+            round_trip_result,
+            check_result,
+        }
+    }
+
+    #[doc(hidden)]
+    pub const fn new_context(
+        call: fn(&mut AppState, Option<&CallContext>, &Value) -> Result<Value, ApiError>,
+        parse_params: fn(&Value) -> Result<(), String>,
+        normalize_params: fn(&Value) -> Result<Value, ApiError>,
+        round_trip_result: fn(&Value) -> Result<Value, String>,
+        check_result: crate::app::DeferredResultCheck,
+    ) -> Handler {
+        Handler {
+            call: HandlerCall::Context(call),
             parse_params,
             normalize_params,
             round_trip_result,
@@ -348,6 +392,22 @@ pub fn call_typed<P: DeserializeOwned + Serialize, R: Serialize>(
     serde_json::to_value(result).map_err(|error| ApiError::internal(error.to_string()))
 }
 
+/// Parse and call a contextual handler without ambient thread state.
+#[doc(hidden)]
+pub fn call_context_typed<P: DeserializeOwned + Serialize, R: Serialize>(
+    app: &mut AppState,
+    context: Option<&CallContext>,
+    params: &Value,
+    handler: fn(&mut AppState, &CallContext, P) -> Result<R, ApiError>,
+) -> Result<Value, ApiError> {
+    let parsed = parse_params::<P>(params)?;
+    let context = context.ok_or_else(|| {
+        ApiError::unavailable("no session on this call — this method needs the initiating client")
+    })?;
+    let result = handler(app, context, parsed)?;
+    serde_json::to_value(result).map_err(|error| ApiError::internal(error.to_string()))
+}
+
 /// Every family's table, in one place.
 fn families() -> [&'static [(&'static str, Handler)]; 13] {
     [
@@ -374,18 +434,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         families()
             .into_iter()
             .flatten()
-            .map(|(name, handler)| {
-                (
-                    *name,
-                    Handler::new(
-                        handler.call,
-                        handler.parse_params,
-                        handler.normalize_params,
-                        handler.round_trip_result,
-                        handler.check_result,
-                    ),
-                )
-            })
+            .map(|(name, handler)| (*name, *handler))
             .collect()
     })
 }
@@ -406,11 +455,24 @@ pub fn dispatch(
     method: &str,
     params: &Value,
 ) -> Option<Result<Value, ApiError>> {
+    dispatch_with_context(app, method, params, None)
+}
+
+/// Serve the same registry with an explicitly authenticated caller context.
+pub fn dispatch_with_context(
+    app: &mut AppState,
+    method: &str,
+    params: &Value,
+    context: Option<&CallContext>,
+) -> Option<Result<Value, ApiError>> {
     let handler = registry().get(method)?;
     if let Some(answered) = app.snapshot_read(method, params) {
         return Some(answered);
     }
-    let answered = (handler.call)(app, params);
+    let answered = match handler.call {
+        HandlerCall::State(call) => call(app, params),
+        HandlerCall::Context(call) => call(app, context, params),
+    };
     // A verb that handed its git to the drain answered `Value::Null` here, so
     // the check in `answer` had nothing to look at. Send the declared type
     // along with the work instead: it is checked when the real value lands.

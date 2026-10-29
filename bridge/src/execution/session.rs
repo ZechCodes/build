@@ -13,6 +13,11 @@ use tokio::time::Instant;
 
 const MAX_REQUESTS: usize = 32;
 
+pub(crate) fn next_request_order() -> u64 {
+    static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+    NEXT_REQUEST.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Allocation identity, shared with the trusted rendezvous adapter.
 #[derive(Clone)]
 pub struct Opening(Arc<OpeningState>);
@@ -109,6 +114,8 @@ enum Identity {
 
 impl VerifiedCaller {
     /// Called only after the HTTP account verifier has validated the grant.
+    // Restricted adapter seam; production callers arrive in reviewed #911 wiring.
+    #[allow(dead_code)]
     pub(crate) fn verified_http(identity: HttpIdentity, deadline: Instant, live: Validity) -> Self {
         Self {
             identity: Identity::Http(identity),
@@ -118,6 +125,8 @@ impl VerifiedCaller {
         }
     }
     /// Called only at authenticated, owner-authorized relay intake.
+    // Restricted adapter seam; only #909 trusted relay intake may call this.
+    #[allow(dead_code)]
     pub(crate) fn verified_relay(device_id: impl Into<String>, opening: Opening) -> Self {
         Self {
             identity: Identity::Relay(device_id.into()),
@@ -183,6 +192,8 @@ pub enum SessionError {
     AlreadyOpen,
     #[error("event replacement does not name the last binding")]
     StaleBinding,
+    #[error("request event binding has the wrong stream class")]
+    WrongStreamClass,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -298,11 +309,13 @@ impl SessionLease {
     }
 }
 
+type CleanupHook = Arc<dyn Fn(&SessionLease) + Send + Sync>;
+
 /// One registry is shared by every transport adapter in the daemon.
 pub struct ClientSessions {
     epoch: Arc<str>,
     sessions: Mutex<HashMap<String, SessionLease>>,
-    request_order: AtomicU64,
+    cleanup_hook: Mutex<Option<CleanupHook>>,
 }
 
 impl ClientSessions {
@@ -310,10 +323,11 @@ impl ClientSessions {
         Self {
             epoch: epoch.into(),
             sessions: Mutex::new(HashMap::new()),
-            request_order: AtomicU64::new(1),
+            cleanup_hook: Mutex::new(None),
         }
     }
     pub fn open(&self, caller: VerifiedCaller) -> Result<SessionLease, SessionError> {
+        self.reap_expired();
         let authorization = AuthorizationLease {
             opening: caller.opening.clone(),
             state: Arc::new(Mutex::new(AuthorizationState {
@@ -349,6 +363,7 @@ impl ClientSessions {
     }
     /// Renewal requires a newly verified proof of the exact HTTP family binding.
     pub fn resume(&self, caller: VerifiedCaller, id: &str) -> Result<SessionLease, SessionError> {
+        self.reap_expired();
         let session = self
             .sessions
             .lock()
@@ -438,12 +453,26 @@ impl ClientSessions {
         sink: Arc<dyn ReplySink>,
         events: Option<&EventBinding>,
     ) -> Result<RequestContext, SessionError> {
+        self.request_for_stream(session, StreamClass::Application, sink, events)
+    }
+    /// Terminal callers must explicitly request the separately bound stream.
+    pub fn request_for_stream(
+        &self,
+        session: &SessionLease,
+        class: StreamClass,
+        sink: Arc<dyn ReplySink>,
+        events: Option<&EventBinding>,
+    ) -> Result<RequestContext, SessionError> {
+        self.reap_expired();
         let _output = session.opening().0.output_gate.lock().unwrap();
         let mut state = session.0.state.lock().unwrap();
         Self::authorize(session)?;
         if let Some(events) = events {
             if !events.session.opening().is(session.opening()) {
                 return Err(SessionError::WrongOpening);
+            }
+            if events.class != class {
+                return Err(SessionError::WrongStreamClass);
             }
             if !events.binding.live.load(Ordering::SeqCst) {
                 return Err(SessionError::Closed);
@@ -461,27 +490,66 @@ impl ClientSessions {
             authorization: session.authorization(),
         };
         Ok(RequestContext {
+            stream_class: class,
             session: session.clone(),
             reply: ReplyLease {
                 session: session.clone(),
                 sink,
                 cancellation,
+                _permit: Arc::new(RequestPermit {
+                    session: Arc::downgrade(&session.0),
+                }),
             },
             events: events.map(EventBinding::events),
-            request_order: self.request_order.fetch_add(1, Ordering::Relaxed),
+            request_order: next_request_order(),
             intake_time: Instant::now(),
         })
     }
+    /// Install a nonblocking handoff for exact application attachment cleanup.
+    /// Called once per removed allocation, after all registry/output locks are
+    /// released, including expiry first observed by an admission call.
+    pub fn set_cleanup_hook(&self, hook: Arc<dyn Fn(&SessionLease) + Send + Sync>) {
+        *self.cleanup_hook.lock().unwrap() = Some(hook);
+    }
+    /// Daemon ticks must call this even when no requests arrive. Returned leases
+    /// are already closed; retaining them deliberately retains their metadata.
+    pub fn reap_expired(&self) -> Vec<SessionLease> {
+        let candidates: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
+        candidates
+            .into_iter()
+            .filter(|session| !session.is_live() && self.retire(session))
+            .collect()
+    }
     pub fn close(&self, session: &SessionLease) {
-        let _output = session.opening().0.output_gate.lock().unwrap();
+        self.retire(session);
+    }
+    fn retire(&self, session: &SessionLease) -> bool {
+        let output = session.opening().0.output_gate.lock().unwrap();
         let mut state = session.0.state.lock().unwrap();
         session.opening().invalidate_unlocked();
-        for binding in &mut state.bindings {
-            if let Some(binding) = binding.take() {
-                binding.live.store(false, Ordering::SeqCst);
+        let bindings = std::mem::take(&mut state.bindings);
+        state.last_bindings = [None, None];
+        for binding in bindings.iter().flatten() {
+            binding.live.store(false, Ordering::SeqCst);
+        }
+        let mut sessions = self.sessions.lock().unwrap();
+        let exact = sessions
+            .get(session.id())
+            .is_some_and(|current| Arc::ptr_eq(&current.0, &session.0));
+        if exact {
+            sessions.remove(session.id());
+        }
+        drop(sessions);
+        drop(state);
+        drop(output);
+        drop(bindings);
+        if exact {
+            let hook = self.cleanup_hook.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook(session);
             }
         }
-        self.sessions.lock().unwrap().remove(session.id());
+        exact
     }
     fn authorize(session: &SessionLease) -> Result<(), SessionError> {
         if !session.opening().is_open() {
@@ -610,11 +678,26 @@ impl RequestCancellation {
     }
 }
 
+/// Executor-owned request capacity survives cancelled caller interest. The
+/// final reply owner releases this only after leaving output/state critical
+/// sections; request cancellation itself never releases running work capacity.
+struct RequestPermit {
+    session: Weak<Session>,
+}
+impl Drop for RequestPermit {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.upgrade() {
+            session.state.lock().unwrap().inflight -= 1;
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ReplyLease {
     session: SessionLease,
     sink: Arc<dyn ReplySink>,
     cancellation: RequestCancellation,
+    _permit: Arc<RequestPermit>,
 }
 impl ReplyLease {
     pub fn send(&self, payload: Value) -> Result<(), DeliveryError> {
@@ -633,6 +716,7 @@ impl ReplyLease {
 }
 
 pub struct RequestContext {
+    stream_class: StreamClass,
     session: SessionLease,
     reply: ReplyLease,
     events: Option<SessionEvents>,
@@ -640,6 +724,9 @@ pub struct RequestContext {
     intake_time: Instant,
 }
 impl RequestContext {
+    pub fn stream_class(&self) -> StreamClass {
+        self.stream_class
+    }
     pub fn session(&self) -> &SessionLease {
         &self.session
     }
@@ -670,9 +757,7 @@ impl RequestContext {
 }
 impl Drop for RequestContext {
     fn drop(&mut self) {
-        let mut state = self.session.0.state.lock().unwrap();
         self.reply.cancellation.cancel();
-        state.inflight -= 1;
     }
 }
 
@@ -815,14 +900,14 @@ mod tests {
         );
         assert!(matches!(
             sessions.request(&session, Arc::new(Sink::default()), None),
-            Err(SessionError::Unauthorized)
+            Err(SessionError::Closed)
         ));
         let other = sessions.open(super::tests::caller()).unwrap();
         tokio::time::advance(Duration::from_secs(21)).await;
         assert!(!other.authorization().is_valid());
         assert!(matches!(
             sessions.resume(super::tests::caller(), other.id()),
-            Err(SessionError::Unauthorized)
+            Err(SessionError::Closed)
         ));
     }
 
@@ -896,6 +981,7 @@ mod tests {
         drop(request);
         cancellation.cancelled().await;
         assert_eq!(reply.send(json!({"ok":true})), Err(DeliveryError::Closed));
+        drop(reply);
         assert!(sessions
             .request(&session, Arc::new(Sink::default()), None)
             .is_ok());
@@ -1091,5 +1177,166 @@ mod tests {
         assert_ne!(events.read_scope(), fresh.events().read_scope());
         session.opening().invalidate();
         assert_eq!(session.opening().while_open(|| 9), None);
+    }
+    #[tokio::test(start_paused = true)]
+    async fn admission_reaps_expired_openings_without_retaining_cleanup_objects() {
+        let sessions = ClientSessions::new("epoch");
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let count = cleanups.clone();
+        sessions.set_cleanup_hook(Arc::new(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        let mut previous: Option<Weak<Session>> = None;
+        for _ in 0..64 {
+            let session = sessions.open(caller()).unwrap();
+            assert_eq!(sessions.sessions.lock().unwrap().len(), 1);
+            if let Some(previous) = previous.take() {
+                assert!(previous.upgrade().is_none());
+            }
+            previous = Some(Arc::downgrade(&session.0));
+            drop(session);
+            tokio::time::advance(Duration::from_secs(21)).await;
+        }
+        let ended = sessions.reap_expired();
+        assert_eq!(ended.len(), 1);
+        assert!(!ended[0].opening().is_open());
+        drop(ended);
+        assert!(previous.unwrap().upgrade().is_none());
+        assert_eq!(cleanups.load(Ordering::SeqCst), 64);
+        assert!(sessions.reap_expired().is_empty());
+        assert!(sessions.sessions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn automatic_reaping_before_open_resume_and_request_releases_sinks_and_waiters() {
+        let sessions = ClientSessions::new("epoch");
+        let expired = sessions.open(caller()).unwrap();
+        let sink = Arc::new(Sink::default());
+        let weak_sink = Arc::downgrade(&sink);
+        let binding = sessions
+            .bind_events(&expired, StreamClass::Application, sink.clone())
+            .unwrap();
+        drop(binding);
+        drop(sink);
+        let waiting = sessions
+            .request(&expired, Arc::new(Sink::default()), None)
+            .unwrap();
+        tokio::time::advance(Duration::from_secs(21)).await;
+        let live = sessions.open(caller()).unwrap();
+        waiting.cancelled().await;
+        assert!(weak_sink.upgrade().is_none());
+        assert_eq!(sessions.sessions.lock().unwrap().len(), 1);
+        tokio::time::advance(Duration::from_secs(21)).await;
+        assert!(sessions.resume(caller(), live.id()).is_err());
+        assert!(sessions.sessions.lock().unwrap().is_empty());
+        let expired = sessions.open(caller()).unwrap();
+        tokio::time::advance(Duration::from_secs(21)).await;
+        assert!(sessions
+            .request(&expired, Arc::new(Sink::default()), None)
+            .is_err());
+        assert!(sessions.sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn revocation_cleanup_is_exact_once_and_runs_after_all_output_and_registry_locks() {
+        let sessions = Arc::new(ClientSessions::new("epoch"));
+        let weak_registry = Arc::downgrade(&sessions);
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let count = cleanups.clone();
+        sessions.set_cleanup_hook(Arc::new(move |session| {
+            assert!(session.opening().0.output_gate.try_lock().is_ok());
+            assert!(session.0.state.try_lock().is_ok());
+            assert!(weak_registry.upgrade().unwrap().sessions.try_lock().is_ok());
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        let live = Arc::new(AtomicBool::new(true));
+        let checked = live.clone();
+        let proof = VerifiedCaller::verified_http(
+            identity(),
+            Instant::now() + Duration::from_secs(20),
+            Arc::new(move || checked.load(Ordering::SeqCst)),
+        );
+        let expired = sessions.open(proof).unwrap();
+        let current = sessions.open(caller()).unwrap();
+        live.store(false, Ordering::SeqCst);
+        let ended = sessions.reap_expired();
+        assert_eq!(ended.len(), 1);
+        assert!(ended[0].opening().is(expired.opening()));
+        sessions.close(&expired);
+        assert!(sessions.reap_expired().is_empty());
+        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
+        assert!(current.is_live());
+    }
+
+    #[test]
+    fn stale_cleanup_cannot_remove_a_new_allocation_using_the_same_locator() {
+        let sessions = ClientSessions::new("epoch");
+        let old = sessions.open(caller()).unwrap();
+        let mut current = sessions.open(caller()).unwrap();
+        sessions.sessions.lock().unwrap().remove(old.id());
+        sessions.sessions.lock().unwrap().remove(current.id());
+        Arc::get_mut(&mut current.0).unwrap().id = old.id().to_string();
+        sessions
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(current.id().to_string(), current.clone());
+        sessions.close(&old);
+        let resumed = sessions.resume(caller(), current.id()).unwrap();
+        assert!(resumed.opening().is(current.opening()));
+        assert!(current.is_live());
+    }
+
+    #[test]
+    fn application_request_cannot_inherit_terminal_events_without_explicit_stream_class() {
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions.open(caller()).unwrap();
+        let terminal = sessions
+            .bind_events(&session, StreamClass::Terminal, Arc::new(Sink::default()))
+            .unwrap();
+        assert!(matches!(
+            sessions.request(&session, Arc::new(Sink::default()), Some(&terminal)),
+            Err(SessionError::WrongStreamClass)
+        ));
+        let request = sessions
+            .request_for_stream(
+                &session,
+                StreamClass::Terminal,
+                Arc::new(Sink::default()),
+                Some(&terminal),
+            )
+            .unwrap();
+        assert_eq!(request.stream_class(), StreamClass::Terminal);
+    }
+    #[test]
+    fn cancelled_request_retains_inflight_slot_until_worker_reply_lease_is_released() {
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions.open(caller()).unwrap();
+        let request = sessions
+            .request(&session, Arc::new(Sink::default()), None)
+            .unwrap();
+        let worker_reply = request.reply();
+        drop(request);
+        assert!(
+            !worker_reply.is_live(),
+            "request drop must cancel delivery immediately"
+        );
+        let mut remaining = Vec::new();
+        for _ in 0..31 {
+            remaining.push(
+                sessions
+                    .request(&session, Arc::new(Sink::default()), None)
+                    .unwrap(),
+            );
+        }
+        assert!(matches!(
+            sessions.request(&session, Arc::new(Sink::default()), None),
+            Err(SessionError::Full)
+        ));
+        drop(worker_reply);
+        let recovered = sessions
+            .request(&session, Arc::new(Sink::default()), None)
+            .unwrap();
+        assert!(recovered.is_live());
     }
 }

@@ -21,6 +21,8 @@ pub struct FrameHandler {
     pub(crate) dispatch: Arc<dyn Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync>,
     session_end: Arc<dyn Fn(&str) + Send + Sync>,
     snapshot: Option<Arc<dyn Fn(Frame) -> Value + Send + Sync>>,
+    greeting: Option<Arc<GreetingRead>>,
+    output_cleanup: Arc<dyn Fn() + Send + Sync>,
     pub(crate) sql: Option<SqlHandler>,
     pub(crate) observations: Option<ObservationHandler>,
     pub(crate) read_executors: Arc<OnceLock<super::sql::ReadExecutors>>,
@@ -31,6 +33,8 @@ pub struct FrameHandler {
     #[cfg(test)]
     pub(crate) sql_observer: Option<super::sql_measurements::SqlObserver>,
 }
+
+type GreetingRead = dyn Fn(&str) -> Value + Send + Sync;
 
 pub(crate) type PreparedObservation = Box<dyn FnOnce() -> Value + Send>;
 
@@ -70,6 +74,8 @@ impl FrameHandler {
             #[cfg(test)]
             sql_thread_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             snapshot: None,
+            greeting: None,
+            output_cleanup: Arc::new(|| {}),
             #[cfg(test)]
             sql_observer: None,
         }
@@ -98,6 +104,30 @@ impl FrameHandler {
     ) -> Self {
         self.sql_observer = Some(Arc::new(observer));
         self
+    }
+
+    pub(crate) fn with_output_cleanup(
+        mut self,
+        cleanup: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        self.output_cleanup = Arc::new(cleanup);
+        self
+    }
+    pub(crate) fn cleanup_outputs(&self) {
+        (self.output_cleanup)();
+    }
+
+    pub(crate) fn with_greeting_reads(
+        mut self,
+        greeting: impl Fn(&str) -> Value + Send + Sync + 'static,
+    ) -> Self {
+        self.greeting = Some(Arc::new(greeting));
+        self
+    }
+    pub(crate) fn greeting(&self, epoch: &str) -> Value {
+        self.greeting
+            .as_ref()
+            .map_or(Value::Null, |greeting| greeting(epoch))
     }
 
     /// Immutable reads execute synchronously at intake, before any capacity gate.
@@ -230,6 +260,10 @@ impl FrameHandler {
     }
 
     pub(crate) fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
+        if !sender.read_is_live() {
+            return crate::api::ApiError::unavailable("request ended before execution")
+                .into_reply(frame.payload.get("id").cloned().unwrap_or(Value::Null));
+        }
         #[cfg(test)]
         let worker_started = std::time::Instant::now();
         let method = frame
@@ -601,7 +635,7 @@ impl Dispatcher {
         // Refused here as well as at the handler (`run_handler`): a frame for
         // an ended opening must not so much as open a lane, since the lane
         // would outlive the session whose close already took its lanes away.
-        if !sender.session_is_open() {
+        if !sender.read_is_live() {
             return;
         }
         if crate::api::effects::is_observation_read(&frame.payload) {
@@ -806,6 +840,17 @@ impl Dispatcher {
             .entry(key)
             .or_insert_with(|| spawn_lane(self.handler.clone()))
             .clone()
+    }
+
+    /// Neutral openings retire without spawning one blocking cleanup per close.
+    /// Domain output cleanup prunes closed proofs in one coalesced daemon pass.
+    pub(crate) fn retire_opening(&self, session_id: &str) {
+        self.prune_sql();
+        self.lanes
+            .lock()
+            .unwrap()
+            .retain(|(session, _), _| session != session_id);
+        self.handler.clock.clients().forget(session_id);
     }
 
     /// A session ended: tell the app so it releases the session's attachments.
@@ -1015,12 +1060,24 @@ fn read_key(sender: &SessionSender, frame: &Frame) -> Option<ReadKey> {
 /// result back under each waiting request id, on the wire that id asked over.
 async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
     let FoldedRead {
-        sender,
+        sender: _,
         frame,
-        callers,
+        mut callers,
         queued,
         priority: _,
     } = folded;
+    callers.retain(|(_, caller)| caller.read_is_live());
+    let Some(sender) = callers
+        .iter()
+        .max_by_key(|(_, caller)| caller.request_order())
+        .map(|(_, caller)| {
+            caller
+                .clone()
+                .for_fold(callers.iter().map(|(_, caller)| caller.clone()).collect())
+        })
+    else {
+        return;
+    };
     #[cfg(test)]
     let observed = handler.clock.request_frame(&frame);
     #[cfg(test)]
@@ -1049,7 +1106,7 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
         #[cfg(test)]
         caller.push_observed(for_caller, &handler.clock, &observed, false);
         #[cfg(not(test))]
-        caller.push(for_caller);
+        caller.push_reply(for_caller);
         #[cfg(test)]
         handler
             .clock
@@ -1083,14 +1140,14 @@ async fn run_job(handler: &FrameHandler, job: Job) {
             #[cfg(test)]
             sender.push_observed(payload, &handler.clock, &observed, false);
             #[cfg(not(test))]
-            sender.push(payload);
+            sender.push_reply(payload);
             #[cfg(test)]
             handler
                 .clock
                 .mark_observed(&observed, "reply_enqueued", std::time::Instant::now());
         }
         Some(Err(_)) => {
-            sender.push(json!({ "id": id, "ok": false, "error": "handler failed" }));
+            sender.push_reply(json!({ "id": id, "ok": false, "error": "handler failed" }));
         }
     }
 }
@@ -1114,7 +1171,7 @@ async fn run_handler(
     frame: Frame,
     queued: QueuedFrame,
 ) -> Option<Result<Value, tokio::task::JoinError>> {
-    if !sender.session_is_open() {
+    if !sender.read_is_live() {
         return None;
     }
     let handler = handler.clone();

@@ -4,9 +4,9 @@ use crate::app::{
     capture_conversation_names, err, off_the_workers, record_idle_in_thread, require_str, AppState,
     HarnessExit, IdleObservation, TabKey,
 };
-use crate::carrier::SessionSender;
 use crate::changes::{Kind, ANNOUNCED_EVENTS, MAX_BATCH_MS, MIN_BATCH_MS};
 use crate::encoding::b64decode;
+use crate::execution::CallContext as SessionSender;
 use crate::models::AgentProvider;
 use crate::pty::HarnessSpec;
 use crate::screen::{AttachSnapshot, TerminalHandle};
@@ -149,17 +149,8 @@ pub(in crate::app) fn session_hello(
     // The client record happens with the app mutex released — it takes its
     // own leaf lock, and nothing in this daemon may nest one lock inside
     // another it did not have to.
-    let (changes, qa_agent, journal_incarnation) = {
-        let app = timer.lock(state);
-        (
-            app.changes(),
-            app.qa_agent,
-            app.store
-                .as_ref()
-                .map(|store| store.journal_incarnation().to_owned()),
-        )
-    };
-    {
+    let greeting = timer.lock(state).session_greeting(sender.bridge_epoch());
+    if sender.has_events() {
         let mut app = timer.lock(state);
         app.subscribe_update_status(sender);
         app.subscribe_models_changed(sender);
@@ -169,47 +160,60 @@ pub(in crate::app) fn session_hello(
         sender.session_id(),
         DeclaredClient::from_hello_params(params),
     );
-    Ok(json!({
-        "api_version": API_VERSION,
-        "bridge_epoch": sender.bridge_epoch(),
-        "journal_incarnation": journal_incarnation,
-        "capabilities": crate::api::capabilities(qa_agent),
-        "ack_confirm_methods": crate::api::writes::ACK_CONFIRM_METHODS,
-        "push_events": true,
-        "events": ANNOUNCED_EVENTS,
-        "coalesce_window_ms": changes.window().as_millis() as u64,
-        // What a Part 1 adapter reads instead of probing for
-        // `changes.subscribe`: whether this bridge serves subscriptions, the
-        // kinds it filters on, whether an item carries what moved or only
-        // its name, and the clamp on a batch interval.
-        "changes": {
-            "subscriptions": true,
-            "mode": "subscriptions",
-            "kinds": Kind::ALL.map(Kind::as_str),
-            // `"bodies"`: every item carries the shape it names, so a client
-            // paints from the push instead of refetching after it. The one
-            // older answer this replaces is `"names"`, which no bridge that
-            // reports this field ever sends.
-            "items": "bodies",
-            "batch_ms": { "min": MIN_BATCH_MS, "max": MAX_BATCH_MS },
-        },
-        // Whether this bridge can carry files on a task (spec: Tasks →
-        // Attachments). Stated outright rather than left to the minor, because
-        // a composer that offers a paperclip against a bridge with no
-        // `tasks.attach` offers a press that cannot work.
-        // `watching`: the watch verbs, the read marks, and `tracker_task`
-        // rows on the inbox. Stated beside `attachments` rather than left to
-        // the minor, for the same reason — an inbox that offers a Done press
-        // against a bridge that cannot clear watched task rows offers one that cannot
-        // work.
-        "tasks": { "attachments": true, "watching": true },
-        "thread_post_operations": {
-            "version": 1,
-            "status_method": "thread.operation",
-            "states": ["queued", "claimed", "delivered", "uncertain"],
-        },
-        "message_context": { "version": 1 },
-    }))
+    Ok(greeting)
+}
+
+impl AppState {
+    /// Authoritative hello metadata without capturing an application event sink.
+    pub(crate) fn session_greeting(&self, bridge_epoch: &str) -> Value {
+        let changes = self.changes();
+        let qa_agent = self.qa_agent;
+        let journal_incarnation = self
+            .store
+            .as_ref()
+            .map(|store| store.journal_incarnation().to_owned());
+        json!({
+            "api_version": API_VERSION,
+            "bridge_epoch": bridge_epoch,
+            "journal_incarnation": journal_incarnation,
+            "capabilities": crate::api::capabilities(qa_agent),
+            "ack_confirm_methods": crate::api::writes::ACK_CONFIRM_METHODS,
+            "push_events": true,
+            "events": ANNOUNCED_EVENTS,
+            "coalesce_window_ms": changes.window().as_millis() as u64,
+            // What a Part 1 adapter reads instead of probing for
+            // `changes.subscribe`: whether this bridge serves subscriptions, the
+            // kinds it filters on, whether an item carries what moved or only
+            // its name, and the clamp on a batch interval.
+            "changes": {
+                "subscriptions": true,
+                "mode": "subscriptions",
+                "kinds": Kind::ALL.map(Kind::as_str),
+                // `"bodies"`: every item carries the shape it names, so a client
+                // paints from the push instead of refetching after it. The one
+                // older answer this replaces is `"names"`, which no bridge that
+                // reports this field ever sends.
+                "items": "bodies",
+                "batch_ms": { "min": MIN_BATCH_MS, "max": MAX_BATCH_MS },
+            },
+            // Whether this bridge can carry files on a task (spec: Tasks →
+            // Attachments). Stated outright rather than left to the minor, because
+            // a composer that offers a paperclip against a bridge with no
+            // `tasks.attach` offers a press that cannot work.
+            // `watching`: the watch verbs, the read marks, and `tracker_task`
+            // rows on the inbox. Stated beside `attachments` rather than left to
+            // the minor, for the same reason — an inbox that offers a Done press
+            // against a bridge that cannot clear watched task rows offers one that cannot
+            // work.
+            "tasks": { "attachments": true, "watching": true },
+            "thread_post_operations": {
+                "version": 1,
+                "status_method": "thread.operation",
+                "states": ["queued", "claimed", "delivered", "uncertain"],
+            },
+            "message_context": { "version": 1 },
+        })
+    }
 }
 
 /// The numeric suffix of a minted `term-<n>` id — the `term.list` sort key.
@@ -708,4 +712,299 @@ pub(in crate::app) fn shell_tab_rows(
         .collect();
     terminals.sort_by_key(|(suffix, _)| *suffix);
     terminals.into_iter().map(|(_, entry)| entry).collect()
+}
+
+#[cfg(test)]
+mod greeting_tests {
+    use super::*;
+    use crate::execution::session::{
+        ClientSessions, DeliveryError, EncodedEvent, EventSink, Opening, ReplySink, RequestContext,
+        StreamClass, VerifiedCaller,
+    };
+    use crate::execution::{ExecutionService, Invocation};
+
+    struct Reply;
+    impl ReplySink for Reply {
+        fn try_send(&self, _event: EncodedEvent) -> Result<(), DeliveryError> {
+            Ok(())
+        }
+    }
+    impl EventSink for Reply {
+        fn try_send(&self, _event: EncodedEvent) -> Result<(), DeliveryError> {
+            Ok(())
+        }
+    }
+
+    fn producer_state(root: &std::path::Path) -> Arc<Mutex<AppState>> {
+        AppState::new_unrooted(root, "main", true, "unused.sock")
+            .with_update_service(Arc::new(crate::update::UpdateService::disabled(
+                "0.2.0".into(),
+                "test".into(),
+            )))
+            .shared()
+    }
+
+    fn producer_tasks(
+        app: &AppState,
+        session_id: &str,
+        scope: (u64, Option<u64>),
+    ) -> [tokio::task::AbortHandle; 3] {
+        let subscriptions = [
+            &app.update_subscriptions,
+            &app.models_subscriptions,
+            &app.harnesses_subscriptions,
+        ];
+        std::array::from_fn(|index| {
+            assert_eq!(subscriptions[index].len(), 1);
+            let (context, task) = subscriptions[index].get(session_id).unwrap();
+            assert_eq!(context.read_scope(), scope);
+            assert!(context.events_are_live());
+            assert!(!task.is_finished());
+            task.abort_handle()
+        })
+    }
+
+    async fn shared_hello(service: &ExecutionService, request: RequestContext) -> Value {
+        let mut call = tokio::time::timeout(
+            Duration::from_secs(5),
+            service.submit(
+                request,
+                Invocation::decode("session.hello", &json!({})).unwrap(),
+            ),
+        )
+        .await
+        .expect("hello admission must settle")
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), call.reply())
+            .await
+            .expect("hello execution must settle")
+            .unwrap()
+    }
+
+    async fn retired(tasks: &[tokio::task::AbortHandle]) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while tasks.iter().any(|task| !task.is_finished()) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("replaced producer tasks must finish after cancellation");
+    }
+
+    #[tokio::test]
+    async fn execution_greeting_before_application_binding_registers_no_producers() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = producer_state(temp.path());
+        let service = ExecutionService::new(AppState::handler(state.clone()));
+        let session = service
+            .sessions()
+            .open(VerifiedCaller::verified_relay("device", Opening::new()))
+            .unwrap();
+        for _ in 0..2 {
+            let greeting = service.greeting(&session).unwrap();
+            assert_eq!(greeting["bridge_epoch"], crate::bridge_epoch::current());
+            assert_eq!(greeting["api_version"], API_VERSION);
+            let app = state.lock().unwrap();
+            assert!(app.update_subscriptions.is_empty());
+            assert!(app.models_subscriptions.is_empty());
+            assert!(app.harnesses_subscriptions.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn application_hello_upserts_and_ignores_retired_binding_requests_and_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = producer_state(temp.path());
+        let handler = AppState::handler(state.clone());
+        let service = ExecutionService::new(handler.clone());
+        let sessions = service.sessions();
+        let session = sessions
+            .open(VerifiedCaller::verified_relay("device", Opening::new()))
+            .unwrap();
+        let old = sessions
+            .bind_events(&session, StreamClass::Application, Arc::new(Reply))
+            .unwrap();
+        let request = sessions
+            .request(&session, Arc::new(Reply), Some(&old))
+            .unwrap();
+        assert_eq!(shared_hello(&service, request).await["ok"], true);
+        let first = producer_tasks(
+            &state.lock().unwrap(),
+            session.id(),
+            old.events().read_scope(),
+        );
+
+        let request = sessions
+            .request(&session, Arc::new(Reply), Some(&old))
+            .unwrap();
+        assert_eq!(shared_hello(&service, request).await["ok"], true);
+        retired(&first).await;
+        let repeated = producer_tasks(
+            &state.lock().unwrap(),
+            session.id(),
+            old.events().read_scope(),
+        );
+
+        let delayed = sessions
+            .request(&session, Arc::new(Reply), Some(&old))
+            .unwrap();
+        let successor = sessions
+            .replace_events(
+                &session,
+                StreamClass::Application,
+                Some(&old),
+                Arc::new(Reply),
+            )
+            .unwrap();
+        let request = sessions
+            .request(&session, Arc::new(Reply), Some(&successor))
+            .unwrap();
+        assert_eq!(shared_hello(&service, request).await["ok"], true);
+        retired(&repeated).await;
+        let current = producer_tasks(
+            &state.lock().unwrap(),
+            session.id(),
+            successor.events().read_scope(),
+        );
+
+        let _stale_reply = shared_hello(&service, delayed).await;
+        old.close();
+        handler.cleanup_outputs();
+        let retained = producer_tasks(
+            &state.lock().unwrap(),
+            session.id(),
+            successor.events().read_scope(),
+        );
+        assert!(current.iter().all(|task| !task.is_finished()));
+        assert!(retained.iter().all(|task| !task.is_finished()));
+        assert!(successor.is_live());
+
+        successor.close();
+        handler.cleanup_outputs();
+        retired(&retained).await;
+        let app = state.lock().unwrap();
+        assert!(app.update_subscriptions.is_empty());
+        assert!(app.models_subscriptions.is_empty());
+        assert!(app.harnesses_subscriptions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn greeting_without_events_registers_no_producers() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppState::new_unrooted(temp.path(), "main", true, "unused.sock").shared();
+        let sessions = ClientSessions::new(crate::bridge_epoch::current());
+        let session = sessions
+            .open(VerifiedCaller::verified_relay("device", Opening::new()))
+            .unwrap();
+        let request = sessions.request(&session, Arc::new(Reply), None).unwrap();
+        let sender = SessionSender::from_request(&request);
+        assert!(!sender.has_events());
+        let timer = crate::timing::FrameClock::new().frame("session.hello");
+        session_hello(&state, &sender, &json!({}), &timer).unwrap();
+        let app = state.lock().unwrap();
+        assert!(app.update_subscriptions.is_empty());
+        assert!(app.models_subscriptions.is_empty());
+        assert!(app.harnesses_subscriptions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn greeting_with_events_registers_application_producers() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppState::new_unrooted(temp.path(), "main", true, "unused.sock").shared();
+        let sender = SessionSender::legacy(
+            "events-client",
+            crate::execution::session::Opening::new(),
+            Arc::new(|_| true),
+        );
+        assert!(sender.has_events());
+        let timer = crate::timing::FrameClock::new().frame("session.hello");
+        session_hello(&state, &sender, &json!({}), &timer).unwrap();
+        let mut app = state.lock().unwrap();
+        assert!(app.models_subscriptions.contains_key(sender.session_id()));
+        assert!(app
+            .harnesses_subscriptions
+            .contains_key(sender.session_id()));
+        app.unsubscribe_models_changed(sender.session_id());
+        app.unsubscribe_harnesses_changed(sender.session_id());
+    }
+
+    #[tokio::test]
+    async fn replacement_producer_cleanup_preserves_successor_binding() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppState::new_unrooted(temp.path(), "main", true, "unused.sock").shared();
+        let opening = Opening::new();
+        let old_live = Arc::new(AtomicBool::new(true));
+        let check = old_live.clone();
+        let old = SessionSender::legacy("replaced-client", opening.clone(), Arc::new(|_| true))
+            .bound(
+                1,
+                Arc::new(move || check.load(Ordering::Acquire)),
+                Arc::new(Mutex::new(())),
+            );
+        let new = SessionSender::legacy("replaced-client", opening, Arc::new(|_| true)).bound(
+            2,
+            Arc::new(|| true),
+            Arc::new(Mutex::new(())),
+        );
+        let timer = crate::timing::FrameClock::new().frame("session.hello");
+        session_hello(&state, &old, &json!({}), &timer).unwrap();
+        let old_task = state
+            .lock()
+            .unwrap()
+            .models_subscriptions
+            .get(old.session_id())
+            .unwrap()
+            .1
+            .abort_handle();
+        old_live.store(false, Ordering::Release);
+        session_hello(&state, &new, &json!({}), &timer).unwrap();
+        let new_task = state
+            .lock()
+            .unwrap()
+            .models_subscriptions
+            .get(new.session_id())
+            .unwrap()
+            .1
+            .abort_handle();
+        let removed = state.lock().unwrap().prune_output_resources();
+        assert!(removed.is_empty());
+        tokio::task::yield_now().await;
+        assert!(
+            old_task.is_finished(),
+            "replacement retires the old producer"
+        );
+        assert!(
+            !new_task.is_finished(),
+            "old cleanup cannot abort its successor"
+        );
+        let mut app = state.lock().unwrap();
+        assert_eq!(
+            app.models_subscriptions
+                .get(new.session_id())
+                .unwrap()
+                .0
+                .read_scope(),
+            new.read_scope()
+        );
+        app.unsubscribe_models_changed(new.session_id());
+        app.unsubscribe_harnesses_changed(new.session_id());
+    }
+
+    #[test]
+    fn authoritative_greeting_matches_legacy_hello_without_a_sink() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = AppState::new_unrooted(temp.path(), "main", true, "unused.sock");
+        let sender = SessionSender::detached("greeting-client");
+        let expected = app.session_greeting(sender.bridge_epoch());
+        let state = app.shared();
+        let timer = crate::timing::FrameClock::new().frame("session.hello");
+        let actual = session_hello(&state, &sender, &json!({}), &timer).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(expected["bridge_epoch"], sender.bridge_epoch());
+        assert_eq!(
+            expected["ack_confirm_methods"],
+            json!(crate::api::writes::ACK_CONFIRM_METHODS)
+        );
+    }
 }

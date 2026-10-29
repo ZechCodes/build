@@ -999,7 +999,10 @@ fn fs_upload_verbs_and_directory_creation_refuse_a_reserved_workspace() {
         .unwrap();
     let sender = SessionSender::detached("upload-user");
     let scoped_call = |method, params| {
-        crate::api::v1::changes::with_session(&sender, || call(&state, method, params))
+        state
+            .lock()
+            .unwrap()
+            .handle_with_context(req(method, params), Some(&sender))
     };
     let begun = scoped_call(
         "fs.uploadBegin",
@@ -1053,7 +1056,10 @@ fn fs_upload_staging_in_ignored_directory_survives_automatic_prune() {
         .unwrap();
     let sender = SessionSender::detached("upload-user");
     let upload = |method, params| {
-        crate::api::v1::changes::with_session(&sender, || call(&state, method, params))
+        state
+            .lock()
+            .unwrap()
+            .handle_with_context(req(method, params), Some(&sender))
     };
     let begun = upload(
         "fs.uploadBegin",

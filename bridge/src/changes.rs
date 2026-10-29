@@ -1707,23 +1707,50 @@ impl ChangeBus {
     /// subscription turned back on has no gap in what it will report.
     pub fn subscribe(&self, session: &SessionSender, sub: SubscriptionSpec) -> SubscribeOutcome {
         let watch = self.watch_state(&sub);
+        // Compatibility callers cannot report admission errors. Retired contexts
+        // still must not install or replace a live subscription.
+        self.try_subscribe(session, sub)
+            .unwrap_or(SubscribeOutcome { watch })
+    }
+
+    pub fn try_subscribe(
+        &self,
+        session: &SessionSender,
+        sub: SubscriptionSpec,
+    ) -> Result<SubscribeOutcome, crate::api::ApiError> {
+        let watch = self.watch_state(&sub);
         let now = Instant::now();
         let mut subscriptions = self.subscriptions.lock().unwrap();
-        match subscriptions
+        if !session.events_are_live() {
+            return Err(crate::api::ApiError::unavailable(
+                "application event binding has ended",
+            ));
+        }
+        subscriptions.retain(|existing| existing.session.events_are_live());
+        let existing = subscriptions
             .iter_mut()
-            .find(|existing| existing.is(session.session_id(), &sub.id))
-        {
+            .find(|existing| existing.matches_context(session) && existing.spec.id == sub.id);
+        match existing {
             Some(existing) => {
                 existing.rescope(&sub.scope);
                 existing.rekind(&sub.kinds);
                 existing.spec = sub;
-                existing.session = session.clone();
+                existing.session = session.event_context();
             }
-            None => subscriptions.push(Subscription::new(sub, session.clone(), now)),
+            None => {
+                let owned = subscriptions
+                    .iter()
+                    .filter(|existing| existing.matches_context(session))
+                    .count();
+                if session
+                    .logical_subscription_limit()
+                    .is_some_and(|limit| owned >= limit)
+                {
+                    return Err(crate::api::ApiError::busy("too many logical subscriptions"));
+                }
+                subscriptions.push(Subscription::new(sub, session.event_context(), now));
+            }
         }
-        // Only when it already holds something: an upsert off `off` has a
-        // deadline the parked flusher has not seen, while a fresh empty
-        // subscription would only wake it to find nothing.
         let holding = subscriptions
             .iter()
             .any(|existing| !existing.pending.is_empty());
@@ -1731,7 +1758,30 @@ impl ChangeBus {
         if holding {
             self.wake.notify_one();
         }
-        SubscribeOutcome { watch }
+        Ok(SubscribeOutcome { watch })
+    }
+
+    /// Remove only resources captured by this exact opening and event binding.
+    pub fn unsubscribe_scoped(&self, session: &SessionSender) {
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .retain(|sub| !sub.matches_context(session));
+    }
+
+    pub fn unsubscribe_one_scoped(&self, session: &SessionSender, sub_id: &str) {
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .retain(|sub| !(sub.matches_context(session) && sub.spec.id == sub_id));
+    }
+
+    /// Periodic retirement releases producers even when no changes are pending.
+    pub fn prune_closed(&self) -> usize {
+        let mut subscriptions = self.subscriptions.lock().unwrap();
+        let before = subscriptions.len();
+        subscriptions.retain(|sub| sub.session.events_are_live());
+        before - subscriptions.len()
     }
 
     /// Stop hearing anything — the session closed.
@@ -2026,7 +2076,7 @@ impl ChangeBus {
             .map(|fact| (fact.entity_id.as_str(), fact))
             .collect();
         let revision = self.board_revision();
-        let mut dead: Vec<String> = Vec::new();
+        let mut dead: Vec<SessionSender> = Vec::new();
         let mut frames = 0;
         for (frame, payload) in due.frames.iter().flat_map(|frame| {
             frame
@@ -2054,11 +2104,11 @@ impl ChangeBus {
                     self.record_changes_delivery(frame, &by_entity, carries_changes);
                 }
                 Some(Sent::Stale) => {}
-                Some(Sent::Gone) | None => dead.push(frame.session.session_id().to_string()),
+                Some(Sent::Gone) | None => dead.push(frame.session.clone()),
             }
         }
-        for session_id in dead {
-            self.unsubscribe(&session_id);
+        for session in dead {
+            self.unsubscribe_scoped(&session);
         }
         frames
     }
@@ -2084,7 +2134,7 @@ impl ChangeBus {
     ///
     /// A stale frame's items the new scope still covers, and its board
     /// lists, go back on the subscription for its next frame.
-    fn send_if_current(&self, frame: &DueFrame, sealed: crate::carrier::OutboundEnvelope) -> Sent {
+    fn send_if_current(&self, frame: &DueFrame, sealed: crate::execution::PreparedOutput) -> Sent {
         let mut subscriptions = self.subscriptions.lock().unwrap();
         let Some(sub) = subscriptions.iter_mut().find(|sub| sub.took(frame)) else {
             return Sent::Stale;
@@ -2246,6 +2296,11 @@ impl ChangeBus {
 }
 
 impl Subscription {
+    fn matches_context(&self, session: &SessionSender) -> bool {
+        self.session.session_id() == session.session_id()
+            && self.session.read_scope() == session.read_scope()
+    }
+
     fn is(&self, session_id: &str, sub_id: &str) -> bool {
         self.session.session_id() == session_id && self.spec.id == sub_id
     }
@@ -2254,7 +2309,8 @@ impl Subscription {
     /// recreated under its id since.
     fn took(&self, frame: &DueFrame) -> bool {
         self.instance == frame.instance
-            && self.is(frame.session.session_id(), &frame.subscription_id)
+            && self.matches_context(&frame.session)
+            && self.spec.id == frame.subscription_id
     }
 }
 
@@ -4764,5 +4820,193 @@ mod compaction_events {
             .unwrap();
         assert!(board["state"].get("removed").is_none());
         assert!(items.iter().any(|item| item["entity_id"] == "run-old"));
+    }
+}
+
+#[cfg(test)]
+mod binding_resources {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    fn spec(id: &str, kind: Kind) -> SubscriptionSpec {
+        SubscriptionSpec {
+            id: id.into(),
+            scope: Scope::All,
+            kinds: [kind].into_iter().collect(),
+            mode: Mode::Realtime,
+            priority: Priority::Background,
+        }
+    }
+
+    fn bound(
+        opening: crate::execution::session::Opening,
+        scope: u64,
+    ) -> (SessionSender, Arc<AtomicBool>) {
+        let live = Arc::new(AtomicBool::new(true));
+        let check = live.clone();
+        let context = SessionSender::legacy("same-session", opening, Arc::new(|_| true)).bound(
+            scope,
+            Arc::new(move || check.load(Ordering::Acquire)),
+            Arc::new(Mutex::new(())),
+        );
+        (context, live)
+    }
+
+    #[derive(Default)]
+    struct Sink;
+    impl crate::execution::session::EventSink for Sink {
+        fn try_send(
+            &self,
+            _: crate::execution::session::EncodedEvent,
+        ) -> Result<(), crate::execution::session::DeliveryError> {
+            Ok(())
+        }
+    }
+    impl crate::execution::session::ReplySink for Sink {
+        fn try_send(
+            &self,
+            _: crate::execution::session::EncodedEvent,
+        ) -> Result<(), crate::execution::session::DeliveryError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn logical_subscription_retains_event_proof_without_request_reply_resources() {
+        use crate::execution::session::{ClientSessions, Opening, StreamClass, VerifiedCaller};
+        use std::sync::atomic::AtomicUsize;
+        struct ReplyDrop(Arc<AtomicUsize>);
+        impl Drop for ReplyDrop {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        impl crate::execution::session::ReplySink for ReplyDrop {
+            fn try_send(
+                &self,
+                _: crate::execution::session::EncodedEvent,
+            ) -> Result<(), crate::execution::session::DeliveryError> {
+                Ok(())
+            }
+        }
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions
+            .open(VerifiedCaller::verified_relay("device", Opening::new()))
+            .unwrap();
+        let events = sessions
+            .bind_events(&session, StreamClass::Application, Arc::new(Sink))
+            .unwrap();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let request = sessions
+            .request(
+                &session,
+                Arc::new(ReplyDrop(dropped.clone())),
+                Some(&events),
+            )
+            .unwrap();
+        let caller = SessionSender::from_request(&request);
+        let bus = ChangeBus::new(Duration::ZERO);
+        bus.try_subscribe(&caller, spec("one", Kind::State))
+            .unwrap();
+        drop(caller);
+        drop(request);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(bus.list(session.id()).len(), 1);
+        assert!(bus.subscriptions.lock().unwrap()[0]
+            .session
+            .events_are_live());
+    }
+
+    #[test]
+    fn logical_subscription_limit_is_atomic_and_recovers_after_replacement() {
+        use crate::execution::session::{ClientSessions, Opening, StreamClass, VerifiedCaller};
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions
+            .open(VerifiedCaller::verified_relay("device", Opening::new()))
+            .unwrap();
+        let first = sessions
+            .bind_events(&session, StreamClass::Application, Arc::new(Sink))
+            .unwrap();
+        let request = sessions
+            .request(&session, Arc::new(Sink), Some(&first))
+            .unwrap();
+        let caller = SessionSender::from_request(&request);
+        let bus = Arc::new(ChangeBus::new(Duration::ZERO));
+        std::thread::scope(|scope| {
+            for index in 0..16 {
+                let bus = bus.clone();
+                let caller = caller.clone();
+                scope.spawn(move || {
+                    let _ = bus.try_subscribe(&caller, spec(&format!("id-{index}"), Kind::State));
+                });
+            }
+        });
+        assert_eq!(bus.list(session.id()).len(), 8);
+        let id = bus.list(session.id())[0].id.clone();
+        bus.try_subscribe(&caller, spec(&id, Kind::Files)).unwrap();
+        assert_eq!(
+            bus.try_subscribe(&caller, spec("excess", Kind::State))
+                .unwrap_err()
+                .code(),
+            "busy"
+        );
+        let second = sessions
+            .replace_events(
+                &session,
+                StreamClass::Application,
+                Some(&first),
+                Arc::new(Sink),
+            )
+            .unwrap();
+        let request = sessions
+            .request(&session, Arc::new(Sink), Some(&second))
+            .unwrap();
+        let successor = SessionSender::from_request(&request);
+        bus.try_subscribe(&successor, spec("fresh", Kind::State))
+            .unwrap();
+        bus.unsubscribe_scoped(&caller);
+        assert_eq!(bus.list(session.id()).len(), 1);
+        second.close();
+        assert_eq!(bus.prune_closed(), 1);
+    }
+
+    #[test]
+    fn replacement_refuses_late_subscribe_and_scopes_old_teardown() {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let opening = crate::execution::session::Opening::new();
+        let (old, live) = bound(opening.clone(), 1);
+        let (new, _) = bound(opening, 2);
+        bus.try_subscribe(&old, spec("shared", Kind::State))
+            .unwrap();
+        live.store(false, Ordering::Release);
+        bus.try_subscribe(&new, spec("shared", Kind::Files))
+            .unwrap();
+        assert!(bus.try_subscribe(&old, spec("shared", Kind::Git)).is_err());
+        bus.unsubscribe_one_scoped(&old, "shared");
+        bus.unsubscribe_scoped(&old);
+        let held = bus.subscriptions.lock().unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].session.read_scope(), new.read_scope());
+        assert!(held[0].spec.kinds.contains(Kind::Files));
+    }
+
+    #[test]
+    fn failed_old_delivery_and_pruning_leave_successor_subscription() {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let opening = crate::execution::session::Opening::new();
+        let (old, live) = bound(opening.clone(), 1);
+        let (new, _) = bound(opening, 2);
+        bus.try_subscribe(&old, spec("shared", Kind::State))
+            .unwrap();
+        bus.note_entity("entity");
+        let due = bus.take_due();
+        live.store(false, Ordering::Release);
+        bus.try_subscribe(&new, spec("shared", Kind::Files))
+            .unwrap();
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        bus.prune_closed();
+        let held = bus.subscriptions.lock().unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].session.read_scope(), new.read_scope());
     }
 }

@@ -155,7 +155,7 @@ impl MutationService {
                 hook();
             }
             let subscription = Subscription {
-                sender: sender.clone(),
+                sender: sender.event_context(),
                 ids: params.operation_ids.into_iter().collect(),
                 cursor,
                 identity: Arc::new(()),

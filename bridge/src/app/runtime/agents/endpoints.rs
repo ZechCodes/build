@@ -6,7 +6,7 @@ use crate::app::{
 };
 #[cfg(test)]
 use crate::app::{Tab, TabRole};
-use crate::carrier::SessionSender;
+use crate::execution::CallContext as SessionSender;
 use crate::harness::harness_for;
 use crate::harness::installed::held_refusal;
 use crate::harness::AgentStatus;
@@ -21,6 +21,18 @@ use std::sync::{Arc, Mutex};
 
 /// The most of an opening message a bubble's title wears.
 const TITLE_MAX_CHARS: usize = 120;
+
+#[derive(Debug)]
+pub(in crate::app) enum ScopedEndpointError {
+    Ended,
+    Domain(String),
+}
+
+impl From<String> for ScopedEndpointError {
+    fn from(error: String) -> Self {
+        Self::Domain(error)
+    }
+}
 
 /// The agent a verb's parameters name, resolved whole.
 ///
@@ -186,18 +198,22 @@ pub(in crate::app) fn agent_attach(
 /// none.
 pub(in crate::app) fn agent_start(
     state: &Arc<Mutex<AppState>>,
+    sender: &SessionSender,
     params: &Value,
     timer: &FrameTimer,
-) -> Result<Value, String> {
+) -> Result<Value, ScopedEndpointError> {
     let agent = {
         let mut s = timer.lock(state);
+        if !sender.read_is_live() {
+            return Err(ScopedEndpointError::Ended);
+        }
         let requested_entity = params
             .get("id")
             .or_else(|| params.get("run_id"))
             .or_else(|| params.get("plan_id"))
             .and_then(Value::as_str);
         if requested_entity.is_some_and(|entity_id| s.plans.contains_key(entity_id)) {
-            return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
+            return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string().into());
         }
         let agent = s.addressed_agent(params)?;
         s.delivery_queue.enqueue(PendingAgentTurn {
@@ -242,16 +258,20 @@ pub(in crate::app) fn agent_start(
 /// session or posting anything to its conversation.
 pub(in crate::app) fn agent_interrupt(
     state: &Arc<Mutex<AppState>>,
+    sender: &SessionSender,
     params: &Value,
     timer: &FrameTimer,
-) -> Result<Value, String> {
-    let entity_id = require_str(params, "entity_id")?;
-    let agent_id = require_str(params, "agent_id")?;
-    let conversation_id = require_str(params, "conversation_id")?;
-    let session = {
+) -> Result<Value, ScopedEndpointError> {
+    let (entity_id, agent_id, conversation_id, session) = {
         let s = timer.lock(state);
+        if !sender.read_is_live() {
+            return Err(ScopedEndpointError::Ended);
+        }
+        let entity_id = require_str(params, "entity_id")?;
+        let agent_id = require_str(params, "agent_id")?;
+        let conversation_id = require_str(params, "conversation_id")?;
         if s.plans.contains_key(&entity_id) {
-            return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
+            return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string().into());
         }
         let address = s.resolve_conversation_address(&entity_id, Some(&agent_id))?;
         s.guard_mutation_thread_id(&address, params.get("thread_id"))?;
@@ -259,7 +279,7 @@ pub(in crate::app) fn agent_interrupt(
             return Err(format!(
                 "agent.interrupt: stale conversation_id {conversation_id}; agent {agent_id} is bound to {}",
                 address.conversation_id
-            ));
+            ).into());
         }
         let root = s.entity_agent_root(&entity_id)?;
         let tab = s
@@ -275,20 +295,36 @@ pub(in crate::app) fn agent_interrupt(
             });
         if !exact {
             return Err(
-                "agent.interrupt: the running session does not match this conversation".to_string(),
+                "agent.interrupt: the running session does not match this conversation"
+                    .to_string()
+                    .into(),
             );
         }
         if !tab.live || matches!(tab.session.status(), AgentStatus::Ended { .. }) {
-            return Err("agent.interrupt: this agent has no running session".to_string());
+            return Err("agent.interrupt: this agent has no running session"
+                .to_string()
+                .into());
         }
         if !matches!(tab.session.status(), AgentStatus::Working) {
-            return Err("agent.interrupt: this agent is not running a turn".to_string());
+            return Err("agent.interrupt: this agent is not running a turn"
+                .to_string()
+                .into());
         }
         if !tab.session.can_interrupt() {
-            return Err("agent.interrupt: this running turn cannot be interrupted".to_string());
+            return Err("agent.interrupt: this running turn cannot be interrupted"
+                .to_string()
+                .into());
         }
-        Arc::clone(&tab.session)
+        (
+            entity_id,
+            agent_id,
+            conversation_id,
+            Arc::clone(&tab.session),
+        )
     };
+    if !sender.read_is_live() {
+        return Err(ScopedEndpointError::Ended);
+    }
     session
         .interrupt()
         .map_err(|error| format!("agent.interrupt: {error}"))?;
@@ -1699,5 +1735,79 @@ impl AppState {
             .entity_agents(&address.conversation_entity_id)?
             .resolve(Some(&address.conversation_id))?;
         Ok(agent.thread.session_instance_is_named(instance, named))
+    }
+}
+
+#[cfg(test)]
+mod scoped_authorization_tests {
+    use super::*;
+    use crate::execution::session::{
+        ClientSessions, DeliveryError, EncodedEvent, Opening, ReplySink, VerifiedCaller,
+    };
+
+    struct Reply;
+    impl ReplySink for Reply {
+        fn try_send(&self, _event: EncodedEvent) -> Result<(), DeliveryError> {
+            Ok(())
+        }
+    }
+
+    type Endpoint = fn(
+        &Arc<Mutex<AppState>>,
+        &SessionSender,
+        &Value,
+        &FrameTimer,
+    ) -> Result<Value, ScopedEndpointError>;
+
+    fn reject_after_lock_wait(endpoint: Endpoint, cancel_request: bool) {
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppState::new_unrooted(temp.path(), "main", true, "unused.sock").shared();
+        let sessions = ClientSessions::new(crate::bridge_epoch::current());
+        let session = sessions
+            .open(VerifiedCaller::verified_relay("device", Opening::new()))
+            .unwrap();
+        let request = sessions.request(&session, Arc::new(Reply), None).unwrap();
+        let context = SessionSender::from_request(&request);
+        assert!(context.read_is_live());
+        let held = state.lock().unwrap();
+        let caller_state = state.clone();
+        let (started, waiting) = std::sync::mpsc::channel();
+        let caller = std::thread::spawn(move || {
+            let timer = crate::timing::FrameClock::new().frame("agent.endpoint");
+            started.send(()).unwrap();
+            endpoint(&caller_state, &context, &json!({}), &timer)
+        });
+        waiting.recv().unwrap();
+        if cancel_request {
+            request.cancellation().cancel();
+        } else {
+            sessions.close(&session);
+        }
+        drop(held);
+        assert!(matches!(
+            caller.join().unwrap(),
+            Err(ScopedEndpointError::Ended)
+        ));
+        assert!(state.lock().unwrap().delivery_queue.is_idle());
+    }
+
+    #[test]
+    fn start_cancelled_during_effect_lock_wait_stops_before_lookup() {
+        reject_after_lock_wait(agent_start, true);
+    }
+
+    #[test]
+    fn interrupt_cancelled_during_effect_lock_wait_stops_before_lookup() {
+        reject_after_lock_wait(agent_interrupt, true);
+    }
+
+    #[test]
+    fn start_authorization_ended_during_effect_lock_wait_stops_before_lookup() {
+        reject_after_lock_wait(agent_start, false);
+    }
+
+    #[test]
+    fn interrupt_authorization_ended_during_effect_lock_wait_stops_before_lookup() {
+        reject_after_lock_wait(agent_interrupt, false);
     }
 }

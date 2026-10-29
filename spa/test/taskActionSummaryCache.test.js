@@ -157,3 +157,50 @@ it("exposes a guarded bounded mutation fragment that can share a caller transact
   expect((await value(summaries.summaryAddress(scope, taskId))).task.title).toBe("Fragment");
   expect(() => summaries.summaryTaskMutation(scope, { id: taskId }, read, { fullTask: "yes" })).toThrow();
 });
+
+it("retains incomplete full-action counter families until a complete covering summary arrives", async () => {
+  await seed();
+  const answer = full({ read_through: "tc-20", updated_at: "2026-10-29T12:01:00Z" });
+  for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) delete answer[field];
+  await action(answer);
+  let held = await value(summaries.summaryAddress(scope, taskId));
+  expect(held).toMatchObject({ needs_unread_refresh: true, task: { read_through: "tc-20", unread_count: 3, unread_mentions: 1, unread_agent_comments: 2 } });
+  async function refresh(task) {
+    const read = await order.nextTaskRead(), ticket = await summaries.beginSummaryQuery(scope, filters, read);
+    await summaries.landSummaryPage(ticket, { summary: true, tasks: [task], basis: "opaque-after" }, { read });
+  }
+  const incomplete = { ...base(), updated_at: answer.updated_at, read_through: "tc-20", unread_count: 0 };
+  delete incomplete.unread_mentions; delete incomplete.unread_agent_comments;
+  await refresh(incomplete);
+  expect((await value(summaries.summaryAddress(scope, taskId))).needs_unread_refresh).toBe(true);
+  await refresh({ ...incomplete, unread_mentions: 0, unread_agent_comments: 0 });
+  held = await value(summaries.summaryAddress(scope, taskId));
+  expect(held.needs_unread_refresh).toBe(false);
+  expect(held.task).toMatchObject({ unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 });
+});
+
+it("compares raw full-action floors before merging held values and never certifies weaker counters", async () => {
+  await seed(base({ read_through: "tc-20", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 }));
+  const answer = full({ unread_count: 9, unread_mentions: 3, unread_agent_comments: 4, updated_at: "2026-10-29T12:01:00Z" });
+  delete answer.read_through; delete answer.watch_started_after;
+  await action(answer);
+  expect(await value(summaries.summaryAddress(scope, taskId))).toMatchObject({ needs_unread_refresh: true,
+    task: { read_through: "tc-20", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 } });
+});
+
+it("marks counter authority incomplete when a compact patch advances its floor without paired counters", async () => {
+  await seed();
+  await summaries.writeSummaryTask(scope, { id: taskId, read_through: "tc-20" }, await order.nextTaskRead());
+  expect(await value(summaries.summaryAddress(scope, taskId))).toMatchObject({ needs_unread_refresh: true,
+    task: { read_through: "tc-20", unread_count: 3, unread_mentions: 1, unread_agent_comments: 2 } });
+  await action(full({ watched: false, updated_at: "2026-10-29T12:01:00Z" }));
+  expect((await value(summaries.summaryAddress(scope, taskId))).needs_unread_refresh).toBe(false);
+});
+
+it("rejects an older issued action after a newer same-timestamp action committed", async () => {
+  await seed(); const first = await order.nextTaskRead(), second = await order.nextTaskRead();
+  await action(full({ watched: false, title: "Newer action" }), { issuedRead: second });
+  const before = await snapshot();
+  expect(await action(full({ watched: true, title: "Older action" }), { issuedRead: first })).toBe(false);
+  expect(await snapshot()).toEqual(before);
+});

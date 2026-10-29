@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { assigneesOf, filterTasks, taskListParams } from "../src/core/trackerFilters.js";
+import { taskIsHeld } from "../src/core/trackerTaskReadiness.js";
 
 const exact = "agent:AgentA\0suffix";
 const actor = { kind: "agent", agent_id: "AgentA\0suffix" };
@@ -19,11 +21,12 @@ const rows = [
 ];
 
 // Oracle one is the server contract, pinned independently as expected IDs.
-// See bridge/src/app/tests/tracker_query_choice_roundtrip.rs:
-// pending_assignment_transitions and pending_only_any_choice_disappears_on_cancel.
+// AssigneeFilter::matches consumes Option<&Value>, not target.kind truthiness.
+// Store maps an active intent to &intent.target even for Value::Null. These
+// source rules apply to both scalar lists and plural TaskSelections.
 const canonical = [
-  ["any", ["waiting", "queued", "provisioning", "failed", "pending-user", "pending-workspace", "assigned", "prefix", "replacement", "different-target"]],
-  ["none", ["missing-target", "consumed", "cancelled", "unassigned"]],
+  ["any", ["waiting", "queued", "provisioning", "failed", "pending-user", "pending-workspace", "missing-target", "assigned", "prefix", "replacement", "different-target"]],
+  ["none", ["consumed", "cancelled", "unassigned"]],
   [exact, ["assigned"]],
   ["agent:AgentA", ["prefix"]],
   ["agent:AgentA\uFFFDsuffix", ["replacement"]],
@@ -56,7 +59,7 @@ describe.each(["whole cached task", "summary projection"])("canonical pending me
       const before = ids(tasks.filter((task) => previousConsumer(task, want)));
       return { want, added: expected.filter((id) => !before.includes(id)), removed: before.filter((id) => !expected.includes(id)) };
     }).filter(({ added, removed }) => added.length || removed.length);
-    const pendingIds = ["waiting", "queued", "provisioning", "failed", "pending-user", "pending-workspace"];
+    const pendingIds = ["waiting", "queued", "provisioning", "failed", "pending-user", "pending-workspace", "missing-target"];
     expect(differences).toEqual([
       { want: "any", added: pendingIds, removed: [] },
       { want: "none", added: [], removed: pendingIds },
@@ -65,9 +68,94 @@ describe.each(["whole cached task", "summary projection"])("canonical pending me
 
   it("unions real exact actors and pending held choices without inventing target membership", () => {
     expect(ids(filterTasks(tasks, { assignee: ["none", exact] })))
-      .toEqual(["missing-target", "consumed", "cancelled", "unassigned", "assigned"]);
+      .toEqual(["consumed", "cancelled", "unassigned", "assigned"]);
     expect(assigneesOf(tasks).map(({ value }) => value))
       .toEqual([exact, "agent:AgentA", "agent:AgentA\uFFFDsuffix", "user"]);
+  });
+});
+
+describe("pending presence independent of the previous kind-based held consumer", () => {
+  it("pins canonical Option presence and Store target extraction", () => {
+    const source = (path) => readFileSync(new URL(`../../bridge/src/${path}`, import.meta.url), "utf8");
+    const filters = source("app/tracker/edits.rs");
+    const store = source("store/tracker.rs");
+    expect(filters).toContain("AssigneeFilter::Unassigned => task.assignee.is_none() && pending_target.is_none()");
+    expect(filters).toContain("AssigneeFilter::Assigned => task.assignee.is_some() || pending_target.is_some()");
+    expect(filters).toContain("AssigneeFilter::Exactly(wanted) => task.assignee.as_ref() == Some(wanted)");
+    expect(store).toContain('"waiting" | "queued" | "provisioning" | "failed"');
+    expect(store).toContain(".map(|intent| &intent.target)");
+    expect(source("store/delivery_intents.rs")).toContain("pub target: Value");
+    const selections = source("app/tracker/selections.rs");
+    expect(selections).toContain(".any(|filter| filter.matches(task, pending))");
+    expect(selections).toContain('AssigneeFilter::Assigned => !row["assignee"].is_null() || pending.is_some()');
+  });
+
+  const targets = [
+    ["null target", null, false],
+    ["missing kind", {}, false],
+    ["null kind", { kind: null }, false],
+    ["empty kind", { kind: "" }, false],
+    ["false kind", { kind: false }, false],
+    ["zero kind", { kind: 0 }, false],
+    ["NUL kind", { kind: "\0" }, true],
+    ["Unicode kind", { kind: "用户\u{10000}" }, true],
+    ["whitespace kind", { kind: " \t" }, true],
+    ["array kind", { kind: [] }, true],
+    ["object kind", { kind: {} }, true],
+    ["numeric kind", { kind: 1 }, true],
+    ["boolean kind", { kind: true }, true],
+    ["exact actor target", actor, true],
+    ["user target", { kind: "user" }, true],
+    ["project target", { kind: "project_agent" }, true],
+  ];
+  const activeStates = ["waiting", "queued", "provisioning", "failed"];
+
+  describe.each(activeStates)("active %s delivery", (state) => {
+    it.each(targets)("uses pending presence for %s without manufacturing exact actor membership", (_label, target, heldBefore) => {
+      const task = pending("pending", state, target);
+      // Two independent oracles: the prior held consumer's literal result,
+      // and the source's Some(&intent.target), including Some(&Value::Null).
+      expect(taskIsHeld(task)).toBe(heldBefore);
+      expect(ids(filterTasks([task], { assignee: "any" }))).toEqual(["pending"]);
+      expect(filterTasks([task], { assignee: "none" })).toEqual([]);
+      for (const want of [exact, "user", "project_agent"]) {
+        expect(filterTasks([task], { assignee: want })).toEqual([]);
+      }
+    });
+  });
+
+  it.each(["consumed", "cancelled", "", "waiting\0", "等待", undefined])(
+    "does not infer pending presence from target for inactive state %j", (state) => {
+      for (const [, target] of targets) {
+        const task = pending("inactive", state, target);
+        expect(taskIsHeld(task)).toBe(false);
+        expect(filterTasks([task], { assignee: "any" })).toEqual([]);
+        expect(ids(filterTasks([task], { assignee: "none" }))).toEqual(["inactive"]);
+      }
+    },
+  );
+
+  it("keeps an actual typed assignee authoritative regardless of pending target or state", () => {
+    for (const state of [...activeStates, "consumed", "cancelled"]) {
+      for (const [, target] of targets) {
+        const task = { ...pending("actual", state, target), assignee: actor };
+        expect(ids(filterTasks([task], { assignee: "any" }))).toEqual(["actual"]);
+        expect(filterTasks([task], { assignee: "none" })).toEqual([]);
+        expect(ids(filterTasks([task], { assignee: exact }))).toEqual(["actual"]);
+        expect(filterTasks([task], { assignee: "user" })).toEqual([]);
+      }
+    }
+  });
+
+  it("records the exact visible difference from the kind-based held consumer", () => {
+    const tasks = targets.map(([id, target]) => pending(id, "waiting", target));
+    const previousAssigned = ids(tasks.filter(taskIsHeld));
+    const assigned = ids(filterTasks(tasks, { assignee: "any" }));
+    const previousUnassigned = ids(tasks.filter((task) => !taskIsHeld(task)));
+    const unassigned = ids(filterTasks(tasks, { assignee: "none" }));
+    const changed = ["null target", "missing kind", "null kind", "empty kind", "false kind", "zero kind"];
+    expect(assigned.filter((id) => !previousAssigned.includes(id))).toEqual(changed);
+    expect(previousUnassigned.filter((id) => !unassigned.includes(id))).toEqual(changed);
   });
 });
 

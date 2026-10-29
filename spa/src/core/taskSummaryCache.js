@@ -98,7 +98,7 @@ function entityFields(task) {
 }
 
 function pageRow(held, task, read, basis) {
-  return { ...summaryValue(held, entityFields(task), read), basis: held?.read_order > read ? held.basis : basis };
+  return { ...summaryValue(held, entityFields(task), read), basis: olderRow(held, task, read) ? held?.basis : basis };
 }
 
 const newerObservation = (observation, read, basis) => observation?.read_order > read ? null : { read_order: read, basis };
@@ -202,8 +202,9 @@ export function writeSummaryTask(scope, task, read, { accept = () => true, fullT
 
 /** Cache-only reconstruction. Loaded membership never claims a project total
  * and an absent entity is never inferred to be deleted by a partial query. */
-const rowOvertaken = (held, row, read) => row?.needs_unread_refresh
+const rowOvertaken = (held, row, read) => row?.needs_unread_refresh || differentBasis(held, row)
   || (row?.read_order || 0) > read && !unchangedBasis(held, row);
+const differentBasis = (held, row) => Boolean(held.basis && row?.basis && held.basis !== row.basis);
 const rowsOvertaken = (held, records) => held.ids.some((id, index) => rowOvertaken(held, records[index]?.value, held.row_reads?.[id] || 0));
 
 export async function readSummaryQuery(scope, filters) {

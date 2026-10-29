@@ -57,6 +57,7 @@ pub(crate) fn diagnostic_debug(session_id: &str, event: &str) {
 
 #[cfg(test)]
 mod backpressure_tests;
+pub mod binding;
 mod checks;
 pub(crate) mod chunk;
 pub(crate) mod client_hint;

@@ -20,7 +20,7 @@ const OWNERS = {
   "core/mermaidRenderer.js": ["core/markdownMermaid.js"],
   "core/mermaidSvg.js": ["core/mermaidRenderer.js"],
   "core/markdownBlockScopes.js": ["core/markdownDetails.js", "core/markdownFootnotes.js"],
-  "core/markdownRefs.js": ["core/markdownLinks.js"],
+  "core/markdownRefs.js": ["core/markdownLinks.js", "core/taskReferenceLookups.js"],
   "core/markdownLinks.js": ["core/markdown.js", "core/markdownInline.js"],
   "core/markdownBlocks.js": ["core/markdown.js"],
   "core/markdownDetails.js": ["core/markdownBlocks.js"],

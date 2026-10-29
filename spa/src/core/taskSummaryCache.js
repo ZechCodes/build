@@ -236,8 +236,11 @@ export async function readSummaryQuery(scope, filters) {
   const [invalidation, observation, ...records] = await readCachedMany([
     invalidationAddress(scope), observationAddress(scope), ...held.ids.map((id) => summaryAddress(scope, id)), ...ids.map((id) => identityAddress(scope, id)),
   ]);
+  const missingIds = held.ids.filter((_id, index) => !records[index]?.value?.task);
   return { ...held,
-    stale: queryOvertaken(held, invalidation?.value, observation?.value) || rowsOvertaken(held, records),
+    complete: held.complete && missingIds.length === 0,
+    missing_ids: missingIds,
+    stale: missingIds.length > 0 || queryOvertaken(held, invalidation?.value, observation?.value) || rowsOvertaken(held, records),
     tasks: records.slice(0, held.ids.length).flatMap((record, index) => record?.value?.task
       ? [{ ...record.value.task, ...held.row_fields?.[held.ids[index]] }] : []),
     identities: Object.fromEntries(ids.flatMap((id, index) => {

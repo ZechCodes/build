@@ -460,6 +460,15 @@ authoritative. A newer HTTP adapter must not advertise pending #887 semantics.
 SPA adapter changes must feed the existing cache/RPC machinery; views still
 render from cache with no transport-aware product logic.
 
+#905's Add by URL client release requires full nonterminal resource coverage
+for the advertised client capabilities. An automation-only method subset does
+not authorize enabling that connection UI. A terminal HTTP stream needs its
+own implemented flow-control/ordering coverage before advertisement; the
+shared boundary preserves the existing WebRTC terminal regardless. Desktop
+uses its native main-process adapter for scoped device tokens while retaining
+the existing restricted renderer OAuth interception. #905 owns that client
+integration and coverage matrix; E1/E2 do not broaden desktop credential access.
+
 Coordinator creates implementation/review assignments; the names below are
 slice ownership, not new dispatches from #903.
 

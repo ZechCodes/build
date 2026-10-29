@@ -273,6 +273,77 @@ async fn cancelled_queued_mutation_starts_no_effect_and_releases_its_budget() {
     assert!(queued_output.try_recv().is_err());
 }
 
+async fn ended_queued_authority_starts_no_effect_and_releases_budget(expire: bool) {
+    let (handler, mut entered, release, effects) = blocked_handler();
+    let service = single_worker(handler);
+    let live = Arc::new(AtomicBool::new(true));
+    let session = service
+        .sessions()
+        .open(caller(
+            live.clone(),
+            Instant::now() + Duration::from_secs(60),
+        ))
+        .unwrap();
+    let (blocking_sink, mut blocking_output, blocking_dropped) = sink();
+    let mut blocking = submit(&service, &session, None, blocking_sink, "user.present").await;
+    let _producer = timeout(WATCHDOG, entered.recv()).await.unwrap().unwrap();
+    let (queued_sink, mut queued_output, queued_dropped) = sink();
+    let mut queued = submit(&service, &session, None, queued_sink, "user.present").await;
+    if expire {
+        // Pause only once the actual worker is occupied and the next request
+        // is queued. Setup/admission cannot auto-advance the grant deadline.
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(61)).await;
+        tokio::time::resume();
+    } else {
+        live.store(false, Ordering::SeqCst);
+    }
+    release.send(()).unwrap();
+    // Keep both Calls alive until the worker has consumed their interest.
+    // Dropping the queued Call sooner would let cancellation hide a missing
+    // authorization check at execution. Already-running work may settle, but
+    // revoked/expired authority must suppress its output as well.
+    let running_outcome = timeout(WATCHDOG, blocking.reply()).await;
+    let queued_outcome = timeout(WATCHDOG, queued.reply()).await;
+    drop(blocking);
+    drop(queued);
+    timeout(WATCHDOG, async {
+        blocking_dropped.await.unwrap();
+        queued_dropped.await.unwrap();
+    })
+    .await
+    .expect("ended callers must release their response budgets after work drains");
+    assert!(
+        running_outcome
+            .expect("running work must settle after release")
+            .is_err(),
+        "ended authority must suppress the already-running request's reply"
+    );
+    assert!(
+        queued_outcome
+            .expect("queued work must drain without starting")
+            .is_err(),
+        "ended authority must suppress the queued request's reply"
+    );
+    assert_eq!(
+        effects.load(Ordering::SeqCst),
+        1,
+        "a request whose authority ended while queued started an effect"
+    );
+    assert!(blocking_output.try_recv().is_err());
+    assert!(queued_output.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn expired_queued_request_starts_no_effect_and_releases_its_budget() {
+    ended_queued_authority_starts_no_effect_and_releases_budget(true).await;
+}
+
+#[tokio::test]
+async fn revoked_queued_request_starts_no_effect_and_releases_its_budget() {
+    ended_queued_authority_starts_no_effect_and_releases_budget(false).await;
+}
+
 #[tokio::test]
 async fn cancelling_newest_folded_caller_still_serves_the_live_older_caller() {
     let (handler, mut entered, release, effects) = blocked_handler();

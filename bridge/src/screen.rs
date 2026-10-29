@@ -377,6 +377,8 @@ pub struct ScreenHandle {
     term_id: Arc<str>,
     screen: Arc<Mutex<TermScreen>>,
     size_snapshot: Arc<AtomicU32>,
+    // Serializes attachment/child viewport effects without holding the model lock.
+    attachment_gate: Arc<Mutex<()>>,
 }
 
 /// Allocation identity without keeping the terminal buffer alive.
@@ -415,6 +417,7 @@ impl ScreenHandle {
             term_id: Arc::from(term_id),
             size_snapshot: Arc::clone(&screen.size_snapshot),
             screen: Arc::new(Mutex::new(screen)),
+            attachment_gate: Arc::new(Mutex::new(())),
         }
     }
 
@@ -1440,5 +1443,217 @@ mod tests {
             16,
             "an ack-less client is fed exactly as it always was: {seen:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod neutral_binding_regressions {
+    use super::*;
+    use crate::execution::session::{
+        ClientSessions, DeliveryError, EncodedEvent, EventSink, Opening, ReplySink, RequestContext,
+        StreamClass, VerifiedCaller,
+    };
+
+    #[derive(Default)]
+    struct Sink(Mutex<Vec<EncodedEvent>>);
+    impl EventSink for Sink {
+        fn try_send(&self, event: EncodedEvent) -> Result<(), DeliveryError> {
+            self.0.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+    impl ReplySink for Sink {
+        fn try_send(&self, _: EncodedEvent) -> Result<(), DeliveryError> {
+            Ok(())
+        }
+    }
+
+    fn replaced_terminal_contexts() -> (SessionSender, SessionSender, Arc<Sink>, [RequestContext; 2])
+    {
+        let sessions = ClientSessions::new("terminal-binding-test");
+        let session = sessions
+            .open(VerifiedCaller::verified_relay("device", Opening::new()))
+            .unwrap();
+        let first = sessions
+            .bind_events(&session, StreamClass::Terminal, Arc::new(Sink::default()))
+            .unwrap();
+        let old_request = sessions
+            .request_for_stream(
+                &session,
+                StreamClass::Terminal,
+                Arc::new(Sink::default()),
+                Some(&first),
+            )
+            .unwrap();
+        let old = SessionSender::from_request(&old_request);
+        let pushed = Arc::new(Sink::default());
+        let second = sessions
+            .replace_events(
+                &session,
+                StreamClass::Terminal,
+                Some(&first),
+                pushed.clone(),
+            )
+            .unwrap();
+        let new_request = sessions
+            .request_for_stream(
+                &session,
+                StreamClass::Terminal,
+                Arc::new(Sink::default()),
+                Some(&second),
+            )
+            .unwrap();
+        let current = SessionSender::from_request(&new_request);
+        assert!(
+            old.read_is_live(),
+            "the independent old request reply remains valid"
+        );
+        assert!(
+            !old.events_are_live(),
+            "only its terminal event binding retired"
+        );
+        (old, current, pushed, [old_request, new_request])
+    }
+
+    #[test]
+    fn retired_terminal_attach_cannot_replace_successor_or_resize_screen() {
+        let (old, current, pushed, _requests) = replaced_terminal_contexts();
+        let screen = ScreenHandle::new("terminal-binding-test", 80, 24);
+        screen.attach(&current, Some((100, 40)));
+        screen.attach(&old, Some((30, 10)));
+        assert_eq!(screen.size(), (100, 40));
+        {
+            let held = screen.screen.lock().unwrap();
+            assert_eq!(held.attached.len(), 1);
+            assert_eq!(held.attached[0].sender.read_scope(), current.read_scope());
+        }
+        screen.feed(b"still-current");
+        screen.flush();
+        let received = pushed.0.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].payload()["type"], "term.output");
+        assert!(received[0].is_live());
+    }
+
+    #[derive(Default)]
+    struct TerminalStub(Mutex<Vec<(u16, u16)>>);
+    impl AgentSession for TerminalStub {
+        fn send_turn(&self, _: &crate::harness::Turn) -> Result<(), crate::harness::HarnessError> {
+            Ok(())
+        }
+        fn status(&self) -> crate::harness::AgentStatus {
+            crate::harness::AgentStatus::Waiting
+        }
+        fn quiet_for(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn exited_within(&self, _: Duration) -> bool {
+            false
+        }
+        fn end(&self) {}
+        fn terminal(&self) -> Option<&dyn TerminalView> {
+            Some(self)
+        }
+        fn backdate_last_output(&self, _: Duration) {}
+    }
+    impl TerminalView for TerminalStub {
+        fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Vec<u8>> {
+            tokio::sync::broadcast::channel(1).1
+        }
+        fn write_input(&self, _: &[u8]) -> Result<(), crate::harness::HarnessError> {
+            Ok(())
+        }
+        fn resize(&self, size: PtySize) -> Result<(), crate::harness::HarnessError> {
+            self.0.lock().unwrap().push((size.cols, size.rows));
+            Ok(())
+        }
+        fn pid(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    #[test]
+    fn retired_terminal_attach_cannot_resize_child_after_successor() {
+        let (old, current, _, _requests) = replaced_terminal_contexts();
+        let child = Arc::new(TerminalStub::default());
+        let session: Arc<dyn AgentSession> = child.clone();
+        let screen = ScreenHandle::new("terminal-child-test", 80, 24);
+        let terminal = TerminalHandle::of(&session, &Some(screen.clone())).unwrap();
+        terminal.attach(&current, Some((100, 40)));
+        terminal.attach(&old, Some((30, 10)));
+        assert_eq!(*child.0.lock().unwrap(), vec![(100, 40)]);
+        assert_eq!(screen.size(), (100, 40));
+        assert_eq!(
+            screen.screen.lock().unwrap().attached[0]
+                .sender
+                .read_scope(),
+            current.read_scope()
+        );
+    }
+
+    #[test]
+    fn terminal_attach_rechecks_binding_after_waiting_for_attachment_gate() {
+        let sessions = ClientSessions::new("terminal-lock-test");
+        let session = sessions
+            .open(VerifiedCaller::verified_relay("device", Opening::new()))
+            .unwrap();
+        let first = sessions
+            .bind_events(&session, StreamClass::Terminal, Arc::new(Sink::default()))
+            .unwrap();
+        let old_request = sessions
+            .request_for_stream(
+                &session,
+                StreamClass::Terminal,
+                Arc::new(Sink::default()),
+                Some(&first),
+            )
+            .unwrap();
+        let old = SessionSender::from_request(&old_request);
+        assert!(old.events_are_live());
+        let child = Arc::new(TerminalStub::default());
+        let process: Arc<dyn AgentSession> = child.clone();
+        let screen = ScreenHandle::new("terminal-lock-test", 80, 24);
+        let terminal = TerminalHandle::of(&process, &Some(screen.clone())).unwrap();
+        let attachment = screen.attachment_gate.lock().unwrap();
+        let mut model = screen.screen.lock().unwrap();
+        let (started, start) = std::sync::mpsc::channel();
+        let delayed = terminal.clone();
+        let late = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            delayed.attach(&old, Some((30, 10)));
+        });
+        start.recv().unwrap();
+        let second = sessions
+            .replace_events(
+                &session,
+                StreamClass::Terminal,
+                Some(&first),
+                Arc::new(Sink::default()),
+            )
+            .unwrap();
+        let current_request = sessions
+            .request_for_stream(
+                &session,
+                StreamClass::Terminal,
+                Arc::new(Sink::default()),
+                Some(&second),
+            )
+            .unwrap();
+        let current = SessionSender::from_request(&current_request);
+        // Install B while this test owns the attachment gate. The model lock
+        // also prevents the unfixed old attach from registering ahead of B.
+        model.set_size(100, 40);
+        model.register("terminal-lock-test", &current);
+        drop(model);
+        drop(attachment);
+        late.join().unwrap();
+        assert!(
+            child.0.lock().unwrap().is_empty(),
+            "retired attach must not resize the child"
+        );
+        let model = screen.screen.lock().unwrap();
+        assert_eq!((model.cols, model.rows), (100, 40));
+        assert_eq!(model.attached.len(), 1);
+        assert_eq!(model.attached[0].sender.read_scope(), current.read_scope());
     }
 }

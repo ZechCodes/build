@@ -30,19 +30,31 @@ export async function beginSummaryQuery(scope, filters, generation, { accept = (
     return [{ ids: [], identity_ids: [], next_cursor: null, complete: false,
       ...held?.value, generation, refreshing: true }];
   });
-  return { scope: { ...scope }, address: queryAddress, generation, cursor: null };
+  return { scope: { ...scope }, address: queryAddress, filters: canonicalSummaryFilters(filters), generation, cursor: null };
 }
 
 function validatePage(ticket, page) {
   if (page?.summary !== true || !Array.isArray(page.tasks)) throw new Error("Expected a task summary page");
   if (page.tasks.some((task) => typeof task?.id !== "string" || !task.id)) throw new Error("Invalid task summary identity");
   validateBasis(page);
+  for (const task of page.tasks) validateQueryFields(ticket.filters || {}, task);
   const next = page.next_cursor;
   if (next != null && (typeof next !== "string" || !next || next === ticket.cursor)) throw new Error("Invalid summary continuation");
 }
 
 function validateBasis(page) {
   if (Object.hasOwn(page, "basis") && (typeof page.basis !== "string" || !page.basis)) throw new Error("Invalid summary basis");
+}
+
+function validateQueryFields(filters, task) {
+  if (filters.order === "anchor" && task.order_anchor_ms !== null && !Number.isSafeInteger(task.order_anchor_ms)) {
+    throw new Error("Missing authoritative task order anchor");
+  }
+  for (const key of ["linked_workspace_id", "tracker_agent_id"]) {
+    if (Object.hasOwn(filters, key) && task.matched_memberships?.[key] !== filters[key]) {
+      throw new Error("Missing exact task membership provenance");
+    }
+  }
 }
 
 function acceptsPage(held, ticket, accept) {

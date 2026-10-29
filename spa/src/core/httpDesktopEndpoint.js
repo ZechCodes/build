@@ -11,6 +11,7 @@ export function desktopHttpValue(envelope) {
 export function createDesktopHttpEndpoint({ api, identity, isCurrent = () => true }) {
   let closed = false;
   let subscription;
+  let subscribeStarted = false;
   let onLost = () => {};
   const current = () => !closed && isCurrent();
   const invoke = async (name, ...args) => {
@@ -29,7 +30,12 @@ export function createDesktopHttpEndpoint({ api, identity, isCurrent = () => tru
   const lose = () => { if (!closed) { close(); onLost(httpFailure("stream_reset")); } };
 
   const subscribe = async (_opening, consume) => {
-    if (subscription) throw httpFailure("protocol");
+    // One immutable Opening per endpoint: recovery creates a new native handle.
+    // Never overlap or retry a subscription on this handle, even before its
+    // stream UUID arrives. Native also rejects concurrent handle subscriptions.
+    if (subscribeStarted) throw httpFailure("protocol");
+    subscribeStarted = true;
+    const requestId = crypto.randomUUID();
     let stream;
     let sequence = 0;
     let buffered = [];
@@ -48,7 +54,10 @@ export function createDesktopHttpEndpoint({ api, identity, isCurrent = () => tru
       if (message.event === "hello") resolveReady();
     };
     const enqueue = (message) => {
-      if (!current()) return;
+      // onEvent broadcasts every native stream. Both owner and attempt are
+      // known before subscribe resolves; stale/missing correlation must never
+      // enter this queue or consume its item/byte allowance (including controls).
+      if (!current() || message?.handle !== identity.handle || message.requestId !== requestId) return;
       if (stream && message.stream !== stream) return;
       bytes += messageBytes(message); count += 1;
       if (count > 128 || bytes > 1024 * 1024) { lose(); return; }
@@ -63,7 +72,7 @@ export function createDesktopHttpEndpoint({ api, identity, isCurrent = () => tru
     };
     const stopEvents = api.onEvent(enqueue);
     try {
-      const result = await invoke("subscribe", identity.handle, { kind: "application" });
+      const result = await invoke("subscribe", identity.handle, { kind: "application" }, { requestId });
       if (typeof result?.stream !== "string") throw httpFailure("protocol");
       stream = result.stream;
       const early = buffered;

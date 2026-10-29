@@ -41,6 +41,22 @@ binding. Relay presence controls WebRTC eligibility; an explicitly selected HTTP
 endpoint remains eligible for authenticated attempts independently of relay
 presence. Account device removal and HTTP revocation/expiry still retire it.
 
+The desktop wrapper generates a fresh UUID before installing its event listener
+and invokes `subscribe(handle, {kind: "application"}, {requestId})`. Every native
+event, including reset/closing controls, must carry the immutable envelope
+`{handle, requestId, stream, sequence, event, data}`. Main binds the opaque handle
+to its owner/navigation generation and captures the caller's attempt ID; these
+fields grant no authority and are not durable cursors. The wrapper discards
+missing/foreign handle or attempt correlation before serialization or queue
+accounting, then also filters the exact returned stream UUID. Queued controls
+from retired attempts on the same handle cannot affect a pending successor.
+The SPA allows only one subscription attempt per endpoint, including while the
+invoke is pending; recovery closes it and obtains a fresh handle and Opening.
+Native retains its independently fenced sequential CAS/rebind API and rejects
+concurrent or reused attempt IDs. This contract requires the separately reviewed
+#914 correlated-envelope correction; the earlier native head supplies no safe
+pre-response correlation and must not be paired with this wrapper.
+
 The real HTTPS witness uses an isolated fixture server and an ephemeral CA,
 exercises production browser adapter entry points, and separately verifies
 untrusted-certificate refusal. It is not acceptance of the Rust runtime, hosted

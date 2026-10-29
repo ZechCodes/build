@@ -35,6 +35,22 @@ def login_app(tmp_path, monkeypatch):
     yield from build_login_app(tmp_path, monkeypatch)
 
 
+@pytest.fixture()
+def completed_login_requests():
+    from skrift.hooks import hooks
+
+    captured = []
+
+    def observe(login_result, request):
+        captured.append(request)
+
+    hooks.add_action("after_login", observe, priority=0)
+    try:
+        yield captured
+    finally:
+        hooks.remove_action("after_login", observe)
+
+
 def signed(key, device, purpose, **fields):
     now = int(utc_now().timestamp())
     return jwt.encode(
@@ -234,49 +250,51 @@ def test_authenticated_legacy_cookie_missing_bridge_identity_cannot_initialize_o
         assert family_count(client) == 0
 
 
-def test_failed_login_identity_persistence_returns_no_authenticated_cookie(
-    login_app, monkeypatch
-):
-    from buildapp import bridge_http_login
+def test_failed_login_identity_persistence_returns_no_authenticated_cookie(login_app):
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session
+    from buildapp.models import BridgeHttpClient
 
-    def unavailable_database(request):
-        raise RuntimeError("isolated login identity persistence failure")
+    def fail_client_commit(db):
+        if any(isinstance(row, BridgeHttpClient) for row in db.new):
+            raise RuntimeError("isolated pending bridge identity commit failure")
 
-    with framework_client(login_app, raise_server_exceptions=False) as client:
-        page = client.get("/auth/dummy/login", follow_redirects=False)
-        monkeypatch.setattr(
-            bridge_http_login, "auth_session_maker", unavailable_database
-        )
-        result = client.post(
-            "/auth/dummy-login",
-            data={
-                "_csrf": csrf(page),
-                "email": "failed-login@example.com",
-                "name": "Failed identity persistence",
-            },
-            follow_redirects=False,
-        )
-        assert result.status_code == 500, result.text
-        session = client.get_session_data()
-        assert SESSION_USER_ID not in session
-        assert BRIDGE_BINDING_KEY not in session
-        assert (
-            client.post(
-                "/api/bridge-discovery/challenges", json={"origin": ORIGIN}
-            ).status_code
-            == 401
-        )
+    event.listen(Session, "before_commit", fail_client_commit)
+    try:
+        with framework_client(login_app, raise_server_exceptions=False) as client:
+            page = client.get("/auth/dummy/login", follow_redirects=False)
+            result = client.post(
+                "/auth/dummy-login",
+                data={
+                    "_csrf": csrf(page),
+                    "email": "failed-login@example.com",
+                    "name": "Failed identity persistence",
+                },
+                follow_redirects=False,
+            )
+            assert result.status_code == 500, result.text
+            session = client.get_session_data()
+            assert SESSION_USER_ID not in session
+            assert BRIDGE_BINDING_KEY not in session
+            assert (
+                client.post(
+                    "/api/bridge-discovery/challenges", json={"origin": ORIGIN}
+                ).status_code
+                == 401
+            )
 
-        async def identities(db):
-            from buildapp.models import BridgeHttpClient
+            async def identities(db):
+                return await db.scalar(
+                    select(func.count()).select_from(BridgeHttpClient)
+                )
 
-            return await db.scalar(select(func.count()).select_from(BridgeHttpClient))
-
-        assert framework.on_database(client, identities) == 0
+            assert framework.on_database(client, identities) == 0
+    finally:
+        event.remove(Session, "before_commit", fail_client_commit)
 
 
 def test_framework_deferred_auth_completion_establishes_a_new_persisted_identity(
-    login_app, monkeypatch
+    login_app, completed_login_requests
 ):
     """Exercise the shared promotion seam after a factor has already verified.
 
@@ -284,7 +302,6 @@ def test_framework_deferred_auth_completion_establishes_a_new_persisted_identity
     authenticated through real primary login, and this case checks the separate
     framework pending-auth promotion boundary calls the same durable login hook.
     """
-    from buildapp import bridge_http_login
     from buildapp.models import BridgeHttpClient
     from buildapp.token_hash import token_hash
     from skrift.auth.session_service import PendingAuthState
@@ -292,19 +309,9 @@ def test_framework_deferred_auth_completion_establishes_a_new_persisted_identity
     from skrift.controllers.auth import _complete_pending_login
     from skrift.db.models.user import User
 
-    captured = []
-    original = bridge_http_login.auth_session_maker
-
-    def capture_authenticated_request(request):
-        captured.append(request)
-        return original(request)
-
-    monkeypatch.setattr(
-        bridge_http_login, "auth_session_maker", capture_authenticated_request
-    )
     with framework_client(login_app) as client:
         user_id, _ = real_login(client)
-        request = captured[-1]
+        request = completed_login_requests[-1]
         initial_binding = request.session[BRIDGE_BINDING_KEY]
 
         async def promote(db):
@@ -331,3 +338,84 @@ def test_framework_deferred_auth_completion_establishes_a_new_persisted_identity
             assert row is not None and row.revoked_at is None
 
         framework.on_database(client, promote)
+
+
+def test_framework_signup_completion_commits_new_account_passkey_and_bridge_identity_together(
+    login_app, completed_login_requests
+):
+    """Use Skrift's post-verification signup/completion services on a new user.
+
+    The credential record is a fixture representing already verified output.
+    This is a transaction/completion regression, not passkey cryptography proof.
+    """
+    from types import SimpleNamespace
+    from buildapp.desktop_auth import auth_session_maker
+    from buildapp.models import BridgeHttpClient
+    from buildapp.token_hash import token_hash
+    from skrift.auth.identities import ResolvedPrimaryIdentity
+    from skrift.config import get_settings
+    from skrift.controllers.auth import (
+        _create_primary_passkey_signup_login,
+        _finalize_primary_login,
+    )
+    from skrift.db.models.second_factor import SecondFactorEnrollment
+    from skrift.db.models.user import User
+    from sqlalchemy.ext.asyncio import async_object_session
+
+    with framework_client(login_app) as client:
+        real_login(client)
+        request = completed_login_requests[-1]
+        credential = SimpleNamespace(
+            credential_id="verified-signup-fixture",
+            public_key="fixture-public-key",
+            sign_count=0,
+            transports=[],
+            enrollment_metadata={},
+        )
+
+        async def complete_signup(db):
+            result = await _create_primary_passkey_signup_login(
+                db,
+                method_key="passkey",
+                factor_key="passkey",
+                email="new-uncommitted-signup@example.com",
+                name="New signup",
+                registration_result=credential,
+            )
+            user_id = result.user.id
+            assert async_object_session(result.user) is db
+            async with auth_session_maker(request)() as observer:
+                assert await observer.get(User, user_id) is None
+            identity = ResolvedPrimaryIdentity(
+                method_key="passkey",
+                method_type="passkey",
+                subject_id=credential.credential_id,
+                email=result.user.email,
+                name=result.user.name,
+                picture_url=None,
+            )
+            response = await _finalize_primary_login(
+                request, db, get_settings(), result, identity=identity
+            )
+            assert response.status_code == 302
+            binding = request.session[BRIDGE_BINDING_KEY]
+            assert request.session[BRIDGE_ACCOUNT_KEY] == str(user_id)
+            async with auth_session_maker(request)() as observer:
+                assert await observer.get(User, user_id) is not None
+                assert (
+                    await observer.scalar(
+                        select(SecondFactorEnrollment).where(
+                            SecondFactorEnrollment.user_id == user_id
+                        )
+                    )
+                    is not None
+                )
+                saved = await observer.scalar(
+                    select(BridgeHttpClient).where(
+                        BridgeHttpClient.user_id == user_id,
+                        BridgeHttpClient.binding_hash == token_hash(binding),
+                    )
+                )
+                assert saved is not None and saved.revoked_at is None
+
+        framework.on_database(client, complete_signup)

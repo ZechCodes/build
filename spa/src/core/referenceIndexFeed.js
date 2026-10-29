@@ -8,11 +8,12 @@ import { taskLookupAddress } from "./taskAggregateReads.js";
 import { subscribeTaskReferenceDemand } from "./taskReferenceDemand.js";
 import { holdReferenceSources } from "./referenceIndex.js";
 
-// A legacy list with no page note is its whole catalogue. Once pages exist,
-// only uninterrupted coverage from +Infinity through -Infinity proves absence.
-function completeTaskList(reads) {
+// Only explicit full-read provenance or uninterrupted page coverage can prove
+// absence. Local actions can create one-row catalogues without page stretches.
+function completeTaskList(record, reads) {
+  if (record?.catalog_complete === true) return true;
   const spans = reads?.stretches || [];
-  if (!spans.length) return true;
+  if (!spans.length) return false;
   let through = Infinity;
   for (const span of [...spans].sort((left, right) => right.above - left.above)) {
     if (span.above < through) return false;
@@ -43,7 +44,7 @@ export function feedReferenceIndex({ subscribeFeed }) {
       if (stopped || !watched.has(key) || read !== serial) return;
       if (Array.isArray(record?.tasks)) tasks[key] = record.tasks;
       else delete tasks[key];
-      tasksComplete[key] = completeTaskList(note?.value);
+      tasksComplete[key] = completeTaskList(record, note?.value);
       publish();
     };
     const unsubscribes = [subscribeCache(address, () => void reread()), subscribeCache(readsAddress(address), () => void reread())];

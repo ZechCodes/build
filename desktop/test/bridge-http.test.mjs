@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createBridgeHttp } from '../src/bridge-http.mjs';
 
 const mint = overrides => ({issuer:'https://getbuild.ing',account_id:'account',device_id:'device',origin:'https://bridge.test',endpoint_epoch:'epoch',family_id:'family',access_token:'fixture-device-token',expires_at:Math.floor(Date.now()/1000)+300,scope:'bridge:read bridge:write',name:'Bridge',fingerprint:'fingerprint',...overrides});
-const opening = () => ({session_id:'session',opening_generation:'generation',grant_expires_at:new Date(Date.now()+30000).toISOString(),greeting:{capabilities:[]}});
+const opening = () => ({session_id:'session',opening_generation:'generation',grant_expires_at:new Date(Date.now()+30000).toISOString(),greeting:{capabilities:[]},transport:{resource_manifest_version:1,operation_ids:['listTasks'],terminal:'webrtc',durable_events:false}});
 const json = (value,status=200) => new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
 function harness(t, options={}) {
   const requests=[]; const output=[];
@@ -52,7 +52,7 @@ test('handles belong to exact owner and credential generation; late discovery ca
   const late=harness(t,{fetch:async url=>{if(url.endsWith('/complete')){await wait;return json(mint());}}});
   const pending=late.bridge.discover(late.owner,'https://bridge.test');
   await new Promise(setImmediate);late.bridge.clear();release();
-  await assert.rejects(pending,{code:'stale_owner'});
+  await assert.rejects(pending,{code:'canceled'});
 });
 
 test('request resolver forbids proxy overrides, validates identifiers and preserves typed params',async t=>{
@@ -76,4 +76,97 @@ test('cancel and signout abort outstanding work and drop late replies',async t=>
   await assert.rejects(pending,{code:'canceled'});
   h.bridge.clear();
   await assert.rejects(h.bridge.request(h.owner,handle,'listTasks',{project_id:'p'}),{code:'invalid_handle'});
+});
+
+test('authenticated opening must advertise compatible complete manifest and explicit terminal policy',async t=>{
+  for(const transport of [undefined,{resource_manifest_version:2,operation_ids:['listTasks'],terminal:'webrtc',durable_events:false},{resource_manifest_version:1,operation_ids:[],terminal:'webrtc',durable_events:false}]) {
+    const h=harness(t,{fetch:async url=>url.endsWith('/v1/sessions') ? json({...opening(),transport}) : undefined});
+    const {handle}=await h.bridge.discover(h.owner,'https://bridge.test');
+    await assert.rejects(h.bridge.open(h.owner,handle,'1'),{code:'incompatible_transport'});
+  }
+});
+
+test('independent hard expiry prevents late in-flight output and closes handle',async t=>{
+  let release;
+  const h=harness(t,{fetch:async url=>{
+    if(url.endsWith('/v1/sessions')) return json({...opening(),grant_expires_at:new Date(Date.now()+40).toISOString()});
+    if(url.includes('task-queries')) return new Promise(resolve=>release=resolve);
+    if(url.endsWith('/v1/sessions/session')) return new Promise(()=>{});
+  }});
+  const {handle}=await h.bridge.discover(h.owner,'https://bridge.test');await h.bridge.open(h.owner,handle,'1');
+  const pending=assert.rejects(h.bridge.request(h.owner,handle,'listTasks',{project_id:'p'}));
+  await new Promise(resolve=>setTimeout(resolve,60));release(json({result:'late'}));
+  await pending;
+  await assert.rejects(h.bridge.request(h.owner,handle,'listTasks',{project_id:'p'}),{code:'invalid_handle'});
+});
+
+test('stream local flow control bounds unacknowledged events and fences post-overflow output',async t=>{
+  let controller;
+  const h=harness(t,{fetch:async url=>{
+    if(url.endsWith('/v1/subscriptions')) return json({subscription_id:'subscription',opening_generation:'generation',events_path:'/v1/subscriptions/subscription/events'});
+    if(url.endsWith('/events')) return new Response(new ReadableStream({start(c){controller=c;}}),{headers:{'content-type':'text/event-stream'}});
+  }});
+  const {handle}=await h.bridge.discover(h.owner,'https://bridge.test');await h.bridge.open(h.owner,handle,'1');
+  const {stream}=await h.bridge.subscribe(h.owner,handle,{kind:'application'});await new Promise(setImmediate);
+  const emit=data=>controller.enqueue(new TextEncoder().encode(data));
+  emit('event: hello\ndata: {"durable":false,"recovery":"current_state_refresh","opening_generation":"generation","bridge_epoch":1}\n\n');
+  await new Promise(setImmediate);
+  h.bridge.ack(h.owner,stream,1);
+  for(let i=0;i<129;i++) emit('event: changes\ndata: {}\n\n');
+  await new Promise(setImmediate);
+  assert.equal(h.output.length,130);assert.equal(h.output.at(-1).event.event,'reset_required');
+  assert.equal(h.output.at(-1).event.data.reason,'overflow');
+  await assert.rejects(h.bridge.unsubscribe(h.owner,stream),{code:'invalid_stream'});
+});
+
+test('resource calls capture application stream handle and cannot run requires-events before hello',async t=>{
+  let controller;
+  const h=harness(t,{fetch:async url=>{
+    if(url.endsWith('/v1/subscriptions')) return json({subscription_id:'subscription',opening_generation:'generation'});
+    if(url.endsWith('/events')) return new Response(new ReadableStream({start(c){controller=c;}}),{headers:{'content-type':'text/event-stream'}});
+  }});
+  const {handle}=await h.bridge.discover(h.owner,'https://bridge.test');await h.bridge.open(h.owner,handle,'1');
+  const {stream}=await h.bridge.subscribe(h.owner,handle,{kind:'application'});await new Promise(setImmediate);
+  controller.enqueue(new TextEncoder().encode('event: hello\ndata: {"durable":false,"recovery":"current_state_refresh","opening_generation":"generation","bridge_epoch":1}\n\n'));
+  await new Promise(setImmediate);
+  await h.bridge.request(h.owner,handle,'listTasks',{project_id:'p'});
+  assert.equal(h.requests.at(-1).opts.headers['X-Build-Subscription'],'subscription');
+  h.bridge.ack(h.owner,stream,1);
+});
+
+test('stream reconnect POST retains predecessor after exact unsubscribe and does not rewrite requests',async t=>{
+  let counter=0;
+  const h=harness(t,{fetch:async url=>{
+    if(url.endsWith('/v1/subscriptions')) return json({subscription_id:`sub${++counter}`,opening_generation:'generation'});
+    if(url.endsWith('/events')) return new Response(new ReadableStream({start(){}}),{headers:{'content-type':'text/event-stream'}});
+  }});
+  const {handle}=await h.bridge.discover(h.owner,'https://bridge.test');await h.bridge.open(h.owner,handle,'1');
+  const first=await h.bridge.subscribe(h.owner,handle,{kind:'application'});await new Promise(setImmediate);
+  await h.bridge.unsubscribe(h.owner,first.stream);
+  await h.bridge.subscribe(h.owner,handle,{kind:'application'});
+  const posts=h.requests.filter(r=>r.url.endsWith('/v1/subscriptions'));
+  assert.equal(posts[0].opts.headers['X-Build-Subscription'],undefined);
+  assert.equal(posts[1].opts.headers['X-Build-Subscription'],'sub1');
+});
+
+test('creation response loss retires opening rather than replaying application POST',async t=>{
+  const h=harness(t,{fetch:async url=>{if(url.endsWith('/v1/subscriptions'))throw new Error('lost');}});
+  const {handle}=await h.bridge.discover(h.owner,'https://bridge.test');await h.bridge.open(h.owner,handle,'1');
+  await assert.rejects(h.bridge.subscribe(h.owner,handle,{kind:'application'}));
+  await assert.rejects(h.bridge.subscribe(h.owner,handle,{kind:'application'}),{code:'invalid_handle'});
+  assert.equal(h.requests.filter(r=>r.url.endsWith('/v1/subscriptions')).length,1);
+});
+
+test('pending reads and writes reserve bounded aggregate response bytes; metadata stays finite',async t=>{
+  let release;
+  const h=harness(t,{fetch:async url=>{if(url.includes('task-queries'))return new Promise(resolve=>release=resolve);}});
+  const {handle}=await h.bridge.discover(h.owner,'https://bridge.test');await h.bridge.open(h.owner,handle,'1');
+  const pending=h.bridge.request(h.owner,handle,'listTasks',{project_id:'p'},{requestId:'pending',priority:'background',write:{operation_id:'operation',after:[]}});
+  await new Promise(setImmediate);
+  const request=h.requests.at(-1);
+  assert.equal(request.opts.headers['X-Build-Priority'],'background');
+  assert.equal(request.opts.headers['Idempotency-Key'],'operation');assert.equal(request.opts.headers['X-Build-After'],'[]');
+  await assert.rejects(h.bridge.request(h.owner,handle,'listTasks',{project_id:'p'},{priority:'user'}),{code:'invalid_options'});
+  h.bridge.cancel(h.owner,'pending');const errorCheck=assert.rejects(pending,error=>error.code==='canceled' && error.uncertain===true);
+  release(json({result:'late'}));await errorCheck;
 });

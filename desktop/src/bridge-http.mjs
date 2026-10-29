@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { canonicalOrigin, jsonRequest, networkOptions, consumeEvents, MAX_JSON_BYTES, transportError } from './bridge-http-network.mjs';
-import { HOSTED_ORIGIN, fail, exact, identifier, segment, verifiedMint, requestOptions, buildRoute } from './bridge-http-contract.mjs';
+import { HOSTED_ORIGIN, fail, exact, identifier, segment, verifiedMint, requestOptions, buildRoute, compatibleTransport } from './bridge-http-contract.mjs';
 
 // Only main constructs owners, chooses the manifest and supplies authenticated
 // account state. No renderer-controlled callback can create verified authority.
@@ -9,6 +9,7 @@ export function createBridgeHttp({fetch=globalThis.fetch, getAuth, isOwnerCurren
   const pending=new Map();
   const streams=new Map();
   let epoch=0;
+  let reservedBytes=0;
 
   function capture(owner) {
     const auth=getAuth();
@@ -18,6 +19,7 @@ export function createBridgeHttp({fetch=globalThis.fetch, getAuth, isOwnerCurren
   function check(binding) {
     if (binding.epoch !== epoch || binding.generation !== getAuth()?.generation || !getAuth()?.accessToken || !isOwnerCurrent(binding.owner)) fail('stale_owner');
     if (binding.controller?.signal.aborted) fail('canceled');
+    if ((binding.handle?.deadline ?? binding.deadline) !== undefined && performance.now() >= (binding.handle?.deadline ?? binding.deadline)) {retire(binding);fail('unauthorized');}
   }
   function handleFor(owner, id) {
     const handle=handles.get(id);
@@ -26,20 +28,21 @@ export function createBridgeHttp({fetch=globalThis.fetch, getAuth, isOwnerCurren
     if (handle.mint.expires_at*1000 <= Date.now()) { retire(handle); fail('unauthorized'); }
     return handle;
   }
-  async function tracked(binding, callback, requestId=randomUUID()) {
+  async function tracked(binding, callback, requestId=randomUUID(), reservation=MAX_JSON_BYTES) {
     check(binding);
     if (pending.size >= 64 || [...pending.values()].filter(value=>value.handle === binding).length >= 32) fail('busy');
+    if (reservedBytes+reservation > 32*MAX_JSON_BYTES) fail('busy');
     const key=`${binding.owner.id ?? ''}:${requestId}`;
     if (pending.has(key)) fail('duplicate_request');
-    const operation={...binding,handle:binding,controller:new AbortController()};
-    pending.set(key,operation);
+    const operation={...binding,handle:binding,requestId,controller:new AbortController()};
+    pending.set(key,operation);reservedBytes+=reservation;
     try { const result=await callback(operation.controller.signal); check(operation); return result; }
-    finally { if(pending.get(key) === operation) pending.delete(key); }
+    finally { reservedBytes-=reservation;if(pending.get(key) === operation) pending.delete(key); }
   }
   const hosted=(path,body,binding,method='POST')=>tracked(binding,signal=>jsonRequest(fetch,`${HOSTED_ORIGIN}${path}`,{method,body,signal,headers:{Authorization:`Bearer ${getAuth().accessToken}`},maxBytes:32*1024}));
   const headers=handle=>({Authorization:`Bearer ${handle.mint.access_token}`,...(handle.opening ? {'X-Build-Session':handle.opening.session_id} : {})});
   async function device(handle,path,options={}) {
-    try { return await tracked(handle,signal=>jsonRequest(fetch,`${handle.mint.origin}${path}`,{...options,signal,headers:{...headers(handle),...options.headers}}),options.requestId); }
+    try { return await tracked(handle,signal=>jsonRequest(fetch,`${handle.mint.origin}${path}`,{...options,signal,headers:{...headers(handle),...options.headers}}),options.requestId,(options.maxBytes ?? MAX_JSON_BYTES)+Buffer.byteLength(JSON.stringify(options.body) ?? '')); }
     catch(error) { if(error.code==='unauthorized') retire(handle); throw error; }
   }
   function metadata(handle) {
@@ -74,12 +77,13 @@ export function createBridgeHttp({fetch=globalThis.fetch, getAuth, isOwnerCurren
     return adopt(binding,verifiedMint(result,expected));
   }
   function installOpening(handle,opening,start,previous) {
+    compatibleTransport(manifest,opening.transport);
     identifier(opening.session_id,'invalid_response'); identifier(opening.opening_generation,'invalid_response');
     if(previous && (opening.session_id !== previous.session_id || opening.opening_generation !== previous.opening_generation)) fail('binding_mismatch');
     const deadline=Math.min(Date.parse(opening.grant_expires_at),Date.now()+Math.max(0,30000-(performance.now()-start)));
     if (!Number.isFinite(deadline) || deadline <= Date.now() || !opening.greeting || typeof opening.greeting !== 'object') fail('invalid_response');
     clearTimeout(handle.hard); clearTimeout(handle.refresh);
-    handle.opening=opening;
+    handle.opening=opening;handle.deadline=performance.now()+deadline-Date.now();
     handle.hard=setTimeout(()=>retire(handle), deadline-Date.now()); handle.hard.unref?.();
     handle.refresh=setTimeout(()=>void renew(handle).catch(()=>retire(handle)),Math.max(0,deadline-Date.now()-10000)); handle.refresh.unref?.();
     return opening;
@@ -108,18 +112,25 @@ export function createBridgeHttp({fetch=globalThis.fetch, getAuth, isOwnerCurren
     const handle=handleFor(owner,id);
     if(!handle.opening) fail('not_open');
     const route=buildRoute(manifest,operationId,params);const extra=requestOptions(options);
+    const stream=streams.get(handle.stream);
+    if(route.requiresEvents && !stream?.ready) fail('stream_required');
+    if(stream?.ready) extra['X-Build-Subscription']=stream.subscription;
     try { return await device(handle,route.path,{...route,headers:extra,requestId:options.requestId,apiEnvelope:true}); }
     catch(error) { if(options.write || !['GET','HEAD'].includes(route.method)) error.uncertain=true;throw error; }
   }
   function endStream(stream,reason) {
     if (!streams.delete(stream.id)) return;
-    stream.handle.streams.delete(stream.id);clearTimeout(stream.stall);stream.controller.abort();
+    stream.handle.streams.delete(stream.id);if(stream.handle.stream===stream.id) stream.handle.stream=null;clearTimeout(stream.stall);stream.controller.abort();
     stream.unacked.clear();stream.bytes=0;
     if(reason) { try { check(stream.handle);send(stream.handle.owner,{stream:stream.id,sequence:++stream.sequence,event:'reset_required',data:{reason,recovery:'current_state_refresh'}}); } catch {} }
   }
   function emit(stream,event) {
     check(stream.handle);
     if(!streams.has(stream.id)) fail('canceled');
+    if(event.event==='hello') {
+      if(stream.ready || event.data.durable !== false || event.data.recovery !== 'current_state_refresh' || event.data.opening_generation !== stream.handle.opening.opening_generation) fail('invalid_stream');
+      stream.ready=true;
+    } else if(!stream.ready) fail('invalid_stream');
     const size=Buffer.byteLength(JSON.stringify(event));
     if(stream.unacked.size >= 128 || stream.bytes+size > MAX_JSON_BYTES) {endStream(stream,'overflow');fail('stream_too_large');}
     stream.bytes+=size;stream.unacked.set(++stream.sequence,size);
@@ -128,7 +139,10 @@ export function createBridgeHttp({fetch=globalThis.fetch, getAuth, isOwnerCurren
   }
   async function pump(stream) {
     try {
+      if(!streams.has(stream.id)) return;
+      check(stream.handle);
       const response=await fetch(`${stream.handle.mint.origin}/v1/subscriptions/${segment(stream.subscription)}/events`,networkOptions({signal:stream.controller.signal,headers:{...headers(stream.handle),Accept:'text/event-stream'}}));
+      if(response.status===401) {retire(stream.handle);void response.body?.cancel();return;}
       await consumeEvents(response,event=>emit(stream,event),{signal:stream.controller.signal});
       endStream(stream,'disconnected');
     } catch {endStream(stream,'disconnected');}
@@ -136,14 +150,15 @@ export function createBridgeHttp({fetch=globalThis.fetch, getAuth, isOwnerCurren
   async function subscribe(owner,id,scope) {
     const handle=handleFor(owner,id);if(!handle.opening) fail('not_open');
     exact(scope,['kind']);if(scope.kind !== 'application') fail('invalid_params');
-    if(handle.streams.size) fail('already_subscribed');
-    const result=await device(handle,'/v1/subscriptions',{method:'POST',body:scope,maxBody:64*1024});
-    identifier(result.subscription_id,'invalid_response');
+    if(handle.streams.size || handle.subscribing) fail('already_subscribed');
+    handle.subscribing=true;
+    let result;try {result=await device(handle,'/v1/subscriptions',{method:'POST',body:scope,maxBody:64*1024,headers:handle.lastSubscription ? {'X-Build-Subscription':handle.lastSubscription} : {}});} catch(error) {retire(handle);throw error;} finally {handle.subscribing=false;}
+    identifier(result.subscription_id,'invalid_response');handle.lastSubscription=result.subscription_id;
     if(result.opening_generation !== handle.opening.opening_generation) fail('binding_mismatch');
     const path=`/v1/subscriptions/${segment(result.subscription_id)}/events`;
     if(result.events_path !== undefined && result.events_path !== path) fail('binding_mismatch');
     const stream={id:randomUUID(),handle,subscription:result.subscription_id,controller:new AbortController(),sequence:0,unacked:new Map(),bytes:0};
-    streams.set(stream.id,stream);handle.streams.add(stream.id);
+    streams.set(stream.id,stream);handle.streams.add(stream.id);handle.stream=stream.id;
     // Begin on the next turn so invoke returns the local stream id first.
     setImmediate(()=>void pump(stream));
     return {stream:stream.id};
@@ -157,7 +172,7 @@ export function createBridgeHttp({fetch=globalThis.fetch, getAuth, isOwnerCurren
     if(stream.unacked.size) {stream.stall=setTimeout(()=>endStream(stream,'stalled'),10000);stream.stall.unref?.();}
   }
   async function unsubscribe(owner,id) {const stream=ownedStream(owner,id);endStream(stream);await device(stream.handle,`/v1/subscriptions/${segment(stream.subscription)}`,{method:'DELETE'});}
-  function cancel(owner,requestId) {identifier(requestId);for(const operation of pending.values()) if(operation.owner===owner && operation.controller && [...pending.entries()].some(([key,value])=>value===operation && key.endsWith(`:${requestId}`))) operation.controller.abort();}
+  function cancel(owner,requestId) {identifier(requestId);for(const operation of pending.values()) if(operation.owner===owner && operation.requestId===requestId) operation.controller.abort();}
   function retire(handle) {
     if(!handles.delete(handle.id)) return;
     clearTimeout(handle.hard);clearTimeout(handle.refresh);clearTimeout(handle.expiry);

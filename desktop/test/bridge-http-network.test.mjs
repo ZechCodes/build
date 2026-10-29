@@ -59,3 +59,9 @@ test('SSE rejects malformed and oversized unfinished events', async () => {
   await assert.rejects(consumeEvents(eventResponse(['data: '+ 'x'.repeat(1024*1024+1)]),()=>{}),{code:'stream_too_large'});
   await assert.rejects(consumeEvents(json({}),()=>{}),{code:'invalid_stream'});
 });
+
+test('typed RPC domain errors survive HTTP mapping while auth errors stay native', async () => {
+  const envelope={id:'r',ok:false,error:'Task changed',error_code:'conflict',retryable:false,bridge_epoch:1,request_id:'r'};
+  assert.deepEqual(await jsonRequest(async()=>json(envelope,{status:409}),'https://bridge.test',{apiEnvelope:true}),envelope);
+  await assert.rejects(jsonRequest(async()=>json(envelope,{status:401}),'https://bridge.test',{apiEnvelope:true}),{code:'unauthorized'});
+});

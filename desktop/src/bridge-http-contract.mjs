@@ -50,10 +50,16 @@ export function buildRoute(manifest, operationId, params) {
   const route = manifest?.operations?.find(value=>value.operationId === operationId);
   if (!route) fail('unsupported_operation');
   if (!['GET','POST','PUT','PATCH','DELETE'].includes(route.verb) || !route.path.startsWith('/v1/') || route.path.includes('?')) fail('invalid_manifest');
-  if (!Number.isSafeInteger(route.responseMaxBytes) || route.responseMaxBytes <= 0 || route.responseMaxBytes > 64*MAX_JSON_BYTES) fail('invalid_manifest');
+  if (!Number.isSafeInteger(route.responseMaxBytes) || route.responseMaxBytes <= 0 || route.responseMaxBytes > 8*MAX_JSON_BYTES) fail('invalid_manifest');
   let path=route.path;
   const body={...params};
   for (const key of route.pathParams) { path=path.replaceAll(`{${key}}`,segment(params[key])); delete body[key]; }
   if (/[{}]/u.test(path) || new URL(path,HOSTED_ORIGIN).origin !== HOSTED_ORIGIN) fail('invalid_manifest');
-  return {path,method:route.verb,body:route.body === 'remaining' ? body : undefined,maxBytes:route.responseMaxBytes};
+  return {path,method:route.verb,body:route.body === 'remaining' ? body : undefined,maxBytes:route.responseMaxBytes,maxBody:route.requestMaxBytes ?? MAX_JSON_BYTES,requiresEvents:route.requires_events === true};
+}
+
+export function compatibleTransport(manifest, transport) {
+  if (manifest?.version !== 1 || transport?.resource_manifest_version !== 1 || transport.terminal !== 'webrtc' || transport.durable_events !== false || !Array.isArray(transport.operation_ids)) fail('incompatible_transport');
+  const supported=new Set(transport.operation_ids);
+  if (manifest.operations.some(route=>!supported.has(route.operationId))) fail('incompatible_transport');
 }

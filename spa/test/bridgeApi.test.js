@@ -112,7 +112,7 @@ describe("adapter selection", () => {
       bodies: { pages: false, mediaRawPages: false },
       reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
-      tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
+      tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
       compaction: { harnessThresholds: false },
       conversations: { settings: true, reset: false },
       github: { repos: false },
@@ -424,6 +424,16 @@ describe("tasks.listPaged", () => {
     expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["tasks.listPaged"] }).tasks.listPaged).toBe(true);
     expect(v1.capabilitiesOf({ api_version: "3.24.0", capabilities: ["tasks.list"] }).tasks.listPaged).toBe(false);
     expect(v1.capabilitiesOf({ api_version: "3.24.0" }).tasks.listPaged).toBe(false);
+  });
+});
+
+describe("bounded task read capabilities", () => {
+  it("negotiates summaries independently of legacy paging and filter choices", () => {
+    const tasks = (capabilities) => v1.capabilitiesOf({ api_version: "3.26.0", capabilities }).tasks;
+    expect(tasks(["tasks.listPaged"])).toMatchObject({ listPaged: true, listSummaries: false, filterChoices: false });
+    expect(tasks(["tasks.listSummaries"])).toMatchObject({ listPaged: false, listSummaries: true, filterChoices: false });
+    expect(tasks(["tasks.filterChoices"])).toMatchObject({ listSummaries: false, filterChoices: true });
+    expect(tasks([])).toMatchObject({ listSummaries: false, filterChoices: false });
   });
 });
 

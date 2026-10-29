@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 
 let cache, summaries;
 const scope = { deviceId: "device-891", projectId: "proj-1" };
@@ -108,6 +108,15 @@ it("keeps column and filter query cursors independent", async () => {
   expect(await summaries.readSummaryQuery(scope, query)).toBeNull();
 });
 
+it("marks another query stale when shared rows change after its membership observation", async () => {
+  const ready = { statuses: ["ready"] };
+  const done = { statuses: ["done"] };
+  await land(await open(ready), page([row("task-1", { status: "ready" })]));
+  await land(await open(done, 2), page([row("task-1", { status: "done" })]));
+  expect((await summaries.readSummaryQuery(scope, ready)).stale).toBe(true);
+  expect((await summaries.readSummaryQuery(scope, done)).stale).toBe(false);
+});
+
 it("retains newer rows and marker authority when an older page enters another query", async () => {
   await land(await open(query, 3), page([row("task-1", { title: "new", read_through: "tc-03", watch_started_after: "te-02", dismissed_through: "te-04", unread_count: 0 })]));
   const other = { states: ["closed"] };
@@ -134,6 +143,22 @@ it("refuses malformed and nonadvancing pages without consuming their cursor", as
   await expect(land(next, page([], { next_cursor: "a" }), 2)).rejects.toThrow();
   await expect(land(next, { tasks: [] }, 2)).rejects.toThrow();
   expect((await summaries.readSummaryQuery(scope, query)).next_cursor).toBe("a");
+});
+
+it("keeps rows, identities and continuation unchanged when the page transaction cannot commit", async () => {
+  const first = await open();
+  await land(first, page([row("task-1")], { next_cursor: "a" }));
+  const put = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(() => {
+    throw new DOMException("Full quota", "QuotaExceededError");
+  });
+  try {
+    expect(await land({ ...first, cursor: "a" }, page([row("task-2")], { next_cursor: "b", identities: { X: { name: "New" } } }), 2)).toBe(false);
+  } finally { put.mockRestore(); }
+  const held = await summaries.readSummaryQuery(scope, query);
+  expect(held.next_cursor).toBe("a");
+  expect(held.tasks.map(({ id }) => id)).toEqual(["task-1"]);
+  expect(held.identities).toEqual({});
+  expect(await cache.readCached(summaries.summaryAddress(scope, "task-2"))).toBeUndefined();
 });
 
 it("fences late pages with an immediate write while retaining query metadata for recovery", async () => {

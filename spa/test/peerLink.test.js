@@ -2466,7 +2466,7 @@ describe("actual pending ICE completion bounds", () => {
     emit({ candidate: `candidate:overflow typ host ${"x".repeat(20000)}` }); expect(peer.closed).toBe(true);
   });
 
-  it.each(["local", "remote"])("orders the %s marker behind relay holds and asynchronous handoff", async (direction) => {
+  it.each([["local", false], ["remote", false], ["local", true], ["remote", true]])("orders the %s marker behind asynchronous handoff (nullFirst=%s)", async (direction, nullFirst) => {
     vi.useFakeTimers(); onTestFinished(() => vi.useRealTimers());
     const releases = [];
     const delivered = [];
@@ -2478,7 +2478,7 @@ describe("actual pending ICE completion bounds", () => {
       } });
     const peer = stood.peer(); peer.addIceCandidate = vi.fn((candidate) => { delivered.push(candidate); return new Promise((resolve) => releases.push(resolve)); });
     const emit = (candidate) => direction === "local" ? peer.gather(candidate) : stood.candidateSinks[0]({ type: "rtc.ice", peer_token: clearToken(2), negotiation: 1, candidate });
-    emit({ candidate: "candidate:1 typ host" }); emit({ candidate: "candidate:2 typ relay" }); emit({ candidate: "" }); emit(null);
+    emit({ candidate: "candidate:1 typ host" }); emit({ candidate: "candidate:2 typ relay" }); if (nullFirst) emit(null); emit({ candidate: "" }); if (!nullFirst) emit(null);
     expect(delivered.map((value) => value?.candidate || null)).toEqual(["candidate:1 typ host"]);
     await vi.advanceTimersByTimeAsync(1501);
     expect(delivered.map((value) => value?.candidate || null)).toEqual(["candidate:1 typ host", "candidate:2 typ relay"]);
@@ -2538,14 +2538,14 @@ describe("ICE audit lifecycle regressions", () => {
     peer.gather({ candidate: "candidate:overflow typ host" }); expect(peer.closed).toBe(true);
   });
 
-  it("normalizes empty native markers but sends no end-marker RPC to a legacy bridge", async () => {
+  it("preserves the legacy empty marker while suppressing the global null", async () => {
     const host = { candidate: "candidate:1 typ host" };
     const stood = await clearStand({ respond: async () => ({ sdp: clearSdp("CD") }), onLocal: (peer) => {
       peer.gather(host); peer.gather({ candidate: "" }); peer.gather(null);
     } });
     await nativeReady(stood); const link = await stood.link; onTestFinished(() => link.close());
     await link.whenInitialSignalingComplete();
-    expect(stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params)).toEqual([{ candidate: host }]);
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params)).toEqual([{ candidate: host }, { candidate: { candidate: "" } }]);
   });
 });
 
@@ -2558,4 +2558,26 @@ it("ignores stale negotiation pushes before the fresh answer authenticates its t
   expect(stood.peer().closed).toBe(false);
   await complete(); await vi.waitFor(() => expect(stood.peer().remoteDescriptions).toHaveLength(1));
   const link = await finishClear(stood); expect(stood.peer().remoteCandidates).toEqual([]); link.close();
+});
+
+describe("legacy empty ICE candidate compatibility", () => {
+  it.each([false, true])("preserves native per-generation empty metadata in the legacy-only path (nullFirst=%s)", async (nullFirst) => {
+    const stood = stand(); await vi.waitFor(() => expect(stood.peer()?.remoteDescriptions).toHaveLength(1));
+    const host = { candidate: "candidate:1 typ host", sdpMid: "0", usernameFragment: "round-1" };
+    const empty = { candidate: "", sdpMid: "0", usernameFragment: "round-1" };
+    stood.peer().gather(host); if (nullFirst) stood.peer().gather(null); stood.peer().gather(empty); if (!nullFirst) stood.peer().gather(null);
+    await nativeReady(stood); const link = await stood.link; onTestFinished(() => link.close());
+    await link.whenInitialSignalingComplete();
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params)).toEqual([{ candidate: host }, { candidate: empty }]);
+  });
+
+  it.each([false, true])("preserves empty metadata after authenticated legacy selection (nullFirst=%s)", async (nullFirst) => {
+    const host = { candidate: "candidate:1 typ host", sdpMid: "0", usernameFragment: "round-1" };
+    const empty = { candidate: "", sdpMid: "0", usernameFragment: "round-1" };
+    const stood = await clearStand({ offerSdp: () => clearSdp("AB") + "a=ice-ufrag:round-1\r\n",
+      respond: async () => ({ sdp: clearSdp("CD") }), onLocal: (peer) => { peer.gather(host); if (nullFirst) peer.gather(null); peer.gather(empty); if (!nullFirst) peer.gather(null); } });
+    await nativeReady(stood); const link = await stood.link; onTestFinished(() => link.close());
+    await link.whenInitialSignalingComplete();
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params)).toEqual([{ candidate: host }, { candidate: empty }]);
+  });
 });

@@ -9,7 +9,7 @@ const classifyCandidate = (candidate) => {
   if (size > MAX_BYTES) throw new Error("pending ICE queue overflow");
   const end = isIceEndMarker(candidate);
   const value = end ? normalizedMarker(candidate) : candidate;
-  return { original: candidate, size, value, end, markerKey: end ? JSON.stringify(value) : null };
+  return { original: candidate, size, value, end, markerKey: end ? JSON.stringify([value, candidateValue(candidate) === null ? "global" : "generation"]) : null };
 };
 const normalizedMarker = (value) => value?.type === "rtc.ice" ? { ...value, candidate: null } : null;
 
@@ -26,11 +26,12 @@ export function createPeerIceQueue({ deliver, accept = () => true }) {
   let ended = false;
   let endSeen = false;
   let marker = null;
+  const handoff = (entry) => deliver(entry.value, entry.release, entry.original);
   const flushMarker = () => {
     if (!ready || !marker || entries.size !== 1) return;
     const entry = marker;
     marker = null;
-    deliver(entry.value, entry.release);
+    handoff(entry);
   };
   const reserve = ({ value, size, markerKey, original }) => {
     const epoch = generation;
@@ -46,7 +47,7 @@ export function createPeerIceQueue({ deliver, accept = () => true }) {
   const dispatch = (entry) => {
     earlyMarkers.delete(entry.markerKey);
     if (!accept(entry.original)) return entry.release();
-    if (!isIceEndMarker(entry.value)) return deliver(entry.value, entry.release);
+    if (!isIceEndMarker(entry.value)) return handoff(entry);
     if (endSeen) return entry.release();
     endSeen = true;
     marker = entry;

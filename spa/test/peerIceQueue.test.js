@@ -9,7 +9,7 @@ describe("bounded negotiation ICE queue", () => {
     queue.offer(candidate);
     expect(deliver).not.toHaveBeenCalled();
     queue.open();
-    expect(deliver).toHaveBeenCalledWith(candidate, expect.any(Function));
+    expect(deliver).toHaveBeenCalledWith(candidate, expect.any(Function), candidate);
     for (let i = 0; i < 127; i++) queue.offer({ candidate: `${i}` });
     expect(() => queue.offer({ candidate: "overflow" })).toThrow(/ICE queue/);
     deliver.mock.calls[0][1]();

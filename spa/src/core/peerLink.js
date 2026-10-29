@@ -219,7 +219,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     deliver: (held) => {
       const { lease, round, value: gathered } = unpackIceLease(held, localCandidates);
       if (torn || !round.active) { lease?.release(); return; }
-      if (lease && isIceEndMarker(gathered) && !selection.isClear()) { lease.release(); return; }
+      if (lease && gathered === null && !selection.isClear()) { lease.release(); return; }
       const candidate = gathered?.toJSON ? gathered.toJSON() : gathered;
       const type = countedCandidateType(gathered);
       const delivery = iceWork(() => signal("rtc.ice", { candidate, ...roundControls(round) }, { signal: round.controller.signal }), round.controller.signal).then(() => {
@@ -243,8 +243,10 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     fatalError = error;
     tearDown("the ICE candidate queue overflowed");
   };
-  const outboundIce = boundedIce(binding, (value, release) => holdOutbound.offer(heldLease(value, release)));
-  const inboundIce = boundedIce(binding, (value, release) => holdInbound.offer(heldLease(value, release)), (push) => selection.acceptsIce(push));
+  const selectedIceValue = (value, original) => selection.isClear() ? value : original;
+  const outboundIce = boundedIce(binding, (value, release, original) => holdOutbound.offer(heldLease(selectedIceValue(value, original), release)),
+    (original) => selection.isClear() || original !== null);
+  const inboundIce = boundedIce(binding, (value, release, original) => holdInbound.offer(heldLease(selectedIceValue(value, original), release)), (push) => selection.acceptsIce(push));
   const releaseIce = () => {
     localCandidates.controls = selection.controls();
     outboundIce?.open();
@@ -300,7 +302,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     if (isIceEndMarker(event.candidate)) {
       round.completed = true;
       void reportLocalCandidates("gathering-complete", round);
-      queueOutgoingCandidate(null);
+      queueOutgoingCandidate(event.candidate);
       return;
     }
     round.gathered[countedCandidateType(event.candidate)] += 1;

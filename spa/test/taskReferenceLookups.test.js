@@ -124,6 +124,9 @@ it("excludes code, pre and existing anchors and enforces byte/node scan budgets"
   host.innerHTML = `<div class="task-page-body markdown">${"<i>text</i>".repeat(300)} #98</div>`;
   await follower.update("nodes");
   expect(lookupCalls().map(([, params]) => params.number)).toEqual([4, 5]);
+  const rows = Array.from({ length: 256 }, () => ({ type: "event" }));
+  rows.push({ get type() { throw new Error("Content fingerprint exceeded its row budget"); } });
+  expect(() => follower.update({ body: "same adopted text", rows })).not.toThrow();
 });
 
 it("keeps a lookup confirmed null distinct from unknown partial membership and retains it on error", async () => {

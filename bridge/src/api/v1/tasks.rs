@@ -148,7 +148,7 @@ struct TasksListInput {
     held: Option<bool>,
     #[serde(default, deserialize_with = "provided")]
     undelivered: Option<bool>,
-    #[serde(default, deserialize_with = "nonnull_value")]
+    #[serde(default, deserialize_with = "nonnull_provided")]
     exclude_assignee: Option<Value>,
 
     project_id: String,
@@ -176,14 +176,12 @@ struct TasksListInput {
     cursor: Option<Option<String>>,
 }
 
-fn nonnull_value<'de, D: serde::Deserializer<'de>>(
+fn nonnull_provided<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
-) -> Result<Option<Value>, D::Error> {
-    let value = Value::deserialize(deserializer)?;
-    if value.is_null() {
-        return Err(serde::de::Error::custom("selector cannot be null"));
-    }
-    Ok(Some(value))
+) -> Result<Option<T>, D::Error> {
+    Option::<T>::deserialize(deserializer)?
+        .map(Some)
+        .ok_or_else(|| serde::de::Error::custom("selector cannot be null"))
 }
 
 fn nullable_provided<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
@@ -1217,6 +1215,9 @@ const UNAVAILABLE: [&str; 7] = [
 ///
 /// [`ApiError::classify`]: crate::api::ApiError::classify
 pub(crate) fn refine(error: ApiError) -> ApiError {
+    if error.message().starts_with("invalid task query selector:") {
+        return ApiError::invalid_params(error.message());
+    }
     if let Some(encoded) = error
         .message()
         .strip_prefix("task_query_timestamp_unsupported:")
@@ -1520,6 +1521,28 @@ fn tasks_columns(
 mod tests {
     use super::super::testing::fixture_round_trips;
     use super::*;
+
+    #[test]
+    fn query_selector_validation_is_invalid_params_without_reclassifying_other_failures() {
+        for message in [
+            "attention_rule must be asked or legacy",
+            "exclude_review_mode must be pull_request or snapshot",
+            "exclude_assignee must be an exact valid assignee object",
+            "membership id must contain 1 to 128 bytes",
+            "invalid task query selector: invalid type: string, expected a boolean",
+        ] {
+            let error = refine(ApiError::classify(message.into()));
+            assert_eq!(error.code(), "invalid_params", "{message}");
+            assert!(!error.retryable(), "{message}");
+        }
+        assert_eq!(
+            refine(ApiError::classify(
+                "unexpected legacy tracker failure".into()
+            ))
+            .code(),
+            "internal"
+        );
+    }
 
     #[test]
     fn unsupported_order_timestamp_preserves_structured_refusal() {

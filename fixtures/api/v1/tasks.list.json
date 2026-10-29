@@ -1134,6 +1134,20 @@
           "field": "updated_at"
         }
       }
+    },
+    {
+      "params": {
+        "project_id": "proj-1",
+        "summary": true,
+        "attention_rule": "unknown-rule"
+      },
+      "reply": {
+        "id": "r-invalid-selector",
+        "ok": false,
+        "error": "attention_rule must be asked or legacy",
+        "error_code": "invalid_params",
+        "retryable": false
+      }
     }
   ],
   "exact_queries": {

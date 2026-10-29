@@ -3,7 +3,7 @@
 // Detail/timeline records belong to trackerCache and are never replaced here.
 import { mergeCachedRecordsTogether, readCached, readCachedMany } from "./localCache.js";
 import { canonicalSummaryFilters } from "./taskSummaryQuery.js";
-import { latestTaskMark } from "./trackerUnread.js";
+import { compareTaskMarkers, isPresentTaskMarker, newerTaskMarker } from "./taskOpaqueMarkers.js";
 import { preserveTaskReviewSummary } from "./trackerCache.js";
 import { summaryPatch } from "./taskSummaryProjection.js";
 
@@ -95,9 +95,9 @@ function preserveMarks(held, task) {
   const next = { ...task };
   let behind = false;
   for (const field of ["read_through", "watch_started_after", "dismissed_through"]) {
-    const mark = latestTaskMark(held?.[field], next[field]);
-    if (mark && mark !== next[field]) behind = true;
-    if (mark) next[field] = mark;
+    const mark = newerTaskMarker(held?.[field], next[field]);
+    if (isPresentTaskMarker(mark) && mark !== next[field]) behind = true;
+    if (isPresentTaskMarker(mark)) next[field] = mark;
   }
   if (behind) for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) {
     if (Object.hasOwn(held, field)) next[field] = held[field];
@@ -106,10 +106,9 @@ function preserveMarks(held, task) {
 }
 
 const markerFields = ["read_through", "watch_started_after", "dismissed_through"];
-const strongerMarks = (held, incoming) => markerFields.some((field) => incoming[field]
-  && latestTaskMark(held?.[field], incoming[field]) === incoming[field] && held?.[field] !== incoming[field]);
+const strongerMarks = (held, incoming) => markerFields.some((field) => compareTaskMarkers(incoming[field], held?.[field]) > 0);
 const coversMarks = (held, incoming) => markerFields.every((field) =>
-  latestTaskMark(held?.[field], incoming[field]) === (incoming[field] || null));
+  compareTaskMarkers(incoming[field], held?.[field]) >= 0);
 
 function markerAuthority(held, incoming) {
   const before = held?.task;

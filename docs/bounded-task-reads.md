@@ -1,5 +1,9 @@
 # Bounded task reads
 
+Wire 3.27.0 adds [task consumer queries](task-query-contract.md), including
+generation-bound summary continuations, independent membership/order selectors,
+aggregate buckets and point lookup. Those additions are separately negotiated.
+
 Wire 3.26.0 adds `tasks.listSummaries`, a capability selecting the summary mode
 of the existing `tasks.list` RPC. It is not a new RPC name. The separate
 `tasks.filterChoices` verb is advertised independently. These APIs do not switch

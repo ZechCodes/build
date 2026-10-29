@@ -742,7 +742,13 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.26.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.27.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.27.0 adds independently negotiated task counts, number lookup, exact
+  watched/attention/workspace/tracker/review predicates and indexed ordering.
+  Summary pages carry a transactional projection basis; changed-basis cursors
+  require an explicit restart. Static readiness streams preserve client-owned
+  runtime agent grouping. Search remains on its existing legacy contract.
+  See [Task consumer queries](docs/task-query-contract.md).
   3.26.0 adds `tasks.listSummaries`: bounded lightweight task pages selected
   with `tasks.list {summary:true}`, plural task filters, and the independently
   advertised `tasks.filterChoices` verb. Legacy task list responses stay intact.

@@ -27,7 +27,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
 
 const scope = { deviceId: "device-ref", projectId: "project-ref" };
 const projectKey = "device-ref/project-ref";
-const deferred = () => { let resolve; const promise = new Promise((yes) => { resolve = yes; }); return { resolve, promise }; };
+const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; };
 const result = (number, found = true) => ({ project_id: scope.projectId, number,
   task: found ? { id: `task-${number}`, project_id: scope.projectId, number, title: `Target ${number}` } : null,
   identities: {}, basis: "opaque-basis" });
@@ -274,4 +274,22 @@ it("coalesces many forced refreshes behind the same initial four in-flight looku
   await started; await Promise.all(refreshes);
   expect(lookupCalls()).toHaveLength(8);
   expect(lookupCalls().map(([, params]) => params.number)).toEqual([1, 2, 3, 4, 1, 2, 3, 4]);
+});
+
+it("drains initial siblings after one error before the explicitly queued trailing refresh", async () => {
+  runtime = await import("../src/core/taskReferenceLookups.js");
+  const initial = new Map([1, 2, 3, 4].map((number) => [number, deferred()]));
+  live.context.rpc.mockImplementation((method, params) => lookupCalls().length <= 4
+    ? initial.get(params.number).promise : Promise.resolve(result(params.number)));
+  const follower = mounted("#1 #2 #3 #4");
+  const started = follower.update("initial");
+  await vi.waitFor(() => expect(lookupCalls()).toHaveLength(4));
+  const forced = follower.refresh();
+  await Promise.resolve(); await Promise.resolve();
+  initial.get(1).reject(new Error("refused"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(lookupCalls()).toHaveLength(4);
+  for (const [number, pending] of initial) if (number !== 1) pending.resolve(result(number));
+  await started; await forced;
+  expect(lookupCalls()).toHaveLength(8);
 });

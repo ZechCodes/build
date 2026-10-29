@@ -41,10 +41,10 @@ remain independent from timestamp ordering support.
 
 Shared cases live in `fixtures/api/task-query-timestamps.json` and are consumed
 by `bridge/tests/task_query_timestamps.rs` and
-`scripts/test-task-query-timestamps.mjs`. Run the latter with the pinned Node:
+`scripts/test-task-query-timestamps.mjs`. Run the latter with Node 22.23.4:
 
 ```
-/home/zech/.local/share/mise/installs/node/22.23.4/bin/node scripts/test-task-query-timestamps.mjs
+node scripts/test-task-query-timestamps.mjs
 ```
 
 On 2026-10-29, Node v22.23.4 and v26.12.1 independently matched all 31 supported

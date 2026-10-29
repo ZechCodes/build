@@ -63,9 +63,9 @@ shared and bounded as in summary pages. The complete response is at most
 
 ## Ordering and static streams
 
-Number is descending and remains the default. Updated orders by parsed update
-milliseconds descending, then number descending; an invalid timestamp has the
-existing recency rank zero. Priority orders urgent, high, medium, low, none,
+Number is descending and remains the default. Updated orders by supported update
+milliseconds descending, then number descending; a genuinely missing timestamp
+has recency rank zero. Priority orders urgent, high, medium, low, none,
 then number descending. This preserves the stable priority pass over the
 existing number-descending catalogue. Anchor orders the summary's activity
 anchor ascending, then number descending, with unknown anchors last. Anchor pages return `order_anchor_ms` with the exact
@@ -74,6 +74,37 @@ metadata. A valid safe-integer session pair uses `session_started_ms`; otherwise
 use parsed `created_at`, then parsed `updated_at`, then unknown. This preserves
 the summary-only Inbox fallback. The internal unknown sentinel never crosses
 the wire as a timestamp.
+
+Ordered timestamps use the separate
+[`ecmascript-iso-v1` domain](task-query-timestamp-domain.md): complete Gregorian
+ISO dates (UTC), or full uppercase `T` date-times with explicit `Z`/numeric
+offset. Native fractions accept 1–9 digits, truncating/padding the wall-clock
+fraction to milliseconds before offset conversion. Expanded years and the
+inclusive ECMAScript TimeClip range are supported. Zone-less date-times,
+lowercase forms, leap seconds, overflow dates, `24:00`, informal parsing and
+other undeclared forms are unsupported. Missing/null/empty values are unknown,
+not unsupported. The documented native fraction extension matches the tested
+Node/Chromium engines; it is not an all-browser or arbitrary-Date.parse proof.
+The legacy history parser and canonical imported bytes are preserved.
+
+Before any successful affected page, at most two partial-index point seeks
+check a conservative whole-project validity scope in the same read snapshot.
+Updated ordering checks update timestamps; anchor ordering checks only the
+fallback fields needed when a valid session pair is absent. An unsupported
+creation fallback refuses anchor ordering even if update time is valid.
+`done_since` checks Done timestamps for Done tasks. Invalid rows beyond the
+candidate window or excluded by other selections still refuse this project/order
+scope. Correction, reparenting, removal and rollback update validity atomically.
+Number/priority reads without cutoff, counts and lookup remain independent.
+
+Refusal is `error_code:"unavailable"`, `retryable:false`, with details
+`{reason:"task_query_timestamp_unsupported",scope:"project_order",order,
+project_id,domain:"ecmascript-iso-v1",field}`. The field is `updated_at`,
+`anchor_fallback` or `done_at`. No result or success cursor is issued. Preserve
+cached rows/cursors and suppress automatic retry until the data or chosen mode
+changes. Explicit legacy compatibility does not become completed bounded
+conversion. This gate intentionally avoids combinatorial validity indexes.
+
 `done_since` is an inclusive epoch-millisecond cutoff and only admits Done
 tasks with a parsed completion time at or after that cutoff. It does not move
 with wall-clock time; the client owns its session cutoff and query identity.

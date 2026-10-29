@@ -211,7 +211,10 @@ export function createRelayRendezvous({
       JSON.stringify({ type: "session_init", session_id: id, route_to: `device:${deviceId}`, session_init: init.sessionInit }),
     );
     const { envelope } = await answer;
-    await atStep("session-accept", Promise.resolve().then(() => transport.openSessionAccept({ sessionKeyB64: init.sessionKeyB64, envelope })));
+    await atStep("session-accept", Promise.resolve().then(async () => {
+      const opened = await transport.openSessionAccept({ sessionKeyB64: init.sessionKeyB64, envelope });
+      if (opened?.sessionId !== id) throw new Error("session accept did not match the pending session");
+    }));
     return { sessionId: id, sessionKeyB64: init.sessionKeyB64, deviceId };
   }
 

@@ -177,3 +177,49 @@ This ledger pins execution to its source head. The final task #900 report
 identifies the documentation-only descendant, final pre-push scan and independent
 scope, code and Astra dispositions. Documentation review does not relabel the
 622 full-suite run or the 2c2 affected-test and release evidence.
+
+
+## Canonical-source repair: committed-head gates
+
+Fresh `nice -n 10 cargo test -- --nocapture` on clean committed
+`cf06f73af8b94ee30d4671043fb35bc2a30cd930` exited **0**. The log
+`/tmp/task900-cargo-canonical-full.log` records that source head, command and
+final `process_exit=0`: **5,995** unit tests passed, 24 ignored, **56** API
+contracts passed, all normal integration suites passed, and doc tests passed.
+This includes both upgrade convergence regressions, all canonical-source and
+RPC cases, and the existing producer/legacy coverage. It supersedes earlier
+full-suite evidence for the repaired implementation without erasing it.
+
+Clippy (`nice -n 10 cargo clippy --manifest-path bridge/Cargo.toml --all-targets
+-- -D warnings`) exited **0** for committed production/test source
+`f2769d34ddf9cfb9614a6b2d475b6b2f992d7f32`; the later `cf06` commits only add
+audit/validation documentation. The distinction is intentional: no later code
+is being credited to an earlier lint run. Formatting on `cf06` exited **0**;
+explicit-path Semgrep on `cf06` exited **0**, 33 files/203 rules/zero findings.
+Logs are `/tmp/task900-clippy-canonical.log`, `/tmp/task900-fmt-canonical.log`
+and `/tmp/task900-semgrep-canonical.log`.
+
+The release build at `cf06` exited **0**, then the two required emitted
+executables ran once each, serially after owned builds/tests/scans stopped.
+Both processes exited **0**. The 1,200-request summary/filter-choice cohort
+reported maximum **98.262 ms**, largest p99 **96.666 ms**, and maximum serialized
+result **340,012 bytes**. Its observed margin under 100 ms is only **1.738 ms**;
+there was no rerun to obtain a better sample. The 600-request count/lookup
+cohort reported maximum **1.535 ms**, largest p99 **1.430 ms**, and maximum
+serialized result **7,758 bytes**. These are absolute results for this cohort,
+not a causal comparison with earlier cohorts or arbitrary-load guarantees.
+
+`/tmp/task900-release-canonical-summary.log` and
+`/tmp/task900-release-canonical-query.log` record exact source/executable
+commands, binary SHA-256 and process exits. The identities are respectively
+`2d97de90d321ec9ad76741e32d5490d8776b37ba1bea1daa5b4866f4ca9d0678` and
+`869d7d685166203b265c8eb4fa89e9d9f9065d57dbb123f0309e9b443252fdb7`.
+The [performance record](task-query-performance.md) contains all 18 release
+rows, sampled-byte semantics and separate startup/write/memory/storage evidence.
+Read-gate success does not waive these costs; an exact-base cost comparison is
+not claimed.
+
+Final independent scope/code/Astra dispositions cover the entire expanded
+repair and documentation delta and are recorded on task #900, together with
+the final pre-push Gitleaks result and exact handoff head. This ledger does not
+self-approve either Astra finding or authorize #891 consumer activation.

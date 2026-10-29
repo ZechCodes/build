@@ -244,9 +244,14 @@ These are working-tree focused outcomes, not an assertion that the complete
 suite ran on a subsequently named clean commit. Additional gate attribution
 belongs to the parent validation ledger (`task-query-validation.md`).
 The document author inspected sources/logs and ran no tests for this audit.
-Full-suite, clippy/format, release/performance and fresh exact-head independent
-scope/code/Astra dispositions remain pending unless independently recorded in
-that ledger. Neither P2 is treated as finally review-approved by this audit.
+The clean committed `cf06f73af8b94ee30d4671043fb35bc2a30cd930` full suite later
+exited 0 (5,995 unit passes/24 ignored, 56 API contracts and all normal
+integrations); code-identical `f2769` Clippy and `cf06` formatting/Semgrep passed.
+Both fresh isolated release cohorts at `cf06` exited 0, including the summary
+maximum 98.262 ms with only 1.738 ms observed margin. Exact attribution and
+startup/write/memory/storage costs belong to that ledger and performance record.
+Fresh independent scope/code/Astra dispositions are recorded on task #900;
+neither P2 is self-approved by this audit, and #891 activation remains separate.
 
 Earlier parser-only evidence remains in `task-query-timestamp-domain.md`; it does
 not prove canonical source selection, aggregate maintenance or any of the

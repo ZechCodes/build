@@ -117,6 +117,28 @@ it("marks another query stale when shared rows change after its membership obser
   expect((await summaries.readSummaryQuery(scope, done)).stale).toBe(false);
 });
 
+it("invalidates earlier absence observations when another query can reveal new members", async () => {
+  const ready = { statuses: ["ready"] };
+  await land(await open(ready), page([]));
+  await land(await open({}, 2), page([row("task-1", { status: "ready" })]));
+  expect((await summaries.readSummaryQuery(scope, ready)).stale).toBe(true);
+});
+
+it("checks refresh reservation acceptance inside the cache transaction", async () => {
+  const ticket = await open();
+  await land(ticket, page([row("task-1")], { next_cursor: "a" }));
+  await summaries.beginSummaryQuery(scope, query, 2, { accept: () => false });
+  const held = await summaries.readSummaryQuery(scope, query);
+  expect(held.refreshing).toBe(false);
+  expect(held.generation).toBe(ticket.generation);
+});
+
+it("merges stronger markers from an older read independently of ordinary fields", async () => {
+  await land(await open(query, 3), page([row("task-1", { title: "held", read_through: "tc-01", unread_count: 5 })]));
+  await land(await open({}, 1), page([row("task-1", { title: "old", read_through: "tc-03", unread_count: 0 })]));
+  expect((await summaries.readSummaryQuery(scope, query)).tasks[0]).toMatchObject({ title: "held", read_through: "tc-03", unread_count: 0 });
+});
+
 it("retains newer rows and marker authority when an older page enters another query", async () => {
   await land(await open(query, 3), page([row("task-1", { title: "new", read_through: "tc-03", watch_started_after: "te-02", dismissed_through: "te-04", unread_count: 0 })]));
   const other = { states: ["closed"] };

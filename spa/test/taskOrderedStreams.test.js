@@ -29,7 +29,7 @@ it("stops at a newly unknown head even when another branch has buffered rows", (
 
 it("permits an exhausted branch, breaks equal-order ties stably, and honors the visible limit", () => {
   const result = mergeKnownTaskHeads([stream("empty", [], true), stream("b", [task(5, "B")], true), stream("a", [task(5, "A")], true)], compare, 1);
-  expect(result.items.map(({ id }) => id)).toEqual(["A"]);
+  expect(result.items.map(({ id }) => id)).toEqual(["B"]);
   expect(result.complete).toBe(false);
   expect(result.needsHeads).toEqual([]);
 });
@@ -45,4 +45,5 @@ it("bounds unknown project-head admission independently from the number of proje
   expect(taskHeadReadPlan(streams, 3)).toEqual(["project-0", "project-1", "project-2"]);
   expect(mergeKnownTaskHeads(streams, compare, 25).items).toEqual([]);
   expect(taskHeadReadPlan([stream("known", [task(1)]), stream("done", [], true)], 3)).toEqual([]);
+  expect(taskHeadReadPlan(streams, 1000)).toHaveLength(4);
 });

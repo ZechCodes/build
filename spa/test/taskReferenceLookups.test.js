@@ -256,3 +256,22 @@ it("keeps adjacent above-safe JSON task numbers unknown instead of linking the o
   expect(host.querySelector('.task-page-body .md-ref-missing')).toBeNull();
   expect(lookupCalls()).toHaveLength(0);
 });
+
+it("coalesces many forced refreshes behind the same initial four in-flight lookups", async () => {
+  runtime = await import("../src/core/taskReferenceLookups.js");
+  const initial = new Map([1, 2, 3, 4].map((number) => [number, deferred()]));
+  live.context.rpc.mockImplementation((method, params) => {
+    const first = initial.get(params.number);
+    return lookupCalls().length <= 4 ? first.promise : Promise.resolve(result(params.number));
+  });
+  const follower = mounted("#1 #2 #3 #4 #5");
+  const started = follower.update("initial");
+  await vi.waitFor(() => expect(lookupCalls()).toHaveLength(4));
+  const refreshes = Array.from({ length: 50 }, () => follower.refresh());
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(lookupCalls()).toHaveLength(4);
+  for (const [number, pending] of initial) pending.resolve(result(number));
+  await started; await Promise.all(refreshes);
+  expect(lookupCalls()).toHaveLength(8);
+  expect(lookupCalls().map(([, params]) => params.number)).toEqual([1, 2, 3, 4, 1, 2, 3, 4]);
+});

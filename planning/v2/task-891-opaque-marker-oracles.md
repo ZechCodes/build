@@ -1,11 +1,12 @@
 # Task #891 opaque marker oracles
 
-The pure `spa/src/core/taskOpaqueMarkers.js` model is an isolated source oracle.
-It does not replace the current unread adapters, change cache writes, or activate
-a new unread/watch policy. Its tests retain independent expectations for the
-current SPA and the canonical bridge semantics. Any migration of existing unread
-or watch behavior needs an explicit scope/code decision and Astra disposition;
-this document records differences for that review, not approval to activate them.
+The pure `spa/src/core/taskOpaqueMarkers.js` model has independent current-SPA
+and canonical bridge oracles. The normalized `taskSummaryCache.js` uses it to
+retain exact opaque floors, including present empty values, independently of
+ordinary row ordering. The legacy unread/attention adapters still use their
+existing rules. Activating normalized readers in a user-visible surface needs
+an explicit scope/code decision and Astra disposition for the differences below;
+this document records those differences, not approval to activate them.
 
 ## Canonical source and interface
 

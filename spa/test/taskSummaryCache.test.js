@@ -96,7 +96,8 @@ it("merges identities independently and never writes over an opened detail", asy
   await land(await open(), page([row("task-1", { summary_truncated: true })], { next_cursor: "a", identities: { A: { name: "A" } } }));
   const ticket = await open({ states: ["closed"] }, 2);
   await land(ticket, page([], { identities: { B: { name: "B" } } }));
-  expect((await summaries.readSummaryQuery(scope, query)).identities).toEqual({ A: { name: "A" }, B: { name: "B" } });
+  expect((await summaries.readSummaryQuery(scope, query)).identities).toEqual({ A: { name: "A" } });
+  expect((await summaries.readSummaryQuery(scope, { states: ["closed"] })).identities).toEqual({ B: { name: "B" } });
   expect((await cache.readCached(detail)).value.timeline).toEqual(["history"]);
   expect((await cache.readCached(detail)).value.task.body).toBe("full body");
 });
@@ -108,4 +109,30 @@ it("refuses malformed and nonadvancing pages without consuming their cursor", as
   await expect(land(next, page([], { next_cursor: "a" }), 2)).rejects.toThrow();
   await expect(land(next, { tasks: [] }, 2)).rejects.toThrow();
   expect((await summaries.readSummaryQuery(scope, query)).next_cursor).toBe("a");
+});
+
+it("fences late pages with an immediate write while retaining query metadata for recovery", async () => {
+  const ticket = await open();
+  await land(ticket, page([row("task-1")], { next_cursor: "a" }));
+  await summaries.writeSummaryTask(scope, row("task-1", { title: "edited", watched: false }), 3);
+  expect(await land({ ...ticket, cursor: "a" }, page([row("task-1", { title: "old", watched: true })]), 2)).toBe(false);
+  const held = await summaries.readSummaryQuery(scope, query);
+  expect(held.tasks[0]).toMatchObject({ title: "edited", watched: false });
+  expect(held.stale).toBe(true);
+  expect(held.next_cursor).toBe("a");
+  const refresh = await open(query, 4);
+  expect((await summaries.readSummaryQuery(scope, query)).stale).toBe(true);
+  await land(refresh, page([row("task-1", { title: "confirmed", watched: false })]));
+  expect((await summaries.readSummaryQuery(scope, query)).stale).toBe(false);
+});
+
+it("preserves marker and unread floors even when a later dispatched read carries older marks", async () => {
+  await land(await open(), page([row("task-1", { read_through: "tc-03", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 })]));
+  await land(await open(query, 2), page([row("task-1", { read_through: "tc-01", unread_count: 5, unread_mentions: 1, unread_agent_comments: 3 })]));
+  expect((await summaries.readSummaryQuery(scope, query)).tasks[0]).toMatchObject({ read_through: "tc-03", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 });
+});
+
+it("does not collapse unsupported selectors or malformed actors into a known query", () => {
+  expect(() => summaries.summaryQueryAddress(scope, { watched: true })).toThrow();
+  expect(() => summaries.summaryQueryAddress(scope, { assignees: [{ kind: "agent", agent_id: "A", extra: true }] })).toThrow();
 });

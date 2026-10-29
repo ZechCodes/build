@@ -65,6 +65,27 @@ function validateCredential(value) {
     fail("invalid_response");
 }
 
+function headerIdentifier(value) {
+  if (typeof value !== "string" || !/^[\x21-\x7e]{1,128}$/u.test(value))
+    fail("invalid_options");
+  return value;
+}
+function operationId(value) {
+  if (
+    typeof value !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(
+      value,
+    )
+  )
+    fail("invalid_options");
+  return value;
+}
+function dependencyHeader(after) {
+  if (!Array.isArray(after) || after.length > 8) fail("invalid_options");
+  after.forEach(operationId);
+  return JSON.stringify(after);
+}
+
 export function requestOptions(options = {}) {
   exact(options, ["requestId", "priority", "write"], "invalid_options");
   if (
@@ -78,19 +99,14 @@ export function requestOptions(options = {}) {
   };
   if (options.requestId !== undefined)
     headers["X-Build-Request-Id"] = identifier(
-      options.requestId,
+      headerIdentifier(options.requestId),
       "invalid_options",
     );
   if (options.write !== undefined) {
     exact(options.write, ["operation_id", "after"], "invalid_options");
-    headers["Idempotency-Key"] = identifier(
-      options.write.operation_id,
-      "invalid_options",
-    );
+    headers["Idempotency-Key"] = operationId(options.write.operation_id);
     if (options.write.after !== undefined) {
-      const after = JSON.stringify(options.write.after);
-      if (Buffer.byteLength(after) > 8192) fail("invalid_options");
-      headers["X-Build-After"] = after;
+      headers["X-Build-After"] = dependencyHeader(options.write.after);
     }
   }
   return headers;

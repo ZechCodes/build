@@ -434,13 +434,19 @@ test("pending reads and writes reserve bounded aggregate response bytes; metadat
     {
       requestId: "pending",
       priority: "background",
-      write: { operation_id: "operation", after: [] },
+      write: {
+        operation_id: "00000000-0000-4000-8000-000000000001",
+        after: [],
+      },
     },
   );
   await new Promise(setImmediate);
   const request = h.requests.at(-1);
   assert.equal(request.opts.headers["X-Build-Priority"], "background");
-  assert.equal(request.opts.headers["Idempotency-Key"], "operation");
+  assert.equal(
+    request.opts.headers["Idempotency-Key"],
+    "00000000-0000-4000-8000-000000000001",
+  );
   assert.equal(request.opts.headers["X-Build-After"], "[]");
   await assert.rejects(
     h.bridge.request(

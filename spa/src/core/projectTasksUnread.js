@@ -1,9 +1,10 @@
 // The project Tasks tab's count (#104): "For the project it is all unreads" —
 // the unread of every watched task in the project that is not finished
-// (#183), read off its cached list and task details (core/taskUnread.js).
+// (#183), from authoritative cached counts when available. Older bridges use
+// the cached list and task details (core/taskUnread.js).
 //
 // A task page's accepted read updates its detail before the list refreshes.
-// Follow both records so this badge agrees with Inbox throughout that gap.
+// The legacy path follows both records so its badge agrees with Inbox in that gap.
 // Cache announcements supply every update; this follower asks for no reads.
 // Once a capable device has supplied authoritative project totals, those totals
 // own the badge; loaded task pages never reconstruct or adjust an aggregate.

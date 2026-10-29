@@ -172,25 +172,22 @@ fn arm_pending(app: &AppState, pending: &Task) {
         )
         .unwrap();
 }
-#[test]
-fn pending_only_any_choice_disappears_on_cancel_without_becoming_exact_target_membership() {
-    let root = tempfile::tempdir().unwrap();
-    let (_repo, mut app, project) = tracked(root.path());
-    let mut pending = seed(&app, &project, None, "api", "backlog");
-    arm_pending(&app, &pending);
-    assert_eq!(choices(&mut app, &project, "assignee"), vec![json!("any")]);
+fn pending_assignment_transitions(app: &mut AppState, project: &str) -> Task {
+    let mut pending = seed(app, project, None, "api", "backlog");
+    arm_pending(app, &pending);
+    assert_eq!(choices(app, project, "assignee"), vec![json!("any")]);
     assert_eq!(
-        selected(&mut app, &project, "assignee", json!("any")),
+        selected(app, project, "assignee", json!("any")),
         BTreeSet::from([pending.id.clone()])
     );
-    assert!(selected(&mut app, &project, "assignee", json!("none")).is_empty());
+    assert!(selected(app, project, "assignee", json!("none")).is_empty());
     let exact = json!({"kind":"agent","agent_id":"AgentA\0suffix"});
-    assert!(selected(&mut app, &project, "assignee", exact.clone()).is_empty());
+    assert!(selected(app, project, "assignee", exact.clone()).is_empty());
     app.tracker_store()
         .unwrap()
         .repair_task_summaries(std::slice::from_ref(&pending.id))
         .unwrap();
-    assert_eq!(choices(&mut app, &project, "assignee"), vec![json!("any")]);
+    assert_eq!(choices(app, project, "assignee"), vec![json!("any")]);
     pending.assignee = Some(Assignee::Agent {
         agent_id: "AgentA\0suffix".into(),
     });
@@ -198,9 +195,9 @@ fn pending_only_any_choice_disappears_on_cancel_without_becoming_exact_target_me
         .unwrap()
         .save_tracker_task_activity(&pending, &[], &[])
         .unwrap();
-    assert_eq!(choices(&mut app, &project, "assignee"), vec![exact.clone()]);
+    assert_eq!(choices(app, project, "assignee"), vec![exact.clone()]);
     assert_eq!(
-        selected(&mut app, &project, "assignee", exact.clone()),
+        selected(app, project, "assignee", exact.clone()),
         BTreeSet::from([pending.id.clone()])
     );
     pending.assignee = None;
@@ -208,16 +205,25 @@ fn pending_only_any_choice_disappears_on_cancel_without_becoming_exact_target_me
         .unwrap()
         .save_tracker_task_activity(&pending, &[], &[])
         .unwrap();
-    let path = app.tracker_project_path(&project).unwrap();
+    let path = app.tracker_project_path(project).unwrap();
     app.tracker_store()
         .unwrap()
         .retire_task_deliveries_of_project(&path)
         .unwrap();
-    assert_eq!(choices(&mut app, &project, "assignee"), vec![json!("none")]);
-    assert!(selected(&mut app, &project, "assignee", json!("any")).is_empty());
-    assert!(selected(&mut app, &project, "assignee", exact.clone()).is_empty());
-    arm_pending(&app, &pending);
-    assert_eq!(choices(&mut app, &project, "assignee"), vec![json!("any")]);
+    assert_eq!(choices(app, project, "assignee"), vec![json!("none")]);
+    assert!(selected(app, project, "assignee", json!("any")).is_empty());
+    assert!(selected(app, project, "assignee", exact.clone()).is_empty());
+    arm_pending(app, &pending);
+    assert_eq!(choices(app, project, "assignee"), vec![json!("any")]);
+
+    pending
+}
+#[test]
+fn pending_only_any_choice_disappears_on_cancel_without_becoming_exact_target_membership() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let pending = pending_assignment_transitions(&mut app, &project);
+    let exact = json!({"kind":"agent","agent_id":"AgentA\0suffix"});
 
     let none = seed(&app, &project, None, "api", "backlog");
     let mut assigned = seed(&app, &project, Some("AgentA\0suffix"), "api", "backlog");

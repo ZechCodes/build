@@ -2581,3 +2581,17 @@ describe("legacy empty ICE candidate compatibility", () => {
     expect(stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params)).toEqual([{ candidate: host }, { candidate: empty }]);
   });
 });
+
+it.each([false, true])("retains127 early candidates and both end forms in one reservation (nullFirst=%s)", async (nullFirst) => {
+  let complete;
+  const stood = await clearStand({ waitForAnswer: false, onLocal: (peer) => {
+    for (let i = 0; i < 127; i++) peer.gather({ candidate: `candidate:${i} typ host` });
+    if (nullFirst) peer.gather(null); peer.gather({ candidate: "" }); if (!nullFirst) peer.gather(null);
+  }, respond: (params) => new Promise((resolve) => { complete = () => clearAnswer(params).then(resolve); }) });
+  expect(stood.peer().closed).toBe(false);
+  await vi.waitFor(() => expect(complete).toBeTypeOf("function")); await complete();
+  await vi.waitFor(() => expect(stood.peer().remoteDescriptions).toHaveLength(1));
+  const link = await finishClear(stood); onTestFinished(() => link.close()); await link.whenInitialSignalingComplete();
+  const candidates = stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params.candidate);
+  expect(candidates).toHaveLength(128); expect(candidates.at(-1)).toBeNull();
+});

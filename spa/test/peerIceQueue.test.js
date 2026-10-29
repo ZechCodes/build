@@ -74,3 +74,23 @@ describe("ICE byte and marker audit regressions", () => {
     queue.close(); calls[127].release(); expect(queue.hasPending()).toBe(false);
   });
 });
+
+describe("one pre-answer end reservation", () => {
+  it.each([false, true])("merges both native marker forms at128 objects (nullFirst=%s)", (nullFirst) => {
+    const calls = [];
+    const queue = createPeerIceQueue({ deliver: (value, release, original) => calls.push({ value, release, original }) });
+    for (let i = 0; i < 127; i++) queue.offer({ candidate: `candidate:${i}` });
+    const empty = { candidate: "", sdpMid: "0", usernameFragment: "round-1" };
+    expect(() => { queue.offer(nullFirst ? null : empty); queue.offer(nullFirst ? empty : null); }).not.toThrow();
+    queue.open(); expect(calls).toHaveLength(127);
+    calls.slice().forEach((call) => call.release()); expect(calls).toHaveLength(128);
+    expect(calls[127].value).toBeNull(); expect(calls[127].original).toBe(empty);
+    calls[127].release(); expect(queue.hasPending()).toBe(false);
+  });
+
+  it("charges a preferred empty marker upgrade against the byte budget", () => {
+    const queue = createPeerIceQueue({ deliver() {} });
+    queue.offer({ candidate: "x".repeat(65480) }); queue.offer(null);
+    expect(() => queue.offer({ candidate: "", usernameFragment: "x".repeat(100) })).toThrow(/ICE queue/);
+  });
+});

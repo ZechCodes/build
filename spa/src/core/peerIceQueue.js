@@ -9,7 +9,7 @@ const classifyCandidate = (candidate) => {
   if (size > MAX_BYTES) throw new Error("pending ICE queue overflow");
   const end = isIceEndMarker(candidate);
   const value = end ? normalizedMarker(candidate) : candidate;
-  return { original: candidate, size, value, end, markerKey: end ? JSON.stringify([value, candidateValue(candidate) === null ? "global" : "generation"]) : null };
+  return { original: candidate, size, value, end, markerKey: end ? JSON.stringify(value) : null };
 };
 const normalizedMarker = (value) => value?.type === "rtc.ice" ? { ...value, candidate: null } : null;
 
@@ -19,7 +19,7 @@ const normalizedMarker = (value) => value?.type === "rtc.ice" ? { ...value, cand
 export function createPeerIceQueue({ deliver, accept = () => true }) {
   const held = [];
   const entries = new Set();
-  const earlyMarkers = new Set();
+  const earlyMarkers = new Map();
   let generation = 0;
   let bytes = 0;
   let ready = false;
@@ -35,9 +35,9 @@ export function createPeerIceQueue({ deliver, accept = () => true }) {
   };
   const reserve = ({ value, size, markerKey, original }) => {
     const epoch = generation;
-    const entry = { value, original, markerKey, release: () => {
+    const entry = { value, original, markerKey, size, release: () => {
       if (epoch !== generation || !entries.delete(entry)) return;
-      bytes -= size;
+      bytes -= entry.size;
       flushMarker();
     } };
     entries.add(entry);
@@ -63,7 +63,22 @@ export function createPeerIceQueue({ deliver, accept = () => true }) {
     endSeen = false;
     marker = null;
   };
-  const duplicate = (entry) => entry.end && (endSeen || earlyMarkers.has(entry.markerKey));
+  const duplicate = (candidate) => {
+    if (!candidate.end) return false;
+    if (endSeen) return true;
+    const existing = earlyMarkers.get(candidate.markerKey);
+    if (!existing) return false;
+    // A global null and a per-generation empty object are one end marker.
+    // Retain the object's metadata for legacy selection without a second item.
+    if (candidateValue(existing.original) === null && candidateValue(candidate.original) !== null) {
+      const extra = candidate.size - existing.size;
+      if (bytes + extra > MAX_BYTES) throw new Error("pending ICE queue overflow");
+      bytes += extra;
+      existing.size = candidate.size;
+      existing.original = candidate.original;
+    }
+    return true;
+  };
   const ensureBudget = (size) => {
     if (entries.size >= MAX_OBJECTS || bytes + size > MAX_BYTES) throw new Error("pending ICE queue overflow");
   };
@@ -76,7 +91,7 @@ export function createPeerIceQueue({ deliver, accept = () => true }) {
       ensureBudget(classified.size);
       const entry = reserve(classified);
       if (ready) dispatch(entry);
-      else { if (entry.markerKey !== null) earlyMarkers.add(entry.markerKey); held.push(entry); }
+      else { if (entry.markerKey !== null) earlyMarkers.set(entry.markerKey, entry); held.push(entry); }
     },
     open() {
       if (ended) return;

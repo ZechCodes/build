@@ -205,13 +205,28 @@ fn protocol_selection_is_explicit_and_legacy_only_before_commitment() {
 
 #[test]
 fn js_proof_and_ack_fixture_authenticate_with_rust_without_reserialization_rules() {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!("../../../../fixtures/api/rtc-binding-v1.json")).unwrap();
-    let transcript = Transcript::new(fixture["offer_sdp"].as_str().unwrap(), fixture["answer_sdp"].as_str().unwrap(),
-        fixture["transcript"]["peer_nonce"].as_str().unwrap(), fixture["transcript"]["peer_token"].as_str().unwrap()).unwrap();
-    let expected = BindProof::new(fixture["session_id"].as_str().unwrap(), &transcript, ChannelRole::App, fixture["challenge"].as_str().unwrap()).unwrap();
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../fixtures/api/rtc-binding-v1.json")).unwrap();
+    let transcript = Transcript::new(
+        fixture["offer_sdp"].as_str().unwrap(),
+        fixture["answer_sdp"].as_str().unwrap(),
+        fixture["transcript"]["peer_nonce"].as_str().unwrap(),
+        fixture["transcript"]["peer_token"].as_str().unwrap(),
+    )
+    .unwrap();
+    let expected = BindProof::new(
+        fixture["session_id"].as_str().unwrap(),
+        &transcript,
+        ChannelRole::App,
+        fixture["challenge"].as_str().unwrap(),
+    )
+    .unwrap();
     let key = fixture["test_session_key"].as_str().unwrap();
     let proof = serde_json::from_value(fixture["proof"]["envelope"].clone()).unwrap();
     let ack = serde_json::from_value(fixture["ack"]["envelope"].clone()).unwrap();
     expected.verify(key, &proof, false).unwrap();
-    assert_eq!(expected.verify(key, &ack, true).unwrap().unwrap(), fixture["binding_id"].as_str().unwrap());
+    assert_eq!(
+        expected.verify(key, &ack, true).unwrap().unwrap(),
+        fixture["binding_id"].as_str().unwrap()
+    );
 }

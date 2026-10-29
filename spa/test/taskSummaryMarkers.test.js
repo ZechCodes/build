@@ -1,0 +1,37 @@
+import { beforeEach, expect, it, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+
+let summaries;
+const scope = { deviceId: "markers-device", projectId: "proj-1" };
+const fields = ["read_through", "watch_started_after", "dismissed_through"];
+const row = (mark, count) => ({ id: "task-1", title: "One", unread_count: count,
+  ...Object.fromEntries(fields.map((field) => [field, mark])) });
+async function land(generation, task) {
+  const ticket = await summaries.beginSummaryQuery(scope, {}, generation);
+  return summaries.landSummaryPage(ticket, { summary: true, basis: `B${generation}`, tasks: [task] }, { read: generation });
+}
+
+beforeEach(async () => {
+  vi.resetModules(); globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
+  summaries = await import("../src/core/taskSummaryCache.js");
+});
+
+it.each(["", " ", "\u0000", "withoutprefix", "other-a-b", "tc-\u{10000}"])(
+  "retains exact present opaque floor %j across a later absent response", async (mark) => {
+    await land(1, row(mark, 0)); await land(2, row(null, 9));
+    const task = (await summaries.readSummaryQuery(scope, {})).tasks[0];
+    for (const field of fields) expect(task[field]).toBe(mark);
+    expect(task.unread_count).toBe(0);
+  },
+);
+
+it.each([["tc-a-b", "te-a-c"], ["tc-\ue000", "te-\u{10000}"], [null, ""]])(
+  "advances canonical suffix floor %j to %j independently of dispatch order", async (before, after) => {
+    await land(3, row(before, 7));
+    const ticket = await summaries.beginSummaryQuery(scope, { states: ["open"] }, 1);
+    await summaries.landSummaryPage(ticket, { summary: true, basis: "B3", tasks: [row(after, 0)] }, { read: 1 });
+    const task = (await summaries.readSummaryQuery(scope, {})).tasks[0];
+    for (const field of fields) expect(task[field]).toBe(after);
+    expect(task.unread_count).toBe(0);
+  },
+);

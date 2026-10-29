@@ -241,9 +241,19 @@ export function createSessionRpc({
     readers.add(held);
     if (held.onFrame) held.onFrame((frame) => takeFrame(frame, held));
     else held.onEnvelope((envelope) => takeEnvelope(envelope, held));
-    held.onClose(() => {
+    held.onClose((reason) => {
       closedCarriers.add(held);
-      sqlReads.releaseCarrier(held, sqlDeliveryError(new Error("the channel closed")));
+      const error = reason || new Error("the channel closed");
+      sqlReads.releaseCarrier(held, sqlDeliveryError(error));
+      // Bound carriers are exact delivery bindings. A completed handoff on
+      // one cannot receive its answer elsewhere; fail it without waiting for
+      // the path deadline. Legacy migration semantics remain unchanged.
+      if (!held.onFrame) return;
+      for (const [id, waiting] of pending) {
+        if (waiting.sendingCarrier !== held) continue;
+        pending.delete(id);
+        waiting.reject(uncertainDeliveryError(error));
+      }
     });
   };
 

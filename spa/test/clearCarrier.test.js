@@ -25,6 +25,7 @@ function codec() {
   let sendSequence = 0;
   let receiveSequence = 0;
   return {
+    close: vi.fn(),
     encode: vi.fn((payload, frame_type = "data") => ({ binding: "app", seq: ++sendSequence, frame_type, payload })),
     decode: vi.fn((frame) => {
       if (frame.binding !== "app" || frame.seq !== receiveSequence + 1) throw new Error("invalid binding or sequence");
@@ -162,6 +163,67 @@ describe("verified clear carrier RPC", () => {
 });
 
 describe("bound carrier retirement", () => {
+  it("retires a replaced binding without closing the raw channel used by its successor", async () => {
+    const { channel, raw, carrier, binding, rpc } = setup();
+    const close = vi.fn();
+    const stale = vi.fn();
+    carrier.onClose(close);
+    carrier.onFrame(stale);
+    carrier.retire(new Error("binding replaced"));
+    const next = bindCarrier(raw, codec());
+    const received = vi.fn();
+    next.onFrame(received);
+    carrier.close();
+    channel.deliver({ binding: "app", seq: 1, frame_type: "data", payload: { active: true } });
+    await next.sendFrame({ request: true });
+    expect(channel.readyState).toBe("open");
+    expect(close).toHaveBeenCalledOnce();
+    expect(binding.close).toHaveBeenCalledOnce();
+    expect(stale).not.toHaveBeenCalled();
+    expect(received).toHaveBeenCalledOnce();
+    await expect(carrier.sendFrame({ old: true })).rejects.toThrow();
+    next.close();
+    rpc.close();
+  });
+
+  it("delivers a validated close before retiring its exact raw carrier once", () => {
+    const { channel, carrier, binding, rpc } = setup();
+    const events = [];
+    carrier.onFrame((frame) => events.push([frame.frame_type, channel.readyState]));
+    carrier.onClose(() => events.push(["closed", channel.readyState]));
+    channel.deliver({ binding: "app", seq: 1, frame_type: "close", payload: { reason: "scope ended" } });
+    expect(events).toEqual([["close", "open"], ["closed", "open"]]);
+    expect(channel.readyState).toBe("closed");
+    expect(binding.close).toHaveBeenCalledOnce();
+    carrier.close();
+    channel.close();
+    expect(events).toHaveLength(2);
+    rpc.close();
+  });
+
+  it("writes a close control completely before closing the channel", async () => {
+    const { channel, carrier, binding, rpc } = setup();
+    const handoff = vi.fn();
+    await carrier.sendFrame({ reason: "done" }, { frameType: "close", onHandoff: handoff });
+    expect(written(channel)).toEqual([{ binding: "app", seq: 1, frame_type: "close", payload: { reason: "done" } }]);
+    expect(handoff).toHaveBeenCalledOnce();
+    expect(channel.readyState).toBe("closed");
+    expect(binding.close).toHaveBeenCalledOnce();
+    await expect(carrier.sendFrame({ later: true })).rejects.toThrow();
+    expect(binding.encode).toHaveBeenCalledOnce();
+    rpc.close();
+  });
+
+  it("promptly fails handed-off non-SQL calls when their bound carrier closes", async () => {
+    const { channel, rpc } = setup();
+    const result = rpc.call("term.input", { text: "one time" }).catch((error) => error);
+    await tick();
+    channel.close();
+    const failure = await Promise.race([result, tick().then(() => "still pending")]);
+    expect(failure).toMatchObject({ message: "the channel closed", uncertain: true });
+    rpc.close();
+  });
+
   it("closes the exact carrier after partial chunk failure and cannot resume", async () => {
     const { channel, carrier, binding, rpc } = setup();
     const close = vi.fn();

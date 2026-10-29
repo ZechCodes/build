@@ -43,6 +43,7 @@ export function bindCarrier(raw, codec) {
     ended = true;
     stopFrames();
     stopClose();
+    codec.close?.();
     frameListeners.clear();
     for (const listener of [...closeListeners]) listener(reason);
     closeListeners.clear();
@@ -61,9 +62,13 @@ export function bindCarrier(raw, codec) {
       close(error);
       return;
     }
-    for (const listener of [...frameListeners]) {
-      if (ended) break;
-      listener(frame);
+    try {
+      for (const listener of [...frameListeners]) {
+        if (ended) break;
+        listener(frame);
+      }
+    } finally {
+      if (frame.frame_type === "close") close();
     }
   });
   const send = async (payload, { frameType = "data", assertCurrent = () => {}, onHandoff = () => {} }) => {
@@ -75,6 +80,7 @@ export function bindCarrier(raw, codec) {
       const envelope = codec.encode(payload, frameType);
       onHandoff();
       await raw.send(envelope);
+      if (frameType === "close") close();
     } catch (error) {
       // Encoding may consume a sequence; writing may transmit partial chunks.
       // Neither failure can safely resume this exact binding.
@@ -89,6 +95,9 @@ export function bindCarrier(raw, codec) {
   return {
     onFrame: subscribe(frameListeners),
     onClose: subscribe(closeListeners),
+    // Rebinding a role can reuse its raw channel. Retire only this codec and
+    // delivery binding; a stale owner must not close the replacement wire.
+    retire,
     close,
     isClosed: () => ended || raw.isClosed?.() === true,
     peerFrameAt: () => raw.peerFrameAt(),

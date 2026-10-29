@@ -136,3 +136,13 @@ it("does not collapse unsupported selectors or malformed actors into a known que
   expect(() => summaries.summaryQueryAddress(scope, { watched: true })).toThrow();
   expect(() => summaries.summaryQueryAddress(scope, { assignees: [{ kind: "agent", agent_id: "A", extra: true }] })).toThrow();
 });
+
+it("keeps full action content out of summary records and retains omitted compact fields", async () => {
+  await land(await open(), page([row("task-1", { dependencies: { blocked: true, waiting_on_count: 2, blocks_count: 1 }, links: { workspace_ids: ["ws-1"], parent_task_id: null } })]));
+  await summaries.writeSummaryTask(scope, { id: "task-1", body: "detail", attachments: ["large"], dependencies: { blocked: false, waiting_on: ["full graph"] }, links: { commits: ["full commit"] } }, 2);
+  const held = (await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.task;
+  expect(held).not.toHaveProperty("body");
+  expect(held).not.toHaveProperty("attachments");
+  expect(held.dependencies).toEqual({ blocked: false, waiting_on_count: 2, blocks_count: 1 });
+  expect(held.links).toEqual({ workspace_ids: ["ws-1"], parent_task_id: null });
+});

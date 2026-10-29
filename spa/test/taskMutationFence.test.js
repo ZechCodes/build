@@ -5,6 +5,8 @@ import * as fence from "../src/core/taskMutationFence.js";
 import { createTaskAggregateReader } from "../src/core/taskAggregateReads.js";
 import { adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts, retireDeviceContext } from "../src/core/deviceContexts.js";
 import { fakeSession } from "./deviceSessionFixture.js";
+import { readTaskCountsSupport, taskCountsSupportAddress } from "../src/core/taskCountsSupport.js";
+import { readCached } from "../src/core/localCache.js";
 
 const deviceId = "mutation-900";
 const deferred = () => {
@@ -74,7 +76,7 @@ it("does not let a failing listener change dispatch, acknowledgment or rejection
 });
 
 it("matches the bridge's supported task write methods and excludes every task read", () => {
-  const effects = readFileSync(new URL("../../bridge/src/api/effects.rs", import.meta.url), "utf8");
+  const effects = readFileSync("../bridge/src/api/effects.rs", "utf8");
   const writes = effects.match(/const WRITE_METHODS:.*?= &\[([\s\S]*?)\];/)[1];
   const methods = [...effects.matchAll(/"(tasks\.[^"]+)"/g)].map((match) => match[1]);
   for (const method of new Set(methods)) expect(fence.isTaskMutationMethod(method)).toBe(writes.includes(`"${method}"`));
@@ -169,4 +171,24 @@ it("blocks aggregate dispatch while actual writes are pending and rejects late r
   expect(await read).toBe(false);
   expect(await reader.read()).toBeNull();
   expect(session.call).toHaveBeenCalledTimes(2);
+});
+
+it("persists current greeting count support for cache rendering across downgrade and retirement", async () => {
+  const selected = `${deviceId}-support`, context = adoptDeviceSession(fakeSession(selected));
+  adoptBridgeSelection(context, { version: "3.27.0" }, { capabilities: { tasks: { counts: true } } });
+  await vi.waitFor(async () => expect(await readTaskCountsSupport(selected)).toBe(true));
+  adoptDeviceSession(fakeSession(selected));
+  adoptBridgeSelection(context, { version: "3.26.0" }, { capabilities: { tasks: {} } });
+  await vi.waitFor(async () => expect((await readCached(taskCountsSupportAddress(selected)))?.value).toEqual({ counts: false, everCounts: true }));
+  retireDeviceContext(selected);
+  expect(await readTaskCountsSupport(selected)).toBe(true);
+});
+
+it("cannot publish support from a greeting replaced before its cache transaction", async () => {
+  const selected = `${deviceId}-superseded-support`, context = adoptDeviceSession(fakeSession(selected));
+  adoptBridgeSelection(context, { version: "3.27.0" }, { capabilities: { tasks: { counts: true } } });
+  adoptDeviceSession(fakeSession(selected));
+  adoptBridgeSelection(context, { version: "3.26.0" }, { capabilities: { tasks: {} } });
+  await vi.waitFor(async () => expect((await readCached(taskCountsSupportAddress(selected)))?.value).toEqual({ counts: false, everCounts: false }));
+  expect(await readTaskCountsSupport(selected)).toBe(false);
 });

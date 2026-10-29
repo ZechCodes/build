@@ -233,3 +233,13 @@ it("does not let a complete action patch certify previously uncertain counter au
     unread_mentions: 0, unread_agent_comments: 0 }, await order.nextTaskRead());
   expect((await value(summaries.summaryAddress(scope, taskId))).needs_unread_refresh).toBe(true);
 });
+
+it("does not grant action watch authority to a stale watched summary page after unwatch", async () => {
+  await seed(base({ updated_at: "2026-10-29T13:00:00Z" }));
+  const generation = await order.nextTaskRead(), query = { statuses: ["ready"] };
+  const page = await summaries.beginSummaryQuery(scope, query, generation);
+  await action(full({ watched: false, updated_at: "2026-10-29T12:00:00Z" }), { issuedRead: await order.nextTaskRead() });
+  expect((await value(summaries.summaryAddress(scope, taskId))).task.watched).toBe(false);
+  expect(await summaries.landSummaryPage(page, { summary: true, basis: "opaque-before", tasks: [base()] }, { read: generation })).toBe(false);
+  expect((await value(summaries.summaryAddress(scope, taskId))).task.watched).toBe(false);
+});

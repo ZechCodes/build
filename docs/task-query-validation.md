@@ -44,6 +44,70 @@ does not retain that property. Canonical event asks use `mentions_user`;
 comment notifications remain supported. The regression log is
 `/tmp/task900-attention-red.log` and must remain with the corrected result.
 
+## Withdrawn Astra candidate and expanded source audit
+
+Independent Astra reviewer `/root/astra_final_review` (gpt-6-astra) requested
+changes on `0d3e81643f66846db76258809ff4888a1c8a3d76` against the exact base.
+The handoff was withdrawn. Both P2 findings concern new query facts consuming
+lossy display inputs: SQLite text `substr` stops at NUL, allowing unsupported
+canonical timestamps to become supported prefixes, and changing opaque assignee
+IDs. A leading-NUL assignee became the empty project bucket and could contribute
+twice. Existing successful gates do not approve a production repair descendant.
+
+The expanded source audit also covers status/labels, read/watch/dismiss markers,
+history-ID suffixes and pending-target presence/kind. See
+[the source-to-predicate map](task-query-source-audit.md), including safe-source
+inspection, implementation boundaries and regression ownership.
+
+New tests against the pre-fix production implementation observed these failures:
+
+- Timestamp regressions: exit **101**, **0 passed, 3 failed**,
+  `/tmp/task900-raw-timestamp-red.log`.
+- Expanded timestamp/structural-source regressions: exit **101**,
+  **0 passed, 5 failed**, `/tmp/task900-exact-source-red.log`.
+- Actual RPC exact-text regressions: exit **101**, **0 passed, 2 failed**,
+  `/tmp/task900-query-exact-text-red.log`.
+- Expanded marker/fact-ID/pending-kind source regressions: exit **101**,
+  **0 passed, 8 failed**, `/tmp/task900-all-source-red.log`.
+
+The first integrated repair attempt also exited **101**, **10 passed, 1 failed**
+(`/tmp/task900-all-source-green.log`, despite its planned-green filename). The
+canonical null/empty oracle caught a real helper bug: SQLite BLOB `substr` of an
+empty value returns NULL, changing a present empty watch floor into absence and
+incorrectly applying fallback. The suffix helper needs an explicit zero-byte
+empty case; leading NUL must remain nonempty by BLOB length.
+A follow-up compilation (`/tmp/task900-all-source-green2.log`) was deliberately
+terminated with exit **143**, before test execution, to cover the equivalent
+trailing-hyphen empty-suffix edge as well. It is not a test pass. The final
+helper preserves NULL input separately from an empty result after the first
+hyphen.
+
+These RED builds included new regression additions to the working tree; they
+are not clean-head full-suite executions. Repairs must classify canonical bytes
+before display reduction, preserve storage/legacy parsing, maintain structural
+facts on supported producers and invalidate prior derived rows on upgrade.
+
+The lead explicitly authorized project-scoped, same-basis refusal for overlong
+stored read/watch/dismiss markers in whole counts responses and attention list
+queries. This preserves write acceptance and exact markers up to 128 UTF-8
+bytes, including NUL, without claiming complete bounded support for longer
+historical markers. Canonical Some("") remains distinct from None; this differs
+from current SPA helper truthiness. #891 requires separate current-consumer
+versus canonical behavior evidence and review before activation. No legacy
+helper parity or consumer activation is inferred from the backend profile.
+
+The fixed integrated source then passed **11/11** source regressions, **6/6**
+actual RPC cases and **79/79** full projection cases, all exit **0**. Logs are
+`/tmp/task900-all-source-green3.log`, `/tmp/task900-all-source-rpc-green.log`
+and `/tmp/task900-all-source-projection-green.log`. These ran the same debug
+`build_bridge-0521f5ae737d1028` executable, SHA-256
+`edf81e7cb31b3a9314d52e4e3e3cd3e3e914e27e6f21268df346633d9095a1fe`.
+It was compiled from the integrated working source subsequently committed as
+`eca9e4692` and `f2769d34ddf9cfb9614a6b2d475b6b2f992d7f32`; these focused runs
+are not relabeled as clean-head full-suite executions. Fresh committed-head
+full Cargo, lint, scans, release timing and independent expanded-delta reviews
+remain required. The Astra blockers are not closed by these focused passes.
+
 ## Earlier focused evidence
 
 - Integrated projection/producer/import/repair suite: **63 passed**, exit 0,

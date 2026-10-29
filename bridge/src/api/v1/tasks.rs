@@ -114,36 +114,107 @@ pub struct TaskIdParams {
 
 /// One project's tasks, narrowed. Every filter is optional and they are ANDed.
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(try_from = "Value")]
+#[serde(try_from = "TasksListInput")]
 pub struct TasksListParams {
     #[serde(flatten)]
     pub filters: TasksListFilters,
 }
 
-impl TryFrom<Value> for TasksListParams {
+/// Typed decoding retains presence separately from a nullable scalar's value.
+/// The validated public filters keep their established normalized wire shape.
+#[derive(Deserialize)]
+struct TasksListInput {
+    project_id: String,
+    #[serde(default)]
+    summary: Option<bool>,
+    #[serde(default, deserialize_with = "nullable_provided")]
+    state: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable_provided")]
+    status: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable_provided")]
+    assignee: Option<Option<Value>>,
+    #[serde(default, deserialize_with = "nullable_provided")]
+    label: Option<Option<String>>,
+    #[serde(default, deserialize_with = "provided")]
+    states: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "provided")]
+    statuses: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "provided")]
+    labels: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "provided")]
+    assignees: Option<Vec<Value>>,
+    #[serde(default, deserialize_with = "nullable_provided")]
+    limit: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "nullable_provided")]
+    cursor: Option<Option<String>>,
+}
+
+fn nullable_provided<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::deserialize(deserializer).map(Some)
+}
+
+impl TryFrom<TasksListInput> for TasksListParams {
     type Error = String;
 
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        if value.get("summary").and_then(Value::as_bool) == Some(true) {
-            for name in ["limit", "cursor"] {
-                if value.get(name).is_some_and(Value::is_null) {
+    fn try_from(input: TasksListInput) -> Result<Self, Self::Error> {
+        if input.summary == Some(true) {
+            for (name, null) in [
+                ("limit", input.limit == Some(None)),
+                ("cursor", input.cursor == Some(None)),
+            ] {
+                if null {
                     return Err(format!("{name} cannot be null in summary mode"));
                 }
             }
         }
-        for (scalar, plural) in [
-            ("state", "states"),
-            ("status", "statuses"),
-            ("label", "labels"),
-            ("assignee", "assignees"),
+        for (scalar, plural, scalar_present, plural_present) in [
+            (
+                "state",
+                "states",
+                input.state.is_some(),
+                input.states.is_some(),
+            ),
+            (
+                "status",
+                "statuses",
+                input.status.is_some(),
+                input.statuses.is_some(),
+            ),
+            (
+                "label",
+                "labels",
+                input.label.is_some(),
+                input.labels.is_some(),
+            ),
+            (
+                "assignee",
+                "assignees",
+                input.assignee.is_some(),
+                input.assignees.is_some(),
+            ),
         ] {
-            if value.get(scalar).is_some() && value.get(plural).is_some() {
+            if scalar_present && plural_present {
                 return Err(format!("provide only one of {scalar} and {plural}"));
             }
         }
-        serde_json::from_value(value)
-            .map(|filters| Self { filters })
-            .map_err(|error| error.to_string())
+        Ok(Self {
+            filters: TasksListFilters {
+                project_id: input.project_id,
+                summary: input.summary,
+                state: input.state.flatten(),
+                status: input.status.flatten(),
+                assignee: input.assignee.flatten(),
+                label: input.label.flatten(),
+                states: input.states,
+                statuses: input.statuses,
+                labels: input.labels,
+                assignees: input.assignees,
+                limit: input.limit.flatten(),
+                cursor: input.cursor.flatten(),
+            },
+        })
     }
 }
 
@@ -648,22 +719,45 @@ pub struct TaskAttachmentBytes {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(untagged, try_from = "Value")]
+#[serde(untagged, from = "TasksListResponse")]
 pub enum TasksList {
     Summaries(TaskSummaries),
     Legacy(LegacyTasksList),
 }
 
-impl TryFrom<Value> for TasksList {
-    type Error = String;
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TasksListResponse {
+    Summaries(TaskSummaries),
+    Legacy(LegacyTasksListResponse),
+}
 
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        if value.get("summary").is_some() {
-            serde_json::from_value(value).map(Self::Summaries)
-        } else {
-            serde_json::from_value(value).map(Self::Legacy)
+/// A present summary discriminator belongs exclusively to the summary shape,
+/// even when the value or the rest of that shape is malformed.
+#[derive(Deserialize)]
+struct LegacyTasksListResponse {
+    #[serde(
+        rename = "summary",
+        default,
+        deserialize_with = "reject_summary_marker"
+    )]
+    _summary: (),
+    #[serde(flatten)]
+    list: LegacyTasksList,
+}
+
+fn reject_summary_marker<'de, D: serde::Deserializer<'de>>(
+    _deserializer: D,
+) -> Result<(), D::Error> {
+    Err(serde::de::Error::custom("summary must be true"))
+}
+
+impl From<TasksListResponse> for TasksList {
+    fn from(input: TasksListResponse) -> Self {
+        match input {
+            TasksListResponse::Summaries(summary) => Self::Summaries(summary),
+            TasksListResponse::Legacy(legacy) => Self::Legacy(legacy.list),
         }
-        .map_err(|error| error.to_string())
     }
 }
 

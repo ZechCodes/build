@@ -6,7 +6,7 @@ import { isTransientTransportError } from "../src/core/transientRead.js";
 import { SQL_READ_METHODS } from "../src/core/sqlReadCredits.js";
 import { readFileSync } from "node:fs";
 
-const METHODS = ["thread.page", "thread.activity", "thread.operation", "thread.revision", "tasks.list", "tasks.get", "tasks.waiting_on.blocks"];
+const METHODS = ["thread.page", "thread.activity", "thread.operation", "thread.revision", "tasks.list", "tasks.get", "tasks.waiting_on.blocks", "tasks.filterChoices"];
 const WRITE_READS = ["writes.status", "writes.subscribe"];
 const PACED_METHODS = [...METHODS, ...WRITE_READS];
 const flush = async () => { for (let turn = 0; turn < 20; turn += 1) await Promise.resolve(); };
@@ -93,6 +93,34 @@ describe("SQL reads share eight sender credits per opening", () => {
     expect(wire.sent[8].method).toBe("writes.subscribe");
     wire.deliver({ id: wire.sent[8].id, ok: true, result: { operations: [] } });
     await expect(subscription).resolves.toEqual({ operations: [] });
+  });
+
+  it.each(["interactive", "background"])("shares task-read credits with filter choices at %s priority", async (priority) => {
+    const { rpc, wire, ask } = setup();
+    for (let n = 0; n < 8; n += 1) ask("tasks.get");
+    await flush();
+    const choices = ask("tasks.filterChoices", { priority });
+    ask("ping");
+    await flush();
+    expect(wire.sent.map(({ method }) => method)).toEqual([...Array(8).fill("tasks.get"), "ping"]);
+    expect(rpc.sqlReadCreditSnapshot()).toEqual({ queued: 1, admitted: 8, timedOutHeld: 0 });
+
+    wire.deliver({ id: wire.sent[0].id, ok: true, result: {} });
+    await flush();
+    expect(wire.sent.at(-1).method).toBe("tasks.filterChoices");
+    const choiceId = wire.sent.at(-1).id;
+    const task = ask("tasks.get");
+    await flush();
+    expect(wire.sent).toHaveLength(10);
+    expect(rpc.sqlReadCreditSnapshot()).toEqual({ queued: 1, admitted: 8, timedOutHeld: 0 });
+
+    wire.deliver({ id: choiceId, ok: true, result: { labels: [] } });
+    await expect(choices).resolves.toEqual({ labels: [] });
+    await flush();
+    expect(wire.sent).toHaveLength(11);
+    expect(wire.sent.at(-1).method).toBe("tasks.get");
+    wire.deliver({ id: wire.sent.at(-1).id, ok: true, result: { id: "task-1" } });
+    await expect(task).resolves.toEqual({ id: "task-1" });
   });
 
   it("paces bridge SQL routing and the 3.24 durable reconciliation reads", () => {

@@ -218,13 +218,13 @@ test("real native adapter discovers, opens, streams and calls an explicit resour
     const owner={id:1};let done;
     const received=new Promise(resolve=>done=resolve);
     const adapter=createBridgeHttp({fetch:nativeFetch,getAuth:()=>({accessToken:'fixture-hosted-token',generation:1}),isOwnerCurrent:o=>o===owner,send:(o,event)=>{
-      assert.equal(o,owner);adapter.ack(owner,event.stream,event.sequence);
+      assert.equal(o,owner);assert.equal(event.requestId,'00000000-0000-4000-8000-000000000001');assert.equal(typeof event.handle,'string');adapter.ack(owner,event.stream,event.sequence);
       if(event.event==='changes')done(event.data);
     },manifest:resourceManifest});
     try {
       const {handle}=await adapter.discover(owner,origin);
       const opened=await adapter.open(owner,handle,'1');assert.equal(opened.opening_generation,'generation');
-      const {stream}=await adapter.subscribe(owner,handle,{kind:'application'});assert.equal(typeof stream,'string');
+      const {stream}=await adapter.subscribe(owner,handle,{kind:'application'},{requestId:'00000000-0000-4000-8000-000000000001'});assert.equal(typeof stream,'string');
       assert.deepEqual(await received,{method:'changes',params:{project_id:'project'}});
       assert.deepEqual(await adapter.request(owner,handle,'project_list',{}, {requestId:'request'}),{id:'request',ok:true,result:{projects:['project']},bridge_epoch:"epoch"});
       await adapter.close(owner,handle);

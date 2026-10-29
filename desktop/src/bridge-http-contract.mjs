@@ -86,6 +86,12 @@ function dependencyHeader(after) {
   return JSON.stringify(after);
 }
 
+// Local subscription correlation only; this is not authority or a durable ID.
+export function subscriptionRequest(options) {
+  exact(options, ["requestId"], "invalid_options");
+  return operationId(options.requestId);
+}
+
 export function requestOptions(options = {}) {
   exact(options, ["requestId", "priority", "write"], "invalid_options");
   if (

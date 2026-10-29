@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createBridgeHttp } from "../src/bridge-http.mjs";
@@ -307,9 +308,14 @@ test("stream local flow control bounds unacknowledged events and fences post-ove
   });
   const { handle } = await h.bridge.discover(h.owner, "https://bridge.test");
   await h.bridge.open(h.owner, handle, "1");
-  const { stream } = await h.bridge.subscribe(h.owner, handle, {
-    kind: "application",
-  });
+  const { stream } = await h.bridge.subscribe(
+    h.owner,
+    handle,
+    {
+      kind: "application",
+    },
+    { requestId: randomUUID() },
+  );
   await new Promise(setImmediate);
   const emit = (data) => controller.enqueue(new TextEncoder().encode(data));
   emit(
@@ -349,9 +355,14 @@ test("resource calls capture application stream handle and cannot run requires-e
   });
   const { handle } = await h.bridge.discover(h.owner, "https://bridge.test");
   await h.bridge.open(h.owner, handle, "1");
-  const { stream } = await h.bridge.subscribe(h.owner, handle, {
-    kind: "application",
-  });
+  const { stream } = await h.bridge.subscribe(
+    h.owner,
+    handle,
+    {
+      kind: "application",
+    },
+    { requestId: randomUUID() },
+  );
   await new Promise(setImmediate);
   controller.enqueue(
     new TextEncoder().encode(
@@ -384,12 +395,22 @@ test("stream reconnect POST retains predecessor after exact unsubscribe and does
   });
   const { handle } = await h.bridge.discover(h.owner, "https://bridge.test");
   await h.bridge.open(h.owner, handle, "1");
-  const first = await h.bridge.subscribe(h.owner, handle, {
-    kind: "application",
-  });
+  const first = await h.bridge.subscribe(
+    h.owner,
+    handle,
+    {
+      kind: "application",
+    },
+    { requestId: randomUUID() },
+  );
   await new Promise(setImmediate);
   await h.bridge.unsubscribe(h.owner, first.stream);
-  await h.bridge.subscribe(h.owner, handle, { kind: "application" });
+  await h.bridge.subscribe(
+    h.owner,
+    handle,
+    { kind: "application" },
+    { requestId: randomUUID() },
+  );
   const posts = h.requests.filter((r) => r.url.endsWith("/v1/subscriptions"));
   assert.equal(posts[0].opts.headers["X-Build-Subscription"], undefined);
   assert.equal(posts[1].opts.headers["X-Build-Subscription"], "sub1");
@@ -404,10 +425,20 @@ test("creation response loss retires opening rather than replaying application P
   const { handle } = await h.bridge.discover(h.owner, "https://bridge.test");
   await h.bridge.open(h.owner, handle, "1");
   await assert.rejects(
-    h.bridge.subscribe(h.owner, handle, { kind: "application" }),
+    h.bridge.subscribe(
+      h.owner,
+      handle,
+      { kind: "application" },
+      { requestId: randomUUID() },
+    ),
   );
   await assert.rejects(
-    h.bridge.subscribe(h.owner, handle, { kind: "application" }),
+    h.bridge.subscribe(
+      h.owner,
+      handle,
+      { kind: "application" },
+      { requestId: randomUUID() },
+    ),
     { code: "invalid_handle" },
   );
   assert.equal(
@@ -547,7 +578,12 @@ test("unacknowledged stream closes after local stalled-delivery deadline and exp
   });
   const { handle } = await h.bridge.discover(h.owner, "https://bridge.test");
   await h.bridge.open(h.owner, handle, "1");
-  await h.bridge.subscribe(h.owner, handle, { kind: "application" });
+  await h.bridge.subscribe(
+    h.owner,
+    handle,
+    { kind: "application" },
+    { requestId: randomUUID() },
+  );
   await new Promise(setImmediate);
   controller.enqueue(
     new TextEncoder().encode(
@@ -582,7 +618,12 @@ test("byte cap bounds multibyte SSE output independently of event count", async 
   });
   const { handle } = await h.bridge.discover(h.owner, "https://bridge.test");
   await h.bridge.open(h.owner, handle, "1");
-  await h.bridge.subscribe(h.owner, handle, { kind: "application" });
+  await h.bridge.subscribe(
+    h.owner,
+    handle,
+    { kind: "application" },
+    { requestId: randomUUID() },
+  );
   await new Promise(setImmediate);
   const send = (value) => controller.enqueue(new TextEncoder().encode(value));
   send(
@@ -597,4 +638,103 @@ test("byte cap bounds multibyte SSE output independently of event count", async 
   await new Promise(setImmediate);
   assert.equal(h.output.at(-1).event.data.reason, "overflow");
   assert.equal(h.output.length, 4);
+});
+
+test("concurrent subscriptions on one handle refuse replacement and capture immutable correlation", async (t) => {
+  let release;
+  const h = harness(t, {
+    fetch: async (url) => {
+      if (url.endsWith("/v1/subscriptions"))
+        return new Promise((resolve) => (release = resolve));
+      if (url.endsWith("/events"))
+        return new Response(
+          'event: hello\ndata: {"subscription_id":"subscription","opening_generation":"generation","bridge_epoch":"epoch","durable":false,"recovery":"current_state_refresh"}\n\n',
+          { headers: { "content-type": "text/event-stream" } },
+        );
+    },
+  });
+  const { handle } = await h.bridge.discover(h.owner, "https://bridge.test");
+  await h.bridge.open(h.owner, handle, "1");
+  const firstId = randomUUID();
+  const options = { requestId: firstId };
+  const pending = h.bridge.subscribe(
+    h.owner,
+    handle,
+    { kind: "application" },
+    options,
+  );
+  await new Promise(setImmediate);
+  await assert.rejects(
+    h.bridge.subscribe(
+      h.owner,
+      handle,
+      { kind: "application" },
+      { requestId: randomUUID() },
+    ),
+    { code: "already_subscribed" },
+  );
+  assert.equal(
+    h.requests.filter((r) => r.url.endsWith("/v1/subscriptions")).length,
+    1,
+  );
+  options.requestId = randomUUID();
+  release(
+    json({ subscription_id: "subscription", opening_generation: "generation" }),
+  );
+  const { stream } = await pending;
+  await new Promise(setImmediate);
+  assert.ok(h.output.length >= 1);
+  for (const { event } of h.output) {
+    assert.equal(event.handle, handle);
+    assert.equal(event.requestId, firstId);
+    assert.equal(event.stream, stream);
+  }
+});
+
+test("retired owner handles never authorize a new opening or subscription", async (t) => {
+  const h = harness(t);
+  const first = await h.bridge.discover(h.owner, "https://bridge.test");
+  await h.bridge.open(h.owner, first.handle, "1");
+  await assert.rejects(
+    h.bridge.subscribe(
+      { ...h.owner },
+      first.handle,
+      { kind: "application" },
+      { requestId: randomUUID() },
+    ),
+    { code: "invalid_handle" },
+  );
+  h.bridge.clear(h.owner);
+  h.owner.alive = false;
+  const successor = { alive: true, id: 2 };
+  const second = await h.bridge.resume(successor, {
+    deviceId: "device",
+    origin: "https://bridge.test",
+    familyId: "family",
+    endpointEpoch: "epoch",
+  });
+  assert.notEqual(first.handle, second.handle);
+  await h.bridge.open(successor, second.handle, "1");
+  await assert.rejects(
+    h.bridge.subscribe(
+      h.owner,
+      second.handle,
+      { kind: "application" },
+      { requestId: randomUUID() },
+    ),
+    { code: "invalid_handle" },
+  );
+  await assert.rejects(
+    h.bridge.subscribe(
+      successor,
+      first.handle,
+      { kind: "application" },
+      { requestId: randomUUID() },
+    ),
+    { code: "invalid_handle" },
+  );
+  assert.equal(
+    h.requests.some((r) => r.url.endsWith("/v1/subscriptions")),
+    false,
+  );
 });

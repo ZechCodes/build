@@ -127,6 +127,16 @@ control, never a durable resume cursor. Reconnection recreates subscriptions and
 refreshes authoritative current state. Lost requests are not automatically
 replayed, and failures after dispatch report an uncertain outcome.
 
+Each native subscription requires `subscribe(handle, scope, {requestId})` with a
+fresh canonical UUID. Every event, including reset and closing controls, carries
+the immutable endpoint `handle` and subscription `requestId` alongside its local
+stream UUID and sequence. Clients filter both correlation fields before
+serializing or accounting for an early event, then require the exact stream UUID
+after the subscribe reply. Correlation conveys no authority. Main rejects reuse
+on the same endpoint handle and retains at most 128 attempt IDs; capacity fails
+explicitly without evicting protected IDs. Recovery may obtain a fresh endpoint
+handle. This API must be paired with the matching hosted client correction.
+
 Every OAuth access-token rotation retires the old native bridge generation and
 requires new account verification. The account service binds bridge credential
 families to that verified access-token issuance, not to a stable installation

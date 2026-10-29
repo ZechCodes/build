@@ -7,7 +7,8 @@ const facade = {
   open: (handle, apiRange) => invoke("open", [handle, apiRange]),
   request: (handle, operationId, params, options = {}) =>
     invoke("request", [handle, operationId, params, options]),
-  subscribe: (handle, scope) => invoke("subscribe", [handle, scope]),
+  subscribe: (handle, scope, options) =>
+    invoke("subscribe", [handle, scope, options]),
   ack: (stream, sequence) => invoke("ack", [stream, sequence]),
   unsubscribe: (stream) => invoke("unsubscribe", [stream]),
   cancel: (requestId) => invoke("cancel", [requestId]),

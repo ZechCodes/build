@@ -9,7 +9,7 @@ const ARITY = new Map([
   ["resume", [1, 1]],
   ["open", [2, 2]],
   ["request", [3, 4]],
-  ["subscribe", [2, 2]],
+  ["subscribe", [3, 3]],
   ["ack", [2, 2]],
   ["unsubscribe", [1, 1]],
   ["cancel", [1, 1]],

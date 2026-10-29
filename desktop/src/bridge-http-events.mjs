@@ -4,7 +4,13 @@ import {
   consumeEvents,
   MAX_JSON_BYTES,
 } from "./bridge-http-network.mjs";
-import { fail, exact, identifier, segment } from "./bridge-http-contract.mjs";
+import {
+  fail,
+  exact,
+  identifier,
+  segment,
+  subscriptionRequest,
+} from "./bridge-http-contract.mjs";
 
 export function createBridgeEventStreams({
   fetch,
@@ -27,6 +33,8 @@ export function createBridgeEventStreams({
     if (reason) {
       try {
         send(stream.handle.owner, {
+          handle: stream.handle.id,
+          requestId: stream.requestId,
           stream: stream.id,
           sequence: ++stream.sequence,
           event: "reset_required",
@@ -59,22 +67,26 @@ export function createBridgeEventStreams({
     check(stream.handle);
     if (!streams.has(stream.id)) fail("canceled");
     validateEvent(stream, event);
-    const size = Buffer.byteLength(JSON.stringify(event));
+    const envelope = {
+      ...event,
+      handle: stream.handle.id,
+      requestId: stream.requestId,
+      stream: stream.id,
+      sequence: stream.sequence + 1,
+    };
+    const size = Buffer.byteLength(JSON.stringify(envelope));
     if (stream.unacked.size >= 128 || stream.bytes + size > MAX_JSON_BYTES) {
       endStream(stream, "overflow");
       fail("stream_too_large");
     }
     stream.bytes += size;
-    stream.unacked.set(++stream.sequence, size);
+    stream.sequence = envelope.sequence;
+    stream.unacked.set(stream.sequence, size);
     if (!stream.stall) {
       stream.stall = setTimeout(() => endStream(stream, "stalled"), 10000);
       stream.stall.unref?.();
     }
-    send(stream.handle.owner, {
-      stream: stream.id,
-      sequence: stream.sequence,
-      ...event,
-    });
+    send(stream.handle.owner, envelope);
   }
   async function pump(stream) {
     try {
@@ -106,12 +118,20 @@ export function createBridgeEventStreams({
       endStream(stream, "disconnected");
     }
   }
-  async function subscribe(owner, id, scope) {
+  function reserveAttempt(handle, requestId) {
+    const attempts = (handle.subscriptionRequests ??= new Set());
+    if (attempts.has(requestId)) fail("duplicate_request");
+    if (attempts.size >= 128) fail("busy");
+    attempts.add(requestId);
+  }
+  async function subscribe(owner, id, scope, options) {
     const handle = handleFor(owner, id);
     if (!handle.opening) fail("not_open");
     exact(scope, ["kind"]);
     if (scope.kind !== "application") fail("invalid_params");
+    const requestId = subscriptionRequest(options);
     if (handle.streams.size || handle.subscribing) fail("already_subscribed");
+    reserveAttempt(handle, requestId);
     handle.subscribing = true;
     let result;
     try {
@@ -119,6 +139,7 @@ export function createBridgeEventStreams({
         method: "POST",
         body: scope,
         maxBody: 64 * 1024,
+        requestId,
         headers: handle.lastSubscription
           ? { "X-Build-Subscription": handle.lastSubscription }
           : {},
@@ -139,6 +160,7 @@ export function createBridgeEventStreams({
     const stream = {
       id: randomUUID(),
       handle,
+      requestId,
       subscription: result.subscription_id,
       controller: new AbortController(),
       sequence: 0,

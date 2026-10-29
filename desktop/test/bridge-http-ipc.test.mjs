@@ -139,6 +139,17 @@ test("sandbox preload exposes only typed functions, strips Electron event and re
   await facade.request("h", "op", { x: 1 }, { requestId: "r" });
   assert.equal(invocations[0][0], "build:bridge-http");
   assert.equal(invocations[0][1], "request");
+  await facade.subscribe(
+    "h",
+    { kind: "application" },
+    { requestId: "00000000-0000-4000-8000-000000000001" },
+  );
+  assert.equal(invocations[1][1], "subscribe");
+  assert.equal(invocations[1][2].length, 3);
+  assert.equal(
+    invocations[1][2][2].requestId,
+    "00000000-0000-4000-8000-000000000001",
+  );
   let event;
   const off = facade.onEvent((value) => {
     event = value;

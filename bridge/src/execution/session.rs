@@ -490,6 +490,7 @@ impl ClientSessions {
             authorization: session.authorization(),
         };
         Ok(RequestContext {
+            read_interest: Arc::new(ReadInterest::default()),
             stream_class: class,
             session: session.clone(),
             reply: ReplyLease {
@@ -715,7 +716,35 @@ impl ReplyLease {
     }
 }
 
+type ReadInterestCallback = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// Advisory read interest only: it cannot grant or extend caller authority.
+#[derive(Default)]
+struct ReadInterest {
+    state: Mutex<ReadInterestState>,
+}
+#[derive(Default)]
+struct ReadInterestState {
+    restrictions: Vec<ReadInterestCallback>,
+    retired: bool,
+}
+impl ReadInterest {
+    fn is_live(&self) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.retired {
+            return false;
+        }
+        if state.restrictions.iter().all(|restriction| restriction()) {
+            true
+        } else {
+            state.retired = true;
+            false
+        }
+    }
+}
+
 pub struct RequestContext {
+    read_interest: Arc<ReadInterest>,
     stream_class: StreamClass,
     session: SessionLease,
     reply: ReplyLease,
@@ -724,6 +753,31 @@ pub struct RequestContext {
     intake_time: Instant,
 }
 impl RequestContext {
+    /// Trusted adapters may only narrow read interest for this exact opening.
+    /// Callbacks must be nonblocking and must not reenter this proof state.
+    pub(crate) fn narrow_read_interest(
+        self,
+        opening: &Opening,
+        callback: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<Self, SessionError> {
+        if !self.session.opening().is(opening) {
+            return Err(SessionError::WrongOpening);
+        }
+        self.read_interest
+            .state
+            .lock()
+            .unwrap()
+            .restrictions
+            .push(callback);
+        Ok(self)
+    }
+
+    /// Capture only read proof state, never a request, reply sink or permit.
+    pub(crate) fn read_interest(&self) -> Arc<dyn Fn() -> bool + Send + Sync> {
+        let interest = self.read_interest.clone();
+        Arc::new(move || interest.is_live())
+    }
+
     pub fn stream_class(&self) -> StreamClass {
         self.stream_class
     }
@@ -1338,5 +1392,95 @@ mod tests {
             .request(&session, Arc::new(Sink::default()), None)
             .unwrap();
         assert!(recovered.is_live());
+    }
+    #[test]
+    fn read_interest_defaults_true_and_retains_no_request_or_sink_resources() {
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions.open(caller()).unwrap();
+        let sink = Arc::new(Sink::default());
+        let weak_sink = Arc::downgrade(&sink);
+        let request = sessions.request(&session, sink.clone(), None).unwrap();
+        drop(sink);
+        let interest = request.read_interest();
+        assert!(interest());
+        drop(request);
+        assert!(weak_sink.upgrade().is_none());
+        assert!(
+            interest(),
+            "read proof is separate from request cancellation"
+        );
+        let mut replacements = Vec::new();
+        for _ in 0..32 {
+            replacements.push(
+                sessions
+                    .request(&session, Arc::new(Sink::default()), None)
+                    .unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn read_interest_narrowing_conjoins_and_false_observation_cannot_revive() {
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions.open(caller()).unwrap();
+        let request = sessions
+            .request(&session, Arc::new(Sink::default()), None)
+            .unwrap();
+        let captured_before_narrowing = request.read_interest();
+        let first = Arc::new(AtomicBool::new(true));
+        let checked_first = first.clone();
+        let request = request
+            .narrow_read_interest(
+                session.opening(),
+                Arc::new(move || checked_first.load(Ordering::SeqCst)),
+            )
+            .unwrap();
+        let second = Arc::new(AtomicBool::new(true));
+        let checked_second = second.clone();
+        let request = request
+            .narrow_read_interest(
+                session.opening(),
+                Arc::new(move || checked_second.load(Ordering::SeqCst)),
+            )
+            .unwrap();
+        assert!(captured_before_narrowing());
+        first.store(false, Ordering::SeqCst);
+        assert!(
+            !captured_before_narrowing(),
+            "second restriction must not replace first"
+        );
+        first.store(true, Ordering::SeqCst);
+        let request = request
+            .narrow_read_interest(session.opening(), Arc::new(|| true))
+            .unwrap();
+        assert!(!request.read_interest()(), "retired proof cannot revive");
+        assert!(
+            request.is_live(),
+            "read retirement must not revoke caller/reply authority"
+        );
+        request.reply().send(json!({"ok":true})).unwrap();
+    }
+
+    #[test]
+    fn read_interest_rejects_a_different_opening_without_evaluating_its_callback() {
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions.open(caller()).unwrap();
+        let other = sessions.open(caller()).unwrap();
+        let request = sessions
+            .request(&session, Arc::new(Sink::default()), None)
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        assert!(matches!(
+            request.narrow_read_interest(
+                other.opening(),
+                Arc::new(move || {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    true
+                })
+            ),
+            Err(SessionError::WrongOpening)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

@@ -492,3 +492,6 @@ async fn real_app_handler_respects_shared_update_exclusion_while_ping_survives()
     assert_eq!(reply(&mut ping).await["result"]["pong"], true);
     assert!(updates.admission().try_enter().is_none());
 }
+
+#[path = "read_interest_tests.rs"]
+mod read_interest;

@@ -63,7 +63,8 @@ def test_routes_discover_renew_revoke_and_never_accept_client_authority(monkeypa
         with client.portal() as portal:
             device, key = portal.call(seed)
         challenge = client.post(
-            f"/api/devices/{device.id}/http-endpoint/challenge", json={}
+            f"/api/devices/{device.id}/http-endpoint/challenge",
+            json={"proof": signed(key, device, "registration-challenge")},
         )
         assert challenge.status_code == 201, challenge.text
         proof = signed(

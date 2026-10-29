@@ -72,7 +72,10 @@ def enroll_and_register(client, user):
         return device
 
     device = framework.on_database(client, seed)
-    result = client.post(f"/api/devices/{device.id}/http-endpoint/challenge", json={})
+    result = client.post(
+        f"/api/devices/{device.id}/http-endpoint/challenge",
+        json={"proof": signed(key, device, "registration-challenge")},
+    )
     assert result.status_code == 201, result.text
     pending = result.json()
     proof = signed(

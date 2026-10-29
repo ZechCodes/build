@@ -73,7 +73,9 @@ async def registered(db):
         ]
     )
     await db.flush()
-    challenge = await auth.registration_challenge(db, device.id, utc_now())
+    challenge = await auth.registration_challenge(
+        db, device.id, signed(key, device, "registration-challenge"), ISSUER, utc_now()
+    )
     proof = signed(
         key,
         device,
@@ -355,13 +357,19 @@ def test_idna_origin_and_empty_port_are_unambiguous():
 async def test_suspended_account_cannot_mint_or_verify_endpoint(db):
     from skrift.db.models.user import User
 
-    user, device, _ = await registered(db)
+    user, device, key = await registered(db)
     (await db.get(User, user)).is_active = False
     await db.flush()
     with pytest.raises(NotAuthorizedException):
         await auth.create_discovery(db, user, "browser:s", ORIGIN, ISSUER, utc_now())
     with pytest.raises(NotAuthorizedException):
-        await auth.registration_challenge(db, device.id, utc_now())
+        await auth.registration_challenge(
+            db,
+            device.id,
+            signed(key, device, "registration-challenge"),
+            ISSUER,
+            utc_now(),
+        )
 
 
 @pytest.mark.asyncio
@@ -386,7 +394,9 @@ async def test_endpoint_change_and_alpha_revoke_cannot_renew_old_family(db):
     minted = await auth.complete_discovery(
         db, user, "browser:s", pending["challenge_id"], proof, ISSUER, utc_now()
     )
-    challenge = await auth.registration_challenge(db, device.id, utc_now())
+    challenge = await auth.registration_challenge(
+        db, device.id, signed(key, device, "registration-challenge"), ISSUER, utc_now()
+    )
     proof = signed(
         key,
         device,

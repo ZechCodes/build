@@ -108,3 +108,23 @@ def test_real_bridge_unpadded_paired_public_key_verifies():
     assert verify(
         VECTOR["discovery"], device, "discovery", "https://getbuild.ing", NOW
     )["sub"] == str(DEVICE.id)
+
+
+def test_rust_signed_registration_allocation_vector_has_a_disjoint_profile():
+    vector = json.loads(
+        (
+            Path(__file__).parents[2]
+            / "fixtures/bridge-http/registration-challenge-proof.json"
+        ).read_text()
+    )
+    # RFC 7515 flattened fixture segments retain the exact standard compact JWS
+    # signing input; the production verifier receives the normal compact value.
+    proof = ".".join(vector[field] for field in ("protected", "payload", "signature"))
+    now = datetime.fromtimestamp(vector["now"], timezone.utc)
+    claims = verify(
+        proof, DEVICE, "registration-challenge", "https://getbuild.ing", now
+    )
+    assert claims["sub"] == str(DEVICE.id)
+    for other in ("registration", "discovery", "introspection"):
+        with pytest.raises(NotAuthorizedException):
+            verify(proof, DEVICE, other, "https://getbuild.ing", now)

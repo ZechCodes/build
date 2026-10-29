@@ -1,0 +1,17 @@
+E
+======================================================================
+ERROR: test_shared_sealed_input_lifetime_and_bounded_release_gc (test_prototype.SelectionTests.test_shared_sealed_input_lifetime_and_bounded_release_gc)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 311, in test_shared_sealed_input_lifetime_and_bounded_release_gc
+    self.db.release_set(token)
+    ^^^^^^^^^^^^^^^^^^^
+AttributeError: 'SelectionDB' object has no attribute 'release_set'. Did you mean: 'create_set'?
+
+----------------------------------------------------------------------
+Ran 1 test in 0.006s
+
+FAILED (errors=1)
+
+Command: nice -n 10 python -m unittest discover -s planning/v2/task-925-selection -k shared_sealed
+Exit: 1

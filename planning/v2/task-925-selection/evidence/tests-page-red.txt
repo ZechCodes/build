@@ -1,0 +1,38 @@
+E
+======================================================================
+ERROR: test_late_page_keyset_seek_is_bounded_with_10000_same_rank (test_prototype.SelectionTests.test_late_page_keyset_seek_is_bounded_with_10000_same_rank)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 109, in _guard
+    yield metrics
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 397, in list_page
+    return [tuple(row) for row in self.connection.execute("""SELECT task,rank,number,status,priority,blocked
+                                  ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      FROM result WHERE owner=? AND (rank, -number, task)>(?, ?, ?)
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      ORDER BY rank,-number,task LIMIT 64""", (build, rank, -number, task))]
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: interrupted
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 296, in test_late_page_keyset_seek_is_bounded_with_10000_same_rank
+    late = self.db.list_page(build, (3, 100, "t00100"))
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 394, in list_page
+    with self._guard():
+         ~~~~~~~~~~~^^
+  File "/usr/lib/python3.14/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 117, in _guard
+    raise BudgetExceeded("quantum VM/soft-time budget; no partial progress") from error
+prototype.BudgetExceeded: quantum VM/soft-time budget; no partial progress
+
+----------------------------------------------------------------------
+Ran 1 test in 1.756s
+
+FAILED (errors=1)
+
+Command: nice -n 10 python -m unittest discover -s planning/v2/task-925-selection -p test_prototype.py -k late_page
+Exit: 1

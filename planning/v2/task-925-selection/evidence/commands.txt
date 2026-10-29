@@ -1,0 +1,64 @@
+Working directory: managed task workspace Build source.
+Base: fcec698761695148bcd8736e9bb516aefa00a8e0.
+Prototype/runner measured code: bdb296735c35dd45aa88a69908e43eb4e8248f4a.
+Ambient host, no isolated timing window; --soft-ms inf disables soft elapsed
+interruption so deterministic VM/probe comparisons are not wall-time gates.
+
+Final commands, all exit 0:
+nice -n 10 python -m unittest discover -s planning/v2/task-925-selection -p 'test_prototype.py' -v
+  stdout/stderr -> final-tests.txt; repeated after comment-only scan annotations
+  -> annotated-tests.txt; 22 tests pass in both.
+
+nice -n 10 python planning/v2/task-925-selection/measure.py --rows 25 1000 10000 --basis global project --schedule quiet normal sustained unrelated --jobs 1 --max-quanta 1200 --soft-ms inf
+  -> final-counts.jsonl (24 records)
+nice -n 10 python planning/v2/task-925-selection/measure.py --rows 100000 --basis project --schedule quiet --jobs 1 --max-quanta 1200 --soft-ms inf
+  -> large-counts.jsonl (1 record)
+nice -n 10 python planning/v2/task-925-selection/measure.py --rows 100000 --basis global --schedule quiet normal sustained unrelated --jobs 1 --max-quanta 1200 --soft-ms inf
+  -> large-global.jsonl (4 records)
+nice -n 10 python planning/v2/task-925-selection/measure.py --rows 100000 --basis project --schedule normal sustained unrelated --jobs 1 --max-quanta 1200 --soft-ms inf
+  -> large-project.jsonl (3 records)
+Combined -> all-final-scenarios.jsonl (32 distinct size/basis/schedule tuples).
+
+nice -n 10 python planning/v2/task-925-selection/measure.py --rows 10000 --basis project --schedule quiet --jobs 3 --max-quanta 1200 --soft-ms inf
+  -> fairness-3.jsonl
+nice -n 10 python planning/v2/task-925-selection/measure.py --rows 10000 --basis project --schedule quiet --jobs 16 --max-quanta 1200 --soft-ms inf
+  -> fairness-16.jsonl
+nice -n 10 python planning/v2/task-925-selection/measure.py --rows 10000 --basis project --schedule quiet --overlap --jobs 1 --max-quanta 1200 --soft-ms inf
+  -> overlap.jsonl
+nice -n 10 python planning/v2/task-925-selection/measure.py --rows 1 --basis project --schedule quiet --long-labels --jobs 1 --max-quanta 1200 --soft-ms inf
+  -> long-labels.jsonl
+
+nice -n 10 python planning/v2/task-925-selection/source_cost.py
+  -> source-cost.jsonl (4 records; unbounded fixture producer diagnostic)
+nice -n 10 python planning/v2/task-925-selection/domain_experiment.py
+  -> ../domain-evidence.json (synthetic model, not Rust Store parity)
+
+Preserved superseded run:
+nice -n 10 python planning/v2/task-925-selection/measure.py --rows 25 1000 10000 100000 --basis global project --schedule quiet normal sustained unrelated --jobs 1 --max-quanta 1200 --soft-ms inf
+  -> initial-counts.jsonl; exit 0; 32 records; in-flight full source snapshot not
+  captured, so explicitly retired from evidence. Continued during sign-in interruption.
+
+Preserved expected TDD failures, exit 1:
+  tests-red.txt: absent implementation import
+  tests-semantic-red.txt: intermediate shape/semantics
+  tests-page-red.txt: expression-key late-page VM budget exceeded
+  tests-release-red.txt: missing sealed input release method while test first added
+
+Scans:
+nice -n 10 semgrep --config auto --error planning/v2/task-925-selection/prototype.py planning/v2/task-925-selection/test_prototype.py planning/v2/task-925-selection/measure.py planning/v2/task-925-selection/domain_experiment.py planning/v2/task-925-selection/source_cost.py
+  first -> semgrep-red.txt, exit 1, six static formatted-SQL findings
+  after narrow internal-SQL annotations -> semgrep-green.txt, exit 0, zero findings
+  annotations change no AST/runtime behavior; provenance.json records both source hashes.
+git diff --check fcec698761695148bcd8736e9bb516aefa00a8e0
+  exit 0; final staged files checked again before commit.
+
+Evidence formatting correction: first staged diff --check exit 2 because semgrep
+console reports include trailing spaces. Archived text reports were whitespace
+normalized; original /tmp reports retained. Repeated staged diff check exit 0.
+The first attempted directory gitleaks was not started because that diff check
+failed; its later actual invocation/result is recorded separately.
+
+nice -n 10 gitleaks dir --no-banner --redact planning/v2/task-925-selection
+  exit 0; complete research packet scanned, no leaks.
+Final annotated unittest rerun exit 0, 22 tests; no measurement source behavior
+changed. Both independent Sol reviews approve research handoff only.

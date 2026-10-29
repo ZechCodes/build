@@ -1,0 +1,5 @@
+e1900a7fc1612f58b72796559f244c2ad6f6b8157e56c142235bc8c41563092f  planning/v2/task-925-selection/domain_experiment.py
+808feee72fbe169bbe6b366568d180c086feb1893e247ab57b077952983a5b72  planning/v2/task-925-selection/measure.py
+687cf18341438b58748f6e5b9d1fb80781652d97d1dcfd8a17ffad0d0bf67229  planning/v2/task-925-selection/prototype.py
+00ddb8e0f3d7cd95e4070a53255ad2afd6a1810a082ef09c9de7737290c1054a  planning/v2/task-925-selection/source_cost.py
+6147556edc4fdbfc16f1f83dff0139dd968752c4c9b81074f189ed97b5b630e9  planning/v2/task-925-selection/test_prototype.py

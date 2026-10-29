@@ -1,0 +1,87 @@
+
+
+┌─────────────┐
+│ Scan Status │
+└─────────────┘
+  Scanning 5 files tracked by git with 1074 Code rules:
+
+  Language      Rules   Files          Origin      Rules
+ ─────────────────────────────        ───────────────────
+  python          243       5          Community    1074
+  <multilang>      47       5
+
+
+
+┌──────────────┐
+│ Scan Summary │
+└──────────────┘
+✅ Scan completed successfully.
+ • Findings: 6 (6 blocking)
+ • Rules run: 290
+ • Targets scanned: 5
+ • Parsed lines: ~100.0%
+ • No ignore information available
+Ran 290 rules on 5 files: 6 findings.
+
+
+┌─────────────────┐
+│ 6 Code Findings │
+└─────────────────┘
+
+    planning/v2/task-925-selection/measure.py
+    ❯❱ python.lang.security.audit.formatted-sql-query.formatted-sql-query
+          ❰❰ Blocking ❱❱
+          Detected possible formatted SQL query. Use parameterized queries instead.
+          Details: https://sg.run/EkWw
+
+           41┆ row = connection.execute(f"SELECT count(*),coalesce(sum({expression}),0) FROM
+               {table}").fetchone()
+
+   ❯❯❱ python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+          ❰❰ Blocking ❱❱
+          Avoiding SQL string concatenation: untrusted input concatenated with raw SQL query can result in SQL
+          Injection. In order to execute raw query safely, prepared statement should be used. SQLAlchemy
+          provides TextualSQL to easily used prepared statement with named parameters. For complex SQL
+          composition, use SQL Expression Language or Schema Definition Language. In most cases, SQLAlchemy
+          ORM will be a better option.
+          Details: https://sg.run/2b1L
+
+           41┆ row = connection.execute(f"SELECT count(*),coalesce(sum({expression}),0) FROM
+               {table}").fetchone()
+
+    planning/v2/task-925-selection/prototype.py
+   ❯❯❱ python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+          ❰❰ Blocking ❱❱
+          Avoiding SQL string concatenation: untrusted input concatenated with raw SQL query can result in SQL
+          Injection. In order to execute raw query safely, prepared statement should be used. SQLAlchemy
+          provides TextualSQL to easily used prepared statement with named parameters. For complex SQL
+          composition, use SQL Expression Language or Schema Definition Language. In most cases, SQLAlchemy
+          ORM will be a better option.
+          Details: https://sg.run/2b1L
+
+          428┆ page = [tuple(row) for row in self.connection.execute(f"""SELECT
+               task,rank,number,status,priority,blocked
+          429┆   FROM result WHERE owner=? AND status=? AND ({columns})>({marks})
+          430┆   ORDER BY {columns} LIMIT 64""", (build, status, *values))]
+            ⋮┆----------------------------------------
+          453┆ removed += self.connection.execute(f"""DELETE FROM {table} WHERE rowid IN
+          454┆   (SELECT rowid FROM {table} WHERE owner=? LIMIT ?)""", (build, remaining)).rowcount
+
+    planning/v2/task-925-selection/test_prototype.py
+    ❯❱ python.lang.security.audit.formatted-sql-query.formatted-sql-query
+          ❰❰ Blocking ❱❱
+          Detected possible formatted SQL query. Use parameterized queries instead.
+          Details: https://sg.run/EkWw
+
+          326┆ self.db.connection.execute(f"SELECT {value}").fetchone()
+
+   ❯❯❱ python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+          ❰❰ Blocking ❱❱
+          Avoiding SQL string concatenation: untrusted input concatenated with raw SQL query can result in SQL
+          Injection. In order to execute raw query safely, prepared statement should be used. SQLAlchemy
+          provides TextualSQL to easily used prepared statement with named parameters. For complex SQL
+          composition, use SQL Expression Language or Schema Definition Language. In most cases, SQLAlchemy
+          ORM will be a better option.
+          Details: https://sg.run/2b1L
+
+          326┆ self.db.connection.execute(f"SELECT {value}").fetchone()

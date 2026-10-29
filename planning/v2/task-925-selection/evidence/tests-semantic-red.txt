@@ -1,0 +1,221 @@
+test_abandoned_input_gc_is_incremental (test_prototype.SelectionTests.test_abandoned_input_gc_is_incremental) ... ok
+test_board_priority_backlog_activation_and_status_stray_max (test_prototype.SelectionTests.test_board_priority_backlog_activation_and_status_stray_max) ... ERROR
+test_budget_interrupt_rolls_back_checkpoint_output_and_counts (test_prototype.SelectionTests.test_budget_interrupt_rolls_back_checkpoint_output_and_counts) ... ERROR
+test_cancel_and_gc_delete_at_most_64_records_no_cascade (test_prototype.SelectionTests.test_cancel_and_gc_delete_at_most_64_records_no_cascade) ... ERROR
+test_cancelled_open_is_unfinished_and_non_backlog_readiness_does_not_activate (test_prototype.SelectionTests.test_cancelled_open_is_unfinished_and_non_backlog_readiness_does_not_activate) ... ERROR
+test_configured_column_order_zero_counts_max_and_large_status_filter (test_prototype.SelectionTests.test_configured_column_order_zero_counts_max_and_large_status_filter) ... ERROR
+test_coordinator_pin_absent_and_legacy_resolved_inputs (test_prototype.SelectionTests.test_coordinator_pin_absent_and_legacy_resolved_inputs) ... ERROR
+test_empty_selection_seals_exact_zero (test_prototype.SelectionTests.test_empty_selection_seals_exact_zero) ... ERROR
+test_exact_scope_empty_is_zero_and_requires_actual_agent (test_prototype.SelectionTests.test_exact_scope_empty_is_zero_and_requires_actual_agent) ... ERROR
+test_global_and_project_epoch_invalidation (test_prototype.SelectionTests.test_global_and_project_epoch_invalidation) ... ERROR
+test_input_bounds_refuse_without_truncating (test_prototype.SelectionTests.test_input_bounds_refuse_without_truncating) ... ok
+test_large_labels_resume_independent_subcursor (test_prototype.SelectionTests.test_large_labels_resume_independent_subcursor) ... ERROR
+test_mutation_after_last_scan_before_atomic_seal_is_rejected (test_prototype.SelectionTests.test_mutation_after_last_scan_before_atomic_seal_is_rejected) ... ERROR
+test_off_page_invalid_source_projection_refuses_instead_of_exact_zero (test_prototype.SelectionTests.test_off_page_invalid_source_projection_refuses_instead_of_exact_zero) ... ERROR
+test_oracle_overlaps_large_roster_status_vocabulary_and_strays (test_prototype.SelectionTests.test_oracle_overlaps_large_roster_status_vocabulary_and_strays) ... ERROR
+test_pending_is_not_zero_and_partials_are_unreadable (test_prototype.SelectionTests.test_pending_is_not_zero_and_partials_are_unreadable) ... ERROR
+test_sealed_exact_set_counts_duplicates_and_is_immutable (test_prototype.SelectionTests.test_sealed_exact_set_counts_duplicates_and_is_immutable) ... ok
+
+======================================================================
+ERROR: test_board_priority_backlog_activation_and_status_stray_max (test_prototype.SelectionTests.test_board_priority_backlog_activation_and_status_stray_max)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 191, in test_board_priority_backlog_activation_and_status_stray_max
+    self.db.put_task(task)
+    ~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_budget_interrupt_rolls_back_checkpoint_output_and_counts (test_prototype.SelectionTests.test_budget_interrupt_rolls_back_checkpoint_output_and_counts)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 156, in test_budget_interrupt_rolls_back_checkpoint_output_and_counts
+    self.db.put_task(header(i))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_cancel_and_gc_delete_at_most_64_records_no_cascade (test_prototype.SelectionTests.test_cancel_and_gc_delete_at_most_64_records_no_cascade)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 167, in test_cancel_and_gc_delete_at_most_64_records_no_cascade
+    self.db.put_task(header(i))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_cancelled_open_is_unfinished_and_non_backlog_readiness_does_not_activate (test_prototype.SelectionTests.test_cancelled_open_is_unfinished_and_non_backlog_readiness_does_not_activate)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 214, in test_cancelled_open_is_unfinished_and_non_backlog_readiness_does_not_activate
+    self.db.put_task(header(1, status="cancelled", holder_kind="agent", holder_id="a", readiness=True))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_configured_column_order_zero_counts_max_and_large_status_filter (test_prototype.SelectionTests.test_configured_column_order_zero_counts_max_and_large_status_filter)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 242, in test_configured_column_order_zero_counts_max_and_large_status_filter
+    self.db.put_task(header(1, status="s0600"))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_coordinator_pin_absent_and_legacy_resolved_inputs (test_prototype.SelectionTests.test_coordinator_pin_absent_and_legacy_resolved_inputs)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 181, in test_coordinator_pin_absent_and_legacy_resolved_inputs
+    self.db.put_task(header(1, holder_kind="project_agent", attention=True))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_empty_selection_seals_exact_zero (test_prototype.SelectionTests.test_empty_selection_seals_exact_zero)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 200, in test_empty_selection_seals_exact_zero
+    self.db.put_task(header(1))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_exact_scope_empty_is_zero_and_requires_actual_agent (test_prototype.SelectionTests.test_exact_scope_empty_is_zero_and_requires_actual_agent)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 207, in test_exact_scope_empty_is_zero_and_requires_actual_agent
+    self.db.put_task(task)
+    ~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_global_and_project_epoch_invalidation (test_prototype.SelectionTests.test_global_and_project_epoch_invalidation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 134, in test_global_and_project_epoch_invalidation
+    self.db.put_task(header(1))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_large_labels_resume_independent_subcursor (test_prototype.SelectionTests.test_large_labels_resume_independent_subcursor)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 95, in test_large_labels_resume_independent_subcursor
+    self.db.put_task(header(1), labels)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_mutation_after_last_scan_before_atomic_seal_is_rejected (test_prototype.SelectionTests.test_mutation_after_last_scan_before_atomic_seal_is_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 145, in test_mutation_after_last_scan_before_atomic_seal_is_rejected
+    self.db.put_task(header(1))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_off_page_invalid_source_projection_refuses_instead_of_exact_zero (test_prototype.SelectionTests.test_off_page_invalid_source_projection_refuses_instead_of_exact_zero)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 226, in test_off_page_invalid_source_projection_refuses_instead_of_exact_zero
+    self.db.put_task(header(i))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_oracle_overlaps_large_roster_status_vocabulary_and_strays (test_prototype.SelectionTests.test_oracle_overlaps_large_roster_status_vocabulary_and_strays)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 82, in test_oracle_overlaps_large_roster_status_vocabulary_and_strays
+    self.db.put_task(task, labels[task["id"]])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+======================================================================
+ERROR: test_pending_is_not_zero_and_partials_are_unreadable (test_prototype.SelectionTests.test_pending_is_not_zero_and_partials_are_unreadable)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 105, in test_pending_is_not_zero_and_partials_are_unreadable
+    self.db.put_task(header(1))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 195, in put_task
+    self._validate_task(task)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/prototype.py", line 173, in _validate_task
+    raise Unsupported("header shape or 2 KiB row bound")
+prototype.Unsupported: header shape or 2 KiB row bound
+
+----------------------------------------------------------------------
+Ran 17 tests in 0.064s
+
+FAILED (errors=14)
+
+Command: nice -n 10 python -m unittest discover -s planning/v2/task-925-selection -v
+Exit: 1

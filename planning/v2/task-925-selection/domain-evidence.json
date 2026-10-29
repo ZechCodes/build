@@ -1,0 +1,26 @@
+{
+  "kind": "deterministic model, no wall timing",
+  "fixtures": 8,
+  "canonical_values_unchanged": true,
+  "projection_alias_detected": true,
+  "validation": "off-page scan must finish or refuse before any publication",
+  "scenarios": [
+    {
+      "selected_state": "open",
+      "admitted_queries": 10,
+      "indexed_project_refusals": 10,
+      "complete_scan_refusals": 0,
+      "exact_normalized_future_facts_query_refusals": 0
+    },
+    {
+      "selected_state": "closed",
+      "admitted_queries": 10,
+      "indexed_project_refusals": 10,
+      "complete_scan_refusals": 10,
+      "exact_normalized_future_facts_query_refusals": 10
+    }
+  ],
+  "unsupported_candidates_current": 8,
+  "unsupported_candidates_future": 6,
+  "caveat": "Synthetic incidence, not a rate estimate for user projects; Future facts recover two label candidates; four opaque-field candidates still exceed the proposed byte ceiling. Two malformed-label candidates also remain unsupported. These closed-state query fixtures cannot safely prune them."
+}

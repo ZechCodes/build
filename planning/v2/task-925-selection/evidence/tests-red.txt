@@ -1,0 +1,24 @@
+test_prototype (unittest.loader._FailedTest.test_prototype) ... ERROR
+
+======================================================================
+ERROR: test_prototype (unittest.loader._FailedTest.test_prototype)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_prototype
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/unittest/loader.py", line 433, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.14/unittest/loader.py", line 374, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_prototype.py", line 6, in <module>
+    from prototype import BudgetExceeded, Pending, SelectionDB, Unsupported
+ModuleNotFoundError: No module named 'prototype'
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (errors=1)
+
+Command: nice -n 10 python -m unittest discover -s planning/v2/task-925-selection -v
+Exit: 1

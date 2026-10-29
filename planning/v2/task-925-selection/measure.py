@@ -38,6 +38,8 @@ def storage(db):
         "result": "length(owner)+length(task)+length(cast(status as blob))+56",
         "status_count": "length(owner)+length(cast(status as blob))+16",
     }.items():
+        # Both identifiers/expressions come solely from the fixed diagnostic map above.
+        # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query, python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         row = connection.execute(f"SELECT count(*),coalesce(sum({expression}),0) FROM {table}").fetchone()
         logical[table] = dict(rows=row[0], payload_bytes=row[1])
     pages = connection.execute("PRAGMA page_count").fetchone()[0]

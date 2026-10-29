@@ -1,0 +1,24 @@
+{
+  "code_commit": "bdb296735c35dd45aa88a69908e43eb4e8248f4a",
+  "python": "3.14.7",
+  "sqlite": "3.53.4",
+  "storage": "in-memory SQLite, no WAL or disk lock contention",
+  "timing": "ambient concurrent host, no isolated timing window",
+  "files": {
+    "prototype.py": {
+      "measured_bdb_sha256": "2b8c1aaf360802b8a42d07d4363cf54c69abe7ab160cf1083d852a0c2e61a65b",
+      "current_sha256": "687cf18341438b58748f6e5b9d1fb80781652d97d1dcfd8a17ffad0d0bf67229",
+      "ast_equal_to_measured": true
+    },
+    "test_prototype.py": {
+      "measured_bdb_sha256": "83a5362018832169c5e5ad5fa95d61d1547202537cac0d5d4abaefc997a29d38",
+      "current_sha256": "6147556edc4fdbfc16f1f83dff0139dd968752c4c9b81074f189ed97b5b630e9",
+      "ast_equal_to_measured": true
+    },
+    "measure.py": {
+      "measured_bdb_sha256": "f5a3b292f8d87ca6e281ef2f2cc08f72b03a3b9119f355af512df30159a0b044",
+      "current_sha256": "808feee72fbe169bbe6b366568d180c086feb1893e247ab57b077952983a5b72",
+      "ast_equal_to_measured": true
+    }
+  }
+}

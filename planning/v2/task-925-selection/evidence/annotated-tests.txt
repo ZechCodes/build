@@ -1,0 +1,27 @@
+test_abandoned_input_gc_is_incremental (test_prototype.SelectionTests.test_abandoned_input_gc_is_incremental) ... ok
+test_board_priority_backlog_activation_and_status_stray_max (test_prototype.SelectionTests.test_board_priority_backlog_activation_and_status_stray_max) ... ok
+test_board_removes_status_filter_and_stray_backlog_stays_number_order (test_prototype.SelectionTests.test_board_removes_status_filter_and_stray_backlog_stays_number_order) ... ok
+test_budget_interrupt_rolls_back_checkpoint_output_and_counts (test_prototype.SelectionTests.test_budget_interrupt_rolls_back_checkpoint_output_and_counts) ... ok
+test_cancel_and_gc_delete_at_most_64_records_no_cascade (test_prototype.SelectionTests.test_cancel_and_gc_delete_at_most_64_records_no_cascade) ... ok
+test_cancelled_open_is_unfinished_and_non_backlog_readiness_does_not_activate (test_prototype.SelectionTests.test_cancelled_open_is_unfinished_and_non_backlog_readiness_does_not_activate) ... ok
+test_configured_column_order_zero_counts_max_and_large_status_filter (test_prototype.SelectionTests.test_configured_column_order_zero_counts_max_and_large_status_filter) ... ok
+test_coordinator_pin_absent_and_legacy_resolved_inputs (test_prototype.SelectionTests.test_coordinator_pin_absent_and_legacy_resolved_inputs) ... ok
+test_empty_selection_seals_exact_zero (test_prototype.SelectionTests.test_empty_selection_seals_exact_zero) ... ok
+test_exact_scope_empty_is_zero_and_requires_actual_agent (test_prototype.SelectionTests.test_exact_scope_empty_is_zero_and_requires_actual_agent) ... ok
+test_global_and_project_epoch_invalidation (test_prototype.SelectionTests.test_global_and_project_epoch_invalidation) ... ok
+test_input_bounds_refuse_without_truncating (test_prototype.SelectionTests.test_input_bounds_refuse_without_truncating) ... ok
+test_large_labels_resume_independent_subcursor (test_prototype.SelectionTests.test_large_labels_resume_independent_subcursor) ... ok
+test_late_page_keyset_seek_is_bounded_with_10000_same_rank (test_prototype.SelectionTests.test_late_page_keyset_seek_is_bounded_with_10000_same_rank) ... ok
+test_mutation_after_last_scan_before_atomic_seal_is_rejected (test_prototype.SelectionTests.test_mutation_after_last_scan_before_atomic_seal_is_rejected) ... ok
+test_off_page_invalid_source_projection_refuses_instead_of_exact_zero (test_prototype.SelectionTests.test_off_page_invalid_source_projection_refuses_instead_of_exact_zero) ... ok
+test_oracle_overlaps_large_roster_status_vocabulary_and_strays (test_prototype.SelectionTests.test_oracle_overlaps_large_roster_status_vocabulary_and_strays) ... ok
+test_pending_is_not_zero_and_partials_are_unreadable (test_prototype.SelectionTests.test_pending_is_not_zero_and_partials_are_unreadable) ... ok
+test_restart_resumes_durable_label_subcursor (test_prototype.SelectionTests.test_restart_resumes_durable_label_subcursor) ... ok
+test_sealed_exact_set_counts_duplicates_and_is_immutable (test_prototype.SelectionTests.test_sealed_exact_set_counts_duplicates_and_is_immutable) ... ok
+test_shared_sealed_input_lifetime_and_bounded_release_gc (test_prototype.SelectionTests.test_shared_sealed_input_lifetime_and_bounded_release_gc) ... ok
+test_stride_one_vm_counter_covers_many_distinct_short_statements (test_prototype.SelectionTests.test_stride_one_vm_counter_covers_many_distinct_short_statements) ... ok
+
+----------------------------------------------------------------------
+Ran 22 tests in 3.216s
+
+OK

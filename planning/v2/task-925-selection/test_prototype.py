@@ -323,6 +323,8 @@ class SelectionTests(unittest.TestCase):
     def test_stride_one_vm_counter_covers_many_distinct_short_statements(self):
         with self.db._guard() as metrics:
             for value in range(1000):
+                # Trusted range integer intentionally gives each VM test a distinct statement.
+                # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query, python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
                 self.db.connection.execute(f"SELECT {value}").fetchone()
         self.assertGreaterEqual(metrics["vm_upper"], 5000)
 

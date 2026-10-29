@@ -425,6 +425,8 @@ class SelectionDB:
                 columns = "blocked_key,priority_key,number_key,task" if grouped else "number_key,task"
                 values = after if grouped else after[2:]
                 marks = ",".join("?" for _ in values)
+                # Sort fragments/placeholder count are fixed internal variants; all values are bound.
+                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
                 page = [tuple(row) for row in self.connection.execute(f"""SELECT task,rank,number,status,priority,blocked
                   FROM result WHERE owner=? AND status=? AND ({columns})>({marks})
                   ORDER BY {columns} LIMIT 64""", (build, status, *values))]
@@ -450,6 +452,8 @@ class SelectionDB:
             removed = 0
             for table in ("result", "status_count"):
                 remaining = self.GC_LIMIT - removed
+                # Table is one of the two fixed internal names in this loop; values are bound.
+                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
                 removed += self.connection.execute(f"""DELETE FROM {table} WHERE rowid IN
                   (SELECT rowid FROM {table} WHERE owner=? LIMIT ?)""", (build, remaining)).rowcount
             if removed < self.GC_LIMIT:

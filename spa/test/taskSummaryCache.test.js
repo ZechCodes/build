@@ -139,6 +139,14 @@ it("merges stronger markers from an older read independently of ordinary fields"
   expect((await summaries.readSummaryQuery(scope, query)).tasks[0]).toMatchObject({ title: "held", read_through: "tc-03", unread_count: 0 });
 });
 
+it("requires revalidation when stronger marks arrive with an older content snapshot", async () => {
+  await land(await open(query, 3), page([row("task-1", { updated_at: "2026-10-29T13:00:00Z", read_through: "tc-01", unread_count: 5 })]));
+  await land(await open({}, 1), page([row("task-1", { updated_at: "2026-10-29T12:00:00Z", read_through: "tc-03", unread_count: 0 })]));
+  const held = await summaries.readSummaryQuery(scope, query);
+  expect(held.tasks[0]).toMatchObject({ read_through: "tc-03", unread_count: 5 });
+  expect(held.stale).toBe(true);
+});
+
 it("retains newer rows and marker authority when an older page enters another query", async () => {
   await land(await open(query, 3), page([row("task-1", { title: "new", read_through: "tc-03", watch_started_after: "te-02", dismissed_through: "te-04", unread_count: 0 })]));
   const other = { states: ["closed"] };

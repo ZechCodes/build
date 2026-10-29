@@ -27,6 +27,12 @@ use serde_json::Value;
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
         v1_method!("tasks.list", tasks_list, TasksListParams, TasksList),
+        v1_method!(
+            "tasks.filterChoices",
+            tasks_filter_choices,
+            TasksFilterChoicesParams,
+            TasksFilterChoices
+        ),
         v1_method!("tasks.get", tasks_get, TaskIdParams, TaskDetail),
         v1_method!(
             "tasks.create",
@@ -108,8 +114,117 @@ pub struct TaskIdParams {
 
 /// One project's tasks, narrowed. Every filter is optional and they are ANDed.
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(try_from = "TasksListInput")]
 pub struct TasksListParams {
+    #[serde(flatten)]
+    pub filters: TasksListFilters,
+}
+
+/// Typed decoding retains presence separately from a nullable scalar's value.
+/// The validated public filters keep their established normalized wire shape.
+#[derive(Deserialize)]
+struct TasksListInput {
+    project_id: String,
+    #[serde(default)]
+    summary: Option<bool>,
+    #[serde(default, deserialize_with = "nullable_provided")]
+    state: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable_provided")]
+    status: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable_provided")]
+    assignee: Option<Option<Value>>,
+    #[serde(default, deserialize_with = "nullable_provided")]
+    label: Option<Option<String>>,
+    #[serde(default, deserialize_with = "provided")]
+    states: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "provided")]
+    statuses: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "provided")]
+    labels: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "provided")]
+    assignees: Option<Vec<Value>>,
+    #[serde(default, deserialize_with = "nullable_provided")]
+    limit: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "nullable_provided")]
+    cursor: Option<Option<String>>,
+}
+
+fn nullable_provided<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::deserialize(deserializer).map(Some)
+}
+
+impl TryFrom<TasksListInput> for TasksListParams {
+    type Error = String;
+
+    fn try_from(input: TasksListInput) -> Result<Self, Self::Error> {
+        if input.summary == Some(true) {
+            for (name, null) in [
+                ("limit", input.limit == Some(None)),
+                ("cursor", input.cursor == Some(None)),
+            ] {
+                if null {
+                    return Err(format!("{name} cannot be null in summary mode"));
+                }
+            }
+        }
+        for (scalar, plural, scalar_present, plural_present) in [
+            (
+                "state",
+                "states",
+                input.state.is_some(),
+                input.states.is_some(),
+            ),
+            (
+                "status",
+                "statuses",
+                input.status.is_some(),
+                input.statuses.is_some(),
+            ),
+            (
+                "label",
+                "labels",
+                input.label.is_some(),
+                input.labels.is_some(),
+            ),
+            (
+                "assignee",
+                "assignees",
+                input.assignee.is_some(),
+                input.assignees.is_some(),
+            ),
+        ] {
+            if scalar_present && plural_present {
+                return Err(format!("provide only one of {scalar} and {plural}"));
+            }
+        }
+        Ok(Self {
+            filters: TasksListFilters {
+                project_id: input.project_id,
+                summary: input.summary,
+                state: input.state.flatten(),
+                status: input.status.flatten(),
+                assignee: input.assignee.flatten(),
+                label: input.label.flatten(),
+                states: input.states,
+                statuses: input.statuses,
+                labels: input.labels,
+                assignees: input.assignees,
+                limit: input.limit.flatten(),
+                cursor: input.cursor.flatten(),
+            },
+        })
+    }
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct TasksListFilters {
     pub project_id: String,
+    /// Lightweight, bounded pages (3.26.0, `tasks.listSummaries`). Defaults
+    /// to false, preserving legacy tasks.list rows and unbounded reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<bool>,
     /// `open` or `closed`; both when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
@@ -122,14 +237,80 @@ pub struct TasksListParams {
     /// One label, matched the way labels are deduped: case-insensitively.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// OR within one selection, AND across dimensions. An empty selection or
+    /// both scalar and plural forms is invalid; omit the dimension for all.
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub states: Option<Vec<String>>,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub statuses: Option<Vec<String>>,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub labels: Option<Vec<String>>,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assignees: Option<Vec<Value>>,
     /// At most this many tasks, 1 to 500 (1.25.0, `tasks.listPaged`). Absent
-    /// is the whole list.
+    /// is the whole legacy list, or 100 rows when summary is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u64>,
     /// Where the page starts: a `next_cursor` an earlier page of the SAME
     /// filter answered (1.25.0). Absent is the top of the list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+}
+
+/// Distinct facets: category is `label`; workflow column is `status`.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskFilterDimension {
+    Label,
+    Assignee,
+    Status,
+    State,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TasksFilterChoicesParams {
+    pub project_id: String,
+    pub dimension: TaskFilterDimension,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub limit: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TasksFilterChoices {
+    pub project_id: String,
+    pub dimension: TaskFilterDimension,
+    /// Label strings, status/state slugs, or assignee filters (`"none"`
+    /// names unassigned tasks). Choices span the project, independently of
+    /// any task page or selection currently displayed by the client.
+    pub choices: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// One file, filed with a task and BEFORE it.
@@ -538,7 +719,50 @@ pub struct TaskAttachmentBytes {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct TasksList {
+#[serde(untagged, from = "TasksListResponse")]
+pub enum TasksList {
+    Summaries(TaskSummaries),
+    Legacy(LegacyTasksList),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TasksListResponse {
+    Summaries(TaskSummaries),
+    Legacy(LegacyTasksListResponse),
+}
+
+/// A present summary discriminator belongs exclusively to the summary shape,
+/// even when the value or the rest of that shape is malformed.
+#[derive(Deserialize)]
+struct LegacyTasksListResponse {
+    #[serde(
+        rename = "summary",
+        default,
+        deserialize_with = "reject_summary_marker"
+    )]
+    _summary: (),
+    #[serde(flatten)]
+    list: LegacyTasksList,
+}
+
+fn reject_summary_marker<'de, D: serde::Deserializer<'de>>(
+    _deserializer: D,
+) -> Result<(), D::Error> {
+    Err(serde::de::Error::custom("summary must be true"))
+}
+
+impl From<TasksListResponse> for TasksList {
+    fn from(input: TasksListResponse) -> Self {
+        match input {
+            TasksListResponse::Summaries(summary) => Self::Summaries(summary),
+            TasksListResponse::Legacy(legacy) => Self::Legacy(legacy.list),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct LegacyTasksList {
     pub project_id: String,
     pub tasks: Vec<TaskView>,
     /// The user's session on this bridge, device-wide rather than this
@@ -548,6 +772,86 @@ pub struct TasksList {
     /// filter (1.25.0). Present only on a page with more rows after it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+}
+
+/// An explicit discriminator preserves the shape of empty summary pages.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskSummaries {
+    #[serde(deserialize_with = "summary_true")]
+    pub summary: bool,
+    pub project_id: String,
+    pub tasks: Vec<TaskSummaryView>,
+    pub identities: std::collections::BTreeMap<String, crate::tracker::TaskAgentIdentity>,
+    pub user_session: UserSessionView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+fn summary_true<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    if bool::deserialize(deserializer)? {
+        Ok(true)
+    } else {
+        Err(serde::de::Error::custom("summary must be true"))
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskSummaryLinks {
+    pub workspace_ids: Vec<String>,
+    pub parent_task_id: Option<String>,
+}
+
+/// Counts only: graph details use the bounded dependency detail APIs.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskSummaryDependencies {
+    pub blocked: bool,
+    pub waiting_on_count: u64,
+    pub blocks_count: u64,
+}
+
+/// List/card/badge/navigation data only. Detail content stays on tasks.get.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskSummaryView {
+    pub id: String,
+    pub project_id: String,
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub status: String,
+    pub labels: Vec<String>,
+    pub priority: String,
+    pub assignee: Option<Value>,
+    pub created_by: Value,
+    pub created_at: String,
+    pub updated_at: String,
+    pub closed_at: Option<String>,
+    pub done_at: Option<String>,
+    pub watched: bool,
+    pub trackers: Vec<String>,
+    pub links: TaskSummaryLinks,
+    pub attachment_count: u64,
+    pub summary_truncated: bool,
+    pub dependencies: TaskSummaryDependencies,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_through: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_started_after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismissed_through: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread_agent_comments: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread_mentions: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_started_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_summary: Option<crate::reviews::records::ReviewSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_assignment: Option<DeferredAssignmentView>,
 }
 
 /// The user's session: epoch milliseconds, each `null` until there is one.
@@ -683,7 +987,16 @@ const CONFLICT: [&str; 9] = [
 /// A word in the request is not one this bridge knows, or a value is out of
 /// shape. `unknown <thing>` otherwise reads as a missing entity, and half of
 /// these are about a word rather than a thing.
-const INVALID: [&str; 31] = [
+const INVALID: [&str; 40] = [
+    "invalid cursor",
+    "invalid task cursor",
+    "states must contain",
+    "statuses must contain",
+    "labels must contain",
+    "assignees must contain",
+    "cannot be supplied together",
+    "unknown field in assignee filter",
+    "assignee agent_id must",
     "a task cannot wait on itself",
     "waiting_on",
     "reverse cursor",
@@ -691,7 +1004,7 @@ const INVALID: [&str; 31] = [
     "retry_deferred_id",
     "only the current failed",
     "delivery intent",
-    "unknown assignee kind:",
+    "unknown assignee kind",
     "operation_id exceeds",
     "operation_id contains",
     "assignee: name a kind",
@@ -723,7 +1036,14 @@ const INVALID: [&str; 31] = [
 /// The store is not there, or a reference did not survive its fencing. Neither
 /// is the caller's fault in a way retrying would fix, and neither is a missing
 /// entity.
-const UNAVAILABLE: [&str; 1] = ["tasks need a durable store"];
+const UNAVAILABLE: [&str; 6] = [
+    "tasks need a durable store",
+    "task summary exceeds",
+    "filter choice exceeds",
+    "invalid task summary",
+    "invalid summary identity",
+    "bounded task response exceeds",
+];
 
 /// Name the refusal this family raised, where the sentence says what
 /// [`ApiError::classify`] cannot read from its general rules. Anything
@@ -900,6 +1220,13 @@ fn tasks_list(app: &mut AppState, params: TasksListParams) -> Result<Answer<Task
     answer(app.tasks_list(&params.wire())).map_err(refine)
 }
 
+fn tasks_filter_choices(
+    app: &mut AppState,
+    params: TasksFilterChoicesParams,
+) -> Result<Answer<TasksFilterChoices>, ApiError> {
+    answer(app.tasks_filter_choices(&params.wire())).map_err(refine)
+}
+
 fn tasks_get(app: &mut AppState, params: TaskIdParams) -> Result<Answer<TaskDetail>, ApiError> {
     answer(app.tasks_get(&params.wire())).map_err(refine)
 }
@@ -996,6 +1323,36 @@ fn tasks_columns(
 mod tests {
     use super::super::testing::fixture_round_trips;
     use super::*;
+
+    #[test]
+    fn bounded_read_refusals_are_typed() {
+        for message in [
+            "invalid cursor: restart this list with its original filters",
+            "invalid task cursor",
+            "states must contain 1 to 100 selections",
+            "statuses must contain 1 to 100 selections",
+            "labels must contain 1 to 100 selections",
+            "assignees must contain 1 to 100 selections",
+            "state and states cannot be supplied together",
+            "unknown field in assignee filter",
+            "unknown assignee kind",
+            "assignee agent_id must contain 1 to 128 bytes",
+        ] {
+            let error = refine(ApiError::classify(message.into()));
+            assert_eq!(error.code(), "invalid_params", "{message}");
+        }
+        for message in [
+            "task summary exceeds 65536 bytes; repair the stored row before continuing",
+            "filter choice exceeds 65536 bytes; repair the stored choice before continuing",
+            "invalid task summary: legacy task labels exceed supported summary limits",
+            "invalid task summary data: legacy task reference exceeds 128 bytes",
+            "bounded task response exceeds 1048576 bytes",
+        ] {
+            let error = refine(ApiError::classify(message.into()));
+            assert_eq!(error.code(), "unavailable", "{message}");
+            assert!(!error.retryable());
+        }
+    }
 
     #[test]
     fn every_fixture_holds_to_the_types_this_family_declares() {

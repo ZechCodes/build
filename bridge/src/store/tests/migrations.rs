@@ -364,7 +364,7 @@ fn a_v1_database_is_migrated_and_its_items_classified() {
 }
 
 #[test]
-fn literal_v2_shape_upgrades_to_nineteen_before_retention_indexes_classify_rows() {
+fn literal_v2_shape_upgrades_to_twenty_before_retention_indexes_classify_rows() {
     let dir = tempfile::tempdir().unwrap();
     let mut thread = crate::thread::Thread::new("legacy");
     thread.post_agent("written by the old bridge", None, "now");
@@ -396,7 +396,7 @@ fn literal_v2_shape_upgrades_to_nineteen_before_retention_indexes_classify_rows(
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "19");
+    assert_eq!(version, "20");
     let stored: (i64, String) = conn
         .query_row(
             "SELECT message, item FROM thread_items WHERE agent_id = 'legacy'",

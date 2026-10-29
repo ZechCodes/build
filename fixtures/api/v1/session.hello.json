@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.25.0",
+    "api_version": "3.26.0",
     "ack_confirm_methods": [],
     "capabilities": [
       "agent.add",
@@ -152,9 +152,11 @@
       "tasks.create",
       "tasks.createdUserMentions",
       "tasks.doneSinceLeft",
+      "tasks.filterChoices",
       "tasks.get",
       "tasks.list",
       "tasks.listPaged",
+      "tasks.listSummaries",
       "tasks.read_through",
       "tasks.reopen",
       "tasks.review.act",

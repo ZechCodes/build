@@ -69,6 +69,170 @@ fn api_version_is_what_versions_json_calls_current() {
 }
 
 #[test]
+fn bounded_task_reads_are_additive_and_independently_advertised() {
+    let advertised = capabilities(false);
+    assert!(advertised.contains(&"tasks.listSummaries"));
+    assert!(advertised.contains(&"tasks.filterChoices"));
+    assert!(!v1::methods()
+        .iter()
+        .any(|(name, _)| *name == "tasks.listSummaries"));
+    let fixture = read_json(&fixtures_root().join("v1/tasks.list.json"));
+    assert!(fixture["result"].get("summary").is_none());
+    assert!(fixture["result"]["tasks"][0].get("body").is_some());
+    let summary = &fixture["summaries"];
+    assert_eq!(summary["since"], "3.26.0");
+    assert_eq!(summary["default_limit"], 100);
+    assert_eq!(summary["max_limit"], 500);
+    assert_eq!(summary["empty_selection"], "invalid_params");
+    assert_eq!(summary["max_result_bytes"], 1_048_576);
+    assert_eq!(summary["max_row_with_identity_bytes"], 65_536);
+}
+
+#[test]
+fn summary_examples_preserve_lightweight_rows_and_sparse_continuations() {
+    let fixture = read_json(&fixtures_root().join("v1/tasks.list.json"));
+    let examples: Vec<_> = fixture["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|example| example["params"]["summary"] == true)
+        .collect();
+    assert!(
+        examples.len() >= 3,
+        "summary, sparse continuation and truncation witnesses"
+    );
+    for example in &examples {
+        assert_eq!(example["result"]["summary"], true);
+        assert!(example["result"]["identities"].is_object());
+        for row in example["result"]["tasks"].as_array().unwrap() {
+            assert_summary_row_shape(row);
+        }
+    }
+    assert!(examples.iter().any(
+        |example| example["result"]["tasks"] == serde_json::json!([])
+            && example["result"]["next_cursor"].is_string()
+    ));
+    assert!(examples
+        .iter()
+        .any(|example| example["result"]["tasks"][0]["summary_truncated"] == true));
+}
+
+fn assert_summary_row_shape(row: &Value) {
+    for field in ["body", "attachments", "identities", "timeline"] {
+        assert!(row.get(field).is_none(), "summary exposes {field}");
+    }
+    for field in ["waiting_on", "blocks"] {
+        assert!(row["dependencies"].get(field).is_none());
+    }
+    assert!(row["dependencies"]["blocked"].is_boolean());
+}
+
+#[test]
+fn malformed_summary_pages_never_fall_back_to_legacy_empty_lists() {
+    let fixture = read_json(&fixtures_root().join("v1/tasks.list.json"));
+    let examples = fixture["examples"].as_array().unwrap();
+    let (_, list_handler) = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "tasks.list")
+        .unwrap();
+    let mut malformed = examples
+        .iter()
+        .find(|example| example["result"]["tasks"] == serde_json::json!([]))
+        .unwrap()["result"]
+        .clone();
+    malformed["summary"] = Value::Bool(false);
+    assert!(
+        list_handler.round_trip_result(&malformed).is_err(),
+        "summary discriminator cannot fall through to legacy empty rows"
+    );
+    malformed["summary"] = Value::Bool(true);
+    malformed.as_object_mut().unwrap().remove("identities");
+    assert!(
+        list_handler.round_trip_result(&malformed).is_err(),
+        "summary identities cannot fall through to legacy empty rows"
+    );
+}
+
+#[test]
+fn filter_choices_are_bounded_and_keep_state_status_label_and_assignee_separate() {
+    let choices = read_json(&fixtures_root().join("v1/tasks.filterChoices.json"));
+    assert_eq!(choices["since"], "3.26.0");
+    assert_eq!(choices["default_limit"], 100);
+    assert_eq!(choices["max_limit"], 500);
+    let (_, handler) = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "tasks.filterChoices")
+        .unwrap();
+    for dimension in ["label", "assignee", "status", "state"] {
+        let params = serde_json::json!({"project_id":"proj-1", "dimension":dimension});
+        assert!(handler.parse_params(&params).is_ok());
+    }
+    assert!(handler
+        .parse_params(&serde_json::json!({"project_id":"proj-1", "dimension":"category"}))
+        .is_err());
+}
+
+#[test]
+fn oversized_task_read_fixtures_are_errors_without_success_or_continuation() {
+    for method in ["tasks.list", "tasks.filterChoices"] {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        let refusal = &fixture["refusals"][0]["reply"];
+        let message = refusal["error"].as_str().unwrap();
+        assert_eq!(
+            refusal,
+            &build_bridge::api::ApiError::unavailable(message)
+                .into_reply(serde_json::json!("r-bounded-read"))
+        );
+        assert_eq!(refusal["ok"], false);
+        assert_eq!(refusal["retryable"], false);
+        assert!(refusal.get("result").is_none());
+        assert!(refusal.get("next_cursor").is_none());
+    }
+}
+
+#[test]
+fn task_summary_params_preserve_legacy_nulls_and_reject_ambiguous_selections() {
+    let (_, handler) = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "tasks.list")
+        .unwrap();
+    for (scalar, plural) in [
+        ("state", "states"),
+        ("status", "statuses"),
+        ("label", "labels"),
+        ("assignee", "assignees"),
+    ] {
+        let mut params = serde_json::json!({"project_id":"proj-1"});
+        params[scalar] = Value::Null;
+        assert!(
+            handler.parse_params(&params).is_ok(),
+            "legacy null {scalar}"
+        );
+        params[plural] = serde_json::json!([]);
+        assert!(
+            handler.parse_params(&params).is_err(),
+            "ambiguous {scalar}+{plural}"
+        );
+        params.as_object_mut().unwrap().remove(scalar);
+        params[plural] = Value::Null;
+        assert!(
+            handler.parse_params(&params).is_err(),
+            "null selection {plural}"
+        );
+    }
+    for field in ["limit", "cursor"] {
+        let mut params = serde_json::json!({"project_id":"proj-1", "summary":true});
+        params[field] = Value::Null;
+        assert!(
+            handler.parse_params(&params).is_err(),
+            "summary null {field}"
+        );
+        params["summary"] = Value::Bool(false);
+        assert!(handler.parse_params(&params).is_ok(), "legacy null {field}");
+    }
+}
+
+#[test]
 fn every_fixture_has_the_spec_shape() {
     for (method, fixture) in method_fixtures() {
         assert!(fixture["since"].is_string(), "{method}: since");
@@ -205,7 +369,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.25.0");
+    assert_eq!(API_VERSION, "3.26.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -361,7 +525,7 @@ fn the_harness_inventory_is_announced_with_its_push() {
 #[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.25.0");
+    assert_eq!(API_VERSION, "3.26.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1317,7 +1481,7 @@ fn thread_page_activity_mode_is_typed_and_optional() {
 
 #[test]
 fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
-    assert_eq!(API_VERSION, "3.25.0");
+    assert_eq!(API_VERSION, "3.26.0");
     assert!(capabilities(false).contains(&"threads.leanActivity"));
     let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
     assert_eq!(fixture["lean_activity"]["since"], "3.20.0");
@@ -1500,7 +1664,7 @@ fn project_source_changes_are_announced_with_a_scope_and_an_item() {
 /// accepts. The legacy shape is the pinned coordinator alone.
 #[test]
 fn project_workers_are_announced_with_their_roster_read_and_purposes() {
-    assert_eq!(API_VERSION, "3.25.0");
+    assert_eq!(API_VERSION, "3.26.0");
     let advertised = capabilities(false);
     assert!(advertised.contains(&"agents.projectWorkers"));
     assert!(advertised.contains(&"agent.list"));
@@ -1588,7 +1752,7 @@ fn sync_base_path_precondition_is_announced_and_typed() {
 /// echoes the client's id.
 #[test]
 fn project_worker_assignment_is_announced_with_its_kind_and_operation_id() {
-    assert_eq!(API_VERSION, "3.25.0");
+    assert_eq!(API_VERSION, "3.26.0");
     assert!(capabilities(false).contains(&"tasks.assignProjectAgent"));
     let assign = read_json(&fixtures_root().join("v1/tasks.assign.json"));
     let example = &assign["project_agent_assignment"];
@@ -1722,7 +1886,19 @@ fn project_task_identities_document_purpose_after_worker_removal() {
     for method in ["tasks.get", "tasks.list"] {
         let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
         assert_eq!(fixture["project_identities"]["since"], "3.21.0", "{method}");
-        let example = fixture["examples"].as_array().unwrap().last().unwrap();
+        let example = fixture["examples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|example| {
+                let task = if method == "tasks.get" {
+                    &example["result"]["task"]
+                } else {
+                    &example["result"]["tasks"][0]
+                };
+                task["identities"]["project-removed-worker"].is_object()
+            })
+            .expect("removed project worker identity example");
         let task = if method == "tasks.get" {
             &example["result"]["task"]
         } else {

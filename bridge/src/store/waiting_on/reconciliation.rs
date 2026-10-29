@@ -162,6 +162,7 @@ pub(super) fn reconcile_task(
         params![event.id, task.id],
     )?;
     tx.execute("UPDATE tracker_tasks SET updated_at = ?1, record = json_set(record, '$.updated_at', ?1) WHERE id = ?2", params![now, task.id])?;
+    crate::store::task_summaries::task_refresh(tx, &task.id)?;
     changed(tx, &task.id)?;
     super::super::delivery_intents::reconcile_task(tx, task, blocked, Some(&event))?;
     Ok(Some(event))

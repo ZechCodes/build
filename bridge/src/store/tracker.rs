@@ -356,6 +356,16 @@ impl Store {
         release: impl Fn(&crate::reviews::records::Review) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
         self.in_waiting_on_transaction(|tx| {
+            // Capture endpoints before FK cascades remove their edge rows.
+            let deleted = tx.prepare("SELECT id FROM tracker_tasks WHERE project_key=?1")?
+                .query_map([project_path], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            let neighbors = tx.prepare("SELECT task_id FROM tracker_task_dependencies WHERE waiting_on_task_id IN
+                    (SELECT id FROM tracker_tasks WHERE project_key=?1)
+                UNION SELECT waiting_on_task_id FROM tracker_task_dependencies WHERE task_id IN
+                    (SELECT id FROM tracker_tasks WHERE project_key=?1)")?
+                .query_map([project_path], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
             let unfinished: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM review_openings WHERE project_key = ?1
                  AND state IN ('preparing', 'failed', 'interrupted')) OR EXISTS(
@@ -406,6 +416,12 @@ impl Store {
                 "DELETE FROM tracker_tasks WHERE project_key = ?1",
                 [project_path],
             )?;
+            for id in deleted {
+                super::task_summaries::task_remove(tx, &id)?;
+            }
+            for id in neighbors {
+                super::task_summaries::dependency_refresh(tx, &id)?;
+            }
             Ok(())
         })
     }
@@ -442,27 +458,58 @@ fn finished_tracked_tasks(tx: &Transaction) -> Result<Vec<Task>, StoreError> {
     .collect()
 }
 
+const INSERT_TASK: &str = "INSERT INTO tracker_tasks
+    (id, project_key, number, state, status, created_at, updated_at, record)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
+const UPDATE_TASK: &str = "UPDATE tracker_tasks SET
+    project_key = ?2, number = ?3, state = ?4, status = ?5,
+    created_at = ?6, updated_at = ?7, record = ?8
+    WHERE id = ?1 AND (project_key IS NOT ?2 OR number IS NOT ?3 OR state IS NOT ?4
+        OR status IS NOT ?5 OR created_at IS NOT ?6 OR updated_at IS NOT ?7 OR record IS NOT ?8)";
+const APPEND_COMMENT: &str =
+    "INSERT OR IGNORE INTO tracker_comments (id, task_id, created_at, record)
+    VALUES (?1, ?2, ?3, ?4)";
+const APPEND_EVENT: &str = "INSERT OR IGNORE INTO tracker_events (id, task_id, at, record)
+    VALUES (?1, ?2, ?3, ?4)";
+
 pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
     super::waiting_on::note_task_write(tx, task)?;
     super::delivery_intents::note_task_write(tx, task)?;
-    tx.execute(
-        "INSERT INTO tracker_tasks
-             (id, project_key, number, state, status, created_at, updated_at, record)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-         ON CONFLICT(id) DO UPDATE SET
-             project_key = ?2, number = ?3, state = ?4, status = ?5,
-             created_at = ?6, updated_at = ?7, record = ?8",
-        rusqlite::params![
-            task.id,
-            task.project_path,
-            task.number as i64,
-            task.state.as_str(),
-            task.status,
-            task.created_at,
-            task.updated_at,
-            serde_json::to_string(task).expect("a task always serializes"),
-        ],
-    )?;
+    let record = serde_json::to_string(task).expect("a task always serializes");
+    let before: Option<(String, String)> = tx
+        .prepare_cached("SELECT state,status FROM tracker_tasks WHERE id=?1")?
+        .query_row([&task.id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()?;
+    let fields = rusqlite::params![
+        task.id,
+        task.project_path,
+        task.number as i64,
+        task.state.as_str(),
+        task.status,
+        task.created_at,
+        task.updated_at,
+        record,
+    ];
+    // An activity append often carries the same task. Compare once before an
+    // UPDATE materializes OLD and runs its programs; retain that statement in
+    // the bounded cache without compiling the INSERT branch on every reopen.
+    let updated = tx.prepare_cached(UPDATE_TASK)?.execute(fields)?;
+    if updated == 0 && before.is_none() {
+        // UPDATE has already acquired the transaction's write lock, so a raw
+        // second writer cannot insert this id between the check and INSERT.
+        tx.prepare_cached(INSERT_TASK)?.execute(fields)?;
+    }
+    if updated != 0 || before.is_none() {
+        super::task_summaries::task_written(tx, task)?;
+        let after = (task.state.as_str(), task.status.as_str());
+        if before
+            .as_ref()
+            .map(|(state, status)| (state.as_str(), status.as_str()))
+            != Some(after)
+        {
+            super::task_summaries::task_dependents_refresh(tx, &task.id)?;
+        }
+    }
     Ok(())
 }
 
@@ -475,28 +522,38 @@ pub(super) fn append_activity(
     events: &[TaskEvent],
 ) -> Result<(), StoreError> {
     for comment in comments {
-        tx.execute(
-            "INSERT OR IGNORE INTO tracker_comments (id, task_id, created_at, record)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![
+        let inserted = tx
+            .prepare_cached(APPEND_COMMENT)?
+            .execute(rusqlite::params![
                 comment.id,
                 comment.task_id,
                 comment.created_at,
                 serde_json::to_string(comment).expect("a comment always serializes"),
-            ],
-        )?;
+            ])?;
+        if inserted != 0 {
+            super::task_summaries::history_append(
+                tx,
+                super::task_summaries::HistoryKind::Comment,
+                &comment.task_id,
+                &comment.id,
+            )?;
+        }
     }
     for event in events {
-        tx.execute(
-            "INSERT OR IGNORE INTO tracker_events (id, task_id, at, record)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![
-                event.id,
-                event.task_id,
-                event.at,
-                serde_json::to_string(event).expect("an event always serializes"),
-            ],
-        )?;
+        let inserted = tx.prepare_cached(APPEND_EVENT)?.execute(rusqlite::params![
+            event.id,
+            event.task_id,
+            event.at,
+            serde_json::to_string(event).expect("an event always serializes"),
+        ])?;
+        if inserted != 0 {
+            super::task_summaries::history_append(
+                tx,
+                super::task_summaries::HistoryKind::Event,
+                &event.task_id,
+                &event.id,
+            )?;
+        }
     }
     super::waiting_on::note_activity(tx, events)?;
     super::delivery_intents::note_activity(tx, events)?;

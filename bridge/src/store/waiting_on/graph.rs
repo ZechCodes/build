@@ -38,6 +38,10 @@ pub(super) fn edit(
     changed(tx, &task.id)?;
     // Reverse counts and summaries of every edited blocker invalidate too.
     tx.execute("UPDATE tracker_tasks SET updated_at = ?1, record = json_set(record, '$.updated_at', ?1) WHERE id = ?2", params![now, task.id])?;
+    crate::store::task_summaries::task_refresh(tx, &task.id)?;
+    for id in add.iter().chain(remove) {
+        crate::store::task_summaries::dependency_refresh(tx, id)?;
+    }
     Ok(())
 }
 

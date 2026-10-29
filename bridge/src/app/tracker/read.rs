@@ -99,7 +99,7 @@ impl TaskReadContext {
         method: &str,
         params: &Value,
     ) -> Result<TaskReadFence, String> {
-        let project_id = if method == "tasks.list" {
+        let project_id = if matches!(method, "tasks.list" | "tasks.filterChoices") {
             require_str(params, "project_id")?
         } else {
             let id = require_str(params, "task_id")?;
@@ -129,6 +129,9 @@ impl TaskReadContext {
         source: &impl TaskReadSource,
         params: &Value,
     ) -> Result<Value, String> {
+        if params.get("summary").and_then(Value::as_bool) == Some(true) {
+            return self.tasks_list_summary(source, params);
+        }
         self.tasks_list_scanned(source, params, None)
     }
 
@@ -166,6 +169,10 @@ impl TaskReadContext {
         let status = edits::optional_status(params, "status")?;
         let assignee = edits::optional_assignee_filter(params)?;
         let label = crate::app::optional_nonempty_string(params, "label")?;
+        let selections = super::selections::has_plural(params)
+            .then(|| super::selections::TaskSelections::parse(params))
+            .transpose()?;
+        let canonical = selections.as_ref().map(|selection| selection.canonical());
         let key = source.tracker_list_key().stored()?;
         let page = pages::PageAsk::parse(
             params,
@@ -178,6 +185,7 @@ impl TaskReadContext {
                 status: status.as_deref(),
                 assignee: &assignee,
                 label,
+                selections: canonical.as_ref(),
             },
         )?;
         let stretch = source
@@ -192,7 +200,17 @@ impl TaskReadContext {
                     take: page.rows_to_keep(),
                     scan: scan.or_else(|| page.rows_to_scan()),
                 },
-                |task, target| assignee.matches(task, target) && edits::carries_label(task, label),
+                |task, target| match &selections {
+                    Some(selections) => selections.matches_task(task, target),
+                    None => {
+                        assignee.matches(task, target)
+                            && label.is_none_or(|label| {
+                                task.labels
+                                    .iter()
+                                    .any(|one| one.eq_ignore_ascii_case(label))
+                            })
+                    }
+                },
             )
             .stored()?;
         let mut tasks = stretch.tasks;
@@ -299,7 +317,7 @@ impl TaskReadContext {
         Ok((project, task))
     }
 
-    fn user_session_json(&self) -> Value {
+    pub(super) fn user_session_json(&self) -> Value {
         let session = self.user_session;
         json!({
             "session_started_ms":session.session_started_ms,

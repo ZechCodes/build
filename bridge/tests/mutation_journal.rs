@@ -411,7 +411,7 @@ fn schema_seventeen_gains_empty_journal_without_changing_existing_domain_records
                 |row| row.get::<_, String>(0)
             )
             .unwrap(),
-        "19"
+        build_bridge::store::SCHEMA_VERSION.to_string()
     );
     assert_eq!(
         database

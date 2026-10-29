@@ -170,9 +170,9 @@ every verb live in `fixtures/api/v1/` and are checked by
 - It answers signaling (`rtc.*`) and attachment writes at once, without
   queueing, so a negotiation never waits behind other work.
 
-The nine SQL-lane methods (`thread.page`, `thread.activity`, `thread.operation`,
+The ten SQL-lane methods (`thread.page`, `thread.activity`, `thread.operation`,
 `thread.revision`, `tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`,
-`writes.status` and `writes.subscribe`) enter a separate lane
+`tasks.filterChoices`, `writes.status` and `writes.subscribe`) enter a separate lane
 before terminal or write admission. `carrier/sql.rs` owns eight dedicated
 threads and a fair queue with at most 16 waiting callers per session opening.
 Callers waiting for a read connection still count against that bound. Excess
@@ -742,7 +742,13 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.24.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.26.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.26.0 adds `tasks.listSummaries`: bounded lightweight task pages selected
+  with `tasks.list {summary:true}`, plural task filters, and the independently
+  advertised `tasks.filterChoices` verb. Legacy task list responses stay intact.
+  See [Bounded task reads](docs/bounded-task-reads.md) for paging and selection
+  semantics. 3.25.0 adds generation-scoped conversation history retention floors
+  (#836).
   3.24.0 adds the durable write foundation: `bridge.epoch`, bounded
   `writes.status`/`writes.subscribe`, and typed ack/confirmation envelopes.
   Every authenticated outgoing application frame is stamped with the same

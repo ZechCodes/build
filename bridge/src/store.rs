@@ -92,8 +92,10 @@ mod schema;
 mod source_sync;
 mod task_observation;
 mod task_rename;
+mod task_summaries;
 mod tracker;
 pub(crate) use task_observation::{TrackerTaskObservation, TrackerTaskPublication};
+pub use task_summaries::{TaskFilterChoice, TaskSummaryCandidate, MAX_SUMMARY_CANDIDATES};
 mod waiting_on;
 pub use waiting_on::{DependencyDigest, DependencySummary, DependentsPage, WaitingOnPage};
 mod terminal_attention;
@@ -126,6 +128,8 @@ pub use tracker::{TaskFilter, TaskSeek, TaskStretch};
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("invalid task summary data: {0}")]
+    TaskSummaryInvalid(String),
     #[error("invalid retention policy: {0}")]
     RetentionInvalid(String),
     #[error("mutation journal: {0}")]
@@ -265,7 +269,7 @@ pub enum StoreError {
 /// 17 adds explicit assignment delivery intents and coordinator notice receipts.
 /// 18 adds the durable mutation journal, reservations and confirmation outbox.
 /// 19 adds durable conversation retention boundaries.
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -322,6 +326,10 @@ impl Store {
                 path: database_path,
                 cause: cause.to_string(),
             })?;
+        // Canonical and projection writes share this one connection. Their
+        // combined working set exceeds rusqlite's default of 16; retain it
+        // rather than compiling the card program on every metadata write.
+        conn.set_prepared_statement_cache_capacity(32);
         // Refuse BEFORE writing anything. A store written by a newer bridge
         // must not receive this build's pragmas or DDL on the way to being
         // rejected — the refusal exists to leave it untouched.
@@ -401,7 +409,11 @@ impl Store {
             )?;
         }
         tracker::initialize_list_key(&conn)?;
+        let summaries_initialized = task_summaries::initialize(&mut conn)?;
         maintenance::configure_incremental_vacuum(&conn)?;
+        if summaries_initialized {
+            task_summaries::mark_complete(&mut conn)?;
+        }
         let writer = StoreWriter::new(conn);
         // Recover ambiguous claims without executing any command at startup.
         writer.recover_mutations()?;
@@ -467,8 +479,8 @@ impl Store {
     }
     /// Fixture access to the actual writer mutex; production readers cannot
     /// obtain this guard.
-    #[cfg(test)]
-    pub(crate) fn writer_for_test(&self) -> std::sync::MutexGuard<'_, Connection> {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn writer_for_test(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.connection()
     }
 

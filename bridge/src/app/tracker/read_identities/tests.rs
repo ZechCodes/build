@@ -1,5 +1,33 @@
 use super::*;
 
+#[test]
+fn committed_identity_uses_captured_association_and_retains_missing_history() {
+    let agent = "agent-committed";
+    let mut context = TaskIdentityContext::default();
+    context
+        .workspaces
+        .insert(PathBuf::from("/current"), "current-workspace".into());
+    let mut retained = unknown_identity(agent);
+    retained.workspace_id = Some("retained-workspace".into());
+    retained.name = Some("Retained name".into());
+    retained.available = true;
+    let mut durable = unknown_identity(agent);
+    durable.workspace_name = Some("Current checkout".into());
+    for (path, expected) in [
+        (Some("/current"), "current-workspace"),
+        (Some("/absent"), "retained-workspace"),
+        (None, "retained-workspace"),
+    ] {
+        let current = context.committed_identity(durable.clone(), path);
+        let merged = retain_known_fields(&retained, current);
+        let identity = context.identity(agent, &merged);
+        assert_eq!(identity.workspace_id.as_deref(), Some(expected));
+        assert_eq!(identity.name.as_deref(), Some("Retained name"));
+        assert_eq!(identity.workspace_name.as_deref(), Some("Current checkout"));
+        assert!(!identity.available);
+    }
+}
+
 fn fixture(root: &Path) -> (AppState, String, String) {
     let harness =
         crate::harness::HarnessContext::resolved(root.join("mcp.sock"), root.into()).unwrap();

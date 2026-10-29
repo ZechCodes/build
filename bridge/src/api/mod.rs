@@ -64,7 +64,8 @@ use std::collections::BTreeSet;
 /// 3.23.0 populates attachments on agent replies and agent-to-agent messages (#696).
 /// 3.24.0 adds bridge epochs and the durable-write journal wire foundation (#739).
 /// 3.25.0 adds generation-scoped conversation history retention floors (#836).
-pub const API_VERSION: &str = "3.25.0";
+/// 3.26.0 adds bounded task summaries and project filter choices (#890).
+pub const API_VERSION: &str = "3.26.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -128,8 +129,9 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "tasks.context",
     "tasks.createdUserMentions", // Since 1.27.0: mentions_user on an agent's created event.
     "tasks.doneSinceLeft",
-    "tasks.listPaged", // Since 1.25.0: limit/cursor and next_cursor on tasks.list.
-    "tasks.unreadCounts", // Since 1.29.0: unread_count on a watched task (tasks.list, tasks.get).
+    "tasks.listSummaries", // Since 3.26.0: bounded lightweight pages and plural filters (#890).
+    "tasks.listPaged",     // Since 1.25.0: limit/cursor and next_cursor on tasks.list.
+    "tasks.unreadCounts",  // Since 1.29.0: unread_count on a watched task (tasks.list, tasks.get).
     "tasks.waitingOn", // Since 3.21.0: scoped graph, deferred assignment and bounded dependency reads (#562).
     "tasks.watching",
     "messages.context",

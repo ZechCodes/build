@@ -43,6 +43,7 @@ impl Store {
                 skeleton.thread.items.clear();
                 tx.execute("UPDATE agents SET record = ?2 WHERE id = ?1",
                     rusqlite::params![agent.id, serde_json::to_string(&skeleton).expect("agent serializes")])?;
+                super::task_summaries::identity_refresh(tx, &agent.id)?;
             }
             for owner in summary_owners {
                 tx.execute("UPDATE implementations SET record = json_set(record, '$.last_summary', NULL, '$.last_error', NULL) WHERE id = ?1", [owner])?;

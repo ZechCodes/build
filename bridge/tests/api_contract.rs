@@ -2015,6 +2015,10 @@ fn exact_task_aggregate_fixtures_pin_bounds_and_generation_refusal() {
             );
         }
     }
+}
+
+#[test]
+fn exact_task_stream_fixtures_pin_partition_and_generation_refusal() {
     let fixture = read_json(&fixtures_root().join("v1/tasks.list.json"));
     let exact = &fixture["exact_queries"];
     assert_eq!(exact["summary_required"], true);

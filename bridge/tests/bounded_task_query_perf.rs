@@ -167,26 +167,7 @@ fn validate(count: usize, method: &str, response: &Value) {
     assert!(serde_json::to_vec(result).unwrap().len() <= 65_536);
     assert!(result["basis"].is_string());
     if method == "tasks.counts" {
-        assert_eq!(result["unfinished_open_count"], count);
-        assert_eq!(result["agents"].as_array().unwrap().len(), 100);
-        let actual: std::collections::BTreeSet<_> = result["agents"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|bucket| bucket["agent_id"].as_str().unwrap().to_string())
-            .collect();
-        let expected = (0..100).map(|n| format!("agent-{n}")).collect();
-        assert_eq!(actual, expected);
-        for bucket in result["agents"].as_array().unwrap() {
-            let index: usize = bucket["agent_id"]
-                .as_str()
-                .unwrap()
-                .strip_prefix("agent-")
-                .unwrap()
-                .parse()
-                .unwrap();
-            assert_eq!(bucket["unfinished_open_count"], (count + 99 - index) / 100);
-        }
+        validate_counts(count, result);
     } else {
         assert_eq!(result["task"]["number"], count);
         assert_eq!(result["task"]["title"], format!("Task {count}"));
@@ -198,6 +179,29 @@ fn validate(count: usize, method: &str, response: &Value) {
         );
         assert!(result["identities"][&assignee].is_object());
         assert_eq!(result["identities"].as_object().unwrap().len(), 1);
+    }
+}
+
+fn validate_counts(count: usize, result: &Value) {
+    assert_eq!(result["unfinished_open_count"], count);
+    assert_eq!(result["agents"].as_array().unwrap().len(), 100);
+    let actual: std::collections::BTreeSet<_> = result["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|bucket| bucket["agent_id"].as_str().unwrap().to_string())
+        .collect();
+    let expected = (0..100).map(|n| format!("agent-{n}")).collect();
+    assert_eq!(actual, expected);
+    for bucket in result["agents"].as_array().unwrap() {
+        let index: usize = bucket["agent_id"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("agent-")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(bucket["unfinished_open_count"], (count + 99 - index) / 100);
     }
 }
 

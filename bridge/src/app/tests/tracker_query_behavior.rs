@@ -156,6 +156,10 @@ fn agent_streams_are_disjoint_for_idle_and_working_roster_states() {
     ] {
         task(&app, &project, title, status, true, Some("AgentA"));
     }
+    assert_roster_streams(&mut app, &project);
+}
+
+fn assert_roster_streams(app: &mut AppState, project: &str) {
     // Working is a cached roster observation, not a persisted task status.
     // Exercise the exact static stream requests for both client observations.
     for working in [false, true] {
@@ -163,7 +167,7 @@ fn agent_streams_are_disjoint_for_idle_and_working_roster_states() {
         let mut working_query = base.clone();
         working_query["undelivered"] = json!(false);
         let working_rows = if working {
-            query(&mut app, &project, working_query)
+            query(app, project, working_query)
         } else {
             vec![]
         };
@@ -171,7 +175,7 @@ fn agent_streams_are_disjoint_for_idle_and_working_roster_states() {
         if working {
             assigned_query["undelivered"] = json!(true);
         }
-        let assigned = query(&mut app, &project, assigned_query);
+        let assigned = query(app, project, assigned_query);
         assert_eq!(working_rows, if working { vec!["active"] } else { vec![] });
         assert_eq!(
             assigned,
@@ -185,28 +189,28 @@ fn agent_streams_are_disjoint_for_idle_and_working_roster_states() {
             working_rows,
             assigned,
             query(
-                &mut app,
-                &project,
+                app,
+                project,
                 json!({"assignee":{"kind":"agent","agent_id":"AgentA"},"state":"open","statuses":["backlog","ready","in_progress"],"blocked":true}),
             ),
             query(
-                &mut app,
-                &project,
+                app,
+                project,
                 json!({"tracker_agent_id":"AgentA","exclude_assignee":{"kind":"agent","agent_id":"AgentA"}}),
             ),
             query(
-                &mut app,
-                &project,
+                app,
+                project,
                 json!({"assignee":{"kind":"agent","agent_id":"AgentA"},"state":"open","status":"in_review"}),
             ),
             query(
-                &mut app,
-                &project,
+                app,
+                project,
                 json!({"assignee":{"kind":"agent","agent_id":"AgentA"},"state":"open","status":"done"}),
             ),
             query(
-                &mut app,
-                &project,
+                app,
+                project,
                 json!({"assignee":{"kind":"agent","agent_id":"AgentA"},"state":"closed"}),
             ),
         ];

@@ -1,0 +1,273 @@
+openapi: 3.1.0
+info:
+  title: Build optional HTTPS lifecycle contract proposal
+  version: 0.1.0-proposed
+  description: >-
+    Design skeleton for #905, not an implemented API. This document specifies
+    direct bridge discovery and session/subscription lifecycle only. Domain
+    resource schemas must be generated from the shared typed registry and
+    reviewed route manifest described in PROPOSAL.md and client-coverage.md.
+    Lifecycle plus a task subset does not qualify as a usable Build connection.
+servers:
+  - url: https://bridge.example:8443
+    description: Exact configured and account-verified device origin
+security:
+  - deviceBearer: []
+paths:
+  /.well-known/build-bridge:
+    post:
+      operationId: createEndpointIdentityProof
+      security: []
+      description: >-
+        Public rate-limited endpoint proof. No account credentials are sent.
+        Bridge signs its configured origin and fixed approving issuer, never
+        an origin supplied by the caller or Host/Forwarded headers.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [challenge_id, nonce]
+              properties:
+                challenge_id:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                nonce:
+                  type: string
+                  minLength: 32
+                  maxLength: 128
+      responses:
+        '200':
+          description: Proof to submit to the authenticated hosted verifier
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [proof]
+                properties:
+                  proof:
+                    type: string
+                    maxLength: 16000
+                    description: Standard compact JWS; not an access token
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/sessions:
+    post:
+      operationId: createClientSession
+      description: >-
+        Opens ClientSessions using a verifier-created OnlineAccountGrant.
+        Request body never supplies account, device or credential authority.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [api_range]
+              properties:
+                api_range:
+                  type: string
+                  maxLength: 128
+                  description: Same supported-version negotiation as session.hello
+      responses:
+        '201':
+          description: Authenticated opening and greeting
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Opening'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/sessions/{session}:
+    parameters:
+      - $ref: '#/components/parameters/SessionPath'
+    patch:
+      operationId: refreshClientSessionGrant
+      description: >-
+        New bearer must verify as the same account/device/stable family/origin
+        and endpoint/authorization epochs. No authority fields in body.
+      responses:
+        '200':
+          description: Refreshed hard deadline and unchanged opening identity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Opening'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: closeClientSession
+      description: Fences opening and outputs; does not roll back accepted commands
+      responses:
+        '204':
+          description: Opening closed
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/subscriptions:
+    post:
+      operationId: createLiveSubscription
+      parameters:
+        - $ref: '#/components/parameters/SessionHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [kind, scope]
+              properties:
+                kind:
+                  type: string
+                  const: live
+                scope:
+                  type: object
+                  description: >-
+                    Existing typed changes.subscribe selectors. A complete
+                    generated schema replaces this skeleton before export;
+                    arbitrary filter JSON is not an allowed runtime contract.
+                  x-build-schema-source: bridge/src/api/v1/changes.rs
+      responses:
+        '201':
+          description: Authorized immutable live subscription
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [subscription_id, durable]
+                properties:
+                  subscription_id:
+                    $ref: '#/components/schemas/Handle'
+                  durable:
+                    type: boolean
+                    const: false
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/subscriptions/{subscription}/events:
+    parameters:
+      - $ref: '#/components/parameters/SubscriptionPath'
+      - $ref: '#/components/parameters/SessionHeader'
+    get:
+      operationId: streamLiveSubscription
+      description: >-
+        Fetch-based SSE. One generation-fenced binding per subscription.
+        Emits hello/changes/operation/reset_required/closing and 15s comment
+        heartbeat, no durable id. Last-Event-ID is refused until a future
+        independently negotiated #887 capability exists. Token checks and
+        independent hard expiry continue after response headers are sent.
+      responses:
+        '200':
+          description: >-
+            Live event stream with no-store and no compression/buffering;
+            bounded 128-event AND 1MiB queue, 10s stalled-write timeout.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          description: Invalid selector or unsupported resume cursor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/subscriptions/{subscription}:
+    parameters:
+      - $ref: '#/components/parameters/SubscriptionPath'
+      - $ref: '#/components/parameters/SessionHeader'
+    delete:
+      operationId: deleteLiveSubscription
+      responses:
+        '204':
+          description: Subscription released without cancelling durable commands
+        default:
+          $ref: '#/components/responses/Error'
+components:
+  securitySchemes:
+    deviceBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: Opaque device/endpoint-scoped access token
+      description: >-
+        Not a gateway or desktop OAuth token. Online authorization freshness
+        at most 30s, access-token lifetime 5min; no bearer in query or cookies.
+  parameters:
+    SessionPath:
+      name: session
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Handle'
+    SubscriptionPath:
+      name: subscription
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Handle'
+    SessionHeader:
+      name: X-Build-Session
+      in: header
+      required: true
+      description: Bound to the verified family/principal; never authority alone
+      schema:
+        $ref: '#/components/schemas/Handle'
+  responses:
+    Error:
+      description: >-
+        Typed domain or HTTP transport refusal. 401 invalid bearer, 403 scope,
+        404 missing, 409 stale/conflict, 413 oversized, 426 incompatible,
+        429 adapter quota, 503 unavailable authority/service, 500 internal.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Handle:
+      type: string
+      minLength: 1
+      maxLength: 128
+      description: Unguessable server handle, not an authentication credential
+    Opening:
+      type: object
+      additionalProperties: false
+      required: [session_id, opening_generation, grant_expires_at, greeting]
+      properties:
+        session_id:
+          $ref: '#/components/schemas/Handle'
+        opening_generation:
+          $ref: '#/components/schemas/Handle'
+        grant_expires_at:
+          type: string
+          format: date-time
+          description: Hard authorization deadline, not access-token lifetime
+        greeting:
+          type: object
+          description: >-
+            Same authenticated shared session.hello result; generated domain
+            schema and fixture required before implemented export.
+          x-build-schema-source: session.hello
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error, error_code, retryable, request_id]
+      properties:
+        error:
+          type: string
+        error_code:
+          type: string
+          description: Preserve domain ApiError code or separate transport code
+        retryable:
+          type: boolean
+          description: Never authorizes blind retry of an uncertain mutation
+        details:
+          description: Existing method-specific typed error details
+        request_id:
+          type: string
+          maxLength: 128

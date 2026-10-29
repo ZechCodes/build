@@ -16,7 +16,6 @@ import pytest_asyncio
 from litestar.exceptions import NotAuthorizedException, TooManyRequestsException
 from sqlalchemy import DDL, func, select, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.exc import DBAPIError
 
 from buildapp import bridge_http_auth as auth
@@ -29,7 +28,11 @@ from buildapp.bridge_http_models import (
     BridgeHttpToken,
 )
 from buildapp.clock import utc_now
-from buildapp.db_test_support import create_skrift_tables, postgres_proof_engine
+from buildapp.db_test_support import (
+    create_skrift_tables,
+    postgres_proof_engine,
+    session_maker_for,
+)
 from buildapp.test_bridge_http_auth import ISSUER, ORIGIN, registered, signed
 
 
@@ -80,9 +83,8 @@ async def postgres_sessions(request):
                 )
             )
         await create_skrift_tables(engine)
-        yield async_sessionmaker(
+        yield session_maker_for(
             engine,
-            expire_on_commit=False,
             info={"postgres_witness_test": request.node.nodeid},
         )
     finally:

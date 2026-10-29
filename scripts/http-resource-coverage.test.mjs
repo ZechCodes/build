@@ -8,14 +8,28 @@ import test from "node:test";
 
 const root = new URL("../", import.meta.url);
 const methodShape = /^(?:ping|[a-z][\w]*(?:\.[A-Za-z][\w]*)+)$/;
-const resourceNamespace = /^(?:agent|archived|board|branch|bridge|capture|changes|conversation|conversations|entity|fs|git|github|harnesses|messages|models|project|push|rtc|run|session|settings|sources|stream|task|tasks|term|thread|threads|user|workspace|workspaces|writes)\./;
 
-// These are feature flags, push types, or diagnostic labels, not dispatch
-// methods. Exceptions are scoped to the source that uses them as metadata.
+// These are feature flags, push types, diagnostic labels, storage keys,
+// selectors or lockfile names, not dispatch methods. Exceptions are scoped
+// to the source that uses them as metadata; there is no namespace exemption.
 // A same-named literal passed directly to an RPC helper is still a consumer.
 const metadata = {
+  "app.js": ["build.deviceFilter"],
+  "appState.js": ["build.selectedDeviceId"],
   "connection.js": ["term.liveness"],
-  "core/changeEvents.js": ["harnesses.changed", "models.changed", "tasks.waitingOn", "writes.confirmed"],
+  "push.js": ["build.push.open"],
+  "core/agentDefaults.js": ["build.agentDefaults"],
+  "core/cacheSync.js": ["build.cacheSync"],
+  "core/changeEvents.js": ["compaction.changed", "harnesses.changed", "models.changed", "tasks.waitingOn", "writes.confirmed"],
+  "core/changesComments.js": ["td.ln", "tr.dhl"],
+  "core/changesModel.js": ["bun.lockb", "composer.lock", "go.sum", "mix.lock", "poetry.lock", "uv.lock", "yarn.lock"],
+  "core/compose.js": ["build.captureQueue"],
+  "core/diffSort.js": ["build.diffSort"],
+  "core/directoryRail.js": ["build.sidebarCollapsed"],
+  "core/navigationVisits.js": ["build.navigation.previous"],
+  "core/railMode.js": ["build.inbox.folded", "build.inbox.view"],
+  "core/theme.js": ["build.theme"],
+  "core/workspaceDefaults.js": ["build.workspaceDefaults"],
   "core/peerLink.js": ["rtc.diagnostics"],
   "core/sessionRpc.js": ["writes.confirmed"],
   "core/writeOperationEffects.js": ["writes.confirmed"],
@@ -26,6 +40,8 @@ const metadata = {
   "terminal/session.js": ["term.closed", "term.output", "term.reset"],
   "core/bridgeApi/v1/writeMethods.js": ["stream.start"],
   "core/bridgeApi/v1/index.js": [
+    "agents.createdBy", "agents.projectWorkers", "bodies.pages", "branches.finishDelete",
+    "compaction.changed", "compaction.harnessThresholds", "diffs.perFile", "errors.codes", "requests.priority",
     "bridge.epoch", "bridge.restarting", "changes.projectSources", "changes.subscriptions",
     "conversations.settings", "fs.mediaRawPages", "fs.projectSourcePath", "fs.projectSources",
     "git.projectSources", "harnesses.changed", "messages.context", "models.changed",
@@ -50,14 +66,24 @@ const dynamicSites = {
     "call ( method )",
     "runCall ( method )"
   ],
+  "core/agentModes.js": [
+    "producer `settings.agent_modes.${family} is missing or malformed`"
+  ],
   "core/agentRail.js": [
     ". currentCall ( ) ( method )",
     ". currentCall ( ) ( method )",
     ". currentCall ( ) ( method )",
     "context . call ( ... args )"
   ],
+  "core/agentSurfacesModel.js": [
+    "producer \"build.agentSurfaces.open.\""
+  ],
   "core/bridgeApi/v1/index.js": [
     "call ( ... args )"
+  ],
+  "core/bridgeApi/v1/writeMethods.js": [
+    "producer \"changes.\"",
+    "producer \"rtc.\""
   ],
   "core/bridgeUpdatePanel.js": [
     "callRpc ( method )"
@@ -89,12 +115,20 @@ const dynamicSites = {
   "core/composeView.js": [
     "homeCall ( method )"
   ],
+  "core/consoleModel.js": [
+    "producer \"build.console.reopen.\"",
+    "producer \"build.console.size.\""
+  ],
   "core/conversationCompaction.js": [
     "ask ( entityId )"
+  ],
+  "core/conversationDetail.js": [
+    "producer \"build.conversation.detail.\""
   ],
   "core/deviceContexts.js": [
     "? transport ( ) ( ... asked )",
     "call ( ... asked )",
+    "producer \"tasks.waiting_on.\"",
     "return transport ( ) ( ... asked )",
     "return transport ( ) ( ... asked )",
     "return transport ( ) ( ... asked )",
@@ -116,6 +150,7 @@ const dynamicSites = {
     ") . call ( view )",
     "callRpc ( `git.${kind}` )",
     "callRpc ( method )",
+    "producer `git.${kind}`",
     "readCheckoutRecord ( kind )",
     "readCheckoutRecord ( kind )",
     "syncActionRpc ( optionId )"
@@ -125,6 +160,9 @@ const dynamicSites = {
   ],
   "core/isolation.js": [
     "callRpc ( target . rpc )"
+  ],
+  "core/markdownFences.js": [
+    "producer `code.${label}`"
   ],
   "core/optimistic.js": [
     "call ( handle )"
@@ -158,14 +196,27 @@ const dynamicSites = {
     "rpc . call ( method )"
   ],
   "core/sessionRpc.js": [
-    "call ( method )"
+    "call ( method )",
+    "producer \"rtc.\"",
+    "producer \"writes.\""
+  ],
+  "core/sessionSwitch.js": [
+    "producer \"rtc.\""
   ],
   "core/syncLists.js": [
     "ask ( context )"
   ],
+  "core/syncSuccessors.js": [
+    "producer \"tasks.\"",
+    "producer \"thread.\""
+  ],
+  "core/taskChecklist.js": [
+    "producer `build.taskChecklist:${JSON.stringify([deviceId, projectId, taskId])}`"
+  ],
   "core/taskReviewCache.js": [
     "mutate ( verb )",
     "mutateRpc ( `tasks.review.${verb}` )",
+    "producer `tasks.review.${verb}`",
     "reviewMutationRpc ( scope . deviceId )"
   ],
   "core/taskReviewControls.js": [
@@ -357,12 +408,23 @@ function firstArgument(tokens, opening, position = 0) {
 
 function consumers(source, file) {
   const { streams, literals } = scan(source);
-  const methods = new Set(literals.filter(({ value }) => value === "ping" || resourceNamespace.test(value) && methodShape.test(value)).map(({ value }) => value));
+  // Namespace lists cannot be used here: an indirect producer can introduce
+  // a new resource family while leaving context.call(method) unchanged.
+  const methods = new Set(literals.filter(({ value }) => methodShape.test(value)).map(({ value }) => value));
   for (const value of metadata[file] || []) methods.delete(value);
   const dynamic = [];
   for (const tokens of streams) {
     for (let index = 0; index < tokens.length; index++) {
       const token = tokens[index];
+      // Track method-shaped producers even when a later call only names the
+      // variable. Prefix fragments also cover the common "family." + verb
+      // construction. These entries are reviewed independently of call sites.
+      if (token.kind === "template" && /^`[a-z][\w]*\.[^\s`]*\$\{/.test(token.value)) {
+        dynamic.push(`producer ${token.value}`);
+      }
+      if (token.kind === "string" && /^[a-z][\w]*(?:\.[A-Za-z][\w]*)*\.$/.test(token.value)) {
+        dynamic.push(`producer ${JSON.stringify(token.value)}`);
+      }
       if (token.value !== "(") continue;
       const name = tokens[index - 1]?.value;
       const returnedCall = name === ")" && tokens[index - 2]?.value === "(";
@@ -400,6 +462,23 @@ async function sources(directory = new URL("spa/src/", root), prefix = "") {
 test("literal collection finds unknown methods without a registry intersection", () => {
   const found = consumers('context.rpc("new_family.future"); callRpc("agent.start"); context.call("thread.page");', "synthetic.js");
   assert.deepEqual([...found.methods].sort(), ["agent.start", "new_family.future", "thread.page"]);
+});
+
+test("indirect producers in new namespaces remain coverage requirements", () => {
+  const known = consumers('const method = "agent.start"; context.call(method);', "synthetic.js");
+  const novel = consumers('const method = "novel.action"; context.call(method);', "synthetic.js");
+  assert.deepEqual(novel.dynamic, known.dynamic, "the dispatch expression stays unchanged in this regression");
+  assert.deepEqual([...novel.methods], ["novel.action"]);
+  const covered = new Set(["agent.start"]);
+  assert.deepEqual([...novel.methods].filter((method) => !covered.has(method)), ["novel.action"]);
+});
+
+test("indirect template and concatenation producers are inventoried independently of dispatch", () => {
+  const known = consumers('const method = `agent.${action}`; context.call(method);', "synthetic.js");
+  const novel = consumers('const method = `novel.${action}`; context.call(method);', "synthetic.js");
+  assert.notDeepEqual(novel.dynamic, known.dynamic);
+  const concatenated = consumers('const method = "novel." + action; context.call(method);', "synthetic.js");
+  assert.ok(concatenated.dynamic.some((site) => site.includes('"novel."')));
 });
 
 test("comments and regexes do not invent consumers; nested template calls do", () => {

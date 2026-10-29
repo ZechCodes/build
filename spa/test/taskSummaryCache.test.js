@@ -213,7 +213,7 @@ it("preserves marker and unread floors even when a later dispatched read carries
 });
 
 it("does not collapse unsupported selectors or malformed actors into a known query", () => {
-  expect(() => summaries.summaryQueryAddress(scope, { watched: true })).toThrow();
+  expect(() => summaries.summaryQueryAddress(scope, { unknown_selector: true })).toThrow();
   expect(() => summaries.summaryQueryAddress(scope, { assignees: [{ kind: "agent", agent_id: "A", extra: true }] })).toThrow();
 });
 

@@ -213,4 +213,3 @@ function createRoleWriteGate(raw) {
     },
   };
 }
-

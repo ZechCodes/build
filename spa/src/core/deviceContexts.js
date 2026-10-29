@@ -22,6 +22,9 @@ import { needsCompactionSupport } from "./bridgeApi/v1/compactionParams.js";
 import { ApiError } from "./bridgeApi/v1/index.js";
 import { TASK_WAITING_ON_UPDATE } from "./taskWaitingOnSupport.js";
 import { deviceWriteOperations } from "./writeOperationRuntime.js";
+import { resetTaskMutationFences, retireTaskMutationFence, retargetTaskMutationFence,
+  wrapTaskMutationCall } from "./taskMutationFence.js";
+import { rememberTaskCountsSupport } from "./taskCountsSupport.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
 const deviceLifecycles = createDeviceLifecycles();
@@ -78,6 +81,11 @@ export const announceDeviceTransport = () => announceDeviceState();
  */
 const ownerRequests = new Set(["project.ensure_conversation", "workspace.ensure_conversation"]);
 const asking = (context, transport) => (...asked) => {
+  const dispatch = () => askContext(context, transport, asked);
+  return context.active() ? wrapTaskMutationCall(context.deviceId, asked[0], dispatch) : dispatch();
+};
+
+function askContext(context, transport, asked) {
   if (needsCompactionSupport(asked[0], asked[1])) return askCompaction(context, transport, asked);
   if (ownerRequests.has(asked[0])) return askOwner(context, transport, asked);
   if (needsTaskWaitingOn(asked[0], asked[1])) return askTaskWaitingOn(context, transport, asked);
@@ -88,7 +96,7 @@ const asking = (context, transport) => (...asked) => {
     return askProjectWorkerAssignment(context, transport, asked);
   }
   return canAnswer(context) ? transport()(...asked) : Promise.reject(new Error(deviceAwayMark(context)));
-};
+}
 
 const needsProjectWorkerAssignment = (method, params) => method === "tasks.assign"
   && params?.assignee?.kind === "new_project_agent";
@@ -235,6 +243,8 @@ export function adoptBridgeSelection(context, selection, adapter, authority = gr
   context.apiVersion = verdict.version || null;
   context.unsupported = verdict.unsupported || null;
   authority.compatible = Boolean(selection) && !context.unsupported;
+  void rememberTaskCountsSupport(context.deviceId, context.adapter?.capabilities,
+    () => authority.current() && authority.compatible && context.active()).catch(() => {});
   releaseGreeting(context, authority); // only this greeting has said what it speaks
   announceDeviceState(); // an unsupported bridge is a machine that cannot answer
   context.answering?.(); // what a surface wanted while it could not be asked
@@ -417,6 +427,7 @@ export function adoptDeviceConnection(session, peerLink = null, onDetached = () 
   // A reconnect re-greets, and the bridge answering it may not be the version
   // that answered last time: what the last greeting settled is not this one's.
   forgetBridgeSelection(context);
+  retargetTaskMutationFence(session.deviceId);
   // The repository is bound to the session that adopted it, not to whichever
   // session the device is on: a post captures its caller when it is made and
   // must finish where it was accepted, or a reconnect landing mid-flight sends
@@ -491,6 +502,7 @@ export function retireDeviceContext(deviceId) {
   const context = contexts.get(deviceId);
   if (!context) return null;
   contexts.delete(deviceId);
+  retireTaskMutationFence(deviceId);
   deviceEras.set(deviceId, (deviceEras.get(deviceId) || 0) + 1);
   context.chatRepository?.dispose();
   context.disposeModelCatalog?.();
@@ -616,4 +628,5 @@ export function resetDeviceContexts() {
   contexts.clear();
   deviceLifecycles.clear();
   deviceEras.clear();
+  resetTaskMutationFences();
 }

@@ -123,7 +123,7 @@ it("does not resurrect a stale miss by falling back behind a later span after an
   await vi.waitFor(() => expect(resolve()).toBeNull());
   const read = await order.nextTaskRead();
   await pages.foldTasksPage(tracker.tasksAddress(scope.deviceId, scope.projectId), {
-    tasks: [row], above: Infinity, through: -Infinity, read, pullRead: read,
+    tasks: [row], above: Infinity, through: 42, read, pullRead: read,
   }, () => []);
   await vi.waitFor(() => expect(resolve()?.title).toBe("Page-positive"));
   const before = index.referenceIndexVersion();

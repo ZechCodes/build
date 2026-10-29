@@ -5,7 +5,7 @@
 | Change | Previous consumer oracle | Canonical/backend oracle and executable fixture | Compatibility boundary |
 | --- | --- | --- | --- |
 | Opaque unread/watch floors | Legacy prefix regex, truthiness fallback and UTF-16 comparisons | Rust summary/tracking and SQL opaque suffix rules; `taskOpaqueMarkers.test.js`, `taskCountMarkerParity.test.js`, `taskSummaryMarkers.test.js` | Authoritative count consumption requires independent `tasks.counts` support and an accepted response. Without an accepted authoritative total, unsupported bridges use legacy badge calculation. An already authoritative mounted badge retains its last accepted cached total on support retirement/refusal. The numeric differences below are explicit review inputs. |
-| Pending-only Assigned/Unassigned | Local `any` checks only real assignee; `none` includes pending-only | Canonical `AssigneeFilter`: any includes pending target, none excludes it, exact actor still real assignee only; `trackerFilterPendingSemantics.test.js`, actual pane `trackerPendingChoiceDom.test.js` | Local correction applies consistently to cached preview and existing backend selection; choosing a new capability does not introduce a second predicate. A bridge with no pending assignment data has no new pending-only rows. |
+| Pending-only Assigned/Unassigned | Original preview checks only actual assignee. The intermediate `taskIsHeld` preview also requires a truthy pending `target.kind`, incorrectly leaving active null/empty/missing-kind targets Unassigned. | Canonical `AssigneeFilter` tests actual-assignee or pending-target Option presence; exact actor still uses actual assignee only. `trackerFilterPendingSemantics.test.js` executes source SQL and real cache DTOs; `tracker_query_choice_roundtrip.rs` verifies actual legacy list, summary list, and get output. | The local correction uses actual assignee or active deferred state, independent of target kind and capability selection. This preserves the canonical any/none predicate; held/readiness remains a separately defined policy. Newly documented null/kind and projected-NUL differences still require checkpoint scope/code/Astra disposition. |
 | ASCII label matching | Local `labels.includes` uses exact case | Existing legacy backend `app/tracker/read.rs` and summary selection use ASCII-insensitive matching; `trackerLabelSourceSemantics.test.js`, actual menu `trackerRemoteChoicesDom.test.js` | The correction is independent of summary/choice capability. Legacy scalar RPC label bytes remain unchanged. `API`/`api` and `API\0v2`/`api\0v2` now match both variants; `É`/`é`, surrounding whitespace, NUL and literal U+FFFD remain distinct. This is an explicit local behavior correction, not a claim that the previous preview agreed. |
 | Mouse/Enter opaque identity | Parsed HTML attribute turns NUL into U+FFFD on click; Enter keeps original string | Actual `mountFilterMenu` and pane fixtures in `filterMenuOpaqueDom.test.js`, `trackerPendingChoiceDom.test.js`, `trackerRemoteChoicesDom.test.js` | Both actions use original in-memory values, independent of bridge support. Display escaping remains; prefix-colliding IDs and literal U+FFFD stay separate from NUL. |
 
@@ -77,6 +77,80 @@ The focused test uses literal current-SPA expectations, a separate Buffer UTF-8
 source oracle, and source-text guards for Rust `when`, `after`, watch fallback,
 and inclusive read-through. This requires no bridge launch, full test suite,
 new RPC, durable synchronization, or network change.
+
+## Pending assignment presence and serialized-state proof (#900)
+
+The pending-assignment correction changes only local Assigned/Unassigned
+filtering in `trackerFilters.js`. The canonical predicate is
+`task.assignee.is_some() || pending_target.is_some()` in
+`bridge/src/app/tracker/edits.rs`; Unassigned requires both to be None. Exact
+actor selection compares only the typed actual assignee. Store list extraction
+in `bridge/src/store/tracker.rs` filters the current intent to `waiting`,
+`queued`, `provisioning`, or `failed`, then maps it to `&intent.target`.
+Consequently an active intent with `Value::Null`, `{}`, or an empty kind still
+provides Some; target kind truthiness does not determine pending presence.
+
+The local predicate now uses actual assignee presence or
+`taskHasUndeliveredAssignment(task)`. Its correctness depends on retaining the
+active-state fact through serialization and cache projection. That dependency
+was checked separately from the hand-built consumer fixtures:
+
+- Actual RPC producer test
+  `pending_presence_wire_survives_null_and_missing_kind_across_list_get_summary`
+  in `bridge/src/app/tests/tracker_query_choice_roundtrip.rs` imports 42 complete
+  isolated canonical metadata cases: four active states plus absent, consumed,
+  and cancelled controls; each with null, missing-kind `{}`, or empty-kind
+  target; each with and without a real typed assignee. After projection repair,
+  it checks actual legacy `tasks.list`, summary `tasks.list`, and `tasks.get`
+  output, as well as canonical any/none/exact summary selection. Active output
+  retains a deferred-assignment object and active state even for null target.
+  Full list/get preserve the target itself. `provisioning` serializes as
+  `queued`, retaining active membership; absent/consumed/cancelled controls
+  have no active deferred object.
+- `trackerFilterPendingSemantics.test.js` extracts the exact trusted
+  `enrich_patch` SQL from `bridge/src/store/task_summaries/sql.rs` and executes
+  it in an isolated in-memory SQLite database using pinned Node's
+  `node:sqlite`. Seventy saved-intent/assignee cases include null, `{}`, empty,
+  leading-NUL, and Unicode target kinds across the same state controls. The
+  actual serialized summary rows then pass through `summaryPatch`,
+  `tasksRecord`, and `taskRecord` before the local filters. These DTOs preserve
+  the active-state fact. Source guards also pin the shared full-list/get
+  `extend_task_summary` → `extend_assignment` serializer chain.
+
+| Pending source | Intermediate `taskIsHeld` preview | Canonical any/none and corrected preview |
+| --- | --- | --- |
+| Active intent, null target or missing/null/empty/false/zero kind, no actual assignee | Unassigned | Assigned; exact actor remains unmatched |
+| Active intent, truthy Unicode/whitespace/array/object/nonzero/true kind in a raw row | Assigned | Assigned; exact actor remains unmatched |
+| Active intent, leading-NUL kind after summary display projection | Can become Unassigned because SQLite display `substr` yields an empty kind | Assigned because serialized active state survives |
+| Absent, consumed, or cancelled intent, no actual assignee | Unassigned | Unassigned |
+| Actual typed assignee, with any tested pending state or target | Assigned | Assigned; only the actual actor matches exact selection |
+
+The leading-NUL display limitation is demonstrated by the executable source-SQL
+fixture, **not** by the 42-case RPC test. Summary target projection can lose or
+truncate kind display bytes while preserving pending state. This is also why
+`pending_present` and `pending_held` in `query_sources.rs` remain distinct:
+the former records active-intent presence; the latter preserves the separate
+held policy's raw target-kind truthiness. The existing `taskIsHeld` readiness
+and grouping helper was not changed, and this correction does not redefine
+held/readiness queries or approve a backend policy change.
+
+Verification at test commit
+`dff68e6d622dbf29eb7e8e97176a831663009542`: the fully qualified named Cargo
+filter executed **one test**, passing all 42 RPC cases; the two focused JS files
+(`trackerFilterPendingSemantics.test.js`, `trackerFilters.test.js`) passed
+**121 tests**. Source-SQL/DTO proof first landed in `3af8ecac0`. The initial
+short Cargo filter combined with `--exact` executed zero tests and is explicitly
+excluded from evidence. These are verification tests for existing producers,
+with no manufactured red-test claim; the local predicate's earlier TDD test
+commit `965dad938` independently recorded 31 expected failures before the fix.
+
+This evidence applies to the tested current canonical producer/read paths with
+complete synchronized saved intent metadata. It does not assert compatibility
+with arbitrary older deployments or unsupported imports. No missing serialized
+state fact was found on the tested paths. Scope/code and Astra review of the
+visible correction, final-head gates, and integration/activation disposition
+remain required; these tests do not authorize deployment or alter #925's
+separate held/readiness contract.
 
 ## Actual project badge aggregate evidence
 

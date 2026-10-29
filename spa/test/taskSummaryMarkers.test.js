@@ -73,7 +73,7 @@ it("keeps attention counter authority separate from the newer watch floor", asyn
 
 it("ends the watch lineage on authoritative unwatch and rejects its later resurrection", async () => {
   await land(1, { ...row("tc-10", 1), watched: true, watch_started_after: "te-30" });
-  const unwatched = { id: "task-1", title: "One", watched: false, read_through: "tc-10" };
+  const unwatched = { id: "task-1", title: "One", watched: false, read_through: "tc-10", dismissed_through: "tc-10" };
   await land(2, unwatched); await land(3, unwatched);
   let held = await summaries.readSummaryQuery(scope, {});
   expect(held.stale).toBe(false);

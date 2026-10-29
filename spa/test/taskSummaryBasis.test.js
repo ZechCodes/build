@@ -96,7 +96,7 @@ it("does not relabel timestamp-protected entity data with a rejected snapshot ba
 });
 
 it.each([
-  [{ review_summary: { version: 1 } }, { review_summary: { version: 2 } }],
+  [{ review_summary: { task_id: "task-1", version: 1, status: "open" } }, { review_summary: { task_id: "task-1", version: 2, status: "open" } }],
   [{ read_through: "tc-10", unread_count: 7 }, { read_through: "tc-20", unread_count: 0 }],
 ])("marks mixed authority from an older different-basis response stale", async (before, after) => {
   await land({}, 3, page("B1", [row({ title: "held", ...before })]));

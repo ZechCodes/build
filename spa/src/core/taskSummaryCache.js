@@ -98,8 +98,21 @@ function entityFields(task) {
 }
 
 function pageRow(held, task, read, basis) {
-  return { ...summaryValue(held, entityFields(task), read), basis: olderRow(held, task, read) ? held?.basis : basis };
+  const incoming = entityFields(task), older = olderRow(held, incoming, read);
+  const value = summaryValue(held, incoming, read);
+  const source = older ? held?.task : incoming;
+  const mixed = changedBasisAuthority(held, basis, source, value.task);
+  const uncertain = mixed || older && held?.basis_uncertain === true;
+  return { ...value, basis: uncertain ? undefined : older ? held?.basis : basis, basis_uncertain: uncertain };
 }
+
+const changedBasisAuthority = (held, basis, source, next) => Boolean(held && held.basis !== basis && authorityDiffers(source, next));
+const authorityDiffers = (before, after) => ["read_through", "dismissed_through"]
+  .some((key) => compareTaskMarkers(before?.[key], after?.[key]) !== 0)
+  || watchAuthorityDiffers(before, after)
+  || JSON.stringify(before?.review_summary ?? null) !== JSON.stringify(after?.review_summary ?? null);
+const watchAuthorityDiffers = (before, after) => after.watched !== false
+  && compareTaskMarkers(counterFloor(before), counterFloor(after)) !== 0;
 
 const newerObservation = (observation, read, basis) => observation?.read_order > read ? null : { read_order: read, basis };
 const unchangedBasis = (held, other) => Boolean(held.basis && held.basis === other?.basis);
@@ -109,10 +122,18 @@ const changedContinuationBasis = (held, ticket, page) => ticket.cursor !== null 
 function preserveMarks(held, task) {
   const next = { ...task };
   for (const field of ["read_through", "watch_started_after", "dismissed_through"]) {
+    if (field === "watch_started_after" && next.watched === false) continue;
     const mark = newerTaskMarker(held?.[field], next[field]);
     if (isPresentTaskMarker(mark)) next[field] = mark;
   }
+  if (next.watched === false) return withoutWatchCounters(next);
   for (const { floor, fields } of counterFamilies) preserveCounterFamily(next, held, task, floor, fields);
+  return next;
+}
+
+function withoutWatchCounters(task) {
+  const next = { ...task };
+  for (const key of ["watch_started_after", "unread_count", "unread_mentions", "unread_agent_comments", "session_started_ms", "last_activity_ms"]) delete next[key];
   return next;
 }
 
@@ -161,7 +182,7 @@ function summaryValue(held, task, read) {
   // stronger incoming mark, including an older dispatch's read report.
   const authority = markerAuthority(held, task, read);
   const next = preserveMarks(authority.source, preserveMarks(before, reviewed));
-  return { task: next, read_order: Math.max(read, held?.read_order || 0), needs_unread_refresh: authority.stale };
+  return { task: next, read_order: Math.max(read, held?.read_order || 0), needs_unread_refresh: next.watched !== false && authority.stale };
 }
 
 /** Commit membership/cursor, summaries and shared identities together. Failure
@@ -202,7 +223,7 @@ export function writeSummaryTask(scope, task, read, { accept = () => true, fullT
 
 /** Cache-only reconstruction. Loaded membership never claims a project total
  * and an absent entity is never inferred to be deleted by a partial query. */
-const rowOvertaken = (held, row, read) => row?.needs_unread_refresh || differentBasis(held, row)
+const rowOvertaken = (held, row, read) => row?.needs_unread_refresh || row?.basis_uncertain || differentBasis(held, row)
   || (row?.read_order || 0) > read && !unchangedBasis(held, row);
 const differentBasis = (held, row) => Boolean(held.basis && row?.basis && held.basis !== row.basis);
 const rowsOvertaken = (held, records) => held.ids.some((id, index) => rowOvertaken(held, records[index]?.value, held.row_reads?.[id] || 0));

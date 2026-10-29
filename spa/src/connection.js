@@ -23,6 +23,8 @@ import { createDeviceConnectionAttempts } from "./core/deviceConnectionAttempts.
 import { createDeviceRecoverySupervisor } from "./core/deviceRecovery.js";
 import { openSession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
+import { openRtcTerminalLink } from "./core/rtcTerminalLink.js";
+import { clearTerminalPeerLinks, configureTerminalPeerLinks, terminalPeerLink } from "./core/terminalPeerLinks.js";
 import { connectionDiagnosticReport, recordConnectionDiagnostic } from "./core/connectionDiagnostics.js";
 import { dialFailureDetail } from "./core/dialFailureDetail.js";
 import { cacheHealth } from "./core/localCache.js";
@@ -91,6 +93,16 @@ const rendezvousLifecycle = createRendezvousLifecycle((deviceId) =>
     getPinnedDeviceKey: pinnedDeviceTransportKey,
   }),
 );
+
+configureTerminalPeerLinks({
+  open: ({ deviceId, signal }) => openRtcTerminalLink({
+    deviceId, signal, transport, fetchIceServers,
+    acquireRendezvous: () => rendezvousLifecycle.forDevice(deviceId).acquire(),
+    clientId: () => rtcClientId(deviceId, pairedTransportKey(deviceId)),
+  }),
+  isCurrent: (context) => knownDeviceContext(context.deviceId) === context && canAnswer(context),
+  onChanged: (context) => followTerminalsIfTheirs(context),
+});
 
 // One explicit attempt owner per device. This stage owns only the attempt and
 // its provisional resources; deviceContexts remains the availability model.
@@ -196,6 +208,7 @@ function closeRendezvous(deviceId) {
 export function forgetRendezvousSockets() {
   deviceRecovery.reset();
   connectionAttempts.clear();
+  clearTerminalPeerLinks();
   resetDeviceContexts();
   rendezvousLifecycle.clear();
   forgetRtcClientHints();
@@ -269,6 +282,7 @@ async function mintAppSession(deviceId, rendezvous, authority) {
 function openDirectLink(deviceId, session, sessionLease, authority) {
   let restartLease = null;
   return openPeerLink({
+    binding: session.peerBinding,
     clientId: () => rtcClientId(deviceId, pairedTransportKey(deviceId)),
     signal: (method, params) => failingAs("refused", session.call(method, params)),
     fetchIceServers: () => failingAs("ice-servers", fetchIceServers()),
@@ -545,12 +559,33 @@ function loseEstablishedConnection(deviceId, lifetime) {
  * again the moment neither this mint nor a negotiation needs it.
  */
 async function mintTerminalSession(deviceId) {
+  const context = contextFor(deviceId);
+  const appSession = context?.session;
+  const peerLink = terminalPeerLink(context);
+  if (appSession?.transport === "http") {
+    if (!peerLink) throw new Error("the terminal RTC owner has closed");
+    return peerLink.mintTerminal();
+  }
+  return mintRtcTerminalOpening(deviceId, { context, appSession, peerLink });
+}
+
+async function mintRtcTerminalOpening(deviceId, { context, appSession, peerLink }) {
+  const assertCurrent = () => {
+    if (contextFor(deviceId) !== context || context?.session !== appSession || terminalPeerLink(context) !== peerLink) {
+      throw new Error("terminal peer was replaced during binding");
+    }
+  };
   const lease = rendezvousLifecycle.forDevice(deviceId).acquire();
   try {
     const minted = await lease.rendezvous.mint({});
+    assertCurrent();
+    const carrier = peerLink?.bindTerminal ? await peerLink.bindTerminal(minted) : peerLink?.term || null;
+    assertCurrent();
     return {
       ...minted,
-      bridgeEpoch: contextFor(deviceId)?.session?.bridgeEpoch,
+      carrier,
+      peerLink,
+      bridgeEpoch: appSession?.bridgeEpoch,
       release: lease.release,
     };
   } catch (error) {
@@ -827,7 +862,9 @@ async function landSession(session, link, releaseInitialLease, attempt, authorit
   // is the terminals' own liveness judgement that nothing is carrying
   // anywhere, which says the path is dead in so many words.
   link.app.onClose(() => loseEstablishedConnection(session.deviceId, lifetime));
-  link.term.onClose((reason) => loseTerminalWire(session.deviceId, lifetime, reason));
+  const terminalClosed = (reason) => loseTerminalWire(session.deviceId, lifetime, reason);
+  if (link.onTerminalClose) link.onTerminalClose(terminalClosed);
+  else link.term?.onClose(terminalClosed);
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
   let initialGreeting = true;

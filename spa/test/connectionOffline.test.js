@@ -12,6 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
+import { configureTerminalPeerLinks } from "../src/core/terminalPeerLinks.js";
 
 const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn(), terminalDeviceId: vi.fn(() => null) }));
 const wire = vi.hoisted(() => ({ openSession: vi.fn(), openPeerLink: vi.fn() }));
@@ -64,7 +65,7 @@ const mints = vi.hoisted(() => ({ provided: null }));
 
 const { App, resetApplication, rememberSelectedDevice } = await import("../src/app.js");
 const {
-  canAnswer, contextFor, deviceFeedView, homeContext, knownContexts, knownDeviceContext, liveContexts, resetDeviceContexts,
+  adoptDeviceConnection, canAnswer, contextFor, deviceFeedView, homeContext, knownContexts, knownDeviceContext, liveContexts, resetDeviceContexts,
 } = await import("../src/core/deviceContexts.js");
 const {
   chooseCreationDevice,
@@ -341,6 +342,63 @@ beforeEach(async () => {
 });
 
 describe("dial failure diagnostics", () => {
+  it("mints HTTP-selected terminals through a separate RTC owner without replacing the app", async () => {
+    await connectDevice("dev-a");
+    const closes = new Set();
+    const session = { ...fakeSession("dev-a"), transport: "http",
+      onClose: (fn) => { closes.add(fn); return () => closes.delete(fn); },
+    };
+    const { context } = adoptDeviceConnection(session, null);
+    const carrier = { onClose: vi.fn() };
+    const child = { term: carrier, recovery: fakeRecovery(), bridgeEpoch: createBridgeEpoch(),
+      mintTerminal: vi.fn(async () => ({ deviceId: "dev-a", sessionId: "separate-term", sessionKeyB64: "term-key", release: vi.fn() })),
+      bindTerminal: vi.fn(async () => carrier), close: vi.fn(), onClose: () => () => {},
+    };
+    const open = vi.fn(async () => child);
+    configureTerminalPeerLinks({ open, isCurrent: (captured) => contextFor("dev-a") === captured && captured.session === session });
+    const minted = await mints.provided("dev-a");
+    expect(minted.carrier).toBe(carrier);
+    expect(minted.bridgeEpoch).toBe(child.bridgeEpoch);
+    expect(child.bindTerminal).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "separate-term" }));
+    expect(open).toHaveBeenCalledWith({ deviceId: "dev-a", signal: expect.any(AbortSignal) });
+    expect(context.session).toBe(session);
+    expect(context.peerLink).toBeNull();
+    expect(session.closed).toBe(false);
+    for (const close of [...closes]) close();
+    expect(child.close).toHaveBeenCalledOnce();
+    await expect(mints.provided("dev-a")).rejects.toThrow(/closed/);
+  });
+
+  it("passes the minted session's opaque binding handle to its real peer opener", async () => {
+    const peerBinding = Object.freeze({ sessionId: "bound-session" });
+    wire.openSession.mockImplementationOnce(async (options) => ({ ...fakeSession(options.deviceId, options.onLost), peerBinding }));
+    await connectDevice("dev-a");
+    expect(wire.openPeerLink.mock.calls.at(-1)[0].binding).toBe(peerBinding);
+  });
+
+  it("binds the separately minted terminal opening before publishing its carrier", async () => {
+    const link = fakePeerLink("dev-a");
+    const bound = { onClose: vi.fn() };
+    link.bindTerminal = vi.fn(async () => bound);
+    wire.openPeerLink.mockResolvedValueOnce(link);
+    await connectDevice("dev-a");
+    const minted = await mints.provided("dev-a");
+    expect(link.bindTerminal).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "dev-a", sessionKeyB64: "key" }));
+    expect(minted.carrier).toBe(bound);
+    expect(minted.peerLink).toBe(link);
+    minted.release();
+  });
+
+  it("keeps an unused clear terminal role unbound when adopting the healthy app", async () => {
+    const link = fakePeerLink("dev-a");
+    link.term = null;
+    link.onTerminalClose = vi.fn(() => () => {});
+    wire.openPeerLink.mockResolvedValueOnce(link);
+    await expect(connectDevice("dev-a")).resolves.toBeDefined();
+    expect(contextFor("dev-a").peerLink).toBe(link);
+    expect(link.onTerminalClose).toHaveBeenCalledOnce();
+  });
+
   const failures = () => connectionDiagnosticHistory().filter((entry) => entry.event === "dial-failed");
 
   it("records an ICE authorization failure once for callers sharing the dial, without error contents", async () => {

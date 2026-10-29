@@ -279,6 +279,7 @@ mod tracker_inbox_wire;
 mod tracker_list_pages;
 mod tracker_list_reads;
 mod tracker_observation_purity;
+mod tracker_query_reads;
 mod tracker_summary_identity_availability;
 mod tracker_summary_identity_bounds;
 mod tracker_summary_reads;
@@ -305,3 +306,5 @@ mod workspaces;
 mod conversation_watch_baselines;
 
 mod waiting_on_rpc_mcp_contract;
+
+mod tracker_query_selections;

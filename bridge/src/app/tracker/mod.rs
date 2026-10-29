@@ -13,6 +13,7 @@
 
 mod activity;
 mod agent_files;
+mod aggregates;
 mod attachments;
 mod bounded_pages;
 pub(in crate::app) use attachments::read_task_attachment;
@@ -45,6 +46,7 @@ mod read_source;
 #[cfg(test)]
 pub(in crate::app) use push::news_phrase;
 pub(in crate::app) use read::{TaskReadContext, TaskReadFence};
+mod query_selections;
 mod refs;
 mod reminder;
 mod reviews;
@@ -143,6 +145,11 @@ impl AppState {
     /// Legacy synchronous adapters used by mutation answers and MCP. The
     /// application RPC lane calls the same projection on a ReadTransaction.
     pub(crate) fn tasks_list(&self, params: &Value) -> Result<Value, String> {
+        if params.get("summary").and_then(Value::as_bool) == Some(true) {
+            return self
+                .tracker_store()?
+                .read_task_projection(|read| self.task_read_context().tasks_list(read, params));
+        }
         self.task_read_context()
             .tasks_list(self.tracker_store()?, params)
     }

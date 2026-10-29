@@ -83,7 +83,7 @@ describe("what the index answers", () => {
 
   it("finds a task in the reader's project", () => {
     expect(at().task(42)).toEqual({ deviceId: "dev-1", projectId: "proj-1", taskId: "task-42", title: "Rebuild the shell" });
-    expect(at().task(9999)).toBeNull();
+    expect(at().task(9999)).toBeUndefined();
   });
 });
 

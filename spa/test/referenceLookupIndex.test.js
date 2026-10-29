@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
@@ -78,4 +79,22 @@ it("does not treat an action-created one-row legacy catalogue as full-list absen
   stop = feedModule.feedReferenceIndex({ subscribeFeed(listener) { listener(feed); return () => {}; } });
   await vi.waitFor(() => expect(resolve(42)?.taskId).toBe(task.id));
   expect(resolve(1)).toBeUndefined();
+});
+
+it("keeps a cacheNewTask-shaped one-row catalogue without read notes unknown for other numbers", async () => {
+  const pane = readFileSync(new URL("../src/core/trackerTasksPane.js", import.meta.url), "utf8");
+  expect(pane).toContain("async function cacheNewTask(task)");
+  expect(pane).toContain("writeTasksRecord(state.deviceId, state.projectId, tasksRecord(catalogue, state.columns, filedAs))");
+  await tracker.writeTasksRecord(place.deviceId, place.projectId, tracker.tasksRecord([task], [], 1));
+  expect(await cache.readCached(reads.readsAddress(tracker.tasksAddress(place.deviceId, place.projectId)))).toBeUndefined();
+  stop = feedModule.feedReferenceIndex({ subscribeFeed(listener) { listener(feed); return () => {}; } });
+  await vi.waitFor(() => expect(resolve(42)?.taskId).toBe(task.id));
+  expect(resolve(1)).toBeUndefined();
+});
+
+it("preserves explicit complete legacy catalogue absence semantics", async () => {
+  await cache.writeCached(tracker.tasksAddress(place.deviceId, place.projectId), { tasks: [task], catalog_complete: true });
+  stop = feedModule.feedReferenceIndex({ subscribeFeed(listener) { listener(feed); return () => {}; } });
+  await vi.waitFor(() => expect(resolve(42)?.taskId).toBe(task.id));
+  expect(resolve(1)).toBeNull();
 });

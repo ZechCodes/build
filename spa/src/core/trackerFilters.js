@@ -108,10 +108,15 @@ const anyOf = (value, wants) => {
   return !chosen.length || chosen.some((want) => wants(want));
 };
 
+// Match the bridge's eq_ignore_ascii_case: opaque bytes, whitespace and
+// non-ASCII letters retain their identity.
+const asciiLabel = (label) => label.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+const labelMatches = (labels, want) => (labels || []).some((label) => asciiLabel(label) === asciiLabel(want));
+
 const matches = (task, filters) =>
   anyOf(filters.state, (want) => task.state === want) &&
   anyOf(filters.status, (want) => task.status === want) &&
-  anyOf(filters.label, (want) => (task.labels || []).includes(want)) &&
+  anyOf(filters.label, (want) => labelMatches(task.labels, want)) &&
   anyOf(filters.assignee, (want) => assigneeMatches(task, want));
 
 /** The same narrowing, applied here — what the cached list is painted through

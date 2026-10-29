@@ -69,6 +69,8 @@ import { refreshBridgeUpdateStatus } from "./core/bridgeUpdates.js";
 import { deliverFeed, joinFeed } from "./core/taskFeed.js";
 import { syncRestoredDevice } from "./core/cacheSync.js";
 import { forgetRtcClientHints, rememberRtcClientSupport, rtcClientId } from "./core/rtcClientHint.js";
+import { openHttpDeviceConnection } from "./core/httpDeviceConnection.js";
+import { forgetHttpConnection, httpRecoveryCandidates, restoreHttpConnections, selectHttpConnection, selectWebRtcConnection, usesHttp } from "./core/httpConnections.js";
 
 // ---- one rendezvous per device (spec rules 4, 5 and 7) -----------------------
 
@@ -181,7 +183,7 @@ export function stopWatchingForWake() {
   stopWakeWatch = null;
 }
 
-export const syncDeviceRecoveryPresence = (devices) => deviceRecovery.syncPresence(devices);
+export const syncDeviceRecoveryPresence = (devices) => deviceRecovery.syncPresence(httpRecoveryCandidates(devices));
 export const deviceRecoverySnapshot = (deviceId) => deviceRecovery.snapshot(deviceId);
 export const onDeviceRecoveryChanged = (listener) => deviceRecovery.subscribe(listener);
 
@@ -427,7 +429,7 @@ function attemptRecoveryDevice(deviceId, epoch) {
 function retryableConnectionFailure(deviceId, error) {
   const lifecycle = existingDeviceLifecycle(deviceId)?.snapshot();
   if (lifecycle?.securityStop || contextFor(deviceId)?.unsupported) return false;
-  return !error?.securityCritical && error?.blockedReason !== "no-webrtc";
+  return !error?.securityCritical && !["no-webrtc", "http-auth", "http-unsupported"].includes(error?.blockedReason);
 }
 
 async function connectOnce(deviceId, attempt) {
@@ -435,7 +437,50 @@ async function connectOnce(deviceId, attempt) {
   // would neither fix that nor tell anyone about it.
   const securityStop = existingDeviceLifecycle(deviceId)?.snapshot().securityStop;
   if (securityStop) throw new Error(securityStop);
+  if (usesHttp(deviceId)) return connectOverHttp(deviceId, attempt);
   return connectOverChannels(deviceId, attempt);
+}
+
+async function connectOverHttp(deviceId, attempt) {
+  try {
+    return await openHttpDeviceConnection(deviceId, attempt, {
+      greet: greetLiveBridge,
+      onLost: (lifetime, error) => loseHttpConnection(deviceId, lifetime, error),
+      onAdopt: (context) => { joinFeed(context); syncHome(context); followTerminalsIfTheirs(context, { freshSession: true }); },
+      onDetached: () => followTerminalsIfTheirs({ deviceId }),
+    });
+  } catch (error) {
+    error.blockedReason = httpBlockedReason(error);
+    throw error;
+  }
+}
+
+const httpBlockedReason = (error) => ({ authentication: "http-auth", unsupported: "http-unsupported", network: "http-network" })[error?.code] || "http-failed";
+
+function loseHttpConnection(deviceId, lifetime, error) {
+  if (!lifetime.current()) return;
+  if (error?.code !== "authentication") { loseEstablishedConnection(deviceId, lifetime); return; }
+  blockDeviceConnection(deviceId, lifetime, "http-auth");
+  deviceRecovery.stop(deviceId, { cancel: false });
+  syncHome(contextFor(deviceId));
+}
+
+/** An explicit choice retires the old transport before dialing its replacement.
+ * No request accepted by the old opening is replayed on the new one. */
+export async function chooseDeviceTransport(deviceId, { transport: selected, identity } = {}) {
+  await restoreHttpConnections();
+  if (selected === "http") {
+    if (identity?.deviceId !== deviceId) throw new Error("The HTTPS address belongs to a different device.");
+    await selectHttpConnection(identity);
+  }
+  else if (selected === "webrtc") await selectWebRtcConnection(deviceId);
+  else throw new Error("Choose HTTPS or WebRTC.");
+  deviceRecovery.stop(deviceId, { cancel: true });
+  connectionAttempts.forDevice(deviceId).cancel();
+  blockCurrentDevice(deviceId, "transport-change");
+  retryDeviceConnection(deviceId);
+  syncDeviceRecoveryPresence(App.devices);
+  return connectDevice(deviceId, { reason: "transport-selection" });
 }
 
 /** Apply only the failure the controller committed as authoritative. */
@@ -614,6 +659,7 @@ export function goOffline(deviceId) {
  * the account calls it online.
  */
 export function deviceWentAway(deviceId) {
+  if (usesHttp(deviceId)) return; // relay presence does not describe this endpoint
   const context = contextFor(deviceId);
   if (!context || (context.offline && !context.blocked)) return;
   // A connect in flight owns that machine's rendezvous: standing the machine
@@ -643,6 +689,7 @@ export function deviceWentAway(deviceId) {
  * machine the account no longer has.
  */
 export function retireDevice(deviceId) {
+  void forgetHttpConnection(deviceId).catch(() => {});
   // A dial in flight at this machine is called off first: whatever it lands or
   // fails at is about a machine the account no longer has.
   deviceRecovery.stop(deviceId, { cancel: false });
@@ -726,6 +773,7 @@ export function greetLiveBridge(context, {
   const isCurrent = () => isAuthoritative() && greetingAuthority.current();
   const repository = context.chatRepository;
   const greeting = greetBridge(session.call, {
+    beforeRefresh: session.transport === "http" ? () => session.allowRefresh() : undefined,
     strict: !suppressFailure,
     deviceId: session.deviceId,
     // Session identity alone is insufficient: restoration can issue another
@@ -965,7 +1013,7 @@ export function syncHome(landed = null) {
  * reason off every row and dial nobody.
  */
 export function openDeviceSessions({ retry = false } = {}) {
-  deviceRecovery.syncPresence(App.devices);
+  syncDeviceRecoveryPresence(App.devices);
   const unblocked = retry ? askBlockedMachinesAgain() : [];
   if (retry) for (const deviceId of unblocked) deviceRecovery.beginAttempt(deviceId, { resetFailures: true });
   const wanted = App.devices.filter(wantsSession).map((device) => device.id);
@@ -1055,7 +1103,7 @@ function wantsSession(device) {
   const context = contextFor(device.id);
   if (existingDeviceLifecycle(device.id)?.snapshot().securityStop) return false;
   if (connectionAttempts.isConnecting(device.id) || context?.blocked) return false;
-  return device.status === "online" && !canAnswer(context);
+  return (device.status === "online" || usesHttp(device.id)) && !canAnswer(context);
 }
 
 /** A caller usually wants one of the two promises. Handling the other here

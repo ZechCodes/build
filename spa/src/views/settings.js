@@ -18,6 +18,7 @@ import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
 import { openAddDevice } from "../sheets/addDevice.js";
+import { openAddByUrl } from "../sheets/addByUrl.js";
 import { disablePush, enablePush, pushState } from "../push.js";
 import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core/theme.js";
 import { harnessDefaultsPanelHtml, mountHarnessDefaults } from "../core/harnessDefaults.js";
@@ -180,7 +181,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
       <h3>📱 Devices &amp; keys</h3>
       <div class="dim" style="font-size:13px;margin-bottom:8px">Only paired devices can read your tasks. When you add one, confirm its fingerprint matches what the bridge printed. Each device's own settings — its projects, its folder, how agents run there — live on its page.</div>
       <div id="devlist"><span class="dim" style="font-size:13px">loading…</span></div>
-      <div class="addproj"><button class="btn primary" id="adddev">Add a device…</button></div>
+      <div class="addproj"><button class="btn primary" id="adddev">Add a device…</button><button class="btn" id="addurl">Add by URL…</button></div>
       <div class="adderr" id="deverr"></div>
     </div>`;
 
@@ -237,6 +238,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   void readCachedDevices();
   void refreshDeviceList();
   $("#adddev").onclick = () => { disposePairing = openAddDevice(refreshDeviceList); };
+  $("#addurl").onclick = () => { disposePairing?.(); disposePairing = openAddByUrl(refreshDeviceList); };
   mountCreationDevice(root, (dispose) => { disposeCreation = dispose; });
   $("#creationdev")?.addEventListener("change", mountAgentDefaults);
   disposeCatalogState = onDeviceStateChanged(mountAgentDefaults);

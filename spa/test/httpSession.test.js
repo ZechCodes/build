@@ -32,7 +32,7 @@ describe("HTTP session adapter and fences", () => {
 
   it("waits for the stream hello, then supplies the greeting and explicit resource calls", async () => {
     const { endpoint } = make();
-    const session = await open(endpoint);
+    const session = await open(endpoint); session.allowRefresh();
     expect(await session.rawCall("session.hello")).toEqual(greeting);
     await session.rawCall("tasks.update", { task_id: "task", body: "text" }, { priority: "background", write: { operation_id: "op", after: [] } });
     expect(endpoint.request).toHaveBeenCalledWith(opening, expect.objectContaining({ path: "/v1/tasks/task", body: { body: "text" } }), expect.objectContaining({ subscriptionId: "stream", priority: "background", write: { operation_id: "op", after: [] } }));
@@ -42,7 +42,7 @@ describe("HTTP session adapter and fences", () => {
   it("preserves typed refusals and write acknowledgments", async () => {
     const { endpoint } = make({ request: vi.fn().mockResolvedValueOnce({ ok: false, error: "precondition", error_code: "stale_body", retryable: false, details: { current: "hash" }, bridge_epoch: "epoch" })
       .mockResolvedValueOnce({ ok: true, write: { phase: "ack" }, result: { changed: true }, bridge_epoch: "epoch" }) });
-    const session = await open(endpoint);
+    const session = await open(endpoint); session.allowRefresh();
     await expect(session.rawCall("tasks.update", { task_id: "task" })).rejects.toMatchObject({ error_code: "stale_body", details: { current: "hash" }, uncertain: false });
     const writes = [];
     session.onWriteFrame((frame) => writes.push(frame));
@@ -55,11 +55,13 @@ describe("HTTP session adapter and fences", () => {
     let resolve;
     const { endpoint, event } = make({ request: vi.fn(() => new Promise((done) => { resolve = done; })) });
     const lost = vi.fn(); const pushed = vi.fn();
-    const session = await open(endpoint, { onLost: lost, onPush: pushed });
+    const session = await open(endpoint, { onLost: lost, onPush: pushed }); session.allowRefresh();
     const pending = session.rawCall("tasks.update", { task_id: "task" });
+    const rejected = expect(pending).rejects.toMatchObject({ uncertain: true });
+    await vi.waitFor(() => expect(resolve).toBeTypeOf("function"));
     await event({ event: "reset_required", data: {} });
     resolve({ ok: true, result: { obsolete: true }, bridge_epoch: "epoch" });
-    await expect(pending).rejects.toMatchObject({ uncertain: true });
+    await rejected;
     expect(lost).toHaveBeenCalledTimes(1);
     await event({ event: "event", data: { type: "changes", bridge_epoch: "epoch" } });
     expect(pushed).not.toHaveBeenCalled();
@@ -67,7 +69,7 @@ describe("HTTP session adapter and fences", () => {
 
   it("rejects wrong epoch push/reply and wrong opening hello", async () => {
     const { endpoint, event } = make({ request: vi.fn().mockResolvedValue({ ok: true, result: {}, bridge_epoch: "other" }) });
-    const pushed = vi.fn(); const session = await open(endpoint, { onPush: pushed });
+    const pushed = vi.fn(); const session = await open(endpoint, { onPush: pushed }); session.allowRefresh();
     await expect(session.rawCall("ping")).rejects.toThrow();
     await event({ event: "event", data: { type: "changes", bridge_epoch: "other" } });
     expect(pushed).not.toHaveBeenCalled();
@@ -75,10 +77,21 @@ describe("HTTP session adapter and fences", () => {
 
   it("does not send after captured scope is cancelled or account replaced", async () => {
     let active = true;
-    const { endpoint } = make(); const session = await open(endpoint, { isCurrent: () => active });
+    const { endpoint } = make(); const session = await open(endpoint, { isCurrent: () => active }); session.allowRefresh();
     active = false;
     await expect(session.rawCall("tasks.update", { task_id: "task" })).rejects.toMatchObject({ uncertain: false });
     expect(endpoint.request).not.toHaveBeenCalled();
     session.close();
+  });
+
+  it("holds ordinary actions until subscriptions are ready and refuses them after close", async () => {
+    const { endpoint } = make(); const session = await open(endpoint);
+    const pending = session.rawCall("tasks.update", { task_id: "task" });
+    const rejected = expect(pending).rejects.toMatchObject({ uncertain: false });
+    await Promise.resolve();
+    expect(endpoint.request).not.toHaveBeenCalled();
+    session.close(); session.allowRefresh();
+    await rejected;
+    expect(endpoint.request).not.toHaveBeenCalled();
   });
 });

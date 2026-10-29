@@ -33,9 +33,12 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
   let hello = false;
   let gateRelease;
   const gate = new Promise((resolve) => { gateRelease = resolve; });
+  let refreshRelease;
+  const refreshGate = new Promise((resolve) => { refreshRelease = resolve; });
   const controllers = new Set();
   const pushListeners = new Set([onPush]);
   const writeListeners = new Set();
+  const closeListeners = new Set();
   const bridgeEpoch = createBridgeEpoch();
   const current = () => !closed && isCurrent();
   const check = () => { if (!current()) throw httpFailure("scope_ended"); };
@@ -44,10 +47,13 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
     if (closed) return;
     closed = true;
     gateRelease();
+    refreshRelease();
     for (const controller of controllers) controller.abort(httpFailure("scope_ended"));
     controllers.clear();
     subscription?.close();
     endpoint.close();
+    for (const listener of [...closeListeners]) { try { listener(); } catch { /* Retire every owned resource. */ } }
+    closeListeners.clear();
     pushListeners.clear(); writeListeners.clear();
   };
   const lose = (error = httpFailure("stream_reset")) => {
@@ -88,9 +94,16 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
     close(); throw error;
   }
 
+  const awaitRefresh = async (method, options) => {
+    if (!["ping", "changes.subscribe", "changes.unsubscribe"].includes(method)) {
+      await httpRequest(() => refreshGate, { signal: optionsOf(options)?.signal, timeoutMs: 0, isCurrent: current });
+      check();
+    }
+  };
   const rawCall = async (method, params = {}, options = {}) => {
     check();
     if (method === "session.hello") return opening.greeting;
+    await awaitRefresh(method, options);
     const route = routes.request(method, params);
     const heldOptions = optionsOf(options) || {};
     const assertCurrent = () => { check(); if (heldOptions.assertCurrent) heldOptions.assertCurrent(); };
@@ -123,6 +136,8 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
   return {
     deviceId: endpoint.identity.deviceId, sessionId: opening.session_id, transport: "http", terminalTransport: "webrtc",
     bridgeEpoch, rawCall,
+    allowRefresh: refreshRelease,
+    onClose(fn) { if (closed) fn(); else closeListeners.add(fn); return () => closeListeners.delete(fn); },
     async call(method, params = {}, options = {}) {
       if (method === "session.hello" || method === "ping") return rawCall(method, params, options);
       await httpRequest(() => gate, { signal: optionsOf(options)?.signal, timeoutMs: 0, isCurrent: current });

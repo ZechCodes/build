@@ -36,10 +36,14 @@ export function createHttpRoutes(manifest) {
         return encodeURIComponent(value);
       });
       if (route.verb === "GET" && Object.keys(body).length) throw httpFailure("protocol");
-      return { operationId: route.operationId, method: route.verb, path, ...(route.verb === "GET" ? {} : { body }),
+      const request = { operationId: route.operationId, method: route.verb, path, ...(route.verb === "GET" ? {} : { body }),
         ...(route.requestMaxBytes ? { requestMaxBytes: route.requestMaxBytes } : {}),
         ...(route.responseMaxBytes ? { responseMaxBytes: route.responseMaxBytes } : {}),
       };
+      // Native IPC consumes the original typed params rather than a URL or
+      // renderer-selected HTTP verb. Keep them out of enumerable wire data.
+      Object.defineProperty(request, "params", { value: structuredClone(params) });
+      return request;
     },
   };
 }

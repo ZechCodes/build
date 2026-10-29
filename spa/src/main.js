@@ -26,6 +26,8 @@ import { installMarkdownNavigation } from "./core/markdownNavigation.js";
 import { installMarkdownTableFocus } from "./core/markdownTableFocus.js";
 import { installMarkdownMermaid } from "./core/markdownMermaid.js";
 import { installMarkdownImages } from "./core/markdownImages.js";
+import { restoreHttpConnections } from "./core/httpConnections.js";
+import { resumeAddByUrl } from "./sheets/addByUrl.js";
 
 initBuildChannel();
 installWindowControlsOverlay();
@@ -85,7 +87,10 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") requestSheetDismiss();
 });
 
-boot();
+void restoreHttpConnections().catch(() => {}).then(() => {
+  void boot();
+  resumeAddByUrl(() => boot());
+});
 // The user arriving, told to each bridge: where "Done since you left" starts.
 startUserPresence();
 // Every bridge that greets is handed this browser's notification key again, so

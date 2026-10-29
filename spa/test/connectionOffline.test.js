@@ -15,6 +15,18 @@ import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
 
 const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn(), terminalDeviceId: vi.fn(() => null) }));
 const wire = vi.hoisted(() => ({ openSession: vi.fn(), openPeerLink: vi.fn() }));
+const http = vi.hoisted(() => ({ selected: new Set(), open: vi.fn() }));
+vi.mock("../src/core/httpConnections.js", async (importOriginal) => ({
+  ...(await importOriginal()),
+  usesHttp: (id) => http.selected.has(id),
+  httpRecoveryCandidates: (devices) => devices.map((device) => http.selected.has(device.id) ? { ...device, status: "online" } : device),
+  forgetHttpConnection: async (id) => http.selected.delete(id),
+  resetHttpConnections: () => http.selected.clear(),
+  restoreHttpConnections: async () => {},
+  selectHttpConnection: async ({ deviceId }) => http.selected.add(deviceId),
+  selectWebRtcConnection: async (id) => http.selected.delete(id),
+}));
+vi.mock("../src/core/httpDeviceConnection.js", () => ({ openHttpDeviceConnection: (...args) => http.open(...args) }));
 
 let devices = [];
 let boardRows = new Map();
@@ -313,6 +325,7 @@ beforeEach(async () => {
   await writeCached(DEVICES_ADDRESS, devices);
   App.selectedDeviceId = null;
   App.route = { name: "inbox" };
+  http.open.mockReset();
   terminals.followTerminalDevice.mockClear();
   captures.flush.mockClear();
   account.fetchDevices = vi.fn(async () => devices);
@@ -2053,5 +2066,45 @@ describe("a machine a page stands on, which the account calls offline", () => {
 
     expect(openedFor("dev-b")).toHaveLength(1);
     expect(liveIds()).toEqual(["dev-b"]);
+  });
+});
+
+describe("explicit HTTP selection with independent relay presence", () => {
+  it("keeps healthy HTTP through relay flapping and shares one dial", async () => {
+    http.selected.add("dev-a");
+    devices = [longGone("dev-a", "Laptop")]; App.devices = devices;
+    let finish;
+    http.open.mockImplementation(async (deviceId) => {
+      await new Promise((resolve) => { finish = resolve; });
+      const session = fakeSession(deviceId); session.transport = "http";
+      const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
+      return adoptDeviceSession(session);
+    });
+    const first = connectDevice("dev-a");
+    const joined = connectDevice("dev-a");
+    expect(joined).toBe(first);
+    await flush(); finish(); await first;
+    const session = lastSession("dev-a");
+    for (const status of ["offline", "online", "offline"]) {
+      devices = [{ ...devices[0], status }]; App.devices = devices;
+      syncDeviceRecoveryPresence(devices); deviceWentAway("dev-a");
+      await openDeviceSessions().settled;
+    }
+    expect(http.open).toHaveBeenCalledOnce();
+    expect(session.close).not.toHaveBeenCalled();
+    expect(contextFor("dev-a").session).toBe(session);
+    expect(wire.openSession).not.toHaveBeenCalled();
+    retireDevice("dev-a");
+    expect(session.close).toHaveBeenCalledOnce();
+  });
+
+  it("never falls back to WebRTC after HTTP authorization refusal", async () => {
+    http.selected.add("dev-a");
+    http.open.mockRejectedValue(Object.assign(Error("Authorization refused"), { code: "authentication", blockedReason: "http-auth" }));
+    await expect(connectDevice("dev-a")).rejects.toThrow("Authorization refused");
+    expect(wire.openSession).not.toHaveBeenCalled();
+    expect(contextFor("dev-a").blocked).toBe("http-auth");
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(http.open).toHaveBeenCalledOnce();
   });
 });

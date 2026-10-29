@@ -100,13 +100,13 @@ function projectAgentsOf(feed) {
 const projectRostersOf = (feed) => new Map((feed?.projects || []).filter((project) => project.projectRoster)
   .map((project) => [project.projectKey, project.projectRoster]));
 
-export function referenceTables({ feed = null, tasks = {} } = {}) {
+export function referenceTables({ feed = null, tasks = {}, tasksComplete = {}, taskLookups = {} } = {}) {
   const workspaces = (feed?.workspaces || []).filter((workspace) => workspace.projectKey).map(workspaceEntry);
   const projects = (feed?.projects || []).filter((project) => project.projectKey).map((project) => ({
     ...placeOfKey(project.projectKey), projectKey: project.projectKey, name: String(project.name || project.id || ""),
   }));
   return { workspaces, projects, agents: agentsOf(feed, workspaces), projectAgents: projectAgentsOf(feed), projectRosters: projectRostersOf(feed),
-    tasks: tasks || {}, held: Boolean(feed) };
+    tasks: tasks || {}, tasksComplete, taskLookups, held: Boolean(feed) };
 }
 
 /** The one row a reader meant, out of those that answer to what they wrote:
@@ -184,10 +184,13 @@ export function resolverFor(tables, { place = null, identities = {} } = {}) {
   const heldOrUnknown = (answer) => (tables.held ? answer : undefined);
   return {
     task(number) {
-      const list = here && tables.tasks[here.projectKey];
-      if (!Array.isArray(list)) return undefined;
-      const found = list.find((task) => Number(task.number) === Number(number));
-      return found?.id ? { deviceId: here.deviceId, projectId: here.projectId, taskId: found.id, title: found.title || "" } : null;
+      if (!here) return undefined;
+      const point = tables.taskLookups[here.projectKey]?.[number];
+      if (point?.status === "missing") return null;
+      const list = tables.tasks[here.projectKey];
+      const found = point?.status === "found" ? point.task : list?.find((task) => Number(task.number) === Number(number));
+      if (found?.id) return { deviceId: here.deviceId, projectId: here.projectId, taskId: found.id, title: found.title || "" };
+      return Array.isArray(list) && tables.tasksComplete[here.projectKey] !== false ? null : undefined;
     },
     workspace: (said) => heldOrUnknown(workspaceAt(tables, String(said || "").trim(), here?.projectKey)),
     project: (said) => heldOrUnknown(nearest(answering(tables.projects, String(said || "").trim(), "projectId"), here?.projectKey)),

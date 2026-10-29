@@ -16,9 +16,9 @@
  *  message limit counts and what bridge/src/rtc/chunk.rs measures. */
 export const CHUNK_BYTES = 16 * 1024;
 
-/** The largest envelope a reassembly may add up to — the relay's own frame cap,
- *  so neither carrier accepts what the other would refuse. Past it the parts
- *  are a peer spending this tab's memory, and the channel closes. */
+/** The largest application frame a channel accepts, whole or reassembled.
+ *  Past it the frame spends too much of this tab's memory, and the channel
+ *  closes. */
 export const MAX_REASSEMBLED_BYTES = 8 * 1024 * 1024;
 
 /** How a receiver tells a part from a whole envelope: the wrapper names `part`
@@ -96,6 +96,15 @@ export function splitEnvelope(envelopeJson) {
   return parts.map((data, index) => JSON.stringify({ part: { id, index, count: parts.length }, data }));
 }
 
+const nonnegativeInteger = (value) => Number.isSafeInteger(value) && value >= 0;
+
+/** Reject malformed fields before they can affect ordering or byte accounting. */
+function validPart(part, data) {
+  return part && nonnegativeInteger(part.id) && nonnegativeInteger(part.index)
+    && nonnegativeInteger(part.count) && part.count > 0 && part.index < part.count
+    && typeof data === "string";
+}
+
 /**
  * One channel's incoming messages, put back together.
  *
@@ -110,7 +119,7 @@ export function createReassembler() {
     const open = pending;
     pending = null;
     if (open) {
-      if (open.id !== part.id || open.nextIndex !== part.index) {
+      if (open.id !== part.id || open.count !== part.count || open.nextIndex !== part.index) {
         throw new ChunkError(`part ${part.index} of message ${part.id} arrived where part ${open.nextIndex} was due`);
       }
       return open;
@@ -127,10 +136,13 @@ export function createReassembler() {
         const open = pending;
         pending = null;
         if (open) throw new ChunkError(`a whole message arrived where part ${open.nextIndex} was due`);
+        if (utf8Length(text) > MAX_REASSEMBLED_BYTES) {
+          throw new ChunkError(`a message past the ${MAX_REASSEMBLED_BYTES} byte reassembly limit`);
+        }
         return text;
       }
       const { part, data } = JSON.parse(text);
-      if (!part || !Number.isInteger(part.count) || !Number.isInteger(part.index) || part.count === 0 || part.index >= part.count) {
+      if (!validPart(part, data)) {
         pending = null;
         throw new ChunkError(`a part that is not one: ${text.slice(0, 64)}`);
       }

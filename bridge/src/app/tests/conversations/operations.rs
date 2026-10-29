@@ -1305,3 +1305,288 @@ fn thread_post_refuses_terminal_and_unknown_entities() {
         "{unknown:?}"
     );
 }
+
+#[test]
+fn codex_slash_local_refusal_is_durable_idempotent_and_never_delivered() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_, run_id) = planned_run_in_review(&mut state, "local refusal");
+    state
+        .runs
+        .get_mut(&run_id)
+        .unwrap()
+        .agents
+        .primary_mut()
+        .unwrap()
+        .choice
+        .provider = AgentProvider::CodexAppServer;
+    let before = primary_thread(&state.runs[&run_id].agents).items.len();
+    let queued = state.delivery_queue.queued().count();
+    let params =
+        json!({"entity_id": run_id, "body": " /daybreak ", "operation_id": "local-daybreak"});
+    let answer = state.thread_post(&params).unwrap();
+    assert_eq!(answer["operation_status"], "delivered");
+    assert_eq!(
+        answer["operation_error"],
+        "Build can't run `/daybreak` on this Codex agent."
+    );
+    state.thread_post(&params).unwrap();
+    assert_eq!(state.delivery_queue.queued().count(), queued);
+    let thread = primary_thread(&state.runs[&run_id].agents);
+    assert_eq!(thread.items.len(), before + 2);
+    let messages: Vec<_> = thread.items[before..]
+        .iter()
+        .filter_map(|item| match item {
+            crate::thread::ThreadItem::Message(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert!(!messages[0].from_build);
+    assert!(messages[1].from_build);
+    assert_eq!(messages[0].operation_id.as_deref(), Some("local-daybreak"));
+    assert_eq!(
+        messages[0].delivery_status,
+        Some(crate::thread::MessageDeliveryStatus::Failed)
+    );
+    assert_eq!(messages[1].role, crate::thread::MessageRole::Agent);
+    assert!(messages[1].operation_id.is_none());
+    assert!(messages.iter().all(|message| message.seen_at.is_none()));
+    let receipt = state.operation_receipt("local-daybreak").unwrap().unwrap();
+    assert!(receipt.delivery.is_none());
+    let before = thread.items.len();
+    let error = state
+        .thread_post(&json!({"entity_id":run_id,"body":"/daybreak"}))
+        .unwrap_err();
+    assert!(error.contains("can't run"));
+    assert_eq!(
+        primary_thread(&state.runs[&run_id].agents).items.len(),
+        before
+    );
+}
+
+#[test]
+fn codex_slash_refusal_rolls_back_and_survives_reload_without_provider_input() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "daybreak-persist");
+    let active = state.runs.get_mut(&run_id).unwrap();
+    active.agents.primary_mut().unwrap().choice.provider = AgentProvider::CodexAppServer;
+    primary_thread_mut(&mut active.agents).post_agent_progress(
+        "Still working",
+        None,
+        now_rfc3339(),
+    );
+    let active = state.take_run(&run_id).unwrap();
+    state.finish_run_mutation(run_id.clone(), active).unwrap();
+    let before = primary_thread(&state.runs[&run_id].agents).clone();
+    let params = json!({"entity_id":run_id,"body":"/daybreak","operation_id":"persist-daybreak"});
+    state.store.as_ref().unwrap().fail_next_write();
+    assert!(state.thread_post(&params).is_err());
+    assert_eq!(primary_thread(&state.runs[&run_id].agents), &before);
+    assert!(state
+        .operation_receipt("persist-daybreak")
+        .unwrap()
+        .is_none());
+    assert!(state
+        .operation_ledger
+        .consume_acceptance_for(&run_id)
+        .is_none());
+    state.thread_post(&params).unwrap();
+    drop(state);
+    let mut reloaded = qa_state(&repo, dir.path());
+    let response = reloaded.thread_post(&params).unwrap();
+    assert_eq!(
+        response["operation_error"],
+        "Build can't run `/daybreak` on this Codex agent."
+    );
+    let thread = primary_thread_mut(&mut reloaded.runs.get_mut(&run_id).unwrap().agents);
+    assert!(thread
+        .read_unread(&now_rfc3339())
+        .iter()
+        .all(|message| message.body != "/daybreak" && !message.from_build));
+    let last = thread.items.last().unwrap();
+    assert!(
+        matches!(last, crate::thread::ThreadItem::Message(message) if message.from_build && message.still_working)
+    );
+    assert!(reloaded
+        .delivery_queue
+        .queued()
+        .all(|turn| turn.operation_id.as_deref() != Some("persist-daybreak")));
+}
+
+#[test]
+fn codex_slash_refusal_does_not_intercept_other_text_or_providers() {
+    for (provider, body) in [
+        (AgentProvider::CodexAppServer, "/compact"),
+        (AgentProvider::CodexAppServer, "/compact focus"),
+        (AgentProvider::CodexAppServer, "/compact\nfocus"),
+        (AgentProvider::CodexAppServer, "/daybreak/file"),
+        (AgentProvider::CodexAppServer, "/home/zech"),
+        (AgentProvider::CodexAppServer, "/tmp/x"),
+        (AgentProvider::CodexAppServer, "explain /daybreak"),
+        (AgentProvider::ClaudeAdk, "/daybreak"),
+    ] {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "ordinary text");
+        state
+            .runs
+            .get_mut(&run_id)
+            .unwrap()
+            .agents
+            .primary_mut()
+            .unwrap()
+            .choice
+            .provider = provider;
+        let answer = state
+            .thread_post(&json!({"entity_id":run_id,"body":body,"operation_id":"ordinary-text"}))
+            .unwrap();
+        assert_eq!(answer["operation_status"], "queued", "{body}");
+        assert!(answer["operation_error"].is_null(), "{body}");
+        assert!(state
+            .operation_receipt("ordinary-text")
+            .unwrap()
+            .unwrap()
+            .delivery
+            .is_some());
+    }
+}
+
+#[test]
+fn codex_slash_unknown_command_names_and_arguments_are_refused() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_, run_id) = planned_run_in_review(&mut state, "unknown commands");
+    state
+        .runs
+        .get_mut(&run_id)
+        .unwrap()
+        .agents
+        .primary_mut()
+        .unwrap()
+        .choice
+        .provider = AgentProvider::CodexAppServer;
+    for (index, body) in [
+        "/goal do this",
+        "/clear",
+        "/daybreak",
+        "/future-name arg\nmore",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let answer = state
+            .thread_post(
+                &json!({"entity_id":run_id,"body":body,"operation_id":format!("unknown-{index}")}),
+            )
+            .unwrap();
+        assert_eq!(answer["operation_status"], "delivered", "{body}");
+        let name = body.split_whitespace().next().unwrap();
+        assert_eq!(
+            answer["operation_error"],
+            format!("Build can't run `{name}` on this Codex agent.")
+        );
+        assert!(state
+            .operation_receipt(&format!("unknown-{index}"))
+            .unwrap()
+            .unwrap()
+            .delivery
+            .is_none());
+    }
+}
+
+#[test]
+fn codex_slash_refuses_attached_commands_but_preserves_batches_and_agent_posts() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "slash-boundaries");
+    let agent_id = primary_agent_id(&state, &run_id);
+    state
+        .runs
+        .get_mut(&run_id)
+        .unwrap()
+        .agents
+        .primary_mut()
+        .unwrap()
+        .choice
+        .provider = AgentProvider::CodexAppServer;
+    let attached = state.handle(req(
+        "thread.attach",
+        json!({"entity_id":run_id,"filename":"review.png","content_b64":b64encode(ONE_PIXEL_PNG)}),
+    ));
+    assert_eq!(attached["ok"], true, "{attached:?}");
+    let answer = state.thread_post(&json!({"entity_id":run_id,"body":"/future","operation_id":"attached-command","attachments":[attached["result"].clone()]})).unwrap();
+    assert_eq!(answer["operation_status"], "delivered");
+    let original = primary_thread(&state.runs[&run_id].agents)
+        .items
+        .iter()
+        .find_map(|item| match item {
+            crate::thread::ThreadItem::Message(message)
+                if message.operation_id.as_deref() == Some("attached-command") =>
+            {
+                Some(message)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(original.attachments.len(), 1);
+    let batch = state.thread_post(&json!({"entity_id":run_id,"messages":[{"body":"/future"},{"body":"context"}],"operation_id":"slash-batch"})).unwrap();
+    assert_eq!(batch["operation_status"], "queued");
+    let offer = primary_thread_mut(&mut state.runs.get_mut(&run_id).unwrap().agents)
+        .post_agent_offering(
+            "Choose",
+            suggested(&[("Run", Some("/future"))]),
+            now_rfc3339(),
+            false,
+        );
+    let choice = state.thread_post(&json!({"entity_id":run_id,"operation_id":"slash-option","option_reply":{"message_id":offer,"option_ids":["option-1"]}})).unwrap();
+    assert_eq!(choice["operation_status"], "queued");
+    let requester = crate::operation::OperationRequester {
+        entity_id: run_id.clone(),
+        agent_id: agent_id.clone(),
+        conversation_id: agent_id,
+    };
+    let agent = state
+        .thread_post_from_agent(
+            &json!({"entity_id":run_id,"body":"/future","operation_id":"agent-command"}),
+            requester,
+        )
+        .unwrap();
+    assert_eq!(agent["operation_status"], "queued");
+}
+
+#[test]
+fn codex_slash_refusal_uses_addressed_choice_and_canonical_history() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let canonical_owner = adopted_run(&mut state, &repo, dir.path(), "slash-canonical");
+    let alias_owner = adopted_run(&mut state, &repo, dir.path(), "slash-alias");
+    let canonical = primary_agent_id(&state, &canonical_owner);
+    let alias = primary_agent_id(&state, &alias_owner);
+    let agent = state
+        .runs
+        .get_mut(&alias_owner)
+        .unwrap()
+        .agents
+        .primary_mut()
+        .unwrap();
+    agent.bind_conversation(&canonical);
+    agent.choice.provider = AgentProvider::CodexAppServer;
+    agent.choice_revision = 9;
+    let before = primary_thread(&state.runs[&canonical_owner].agents)
+        .items
+        .len();
+    let response = state.thread_post(&json!({"entity_id":alias_owner,"agent_id":alias,"conversation_id":canonical,"choice_revision":9,"body":"/future","operation_id":"alias-refusal"})).unwrap();
+    assert_eq!(response["operation_status"], "delivered");
+    let receipt = state.operation_receipt("alias-refusal").unwrap().unwrap();
+    assert_eq!(receipt.choice_revision, 9);
+    assert_eq!(receipt.agent_id, alias);
+    assert_eq!(receipt.conversation_id, canonical);
+    assert_eq!(receipt.posted_sequence, receipt.message_start_sequence);
+    assert_eq!(
+        primary_thread(&state.runs[&canonical_owner].agents)
+            .items
+            .len(),
+        before + 2
+    );
+}

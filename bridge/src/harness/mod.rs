@@ -573,6 +573,44 @@ fn refuse_a_session_nobody_can_watch(session: &dyn AgentSession) -> Result<(), H
 /// [`Harness::compacts_on_command`].
 pub const COMPACT_COMMAND: &str = "/compact";
 
+/// Native command admission is explicit per provider; terminal providers keep
+/// their existing passthrough behavior.
+enum SlashCommands {
+    Passthrough,
+    Native(&'static [&'static str]),
+}
+
+const PROVIDER_SLASH_COMMANDS: &[(AgentProvider, SlashCommands)] = &[
+    (AgentProvider::Claude, SlashCommands::Passthrough),
+    (AgentProvider::Codex, SlashCommands::Passthrough),
+    (AgentProvider::ClaudeAdk, SlashCommands::Passthrough),
+    (
+        AgentProvider::CodexAppServer,
+        SlashCommands::Native(&[COMPACT_COMMAND]),
+    ),
+    (AgentProvider::Pi, SlashCommands::Passthrough),
+];
+
+pub(crate) fn unsupported_slash_command(provider: AgentProvider, body: &str) -> Option<&str> {
+    let (_, SlashCommands::Native(supported)) = PROVIDER_SLASH_COMMANDS
+        .iter()
+        .find(|(candidate, _)| *candidate == provider)?
+    else {
+        return None;
+    };
+    let token = body.split_whitespace().next()?;
+    let name = token.strip_prefix('/')?;
+    if !name.as_bytes().first()?.is_ascii_alphabetic()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        || supported.contains(&token)
+    {
+        return None;
+    }
+    Some(token)
+}
+
 /// The implementation for `provider`. The only way to reach one.
 pub fn harness_for(provider: AgentProvider) -> &'static dyn Harness {
     match provider {

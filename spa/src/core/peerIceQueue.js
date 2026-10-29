@@ -1,59 +1,88 @@
 const MAX_OBJECTS = 128;
 const MAX_BYTES = 64 * 1024;
 const encoder = new TextEncoder();
-const endMarker = (candidate) => candidate === null || candidate?.candidate === null;
 const serializedSize = (candidate) => encoder.encode(JSON.stringify(candidate?.toJSON ? candidate.toJSON() : candidate)).byteLength;
+const candidateValue = (value) => value?.type === "rtc.ice" ? value.candidate : value;
+export const isIceEndMarker = (value) => candidateValue(value) === null || [null, ""].includes(candidateValue(value)?.candidate);
+const classifyCandidate = (candidate) => {
+  const size = serializedSize(candidate);
+  if (size > MAX_BYTES) throw new Error("pending ICE queue overflow");
+  const end = isIceEndMarker(candidate);
+  const value = end ? normalizedMarker(candidate) : candidate;
+  return { original: candidate, size, value, end, markerKey: end ? JSON.stringify(value) : null };
+};
+const normalizedMarker = (value) => value?.type === "rtc.ice" ? { ...value, candidate: null } : null;
 
-/** Reservations survive delivery to the relay hold. Release them only when
- * that hold hands the candidate to native ICE or encrypted signaling. */
-export function createPeerIceQueue({ deliver }) {
+/** Each completion lease owns one reservation in one generation. Native ICE
+ * and signaling must release it only after their asynchronous work settles.
+ * The end marker stays reserved until all earlier work has completed. */
+export function createPeerIceQueue({ deliver, accept = () => true }) {
   const held = [];
-  const reservations = new Map();
+  const entries = new Set();
+  const earlyMarkers = new Set();
+  let generation = 0;
   let bytes = 0;
-  let count = 0;
   let ready = false;
   let ended = false;
   let endSeen = false;
+  let marker = null;
+  const flushMarker = () => {
+    if (!ready || !marker || entries.size !== 1) return;
+    const entry = marker;
+    marker = null;
+    deliver(entry.value, entry.release);
+  };
+  const reserve = ({ value, size, markerKey, original }) => {
+    const epoch = generation;
+    const entry = { value, original, markerKey, release: () => {
+      if (epoch !== generation || !entries.delete(entry)) return;
+      bytes -= size;
+      flushMarker();
+    } };
+    entries.add(entry);
+    bytes += size;
+    return entry;
+  };
+  const dispatch = (entry) => {
+    earlyMarkers.delete(entry.markerKey);
+    if (!accept(entry.original)) return entry.release();
+    if (!isIceEndMarker(entry.value)) return deliver(entry.value, entry.release);
+    if (endSeen) return entry.release();
+    endSeen = true;
+    marker = entry;
+    flushMarker();
+  };
   const clear = () => {
+    generation += 1;
     held.length = 0;
-    reservations.clear();
+    entries.clear();
+    earlyMarkers.clear();
     bytes = 0;
-    count = 0;
     ready = false;
     endSeen = false;
+    marker = null;
   };
-  const reserve = (candidate, size) => {
-    const sizes = reservations.get(candidate) || [];
-    sizes.push(size);
-    reservations.set(candidate, sizes);
+  const duplicate = (entry) => entry.end && (endSeen || earlyMarkers.has(entry.markerKey));
+  const ensureBudget = (size) => {
+    if (entries.size >= MAX_OBJECTS || bytes + size > MAX_BYTES) throw new Error("pending ICE queue overflow");
   };
   return {
     offer(candidate) {
       if (ended) return;
-      const end = endMarker(candidate);
-      if (end && endSeen) return;
-      const size = serializedSize(candidate);
-      if (count >= MAX_OBJECTS || bytes + size > MAX_BYTES) throw new Error("pending ICE queue overflow");
-      if (end) endSeen = true;
-      count += 1;
-      bytes += size;
-      reserve(candidate, size);
-      if (ready) deliver(candidate);
-      else held.push(candidate);
-    },
-    delivered(candidate) {
-      const sizes = reservations.get(candidate);
-      if (!sizes?.length) return;
-      bytes -= sizes.shift();
-      count -= 1;
-      if (!sizes.length) reservations.delete(candidate);
+      if (ready && !accept(candidate)) return;
+      const classified = classifyCandidate(candidate);
+      if (duplicate(classified)) return;
+      ensureBudget(classified.size);
+      const entry = reserve(classified);
+      if (ready) dispatch(entry);
+      else { if (entry.markerKey !== null) earlyMarkers.add(entry.markerKey); held.push(entry); }
     },
     open() {
       if (ended) return;
       ready = true;
-      for (const candidate of held.splice(0)) deliver(candidate);
+      for (const entry of held.splice(0)) dispatch(entry);
     },
-    hasPending: () => count > 0,
+    hasPending: () => entries.size > 0,
     reset: clear,
     close() { ended = true; clear(); },
   };

@@ -2091,7 +2091,7 @@ describe("clear startup boundaries", () => {
     const link = await stood.link;
     await vi.waitFor(() => expect(stood.peer().remoteCandidates).toEqual([remote, null]));
     const outbound = stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params);
-    expect(outbound.map((params) => params.candidate)).toEqual([local, null]);
+    expect(outbound.map((params) => params.candidate)).toEqual(protocol === "dtls-json-v1" ? [local, null] : [local]);
     if (protocol === "dtls-json-v1") expect(outbound.every((params) => params.peer_token === clearToken(2) && params.negotiation === 1)).toBe(true);
     else expect(outbound.every((params) => params.peer_token === undefined)).toBe(true);
     link.close();
@@ -2266,7 +2266,8 @@ describe("clear negotiation attempt fences", () => {
   it.each(["local", "remote"])("includes held %s relay objects in the queue bound", async (direction) => {
     const stood = await clearStand(); const peer = stood.peer();
     const candidate = (index, type) => ({ type, candidate: `candidate:${index} typ ${type}` });
-    const emit = direction === "local" ? (value) => peer.gather(value) : (value) => stood.candidateSinks[0]({ type: "rtc.ice", candidate: value, peer_token: clearToken(2), negotiation: 1 });
+    const sink = stood.candidateSinks[0];
+    const emit = direction === "local" ? (value) => peer.gather(value) : (value) => sink({ type: "rtc.ice", candidate: value, peer_token: clearToken(2), negotiation: 1 });
     emit(candidate(0, "host"));
     for (let i = 0; i < 129; i++) emit(candidate(i, "relay"));
     await expect(stood.link).rejects.toThrow();
@@ -2441,4 +2442,120 @@ describe("finite signaling tail", () => {
     stood.peer().gather({ candidate: "candidate:late typ host" });
     expect(stood.signalled.length).toBe(before);
   });
+});
+
+describe("actual pending ICE completion bounds", () => {
+  it.each(["local", "remote"])("retains the %s reservation across asynchronous delivery", async (direction) => {
+    const stood = await clearStand({ onLocal: (peer) => { peer.iceGatheringState = "gathering"; },
+      signalImpl: (method, params) => method === "rtc.offer" ? clearAnswer(params) : method === "rtc.ice" ? new Promise(() => {}) : Promise.resolve({}) });
+    const link = await finishClear(stood); onTestFinished(() => link.close());
+    const peer = stood.peer(); peer.addIceCandidate = vi.fn(() => new Promise(() => {}));
+    const emit = (candidate) => direction === "local" ? peer.gather(candidate) : stood.candidateSinks[0]({ type: "rtc.ice", peer_token: clearToken(2), negotiation: 1, candidate });
+    for (let i = 0; i < 128; i++) emit({ candidate: `candidate:${i} typ host` });
+    expect(peer.closed).toBe(false);
+    emit({ candidate: "candidate:overflow typ host" }); expect(peer.closed).toBe(true);
+  });
+  it.each(["local", "remote"])("retains the %s byte budget across asynchronous delivery", async (direction) => {
+    const stood = await clearStand({ onLocal: (peer) => { peer.iceGatheringState = "gathering"; },
+      signalImpl: (method, params) => method === "rtc.offer" ? clearAnswer(params) : method === "rtc.ice" ? new Promise(() => {}) : Promise.resolve({}) });
+    const link = await finishClear(stood); onTestFinished(() => link.close());
+    const peer = stood.peer(); peer.addIceCandidate = vi.fn(() => new Promise(() => {}));
+    const emit = (candidate) => direction === "local" ? peer.gather(candidate) : stood.candidateSinks[0]({ type: "rtc.ice", peer_token: clearToken(2), negotiation: 1, candidate });
+    for (let i = 0; i < 3; i++) emit({ candidate: `candidate:${i} typ host ${"x".repeat(20000)}` });
+    expect(peer.closed).toBe(false);
+    emit({ candidate: `candidate:overflow typ host ${"x".repeat(20000)}` }); expect(peer.closed).toBe(true);
+  });
+
+  it.each(["local", "remote"])("orders the %s marker behind relay holds and asynchronous handoff", async (direction) => {
+    vi.useFakeTimers(); onTestFinished(() => vi.useRealTimers());
+    const releases = [];
+    const delivered = [];
+    const stood = await clearStand({ onLocal: (peer) => { peer.iceGatheringState = "gathering"; },
+      signalImpl: (method, params) => {
+        if (method === "rtc.offer") return clearAnswer(params);
+        if (method !== "rtc.ice") return Promise.resolve({});
+        delivered.push(params.candidate); return new Promise((resolve) => releases.push(resolve));
+      } });
+    const peer = stood.peer(); peer.addIceCandidate = vi.fn((candidate) => { delivered.push(candidate); return new Promise((resolve) => releases.push(resolve)); });
+    const emit = (candidate) => direction === "local" ? peer.gather(candidate) : stood.candidateSinks[0]({ type: "rtc.ice", peer_token: clearToken(2), negotiation: 1, candidate });
+    emit({ candidate: "candidate:1 typ host" }); emit({ candidate: "candidate:2 typ relay" }); emit({ candidate: "" }); emit(null);
+    expect(delivered.map((value) => value?.candidate || null)).toEqual(["candidate:1 typ host"]);
+    await vi.advanceTimersByTimeAsync(1501);
+    expect(delivered.map((value) => value?.candidate || null)).toEqual(["candidate:1 typ host", "candidate:2 typ relay"]);
+    releases.splice(0).forEach((release) => release()); await vi.advanceTimersByTimeAsync(0);
+    expect(delivered.map((value) => value?.candidate || null)).toEqual(["candidate:1 typ host", "candidate:2 typ relay", null]);
+    releases.splice(0).forEach((release) => release());
+    stood.peer().close(); await expect(stood.link).rejects.toThrow();
+  });
+});
+
+describe("ICE audit lifecycle regressions", () => {
+  it("retires a healthy optional restart at its deadline without admitting late ICE", async () => {
+    vi.useFakeTimers(); onTestFinished(() => vi.useRealTimers());
+    let peer;
+    const stood = await clearStand({ openTimeoutMs: 1000, onFailed: async () => { peer.iceGatheringState = "gathering"; } });
+    peer = stood.peer();
+    peer.getStats = async () => asReport([
+      ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+      ...pairEntries("direct", { localType: "host", remoteType: "host" }),
+    ]);
+    const link = await finishClear(stood); onTestFinished(() => link.close());
+    await vi.advanceTimersByTimeAsync(20001);
+    expect(stood.signalled.filter(([method]) => method === "rtc.offer")).toHaveLength(2);
+    const callback = peer.listeners.icecandidate[0];
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(peer.closed).toBe(false);
+    callback({ candidate: { candidate: "candidate:late typ host" } });
+    peer.gather({ candidate: "candidate:later typ host" });
+    stood.candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: "candidate:remote typ host" }, peer_token: clearToken(2), negotiation: 2 });
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice")).toEqual([]);
+    expect(peer.remoteCandidates).toEqual([]);
+  });
+
+  it("expires pending native ICE after signaling already completed", async () => {
+    vi.useFakeTimers(); onTestFinished(() => vi.useRealTimers());
+    const stood = await clearStand({ openTimeoutMs: 1000 }); const link = await finishClear(stood);
+    onTestFinished(() => link.close()); await link.whenInitialSignalingComplete();
+    let finishNative;
+    stood.peer().addIceCandidate = () => new Promise((resolve) => { finishNative = resolve; });
+    stood.candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: "candidate:pending typ host" }, peer_token: clearToken(2), negotiation: 1 });
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(stood.peer().closed).toBe(true); expect(vi.getTimerCount()).toBe(0);
+    finishNative(); await vi.advanceTimersByTimeAsync(0);
+    expect(stood.peer().closed).toBe(true);
+  });
+
+  it("does not release reused successor candidate reservations when an old signal settles", async () => {
+    const completes = [];
+    const stood = await clearStand({ signalImpl: (method, params) => method === "rtc.offer" ? clearAnswer(params)
+      : method === "rtc.ice" ? new Promise((resolve) => completes.push(resolve)) : Promise.resolve({}) });
+    const link = await finishClear(stood); onTestFinished(() => link.close()); const peer = stood.peer();
+    const reused = { candidate: "candidate:reused typ host" }; peer.gather(reused);
+    const oldSignal = completes[0]; peer.fail(); await vi.waitFor(() => expect(peer.remoteDescriptions).toHaveLength(2));
+    peer.gather(reused); oldSignal(); await Promise.resolve(); await Promise.resolve();
+    for (let i = 0; i < 127; i++) peer.gather({ candidate: `candidate:${i} typ host` });
+    expect(peer.closed).toBe(false);
+    peer.gather({ candidate: "candidate:overflow typ host" }); expect(peer.closed).toBe(true);
+  });
+
+  it("normalizes empty native markers but sends no end-marker RPC to a legacy bridge", async () => {
+    const host = { candidate: "candidate:1 typ host" };
+    const stood = await clearStand({ respond: async () => ({ sdp: clearSdp("CD") }), onLocal: (peer) => {
+      peer.gather(host); peer.gather({ candidate: "" }); peer.gather(null);
+    } });
+    await nativeReady(stood); const link = await stood.link; onTestFinished(() => link.close());
+    await link.whenInitialSignalingComplete();
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params)).toEqual([{ candidate: host }]);
+  });
+});
+
+it("ignores stale negotiation pushes before the fresh answer authenticates its token", async () => {
+  let complete;
+  const stood = await clearStand({ waitForAnswer: false, respond: (params) => new Promise((resolve) => { complete = () => clearAnswer(params).then(resolve); }) });
+  await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
+  const sink = stood.candidateSinks[0];
+  for (let i = 0; i < 129; i++) sink({ type: "rtc.ice", candidate: { candidate: `candidate:${i} typ host` }, peer_token: clearToken(9), negotiation: 0 });
+  expect(stood.peer().closed).toBe(false);
+  await complete(); await vi.waitFor(() => expect(stood.peer().remoteDescriptions).toHaveLength(1));
+  const link = await finishClear(stood); expect(stood.peer().remoteCandidates).toEqual([]); link.close();
 });

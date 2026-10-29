@@ -5,11 +5,11 @@ import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { createDirectPairMonitor } from "./directPairMonitor.js";
 import { browserCandidateDiagnostic, browserRtcErrorName, candidateDiagnostic, directPairNoTryReason, remoteCandidateOutcome, safeCandidateReason } from "./rtcDiagnostics.js";
 import { acceptPeerAnswer, createPeerOffer, DTLS_JSON_PROTOCOL } from "./peerBinding.js";
-import { createPeerIceQueue } from "./peerIceQueue.js";
+import { createPeerIceQueue, isIceEndMarker } from "./peerIceQueue.js";
 import { CHANNELS, createRoleBindings, terminalCredentials } from "./peerChannelBindings.js";
 
 const OPEN_TIMEOUT_MS = 15000;
-const HELD_ICE_PUSH = Symbol("held authenticated ICE push");
+const HELD_ICE_PUSH = Symbol("held ICE completion lease");
 
 const blockedBy = (reason, message) => Object.assign(new Error(message), { blockedReason: reason });
 const safeState = (state) => (["new", "connecting", "connected", "disconnected", "failed", "closed"].includes(state) ? state : "unknown");
@@ -129,7 +129,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   let initialSignalingComplete = Promise.resolve();
   let currentSignalingComplete = initialSignalingComplete;
   const newLocalCandidates = () => ({
-    generation: negotiationGeneration, active: true, ufrags: new Set(), gathered: candidateCounts(), delivered: candidateCounts(), failed: candidateCounts(), pending: new Set(),
+    generation: negotiationGeneration, active: true, controller: new AbortController(), deadlineTimer: null, ufrags: new Set(), gathered: candidateCounts(), delivered: candidateCounts(), failed: candidateCounts(), pending: new Set(),
     completed: false, embeddedHost: false,
   });
   let localCandidates = newLocalCandidates();
@@ -184,6 +184,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     target.addEventListener(type, listener);
     observed.push(() => target.removeEventListener(type, listener));
   };
+  const attemptFailure = (error) => fatalError || error;
   const ensureActive = () => {
     if (fatalError) throw fatalError;
     if (torn) throw blockedBy("failed", "the peer connection closed");
@@ -196,57 +197,63 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   // the browser is the controlling agent, and nomination is the browser's.
   const holdInbound = createRelayHold({
     deliver: async (held) => {
-      if (torn) return;
-      const push = held?.[HELD_ICE_PUSH];
-      if (push) inboundIce.delivered(push);
-      const candidate = push ? push.candidate : held;
-      const detail = { ...browserCandidateDiagnostic(candidate), generation: negotiationGeneration };
+      const lease = held?.[HELD_ICE_PUSH];
+      const round = lease?.round || localCandidates;
+      const candidate = lease ? lease.value.candidate : held;
+      const detail = { ...browserCandidateDiagnostic(candidate), generation: round.generation };
       try {
-        await peer.addIceCandidate(candidate);
+        if (torn || !round.active) return;
+        await iceWork(() => peer.addIceCandidate(candidate), round.controller.signal);
         diagnostic("remote-candidate", { ...detail, outcome: "accepted" });
       } catch (error) {
+        if (!round.active) return;
         diagnostic("remote-candidate", { ...detail, outcome: remoteCandidateOutcome(error), error: browserRtcErrorName(error) });
         diagnostic("candidate-failed", { direction: "remote" });
-      }
+      } finally { lease?.release(); }
     },
   });
-  const outboundCandidatesDelivered = (round = localCandidates) => Promise.all([...round.pending]);
+  const outboundCandidatesDelivered = async (round = localCandidates) => {
+    while (round.active && round.pending.size) await Promise.all([...round.pending]);
+  };
   const holdOutbound = createRelayHold({
-    deliver: (gathered) => {
-      if (torn) return;
-      // Held as the RTCIceCandidate — that is the shape whose `type` the hold
-      // reads — and serialised only on the way out, because `toJSON` does not
-      // carry it.
-      outboundIce?.delivered(gathered);
+    deliver: (held) => {
+      const { lease, round, value: gathered } = unpackIceLease(held, localCandidates);
+      if (torn || !round.active) { lease?.release(); return; }
+      if (lease && isIceEndMarker(gathered) && !selection.isClear()) { lease.release(); return; }
       const candidate = gathered?.toJSON ? gathered.toJSON() : gathered;
-      const round = localCandidates;
       const type = countedCandidateType(gathered);
-      const delivery = signal("rtc.ice", { candidate, ...selection.controls() }).then(() => {
-        round.delivered[type] += 1;
+      const delivery = iceWork(() => signal("rtc.ice", { candidate, ...roundControls(round) }, { signal: round.controller.signal }), round.controller.signal).then(() => {
+        if (round.active) round.delivered[type] += 1;
       }).catch((error) => {
+        if (!round.active) return;
         round.failed[type] += 1;
         const reason = safeCandidateReason(error?.details?.reason);
         diagnostic("candidate-failed", { direction: "local", ...(reason ? { reason } : {}) });
       }).finally(() => {
+        lease?.release();
         round.pending.delete(delivery);
-        if (peer.iceGatheringState === "complete") reportLocalCandidates("candidate-delivered", round);
+        if (round.active && peer.iceGatheringState === "complete") reportLocalCandidates("candidate-delivered", round);
       });
       round.pending.add(delivery);
     },
   });
+  const roundControls = (round) => round.controls || selection.controls();
+  const heldLease = (value, release) => ({ type: candidateTypeOf(candidateForHold(value)), [HELD_ICE_PUSH]: { value, release, round: localCandidates } });
   const failIce = (error) => {
     fatalError = error;
     tearDown("the ICE candidate queue overflowed");
   };
-  const outboundIce = boundedIce(binding, (candidate) => holdOutbound.offer(candidate));
-  const inboundIce = boundedIce(binding, (push) => {
-    if (selection.acceptsIce(push)) holdInbound.offer({ type: candidateTypeOf(push.candidate), [HELD_ICE_PUSH]: push });
-    else inboundIce.delivered(push);
-  });
-  const releaseIce = () => { outboundIce?.open(); inboundIce?.open(); };
+  const outboundIce = boundedIce(binding, (value, release) => holdOutbound.offer(heldLease(value, release)));
+  const inboundIce = boundedIce(binding, (value, release) => holdInbound.offer(heldLease(value, release)), (push) => selection.acceptsIce(push));
+  const releaseIce = () => {
+    localCandidates.controls = selection.controls();
+    outboundIce?.open();
+    inboundIce?.open();
+  };
   const receiveIce = (push) => {
     if (binding && !localCandidates.active) return;
     if (!binding) return holdInbound.offer(push.candidate);
+    if (!selection.mayAcceptIce(push)) return;
     try {
       if (!selection.ready() || selection.acceptsIce(push)) inboundIce.offer(push);
     } catch (error) { failIce(error); }
@@ -290,7 +297,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   const outgoingForRound = (round) => (event) => {
     if (torn || round !== localCandidates || !round.active) return;
     if (binding && !candidateMatchesRound(event.candidate, round.ufrags)) return;
-    if (!event.candidate) {
+    if (isIceEndMarker(event.candidate)) {
       round.completed = true;
       void reportLocalCandidates("gathering-complete", round);
       queueOutgoingCandidate(null);
@@ -341,6 +348,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     if (torn) return;
     torn = true;
     tornBecause = reason;
+    stopCandidateRound(localCandidates);
     cancelSignaling();
     cancelWait();
     stopWatching();
@@ -466,8 +474,8 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   // rendezvous and the bridge can only report that it received no hosts.
   const expirePendingIce = (round) => {
     if (!binding || round !== localCandidates || torn) return;
-    round.active = false;
     const pending = inboundIce.hasPending() || outboundIce.hasPending() || round.pending.size > 0;
+    stopCandidateRound(round);
     inboundIce.reset();
     outboundIce.reset();
     holdInbound.reset();
@@ -477,6 +485,9 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       fatalError = blockedBy("timeout", "pending ICE setup expired");
       tearDown("pending ICE setup expired");
     }
+  };
+  const armCandidateDeadline = (round, deadline) => {
+    if (binding) round.deadlineTimer = setTimeout(() => expirePendingIce(round), Math.max(1, deadline - Date.now()));
   };
   const finishSignaling = async (deadline) => {
     let cancelGathering = () => {};
@@ -503,8 +514,9 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   try {
     diagnostic("negotiating", { phase: "initial" });
     const initialDeadline = Date.now() + openTimeoutMs;
+    armCandidateDeadline(localCandidates, initialDeadline);
     await withinDeadline(openTimeoutMs, async (remaining) => {
-      await offer(peer, signal, iceServers, {}, ensureActive, clientId, rememberLocalOffer, answerDiagnostic(), selection);
+      await offer(peer, signal, iceServers, {}, ensureActive, clientId, rememberLocalOffer, answerDiagnostic(), selection, { signal: localCandidates.controller.signal });
       ensureActive();
       releaseIce();
       appBinder.select(selection.current());
@@ -527,7 +539,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     await sampleTransportPath();
   } catch (error) {
     tearDown(`the connection never opened: ${error?.blockedReason || "failed"}`);
-    throw error;
+    throw attemptFailure(error);
   }
 
   /**
@@ -543,13 +555,13 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     cancelSignaling();
     negotiationGeneration += 1;
     selection.begin();
-    localCandidates.active = false;
-    localCandidates.pending.clear();
+    stopCandidateRound(localCandidates);
     outboundIce?.reset();
     inboundIce?.reset();
     localCandidates = newLocalCandidates();
     watchNewCandidateRound();
     renegotiationDeadline = Date.now() + openTimeoutMs;
+    armCandidateDeadline(localCandidates, renegotiationDeadline);
     let cancelActivity = () => {};
     let negotiationActive = true;
     const ensureNegotiationActive = () => {
@@ -571,7 +583,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
         const freshServers = await fetchIceServers();
         ensureNegotiationActive();
         peer.setConfiguration?.({ iceServers: freshServers });
-        await offer(peer, signal, freshServers, { iceRestart: true }, ensureNegotiationActive, clientId, rememberLocalOffer, answerDiagnostic(), selection);
+        await offer(peer, signal, freshServers, { iceRestart: true }, ensureNegotiationActive, clientId, rememberLocalOffer, answerDiagnostic(), selection, { signal: localCandidates.controller.signal });
         ensureNegotiationActive();
         releaseIce();
         if (phase === "direct-pair") {
@@ -586,6 +598,9 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
         }
         await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelActivity = cancel), ensureNegotiationActive);
       }, (cancel) => (cancelWait = () => { cancelActivity(); cancel(); }));
+    } catch (error) {
+      expirePendingIce(localCandidates);
+      throw error;
     } finally {
       negotiationActive = false;
       cancelActivity();
@@ -669,7 +684,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
 
 const reportLocalOffer = (peer, local, remember) => remember?.(peer.localDescription?.sdp || local.sdp);
 
-async function offer(peer, signal, iceServers, options, ensureActive, clientId, rememberLocalOffer, diagnostic, selection) {
+async function offer(peer, signal, iceServers, options, ensureActive, clientId, rememberLocalOffer, diagnostic, selection, signalOptions) {
   const local = await peer.createOffer(options);
   ensureActive();
   rememberLocalOffer?.(local.sdp);
@@ -678,7 +693,7 @@ async function offer(peer, signal, iceServers, options, ensureActive, clientId, 
   ensureActive();
   reportLocalOffer(peer, local, rememberLocalOffer);
   const hint = clientId?.();
-  const answer = await signal("rtc.offer", { sdp: local.sdp, ice_servers: iceServers, ...advertised, ...(hint ? { client_id: hint } : {}) });
+  const answer = await signal("rtc.offer", { sdp: local.sdp, ice_servers: iceServers, ...advertised, ...(hint ? { client_id: hint } : {}) }, signalOptions);
   ensureActive();
   diagnostic("received");
   await selection.accept(local.sdp, advertised, answer, ensureActive);
@@ -791,6 +806,9 @@ function createPeerSelection(binding) {
     ready: () => ready,
     isClear: () => selected?.protocol === DTLS_JSON_PROTOCOL,
     controls: () => selected?.transcript ? { peer_token: selected.transcript.peer_token, negotiation: generation } : {},
+    mayAcceptIce: (push) => selected?.transcript
+      ? push.peer_token === selected.transcript.peer_token && push.negotiation === generation
+      : push.negotiation === undefined || push.negotiation === generation,
     acceptsIce: (push) => !selected?.transcript || (push.peer_token === selected.transcript.peer_token && push.negotiation === generation),
   };
 }
@@ -799,8 +817,8 @@ function allocatePeerNegotiation(binding, previous) {
   return binding?.allocateNegotiation ? binding.allocateNegotiation() : previous + 1;
 }
 
-function boundedIce(binding, deliver) {
-  return binding ? createPeerIceQueue({ deliver }) : null;
+function boundedIce(binding, deliver, accept) {
+  return binding ? createPeerIceQueue({ deliver, accept }) : null;
 }
 
 function iceUfrags(sdp) {
@@ -811,4 +829,31 @@ function candidateMatchesRound(candidate, ufrags) {
   if (!candidate) return true;
   const fragment = candidate.usernameFragment || candidate.candidate?.match(/(?:^|\s)ufrag\s+(\S+)/)?.[1];
   return !fragment || ufrags.has(fragment);
+}
+
+function candidateForHold(value) {
+  return value?.type === "rtc.ice" ? value.candidate : value;
+}
+
+function stopCandidateRound(round) {
+  round.active = false;
+  clearTimeout(round.deadlineTimer);
+  round.controller.abort(new Error("the ICE candidate round ended"));
+  round.pending.clear();
+}
+
+function iceWork(operation, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    const abort = () => { signal.removeEventListener("abort", abort); reject(signal.reason); };
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      Promise.resolve(operation()).then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+    } catch (error) { signal.removeEventListener("abort", abort); reject(error); }
+  });
+}
+
+function unpackIceLease(held, currentRound) {
+  const lease = held?.[HELD_ICE_PUSH];
+  return { lease, round: lease?.round || currentRound, value: lease ? lease.value : held };
 }

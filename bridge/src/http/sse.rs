@@ -1,8 +1,8 @@
 //! Transient application SSE output. There is deliberately no event ID/replay log.
 //!
 //! A dequeued event retains its allocation until its delivery lease is dropped.
-//! The socket body keeps that lease until it is polled for more output; bounded
-//! HTTP writer buffers and a stalled-write timeout complete the socket bound.
+//! The socket body transfers that lease into Bytes::from_owner, retaining its
+//! charge through the actual socket handoff. Stalled writes have a hard timeout.
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -35,7 +35,10 @@ impl SseEvent {
         ) {
             return Err(DeliveryError::Unsupported);
         }
-        let data = serde_json::to_string(payload).map_err(|_| DeliveryError::Unsupported)?;
+        let framing = name.len() + "event: \ndata: \n\n".len();
+        let data = super::body::encode_json(payload, MAX_EVENT_BYTES - framing)
+            .map_err(|_| DeliveryError::TooLarge)?;
+        let data = String::from_utf8(data).map_err(|_| DeliveryError::Unsupported)?;
         let encoded = format!("event: {name}\ndata: {data}\n\n");
         if encoded.len() > MAX_EVENT_BYTES {
             return Err(DeliveryError::TooLarge);
@@ -180,6 +183,12 @@ impl Drop for SseReceiver {
 impl DeliveryLease {
     pub fn as_str(&self) -> &str {
         self.event.as_str()
+    }
+}
+
+impl AsRef<[u8]> for DeliveryLease {
+    fn as_ref(&self) -> &[u8] {
+        self.event.as_str().as_bytes()
     }
 }
 

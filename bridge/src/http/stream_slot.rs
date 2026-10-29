@@ -77,7 +77,7 @@ impl<T: RetireBinding> StreamSlot<T> {
         current(&mut state, handle)?
             .binding
             .clone()
-            .ok_or(StreamError::Required)
+            .ok_or(StreamError::Replaced)
     }
 
     pub fn delete(&self, handle: &str) -> Result<(), StreamError> {

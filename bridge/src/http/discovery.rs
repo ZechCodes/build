@@ -5,7 +5,7 @@ use std::fmt;
 use std::time::Duration;
 
 use aws_lc_rs::signature::Ed25519KeyPair;
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 
@@ -135,11 +135,11 @@ impl DeviceProofSigner {
             return Err(ProofError::InvalidInput);
         }
         bounded(&endpoint_epoch, 128)?;
-        let seed = STANDARD
-            .decode(&identity.identity_private_key_b64)
+        let seed = STANDARD_NO_PAD
+            .decode(identity.identity_private_key_b64.trim_end_matches('='))
             .map_err(|_| ProofError::Signing)?;
-        let public = STANDARD
-            .decode(&identity.identity_public_key_b64)
+        let public = STANDARD_NO_PAD
+            .decode(identity.identity_public_key_b64.trim_end_matches('='))
             .map_err(|_| ProofError::Signing)?;
         let pair = Ed25519KeyPair::from_seed_and_public_key(&seed, &public)
             .map_err(|_| ProofError::Signing)?;

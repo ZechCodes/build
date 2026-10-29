@@ -248,3 +248,22 @@ fn origins_reject_invalid_dns_labels_and_noncanonical_device_ids() {
     )
     .is_err());
 }
+
+#[test]
+fn stored_unpadded_transport_identity_keys_can_sign_standard_jws() {
+    // transport::generate_identity_keypair persists STANDARD_NO_PAD; older API
+    // provisioning may return padded keys. Both refer to the same paired key.
+    let mut id = identity();
+    id.identity_private_key_b64 = id.identity_private_key_b64.trim_end_matches('=').to_owned();
+    id.identity_public_key_b64 = id.identity_public_key_b64.trim_end_matches('=').to_owned();
+    let signer = DeviceProofSigner::new(
+        &id,
+        "https://getbuild.ing",
+        CanonicalOrigin::parse("https://bridge.example").unwrap(),
+        "epoch-1".into(),
+    )
+    .unwrap();
+    assert!(signer
+        .discovery_proof("challenge", "nonce", 1_800_000_000)
+        .is_ok());
+}

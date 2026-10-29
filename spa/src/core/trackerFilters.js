@@ -20,7 +20,7 @@
 // No DOM, no app imports.
 
 import { UNASSIGNED, assigneeFromKey, assigneeKey, columnsOf } from "./trackerModel.js";
-import { taskIsHeld } from "./trackerTaskReadiness.js";
+import { taskHasUndeliveredAssignment } from "./trackerTaskReadiness.js";
 
 /**
  * What one filter holds, always as a list.
@@ -94,9 +94,12 @@ export function taskListParams(projectId, filters = {}) {
 }
 
 function assigneeMatches(task, want) {
-  if (want === ANY_ASSIGNEE) return taskIsHeld(task);
-  if (want === UNASSIGNED) return !taskIsHeld(task);
-  // A pending delivery holds the task, but its target is not its assignee.
+  // AssigneeFilter::matches tests Option presence. An active intent supplies
+  // Some(target), even for null or a target without a truthy kind.
+  const assigned = Boolean(task.assignee) || taskHasUndeliveredAssignment(task);
+  if (want === ANY_ASSIGNEE) return assigned;
+  if (want === UNASSIGNED) return !assigned;
+  // Pending presence satisfies any, but its target is not an exact assignee.
   return assigneeKey(task.assignee) === want;
 }
 

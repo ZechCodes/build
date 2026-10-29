@@ -60,3 +60,8 @@ fixtures/api/v1/git.unpushed.json:generic-api-key:6
 # Scope these exceptions to the introducing commit, file and exact lines.
 1f7db8234664b3425b6d5116566dbe50cfb16659:transport/fixtures/v1.json:generic-api-key:308
 1f7db8234664b3425b6d5116566dbe50cfb16659:transport/fixtures/v1.json:generic-api-key:310
+
+# #915 public source checksum, not a credential: this exact historical finding
+# is SHA-256 of frozen fd234144 spa/src/core/pushKeySync.js. Later snapshots
+# display source digests in short parts; this exemption covers only this commit.
+265d9215af384bc534616edad934702d8f376065:scripts/http-resource-coverage.test.mjs:generic-api-key:242

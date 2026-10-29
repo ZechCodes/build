@@ -78,4 +78,21 @@ describe("browser HTTP endpoint", () => {
     resolve(json({ ok: true, result: {} }));
     await pending; endpoint.close();
   });
+
+  it("preserves a domain 403 without retiring healthy endpoint authority", async () => {
+    const denied = { error: "Scope does not permit this action", error_code: "forbidden_scope", retryable: false };
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json(opening)).mockResolvedValueOnce(json(denied, 403)).mockResolvedValue(new Response(null, { status: 204 }));
+    const endpoint = createBrowserHttpEndpoint({ grant: grant(), fetchImpl });
+    const lost = vi.fn(); endpoint.onLost(lost);
+    const held = await endpoint.open("range");
+    expect(await endpoint.request(held, { path: "/v1/action", method: "POST", body: {} }, { subscriptionId: "stream" })).toEqual(denied);
+    expect(lost).not.toHaveBeenCalled(); endpoint.close();
+  });
+
+  it("reports an incompatible lifecycle refusal without relabeling it as failed account authority", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json({ error: "Unsupported API range", error_code: "unsupported_version", retryable: false }, 426));
+    const endpoint = createBrowserHttpEndpoint({ grant: grant(), fetchImpl });
+    await expect(endpoint.open("old range")).rejects.toMatchObject({ code: "unsupported", uncertain: false });
+    endpoint.close();
+  });
 });

@@ -455,11 +455,17 @@ async function connectOverHttp(deviceId, attempt) {
   }
 }
 
-const httpBlockedReason = (error) => ({ authentication: "http-auth", unsupported: "http-unsupported", network: "http-network" })[error?.code] || "http-failed";
+const httpAuthCodes = new Set(["authentication", "unauthorized", "binding_mismatch", "stale_owner", "untrusted_caller", "invalid_handle"]);
+const httpCompatibilityCodes = new Set(["unsupported", "incompatible_transport", "unsupported_operation", "invalid_manifest"]);
+const httpBlockedReason = (error) => {
+  if (httpAuthCodes.has(error?.code)) return "http-auth";
+  if (httpCompatibilityCodes.has(error?.code)) return "http-unsupported";
+  return ["network", "network_error"].includes(error?.code) ? "http-network" : "http-failed";
+};
 
 function loseHttpConnection(deviceId, lifetime, error) {
   if (!lifetime.current()) return;
-  if (error?.code !== "authentication") { loseEstablishedConnection(deviceId, lifetime); return; }
+  if (!httpAuthCodes.has(error?.code)) { loseEstablishedConnection(deviceId, lifetime); return; }
   blockDeviceConnection(deviceId, lifetime, "http-auth");
   deviceRecovery.stop(deviceId, { cancel: false });
   syncHome(contextFor(deviceId));

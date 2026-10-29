@@ -61,7 +61,7 @@ export function createBrowserHttpEndpoint({ grant, fetchImpl = fetch, isCurrent 
         response = await fetchImpl(origin + path, { method, credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store",
           headers: headers(extra, encoded !== undefined), signal: requestSignal, ...withBody(encoded) });
       } catch { throw httpFailure("network", true); }
-      if (response.status === 401 || response.status === 403) { lose(); throw httpFailure("authentication"); }
+      if (response.status === 401) { lose(); throw httpFailure("authentication"); }
       const value = await boundedJson(response, maxBytes);
       if (!response.ok && typeof value?.error !== "string") throw httpFailure("protocol");
       return value;
@@ -75,7 +75,7 @@ export function createBrowserHttpEndpoint({ grant, fetchImpl = fetch, isCurrent 
     hardDeadline = monotonic() + wait;
     clearTimeout(hardTimer); clearTimeout(refreshTimer);
     hardTimer = setTimeout(() => lose(), wait);
-    refreshTimer = setTimeout(() => { void refresh().catch(() => lose()); }, Math.min(20000, wait * 2 / 3));
+    refreshTimer = setTimeout(() => { void refresh().catch(lose); }, Math.min(20000, wait * 2 / 3));
   };
   const refresh = async () => {
     check();
@@ -83,6 +83,7 @@ export function createBrowserHttpEndpoint({ grant, fetchImpl = fetch, isCurrent 
     check();
     const started = monotonic();
     const renewed = await json(`/v1/sessions/${segment(opening.session_id)}`, "PATCH", undefined, { timeoutMs: 5000 });
+    assertLifecycle(renewed);
     if (renewed.session_id !== opening.session_id || renewed.opening_generation !== opening.opening_generation) throw httpFailure("protocol");
     armGrant(renewed, started);
   };
@@ -91,6 +92,7 @@ export function createBrowserHttpEndpoint({ grant, fetchImpl = fetch, isCurrent 
     check();
     if (stream || !sameOpening(heldOpening, opening)) throw httpFailure("protocol");
     const binding = await json("/v1/subscriptions", "POST", { kind: "application" }, { extra: { "X-Build-Session": opening.session_id } });
+    assertLifecycle(binding);
     const path = `/v1/subscriptions/${segment(binding.subscription_id)}/events`;
     if (typeof binding.subscription_id !== "string" || binding.opening_generation !== opening.opening_generation || binding.events_path !== path) throw httpFailure("protocol");
     const controller = new AbortController();
@@ -130,6 +132,7 @@ export function createBrowserHttpEndpoint({ grant, fetchImpl = fetch, isCurrent 
       if (opening) throw httpFailure("protocol");
       const started = monotonic();
       opening = await json("/v1/sessions", "POST", { api_range: apiRange });
+      assertLifecycle(opening);
       armGrant(opening, started);
       return opening;
     },
@@ -141,6 +144,12 @@ export function createBrowserHttpEndpoint({ grant, fetchImpl = fetch, isCurrent 
     },
     subscribe, close,
   };
+}
+
+function assertLifecycle(value) {
+  if (typeof value?.error !== "string") return;
+  const code = value.error_code === "unsupported_version" ? "unsupported" : value.error_code;
+  throw Object.assign(httpFailure(code), { bridgeRefusal: true, retryable: value.retryable === true });
 }
 
 function resourceHeaders(opening, options) {

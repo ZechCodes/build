@@ -84,6 +84,25 @@ describe("HTTP session adapter and fences", () => {
     expect(pushed).not.toHaveBeenCalled();
   });
 
+  it("preserves typed admission errors without an epoch and publishes no state", async () => {
+    const { endpoint } = make({ request: vi.fn().mockResolvedValue({ ok: false, error: "Stream replaced", error_code: "stream_replaced", retryable: false }) });
+    const lost = vi.fn(); const pushed = vi.fn();
+    const session = await open(endpoint, { onLost: lost, onPush: pushed }); session.allowRefresh();
+    await expect(session.rawCall("ping")).rejects.toMatchObject({ error_code: "stream_replaced", uncertain: false });
+    expect(lost).not.toHaveBeenCalled();
+    expect(pushed).not.toHaveBeenCalled();
+    session.close();
+  });
+
+  it("retires credentials-closed streams as authorization loss", async () => {
+    const { endpoint, event } = make(); const lost = vi.fn();
+    const session = await open(endpoint, { onLost: lost });
+    await event({ event: "reset_required", data: { reason: "credentials_closed", recovery: "current_state_refresh" } });
+    expect(lost).toHaveBeenCalledWith(expect.objectContaining({ code: "authentication" }));
+    const closed = vi.fn(); session.onClose(closed);
+    expect(closed).toHaveBeenCalledOnce();
+  });
+
   it("rejects wrong epoch push/reply and wrong opening hello", async () => {
     const { endpoint, event } = make({ request: vi.fn().mockResolvedValue({ ok: true, result: {}, bridge_epoch: "other" }) });
     const pushed = vi.fn(); const session = await open(endpoint, { onPush: pushed }); session.allowRefresh();

@@ -72,7 +72,7 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
       return;
     }
     if (!hello) { lose(httpFailure("protocol")); throw httpFailure("protocol"); }
-    if (["reset_required", "closing"].includes(event)) { lose(); return; }
+    if (["reset_required", "closing"].includes(event)) { lose(streamFailure(data)); return; }
     if (!["changes", "operation", "event"].includes(event)) return;
     if (!bridgeEpoch.accepts(data)) { lose(); return; }
     publishWrite(data);
@@ -120,7 +120,7 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
         sent = true;
         const frame = await endpoint.request(opening, route, { ...heldOptions, timeoutMs, signal: requestSignal, subscriptionId: subscription.binding });
         assertCurrent();
-        if (!bridgeEpoch.accepts(frame)) { lose(); throw endedOpeningError(method, true); }
+        if (requiresEpoch(frame) && !bridgeEpoch.accepts(frame)) { lose(); throw endedOpeningError(method, true); }
         if (typeof frame.error === "string") throw refusal(frame);
         if (frame.ok !== true) throw httpFailure("protocol", true);
         publishWrite(frame);
@@ -169,3 +169,5 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
 }
 
 const defaultTimeout = (method) => method === "workspace.get" ? null : 12000;
+const requiresEpoch = (frame) => typeof frame?.error !== "string" || frame.bridge_epoch !== undefined;
+const streamFailure = (data) => httpFailure(data?.reason === "credentials_closed" ? "authentication" : "stream_reset");

@@ -38,6 +38,7 @@ export const INPUT_SOURCES = {
   "core/workspaceRefPicker.js": "workspace refs",
   "core/workspaceReviewForm.js": "open workspace review",
   "sheets/addDevice.js": "pairing",
+  "sheets/addByUrl.js": "Add by URL",
   "sheets/browser.js": "directory browser",
   "sheets/newRepo.js": "new project remote",
   "sheets/projectSettings.js": "project settings / project remote",
@@ -93,6 +94,7 @@ export const INPUT_SURFACES = [
   { name: "open workspace review", selectors: ["[data-review-title]", "[data-review-description]", "[data-review-base]", "#review-create-assignee"] },
   { name: "new conversation", selectSurface: "new conversation", selectors: ["[data-new-agent-name]", ".rail-composer textarea"] },
   { name: "pairing", selectors: ["#paircode"] },
+  { name: "Add by URL", selectors: ["#bridge-url"] },
   { name: "directory browser", selectors: ["#bdirnew"] },
   { name: "device label", selectors: ["#device-label"] },
   { name: "filter menu", selectors: [".fmenu-search"] },
@@ -114,6 +116,7 @@ export const INPUT_SURFACES = [
 const modules = {
   app: "src/app.js", cache: "src/core/localCache.js", records: "src/core/settingsRecords.js",
   pairing: "src/sheets/addDevice.js", browser: "src/sheets/browser.js", device: "src/views/deviceSettings.js",
+  addByUrl: "src/sheets/addByUrl.js",
   filter: "src/core/filterMenuControl.js", refs: "src/core/workspaceRefPicker.js", toolbar: "src/core/toolbar.js",
   feed: "src/core/taskFeed.js", inbox: "src/core/inbox.js", taskComposer: "src/core/taskComposer.js",
   task: "src/core/trackerTaskRender.js", assignee: "src/core/trackerAssigneePicker.js", pop: "src/commentPop.js",
@@ -166,6 +169,7 @@ async function seedInputSurface({ name, theme }) {
       root.querySelector('.frow[data-path="docs"] [data-upload-action="folder"]').click();
     },
     pairing() { disposers.push(m.pairing.openAddDevice(() => {})); },
+    "Add by URL"() { disposers.push(m.addByUrl.openAddByUrl(() => {})); },
     "directory browser": async () => {
       await m.cache.writeCached(m.browser.browserListingAddress(device.id, "/code"), listing);
       await m.browser.openBrowser({ title: "Choose a folder", deviceId: device.id, startPath: "/code", allowCreateDirectory: true, callRpc, onChoose: () => {} });

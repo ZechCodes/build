@@ -60,3 +60,10 @@ fixtures/api/v1/git.unpushed.json:generic-api-key:6
 # Scope these exceptions to the introducing commit, file and exact lines.
 1f7db8234664b3425b6d5116566dbe50cfb16659:transport/fixtures/v1.json:generic-api-key:308
 1f7db8234664b3425b6d5116566dbe50cfb16659:transport/fixtures/v1.json:generic-api-key:310
+
+# #910 public cross-language JWS vectors: fixed public test seed byte 7 repeated
+# 32 times, synthetic challenge/device and bridge.example; no deployed authority.
+# Exact historical fingerprints only; the JWT rule remains enabled everywhere.
+e8f22fde3b31141c5c7019ccdc7086a0eec99442:fixtures/bridge-http/device-proofs.json:jwt:3
+e8f22fde3b31141c5c7019ccdc7086a0eec99442:fixtures/bridge-http/device-proofs.json:jwt:5
+e8f22fde3b31141c5c7019ccdc7086a0eec99442:fixtures/bridge-http/device-proofs.json:jwt:7

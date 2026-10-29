@@ -38,3 +38,8 @@ A bridge token lasts at most five minutes and no later than parent OAuth expiry;
 old parent possession can mint only until that immutable expiry unless revoked.
 Cached authority never outlives its known expiry or verification-start+30 seconds.
 The final task report supplies actual gate exit codes and skipped baseline tests.
+
+Gitleaks initially identified the three public fixed-key JWS vectors as JWTs.
+The coordinator reviewed the fixture and authorized only their exact historical
+commit/file/rule/line fingerprints in `.gitleaksignore`; the JWT rule remains
+enabled. The final committed-range scan records its exit in the task report.

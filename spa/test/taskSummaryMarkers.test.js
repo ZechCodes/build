@@ -70,3 +70,23 @@ it("keeps attention counter authority separate from the newer watch floor", asyn
     unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 });
   expect(held.stale).toBe(true);
 });
+
+it("ends the watch lineage on authoritative unwatch and rejects its later resurrection", async () => {
+  await land(1, { ...row("tc-10", 1), watched: true, watch_started_after: "te-30" });
+  const unwatched = { id: "task-1", title: "One", watched: false, read_through: "tc-10" };
+  await land(2, unwatched); await land(3, unwatched);
+  let held = await summaries.readSummaryQuery(scope, {});
+  expect(held.stale).toBe(false);
+  expect(held.tasks[0]).not.toHaveProperty("watch_started_after");
+  expect(held.tasks[0]).not.toHaveProperty("unread_count");
+  const ticket = await summaries.beginSummaryQuery(scope, { states: ["open"] }, 1);
+  await summaries.landSummaryPage(ticket, { summary: true, basis: "B1", tasks: [
+    { ...row("tc-10", 1), watched: true, watch_started_after: "te-30" },
+  ] }, { read: 1 });
+  held = await summaries.readSummaryQuery(scope, {});
+  expect(held.tasks[0].watched).toBe(false); expect(held.stale).toBe(false);
+  await land(4, { ...row("tc-10", 2), watched: true, watch_started_after: "" });
+  held = await summaries.readSummaryQuery(scope, {});
+  expect(held.tasks[0]).toMatchObject({ watched: true, watch_started_after: "", unread_count: 2 });
+  expect(held.stale).toBe(false);
+});

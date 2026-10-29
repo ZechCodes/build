@@ -94,3 +94,15 @@ it("does not relabel timestamp-protected entity data with a rejected snapshot ba
   expect(held.stale).toBe(true);
   expect((await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.basis).toBe("B1");
 });
+
+it.each([
+  [{ review_summary: { version: 1 } }, { review_summary: { version: 2 } }],
+  [{ read_through: "tc-10", unread_count: 7 }, { read_through: "tc-20", unread_count: 0 }],
+])("marks mixed authority from an older different-basis response stale", async (before, after) => {
+  await land({}, 3, page("B1", [row({ title: "held", ...before })]));
+  await land({ states: ["open"] }, 1, page("B2", [row({ title: "old", ...after })]));
+  const held = await summaries.readSummaryQuery(scope, {});
+  expect(held.tasks[0].title).toBe("held");
+  expect(held.stale).toBe(true);
+  expect((await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.basis_uncertain).toBe(true);
+});

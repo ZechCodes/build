@@ -2,6 +2,16 @@
 
 Decision input for #887/#891, based on this checkout. **All new contracts below are proposals, not approved bridge work.** No RPC, schema, or consumer implementation is changed by this document. Paths and lines refer to the audited source before #891 implementation.
 
+Delivery decision (2026-10-29): the epic lead requires exact counts, membership
+and existing global ordering. Backend #900 owns the aggregate, independent
+membership/lookup/review-mode and ordering primitives; #901 owns bounded
+detail/history after #900 integrates. Exact names/capabilities/fixtures remain
+to be pinned by those owners. Locale-sensitive substring search remains
+unsettled: no proposed search capability is approved, and the existing chooser
+search stays on its compatibility path until resolved. This fallback does not
+complete that consumer's bounded conversion. #891 retains its approved base
+until the lead explicitly authorizes integration from an updated base.
+
 ## Existing guarantees and notation
 
 `tasks.list {project_id,summary:true,limit,cursor?,…}` is advertised by `tasks.listSummaries`. It accepts state/status/label/assignee scalar or plural selections, OR within a dimension and AND across dimensions. See `bridge/src/app/tracker/selections.rs:6`, `:14`, `:65`; dispatch is `bridge/src/app/tracker/read.rs:127`. There is no watched, tracker, linked-workspace, number, text, attention, done-since, or sort selector in that parser. Unknown fields must not be mistaken for working filters.

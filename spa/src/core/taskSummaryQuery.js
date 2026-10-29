@@ -22,9 +22,9 @@ function actorKey(value) {
 }
 
 const dimensions = [
-  ["state", "states", (value) => value.trim()],
+  ["state", "states", (value) => value],
   ["status", "statuses", statusSlug],
-  ["label", "labels", (value) => asciiLower(value.trim())],
+  ["label", "labels", asciiLower],
   ["assignee", "assignees", actorKey],
 ];
 

@@ -48,11 +48,12 @@ function acceptsPage(held, ticket, accept) {
 const distinct = (values) => [...new Set(values)];
 const append = (held, incoming, first) => distinct([...(first ? [] : held || []), ...incoming]);
 
-function membership(held, ticket, page, ids, identities) {
+function membership(held, ticket, page, ids, identities, read) {
   const first = ticket.cursor === null;
   return { ...held,
     ids: append(held.ids, ids, first),
     identity_ids: append(held.identity_ids, identities, first),
+    row_reads: { ...(first ? {} : held.row_reads), ...Object.fromEntries(ids.map((id) => [id, read])) },
     next_cursor: page.next_cursor ?? null,
     complete: page.next_cursor == null,
     refreshing: false,
@@ -75,9 +76,11 @@ function preserveMarks(held, task) {
 }
 
 function summaryValue(held, task, read) {
-  if (held?.read_order > read || Date.parse(held?.task?.updated_at) > Date.parse(task.updated_at)) return null;
-  const next = preserveMarks(held?.task, preserveTaskReviewSummary(held?.task, task, { readOrder: read }));
-  return { task: next, read_order: read };
+  const older = held?.read_order > read || Date.parse(held?.task?.updated_at) > Date.parse(task.updated_at);
+  const next = preserveMarks(held?.task, preserveTaskReviewSummary(held?.task, task, {
+    readOrder: read, keepHeld: older, allowMissing: !older, baseRow: older ? held.task : task,
+  }));
+  return { task: next, read_order: Math.max(read, held?.read_order || 0) };
 }
 
 /** Commit membership/cursor, summaries and shared identities together. Failure
@@ -97,17 +100,18 @@ export async function landSummaryPage(ticket, page, { read, accept = () => true 
     const rows = tasks.map((task, index) => summaryValue(records[index]?.value, task, read));
     const actors = identities.map(([, identity], index) => records[tasks.length + index]?.value?.read_order > read
       ? null : { identity, read_order: read });
-    return [membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id)), null, ...rows, ...actors];
+    return [membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id), read), null, ...rows, ...actors];
   });
 }
 
 /** Immediate action result or optimistic patch. The shared row and project
  * invalidation commit together, fencing every older query without enumerating
  * inactive query records. Callers own rollback/confirmation of optimistic edits. */
-export function writeSummaryTask(scope, task, read) {
+export function writeSummaryTask(scope, task, read, { accept = () => true, fullTask = false } = {}) {
   if (!task?.id || !Number.isSafeInteger(read) || read <= 0) throw new Error("Invalid summary write");
   return mergeCachedRecordsTogether([summaryAddress(scope, task.id), invalidationAddress(scope)], ([held, invalidation]) => {
-    const row = summaryValue(held?.value, summaryPatch(held?.value?.task, task), read);
+    if (!accept()) return null;
+    const row = summaryValue(held?.value, summaryPatch(held?.value?.task, task, fullTask), read);
     if (!row) return null;
     return [row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) }];
   });
@@ -115,6 +119,9 @@ export function writeSummaryTask(scope, task, read) {
 
 /** Cache-only reconstruction. Loaded membership never claims a project total
  * and an absent entity is never inferred to be deleted by a partial query. */
+const rowsOvertaken = (held, records) => held.ids.some((id, index) =>
+  (records[index]?.value?.read_order || 0) > (held.row_reads?.[id] || 0));
+
 export async function readSummaryQuery(scope, filters) {
   const record = await readCached(summaryQueryAddress(scope, filters));
   if (!record?.value) return null;
@@ -124,7 +131,7 @@ export async function readSummaryQuery(scope, filters) {
     invalidationAddress(scope), ...held.ids.map((id) => summaryAddress(scope, id)), ...ids.map((id) => identityAddress(scope, id)),
   ]);
   return { ...held,
-    stale: (invalidation?.value?.read_order || 0) > (held.published_generation || 0),
+    stale: (invalidation?.value?.read_order || 0) > (held.published_generation || 0) || rowsOvertaken(held, records),
     tasks: records.slice(0, held.ids.length).map((record) => record?.value?.task).filter(Boolean),
     identities: Object.fromEntries(ids.flatMap((id, index) => {
       const value = records[held.ids.length + index]?.value?.identity;

@@ -41,12 +41,19 @@ Query replacement changes membership only. It never infers entity deletion
 from absence. Independent filters/board columns hold separate cursors and
 generations while sharing entity records. A later row in one query cannot be
 overwritten by a delayed older page from another query.
+Each membership also retains the read that observed its named row. A shared
+row updated by a different query makes the earlier membership stale, rather
+than presenting incompatible predicate membership as freshly established.
 
 Immediate action patches update the shared summary and invalidate older query
 tickets atomically. They preserve omitted compact fields and reject detail
 content from the summary projection. Read/watch/dismiss marker floors are
 monotonic; older marker observations cannot restore unread counts. Full
 `tracker-task` detail/timeline records remain separately owned and untouched.
+Authoritative full-task action results have an explicit projection mode that
+clears omitted false watching/completion/review/deferred fields; partial
+optimistic patches retain omissions. Both accept a transaction-time lifetime
+check. PR server versions reconcile independently of ordinary row read order.
 
 ## Integration still required
 

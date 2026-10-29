@@ -9,8 +9,11 @@ const pick = (value, keys) => Object.fromEntries(keys.filter((key) => Object.has
 
 /** Omitted compact fields survive an action patch. This deliberately does not
  * turn absent expanded dependency/link arrays into empty authoritative facts. */
-export function summaryPatch(held, incoming) {
-  const next = { ...held, ...pick(incoming, fields) };
+export function summaryPatch(held, incoming, fullTask = false) {
+  const defaults = fullTask ? { watched: false, done_at: null, review_summary: null, deferred_assignment: null,
+    attachment_count: incoming.attachments?.length || 0 } : {};
+  const next = { ...held, ...defaults, ...pick(incoming, fields) };
+  delete next.__review_summary_cache;
   for (const [key, keys] of [["links", ["workspace_ids", "parent_task_id"]],
     ["dependencies", ["blocked", "waiting_on_count", "blocks_count"]]]) {
     if (incoming[key]) next[key] = { ...held?.[key], ...pick(incoming[key], keys) };

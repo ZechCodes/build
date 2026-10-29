@@ -289,3 +289,31 @@ below the unchanged 2,048-byte envelope cap; their inner keys are 792/798 bytes.
 Fresh production-descendant full gates, matched cost evidence and independent
 scope/code/Astra review remain pending. Earlier read latency cohorts retain
 their named source identities; no sample is rerun to improve its observed margin.
+
+## Range/choice repair: full suite and test-only lint follow-up
+
+The clean committed-head full run at
+`34dc4db3a1e6046fbf00a1991772a8d666a4d901` exited **0**: **6,004** unit tests
+passed, 24 ignored, **56** API contracts passed, all normal integration suites
+and doc tests passed. `/tmp/task900-cargo-range-choice-full.log` records the
+source head, exact `nice -n 10 cargo test -- --nocapture` command and final
+`process_exit=0`. This includes the production range/choice repair and the
+expanded cursor/lifecycle tests; the earlier `cf06` full run remains separate.
+
+The subsequent `nice -n 10 cargo clippy --all-targets -- -D warnings` at the
+same `34dc` head exited **101**. The sole finding is cognitive complexity 22/15
+in the pending-choice lifecycle test, not a production failure. The original
+log `/tmp/task900-clippy-range-choice.log` remains retained. The sequential
+gate wrapper stopped there, so no release build or measurement ran in that
+invocation. The test-only follow-up extracts helpers while retaining all
+same-task transitions, cancellation, reassignment and repair assertions;
+no suppression or ratchet edit is authorized. The 34dc full-suite result must
+not be relabeled as covering that extraction descendant.
+
+The test-only helper extraction is committed as `f85b2b803`. The affected five
+RPC tests exited **0** (`/tmp/task900-choice-test-refactor-green.log`); the
+emitted debug test executable SHA-256 is
+`ced8bff74287f3a643f4ada8545ea81f0a0d380f721847be8b7bad79a6b530f4`.
+The delta changes one test file, retaining every transition assertion and
+production source. Clippy, scans and release qualification must run on the
+descendant; no additional full suite is requested solely for bookkeeping.

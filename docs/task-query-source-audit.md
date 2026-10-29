@@ -409,3 +409,34 @@ Earlier parser-only evidence remains in `task-query-timestamp-domain.md`; it doe
 not prove canonical source selection, aggregate maintenance or any of the
 request-changes repairs above. Final validation must name the actual source head
 and distinguish new focused regressions from earlier whole-suite evidence.
+
+
+### Rendered filter-menu activation gate
+
+#891/c/tc-01M64B6AD18F38Q7SYDE3YJVQZ pins an additional rendered-control
+boundary identified by #891 in the current SPA:
+`filterMenuControl`'s `rowHtml` applies `esc(value)` into a `data-value`
+attribute. Mouse selection reads `dataset.value`, whereas Enter selection uses
+the original `rows[active].value`. #891's isolated witness using the current
+escaping helper and JSDOM observed a NUL in that attribute becoming U+FFFD.
+This is source/witness evidence reported by #891, not a browser test executed
+by the #900 audit author.
+
+Consequently, the backend's exact RPC round-trip tests do not establish that
+rendered mouse and keyboard selection preserve the same opaque value. Before
+#891 activation, the actual rendered control must demonstrate mouse and Enter
+round trips for NUL-bearing labels and opaque assignee values, including
+prefix/suffix collision counterparts and a literal U+FFFD (`�`) value distinct
+from NUL, and prove the selected value reaches the
+canonical query unchanged. DOM escaping safety alone is not an equality proof
+for attribute-backed identity transport.
+
+This rendered-control check is an additional UI activation gate, alongside the
+existing marker/source and pending-only Any compatibility gates. Backend
+coverage does not satisfy it. No new matching semantics, ID restrictions,
+legacy behavior change or consumer activation is authorized by this finding;
+the backend exact semantics and activation hold remain unchanged. The rendered
+control fix is already routed to #891 as authorized integration work. This
+notice requires no backend change or backend gate rerun.
+
+The authorized future #891 fix resolves the original choice through stable in-memory row identity/index, preserving display escaping. Mouse and Enter must dispatch identical original values; this implementation remains outside the frozen backend task.

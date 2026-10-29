@@ -100,6 +100,19 @@ function admittedNumbers(host, admission) {
   return [...numbers];
 }
 
+async function readPoints(turn, force) {
+  const settled = await Promise.allSettled(turn.numbers.map(async (number) => {
+    const cached = await turn.reader.read(number);
+    if (!force && cached.status !== "unknown") return false;
+    return turn.reader.refresh(number);
+  }));
+  // A rejected sibling must not release the trailing turn while other
+  // requests from this same authority are still outstanding.
+  const failure = settled.find((result) => result.status === "rejected");
+  if (failure) throw failure.reason;
+  return settled.map((result) => result.value);
+}
+
 function readAuthority(deviceId, context) {
   let held;
   return () => {
@@ -124,11 +137,7 @@ export function mountTaskReferenceLookups(host, { deviceId, projectId, context =
     const request = await whenGreeted(context, (stands) => {
       if (!canRead() || current !== turn || authority() !== issued) return false;
       turn.stands = stands;
-      return Promise.all(turn.numbers.map(async (number) => {
-        const cached = await turn.reader.read(number);
-        if (!force && cached.status !== "unknown") return false;
-        return turn.reader.refresh(number);
-      }));
+      return readPoints(turn, force);
     });
     return request ? request.sent : false;
   }

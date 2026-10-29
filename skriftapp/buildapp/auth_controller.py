@@ -59,6 +59,8 @@ from buildapp.email_consent import record_signup_consent
 from buildapp.invite_pages import APP_PATH, claim_outcome_path
 from buildapp.invite_kind import InviteKind
 from buildapp.models import Invite
+# Register the supported completion hook before any authentication response.
+from buildapp.bridge_http_login import establish_browser_login as establish_browser_login
 from buildapp.session_auth import session_user_id
 from buildapp.signup_invite import admitted_address, carried_invite, options_for, remember_options
 

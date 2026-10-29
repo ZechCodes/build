@@ -16,7 +16,6 @@ cannot pair a bridge."""
 from __future__ import annotations
 
 import re
-import secrets
 from collections.abc import Awaitable, Callable
 from uuid import UUID
 
@@ -148,13 +147,11 @@ def bridge_http_client_binding(connection: ASGIConnection) -> str:
     """
     user_id = session_user_id(connection)
     if user_id is not None:
-        if connection.session.get(BRIDGE_ACCOUNT_KEY) != str(user_id):
-            connection.session[BRIDGE_ACCOUNT_KEY] = str(user_id)
-            connection.session[BRIDGE_BINDING_KEY] = "browser:" + secrets.token_urlsafe(32)
         binding = connection.session.get(BRIDGE_BINDING_KEY)
-        if not isinstance(binding, str) or not binding.startswith("browser:"):
-            binding = "browser:" + secrets.token_urlsafe(32)
-            connection.session[BRIDGE_BINDING_KEY] = binding
+        if connection.session.get(BRIDGE_ACCOUNT_KEY) != str(user_id):
+            raise NotAuthorizedException("Fresh authentication required")
+        if not isinstance(binding, str) or not re.fullmatch(r"browser:[A-Za-z0-9_-]{43}", binding):
+            raise NotAuthorizedException("Fresh authentication required")
         return binding
     state = connection.scope.get("state", {})
     if state.get(OAUTH_CLIENT_STATE_KEY) != DESKTOP_CLIENT_ID or not state.get(DESKTOP_USER_STATE_KEY):

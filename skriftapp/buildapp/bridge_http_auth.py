@@ -239,6 +239,7 @@ def discovery_payload(challenge, issuer):
 
 
 async def pending_discovery(db, user_id, client_binding, challenge_id, issuer, now):
+    await _client_active(db, user_id, client_binding, now)
     challenge = await _get_challenge(db, challenge_id, "discovery")
     _check_pending(challenge, user_id, client_binding, now)
     return discovery_payload(challenge, issuer)
@@ -481,10 +482,16 @@ async def _client(db, user_id, client_binding):
 
 
 async def _client_active(db, user_id, client_binding, now):
+    if not client_binding.startswith(("browser:", "desktop:")):
+        refuse()
     # Same row lock as logout: no discovery can race a logout tombstone.
     await db.scalar(select(User).where(User.id == user_id).with_for_update())
     binding = await _client(db, user_id, client_binding)
     if binding is not None and binding.revoked_at is not None:
+        refuse()
+    # Only the authentication-completion hook creates active browser identities.
+    # Older/lazy cookie values must never become a new authenticated login here.
+    if client_binding.startswith("browser:") and binding is None:
         refuse()
     parent = _parent_fields(client_binding)
     if parent:
@@ -510,8 +517,11 @@ def _parent_fields(client_binding):
 
 
 async def _parent_active(db, family, now):
-    if family.parent_expires_at is None:
-        return True
+    if family.client_binding.startswith("browser:"):
+        binding = await _client(db, family.user_id, family.client_binding)
+        return binding is not None and binding.revoked_at is None
+    if not family.client_binding.startswith("desktop:") or family.parent_expires_at is None:
+        return False
     return family.parent_expires_at > now and not await oauth2_service.is_token_revoked(
         db, family.parent_jti
     )

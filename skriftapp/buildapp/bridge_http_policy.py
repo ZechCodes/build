@@ -10,6 +10,7 @@ from datetime import datetime
 from uuid import UUID
 
 from litestar import Request
+from litestar.exceptions import NotAuthorizedException
 from litestar.types import ASGIApp, Receive, Scope, Send
 from skrift.config import get_settings
 from skrift.middleware.security import apply_csp_nonce
@@ -125,11 +126,7 @@ class BuildBridgeCSPMiddleware:
             return
         request = Request(scope)
         user_id = require_user(request)
-        binding = bridge_http_client_binding(request)
-        async with auth_session_maker(request)() as db:
-            origins = await document_origins(
-                db, user_id, binding, request.query_params.get("bridge_discovery"), utc_now()
-            )
+        origins = await self._authorized_origins(request, user_id)
         if self.settings.enabled and self.settings.content_security_policy:
             existing = next((value.decode() for name, value in headers if name.lower() == b"content-security-policy"), None)
             base = existing or self.settings.content_security_policy
@@ -141,6 +138,24 @@ class BuildBridgeCSPMiddleware:
         headers = [(name, value) for name, value in headers if name.lower() not in {b"cache-control", b"referrer-policy"}]
         headers.extend([(b"cache-control", b"private, no-store"), (b"referrer-policy", b"no-referrer")])
         message["headers"] = headers
+
+
+    @staticmethod
+    async def _authorized_origins(request: Request, user_id: UUID) -> list[str]:
+        from buildapp.bridge_http_auth import _client_active
+
+        # Old signed cookies still render cached views under the baseline CSP;
+        # only fresh authentication can establish bridge HTTP authority.
+        try:
+            binding = bridge_http_client_binding(request)
+            async with auth_session_maker(request)() as db:
+                now = utc_now()
+                await _client_active(db, user_id, binding, now)
+                return await document_origins(
+                    db, user_id, binding, request.query_params.get("bridge_discovery"), now
+                )
+        except NotAuthorizedException:
+            return []
 
 
 async def revoke_browser_client(request: Request, user_id: UUID | None, binding: str | None) -> None:

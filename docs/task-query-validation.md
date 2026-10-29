@@ -317,3 +317,55 @@ emitted debug test executable SHA-256 is
 The delta changes one test file, retaining every transition assertion and
 production source. Clippy, scans and release qualification must run on the
 descendant; no additional full suite is requested solely for bookkeeping.
+
+## Final repaired production and test-only descendant gates
+
+At clean committed `55784b050e7294b68830bc3c82beeb2a72c86b31`, Clippy with all
+targets and warnings denied exited **0**; formatting exited **0**; explicit-path
+Semgrep exited **0**, 39 tracked files, 445 rules, zero findings. The logs are
+`/tmp/task900-clippy-choice-extraction.log`,
+`/tmp/task900-fmt-choice-extraction.log` and
+`/tmp/task900-semgrep-choice-extraction.log`, each recording source, command
+and final process exit. The full Cargo run remains attributed to `34dc`, and
+the five affected RPC tests to the test-only `f85` extraction. No production
+change follows `fa8a4ff9b`; later committed changes are test helpers and evidence.
+
+The three-target release build at `55784b050` exited **0**. Each emitted read
+gate then ran **once**, serially with other owned builds/tests/scans stopped,
+and exited **0**. Summary/choice maximum **94.649 ms**, largest p99 **94.247 ms**,
+maximum sampled serialized result **340,012 bytes**. Aggregate/lookup maximum
+**3.300 ms**, largest p99 **1.973 ms**, maximum result **7,758 bytes**. Lookup's
+own maximum is 3.300 ms at 100 tasks (5,000-task lookup maximum 0.711 ms);
+the old `cf06` lookup maximum 0.554 ms is historical, not this repaired run.
+The old `cf06` summary maximum 98.262 ms and 1.738 ms margin remain retained;
+the new samples are production-descendant qualification, not attempts to
+improve a passing cohort. These results do not establish causal differences.
+
+Build and raw run logs are `/tmp/task900-release-choice-extraction-build.log`,
+`/tmp/task900-release-repaired-summary.log` and
+`/tmp/task900-release-repaired-query.log`. Commands, binary hashes, all 18
+scenario rows and sampled-byte semantics are in the
+[performance record](task-query-performance.md).
+
+The matched exact-base cost cohort ran only after both read gates stopped.
+All **24** direct processes, the guarded runner and parser exited **0**, with
+**552** raw operation samples. The [cost record](task-query-cost/README.md)
+retains source/binary/fixture identity, order, raw samples, CPU and raw HWM.
+It shows added repair/reopen/write costs; cost acceptance remains unresolved
+and is separate from correctness and scope review. HWM is not allocator/RSS
+delta, and matched RSS/storage/empty-startup evidence is absent. No #890 waiver
+or no-regression claim follows from these passes.
+
+The first diff-format check of generated cost CSV artifacts exited **2** for
+CRLF line endings. Commit `7ad0d8117` normalizes them to LF without changing
+samples; subsequent staged/range format checks exited **0**. This artifact
+format failure is retained in the cost record separately from the successful
+measurement processes. The final compact record includes all 20 wall/CPU
+median-and-range rows, exact outer commands and inherited-priority limits.
+
+The final independent scope/code dispositions must inspect the test-helper and
+documentation delta in addition to their full `34dc` repair inspection. Fresh
+independent Astra disposition on the complete final head must close the two
+new range/choice findings; original `0d3` findings remain separately recorded as
+closed at the `484` inspection. Final review dispositions and pre-push scan are
+recorded on #900 rather than inferred from this implementation ledger.

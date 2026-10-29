@@ -146,7 +146,7 @@ Completed focused logs are `/tmp/task900-choice-rpc-green.log` (**4 passed, 0
 failed**) and `/tmp/task900-choice-store-green.log` (**2 passed, 0 failed**), both
 with owner-confirmed exit **0**. These precede the additional worst-case escaped
 key regression. The later boundary-inclusive RPC run above separately verifies
-that larger-key path. No tests were executed by this document author.
+that larger-key path. The audit-writing subagent did not execute these focused tests; committed-head gate executions are recorded separately in the validation ledger.
 
 The final frozen-source focused reruns are owner-confirmed exit **0**:
 `/tmp/task900-choice-store-final-green.log` (**2/2**),
@@ -180,12 +180,14 @@ activation is inferred. The explicit #891 activation gap is
 #891/c/tc-01M64A9D058M2B7EMP3N30G6YM. It requires consumer integration evidence
 and review for the visible difference before enabling the bounded path.
 
-| Additional source-to-predicate dependency | Repair boundary | Verification status |
+| Additional source-to-predicate dependency | Repair boundary | Focused-stage verification |
 | --- | --- | --- |
-| Canonical dismissal suffix → meaningful-history EXISTS | Separate NULL/no-floor branch from indexed non-NULL ULID range in the actual production INSERT; preserve canonical empty-floor behavior | New P2 remains review-open; production-path RED and focused GREEN recorded; Source `fa8a4ff9b` frozen; broader gates/review pending |
-| Canonical labels/status/assignee → materialized filter choices | Read bounded structural source cells, not display strings; every offered value round-trips through canonical list matching | New P2 remains review-open; RPC/store RED and focused GREEN recorded; escaped-key focused GREEN recorded; Source `fa8a4ff9b` frozen; broader gates/review pending |
+| Canonical dismissal suffix → meaningful-history EXISTS | Separate NULL/no-floor branch from indexed non-NULL ULID range in the actual production INSERT; preserve canonical empty-floor behavior | Production-path RED and focused GREEN recorded; source `fa8a4ff9b` frozen; final gates and Astra disposition recorded separately |
+| Canonical labels/status/assignee → materialized filter choices | Read bounded structural source cells, not display strings; every offered value round-trips through canonical list matching | RPC/store and escaped-key RED/GREEN recorded; source `fa8a4ff9b` frozen; final gates and Astra disposition recorded separately |
 | Canonical pending presence → Any/None choice | Refresh choices after source metadata, on cancel/rearm/repair/reassignment/deletion; no target-agent membership | Backend direction authorized; focused lifecycle regression passed; #891 activation review pending |
-| Legal 128-byte opaque ID → serialized choice key/position | Bound complete JSON key and opaque position at 1,024 bytes without shrinking/capping the ID | Boundary-inclusive RPC 5/5 passed; full cursor cap unchanged; Source `fa8a4ff9b` frozen; broader gates/review pending |
+| Legal 128-byte opaque ID → serialized choice key/position | Bound complete JSON key and opaque position at 1,024 bytes without shrinking/capping the ID | Boundary-inclusive RPC 5/5 passed; full cursor cap unchanged; source `fa8a4ff9b` frozen; descendant execution heads are in the validation ledger |
+
+The table retains focused-stage evidence. The [validation ledger](task-query-validation.md) pins the completed full run to `34dc`, affected helper-refactor tests to `f85`, and lint/release/cost samples to `557`. Final independent dispositions belong on #900; this map does not self-approve either Astra finding. The [cost comparison](task-query-cost/README.md) retains added costs and unmeasured domains for a separate cost disposition.
 
 ## Source-to-predicate map
 

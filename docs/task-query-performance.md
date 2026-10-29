@@ -52,7 +52,7 @@ pages and current log allocation. Neither is an incremental allocator or logical
 payload measurement. First-after-reopen flags apply to the first metadata write;
 other first-operation kinds run after that metadata write.
 
-## Current canonical-source debug evidence: cf06f73a
+## Canonical-source debug cohort: cf06f73a
 
 The canonical source-row and raw-ID marker repair changed production read/write
 paths after the earlier cohorts below. **The historical `622f449b` debug and
@@ -190,7 +190,7 @@ also passed:
 
 The aggregate/lookup cohort's maximum was 1.535 ms (one-task counts); maximum
 p99 was 1.430 ms (5,000-task counts), and maximum result size was 7,758 bytes.
-Lookup's maximum was 0.554 ms. These are absolute fixture observations, not a
+For this historical `cf06` cohort only, lookup's maximum was 0.554 ms. These are absolute fixture observations, not a
 causal comparison with #890, the exact base, or either historical cohort.
 They do not waive startup, storage or write costs recorded above.
 
@@ -347,3 +347,89 @@ canonical writer transactions. They add real startup/backfill work, retained
 storage and per-write cost; carrier success alone cannot establish those costs
 are unchanged. Imported canonical row byte size remains unbounded during
 backfill; batch cardinality does not bound decoding one arbitrarily large row.
+
+
+## Repaired range/choice release qualification: 55784b050
+
+Production maintenance and canonical choice paths changed in `fa8a4ff9b` after
+Astra withdrew candidate `484`. The fresh qualification below is required for
+that repair, not a rerun to improve an earlier sample. The full Cargo result
+remains pinned to `34dc4db3a`; its subsequent Clippy failure was repaired only
+by test-helper extraction `f85b2b803`. Committed `55784b050e7294b68830bc3c82beeb2a72c86b31`
+adds documentation and is the source of these release executables.
+
+Clippy, formatting and Semgrep passed before measurement. The release build
+exited **0**; all owned builds/tests/scans stopped, then each direct read gate
+ran **once**, serially, and exited **0**. The summary/choice maximum was
+**94.649 ms**, largest scenario p99 **94.247 ms**, maximum sampled result
+**340,012 bytes**. Its observed margin is **5.351 ms**, not an arbitrary-load
+promise. Count/lookup maximum was **3.300 ms**, largest p99 **1.973 ms**, maximum
+sampled result **7,758 bytes**. The prior `cf06` maximum **98.262 ms** and
+**1.738 ms** observed margin remain retained above. Differences between cohorts
+do not establish a causal performance improvement or regression.
+
+The repaired cohort's lookup maximum itself is **3.300 ms**, at 100 tasks,
+with p99 **1.973 ms**; the 5,000-task lookup maximum is **0.711 ms**. The
+historical `cf06` lookup maximum of 0.554 ms does not describe this repaired run.
+
+From `bridge/`, the exact executable commands were:
+
+```sh
+nice -n 10 cargo test --release --features testing --test bounded_task_write_perf --test bounded_task_query_perf --test bounded_task_carrier_perf --no-run
+nice -n 10 target/release/deps/bounded_task_carrier_perf-fe5c6190a1faf97e bounded_reads_carrier_max_and_p99_with_both_locks_held --ignored --exact --nocapture --test-threads=1
+nice -n 10 target/release/deps/bounded_task_query_perf-a9b710faaf70c464 aggregate_lookup_carrier_release_latency_gate --ignored --exact --nocapture --test-threads=1
+```
+
+All three process exits were **0**. The self-pinned raw logs are
+`/tmp/task900-release-choice-extraction-build.log`,
+`/tmp/task900-release-repaired-summary.log` and
+`/tmp/task900-release-repaired-query.log`; copies are attached on #900.
+The direct-run wrapper records the absolute executable paths equivalent to
+those shown above. SHA-256 identities:
+
+- Summary/choice: `e07b64f29d334bade4c00c1c74c3586ed22a47106424ba7320507eed78dff16a`.
+- Aggregate/lookup: `3cfa9ec6d9076b3a7bcfbd4a0a7c85f4398c8dfe778ff7f9b684d251d6ab70b2`.
+- Common write fixture built in the same invocation: `1b05323973754d2e3adea668fd7c4654c76d2642baf7fdd840bd4037147f3e62`.
+
+Each row contains 100 requests. Bytes are the maximum sampled serialized result
+JSON, excluding RPC/encryption envelopes. Timers include carrier admission,
+matching decryption and result decoding; fixture setup is outside them. Both
+read suites retain the real app mutex, Store writer and independent SQLite
+write transaction during requests, with the existing eight-reader SQL lane.
+
+| Tasks | Scenario | Method | Rows | Max result bytes | p99 ms | Max ms |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | 0 | tasks.list | 1 | 955 | 0.660 | 1.284 |
+| 1 | 1 | tasks.list | 1 | 955 | 0.926 | 1.131 |
+| 1 | 2 | tasks.list | 0 | 283 | 0.341 | 0.354 |
+| 1 | 3 | tasks.filterChoices | 2 | 79 | 0.311 | 0.327 |
+| 100 | 0 | tasks.list | 100 | 67,768 | 27.509 | 28.561 |
+| 100 | 1 | tasks.list | 100 | 67,768 | 25.424 | 25.678 |
+| 100 | 2 | tasks.list | 0 | 285 | 6.589 | 6.714 |
+| 100 | 3 | tasks.filterChoices | 100 | 1,351 | 0.538 | 0.587 |
+| 5000 | 0 | tasks.list | 100 | 68,412 | 24.390 | 24.974 |
+| 5000 | 1 | tasks.list | 500 | 340,012 | 94.247 | 94.649 |
+| 5000 | 2 | tasks.list | 0 | 513 | 29.204 | 29.292 |
+| 5000 | 3 | tasks.filterChoices | 100 | 1,351 | 0.565 | 0.575 |
+| 1 | — | tasks.counts | — | 7,652 | 1.559 | 2.208 |
+| 1 | — | tasks.lookup | — | 877 | 0.477 | 0.494 |
+| 100 | — | tasks.counts | — | 7,656 | 1.640 | 1.732 |
+| 100 | — | tasks.lookup | — | 888 | 1.973 | 3.300 |
+| 5000 | — | tasks.counts | — | 7,758 | 1.614 | 1.661 |
+| 5000 | — | tasks.lookup | — | 892 | 0.555 | 0.711 |
+
+## Matched startup/write/memory cost evidence
+
+The [matched cost record](task-query-cost/README.md) compares exact base
+`12b8f869bd94e259666df69f1a8c0cde5c695982` with frozen candidate `55784b050`
+using a Build-managed exact-base checkout and identical existing public Store
+fixtures. It retains commands, release profile, source/binary/fixture hashes,
+24-process counterbalanced order, all exits, 552 raw operation samples and CPU
+and raw HWM values. Both builds finish before measurement; no retries or
+additional read-gate samples are used to select better results.
+
+The observations include added startup/reopen and recurring small-write costs.
+They require separate cost disposition; passing gates and #890 acceptance do
+not waive them. The common fixture supplies forced-repair/startup and completed
+reopen timings and raw process HWM snapshots, not matched empty startup, RSS,
+allocator delta or storage measurements. Those limits remain explicit.

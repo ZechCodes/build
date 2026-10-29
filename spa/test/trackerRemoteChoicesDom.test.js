@@ -98,6 +98,24 @@ it("loads independent first choice pages without changing legacy list grouping, 
   expect(choiceCalls()).toHaveLength(4);
 });
 
+it("readmits choice pages after switching away while the first pages are pending", async () => {
+  const waiting = new Map();
+  remote = ({ dimension }) => new Promise((resolve) => waiting.set(dimension, resolve));
+  await mount();
+  await vi.waitFor(() => expect(waiting.size).toBe(4));
+  host.querySelector('[data-task-view="dashboard"]').click();
+  await vi.waitFor(() => expect(host.querySelector('[data-task-view="dashboard"]').getAttribute("aria-pressed")).toBe("true"));
+  for (const [dimension, resolve] of waiting) resolve(page(dimension, ["obsolete"]));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  remote = async ({ dimension }) => page(dimension, dimension === "label" ? ["returned"] : []);
+  host.querySelector('[data-task-view="list"]').click();
+  await vi.waitFor(() => expect(choiceCalls()).toHaveLength(8), { timeout: 10_000 });
+  await open("label");
+  await vi.waitFor(() => expect(labels("label")).toContain("returned"));
+  expect(labels("label")).not.toContain("obsolete");
+  expect((await choices.readFilterChoices(scope, "label")).refreshing).toBe(false);
+});
+
 it("advances only the chosen menu, including a sparse empty choice page", async () => {
   await mount(); await open("label");
   await vi.waitFor(() => expect(more("label")?.hidden).toBe(false), { timeout: 10_000 });

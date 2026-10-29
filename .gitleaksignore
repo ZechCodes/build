@@ -65,3 +65,7 @@ fixtures/api/v1/git.unpushed.json:generic-api-key:6
 # is SHA-256 of frozen fd234144 spa/src/core/pushKeySync.js. Later snapshots
 # display source digests in short parts; this exemption covers only this commit.
 265d9215af384bc534616edad934702d8f376065:scripts/http-resource-coverage.test.mjs:generic-api-key:242
+
+# #911 provenance-preserving cherry-pick of the exact #915 public-source
+# checksum finding above; independently recomputed from the frozen git object.
+f9743f792a7a4b0854b24464cb0c890aa50be435:scripts/http-resource-coverage.test.mjs:generic-api-key:242

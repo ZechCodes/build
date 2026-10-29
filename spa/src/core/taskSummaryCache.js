@@ -80,6 +80,17 @@ function preserveMarks(held, task) {
 const markerFields = ["read_through", "watch_started_after", "dismissed_through"];
 const strongerMarks = (held, incoming) => markerFields.some((field) => incoming[field]
   && latestTaskMark(held?.[field], incoming[field]) === incoming[field] && held?.[field] !== incoming[field]);
+const coversMarks = (held, incoming) => markerFields.every((field) =>
+  latestTaskMark(held?.[field], incoming[field]) === (incoming[field] || null));
+
+function markerAuthority(held, incoming) {
+  const before = held?.task;
+  const olderContent = Date.parse(incoming.updated_at) < Date.parse(before?.updated_at);
+  const stronger = strongerMarks(before, incoming);
+  const stale = olderContent && stronger || held?.needs_unread_refresh && (olderContent || !coversMarks(before, incoming));
+  const source = olderContent ? Object.fromEntries(markerFields.map((field) => [field, incoming[field]])) : incoming;
+  return { source: stronger ? source : before, stale: Boolean(stale) };
+}
 
 const olderRow = (held, task, read) => held?.read_order > read || Date.parse(held?.task?.updated_at) > Date.parse(task.updated_at);
 
@@ -92,9 +103,9 @@ function summaryValue(held, task, read) {
   // Marks and their paired counters have their own authority, independently
   // of ordinary row request order. Preserve held fields while accepting a
   // stronger incoming mark, including an older dispatch's read report.
-  const authority = strongerMarks(before, task) ? task : before;
-  const next = preserveMarks(authority, preserveMarks(before, reviewed));
-  return { task: next, read_order: Math.max(read, held?.read_order || 0) };
+  const authority = markerAuthority(held, task);
+  const next = preserveMarks(authority.source, preserveMarks(before, reviewed));
+  return { task: next, read_order: Math.max(read, held?.read_order || 0), needs_unread_refresh: authority.stale };
 }
 
 /** Commit membership/cursor, summaries and shared identities together. Failure
@@ -135,7 +146,7 @@ export function writeSummaryTask(scope, task, read, { accept = () => true, fullT
 /** Cache-only reconstruction. Loaded membership never claims a project total
  * and an absent entity is never inferred to be deleted by a partial query. */
 const rowsOvertaken = (held, records) => held.ids.some((id, index) =>
-  (records[index]?.value?.read_order || 0) > (held.row_reads?.[id] || 0));
+  records[index]?.value?.needs_unread_refresh || (records[index]?.value?.read_order || 0) > (held.row_reads?.[id] || 0));
 
 export async function readSummaryQuery(scope, filters) {
   const record = await readCached(summaryQueryAddress(scope, filters));

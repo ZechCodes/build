@@ -33,6 +33,34 @@ adapter creates another application execution pool.
   require the exact live carrier; new RequestContext work additionally requires
   live request interest. Internal owner close cleanup runs after retirement.
 
+## Captured RTC read interest
+
+Trusted RTC adapters use the crate-restricted
+`RequestContext::narrow_read_interest(self, &Opening, Arc<dyn Fn() -> bool + Send + Sync>)`
+before submit. A different Opening allocation returns `WrongOpening` before the
+callback is evaluated. The callback captures only the already verified exact
+Opening, peer and channel proof; it cannot look up or rebind a session by ID.
+Callbacks must be nonblocking and may not reenter the proof state.
+
+Every restriction is conjoined, and an observed false result permanently retires
+that request's read proof. Adding another callback cannot replace an earlier
+restriction or revive it. The captured proof contains no request, reply sink or
+budget guard. Default read interest is true for adapters without this extra
+restriction.
+
+Execution checks read interest at read admission and worker handoff, using the
+existing effect registry. Authority, Opening lifetime and request cancellation
+remain mandatory independently of the extra proof. Retiring only this proof
+stops queued reads and read delivery while ordinary admitted work may settle.
+The RTC adapter retains its ordinary Call until settlement and retires the
+captured reply/event/peer proofs separately. Dropping the Call is request
+cancellation, not wire-loss cleanup. Whole-Opening closure, authority expiry and
+revocation override both read and ordinary-work liveness. Folded reads compute
+for any surviving captured caller; one retired representative cannot hide it.
+Producer event contexts strip this request-specific proof as well as reply
+resources. Internal CLOSE-only owner cleanup remains separate from admission of
+new effects.
+
 ## Authority and output
 
 `ClientSessions` owns execution openings. Its public `open` and `resume` accept
@@ -93,6 +121,41 @@ an owner fixture without a carrier or encryption key. Tests can construct a real
 AppState handler, obtain execution from FrameIntake, bind capture sinks and use
 the normal Invocation and submit path. HTTP authentication acceptance must use
 the actual verifier/runtime; this fixture is not authentication evidence.
+
+The construction signatures are `AppState::handler(Arc<Mutex<AppState>>) ->
+FrameHandler` and `ExecutionService::new(FrameHandler) -> Arc<ExecutionService>`.
+Tests supply their existing isolated AppState fixture to the first constructor.
+`FrameIntake::new(handler, transport_keys)` is the legacy carrier constructor;
+`intake.execution()` reuses its service. HTTP-only tests can construct execution
+directly without any carrier keys.
+
+The normal adapter sequence, using a session obtained from the real verifier or
+`testing::owner_session` in execution-only tests, is:
+
+```rust
+let sessions = execution.sessions();
+let request = sessions.request(&session, reply_sink, Some(&application_binding))?;
+let invocation = Invocation::decode(method, &params)?
+    .with_metadata(RequestMetadata {
+        request_id: Some(request_id),
+        priority: RequestPriority::Foreground,
+        write: None,
+    })?;
+let mut call = execution.submit(request, invocation).await?;
+let reply = call.reply().await?;
+// Retain call until the sink's encoded reply has finished its native write.
+```
+
+`ReplySink: Send + Sync` defines
+`fn try_send(&self, event: EncodedEvent) -> Result<(), DeliveryError>`; EventSink
+has the same signature. `Call::context()` exposes the captured RequestContext,
+`Call::cancel()` cancels that request, and dropping Call has the same interest
+retirement effect. `Call::reply(&mut self)` returns
+`Result<serde_json::Value, CallError>` asynchronously; the adapter may instead
+await its own final-event sink while retaining Call. `EncodedEvent: Clone` owns
+encoded bytes and its proof, so response bodies can retain it directly rather
+than serializing the Value again. Sinks must not call back into session methods
+while synchronously enqueuing under an output gate.
 
 The exported seam is exercised independently of HTTP runtime and clear-codec
 wiring. Those adapters must be imported only at reviewed exact heads. The

@@ -99,7 +99,10 @@ impl ExecutionService {
         Ok(call)
     }
     pub(crate) async fn submit_frame(&self, sender: CallContext, frame: Frame, arrived: WaitTimer) {
-        if !sender.read_is_live() {
+        let method = frame.payload["method"]
+            .as_str()
+            .unwrap_or(&frame.frame_type);
+        if !sender.method_is_live(method) {
             return;
         }
         let handler = self.dispatcher.handler();
@@ -112,12 +115,12 @@ impl ExecutionService {
         };
         if frame.payload["method"] == "bridge.stats" {
             if sender.read_is_live() {
-                sender.push_reply(handler.call_since(sender.clone(), frame, arrived));
+                sender.push_read_reply(handler.call_since(sender.clone(), frame, arrived));
             }
             return;
         }
         if frame.payload["method"] == "ping" {
-            sender.push_reply(crate::api::reply(
+            sender.push_read_reply(crate::api::reply(
                 frame.payload["id"].clone(),
                 Ok(crate::app::pong()),
             ));

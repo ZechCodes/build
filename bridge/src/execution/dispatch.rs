@@ -242,6 +242,13 @@ impl FrameHandler {
         frame: Frame,
         arrived: WaitTimer,
     ) -> Value {
+        let method = frame.payload["method"]
+            .as_str()
+            .unwrap_or(&frame.frame_type);
+        if super::requires_read_interest(method) && !sender.read_is_live() {
+            return crate::api::ApiError::unavailable("read interest ended before execution")
+                .into_reply(frame.payload.get("id").cloned().unwrap_or(Value::Null));
+        }
         if let Err(error) = crate::api::v1::validate_write_metadata(&frame.payload) {
             return error.into_reply(frame.payload.get("id").cloned().unwrap_or(Value::Null));
         }
@@ -260,18 +267,16 @@ impl FrameHandler {
     }
 
     pub(crate) fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
+        let method = frame.payload["method"]
+            .as_str()
+            .unwrap_or(&frame.frame_type);
         // Only internal teardown dispatches CLOSE after its opening was retired.
-        if frame.frame_type != CLOSE_FRAME_TYPE && !sender.execution_is_live() {
+        if frame.frame_type != CLOSE_FRAME_TYPE && !sender.method_is_live(method) {
             return crate::api::ApiError::unavailable("request ended before execution")
                 .into_reply(frame.payload.get("id").cloned().unwrap_or(Value::Null));
         }
         #[cfg(test)]
         let worker_started = std::time::Instant::now();
-        let method = frame
-            .payload
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or(&frame.frame_type);
         #[cfg(test)]
         let observed = self.clock.request_frame(&frame);
         let timer = queued.start(method);
@@ -636,7 +641,10 @@ impl Dispatcher {
         // Refused here as well as at the handler (`run_handler`): a frame for
         // an ended opening must not so much as open a lane, since the lane
         // would outlive the session whose close already took its lanes away.
-        if !sender.execution_is_live() {
+        let method = frame.payload["method"]
+            .as_str()
+            .unwrap_or(&frame.frame_type);
+        if !sender.method_is_live(method) {
             return;
         }
         if crate::api::effects::is_observation_read(&frame.payload) {
@@ -1105,9 +1113,9 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
             .clock
             .mark_observed(&observed, "reply_start", std::time::Instant::now());
         #[cfg(test)]
-        caller.push_observed(for_caller, &handler.clock, &observed, false);
+        caller.push_observed(for_caller, &handler.clock, &observed, true);
         #[cfg(not(test))]
-        caller.push_reply(for_caller);
+        caller.push_read_reply(for_caller);
         #[cfg(test)]
         handler
             .clock
@@ -1125,6 +1133,11 @@ async fn run_job(handler: &FrameHandler, job: Job) {
         queued,
     } = job;
     let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
+    let read_fenced = super::requires_read_interest(
+        frame.payload["method"]
+            .as_str()
+            .unwrap_or(&frame.frame_type),
+    );
     #[cfg(test)]
     let observed = handler.clock.request_frame(&frame);
     #[cfg(test)]
@@ -1139,16 +1152,25 @@ async fn run_job(handler: &FrameHandler, job: Job) {
                 .clock
                 .mark_observed(&observed, "reply_start", std::time::Instant::now());
             #[cfg(test)]
-            sender.push_observed(payload, &handler.clock, &observed, false);
+            sender.push_observed(payload, &handler.clock, &observed, read_fenced);
             #[cfg(not(test))]
-            sender.push_reply(payload);
+            if read_fenced {
+                sender.push_read_reply(payload);
+            } else {
+                sender.push_reply(payload);
+            }
             #[cfg(test)]
             handler
                 .clock
                 .mark_observed(&observed, "reply_enqueued", std::time::Instant::now());
         }
         Some(Err(_)) => {
-            sender.push_reply(json!({ "id": id, "ok": false, "error": "handler failed" }));
+            let error = json!({ "id": id, "ok": false, "error": "handler failed" });
+            if read_fenced {
+                sender.push_read_reply(error);
+            } else {
+                sender.push_reply(error);
+            }
         }
     }
 }
@@ -1172,7 +1194,10 @@ async fn run_handler(
     frame: Frame,
     queued: QueuedFrame,
 ) -> Option<Result<Value, tokio::task::JoinError>> {
-    if !sender.execution_is_live() {
+    let method = frame.payload["method"]
+        .as_str()
+        .unwrap_or(&frame.frame_type);
+    if !sender.method_is_live(method) {
         return None;
     }
     let handler = handler.clone();

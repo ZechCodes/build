@@ -755,6 +755,8 @@ pub struct RequestContext {
 impl RequestContext {
     /// Trusted adapters may only narrow read interest for this exact opening.
     /// Callbacks must be nonblocking and must not reenter this proof state.
+    // Restricted adapter seam; production callers arrive in reviewed #909 binding wiring.
+    #[allow(dead_code)]
     pub(crate) fn narrow_read_interest(
         self,
         opening: &Opening,

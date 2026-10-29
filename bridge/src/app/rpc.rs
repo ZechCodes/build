@@ -197,7 +197,7 @@ pub(in crate::app) fn dispatch_frame(
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    if !sender.execution_is_live() {
+    if !sender.method_is_live(&method) {
         return api::reply(
             id,
             Err(ApiError::unavailable("request authorization has ended")),
@@ -220,7 +220,7 @@ pub(in crate::app) fn dispatch_frame(
         Err(error) => return api::reply(id, Err(error)),
     };
 
-    if !sender.execution_is_live() {
+    if !sender.method_is_live(&method) {
         return api::reply(
             id,
             Err(ApiError::unavailable("request authorization has ended")),
@@ -444,7 +444,7 @@ fn routed(
     timer.mark_request("dispatch_start");
     let (dispatched, deferred) = {
         let mut app = timer.lock(state);
-        if !context.execution_is_live() {
+        if !context.method_is_live(method) {
             return Err(ApiError::unavailable("request authorization has ended"));
         }
         // Refuse before dispatch_deferring can take an existing deferred job

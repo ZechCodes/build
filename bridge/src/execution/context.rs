@@ -17,6 +17,7 @@ pub struct CallContext {
     reply: Output,
     session_live: Liveness,
     reply_live: Liveness,
+    read_live: Liveness,
     request_scoped: bool,
     event_live: Liveness,
     scope: Option<u64>,
@@ -52,12 +53,15 @@ impl CallContext {
         self.opening.is_open() && (self.session_live)()
     }
     pub(crate) fn read_is_live(&self) -> bool {
-        self.session_is_open() && (self.reply_live)()
+        self.session_is_open() && (self.reply_live)() && (self.read_live)()
     }
     /// Legacy admitted work survives one carrier closing while its opening lives.
     /// Per-request work additionally retains the initiating request's cancellation.
     pub(crate) fn execution_is_live(&self) -> bool {
         self.session_is_open() && (!self.request_scoped || (self.reply_live)())
+    }
+    pub(crate) fn method_is_live(&self, method: &str) -> bool {
+        self.execution_is_live() && (!super::requires_read_interest(method) || self.read_is_live())
     }
     pub fn has_events(&self) -> bool {
         self.has_events
@@ -72,6 +76,7 @@ impl CallContext {
     pub(crate) fn for_fold(mut self, callers: Vec<Self>) -> Self {
         self.request_scoped = true;
         self.reply_live = Arc::new(move || callers.iter().any(Self::read_is_live));
+        self.read_live = Arc::new(|| true);
         self
     }
 
@@ -80,6 +85,7 @@ impl CallContext {
         let mut producer = self.clone();
         producer.reply = Arc::new(|_| false);
         producer.reply_live = producer.event_live.clone();
+        producer.read_live = Arc::new(|| true);
         producer
     }
 
@@ -111,6 +117,7 @@ impl CallContext {
             reply: send,
             session_live: Arc::new(|| true),
             reply_live: Arc::new(|| true),
+            read_live: Arc::new(|| true),
             request_scoped: false,
             event_live: Arc::new(|| true),
             scope: None,
@@ -144,6 +151,7 @@ impl CallContext {
             reply: Arc::new(move |payload| reply.send(payload).is_ok()),
             session_live: Arc::new(move || session.is_live()),
             reply_live: Arc::new(move || reply_live.is_live()),
+            read_live: request.read_interest(),
             request_scoped: true,
             event_live: Arc::new(move || {
                 event_live.as_ref().is_some_and(|events| events.is_live())
@@ -190,10 +198,12 @@ impl CallContext {
             return false;
         };
         let _gate = self.gate.lock().unwrap();
-        self.read_is_live() && (self.reply)(prepared.0)
+        self.session_is_open() && (self.reply_live)() && (self.reply)(prepared.0)
     }
     pub(crate) fn push_read_reply(&self, payload: Value) {
-        self.push_reply(payload);
+        if self.read_is_live() {
+            self.push_reply(payload);
+        }
     }
 
     #[cfg(test)]

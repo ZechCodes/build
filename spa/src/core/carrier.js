@@ -62,13 +62,15 @@ export function bindCarrier(raw, codec) {
       close(error);
       return;
     }
-    try {
-      for (const listener of [...frameListeners]) {
-        if (ended) break;
-        listener(frame);
-      }
-    } finally {
-      if (frame.frame_type === "close") close();
+    // A close is transport control. Its payload can never answer a request
+    // or publish a push through the application listeners.
+    if (frame.frame_type === "close") {
+      close();
+      return;
+    }
+    for (const listener of [...frameListeners]) {
+      if (ended) break;
+      listener(frame);
     }
   });
   const send = async (payload, { frameType = "data", assertCurrent = () => {}, onHandoff = () => {} }) => {

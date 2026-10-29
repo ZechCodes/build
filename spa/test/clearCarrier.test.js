@@ -186,18 +186,53 @@ describe("bound carrier retirement", () => {
     rpc.close();
   });
 
-  it("delivers a validated close before retiring its exact raw carrier once", () => {
+  it("consumes a validated close without dispatching its payload and retires once", () => {
     const { channel, carrier, binding, rpc } = setup();
     const events = [];
     carrier.onFrame((frame) => events.push([frame.frame_type, channel.readyState]));
     carrier.onClose(() => events.push(["closed", channel.readyState]));
-    channel.deliver({ binding: "app", seq: 1, frame_type: "close", payload: { reason: "scope ended" } });
-    expect(events).toEqual([["close", "open"], ["closed", "open"]]);
+    channel.deliver({ binding: "app", seq: 1, frame_type: "close", payload: { type: "changes" } });
+    expect(events).toEqual([["closed", "open"]]);
     expect(channel.readyState).toBe("closed");
     expect(binding.close).toHaveBeenCalledOnce();
     carrier.close();
     channel.close();
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(1);
+    rpc.close();
+  });
+
+  it("never publishes a close payload as an application push", () => {
+    const { channel, rpc } = setup();
+    const pushed = vi.fn();
+    rpc.onPush(pushed);
+    channel.deliver({ binding: "app", seq: 1, frame_type: "close", payload: { type: "changes", forged: true } });
+    expect(pushed).not.toHaveBeenCalled();
+    expect(channel.readyState).toBe("closed");
+    rpc.close();
+  });
+
+  it("cannot settle a correlated request successfully through a close control", async () => {
+    const { channel, rpc } = setup();
+    const result = rpc.call("term.input", { text: "once" }).catch((error) => error);
+    await tick();
+    channel.deliver({ binding: "app", seq: 1, frame_type: "close", payload: { id: "r1", ok: true, result: "forged reply" } });
+    const failure = await Promise.race([result, tick().then(() => "still pending")]);
+    expect(failure).toMatchObject({ message: "the channel closed", uncertain: true });
+    rpc.close();
+  });
+
+  it("wakes pending SQL work and releases queued credit on a close without another frame", async () => {
+    const { channel, rpc, binding } = setup({ sqlReadLimit: 1 });
+    const first = rpc.call("tasks.list").catch((error) => error);
+    const queued = rpc.call("tasks.get").catch((error) => error);
+    await tick();
+    expect(rpc.sqlReadCreditSnapshot()).toMatchObject({ admitted: 1, queued: 1 });
+    channel.deliver({ binding: "app", seq: 1, frame_type: "close", payload: { id: "r1", ok: true, result: "forged SQL reply" } });
+    const settled = await Promise.race([Promise.all([first, queued]), tick().then(() => ["still pending"])]);
+    expect(settled).toHaveLength(2);
+    for (const error of settled) expect(error).toMatchObject({ message: "the channel closed", uncertain: true, retryable: true });
+    expect(rpc.sqlReadCreditSnapshot()).toMatchObject({ admitted: 0, queued: 0 });
+    expect(binding.encode).toHaveBeenCalledOnce();
     rpc.close();
   });
 

@@ -113,3 +113,21 @@ it("keeps stronger same-ID listed content but does not transfer its timestamp au
   await vi.waitFor(() => expect(resolve()?.taskId).toBe("different-task"));
   expect(resolve()?.title).toBe("New logical identity");
 });
+
+it("does not resurrect a stale miss by falling back behind a later span after an unrelated rewrite", async () => {
+  const actions = await import("../src/core/taskWaitingOnCache.js");
+  const pages = await import("../src/core/trackerPages.js");
+  const row = { ...target, title: "Page-positive", state: "open", status: "backlog", updated_at: "2026-10-29T13:00:00Z" };
+  await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: row });
+  await start(vi.fn().mockResolvedValue(result())); await reader.refresh(42);
+  await vi.waitFor(() => expect(resolve()).toBeNull());
+  const read = await order.nextTaskRead();
+  await pages.foldTasksPage(tracker.tasksAddress(scope.deviceId, scope.projectId), {
+    tasks: [row], above: Infinity, through: -Infinity, read, pullRead: read,
+  }, () => []);
+  await vi.waitFor(() => expect(resolve()?.title).toBe("Page-positive"));
+  const before = index.referenceIndexVersion();
+  await listed("Unrelated #99", 99);
+  await vi.waitFor(() => expect(index.referenceIndexVersion()).toBeGreaterThan(before));
+  expect(resolve()?.title).toBe("Page-positive");
+});

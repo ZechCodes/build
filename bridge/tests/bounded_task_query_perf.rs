@@ -5,7 +5,7 @@ use build_bridge::app::AppState;
 use build_bridge::carrier::testing::{client_request, session_init, ChannelWire};
 use build_bridge::carrier::{FrameIntake, SessionSender};
 use build_bridge::harness::HarnessContext;
-use build_bridge::tracker::{Actor, Task};
+use build_bridge::tracker::{Actor, Assignee, Task};
 use build_bridge::transport;
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -39,6 +39,9 @@ fn seed(store: &build_bridge::store::Store, project: &str, count: usize) {
             "2026-10-01T00:00:00Z",
         );
         task.body = "excluded body".repeat(1000);
+        task.assignee = Some(Assignee::Agent {
+            agent_id: format!("agent-{}", (number - 1) % 100),
+        });
         assert_eq!(
             store.create_tracker_task(task, &[]).unwrap().number,
             number as u64
@@ -161,7 +164,7 @@ impl Fixture {
 fn validate(count: usize, method: &str, response: &Value) {
     assert_eq!(response["ok"], true, "{response}");
     let result = &response["result"];
-    assert!(serde_json::to_vec(result).unwrap().len() <= 1_048_576);
+    assert!(serde_json::to_vec(result).unwrap().len() <= 65_536);
     assert!(result["basis"].is_string());
     if method == "tasks.counts" {
         assert_eq!(result["unfinished_open_count"], count);
@@ -172,15 +175,29 @@ fn validate(count: usize, method: &str, response: &Value) {
             .iter()
             .map(|bucket| bucket["agent_id"].as_str().unwrap().to_string())
             .collect();
-        let expected = (0..100).map(|n| format!("absent-{n}")).collect();
+        let expected = (0..100).map(|n| format!("agent-{n}")).collect();
         assert_eq!(actual, expected);
         for bucket in result["agents"].as_array().unwrap() {
-            assert_eq!(bucket["unfinished_open_count"], 0);
+            let index: usize = bucket["agent_id"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("agent-")
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(bucket["unfinished_open_count"], (count + 99 - index) / 100);
         }
     } else {
         assert_eq!(result["task"]["number"], count);
         assert_eq!(result["task"]["title"], format!("Task {count}"));
         assert!(result["task"].get("body").is_none());
+        let assignee = format!("agent-{}", (count - 1) % 100);
+        assert_eq!(
+            result["task"]["assignee"],
+            json!({"kind":"agent","agent_id":assignee})
+        );
+        assert!(result["identities"][&assignee].is_object());
+        assert_eq!(result["identities"].as_object().unwrap().len(), 1);
     }
 }
 
@@ -191,7 +208,7 @@ async fn run(timing: bool) {
     );
     let tools = tempfile::tempdir().unwrap();
     std::env::set_var("PATH", project_bridge::private_path(tools.path()));
-    let agents: Vec<_> = (0..100).map(|n| format!("absent-{n}")).collect();
+    let agents: Vec<_> = (0..100).map(|n| format!("agent-{n}")).collect();
     let mut failures = Vec::new();
     for count in [1, 100, 5000] {
         let mut fixture = Fixture::new(count);

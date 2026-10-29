@@ -1,6 +1,6 @@
 # Task query performance evidence
 
-The comparison base for #900 is `12b8f869b`. Counts, point lookup, ordering and
+The comparison base for #900 is `12b8f869bd94e259666df69f1a8c0cde5c695982`. Counts, point lookup, ordering and
 exact membership maintenance extend its existing materialized task summaries.
 Search stays outside this conversion. A successful bounded read gate does not
 waive startup, storage or write costs.
@@ -18,13 +18,18 @@ nice -n 10 cargo test --release --features testing --test bounded_task_query_per
 The default test checks actual responses and their byte bounds without a latency
 threshold. The ignored timing test refuses debug builds and asserts that **every
 sample** is at most 100 ms. Each mode issues 100 serial encrypted carrier requests
-for counts with 100 explicit absent agent buckets and 100 for an existing number
+for counts with 100 explicit agent buckets and 100 for an existing number
 lookup, at each of 1, 100 and 5,000 tasks (600 requests). The actual app mutex,
 Store writer mutex and independent SQLite `BEGIN IMMEDIATE` lock remain held
 throughout each fixture's reads. This exercises carrier admission and the SQL
 lane rather than calling an aggregate helper directly. Assertions cover exact
 project and agent counts, lookup identity/title/number, absence of body, basis,
-and the 1 MiB result bound. The API's tighter point-result bound still applies.
+and the tighter 65,536-byte point-result bound (also below the 1 MiB carrier cap).
+Tasks are assigned evenly across `agent-0` through `agent-99`; bucket `i` must
+contain `(task_count + 99 - i) / 100` unfinished tasks. The larger fixtures
+populate every requested bucket. Assignees have no roster rows, so lookup also
+exercises the bounded unknown-identity fallback and verifies that one identity
+is returned. This does not measure rich roster metadata or live overlays.
 Reported p99 is nearest rank (sample 99 of 100); max enforces the gate.
 
 All roots, config, repository, store, HarnessContext socket and provider PATH
@@ -34,7 +39,9 @@ synchronously initialized readers and the original write/carrier benchmarks
 remain unchanged. Setup/seeding is outside request timers.
 
 A separate default test reports empty startup, forced definition repair/backfill
-of 100 tasks, and three completed reopens. Each reopen performs three rounds of
+of 100 small assigned tasks, and three completed reopens. This measures total
+forced repair, including existing summary work; it does not isolate #900's
+incremental migration cost. Each reopen performs three rounds of
 ordinary metadata write, history append, read-marker write and workspace/tracker
 relation write. Canonical field assertions accompany measurements. Thread CPU
 and wall times are separate. RSS/HWM are raw process values, including fixture

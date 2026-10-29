@@ -37,8 +37,10 @@ const lookupCalls = () => live.context.rpc.mock.calls.filter(([method]) => metho
 const mounted = (content) => {
   host.innerHTML = `<div class="task-page-body markdown">${content}</div>`;
   const follower = runtime.mountTaskReferenceLookups(host, { ...scope, context: live.context });
-  running.add(follower);
-  return follower;
+  const wrapped = { ...follower, update: (content) => follower.update(typeof content === "string"
+    ? { body: host.textContent, rows: [] } : content) };
+  running.add(wrapped);
+  return wrapped;
 };
 
 beforeEach(async () => {
@@ -172,4 +174,41 @@ it("denies unsupported greetings and disposed content without catalogue or boots
   await follower.update("one"); expect(lookupCalls()).toHaveLength(0);
   live.context.adapter.capabilities.tasks.lookup = true;
   follower.dispose(); await follower.refresh(); expect(lookupCalls()).toHaveLength(0);
+});
+
+it("counts element-only DOM nodes and avoids whole-subtree selectors and ancestor searches", async () => {
+  runtime = await import("../src/core/taskReferenceLookups.js");
+  const follower = mounted(`${"<i></i>".repeat(300)} #42`);
+  const queries = vi.spyOn(host, "querySelectorAll");
+  const ancestors = vi.spyOn(Element.prototype, "closest");
+  try {
+    await follower.update({ body: "#42", rows: [] });
+    expect(queries).not.toHaveBeenCalled();
+    expect(ancestors).not.toHaveBeenCalled();
+    expect(lookupCalls()).toHaveLength(0);
+  } finally { queries.mockRestore(); ancestors.mockRestore(); }
+});
+
+it("does not admit multiline references beyond the same bounded source horizon used for content identity", async () => {
+  runtime = await import("../src/core/taskReferenceLookups.js");
+  const prefix = "x".repeat(4096);
+  const follower = mounted(`<p>${prefix}</p><p>#42</p>`);
+  await follower.update({ body: `${prefix}\n\n#42`, rows: [] });
+  expect(lookupCalls()).toHaveLength(0);
+  host.innerHTML = `<div class="task-page-body markdown"><p>${prefix}</p><p>#43</p></div>`;
+  await follower.update({ body: `${prefix}\n\n#43`, rows: [] });
+  expect(lookupCalls()).toHaveLength(0);
+});
+
+it("does not admit comment refs beyond the bounded source row horizon", async () => {
+  runtime = await import("../src/core/taskReferenceLookups.js");
+  host.innerHTML = '<li data-comment-id="late"><div class="task-comment-body markdown">#42</div></li>';
+  const follower = runtime.mountTaskReferenceLookups(host, { ...scope, context: live.context }); running.add(follower);
+  const rows = [...Array.from({ length: 256 }, () => ({ type: "event" })), { type: "comment", key: "late", body: "#42" }];
+  await follower.update({ body: "", rows });
+  expect(lookupCalls()).toHaveLength(0);
+  rows[256] = { type: "comment", key: "late", body: "#43" };
+  host.querySelector('.task-comment-body').textContent = "#43";
+  await follower.update({ body: "", rows });
+  expect(lookupCalls()).toHaveLength(0);
 });

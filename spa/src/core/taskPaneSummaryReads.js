@@ -37,6 +37,7 @@ export function createTaskPaneChoiceReads({ scope, host, callRpc, capabilities, 
   let disposed = false;
   let lastSession;
   let requested = false;
+  let requestSerial = 0;
   let readSerial = 0;
   const current = () => !disposed && active() && enabled();
   const readers = Object.fromEntries(Object.keys(DIMENSIONS).map((dimension) => [dimension,
@@ -53,14 +54,19 @@ export function createTaskPaneChoiceReads({ scope, host, callRpc, capabilities, 
   const unsubscribe = subscribeCache({ ...filterChoicesAddress(scope, "label"), sub: undefined }, () => void readCache());
   const ready = readCache();
 
-  function ask(reader, operation) {
-    return reader[operation]().catch((error) => { if (current()) onError(error); return false; });
+  function ask(reader, operation, discarded = () => {}) {
+    return reader[operation]().then((accepted) => {
+      if (accepted === false) discarded();
+      return accepted;
+    }).catch((error) => { if (current()) onError(error); return false; });
   }
   function refresh() {
     if (!current() || capabilities()?.filterChoices !== true) return Promise.resolve(false);
     lastSession = sessionOf();
     requested = true;
-    return Promise.all(Object.values(readers).map((reader) => ask(reader, "refresh")));
+    const serial = ++requestSerial;
+    const discarded = () => { if (serial === requestSerial) requested = false; };
+    return Promise.all(Object.values(readers).map((reader) => ask(reader, "refresh", discarded)));
   }
   function ensure() {
     return requested && lastSession === sessionOf() ? Promise.resolve(false) : refresh();

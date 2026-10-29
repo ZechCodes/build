@@ -98,18 +98,25 @@ it("loads independent first choice pages without changing legacy list grouping, 
   expect(choiceCalls()).toHaveLength(4);
 });
 
-it("readmits choice pages after switching away while the first pages are pending", async () => {
+it.each(["initial", "refresh"])("readmits choice pages after switching away during %s pages", async (phase) => {
+  if (phase === "refresh") {
+    await mount();
+    await vi.waitFor(async () => expect((await choices.readFilterChoices(scope, "label"))?.next_cursor).toBe("label-next"));
+  }
   const waiting = new Map();
   remote = ({ dimension }) => new Promise((resolve) => waiting.set(dimension, resolve));
-  await mount();
+  if (phase === "initial") await mount();
+  else watchers.find(({ entity }) => entity === scope.projectId).refresh();
   await vi.waitFor(() => expect(waiting.size).toBe(4));
+  const requested = choiceCalls().length;
   host.querySelector('[data-task-view="dashboard"]').click();
   await vi.waitFor(() => expect(host.querySelector('[data-task-view="dashboard"]').getAttribute("aria-pressed")).toBe("true"));
   for (const [dimension, resolve] of waiting) resolve(page(dimension, ["obsolete"]));
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await choices.readFilterChoices(scope, "label"); // wait behind the rejected page transactions
   remote = async ({ dimension }) => page(dimension, dimension === "label" ? ["returned"] : []);
   host.querySelector('[data-task-view="list"]').click();
-  await vi.waitFor(() => expect(choiceCalls()).toHaveLength(8), { timeout: 10_000 });
+  await vi.waitFor(() => expect(choiceCalls()).toHaveLength(requested + 4), { timeout: 10_000 });
   await open("label");
   await vi.waitFor(() => expect(labels("label")).toContain("returned"));
   expect(labels("label")).not.toContain("obsolete");

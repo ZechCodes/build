@@ -15,17 +15,18 @@ const address = ({ deviceId, projectId }, kind, sub) => ({ deviceId, entityId: S
 export const summaryAddress = (scope, id) => address(scope, TASK_SUMMARY_KIND, id);
 const identityAddress = (scope, id) => address(scope, TASK_SUMMARY_IDENTITY_KIND, id);
 const invalidationAddress = (scope) => address(scope, "tracker-summary-invalidation", "");
+const observationAddress = (scope) => address(scope, "tracker-summary-observation", "");
 export const summaryQueryAddress = (scope, filters) => address(scope, TASK_SUMMARY_QUERY_KIND,
   JSON.stringify(canonicalSummaryFilters(filters)));
 
 /** Start a refresh without discarding the last successful cached paint.
  * A caller takes generation from nextTaskRead before dispatch. Older tickets
  * cannot reset a newer refresh, including across tabs. */
-export async function beginSummaryQuery(scope, filters, generation) {
+export async function beginSummaryQuery(scope, filters, generation, { accept = () => true } = {}) {
   if (!Number.isSafeInteger(generation) || generation <= 0) throw new Error("Invalid summary query generation");
   const queryAddress = summaryQueryAddress(scope, filters);
   await mergeCachedRecordsTogether([queryAddress], ([held]) => {
-    if (held?.value?.generation >= generation) return null;
+    if (!accept() || held?.value?.generation >= generation) return null;
     return [{ ids: [], identity_ids: [], next_cursor: null, complete: false,
       ...held?.value, generation, refreshing: true }];
   });
@@ -58,6 +59,7 @@ function membership(held, ticket, page, ids, identities, read) {
     complete: page.next_cursor == null,
     refreshing: false,
     published_generation: ticket.generation,
+    observed_read_order: read,
   };
 }
 
@@ -75,11 +77,23 @@ function preserveMarks(held, task) {
   return next;
 }
 
+const markerFields = ["read_through", "watch_started_after", "dismissed_through"];
+const strongerMarks = (held, incoming) => markerFields.some((field) => incoming[field]
+  && latestTaskMark(held?.[field], incoming[field]) === incoming[field] && held?.[field] !== incoming[field]);
+
+const olderRow = (held, task, read) => held?.read_order > read || Date.parse(held?.task?.updated_at) > Date.parse(task.updated_at);
+
 function summaryValue(held, task, read) {
-  const older = held?.read_order > read || Date.parse(held?.task?.updated_at) > Date.parse(task.updated_at);
-  const next = preserveMarks(held?.task, preserveTaskReviewSummary(held?.task, task, {
-    readOrder: read, keepHeld: older, allowMissing: !older, baseRow: older ? held.task : task,
-  }));
+  const before = held?.task;
+  const older = olderRow(held, task, read);
+  const reviewed = preserveTaskReviewSummary(before, task, {
+    readOrder: read, keepHeld: older, allowMissing: !older, baseRow: older ? before : task,
+  });
+  // Marks and their paired counters have their own authority, independently
+  // of ordinary row request order. Preserve held fields while accepting a
+  // stronger incoming mark, including an older dispatch's read report.
+  const authority = strongerMarks(before, task) ? task : before;
+  const next = preserveMarks(authority, preserveMarks(before, reviewed));
   return { task: next, read_order: Math.max(read, held?.read_order || 0) };
 }
 
@@ -92,15 +106,16 @@ export async function landSummaryPage(ticket, page, { read, accept = () => true 
   if (!Number.isSafeInteger(read) || read <= 0) throw new Error("Invalid summary read order");
   const tasks = [...new Map(page.tasks.map((task) => [task.id, task])).values()];
   const identities = Object.entries(page.identities || {});
-  const addresses = [ticket.address, invalidationAddress(ticket.scope), ...tasks.map((task) => summaryAddress(ticket.scope, task.id)),
+  const addresses = [ticket.address, invalidationAddress(ticket.scope), observationAddress(ticket.scope), ...tasks.map((task) => summaryAddress(ticket.scope, task.id)),
     ...identities.map(([id]) => identityAddress(ticket.scope, id))];
-  return mergeCachedRecordsTogether(addresses, ([query, invalidation, ...records]) => {
+  return mergeCachedRecordsTogether(addresses, ([query, invalidation, observation, ...records]) => {
     const held = query?.value;
     if (!acceptsPage(held, ticket, accept) || invalidation?.value?.read_order > ticket.generation) return null;
     const rows = tasks.map((task, index) => summaryValue(records[index]?.value, task, read));
     const actors = identities.map(([, identity], index) => records[tasks.length + index]?.value?.read_order > read
       ? null : { identity, read_order: read });
-    return [membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id), read), null, ...rows, ...actors];
+    return [membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id), read), null,
+      { read_order: Math.max(read, observation?.value?.read_order || 0) }, ...rows, ...actors];
   });
 }
 
@@ -127,11 +142,11 @@ export async function readSummaryQuery(scope, filters) {
   if (!record?.value) return null;
   const held = record.value;
   const ids = held.identity_ids || [];
-  const [invalidation, ...records] = await readCachedMany([
-    invalidationAddress(scope), ...held.ids.map((id) => summaryAddress(scope, id)), ...ids.map((id) => identityAddress(scope, id)),
+  const [invalidation, observation, ...records] = await readCachedMany([
+    invalidationAddress(scope), observationAddress(scope), ...held.ids.map((id) => summaryAddress(scope, id)), ...ids.map((id) => identityAddress(scope, id)),
   ]);
   return { ...held,
-    stale: (invalidation?.value?.read_order || 0) > (held.published_generation || 0) || rowsOvertaken(held, records),
+    stale: queryOvertaken(held, invalidation?.value, observation?.value) || rowsOvertaken(held, records),
     tasks: records.slice(0, held.ids.length).map((record) => record?.value?.task).filter(Boolean),
     identities: Object.fromEntries(ids.flatMap((id, index) => {
       const value = records[held.ids.length + index]?.value?.identity;
@@ -139,3 +154,7 @@ export async function readSummaryQuery(scope, filters) {
     })),
   };
 }
+
+const queryOvertaken = (held, invalidation, observation) =>
+  (invalidation?.read_order || 0) > (held.published_generation || 0)
+  || (observation?.read_order || 0) > (held.observed_read_order || 0);

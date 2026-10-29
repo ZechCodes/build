@@ -38,7 +38,7 @@ export function createTaskSummaryReader({ scope, filters, callRpc, capabilities,
     return track(async () => {
       const readOrder = await nextTaskRead();
       if (!accepts(generation, session)) return false;
-      const next = await beginSummaryQuery(scope, params, readOrder);
+      const next = await beginSummaryQuery(scope, params, readOrder, { accept: () => accepts(generation, session) });
       if (!accepts(generation, session)) return false;
       ticket = next;
       return ask(next, readOrder, generation, session);

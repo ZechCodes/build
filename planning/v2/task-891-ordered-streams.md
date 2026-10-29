@@ -79,12 +79,17 @@ to label incompatible old membership as current or turn unknown into empty.
   stays a client predicate until its precise bounded contract is settled.
 - Watched Inbox requires the global activity anchor order, not task-number
   order. Per-project streams can be merged by the existing `byAnchor` tie-breaks
-  from `inboxOrder.js`; counts never derive from the loaded heads. A cross-project
+  from `inboxOrdering.js`; counts never derive from the loaded heads. A cross-project
   merge retains each project's independent head/cursor and does not exhaust
   projects just to fill a menu or resolve a reference.
   Admission must also cap project-head requests per explicit operation; opening
   the view must not introduce an all-project sweep into #891 bootstrap. Unknown
   project heads obey the same merge barrier as empty sparse branches.
+  Equal anchors retain stable project source order, then that project's
+  number-descending input order. The merge must not add an ID, activity or
+  label tie-break. #900's refined `order_anchor_ms` field is query-authoritative
+  (integer or explicit null), including its created-at fallback; store it with
+  membership/order metadata rather than as an unqualified global task fact.
 
 All selection, order, locale and exclusion facts that affect server membership
 or cursor binding must be present in canonical cache query identity. Cached

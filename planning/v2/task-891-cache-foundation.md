@@ -18,6 +18,7 @@ eviction reaches the new records. No cache schema bump or store is introduced.
 | `tracker-summary-identity` / agent ID | Shared compact identity and read order, independent of task/detail duplication. |
 | `tracker-summary-query` / canonical filter JSON | Loaded task IDs, identity IDs, refresh generation, last published generation, cursor, completion and refresh state. It contains no task bodies or invented total. |
 | `tracker-summary-invalidation` / empty | Latest immediate-write read order. Fences all older project query tickets without enumerating inactive cached queries. |
+| `tracker-summary-observation` / empty | Latest project page observation; conservatively marks older memberships, including empty ones, stale when another query can reveal entrants. |
 
 `taskSummaryQuery.js` canonicalizes the currently negotiated summary filters
 only: state/status/label/assignee selections, OR within each set and AND across
@@ -44,6 +45,12 @@ overwritten by a delayed older page from another query.
 Each membership also retains the read that observed its named row. A shared
 row updated by a different query makes the earlier membership stale, rather
 than presenting incompatible predicate membership as freshly established.
+The #890-only foundation conservatively treats newer project observations as
+stale evidence, including for empty memberships. This can require extra
+first-page revalidation after unrelated query reads; it is not a performance
+claim. #900's projection basis will let integration distinguish compatible
+same-basis pages from actual membership changes. No durable event journal or
+background sweep is introduced here.
 
 Immediate action patches update the shared summary and invalidate older query
 tickets atomically. They preserve omitted compact fields and reject detail

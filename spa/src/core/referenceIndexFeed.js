@@ -1,7 +1,7 @@
 // Cache-only reference sources. Point records are read only for explicitly
 // admitted mounted content; this feed never discovers or dispatches lookups.
 import { deviceKey } from "./deviceKey.js";
-import { readCached, readCachedMany, subscribeCache } from "./localCache.js";
+import { readCached, subscribeCache } from "./localCache.js";
 import { readTasksRecord, tasksAddress } from "./trackerCache.js";
 import { readsAddress } from "./taskReadOrder.js";
 import { taskLookupAddress } from "./taskAggregateReads.js";

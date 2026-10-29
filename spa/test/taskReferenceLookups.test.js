@@ -77,6 +77,42 @@ it("admits four fixed unknown refs from actual mounted task-page content and nev
   expect(lookupCalls()).toHaveLength(4);
 });
 
+it("keeps an off-page reference unknown until a real task-page lookup confirms missing", async () => {
+  const held = task({ id: "task-own", project_id: scope.projectId, body: "See #42.", watched: false });
+  const taskOrder = await import("../src/core/taskReadOrder.js");
+  await cache.writeCached(tracker.tasksAddress(scope.deviceId, scope.projectId), { tasks: [{ id: "other", number: 100 }] });
+  await cache.writeCached(taskOrder.readsAddress(tracker.tasksAddress(scope.deviceId, scope.projectId)), {
+    stretches: [{ above: Infinity, through: 100, read: 1 }], rows: {},
+  });
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, held.id, tracker.taskRecord(held, []));
+  const pending = deferred();
+  live.context.rpc.mockImplementation((method) => method === "tasks.lookup" ? pending.promise : new Promise(() => {}));
+  const { mountTaskPage } = await import("../src/core/trackerTaskPage.js");
+  page = mountTaskPage(host, { ...scope, projectKey, taskId: held.id, callRpc: live.context.rpc,
+    catalog: () => ({ providers: [] }), feed: () => ({ projects: [], workspaces: [], items: [] }) });
+  await vi.waitFor(() => expect(lookupCalls()).toHaveLength(1));
+  expect(host.querySelector('.task-page-body').textContent).toContain("#42");
+  expect(host.querySelector('.task-page-body .md-ref-missing')).toBeNull();
+  pending.resolve(result(42, false));
+  await vi.waitFor(() => expect(host.querySelector('.task-page-body .md-ref-missing')?.textContent).toBe("#42"));
+  expect(lookupCalls()).toHaveLength(1);
+});
+
+it("rejects a reply for a superseded mounted content turn", async () => {
+  runtime = await import("../src/core/taskReferenceLookups.js");
+  const old = deferred();
+  live.context.rpc.mockImplementationOnce(() => old.promise);
+  const follower = mounted("#42");
+  void follower.update("old-content");
+  await vi.waitFor(() => expect(lookupCalls()).toHaveLength(1));
+  host.innerHTML = '<div class="task-page-body markdown">#43</div>';
+  await follower.update("new-content");
+  old.resolve(result(42));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect((await reads.readTaskLookup(scope, 42)).status).toBe("unknown");
+  expect((await reads.readTaskLookup(scope, 43)).status).toBe("found");
+});
+
 it("excludes code, pre and existing anchors and enforces byte/node scan budgets", async () => {
   runtime = await import("../src/core/taskReferenceLookups.js");
   const follower = mounted('<code>#1</code><pre>#2</pre><a href="#existing">#3</a><p>#4 #5</p>');

@@ -100,13 +100,15 @@ function projectAgentsOf(feed) {
 const projectRostersOf = (feed) => new Map((feed?.projects || []).filter((project) => project.projectRoster)
   .map((project) => [project.projectKey, project.projectRoster]));
 
-export function referenceTables({ feed = null, tasks = {}, tasksComplete = {}, taskLookups = {} } = {}) {
+const taskSources = ({ tasks = {}, tasksComplete = {}, taskLookups = {} }) => ({ tasks, tasksComplete, taskLookups });
+
+export function referenceTables({ feed = null, ...taskOptions } = {}) {
   const workspaces = (feed?.workspaces || []).filter((workspace) => workspace.projectKey).map(workspaceEntry);
   const projects = (feed?.projects || []).filter((project) => project.projectKey).map((project) => ({
     ...placeOfKey(project.projectKey), projectKey: project.projectKey, name: String(project.name || project.id || ""),
   }));
   return { workspaces, projects, agents: agentsOf(feed, workspaces), projectAgents: projectAgentsOf(feed), projectRosters: projectRostersOf(feed),
-    tasks: tasks || {}, tasksComplete, taskLookups, held: Boolean(feed) };
+    ...taskSources(taskOptions), held: Boolean(feed) };
 }
 
 /** The one row a reader meant, out of those that answer to what they wrote:
@@ -169,6 +171,20 @@ function projectAgentTarget(tables, id, here, identities) {
   return projectAgent(tables, id, { place: here, identities });
 }
 
+function foundTask(tables, here, number, point) {
+  if (point?.status === "found") return point.task;
+  return tables.tasks[here.projectKey]?.find((task) => Number(task.number) === Number(number));
+}
+
+function taskTarget(tables, here, number) {
+  if (!here) return undefined;
+  const point = tables.taskLookups[here.projectKey]?.[number];
+  if (point?.status === "missing") return null;
+  const found = foundTask(tables, here, number, point);
+  if (found?.id) return { deviceId: here.deviceId, projectId: here.projectId, taskId: found.id, title: found.title || "" };
+  return Array.isArray(tables.tasks[here.projectKey]) && tables.tasksComplete[here.projectKey] !== false ? null : undefined;
+}
+
 /**
  * The resolver core/markdownLinks.js asks, over the tables above, for a reader
  * standing at `place` (`{ deviceId, projectId }`, or nothing).
@@ -183,15 +199,7 @@ export function resolverFor(tables, { place = null, identities = {} } = {}) {
   const known = identities || {};
   const heldOrUnknown = (answer) => (tables.held ? answer : undefined);
   return {
-    task(number) {
-      if (!here) return undefined;
-      const point = tables.taskLookups[here.projectKey]?.[number];
-      if (point?.status === "missing") return null;
-      const list = tables.tasks[here.projectKey];
-      const found = point?.status === "found" ? point.task : list?.find((task) => Number(task.number) === Number(number));
-      if (found?.id) return { deviceId: here.deviceId, projectId: here.projectId, taskId: found.id, title: found.title || "" };
-      return Array.isArray(list) && tables.tasksComplete[here.projectKey] !== false ? null : undefined;
-    },
+    task: (number) => taskTarget(tables, here, number),
     workspace: (said) => heldOrUnknown(workspaceAt(tables, String(said || "").trim(), here?.projectKey)),
     project: (said) => heldOrUnknown(nearest(answering(tables.projects, String(said || "").trim(), "projectId"), here?.projectKey)),
     agent(id) {

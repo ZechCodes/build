@@ -49,6 +49,7 @@ import { patchParts } from "./partPatch.js";
 import { patchList } from "./patchList.js";
 import { followConversation, paintKeepingPlace, wireReaderMotion } from "./paintKeepingPlace.js";
 import { subscribeReferenceIndex } from "./referenceIndex.js";
+import { mountTaskReferenceLookups } from "./taskReferenceLookups.js";
 import { mountComposerAttachments } from "./composer.js";
 import { taskAttachmentRefusal } from "./taskAttachments.js";
 import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
@@ -122,6 +123,7 @@ export function mountTaskPage(host, options) {
     // that has to settle into the tray after it.
     files: [],
   };
+  const referenceLookups = mountTaskReferenceLookups(host, { deviceId: state.deviceId, projectId: state.projectId });
   let checklistFocus = null;
   const checklist = createTaskChecklist({
     deviceId: state.deviceId, projectId: state.projectId, taskId: state.taskId,
@@ -474,6 +476,7 @@ export function mountTaskPage(host, options) {
     // route names an id, but only a read knows its number and title.
     state.onTaskRead?.(record.task);
     state.rows = timelineRows(record.timeline);
+    void referenceLookups.update({ body: record.task.body, rows: state.rows });
     // Read the mark while it still says where this visit began. The open
     // mark below advances it, but the held divider must not move with it.
     updateUnread();
@@ -968,7 +971,7 @@ export function mountTaskPage(host, options) {
   // is what re-reads it, and the pass behind that (core/cacheSync.js) is the
   // whole of the safety net.
   const watcher = watchChanges({
-    refresh: () => { void refresh(); reviewPage?.refresh(); },
+    refresh: () => { void refresh(); void referenceLookups.refresh(); reviewPage?.refresh(); },
     entity: state.projectId,
     deviceId: state.deviceId,
   // Named only where the bridge carries them (core/trackerPush.js): every
@@ -977,6 +980,7 @@ export function mountTaskPage(host, options) {
     kinds: tasksPushKinds(state.deviceId),
     mode: "realtime",
     onChanges: (items) => {
+      void referenceLookups.refresh();
       if (namesTask(items, state.taskId)) { void refresh(); reviewPage?.refresh(); }
     },
   });
@@ -1003,6 +1007,7 @@ export function mountTaskPage(host, options) {
       checklistSupportWatcher();
       reviewWatcher();
       referencesWatcher();
+      referenceLookups.dispose();
       reads.dispose();
       unreadMarker.leave();
       unreadPill.dispose();

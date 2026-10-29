@@ -204,3 +204,32 @@ it("rejects an older issued action after a newer same-timestamp action committed
   expect(await action(full({ watched: true, title: "Older action" }), { issuedRead: first })).toBe(false);
   expect(await snapshot()).toEqual(before);
 });
+
+it.each([true, false])("keeps newer content while accepting an older-body action's read floor and watched=%s", async (watched) => {
+  await seed(base({ title: "Newer title", updated_at: "2026-10-29T13:00:00Z", watch_started_after: "" }));
+  await action(full({ title: "Old title", body: "Old body", watched, read_through: "tc-30\0", watch_started_after: "",
+    updated_at: "2026-10-29T12:00:00Z", unread_count: 0 }), { issuedRead: await order.nextTaskRead() });
+  const detail = await tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId);
+  expect(detail.task).toMatchObject({ title: "Newer title", body: "Held body", read_through: "tc-30\0", watched });
+  expect(detail.timeline).toEqual([{ id: "history" }]);
+  const row = (await value(summaries.summaryAddress(scope, taskId))).task;
+  expect(row).toMatchObject({ title: "Newer title", read_through: "tc-30\0", watched });
+  const listed = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
+  expect(listed).toMatchObject({ title: "Newer title", read_through: "tc-30\0", watched });
+  if (!watched) {
+    for (const task of [row, detail.task, listed]) {
+      expect(task).not.toHaveProperty("watch_started_after"); expect(task).not.toHaveProperty("unread_count");
+    }
+  }
+});
+
+it("does not let a complete action patch certify previously uncertain counter authority", async () => {
+  await seed();
+  const incomplete = full({ read_through: "tc-20" });
+  delete incomplete.unread_mentions; delete incomplete.unread_agent_comments;
+  await action(incomplete);
+  expect((await value(summaries.summaryAddress(scope, taskId))).needs_unread_refresh).toBe(true);
+  await summaries.writeSummaryTask(scope, { id: taskId, read_through: "tc-20", unread_count: 0,
+    unread_mentions: 0, unread_agent_comments: 0 }, await order.nextTaskRead());
+  expect((await value(summaries.summaryAddress(scope, taskId))).needs_unread_refresh).toBe(true);
+});

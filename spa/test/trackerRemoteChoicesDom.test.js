@@ -189,6 +189,51 @@ it("paints cached choices and continuation without a live capability, while admi
   expect(choiceCalls()).toHaveLength(0);
 });
 
+it("keeps a remote pending-only any choice canonical through assignment and unassignment", async () => {
+  tasks = [task({ id: "pending", title: "Pending delivery", deferred_assignment: { state: "queued", target: nulActor } })];
+  remote = async ({ dimension }) => page(dimension, dimension === "assignee" ? ["any"] : []);
+  call.mockImplementation(async (method, params) => {
+    if (method === "tasks.filterChoices") return remote(params);
+    if (method === "tasks.get") return { task: tasks[0], timeline: [] };
+    if (method === "tasks.list") return params.assignee ? new Promise(() => {}) : { tasks };
+    return {};
+  });
+  const tracker = await import("../src/core/trackerCache.js");
+  const { nextTaskRead } = await import("../src/core/taskReadOrder.js");
+  const save = async () => tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    tracker.tasksRecord(tasks, columns(), await nextTaskRead()));
+  await save(); await mount(); await open("assignee");
+  await vi.waitFor(async () => expect((await choices.readFilterChoices(scope, "assignee"))?.complete).toBe(true), { timeout: 10_000 });
+  expect(rows("assignee").some((row) => row.dataset.key === `option:agent:${nulActor.agent_id}`)).toBe(false);
+  rows("assignee")[labels("assignee").indexOf("Anyone assigned")].click();
+  await vi.waitFor(() => expect(call).toHaveBeenCalledWith("tasks.list", {
+    project_id: scope.projectId, state: "open", assignee: "any",
+  }), { timeout: 10_000 });
+  await vi.waitFor(() => expect(titles()).toEqual(["Pending delivery"]), { timeout: 10_000 });
+  tasks = [{ ...tasks[0], assignee: nulActor, deferred_assignment: null, updated_at: "2026-08-21T10:01:00Z" }];
+  await save();
+  await vi.waitFor(() => expect(titles()).toEqual(["Pending delivery"]), { timeout: 10_000 });
+  tasks = [{ ...tasks[0], assignee: null, updated_at: "2026-08-21T10:02:00Z" }];
+  await save();
+  await vi.waitFor(() => expect(titles()).toEqual([]), { timeout: 10_000 });
+});
+
+it("rejects an old-session choice continuation after a new first-page generation", async () => {
+  await mount(); await open("label");
+  await vi.waitFor(() => expect(more("label")?.hidden).toBe(false), { timeout: 10_000 });
+  let settle;
+  remote = async ({ dimension, cursor }) => cursor ? new Promise((resolve) => { settle = resolve; })
+    : page(dimension, dimension === "label" ? ["new-session"] : []);
+  more("label").click();
+  await vi.waitFor(() => expect(settle).toBeTypeOf("function"), { timeout: 10_000 });
+  session = {};
+  await refreshChoices();
+  await vi.waitFor(() => expect(labels("label")).toEqual(["new-session"]), { timeout: 10_000 });
+  settle(page("label", ["retired-choice"]));
+  await vi.waitFor(async () => expect((await choices.readFilterChoices(scope, "label")).choices).toEqual(["new-session"]), { timeout: 10_000 });
+  expect(more("label").hidden).toBe(true);
+});
+
 it.each(["dashboard", "workspace"])("retains the %s compatibility path without bounded row or choice activation", async (mode) => {
   await mount(mode === "dashboard" ? { defaultView: "dashboard" } : { only: () => true });
   await open("label");

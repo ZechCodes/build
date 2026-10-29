@@ -38,6 +38,7 @@ export function createTaskPaneChoiceReads({ scope, host, callRpc, capabilities, 
   let lastSession;
   let requested = false;
   let requestSerial = 0;
+  let pendingRound = null;
   let readSerial = 0;
   const current = () => !disposed && active() && enabled();
   const readers = Object.fromEntries(Object.keys(DIMENSIONS).map((dimension) => [dimension,
@@ -66,10 +67,16 @@ export function createTaskPaneChoiceReads({ scope, host, callRpc, capabilities, 
     requested = true;
     const serial = ++requestSerial;
     const discarded = () => { if (serial === requestSerial) requested = false; };
-    return Promise.all(Object.values(readers).map((reader) => ask(reader, "refresh", discarded)));
+    const operation = Promise.all(Object.values(readers).map((reader) => ask(reader, "refresh", discarded)));
+    pendingRound = operation;
+    void operation.then(() => { if (pendingRound === operation) pendingRound = null; });
+    return operation;
   }
   function ensure() {
-    return requested && lastSession === sessionOf() ? Promise.resolve(false) : refresh();
+    if (!requested || lastSession !== sessionOf()) return refresh();
+    // A return can arrive after rejected admission but before its transaction
+    // settles. Preserve that demand; only discarded pages reopen admission.
+    return pendingRound ? pendingRound.then(() => requested ? false : refresh()) : Promise.resolve(false);
   }
 
   return {

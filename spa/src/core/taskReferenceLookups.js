@@ -20,7 +20,7 @@ const taskNumbersIn = (text) => referencesIn(text).filter((reference) => referen
 
 function* contentParts(content) {
   yield content.body || "";
-  for (const row of content.rows || []) if (row.type === "comment") yield row.body;
+  for (const row of (content.rows || []).slice(0, MAX_TEXT_NODES)) if (row.type === "comment") yield row.body;
 }
 
 function boundedContentKey(content) {

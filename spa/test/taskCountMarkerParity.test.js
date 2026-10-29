@@ -131,7 +131,7 @@ it("retains fetched authoritative badge data and legacy detail through unsupport
   await vi.waitFor(() => expect(badge.count()).toBe(1));
   await support.rememberTaskCountsSupport(scope.deviceId, { tasks: { counts: true } });
   const fixture = JSON.parse(readFileSync(new URL("../../fixtures/api/v1/tasks.counts.json", import.meta.url), "utf8"));
-  const refusal = Object.assign(new Error(fixture.refusals[0].reply.error), fixture.refusals[0].reply);
+  const refusal = fixture.refusals[0].reply;
   const rpc = vi.fn().mockResolvedValueOnce({ project_id: scope.projectId, unfinished_open_count: 1,
     watched_unread_total: sourceUnread(task, timeline), agents: [], basis: "fetched-basis" }).mockRejectedValueOnce(refusal);
   const reader = counts.createTaskAggregateReader({ scope, callRpc: rpc, capabilities: () => ({ counts: true }), sessionOf: () => "session" });

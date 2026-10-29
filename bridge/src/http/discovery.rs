@@ -175,6 +175,16 @@ impl DeviceProofSigner {
         )
     }
 
+    /// Only nonce allocation at the paired issuer; no caller-selected claims.
+    pub fn registration_challenge_assertion(&self, now: u64) -> Result<String, ProofError> {
+        self.sign(
+            "build-http-registration-challenge+jwt",
+            format!("{}/challenge", self.registration_url()),
+            now,
+            serde_json::json!({}),
+        )
+    }
+
     pub fn discovery_proof(
         &self,
         challenge_id: &str,
@@ -284,10 +294,11 @@ impl EndpointRegistrar {
         enabled: bool,
     ) -> Result<RegisteredEndpoint, ProofError> {
         let url = self.signer.registration_url();
+        let allocation_proof = self.signer.registration_challenge_assertion(unix_now()?)?;
         let challenge: RegistrationChallenge = bounded_json(
             self.client
                 .post(format!("{url}/challenge"))
-                .json(&serde_json::json!({}))
+                .json(&serde_json::json!({"proof":allocation_proof}))
                 .send()
                 .await
                 .map_err(|_| ProofError::Unavailable)?,

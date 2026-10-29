@@ -173,7 +173,7 @@ async fn registrar(server: &wiremock::MockServer) -> EndpointRegistrar {
 #[tokio::test]
 async fn registration_uses_fixed_paths_and_validates_echoed_binding() {
     use wiremock::{
-        matchers::{body_json, header, method, path},
+        matchers::{header, method, path},
         Mock, ResponseTemplate,
     };
     let server = wiremock::MockServer::start().await;
@@ -182,17 +182,28 @@ async fn registration_uses_fixed_paths_and_validates_echoed_binding() {
         "/api/devices/{}/http-endpoint",
         registrar.signer.device_id()
     );
-    Mock::given(method("POST")).and(path(format!("{registration}/challenge"))).and(header("content-type","application/json")).and(body_json(serde_json::json!({}))).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"challenge_id":"challenge","nonce":"nonce","expires_at":unix_now().unwrap()+60}))).mount(&server).await;
+    Mock::given(method("POST")).and(path(format!("{registration}/challenge"))).and(header("content-type","application/json")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"challenge_id":"challenge","nonce":"nonce","expires_at":unix_now().unwrap()+60}))).mount(&server).await;
     Mock::given(method("POST")).and(path(&registration)).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"origin":"https://bridge.example","endpoint_epoch":"epoch-1","enabled":true}))).mount(&server).await;
     assert!(registrar.register(None, true).await.unwrap().enabled);
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
+    assert!(!requests[0].headers.contains_key("authorization"));
+    let allocation: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(allocation.as_object().unwrap().len(), 1);
+    let allocation_proof = allocation["proof"].as_str().unwrap();
+    assert_eq!(
+        jsonwebtoken::decode_header(allocation_proof)
+            .unwrap()
+            .typ
+            .as_deref(),
+        Some("build-http-registration-challenge+jwt")
+    );
     assert!(!requests[1].headers.contains_key("authorization"));
     let body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
     assert_eq!(body.as_object().unwrap().len(), 1);
     assert!(body["proof"].as_str().unwrap().len() < 16384);
     server.reset().await;
-    Mock::given(method("POST")).and(path(format!("{registration}/challenge"))).and(header("content-type","application/json")).and(body_json(serde_json::json!({}))).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"challenge_id":"challenge","nonce":"nonce","expires_at":unix_now().unwrap()+60}))).mount(&server).await;
+    Mock::given(method("POST")).and(path(format!("{registration}/challenge"))).and(header("content-type","application/json")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"challenge_id":"challenge","nonce":"nonce","expires_at":unix_now().unwrap()+60}))).mount(&server).await;
     Mock::given(method("POST")).and(path(&registration)).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"origin":"https://attacker.example","endpoint_epoch":"epoch-1","enabled":true}))).mount(&server).await;
     assert_eq!(
         registrar.register(None, true).await,
@@ -266,4 +277,61 @@ fn stored_unpadded_transport_identity_keys_can_sign_standard_jws() {
     assert!(signer
         .discovery_proof("challenge", "nonce", 1_800_000_000)
         .is_ok());
+}
+
+#[test]
+fn allocation_assertion_has_its_own_fixed_purpose_and_path() {
+    let signer = DeviceProofSigner::new(
+        &identity(),
+        "https://getbuild.ing",
+        CanonicalOrigin::parse("https://bridge.example").unwrap(),
+        "epoch-1".into(),
+    )
+    .unwrap();
+    let proof = signer
+        .registration_challenge_assertion(1_800_000_000)
+        .unwrap();
+    let header = jsonwebtoken::decode_header(&proof).unwrap();
+    assert_eq!(
+        header.typ.as_deref(),
+        Some("build-http-registration-challenge+jwt")
+    );
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::EdDSA);
+    validation.validate_exp = false;
+    validation.set_audience(&["https://getbuild.ing/api/devices/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/http-endpoint/challenge"]);
+    let public = base64::engine::general_purpose::STANDARD
+        .decode(identity().identity_public_key_b64)
+        .unwrap();
+    let claims = jsonwebtoken::decode::<serde_json::Value>(
+        &proof,
+        &jsonwebtoken::DecodingKey::from_ed_der(&public),
+        &validation,
+    )
+    .unwrap()
+    .claims;
+    assert_eq!(claims["iss"], claims["sub"]);
+    assert_eq!(
+        claims["exp"].as_u64().unwrap() - claims["iat"].as_u64().unwrap(),
+        30
+    );
+    assert!(claims.get("origin").is_none());
+}
+
+#[tokio::test]
+async fn old_hosted_allocator_rejection_has_no_unsigned_fallback() {
+    use wiremock::{matchers::any, Mock, ResponseTemplate};
+    let server = wiremock::MockServer::start().await;
+    let registrar = registrar(&server).await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(400))
+        .mount(&server)
+        .await;
+    assert_eq!(
+        registrar.register(Some("epoch-1"), false).await,
+        Err(ProofError::Refused)
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(body["proof"].is_string());
 }

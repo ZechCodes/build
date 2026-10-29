@@ -53,12 +53,17 @@ async def current_device(db, device_id):
     return device
 
 
-async def registration_challenge(db, device_id, now):
-    await current_device(db, device_id)
-    await _bounded_challenges(db, BridgeHttpChallenge.device_id == device_id, now, 8)
-    challenge, nonce = await _challenge(
-        db, now, purpose="registration", device_id=device_id
-    )
+async def registration_challenge(db, device_id, proof, issuer, now):
+    device = await current_device(db, device_id)
+    claims = verify(proof, device, "registration-challenge", issuer, now)
+    # Device row remains locked until the outer request transaction commits.
+    # A capacity/write failure rolls back both proof spend and nonce allocation.
+    async with db.begin_nested():
+        await _record_replay(db, device, claims, now)
+        await _bounded_challenges(db, BridgeHttpChallenge.device_id == device_id, now, 8)
+        challenge, nonce = await _challenge(
+            db, now, purpose="registration", device_id=device_id
+        )
     return {
         "challenge_id": str(challenge.id),
         "nonce": nonce,

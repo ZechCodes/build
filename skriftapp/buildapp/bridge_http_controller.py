@@ -23,9 +23,9 @@ async def fields(request, allowed, maximum=18000):
         raise ClientException("JSON required")
     raw = bytearray()
     async for chunk in request.stream():
-        raw.extend(chunk)
-        if len(raw) > maximum:
+        if len(raw) + len(chunk) > maximum:
             raise ClientException("Request too large", status_code=413)
+        raw.extend(chunk)
     try:
         body = require_json_object(json.loads(raw))
     except (ValueError, UnicodeError, RecursionError):
@@ -51,10 +51,12 @@ class BridgeHttpController(Controller):
 
     @post("/api/devices/{device_id:uuid}/http-endpoint/challenge")
     async def registration_challenge(
-        self, device_id: UUID, request: Request, db_session: AsyncSession
+        self, device_id: UUID, request: Request, db_session: AsyncSession, public_base_url: str
     ) -> Response:
-        await fields(request, (), 2048)
-        payload = await auth.registration_challenge(db_session, device_id, utc_now())
+        body = await fields(request, ("proof",), 18000)
+        payload = await auth.registration_challenge(
+            db_session, device_id, body["proof"], public_base_url, utc_now()
+        )
         await db_session.commit()
         return response(payload)
 

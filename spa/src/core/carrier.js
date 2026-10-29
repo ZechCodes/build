@@ -35,12 +35,13 @@ export function bindCarrier(raw, codec) {
   const frameListeners = new Set();
   const closeListeners = new Set();
   let ended = false;
-  let writing = Promise.resolve();
+  const lease = new AbortController();
   let stopFrames = () => {};
   let stopClose = () => {};
   const retire = (reason = null) => {
     if (ended) return false;
     ended = true;
+    lease.abort(reason || new Error("the bound channel closed"));
     stopFrames();
     stopClose();
     codec.close?.();
@@ -73,21 +74,25 @@ export function bindCarrier(raw, codec) {
       listener(frame);
     }
   });
-  const send = async (payload, { frameType = "data", assertCurrent = () => {}, onHandoff = () => {} }) => {
-    if (ended || raw.isClosed?.()) throw new Error("the bound channel closed");
-    // Cancellation and scope changes are definitely unsent and leave the
-    // channel usable. Check before the codec allocates its next sequence.
-    assertCurrent();
+  const send = async (payload, { frameType = "data", assertCurrent = () => {}, onHandoff = () => {}, signal } = {}) => {
+    const linked = linkedAbort(lease.signal, signal);
+    let encoded = false;
     try {
-      const envelope = codec.encode(payload, frameType);
-      onHandoff();
-      await raw.send(envelope);
+      await raw.sendGenerated(() => {
+        encoded = true;
+        return codec.encode(payload, frameType);
+      }, { signal: linked.signal, assertCurrent, onHandoff });
       if (frameType === "close") close();
     } catch (error) {
-      // Encoding may consume a sequence; writing may transmit partial chunks.
-      // Neither failure can safely resume this exact binding.
-      close(error);
+      // The physical writer owns partial-frame failure, including retirement
+      // after this wrapper ended. A zero-byte cancellation leaves raw reusable.
+      if (encoded) {
+        if (linked.signal.aborted) retire(error);
+        else close(error);
+      }
       throw error;
+    } finally {
+      linked.dispose();
     }
   };
   const subscribe = (listeners) => (fn) => {
@@ -101,16 +106,37 @@ export function bindCarrier(raw, codec) {
     // delivery binding; a stale owner must not close the replacement wire.
     retire,
     close,
-    isClosed: () => ended || raw.isClosed?.() === true,
+    isClosed: () => ended,
     peerFrameAt: () => raw.peerFrameAt(),
     peerPartAt: () => raw.peerPartAt(),
     peerIsConnected: () => raw.peerIsConnected(),
-    sendFrame(payload, options = {}) {
-      const written = writing.then(() => send(payload, options));
-      writing = written.catch(() => {});
-      return written;
-    },
+    sendFrame: send,
   };
+}
+
+const abortReason = (signal) => signal.reason || new DOMException("The write was cancelled", "AbortError");
+
+function abortable(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const stop = () => signal.removeEventListener("abort", abort);
+    const abort = () => { stop(); reject(abortReason(signal)); };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then((value) => { stop(); resolve(value); }, (error) => { stop(); reject(error); });
+    if (signal.aborted) abort();
+  });
+}
+
+function linkedAbort(...signals) {
+  const controller = new AbortController();
+  const stops = [];
+  for (const signal of signals.filter(Boolean)) {
+    const abort = () => controller.abort(abortReason(signal));
+    signal.addEventListener("abort", abort, { once: true });
+    stops.push(() => signal.removeEventListener("abort", abort));
+    if (signal.aborted) abort();
+  }
+  return { signal: controller.signal, dispose: () => stops.forEach((stop) => stop()) };
 }
 
 /**
@@ -235,11 +261,12 @@ function relayCarrier(socket, sessionId, frames) {
 function channelCarrier(channel, frames) {
   const core = carrierCore(frames);
   const reassembler = createReassembler();
-  const drainWaiters = [];
+  const drainWaiters = new Set();
 
   const shutDown = (reason = null) => {
     if (!core.end(reason)) return;
-    for (const { reject } of drainWaiters.splice(0)) reject(new Error("the channel closed"));
+    for (const { reject } of drainWaiters) reject(new Error("the channel closed"));
+    drainWaiters.clear();
     if (channel.readyState === "open" || channel.readyState === "connecting") channel.close();
   };
 
@@ -271,15 +298,20 @@ function channelCarrier(channel, frames) {
 
   channel.bufferedAmountLowThreshold = DC_BUFFERED_HIGH;
   channel.addEventListener("bufferedamountlow", () => {
-    for (const { resolve } of drainWaiters.splice(0)) resolve();
+    for (const { resolve } of drainWaiters) resolve();
+    drainWaiters.clear();
   });
 
-  const drained = () =>
-    new Promise((resolve, reject) => {
+  const drained = (signal) => {
+    let waiter;
+    const ready = new Promise((resolve, reject) => {
       if (core.gone() || channel.readyState !== "open") return reject(new Error("the channel closed"));
       if (channel.bufferedAmount <= DC_BUFFERED_HIGH) return resolve();
-      drainWaiters.push({ resolve, reject });
+      waiter = { resolve, reject };
+      drainWaiters.add(waiter);
     });
+    return abortable(ready, signal).finally(() => drainWaiters.delete(waiter));
+  };
 
   const write = async (envelope) => {
     for (const part of splitEnvelope(JSON.stringify(envelope))) {
@@ -289,16 +321,53 @@ function channelCarrier(channel, frames) {
     }
   };
 
-  // One envelope's parts cross without another's between them, and a writer
-  // parked at the buffer limit holds the ones behind it rather than reordering.
+  // A generated application write allocates its sequence only after initial
+  // capacity is available on the actual physical queue. Each await and caller
+  // callback is followed by an allocation check before another physical byte.
+  const writeGenerated = async (prepare, { signal, assertCurrent = () => {}, onHandoff = () => {} }) => {
+    let attempted = false;
+    const leaseCurrent = () => {
+      if (signal?.aborted) throw abortReason(signal);
+      if (core.gone() || channel.readyState !== "open") throw new Error("the channel closed");
+    };
+    const current = () => {
+      leaseCurrent();
+      assertCurrent();
+      leaseCurrent(); // Caller assertions can synchronously retire this lease.
+    };
+    const abort = () => { if (attempted) shutDown(abortReason(signal)); };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      await drained(signal);
+      current();
+      const parts = splitEnvelope(JSON.stringify(prepare()));
+      current();
+      for (const part of parts) {
+        if (attempted) { await drained(signal); current(); }
+        if (!attempted) { onHandoff(); current(); }
+        attempted = true;
+        channel.send(part);
+        current();
+      }
+    } catch (error) {
+      if (attempted) shutDown(error);
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
+  };
+
+  // Legacy controls and generated writes share one physical queue.
   let writing = Promise.resolve();
+  const enqueue = (operation) => {
+    const written = writing.then(operation);
+    writing = written.catch(() => {});
+    return written;
+  };
   return {
     ...core.interface,
-    send: (envelope) => {
-      const written = writing.then(() => write(envelope));
-      writing = written.catch(() => {});
-      return written;
-    },
+    send: (envelope) => enqueue(() => write(envelope)),
+    sendGenerated: (prepare, options = {}) => abortable(enqueue(() => writeGenerated(prepare, options)), options.signal),
     close: shutDown,
   };
 }

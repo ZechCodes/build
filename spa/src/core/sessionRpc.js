@@ -408,7 +408,7 @@ export function createSessionRpc({
           sqlReads.sent(id);
         };
         if (sending.sendFrame) {
-          await sending.sendFrame(payload, { assertCurrent: ensureCurrent, onHandoff: handoff }).catch((error) => {
+          await sending.sendFrame(payload, { signal, assertCurrent: ensureCurrent, onHandoff: handoff }).catch((error) => {
             throw waiting.handoffAttempted ? uncertainDeliveryError(error) : error;
           });
           return;

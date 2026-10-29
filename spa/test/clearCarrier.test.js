@@ -162,6 +162,176 @@ describe("verified clear carrier RPC", () => {
   });
 });
 
+describe("allocation-fenced raw writes", () => {
+  it("wakes a retired parked writer before drain and sends only its successor", async () => {
+    const { channel, raw, carrier, binding, rpc } = setup();
+    channel.bufferedAmount = DC_BUFFERED_HIGH + 1;
+    const handoff = vi.fn();
+    const old = carrier.sendFrame({ old: true }, { onHandoff: handoff }).catch((error) => error);
+    await tick();
+    carrier.retire(new Error("replaced"));
+    const successorCodec = codec();
+    const successor = bindCarrier(raw, successorCodec);
+    const fresh = successor.sendFrame({ fresh: true });
+    const outcome = await Promise.race([old, tick().then(() => "still parked")]);
+    expect(outcome).toBeInstanceOf(Error);
+    expect(binding.encode).not.toHaveBeenCalled();
+    expect(handoff).not.toHaveBeenCalled();
+    carrier.close();
+    channel.drain();
+    await fresh;
+    expect(written(channel).map((frame) => frame.payload)).toEqual([{ fresh: true }]);
+    expect(channel.readyState).toBe("open");
+    successor.close();
+    rpc.close();
+  });
+
+  it("cancels before first byte without allocating a sequence or handoff", async () => {
+    const { channel, carrier, binding, rpc } = setup();
+    channel.bufferedAmount = DC_BUFFERED_HIGH + 1;
+    const abort = new AbortController();
+    const handoff = vi.fn();
+    const canceled = carrier.sendFrame({ canceled: true }, { signal: abort.signal, onHandoff: handoff }).catch((error) => error);
+    await tick();
+    abort.abort(new Error("cancelled"));
+    expect(await Promise.race([canceled, tick().then(() => "still parked")])).toBeInstanceOf(Error);
+    expect(binding.encode).not.toHaveBeenCalled();
+    expect(handoff).not.toHaveBeenCalled();
+    expect(channel.readyState).toBe("open");
+    channel.drain();
+    await carrier.sendFrame({ next: true });
+    expect(written(channel).map((frame) => [frame.seq, frame.payload])).toEqual([[1, { next: true }]]);
+    rpc.close();
+  });
+
+  it("settles cancellation queued behind another parked raw write before drain", async () => {
+    const { channel, carrier, binding, rpc } = setup();
+    channel.bufferedAmount = DC_BUFFERED_HIGH + 1;
+    const first = carrier.sendFrame({ first: true });
+    const abort = new AbortController();
+    const queued = carrier.sendFrame({ canceled: true }, { signal: abort.signal }).catch((error) => error);
+    abort.abort();
+    expect(await Promise.race([queued, tick().then(() => "still queued")])).toBeInstanceOf(Error);
+    expect(binding.encode).not.toHaveBeenCalled();
+    channel.drain();
+    await first;
+    await carrier.sendFrame({ last: true });
+    expect(written(channel).map((frame) => frame.seq)).toEqual([1, 2]);
+    rpc.close();
+  });
+
+  it("rechecks caller scope after initial drain before codec allocation", async () => {
+    const { channel, carrier, binding, rpc } = setup();
+    channel.bufferedAmount = DC_BUFFERED_HIGH + 1;
+    let current = true;
+    const result = carrier.sendFrame({}, { assertCurrent: () => { if (!current) throw new Error("stale scope"); } }).catch((error) => error);
+    await tick();
+    current = false;
+    channel.drain();
+    expect((await result).message).toBe("stale scope");
+    expect(binding.encode).not.toHaveBeenCalled();
+    expect(channel.sent).toEqual([]);
+    expect(channel.readyState).toBe("open");
+    rpc.close();
+  });
+
+  it("physically closes partial writes on retirement before a successor can send", async () => {
+    const { channel, raw, carrier, rpc } = setup();
+    channel.send = (part) => { channel.sent.push(part); channel.bufferedAmount = DC_BUFFERED_HIGH + 1; };
+    const old = carrier.sendFrame({ text: "x".repeat(CHUNK_BYTES * 2) }).catch((error) => error);
+    await tick();
+    expect(channel.sent).toHaveLength(1);
+    const successor = bindCarrier(raw, codec());
+    carrier.retire(new Error("replaced mid-frame"));
+    expect(channel.readyState).toBe("closed");
+    await expect(successor.sendFrame({ fresh: true })).rejects.toThrow();
+    expect(await old).toBeInstanceOf(Error);
+    channel.drain();
+    await tick();
+    expect(channel.sent).toHaveLength(1);
+    rpc.close();
+  });
+
+  it("fences retirement reentrant from channel.send before another chunk", async () => {
+    const { channel, carrier, rpc } = setup();
+    channel.send = (part) => { channel.sent.push(part); carrier.retire(new Error("reentrant retirement")); };
+    await expect(carrier.sendFrame({ text: "x".repeat(CHUNK_BYTES * 2) })).rejects.toThrow();
+    expect(channel.sent).toHaveLength(1);
+    expect(channel.readyState).toBe("closed");
+    rpc.close();
+  });
+
+  it("rechecks retirement reentrant from assertCurrent before allocating a sequence", async () => {
+    const { channel, carrier, binding, rpc } = setup();
+    await expect(carrier.sendFrame({}, { assertCurrent: () => carrier.retire(new Error("assertion retired")) })).rejects.toThrow();
+    expect(binding.encode).not.toHaveBeenCalled();
+    expect(channel.sent).toEqual([]);
+    expect(channel.readyState).toBe("open");
+    rpc.close();
+  });
+
+  it("retires a sequence consumed by cancellation during encoding without closing an untouched raw", async () => {
+    const { channel, raw, carrier, binding, rpc } = setup();
+    const abort = new AbortController();
+    binding.encode.mockImplementation(() => {
+      abort.abort(new Error("encoding cancelled"));
+      return { binding: "app", seq: 1, frame_type: "data", payload: {} };
+    });
+    await expect(carrier.sendFrame({}, { signal: abort.signal })).rejects.toThrow("encoding cancelled");
+    expect(carrier.isClosed()).toBe(true);
+    expect(channel.sent).toEqual([]);
+    expect(channel.readyState).toBe("open");
+    await expect(carrier.sendFrame({ later: true })).rejects.toThrow();
+    expect(binding.encode).toHaveBeenCalledOnce();
+    const successor = bindCarrier(raw, codec());
+    await successor.sendFrame({ fresh: true });
+    expect(written(channel).map((frame) => frame.seq)).toEqual([1]);
+    successor.close();
+    rpc.close();
+  });
+
+  it("closes a partial physical frame synchronously when its caller cancels", async () => {
+    const { channel, carrier, rpc } = setup();
+    const abort = new AbortController();
+    channel.send = (part) => { channel.sent.push(part); channel.bufferedAmount = DC_BUFFERED_HIGH + 1; };
+    const pending = carrier.sendFrame({ text: "x".repeat(CHUNK_BYTES * 2) }, { signal: abort.signal }).catch((error) => error);
+    await tick();
+    expect(channel.sent).toHaveLength(1);
+    abort.abort(new Error("cancel partial frame"));
+    expect(channel.readyState).toBe("closed");
+    expect(await pending).toBeInstanceOf(Error);
+    channel.drain();
+    await tick();
+    expect(channel.sent).toHaveLength(1);
+    rpc.close();
+  });
+
+  it("keeps codec preparation behind preexisting raw control writes", async () => {
+    const { channel, raw, carrier, binding, rpc } = setup();
+    channel.bufferedAmount = DC_BUFFERED_HIGH + 1;
+    const control = raw.send({ control: "proof" });
+    const app = carrier.sendFrame({ app: true });
+    await tick();
+    expect(binding.encode).not.toHaveBeenCalled();
+    channel.drain();
+    await Promise.all([control, app]);
+    expect(written(channel).map((frame) => frame.control || frame.payload)).toEqual(["proof", { app: true }]);
+    rpc.close();
+  });
+
+  it("rechecks retirement caused by handoff before the first physical byte", async () => {
+    const { channel, raw, carrier, rpc } = setup();
+    await expect(carrier.sendFrame({}, { onHandoff: () => carrier.retire(new Error("handoff replaced")) })).rejects.toThrow();
+    expect(channel.sent).toEqual([]);
+    expect(channel.readyState).toBe("open");
+    const successor = bindCarrier(raw, codec());
+    await successor.sendFrame({ fresh: true });
+    expect(written(channel).map((frame) => frame.payload)).toEqual([{ fresh: true }]);
+    successor.close();
+    rpc.close();
+  });
+});
+
 describe("bound carrier retirement", () => {
   it("retires a replaced binding without closing the raw channel used by its successor", async () => {
     const { channel, raw, carrier, binding, rpc } = setup();

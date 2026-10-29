@@ -43,9 +43,9 @@ pub mod testing;
 mod timing_tests;
 
 use crate::execution::dispatch::Dispatcher;
-pub(crate) use crate::execution::PreparedObservation;
 #[cfg(test)]
 use crate::execution::sql;
+pub(crate) use crate::execution::PreparedObservation;
 
 /// One thing bound for a carrier's wire, before any wire wrapper exists: an
 /// encrypted frame for a client session, or the `session_accept` answering an

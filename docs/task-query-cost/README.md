@@ -8,7 +8,8 @@ The approved native Build-managed baseline workspace was detached at exact
 `12b8f869bd94e259666df69f1a8c0cde5c695982`. Candidate source was exact
 `55784b050e7294b68830bc3c82beeb2a72c86b31` (production repair `fa8a4ff9b`, with
 subsequent test-helper/docs changes). Both sources stayed clean during sampling.
-No manual checkout, clone or fixture-source copy was created. The existing
+The detached checkout was selected inside the Build-managed workspace; no
+unmanaged worktree, clone or fixture-source copy was created. The existing
 `bridge/tests/bounded_task_write_perf.rs` was byte-identical at both sources:
 SHA-256 `fb478ebb1b143cc455fbe7f93fa28d72559a3b5e26503dce75f8c8337ee1e92d`.
 
@@ -47,8 +48,8 @@ whole-machine idle claim follows from that coordination.
 Exact execution and parsing commands, from the candidate repository root:
 
 ```sh
-python3 docs/task-query-cost/compare.py run --base /tmp/task900-cost-baseline-manifest.json --candidate /tmp/task900-cost-candidate-manifest.json --output /tmp/task900-cost-cohort-55784b05
-python3 docs/task-query-cost/compare.py parse --output /tmp/task900-cost-cohort-55784b05
+python3 docs/task-query-cost/compare.py run --base /tmp/task900-cost-baseline-manifest.json --candidate /tmp/task900-cost-candidate-manifest.json --output /tmp/task900-cost-cohort-55784b05 > /tmp/task900-cost-runner.log 2>&1
+python3 docs/task-query-cost/compare.py parse --output /tmp/task900-cost-cohort-55784b05 > /tmp/task900-cost-parsed-summary.json
 ```
 
 Each direct command was `nice -n 10 /tmp/task900-cost-{baseline|candidate}-bin
@@ -60,7 +61,9 @@ actual exits, source/binary/fixture identities, ordering and elapsed process
 observations. Process elapsed time is not substituted for the instrumented
 Store operation times below.
 
-The runner inherited niceness **10** for every process; `nice -n 10` requests
+Neither outer Python invocation had a `nice` prefix. The runner directly
+observed inherited niceness **10** from its execution environment for every
+process; `nice -n 10` requests
 another increment of 10. Linux's clamp implies effective child niceness 19;
 actual per-child niceness was not directly sampled. Both variants used the same
 requested command and inherited priority. This is not an explanation or waiver
@@ -95,34 +98,34 @@ possible producer, relation/read-marker workload or selector distribution.
 
 ## Measured Store operation costs
 
-Values below are wall milliseconds: median [minimum–maximum]. Counts are per
-variant; separate CPU medians/ranges and every unrounded sample are retained in
+Values below are wall and thread CPU milliseconds: median [minimum–maximum].
+Counts are per variant; CPU medians/ranges and every unrounded sample are retained in
 [summary.json](summary.json) and [samples.csv](samples.csv). Within-process writes
 share state, so they are not independent process replicates. The three rounds
 are a small cohort, without confidence intervals or a universal latency claim.
 
-| Workload | Phase | n | Base wall ms | Candidate wall ms |
-| --- | --- | ---: | ---: | ---: |
-| Small append | forced repair startup | 3 | 10.1170 [7.4620–10.5530] | 11.7080 [11.5790–11.9560] |
-| Small append | initial first | 3 | 0.4930 [0.4810–0.5390] | 0.7500 [0.7490–0.7700] |
-| Small append | initial warm | 12 | 0.1720 [0.1620–0.2300] | 0.3825 [0.3660–0.3950] |
-| Small append | completed reopen | 15 | 4.7350 [4.5980–4.9250] | 5.4660 [5.3750–7.4070] |
-| Small append | post reopen first | 15 | 0.5560 [0.5300–0.6100] | 0.9410 [0.9230–1.0670] |
-| Small append | post reopen warm | 30 | 0.1755 [0.1700–0.2540] | 0.3840 [0.3640–0.4370] |
-| Huge append | forced repair startup | 3 | 91.6970 [88.5470–94.1380] | 107.8860 [103.1840–108.0020] |
-| Huge append | initial first | 3 | 15.3510 [15.0360–16.6060] | 16.5960 [16.1310–16.6280] |
-| Huge append | initial warm | 12 | 11.4955 [11.2330–12.1890] | 11.8960 [11.5220–13.1340] |
-| Huge append | completed reopen | 15 | 4.8430 [4.7990–5.2200] | 5.5730 [5.4580–6.0370] |
-| Huge append | post reopen first | 15 | 10.7300 [10.2790–13.0870] | 11.5200 [11.0620–12.2550] |
-| Huge append | post reopen warm | 30 | 10.4545 [10.2290–12.7410] | 11.0760 [10.6630–12.4180] |
-| Small metadata + comment | metadata first | 3 | 0.7320 [0.7110–0.8120] | 1.3220 [1.2230–1.4200] |
-| Small metadata + comment | metadata warm | 12 | 0.3810 [0.3530–0.4670] | 0.8955 [0.8420–0.9840] |
-| Small metadata + comment | metadata invalidated first | 15 | 2.0630 [1.9980–2.5090] | 2.9150 [2.8230–3.4260] |
-| Small metadata + comment | metadata invalidated warm | 30 | 0.3800 [0.3510–0.4390] | 0.8770 [0.8410–0.9840] |
-| Huge metadata + comment | metadata first | 3 | 21.2880 [20.2220–21.3890] | 23.4190 [22.9120–23.4790] |
-| Huge metadata + comment | metadata warm | 12 | 12.3035 [11.6980–12.8390] | 12.7830 [12.3970–12.9650] |
-| Huge metadata + comment | metadata invalidated first | 15 | 14.0400 [13.8050–15.0170] | 14.9970 [14.7480–15.8160] |
-| Huge metadata + comment | metadata invalidated warm | 30 | 12.1200 [11.8360–13.2820] | 12.7460 [12.4740–13.3950] |
+| Workload | Phase | n | Base wall ms | Candidate wall ms | Base CPU ms | Candidate CPU ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Small append | forced repair startup | 3 | 10.1170 [7.4620–10.5530] | 11.7080 [11.5790–11.9560] | 9.9190 [7.4020–10.3160] | 11.5880 [11.4610–11.8250] |
+| Small append | initial first | 3 | 0.4930 [0.4810–0.5390] | 0.7500 [0.7490–0.7700] | 0.4940 [0.4810–0.5340] | 0.7430 [0.7340–0.7630] |
+| Small append | initial warm | 12 | 0.1720 [0.1620–0.2300] | 0.3825 [0.3660–0.3950] | 0.1730 [0.1620–0.1850] | 0.3780 [0.3670–0.3890] |
+| Small append | completed reopen | 15 | 4.7350 [4.5980–4.9250] | 5.4660 [5.3750–7.4070] | 4.6970 [4.5650–4.8710] | 5.4180 [5.3320–7.2680] |
+| Small append | post reopen first | 15 | 0.5560 [0.5300–0.6100] | 0.9410 [0.9230–1.0670] | 0.5540 [0.5300–0.5730] | 0.9320 [0.9150–1.0100] |
+| Small append | post reopen warm | 30 | 0.1755 [0.1700–0.2540] | 0.3840 [0.3640–0.4370] | 0.1760 [0.1700–0.2290] | 0.3790 [0.3650–0.4240] |
+| Huge append | forced repair startup | 3 | 91.6970 [88.5470–94.1380] | 107.8860 [103.1840–108.0020] | 90.6300 [87.5340–93.1870] | 106.6370 [101.8830–106.7720] |
+| Huge append | initial first | 3 | 15.3510 [15.0360–16.6060] | 16.5960 [16.1310–16.6280] | 15.1650 [14.8100–16.4630] | 16.4170 [15.9100–16.4600] |
+| Huge append | initial warm | 12 | 11.4955 [11.2330–12.1890] | 11.8960 [11.5220–13.1340] | 11.3990 [11.1300–12.0770] | 11.7000 [11.4120–12.9280] |
+| Huge append | completed reopen | 15 | 4.8430 [4.7990–5.2200] | 5.5730 [5.4580–6.0370] | 4.7950 [4.7510–5.1530] | 5.5180 [5.4150–5.9750] |
+| Huge append | post reopen first | 15 | 10.7300 [10.2790–13.0870] | 11.5200 [11.0620–12.2550] | 10.5800 [10.1470–12.8690] | 11.3910 [10.9020–12.1060] |
+| Huge append | post reopen warm | 30 | 10.4545 [10.2290–12.7410] | 11.0760 [10.6630–12.4180] | 10.3345 [10.1200–12.5630] | 10.9730 [10.5570–12.3030] |
+| Small metadata + comment | metadata first | 3 | 0.7320 [0.7110–0.8120] | 1.3220 [1.2230–1.4200] | 0.7320 [0.7030–0.8050] | 1.3140 [1.2060–1.4120] |
+| Small metadata + comment | metadata warm | 12 | 0.3810 [0.3530–0.4670] | 0.8955 [0.8420–0.9840] | 0.3805 [0.3540–0.4680] | 0.8880 [0.8340–0.9760] |
+| Small metadata + comment | metadata invalidated first | 15 | 2.0630 [1.9980–2.5090] | 2.9150 [2.8230–3.4260] | 2.0460 [1.9810–2.4810] | 2.8870 [2.7840–3.4030] |
+| Small metadata + comment | metadata invalidated warm | 30 | 0.3800 [0.3510–0.4390] | 0.8770 [0.8410–0.9840] | 0.3755 [0.3520–0.4400] | 0.8680 [0.8390–0.9780] |
+| Huge metadata + comment | metadata first | 3 | 21.2880 [20.2220–21.3890] | 23.4190 [22.9120–23.4790] | 21.0480 [20.0160–21.1650] | 23.1840 [22.7130–23.2140] |
+| Huge metadata + comment | metadata warm | 12 | 12.3035 [11.6980–12.8390] | 12.7830 [12.3970–12.9650] | 12.1640 [11.5820–12.7110] | 12.6350 [12.2680–12.7250] |
+| Huge metadata + comment | metadata invalidated first | 15 | 14.0400 [13.8050–15.0170] | 14.9970 [14.7480–15.8160] | 13.8620 [13.6220–14.8410] | 14.8070 [14.5560–15.5990] |
+| Huge metadata + comment | metadata invalidated warm | 30 | 12.1200 [11.8360–13.2820] | 12.7460 [12.4740–13.3950] | 11.9740 [11.7140–13.1100] | 12.6180 [12.3460–13.2380] |
 
 The candidate increases observed in this cohort include small warm appends
 0.1720→0.3825 ms, small warm metadata/comment writes 0.3810→0.8955 ms,
@@ -163,3 +166,9 @@ Full stdout/stderr plus run metadata and process exits are aggregated at
 logs remain at `/tmp/task900-cost-cohort-55784b05/`. The aggregate SHA-256 is
 recorded in `record.json`. Correctness review and cost acceptance are separate;
 the lead must explicitly disposition these results and their uncovered costs.
+
+The initial staged artifact-format check exited **2** because CSV CRLF endings
+were reported as trailing whitespace. The LF-only correction (`7ad0d8117`)
+retained every numerical sample; the subsequent staged and committed-range
+checks exited **0**. This artifact-format failure is preserved in `record.json`
+and was not a measurement failure or a reason to rerun the cohort.

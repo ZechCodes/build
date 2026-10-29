@@ -20,5 +20,28 @@
     "Fresh process does not imply disk-cold cache",
     "Three process rounds; within-process writes share state",
     "Wall and CPU values do not establish a causal explanation for the observed deltas"
+  ],
+  "runner_invocation": "python3 docs/task-query-cost/compare.py run --base /tmp/task900-cost-baseline-manifest.json --candidate /tmp/task900-cost-candidate-manifest.json --output /tmp/task900-cost-cohort-55784b05 > /tmp/task900-cost-runner.log 2>&1",
+  "parser_invocation": "python3 docs/task-query-cost/compare.py parse --output /tmp/task900-cost-cohort-55784b05 > /tmp/task900-cost-parsed-summary.json",
+  "outer_command_nice_prefix": false,
+  "priority_observation": "Runner os.getpriority(PRIO_PROCESS,0) recorded inherited10 before all24subprocesses; no nice prefix on outer Python commands. Per-child effective priority not directly sampled.",
+  "artifact_format_checks": [
+    {
+      "command": "git diff --cached --check -- docs/task-query-cost",
+      "process_exit": 2,
+      "finding": "Initial CSV CRLF line endings reported as trailing whitespace; artifact-format failure only, measurement samples unchanged.",
+      "artifact_commit": "feede514e"
+    },
+    {
+      "command": "git diff --cached --check -- docs/task-query-cost",
+      "process_exit": 0,
+      "finding": "After CSV LF normalization; numerical samples unchanged.",
+      "fix_commit": "7ad0d8117"
+    },
+    {
+      "command": "git diff --check 55784b050e7294b68830bc3c82beeb2a72c86b31..HEAD -- docs/task-query-cost",
+      "process_exit": 0,
+      "finding": "Committed cost artifact range after LF correction."
+    }
   ]
 }

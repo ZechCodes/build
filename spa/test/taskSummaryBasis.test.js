@@ -106,3 +106,12 @@ it.each([
   expect(held.stale).toBe(true);
   expect((await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.basis_uncertain).toBe(true);
 });
+
+it("does not certify missing normalized entities as an exhausted empty result", async () => {
+  await land({}, 1, page("B"));
+  await cache.deleteCached([summaries.summaryAddress(scope, "task-1")]);
+  const held = await summaries.readSummaryQuery(scope, {});
+  expect(held.ids).toEqual(["task-1"]);
+  expect(held.stale).toBe(true); expect(held.complete).toBe(false);
+  expect(held.missing_ids).toEqual(["task-1"]);
+});

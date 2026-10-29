@@ -119,7 +119,7 @@ fn v10_store(dir: &std::path::Path) -> crate::tracker::Task {
         rusqlite::params![
             task.id,
             task.project_path,
-            task.number,
+            i64::try_from(task.number).unwrap(),
             task.state.as_str(),
             task.status,
             task.created_at,
@@ -157,7 +157,7 @@ fn assert_v10_data_intact(store: &Store, expected_task: &crate::tracker::Task) {
         )
         .unwrap();
     assert_eq!(task, V10_TASK_RECORD, "the original task bytes survive");
-    let items: Vec<(String, u64, u64, bool, String)> = conn
+    let items: Vec<(String, i64, i64, bool, String)> = conn
         .prepare("SELECT agent_id, sequence, updated_sequence, message, item FROM thread_items")
         .unwrap()
         .query_map([], |row| {

@@ -298,6 +298,8 @@ impl ReadService {
             .validate_scope(read, method, params)
             .map_err(task_error)?;
         let answer = match method {
+            "tasks.counts" => context.tasks.tasks_counts(read, params),
+            "tasks.lookup" => context.tasks.tasks_lookup(read, params),
             "tasks.list" => context.tasks.tasks_list(read, params),
             "tasks.filterChoices" => context.tasks.tasks_filter_choices(read, params),
             "tasks.get" => context.tasks.tasks_get(read, params),

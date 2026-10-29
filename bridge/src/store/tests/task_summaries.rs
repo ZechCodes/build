@@ -1598,3 +1598,15 @@ fn unrelated_schema_change_revalidates_without_replaying_completed_history() {
     let store = Store::new(dir.path()).unwrap();
     assert_eq!(summary(&store, "/summary")["title"], "no replay");
 }
+
+#[path = "task_summaries/query_projection.rs"]
+mod query_projection;
+
+#[path = "task_summaries/query_attention.rs"]
+mod query_attention;
+
+#[path = "task_summaries/query_timestamp_sources.rs"]
+mod query_timestamp_sources;
+
+#[path = "task_summaries/query_choices.rs"]
+mod query_choices;

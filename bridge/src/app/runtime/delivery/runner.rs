@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "settlement_probe.rs"]
+pub(in crate::app) mod settlement_probe;
+
 use super::compaction::{send_compaction, CompactionSend};
 use crate::app::{
     deliver, AppState, DeliveryOutcome, PendingTurns, AGENT_START_DECLINED_SESSION_OVER,
@@ -185,6 +189,8 @@ impl DeliveryRunner {
         let state = Arc::clone(state);
         let delivering = runtime.spawn_blocking(move || {
             let _lease = lease;
+            #[cfg(test)]
+            let _background = settlement_probe::background();
             DeliveryRunner::run(&state, turns)
         });
         runtime.spawn(async move {
@@ -229,6 +235,8 @@ impl DeliveryRunner {
             }
             let delivered = deliver(state, &turn, &timer);
             let completed = !matches!(&delivered, Ok(DeliveryOutcome::Deferred));
+            #[cfg(test)]
+            settlement_probe::before_settlement(state, turn.operation_id.as_deref());
             let mut s = timer.lock(state);
             if let Some(operation_id) = turn.operation_id.as_deref() {
                 let next = match &delivered {

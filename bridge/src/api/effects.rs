@@ -22,6 +22,8 @@ pub const SQL_READ_METHODS: &[&str] = &[
     "thread.operation",
     "thread.revision",
     "tasks.list",
+    "tasks.counts",
+    "tasks.lookup",
     "tasks.filterChoices",
     "tasks.get",
     "tasks.waiting_on.blocks",

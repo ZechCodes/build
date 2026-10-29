@@ -95,7 +95,10 @@ mod task_rename;
 mod task_summaries;
 mod tracker;
 pub(crate) use task_observation::{TrackerTaskObservation, TrackerTaskPublication};
-pub use task_summaries::{TaskFilterChoice, TaskSummaryCandidate, MAX_SUMMARY_CANDIDATES};
+pub use task_summaries::{
+    TaskCounts, TaskFilterChoice, TaskQueryFilter, TaskQueryOrder, TaskQueryPosition,
+    TaskSummaryCandidate, MAX_SUMMARY_CANDIDATES,
+};
 mod waiting_on;
 pub use waiting_on::{DependencyDigest, DependencySummary, DependentsPage, WaitingOnPage};
 mod terminal_attention;

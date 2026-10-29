@@ -9,6 +9,12 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 mod maintenance;
+mod query_projection;
+mod query_sources;
+mod query_timestamps;
+pub use query_projection::TaskCounts;
+mod query_reads;
+pub use query_reads::{TaskQueryFilter, TaskQueryOrder, TaskQueryPosition};
 mod sql;
 pub(super) use maintenance::{
     dependency_refresh, history_append, history_repair, identity_refresh, identity_remove,
@@ -32,7 +38,68 @@ pub struct TaskFilterChoice {
     pub value: Value,
 }
 
+fn decode_summary_candidate(
+    raw: String,
+    target: Option<String>,
+    identities: String,
+    project: &str,
+) -> Result<TaskSummaryCandidate, StoreError> {
+    let mut row: Value = super::tracker::decode(&raw, "tracker_task_summaries", project)?;
+    if row.get("_summary_invalid_labels").and_then(Value::as_bool) == Some(true) {
+        return Err(StoreError::TaskSummaryInvalid(
+            "legacy task labels exceed supported summary limits".into(),
+        ));
+    }
+    if row.get("_summary_invalid_refs").and_then(Value::as_bool) == Some(true) {
+        return Err(StoreError::TaskSummaryInvalid(
+            "legacy task reference exceeds 128 bytes".into(),
+        ));
+    }
+    if row
+        .get("_summary_invalid_metadata_refs")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return Err(StoreError::TaskSummaryInvalid(
+            "legacy task metadata reference exceeds 128 bytes".into(),
+        ));
+    }
+    row.as_object_mut()
+        .expect("summary is an object")
+        .remove("_summary_invalid_metadata_refs");
+    row.as_object_mut()
+        .expect("summary is an object")
+        .remove("_summary_invalid_refs");
+    row.as_object_mut()
+        .expect("summary is an object")
+        .remove("_summary_invalid_labels");
+    Ok(TaskSummaryCandidate {
+        row,
+        assignment_target: target
+            .map(|raw| super::tracker::decode(&raw, "tracker_task_summaries/target", project))
+            .transpose()?,
+        identities: super::tracker::decode(
+            &identities,
+            "tracker_task_summaries/identities",
+            project,
+        )?,
+    })
+}
+
 impl Store {
+    /// Keep aggregate facts, memberships and revision in one read snapshot for
+    /// synchronous adapters, just as the SQL read lane does for RPC requests.
+    pub(crate) fn read_task_projection<T>(
+        &self,
+        work: impl FnOnce(&ReadTransaction<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut conn = self.connection();
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        let result = work(&ReadTransaction::new(&tx))?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(result)
+    }
+
     /// Reconcile explicitly imported or repaired task endpoints in one commit.
     /// The caller supplies both OLD and NEW task ids for reparented records,
     /// plus endpoints of removed dependency edges. Deleted tasks are cleaned up.
@@ -156,49 +223,7 @@ impl ReadTransaction<'_> {
         records
             .map(|record| {
                 let (raw, target, identities) = record?;
-                let mut row: Value =
-                    super::tracker::decode(&raw, "tracker_task_summaries", project)?;
-                if row.get("_summary_invalid_labels").and_then(Value::as_bool) == Some(true) {
-                    return Err(StoreError::TaskSummaryInvalid(
-                        "legacy task labels exceed supported summary limits".into(),
-                    ));
-                }
-                if row.get("_summary_invalid_refs").and_then(Value::as_bool) == Some(true) {
-                    return Err(StoreError::TaskSummaryInvalid(
-                        "legacy task reference exceeds 128 bytes".into(),
-                    ));
-                }
-                if row
-                    .get("_summary_invalid_metadata_refs")
-                    .and_then(Value::as_bool)
-                    == Some(true)
-                {
-                    return Err(StoreError::TaskSummaryInvalid(
-                        "legacy task metadata reference exceeds 128 bytes".into(),
-                    ));
-                }
-                row.as_object_mut()
-                    .expect("summary is an object")
-                    .remove("_summary_invalid_metadata_refs");
-                row.as_object_mut()
-                    .expect("summary is an object")
-                    .remove("_summary_invalid_refs");
-                row.as_object_mut()
-                    .expect("summary is an object")
-                    .remove("_summary_invalid_labels");
-                Ok(TaskSummaryCandidate {
-                    row,
-                    assignment_target: target
-                        .map(|raw| {
-                            super::tracker::decode(&raw, "tracker_task_summaries/target", project)
-                        })
-                        .transpose()?,
-                    identities: super::tracker::decode(
-                        &identities,
-                        "tracker_task_summaries/identities",
-                        project,
-                    )?,
-                })
+                decode_summary_candidate(raw, target, identities, project)
             })
             .collect()
     }
@@ -213,7 +238,7 @@ impl ReadTransaction<'_> {
         limit: usize,
     ) -> Result<Vec<TaskFilterChoice>, StoreError> {
         let mut statement = self.connection().prepare(
-            "SELECT CASE WHEN length(CAST(choice_key AS BLOB))<=512 THEN choice_key ELSE '' END, CASE WHEN length(CAST(choice_key AS BLOB))<=512 AND length(CAST(value AS BLOB))<=1024 THEN value END FROM tracker_task_filter_values
+            "SELECT CASE WHEN length(CAST(choice_key AS BLOB))<=CASE WHEN ?2='assignee' THEN 1024 ELSE 512 END THEN choice_key ELSE '' END, CASE WHEN length(CAST(choice_key AS BLOB))<=CASE WHEN ?2='assignee' THEN 1024 ELSE 512 END AND length(CAST(value AS BLOB))<=1024 THEN value END FROM tracker_task_filter_values
              WHERE project_key = ?1 AND dimension = ?2 AND choice_key > ?3
              ORDER BY choice_key LIMIT ?4",
         )?;
@@ -230,7 +255,7 @@ impl ReadTransaction<'_> {
             let (key, raw) = row?;
             let raw = raw.ok_or_else(|| {
                 StoreError::TaskSummaryInvalid(
-                    "filter choice key exceeds 512 bytes or value exceeds 1024 bytes".into(),
+                    "filter choice key exceeds its bound (1024 assignee, 512 otherwise) or value exceeds 1024 bytes".into(),
                 )
             })?;
             let value = super::tracker::decode(&raw, "tracker_task_filter_choices", project)?;
@@ -269,7 +294,7 @@ fn validate_filter_choice(dimension: &str, value: &Value) -> Result<(), StoreErr
 }
 
 fn valid_assignee_choice(value: &Value) -> bool {
-    if value.as_str() == Some("none") {
+    if matches!(value.as_str(), Some("none" | "any")) {
         return true;
     }
     let Ok(assignee) = serde_json::from_value::<crate::tracker::Assignee>(value.clone()) else {
@@ -293,6 +318,10 @@ fn projection_definition() -> &'static ProjectionDefinition {
     DEFINITION.get_or_init(|| {
         let mut hash = Sha256::new();
         hash.update(sql::TABLES);
+        hash.update(query_projection::TABLES);
+        hash.update(include_str!("task_summaries/query_projection.rs"));
+        hash.update(include_str!("task_summaries/query_sources.rs"));
+        hash.update(include_str!("task_summaries/query_timestamps.rs"));
         hash.update(include_str!("task_summaries/maintenance.rs"));
         hash.update(include_str!("task_summaries/sql.rs"));
         hash.update(include_str!("task_summaries/sql/activity.rs"));
@@ -365,7 +394,7 @@ fn projection_objects(conn: &Connection) -> Result<BTreeMap<String, String>, Sto
         "SELECT name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND
         (name IN ('tracker_task_summary_facts','tracker_task_summaries','tracker_task_filter_choices',
             'tracker_task_filter_values','tracker_task_summary_identities','tracker_task_summary_context')
-        OR name GLOB 'tracker_summary_*' OR name GLOB 'tracker_summaries_*' OR name GLOB 'tracker_choices_*')"
+        OR name GLOB 'tracker_task_query_*' OR name GLOB 'tracker_summary_*' OR name GLOB 'tracker_summaries_*' OR name GLOB 'tracker_choices_*')"
     )?;
     let objects = statement
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -415,6 +444,7 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<bool, StoreError> {
         reset_projection(conn)?;
     } else {
         conn.execute_batch(sql::TABLES)?;
+        conn.execute_batch(query_projection::TABLES)?;
     }
     // Persist the input definition before any batch checkpoint. A later
     // binary must not resume a partially built projection with different rules.
@@ -516,6 +546,10 @@ fn reset_projection(conn: &mut Connection) -> Result<(), StoreError> {
     #[cfg(test)]
     let _phase = MigrationPhase::new("reset_projection");
     let tables = [
+        "tracker_task_query_sources",
+        "tracker_task_query_facts",
+        "tracker_task_query_memberships",
+        "tracker_task_query_counts",
         "tracker_task_filter_choices",
         "tracker_task_filter_values",
         "tracker_task_summary_facts",
@@ -542,6 +576,7 @@ fn reset_projection(conn: &mut Connection) -> Result<(), StoreError> {
         tx.execute_batch(&format!("DROP TABLE IF EXISTS {table}"))?;
     }
     tx.execute_batch(sql::TABLES)?;
+    tx.execute_batch(query_projection::TABLES)?;
     tx.execute(
         "DELETE FROM meta WHERE key LIKE 'task_summary_v1_%' OR key='task_summary_rebuild'",
         [],

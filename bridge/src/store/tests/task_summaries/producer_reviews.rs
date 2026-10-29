@@ -92,11 +92,19 @@ fn publish(store: &Store) -> crate::reviews::records::Review {
 
 fn assert_review_card(store: &Store, id: &str) {
     let canonical = store.load_review_summary(id).unwrap().unwrap();
+    let mode: String = store
+        .connection()
+        .query_row(
+            "SELECT review_mode FROM tracker_task_query_facts WHERE task_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(mode, "pull_request");
     let card = summary(store, "/repo");
-    assert_eq!(
-        card["review_summary"],
-        serde_json::to_value(canonical).unwrap()
-    );
+    let mut expected = serde_json::to_value(canonical).unwrap();
+    expected["mode"] = serde_json::json!("pull_request");
+    assert_eq!(card["review_summary"], expected);
     assert_eq!(
         card["status"],
         store.load_tracker_task(id).unwrap().unwrap().status

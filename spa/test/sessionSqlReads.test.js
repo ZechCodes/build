@@ -6,7 +6,7 @@ import { isTransientTransportError } from "../src/core/transientRead.js";
 import { SQL_READ_METHODS } from "../src/core/sqlReadCredits.js";
 import { readFileSync } from "node:fs";
 
-const METHODS = ["thread.page", "thread.activity", "thread.operation", "thread.revision", "tasks.list", "tasks.get", "tasks.waiting_on.blocks", "tasks.filterChoices"];
+const METHODS = ["thread.page", "thread.activity", "thread.operation", "thread.revision", "tasks.list", "tasks.get", "tasks.waiting_on.blocks", "tasks.filterChoices", "tasks.counts", "tasks.lookup"];
 const WRITE_READS = ["writes.status", "writes.subscribe"];
 const PACED_METHODS = [...METHODS, ...WRITE_READS];
 const flush = async () => { for (let turn = 0; turn < 20; turn += 1) await Promise.resolve(); };
@@ -121,6 +121,45 @@ describe("SQL reads share eight sender credits per opening", () => {
     expect(wire.sent.at(-1).method).toBe("tasks.get");
     wire.deliver({ id: wire.sent.at(-1).id, ok: true, result: { id: "task-1" } });
     await expect(task).resolves.toEqual({ id: "task-1" });
+  });
+
+  it.each(["interactive", "background"])("shares counts and lookup credits with mixed SQL reads at %s priority", async (priority) => {
+    const { rpc, wire, ask } = setup();
+    const initial = ["tasks.counts", "tasks.lookup", "thread.page", "tasks.list", "tasks.filterChoices", "writes.status", "thread.revision", "tasks.get"];
+    const active = initial.map((method) => ask(method, { priority }));
+    await flush();
+    const counts = ask("tasks.counts", { priority });
+    const lookup = ask("tasks.lookup", { priority });
+    ask("ping");
+    await flush();
+    expect(wire.sent.map(({ method }) => method)).toEqual([...initial, "ping"]);
+    expect(rpc.sqlReadCreditSnapshot()).toEqual({ queued: 2, admitted: 8, timedOutHeld: 0 });
+
+    wire.deliver({ id: wire.sent[0].id, ok: false, error: "marker unsupported", error_code: "unavailable", retryable: false });
+    await expect(active[0]).rejects.toMatchObject({ error_code: "unavailable", retryable: false });
+    await flush();
+    expect(wire.sent.at(-1).method).toBe("tasks.counts");
+    const countsId = wire.sent.at(-1).id;
+    expect(rpc.sqlReadCreditSnapshot()).toEqual({ queued: 1, admitted: 8, timedOutHeld: 0 });
+    wire.deliver({ id: wire.sent[1].id, ok: true, result: { task: null } });
+    await expect(active[1]).resolves.toEqual({ task: null });
+    await flush();
+    expect(wire.sent.at(-1).method).toBe("tasks.lookup");
+    const lookupId = wire.sent.at(-1).id;
+    expect(rpc.sqlReadCreditSnapshot()).toEqual({ queued: 0, admitted: 8, timedOutHeld: 0 });
+
+    const next = ask("thread.activity");
+    await flush();
+    expect(wire.sent.at(-1).id).toBe(lookupId);
+    wire.deliver({ id: countsId, ok: true, result: { unfinished_open_count: 3 } });
+    await expect(counts).resolves.toEqual({ unfinished_open_count: 3 });
+    await flush();
+    expect(wire.sent.at(-1).method).toBe("thread.activity");
+    wire.deliver({ id: lookupId, ok: true, result: { task: { number: 42 } } });
+    await expect(lookup).resolves.toEqual({ task: { number: 42 } });
+    wire.deliver({ id: wire.sent.at(-1).id, ok: true, result: {} });
+    await expect(next).resolves.toEqual({});
+    expect(rpc.sqlReadCreditSnapshot()).toEqual({ queued: 0, admitted: 6, timedOutHeld: 0 });
   });
 
   it("paces bridge SQL routing and the 3.24 durable reconciliation reads", () => {

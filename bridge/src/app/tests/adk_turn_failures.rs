@@ -504,6 +504,14 @@ impl ManagedBlockFixture {
     }
 
     async fn complete_below_threshold(&self) {
+        self.observe_below_threshold_completion().await;
+        let receipt = self
+            .wait_for_delivery_settlement("managed-block-below-threshold")
+            .await;
+        assert!(receipt.execution_error.is_none(), "{receipt:?}");
+    }
+
+    async fn observe_below_threshold_completion(&self) {
         let state = &self.state;
         let owner = &self.owner;
         let agent = &self.agent;
@@ -554,46 +562,89 @@ impl ManagedBlockFixture {
         .expect("the below-threshold normal turn completes and its status pump settles");
     }
 
-    async fn assert_reblocked_cycle(&self) {
-        let state = &self.state;
-        let owner = &self.owner;
-        let agent = &self.agent;
-        let task_id = &self.task_id;
-        let input = &self.input;
-        let coordinator_log = &self.coordinator_log;
-        let threshold = &self.threshold;
-        {
-            let mut app = state.lock().unwrap();
-            app.record_agent_turn_context(
-                owner,
-                agent,
-                crate::harness::TurnContext {
-                    context_tokens: *threshold,
-                    cache_read_tokens: 0,
-                },
-            );
-            let next_cycle = app.handle(req(
-                "thread.post",
-                json!({
-                    "entity_id":owner, "agent_id":agent, "conversation_id":agent,
-                    "operation_id":"managed-block-new-cycle", "body":"new due cycle after recovery",
-                }),
-            ));
-            assert_eq!(next_cycle["ok"], true, "{next_cycle}");
-        }
-        deliver_pending_agent_turns(state);
-        assert_managed_block_failure(&mut state.lock().unwrap(), owner, agent, task_id, 2);
+    fn queue_reblocked_cycle(&self) {
+        let mut app = self.state.lock().unwrap();
+        app.record_agent_turn_context(
+            &self.owner,
+            &self.agent,
+            crate::harness::TurnContext {
+                context_tokens: self.threshold,
+                cache_read_tokens: 0,
+            },
+        );
+        let next_cycle = app.handle(req(
+            "thread.post",
+            json!({
+                "entity_id":self.owner, "agent_id":self.agent, "conversation_id":self.agent,
+                "operation_id":"managed-block-new-cycle", "body":"new due cycle after recovery",
+            }),
+        ));
+        assert_eq!(next_cycle["ok"], true, "{next_cycle}");
+    }
+
+    async fn wait_for_delivery_settlement(
+        &self,
+        operation: &str,
+    ) -> crate::operation::OperationReceipt {
+        wait_for(Duration::from_secs(5), || {
+            let app = self.state.lock().unwrap();
+            let receipt = app.operation_receipt(operation).ok()??;
+            (receipt.status == crate::operation::OperationStatus::Delivered
+                && !app.delivery_queue.agent_in_flight(&self.key))
+            .then_some(receipt)
+        })
+        .await
+        .expect("the exact operation and its background delivery ticket settle")
+    }
+
+    async fn wait_for_reblocked_delivery(&self) {
+        let receipt = self
+            .wait_for_delivery_settlement("managed-block-new-cycle")
+            .await;
+        assert!(
+            receipt
+                .execution_error
+                .as_deref()
+                .is_some_and(|error| error.contains("DISABLE_COMPACT")),
+            "{receipt:?}"
+        );
+    }
+
+    async fn assert_second_coordinator_notice(&self) {
         wait_for(
             crate::app::runtime::delivery::queue::NOTICE_SETTLE_WINDOW + Duration::from_secs(5),
-            || (coordinator_log.turns().len() == 2).then_some(()),
+            || (self.coordinator_log.turns().len() == 2).then_some(()),
         )
         .await
         .expect("a new blocked cycle produces fresh coordinator attention");
+        assert_eq!(self.coordinator_log.turns().len(), 2);
+    }
+
+    fn assert_reblocked_attention(&self) {
+        assert_managed_block_failure(
+            &mut self.state.lock().unwrap(),
+            &self.owner,
+            &self.agent,
+            &self.task_id,
+            2,
+        );
         assert_eq!(
-            std::fs::read_to_string(input).unwrap().lines().count(),
+            std::fs::read_to_string(&self.input)
+                .unwrap()
+                .lines()
+                .count(),
             1,
             "the reblocked wake is also refused without delivery or compaction"
         );
+    }
+
+    async fn assert_reblocked_cycle(&self) {
+        self.queue_reblocked_cycle();
+        deliver_pending_agent_turns(&self.state);
+        self.wait_for_reblocked_delivery().await;
+        self.assert_reblocked_attention();
+        self.assert_second_coordinator_notice().await;
+        self.assert_reblocked_attention();
     }
 }
 
@@ -799,4 +850,101 @@ fn assert_managed_opening_state(worker: &dyn AgentSession, cold: bool) {
             "admission cannot promote active policy before init"
         );
     }
+}
+
+fn managed_failure_count(app: &AppState, agent: &str) -> usize {
+    app.store.as_ref().unwrap().thread_page(agent, None, 1000).unwrap().iter().filter(|row| matches!(row, crate::thread::ThreadItem::Message(message) if message.outcome == Some(crate::thread::MessageOutcome::Failed))).count()
+}
+
+impl ManagedBlockFixture {
+    fn assert_controlled_held_delivery(&self) {
+        let app = self.state.lock().unwrap();
+        let below = app
+            .operation_receipt("managed-block-below-threshold")
+            .unwrap()
+            .unwrap();
+        let next = app
+            .operation_receipt("managed-block-new-cycle")
+            .unwrap()
+            .unwrap();
+        let marker = app
+            .agent_conversation(&self.owner, Some(&self.agent))
+            .unwrap()
+            .managed_compaction_failure_reported;
+        let count = managed_failure_count(&app, &self.agent);
+        let input = std::fs::read_to_string(&self.input)
+            .unwrap()
+            .lines()
+            .count();
+        eprintln!("CONTROLLED held queued={} inflight={} below={:?} next={:?} recovered_marker={marker} failures={count} child_inputs={input}", app.delivery_queue.queued_len(), app.delivery_queue.agent_in_flight(&self.key), below.status, next.status);
+        assert!(app.delivery_queue.agent_in_flight(&self.key));
+        assert_eq!(below.status, crate::operation::OperationStatus::Claimed);
+        assert_eq!(next.status, crate::operation::OperationStatus::Queued);
+        assert!(!marker);
+        assert_eq!(count, 1);
+        assert_eq!(input, 1);
+    }
+
+    async fn assert_reblocked_repeat_keeps_one_failure_per_cycle(&self) {
+        let repeated = self.state.lock().unwrap().handle(req(
+            "thread.post",
+            json!({
+                "entity_id":self.owner, "agent_id":self.agent, "conversation_id":self.agent,
+                "operation_id":"managed-block-new-cycle-repeat", "body":"same blocked cycle again",
+            }),
+        ));
+        assert_eq!(repeated["ok"], true, "{repeated}");
+        deliver_pending_agent_turns(&self.state);
+        let receipt = self
+            .wait_for_delivery_settlement("managed-block-new-cycle-repeat")
+            .await;
+        assert!(
+            receipt
+                .execution_error
+                .as_deref()
+                .is_some_and(|error| error.contains("DISABLE_COMPACT")),
+            "{receipt:?}"
+        );
+        self.assert_reblocked_attention();
+        assert_eq!(self.coordinator_log.turns().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn managed_block_semantic_completion_waits_for_background_ticket_settlement() {
+    use crate::app::runtime::delivery::runner::settlement_probe::Gate;
+    let fixture = ManagedBlockFixture::new(ManagedBlockScenario::BusyStore).await;
+    fixture.assert_first_refusal();
+    fixture
+        .assert_repeated_refusal(ManagedBlockScenario::BusyStore)
+        .await;
+    let mut gate = Gate::install(&fixture.state, "managed-block-below-threshold");
+    fixture.queue_below_threshold();
+    // The real runner, rather than the synchronous test helper, owns this batch.
+    DeliveryRunner::drain(&fixture.state, &a_frame(&fixture.state));
+    fixture.observe_below_threshold_completion().await;
+    gate.entered();
+    fixture.queue_reblocked_cycle();
+    deliver_pending_agent_turns(&fixture.state);
+    fixture.assert_controlled_held_delivery();
+
+    let completion = fixture.wait_for_reblocked_delivery();
+    tokio::pin!(completion);
+    let pending = std::future::poll_fn(|context| {
+        std::task::Poll::Ready(std::future::Future::poll(completion.as_mut(), context).is_pending())
+    })
+    .await;
+    assert!(
+        pending,
+        "semantic completion must remain Pending while the actual delivery ticket is held"
+    );
+    gate.release();
+    completion.await;
+    eprintln!("CONTROLLED semantic completion Ready after gate release");
+    fixture.assert_reblocked_attention();
+    fixture.assert_second_coordinator_notice().await;
+    fixture
+        .assert_reblocked_repeat_keeps_one_failure_per_cycle()
+        .await;
+    fixture.worker.end();
 }

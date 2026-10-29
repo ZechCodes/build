@@ -7,6 +7,7 @@ skips these cases when the explicitly guarded test URL is absent.
 """
 
 import asyncio
+import json
 import os
 from uuid import UUID, uuid4
 
@@ -32,8 +33,17 @@ from buildapp.db_test_support import create_skrift_tables, postgres_proof_engine
 from buildapp.test_bridge_http_auth import ISSUER, ORIGIN, registered, signed
 
 
+def witness(event, **observations):
+    """Emit only server/connection observations, never credential material."""
+    print(
+        "postgres-witness "
+        + json.dumps({"event": event, **observations}, sort_keys=True),
+        flush=True,
+    )
+
+
 @pytest_asyncio.fixture
-async def postgres_sessions():
+async def postgres_sessions(request):
     raw_url = os.environ.get("BRIDGE_HTTP_TEST_POSTGRES_URL")
     if not raw_url:
         pytest.skip("requires explicitly configured disposable local PostgreSQL")
@@ -49,8 +59,15 @@ async def postgres_sessions():
             connection = await connection.execution_options(
                 isolation_level="AUTOCOMMIT"
             )
-            assert (
-                int(await connection.scalar(text("SHOW server_version_num"))) >= 160000
+            version_number = int(
+                await connection.scalar(text("SHOW server_version_num"))
+            )
+            assert version_number >= 160000
+            witness(
+                "server",
+                test=request.node.nodeid,
+                version=await connection.scalar(text("SELECT version()")),
+                version_number=version_number,
             )
             await connection.execute(
                 DDL(
@@ -63,7 +80,11 @@ async def postgres_sessions():
                 )
             )
         await create_skrift_tables(engine)
-        yield async_sessionmaker(engine, expire_on_commit=False)
+        yield async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            info={"postgres_witness_test": request.node.nodeid},
+        )
     finally:
         await engine.dispose()
         async with admin.connect() as connection:
@@ -119,10 +140,23 @@ async def assert_blocked(maker, contender, holder):
 
     async def observe():
         async with maker() as db:
-            while not await db.scalar(
-                text("SELECT :holder = ANY(pg_blocking_pids(:contender))"),
-                {"holder": holder, "contender": contender},
-            ):
+            observer = await db.scalar(text("SELECT pg_backend_pid()"))
+            assert observer not in (holder, contender)
+            while True:
+                blockers = await db.scalar(
+                    text("SELECT pg_blocking_pids(:contender)"),
+                    {"contender": contender},
+                )
+                if holder in blockers:
+                    witness(
+                        "blocking",
+                        test=maker.kw["info"]["postgres_witness_test"],
+                        holder_pid=holder,
+                        contender_pid=contender,
+                        observer_pid=observer,
+                        pg_blocking_pids=sorted(blockers),
+                    )
+                    return
                 await asyncio.sleep(0.005)
 
     await asyncio.wait_for(observe(), timeout=5)

@@ -20,6 +20,7 @@
 // No DOM, no app imports.
 
 import { UNASSIGNED, assigneeFromKey, assigneeKey, columnsOf } from "./trackerModel.js";
+import { taskIsHeld } from "./trackerTaskReadiness.js";
 
 /**
  * What one filter holds, always as a list.
@@ -63,8 +64,8 @@ export const NO_FILTERS = Object.freeze({ state: "", status: "", assignee: "", l
  */
 export const DEFAULT_FILTERS = Object.freeze({ ...NO_FILTERS, state: "open" });
 
-/** The word that means "assigned to somebody, no matter who". `tasks.list`
- *  takes it beside the actor shapes and beside `"none"`. */
+/** The word that means "held by somebody, no matter who", including a saved
+ *  pending delivery. `tasks.list` takes it beside actor shapes and `"none"`. */
 export const ANY_ASSIGNEE = "any";
 
 /** The assignee param a filter value becomes: the two words ride as words, an
@@ -92,8 +93,12 @@ export function taskListParams(projectId, filters = {}) {
   return params;
 }
 
-const assigneeMatches = (assignee, want) =>
-  want === ANY_ASSIGNEE ? Boolean(assignee && assignee.kind) : assigneeKey(assignee) === want;
+function assigneeMatches(task, want) {
+  if (want === ANY_ASSIGNEE) return taskIsHeld(task);
+  if (want === UNASSIGNED) return !taskIsHeld(task);
+  // A pending delivery holds the task, but its target is not its assignee.
+  return assigneeKey(task.assignee) === want;
+}
 
 /** Any of them, or none chosen at all. Any-of and not all-of: a reader ticking
  *  a second label is widening what they will accept, which is what a list of
@@ -107,7 +112,7 @@ const matches = (task, filters) =>
   anyOf(filters.state, (want) => task.state === want) &&
   anyOf(filters.status, (want) => task.status === want) &&
   anyOf(filters.label, (want) => (task.labels || []).includes(want)) &&
-  anyOf(filters.assignee, (want) => assigneeMatches(task.assignee, want));
+  anyOf(filters.assignee, (want) => assigneeMatches(task, want));
 
 /** The same narrowing, applied here — what the cached list is painted through
  *  until the bridge's own answer lands. */

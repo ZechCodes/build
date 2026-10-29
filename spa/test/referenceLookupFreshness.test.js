@@ -65,3 +65,51 @@ it("does not infer per-row authority from a no-note list maximum", async () => {
   await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([{ ...target, title: "Unproved positive" }], [], 1));
   await vi.waitFor(() => expect(resolve()?.title).toBe("Unproved positive"));
 });
+
+it("keeps a stronger same-task point title when a newer page read retains an older legacy body", async () => {
+  const actions = await import("../src/core/taskWaitingOnCache.js");
+  const pages = await import("../src/core/trackerPages.js");
+  const row = (hour, title, id = target.id) => ({ ...target, id, title, state: "open", status: "backlog",
+    updated_at: `2026-10-29T${hour}:00:00Z` });
+  await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: row("13", "Retained T13") });
+  await start(vi.fn().mockResolvedValue(result(row("14", "Stronger T14"))));
+  await reader.refresh(42);
+  await vi.waitFor(() => expect(resolve()?.title).toBe("Stronger T14"));
+  const before = index.referenceIndexVersion(), read = await order.nextTaskRead();
+  await pages.foldTasksPage(tracker.tasksAddress(scope.deviceId, scope.projectId), {
+    tasks: [row("12", "Incoming T12")], above: Infinity, through: -Infinity, read, pullRead: read,
+    readAt: Date.parse("2026-10-29T12:00:00Z"),
+  }, () => []);
+  expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0].title).toBe("Retained T13");
+  await vi.waitFor(() => expect(index.referenceIndexVersion()).toBeGreaterThan(before));
+  expect(resolve()?.title).toBe("Stronger T14");
+});
+
+it("does not hide a cacheNewTask-shaped new positive behind a stale miss and inherited old spans", async () => {
+  const address = tracker.tasksAddress(scope.deviceId, scope.projectId), note = order.readsAddress(address);
+  const prior = await order.nextTaskRead();
+  await cache.mergeCachedRecordsTogether([address, note], () => [tracker.tasksRecord([], [], prior), {
+    stretches: [{ above: Infinity, through: -Infinity, read: prior }], rows: {},
+  }]);
+  await start(vi.fn().mockResolvedValue(result())); await reader.refresh(42);
+  await vi.waitFor(() => expect(resolve()).toBeNull());
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    tracker.tasksRecord([{ ...target, title: "New unnoted positive" }], [], await order.nextTaskRead()));
+  await vi.waitFor(() => expect(resolve()?.title).toBe("New unnoted positive"));
+});
+
+it("keeps stronger same-ID listed content but does not transfer its timestamp authority across IDs", async () => {
+  const actions = await import("../src/core/taskWaitingOnCache.js");
+  await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: { ...target,
+    title: "Future same identity", updated_at: "2026-10-29T15:00:00Z" } });
+  await start(vi.fn().mockResolvedValueOnce(result({ ...target, title: "Older body newer membership", updated_at: "2026-10-29T14:00:00Z" }))
+    .mockResolvedValueOnce(result({ ...target, id: "different-task", title: "New logical identity", updated_at: "2026-10-29T13:00:00Z" })));
+  await vi.waitFor(() => expect(resolve()?.title).toBe("Future same identity"));
+  const before = index.referenceIndexVersion();
+  await reader.refresh(42);
+  await vi.waitFor(() => expect(index.referenceIndexVersion()).toBeGreaterThan(before));
+  expect(resolve()?.title).toBe("Future same identity");
+  await reader.refresh(42);
+  await vi.waitFor(() => expect(resolve()?.taskId).toBe("different-task"));
+  expect(resolve()?.title).toBe("New logical identity");
+});

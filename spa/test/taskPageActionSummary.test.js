@@ -7,14 +7,15 @@ import { readTaskRecord, writeTaskRecord, writeTasksRecord } from "../src/core/t
 import { beginSummaryQuery, landSummaryPage, readSummaryQuery, summaryAddress } from "../src/core/taskSummaryCache.js";
 import { nextTaskRead } from "../src/core/taskReadOrder.js";
 import { taskMutationsPending } from "../src/core/taskMutationFence.js";
-import { adoptDeviceSession, resetDeviceContexts, retireDeviceContext } from "../src/core/deviceContexts.js";
+import { adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts, retireDeviceContext } from "../src/core/deviceContexts.js";
+import { createTaskWaitingOnActions } from "../src/core/taskWaitingOnActions.js";
 import { mountTaskPage } from "../src/core/trackerTaskPage.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 
 const observation = vi.hoisted(() => ({ carries: false, session: null }));
 vi.mock("../src/core/changeEvents.js", () => ({
   onBridgeGreeted: () => () => {}, disarmChangeEvents() {},
-  bridgeCapabilities: () => ({ tasks: {}, changes: { subscriptions: true, kinds: ["tasks"] } }),
+  bridgeCapabilities: () => ({ tasks: { waitingOn: true }, changes: { subscriptions: true, kinds: ["tasks"] } }),
   watchChanges: () => ({ dispose() {} }),
 }));
 vi.mock("../src/core/deviceReconnect.js", () => ({
@@ -57,6 +58,7 @@ beforeEach(async () => {
   resetDeviceContexts(); await wipeCache(); document.body.innerHTML = ""; pages = [];
   observation.carries = false;
   session = fakeSession(scope.deviceId); observation.session = session; context = adoptDeviceSession(session);
+  adoptBridgeSelection(context, { version: "3.27.0" }, { capabilities: { tasks: { waitingOn: true } } });
   session.call.mockImplementation((method) => method === "tasks.get" ? Promise.resolve({ task: full(), timeline }) : Promise.resolve({}));
   await writeTaskRecord(scope.deviceId, scope.projectId, taskId, { task: full(), timeline });
   await writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [full()], columns: columns() });
@@ -214,4 +216,22 @@ it("does not let an older no-task read acknowledgment raise the floor after a ne
   read.resolve({}); await settle();
   expect((await cachedSummary()).task.read_through).toBe("tc-20");
   expect((await readTaskRecord(scope.deviceId, scope.projectId, taskId)).task.read_through).toBe("tc-20");
+});
+
+it.each(["dependency", "assignment"])("rejects an older %s owner's full reply after a newer page unwatch", async (owner) => {
+  const older = deferred(), unwatch = deferred(), watched = full({ watched: true, watch_started_after: "", unread_count: 0 });
+  await writeTaskRecord(scope.deviceId, scope.projectId, taskId, { task: watched, timeline });
+  session.call.mockImplementation((method) => method === "tasks.get" ? Promise.resolve({ task: watched, timeline })
+    : method === "tasks.unwatch" ? unwatch.promise : older.promise);
+  const actions = createTaskWaitingOnActions({ ...scope, taskId, call: context.rpc });
+  const request = owner === "dependency" ? actions.add(["blocker"]) : actions.assign({ assignee: { kind: "user" } });
+  const method = owner === "dependency" ? "tasks.waiting_on.add" : "tasks.assign";
+  await vi.waitFor(() => expect(count(method)).toBe(1));
+  const mounted = await mount(); expect(mounted.button().getAttribute("aria-pressed")).toBe("true");
+  mounted.button().click(); await vi.waitFor(() => expect(count("tasks.unwatch")).toBe(1));
+  unwatch.resolve({ task: full({ watched: false, read_through: "tc-20" }) });
+  await vi.waitFor(async () => expect((await cachedSummary()).task.read_through).toBe("tc-20"));
+  older.resolve({ task: watched }); await request; await settle();
+  expect((await cachedSummary()).task).toMatchObject({ watched: false, read_through: "tc-20" });
+  expect((await readTaskRecord(scope.deviceId, scope.projectId, taskId)).task).toMatchObject({ watched: false, read_through: "tc-20" });
 });

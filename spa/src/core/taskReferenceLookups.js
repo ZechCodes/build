@@ -148,14 +148,19 @@ export function mountTaskReferenceLookups(host, { deviceId, projectId, context =
       sessionOf: authority, active: () => canRead() && current === turn && turn.stands(),
       mutationEpoch: () => taskMutationEpoch(deviceId),
     });
-    turn.run = trailingRead((force) => readTurn(turn, force), { generationOf: authority });
+    turn.force = false;
+    turn.run = trailingRead(() => {
+      const force = turn.force;
+      turn.force = false;
+      return readTurn(turn, force);
+    }, { generationOf: authority });
     // take() adopts cache content before its synchronous paint. Scan afterwards,
     // once, with the content token captured before any point request can finish.
     return Promise.resolve().then(() => {
       if (disposed || current !== turn) return false;
       turn.numbers = admittedNumbers(host, admission);
       turn.release = admitTaskReferenceLookups({ deviceId, projectId }, turn.numbers);
-      return turn.run(false);
+      return turn.run();
     }).catch(() => false);
   }
 
@@ -164,7 +169,9 @@ export function mountTaskReferenceLookups(host, { deviceId, projectId, context =
     if (disposed || !current || !canRead()) return Promise.resolve(false);
     if (!scheduled) scheduled = Promise.resolve().then(() => {
       scheduled = null;
-      return current?.run(true);
+      if (!current) return false;
+      current.force = true;
+      return current.run();
     }).catch(() => false);
     return scheduled;
   }

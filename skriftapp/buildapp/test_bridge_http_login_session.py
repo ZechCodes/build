@@ -134,7 +134,13 @@ def family_count(client):
     return framework.on_database(client, read)
 
 
-def test_real_earliest_login_cookie_cannot_remint_after_csrf_logout(login_app):
+def test_real_earliest_login_cookie_cannot_remint_after_csrf_logout(
+    login_app, tmp_path, monkeypatch
+):
+    from buildapp import controllers
+
+    (tmp_path / "index.html").write_text("<html>Cached Build shell</html>")
+    monkeypatch.setattr(controllers, "STATIC_DIR", tmp_path)
     with framework_client(login_app) as client:
         user, earliest = real_login(client)
         device, key = enroll_and_register(client, user)
@@ -178,6 +184,9 @@ def test_real_earliest_login_cookie_cannot_remint_after_csrf_logout(login_app):
             ).status_code
             == 401
         )
+        shell = client.get("/app/")
+        assert shell.status_code == 200
+        assert ORIGIN not in shell.headers["content-security-policy"]
         restore(client, unrelated_cookies)
         assert active(client, device, key, unrelated["access_token"]) is True
         assert (
@@ -261,3 +270,61 @@ def test_failed_login_identity_persistence_returns_no_authenticated_cookie(
             return await db.scalar(select(func.count()).select_from(BridgeHttpClient))
 
         assert framework.on_database(client, identities) == 0
+
+
+def test_framework_deferred_auth_completion_establishes_a_new_persisted_identity(
+    login_app, monkeypatch
+):
+    """Exercise the shared promotion seam after a factor has already verified.
+
+    External-factor verification is not simulated by this test: the account was
+    authenticated through real primary login, and this case checks the separate
+    framework pending-auth promotion boundary calls the same durable login hook.
+    """
+    from buildapp import bridge_http_login
+    from buildapp.models import BridgeHttpClient
+    from buildapp.token_hash import token_hash
+    from skrift.auth.session_service import PendingAuthState
+    from skrift.config import get_settings
+    from skrift.controllers.auth import _complete_pending_login
+    from skrift.db.models.user import User
+
+    captured = []
+    original = bridge_http_login.auth_session_maker
+
+    def capture_authenticated_request(request):
+        captured.append(request)
+        return original(request)
+
+    monkeypatch.setattr(
+        bridge_http_login, "auth_session_maker", capture_authenticated_request
+    )
+    with framework_client(login_app) as client:
+        user_id, _ = real_login(client)
+        request = captured[-1]
+        initial_binding = request.session[BRIDGE_BINDING_KEY]
+
+        async def promote(db):
+            user = await db.get(User, user_id)
+            pending = PendingAuthState(
+                pending_auth_id=str(uuid4()),
+                method_key="passkey",
+                method_type="passkey",
+                stage="verify",
+                user_id=str(user_id),
+            )
+            result = await _complete_pending_login(
+                request, get_settings(), user, pending
+            )
+            assert result.status_code == 302
+            new_binding = request.session[BRIDGE_BINDING_KEY]
+            assert new_binding != initial_binding
+            row = await db.scalar(
+                select(BridgeHttpClient).where(
+                    BridgeHttpClient.user_id == user_id,
+                    BridgeHttpClient.binding_hash == token_hash(new_binding),
+                )
+            )
+            assert row is not None and row.revoked_at is None
+
+        framework.on_database(client, promote)

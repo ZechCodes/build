@@ -284,7 +284,7 @@ function openDirectLink(deviceId, session, sessionLease, authority) {
   return openPeerLink({
     binding: session.peerBinding,
     clientId: () => rtcClientId(deviceId, pairedTransportKey(deviceId)),
-    signal: (method, params) => failingAs("refused", session.call(method, params)),
+    signal: (method, params, options) => failingAs("refused", session.call(method, params, options)),
     fetchIceServers: () => failingAs("ice-servers", fetchIceServers()),
     onPush: session.onPush,
     confirmCarried: () => session.confirmCarried(),

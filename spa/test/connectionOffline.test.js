@@ -376,6 +376,14 @@ describe("dial failure diagnostics", () => {
     expect(wire.openPeerLink.mock.calls.at(-1)[0].binding).toBe(peerBinding);
   });
 
+  it("forwards the exact ICE round cancellation signal to the session call", async () => {
+    await connectDevice("dev-a");
+    const options = { signal: new AbortController().signal };
+    const candidate = { candidate: "candidate:round" };
+    await wire.openPeerLink.mock.calls.at(-1)[0].signal("rtc.ice", candidate, options);
+    expect(contextFor("dev-a").session.call).toHaveBeenCalledWith("rtc.ice", candidate, options);
+  });
+
   it("binds the separately minted terminal opening before publishing its carrier", async () => {
     const link = fakePeerLink("dev-a");
     const bound = { onClose: vi.fn() };

@@ -14,7 +14,7 @@ import { agentModelsFromFeed } from "./agentModelBadge.js";
 
 import { messageOf } from "./text.js";
 import { hashFromRoute } from "./router.js";
-import { watchChanges } from "./changeEvents.js";
+import { bridgeCapabilities, watchChanges } from "./changeEvents.js";
 import { tasksPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
 import {
@@ -60,6 +60,9 @@ import { openTaskComposer } from "./taskComposer.js";
 import { labelsOf } from "./trackerFilters.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { subscribeReferenceIndex } from "./referenceIndex.js";
+import { createTaskPaneChoiceReads } from "./taskPaneSummaryReads.js";
+import { wrapTaskMutationCall } from "./taskMutationFence.js";
+import { writeSummaryTask } from "./taskSummaryCache.js";
 
 export const TASK_PAGE_SIZE = 25;
 const VIEW_IDS = new Set([DASHBOARD_VIEW, LIST_VIEW, BOARD_VIEW]);
@@ -186,6 +189,15 @@ export function mountTasksPane(host, options) {
       saveUi();
     },
   });
+  const remoteChoices = createTaskPaneChoiceReads({
+    scope: { deviceId: state.deviceId, projectId: state.projectId }, host,
+    callRpc: state.callRpc, capabilities: () => bridgeCapabilities(state.deviceId)?.tasks,
+    sessionOf: () => deviceSession(state.deviceId),
+    enabled: () => !state.only && state.view !== DASHBOARD_VIEW,
+    active: () => !state.disposed,
+    onChange: () => paint(),
+    onError: (error) => notifyError("Could not read task filter choices", messageOf(error)),
+  });
 
   const paintContext = () => ({
     columns: state.columns,
@@ -281,9 +293,11 @@ export function mountTasksPane(host, options) {
       // The menus are built from the project's WHOLE list and from the feed:
       // the labels its tasks wear, and every agent standing on one of its
       // workspaces, grouped the way the assignee picker groups them (#44).
-      options: filterOptions(state.all, state.columns, nameActor, groups()),
+      options: remoteChoices.options(filterOptions(state.all, state.columns, nameActor, groups()),
+        filterOptions([], state.columns, nameActor, groups()), state.filters, nameActor),
       filters: state.filters,
     });
+    remoteChoices.paintContinuation();
     const view = VIEWS[state.view] || VIEWS[LIST_VIEW];
     view.paint(chrome.body, view.entries(), paintContext(), view.wire);
     wireColumnDrops();
@@ -439,6 +453,7 @@ export function mountTasksPane(host, options) {
 
   async function readList() {
     if (state.disposed) return;
+    void remoteChoices.ensure();
     const filters = shownFilters();
     try {
       const params = taskListParams(state.projectId, filters);
@@ -503,9 +518,15 @@ export function mountTasksPane(host, options) {
    * A refused move puts it back where it was and says why — a card that stayed
    * put with no word is a card the reader will drag again.
    */
-  async function moveTask(taskId, status) {
+  function moveTask(taskId, status) {
     const task = state.shown.find((candidate) => candidate.id === taskId);
     if (!task || task.status === status) return;
+    return wrapTaskMutationCall(state.deviceId, "tasks.update", () => writeMovedTask(task, status));
+  }
+
+  async function writeMovedTask(task, status) {
+    const taskId = task.id;
+    const scope = { deviceId: state.deviceId, projectId: state.projectId };
     const heldQuery = state.unscopedShown;
     const heldCatalogue = state.unscoped;
     const movedQuery = withMovedTask(heldQuery, taskId, status);
@@ -519,6 +540,7 @@ export function mountTasksPane(host, options) {
     await Promise.all([
       writeTasksQueryRecord(state.deviceId, state.projectId, queryParams(), tasksRecord(movedQuery, state.columns, movedAs)),
       writeTasksRecord(state.deviceId, state.projectId, tasksRecord(movedCatalogue, state.columns, movedAs)),
+      writeSummaryTask(scope, { id: taskId, status }, movedAs),
     ]);
     try {
       await state.callRpc("tasks.update", moveParams(taskId, status));
@@ -529,6 +551,7 @@ export function mountTasksPane(host, options) {
       await Promise.all([
         writeTasksQueryRecord(state.deviceId, state.projectId, queryParams(), tasksRecord(heldQuery, state.columns, restoredAs)),
         writeTasksRecord(state.deviceId, state.projectId, tasksRecord(heldCatalogue, state.columns, restoredAs)),
+        writeSummaryTask(scope, { id: taskId, status: task.status }, restoredAs),
       ]);
       notifyError("Could not move this task", messageOf(error));
     }
@@ -607,15 +630,22 @@ export function mountTasksPane(host, options) {
    * see the thing you just wrote appear in the list you wrote it against. The
    * refresh behind it replaces this record with the bridge's own.
    */
-  async function showTheNewTask(task) {
+  function showTheNewTask(task) {
     if (!task || state.disposed) return;
+    return wrapTaskMutationCall(state.deviceId, "tasks.create", () => cacheNewTask(task));
+  }
+
+  async function cacheNewTask(task) {
+    const filedAs = await nextTaskRead();
+    const summaryWrite = writeSummaryTask({ deviceId: state.deviceId, projectId: state.projectId }, task,
+      filedAs, { fullTask: true });
     const held = kept([task]);
-    if (!held.length) return; // a workspace's tab may not be about this task
+    if (!held.length) return summaryWrite; // a workspace's tab may not be about this task
     const catalogue = sortTasks([...state.unscoped.filter((one) => one.id !== task.id), task]);
     const query = sortTasks([...state.unscopedShown.filter((one) => one.id !== task.id), task]);
     state.focusTask = task.id;
-    const filedAs = await nextTaskRead();
     await Promise.all([
+      summaryWrite,
       writeTasksRecord(state.deviceId, state.projectId, tasksRecord(catalogue, state.columns, filedAs)),
       writeTasksQueryRecord(state.deviceId, state.projectId, queryParams(), tasksRecord(query, state.columns, filedAs)),
     ]);
@@ -740,7 +770,7 @@ export function mountTasksPane(host, options) {
   // this project moved and reads the list again, and the pass behind it
   // (core/cacheSync.js) is the whole of the safety net.
   const watcher = watchChanges({
-    refresh: () => void refresh(),
+    refresh: () => { void remoteChoices.refresh(); void refresh(); },
     entity: state.projectId,
     deviceId: state.deviceId,
   // Named only where the bridge carries them (core/trackerPush.js): every
@@ -773,6 +803,7 @@ export function mountTasksPane(host, options) {
       queryUnsubscribe?.();
       reads.dispose();
       chrome.dispose();
+      remoteChoices.dispose();
       state.picker?.close?.();
       state.composer?.close?.();
     },

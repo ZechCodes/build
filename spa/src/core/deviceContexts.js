@@ -243,12 +243,16 @@ export function adoptBridgeSelection(context, selection, adapter, authority = gr
   context.apiVersion = verdict.version || null;
   context.unsupported = verdict.unsupported || null;
   authority.compatible = Boolean(selection) && !context.unsupported;
-  void rememberTaskCountsSupport(context.deviceId, context.adapter?.capabilities,
-    () => authority.current() && authority.compatible && context.active()).catch(() => {});
+  rememberCountsGreeting(context, authority);
   releaseGreeting(context, authority); // only this greeting has said what it speaks
   announceDeviceState(); // an unsupported bridge is a machine that cannot answer
   context.answering?.(); // what a surface wanted while it could not be asked
   return context;
+}
+
+function rememberCountsGreeting(context, authority) {
+  void rememberTaskCountsSupport(context.deviceId, context.adapter?.capabilities,
+    () => authority.current() && authority.compatible && context.active()).catch(() => {});
 }
 
 /** A device whose greeting no longer stands: the next one settles it again. */

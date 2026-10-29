@@ -4,6 +4,7 @@
 export const SQL_READ_METHODS = Object.freeze([
   "thread.page", "thread.activity", "thread.operation", "thread.revision",
   "tasks.list", "tasks.get", "tasks.waiting_on.blocks", "tasks.filterChoices",
+  "tasks.counts", "tasks.lookup",
   "writes.status", "writes.subscribe",
 ]);
 export const SQL_READ_LIMIT = 8;

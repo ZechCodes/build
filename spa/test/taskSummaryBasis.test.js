@@ -85,3 +85,12 @@ it("requires authoritative requested anchor and exact relation provenance", asyn
   expect(await summaries.landSummaryPage(ticket, page("B", [row({ matched_memberships, order_anchor_ms: null })]), { read: 1 })).toBe(true);
   expect((await summaries.readSummaryQuery(scope, filters)).tasks[0].order_anchor_ms).toBeNull();
 });
+
+it("does not relabel timestamp-protected entity data with a rejected snapshot basis", async () => {
+  await land({}, 1, page("B1", [row({ title: "cached", updated_at: "2026-10-29T12:00:10Z" })]));
+  await land({}, 2, page("B2", [row({ title: "wire", updated_at: "2026-10-29T12:00:00Z" })]));
+  const held = await summaries.readSummaryQuery(scope, {});
+  expect(held.tasks[0].title).toBe("cached");
+  expect(held.stale).toBe(true);
+  expect((await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.basis).toBe("B1");
+});

@@ -35,6 +35,14 @@ impl TaskReadContext {
         let below = position
             .map(|position| summary_position(&position, &basis))
             .transpose()?;
+        if query.filter.attention_rule.is_some() {
+            super::query_selections::ensure_supported_markers(
+                source,
+                project,
+                &project_id,
+                "tasks.list",
+            )?;
+        }
         if let Some(field) = source
             .task_query_unsupported_domain(project, query.order, query.filter.done_since.is_some())
             .stored()?
@@ -157,6 +165,8 @@ impl TaskReadContext {
                 })
                 .unwrap_or(retained);
             let mut identity = self.identities.identity(id, &durable);
+            // The dictionary key is structural identity, never a display field.
+            identity.agent_id = id.to_string();
             // Display names can change in the live overlay. IDs stay exact.
             identity.workspace_name = identity
                 .workspace_name

@@ -50,6 +50,10 @@ impl TaskQueryOrder {
     }
 }
 impl Store {
+    pub fn task_query_markers_unsupported(&self, project: &str) -> Result<bool, StoreError> {
+        ReadTransaction::new(&self.connection()).task_query_markers_unsupported(project)
+    }
+
     pub fn task_query_unsupported_domain(
         &self,
         project: &str,
@@ -87,6 +91,13 @@ impl Store {
     }
 }
 impl ReadTransaction<'_> {
+    pub fn task_query_markers_unsupported(&self, project: &str) -> Result<bool, StoreError> {
+        let sql="SELECT EXISTS(SELECT 1 FROM tracker_task_query_facts INDEXED BY tracker_task_query_invalid_markers WHERE project_key=?1 AND invalid_markers=1)";
+        Ok(self
+            .connection()
+            .query_row(sql, [project], |row| row.get(0))?)
+    }
+
     /// Conservative project-wide validity is a pair of partial-index point
     /// seeks, independent of row filters and of the candidate scan window.
     pub fn task_query_unsupported_domain(
@@ -126,9 +137,9 @@ impl ReadTransaction<'_> {
         let Some(number_sql) = i64::try_from(number).ok() else {
             return Ok(None);
         };
-        let raw = self.connection().query_row("SELECT record,assignment_target,identities FROM tracker_task_summaries WHERE project_key=?1 AND number=?2",params![project,number_sql],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,String>(2)?))).optional()?;
-        raw.map(|(raw, target, identities)| {
-            decode_summary_candidate(raw, target, identities, project)
+        let raw = self.connection().query_row("SELECT s.record,s.assignment_target,s.identities,q.assignee_kind,CASE WHEN length(CAST(q.assignee_agent_id AS BLOB))<=128 THEN q.assignee_agent_id END,q.status,q.labels_json,q.status_truncated,q.creator_kind,CASE WHEN length(CAST(q.creator_agent_id AS BLOB))<=128 THEN q.creator_agent_id END,q.read_through,q.watch_started_after,q.dismissed_through FROM tracker_task_summaries s LEFT JOIN tracker_task_query_sources q ON q.task_id=s.task_id WHERE s.project_key=?1 AND s.number=?2",params![project,number_sql],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,String>(2)?,CanonicalSelection {kind:row.get(3)?,agent:row.get(4)?,status:row.get(5)?,labels:row.get(6)?,status_truncated:row.get(7)?,creator_kind:row.get(8)?,creator_agent:row.get(9)?,read_through:row.get(10)?,watch_started_after:row.get(11)?,dismissed_through:row.get(12)?}))).optional()?;
+        raw.map(|(raw, target, identities, selection)| {
+            selection.apply(decode_summary_candidate(raw, target, identities, project)?)
         })
         .transpose()
     }
@@ -218,7 +229,7 @@ impl ReadTransaction<'_> {
         filter: &TaskQueryFilter,
     ) -> Result<bool, StoreError> {
         let attention = filter.attention_rule.as_deref();
-        let sql = "SELECT (?2 IS NULL OR watched=?2) AND (?3 IS NULL OR unfinished=?3) AND (?4 IS NULL OR blocked=?4) AND (?5 IS NULL OR held=?5) AND (?6 IS NULL OR undelivered=?6) AND (?7 IS NULL OR CASE ?7 WHEN 'asked' THEN attention_asked ELSE attention_legacy END) AND (?8 IS NULL OR EXISTS(SELECT 1 FROM tracker_task_query_memberships m WHERE m.task_id=f.task_id AND m.kind='workspace' AND m.value=?8)) AND (?9 IS NULL OR EXISTS(SELECT 1 FROM tracker_task_query_memberships m WHERE m.task_id=f.task_id AND m.kind='tracker' AND m.value=?9)) AND (?10 IS NULL OR review_mode IS NULL OR review_mode<>?10) AND (?11 IS NULL OR done_ms>=?11) FROM tracker_task_query_facts f WHERE task_id=?1";
+        let sql = "SELECT (?2 IS NULL OR watched=?2) AND (?3 IS NULL OR unfinished=?3) AND (?4 IS NULL OR blocked=?4) AND (?5 IS NULL OR held=?5) AND (?6 IS NULL OR undelivered=?6) AND (?7 IS NULL OR CASE ?7 WHEN 'asked' THEN attention_asked ELSE attention_legacy END) AND (?8 IS NULL OR EXISTS(SELECT 1 FROM tracker_task_query_memberships m WHERE m.task_id=f.task_id AND m.kind='workspace' AND m.value=?8)) AND (?9 IS NULL OR EXISTS(SELECT 1 FROM tracker_task_query_memberships m WHERE m.task_id=f.task_id AND m.kind='tracker' AND m.value=?9)) AND (?10 IS NULL OR review_mode IS NULL OR review_mode<>?10) AND (?11 IS NULL OR done_ms>=?11) AND (?12 IS NULL OR NOT(assignee_kind IS ?12 AND (?12<>'agent' OR assignee_agent_id IS ?13))) FROM tracker_task_query_facts f WHERE task_id=?1";
         Ok(self
             .connection()
             .query_row(
@@ -234,11 +245,76 @@ impl ReadTransaction<'_> {
                     filter.linked_workspace_id,
                     filter.tracker_agent_id,
                     filter.exclude_review_mode,
-                    filter.done_since
+                    filter.done_since,
+                    filter
+                        .exclude_assignee
+                        .as_ref()
+                        .and_then(|value| value["kind"].as_str()),
+                    filter
+                        .exclude_assignee
+                        .as_ref()
+                        .and_then(|value| value["agent_id"].as_str())
                 ],
                 |row| row.get::<_, Option<bool>>(0),
             )?
             .unwrap_or(false))
+    }
+}
+struct CanonicalSelection {
+    kind: Option<String>,
+    agent: Option<String>,
+    status: Option<String>,
+    labels: Option<String>,
+    status_truncated: Option<bool>,
+    creator_kind: Option<String>,
+    creator_agent: Option<String>,
+    read_through: Option<String>,
+    watch_started_after: Option<String>,
+    dismissed_through: Option<String>,
+}
+impl CanonicalSelection {
+    fn apply(
+        self,
+        mut candidate: TaskSummaryCandidate,
+    ) -> Result<TaskSummaryCandidate, StoreError> {
+        let missing = || {
+            StoreError::TaskSummaryInvalid(
+                "query projection is missing canonical selection inputs".into(),
+            )
+        };
+        candidate.row["assignee"] = match self.kind.as_deref() {
+            None => Value::Null,
+            Some("agent") => {
+                serde_json::json!({"kind":"agent","agent_id":self.agent.ok_or_else(missing)?})
+            }
+            Some("user" | "project_agent") => serde_json::json!({"kind":self.kind}),
+            _ => return Err(missing()),
+        };
+        candidate.row["created_by"] = match self.creator_kind.as_deref() {
+            Some("agent") => {
+                serde_json::json!({"kind":"agent","agent_id":self.creator_agent.ok_or_else(missing)?})
+            }
+            Some("user" | "build") => serde_json::json!({"kind":self.creator_kind}),
+            _ => return Err(missing()),
+        };
+        for (field, value) in [
+            ("read_through", self.read_through),
+            ("watch_started_after", self.watch_started_after),
+            ("dismissed_through", self.dismissed_through),
+        ] {
+            candidate.row[field] = value.map(Value::String).unwrap_or(Value::Null);
+        }
+        candidate.row["status"] = Value::String(self.status.ok_or_else(missing)?);
+        let labels: Vec<String> = super::super::tracker::decode(
+            &self.labels.ok_or_else(missing)?,
+            "tracker_task_query_sources/labels",
+            "canonical",
+        )?;
+        candidate.row["labels"] = serde_json::json!(labels);
+        if self.status_truncated.ok_or_else(missing)? {
+            candidate.row["summary_truncated"] = Value::Bool(true);
+        }
+        Ok(candidate)
     }
 }
 fn position_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskQueryPosition> {
@@ -341,10 +417,10 @@ mod tests {
     #[test]
     fn point_lookup_never_decodes_a_neighbor_and_supports_max_number() {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("CREATE TABLE tracker_task_summaries(project_key TEXT,number INTEGER,record TEXT,assignment_target TEXT,identities TEXT,PRIMARY KEY(project_key,number)); INSERT INTO tracker_task_summaries VALUES('p',1,'malformed',NULL,'{}');").unwrap();
+        connection.execute_batch("CREATE TABLE tracker_task_summaries(task_id TEXT,project_key TEXT,number INTEGER,record TEXT,assignment_target TEXT,identities TEXT,PRIMARY KEY(project_key,number)); CREATE TABLE tracker_task_query_sources(task_id TEXT PRIMARY KEY,assignee_kind TEXT,assignee_agent_id TEXT,status TEXT,labels_json TEXT,status_truncated INTEGER,creator_kind TEXT,creator_agent_id TEXT,read_through TEXT,watch_started_after TEXT,dismissed_through TEXT); INSERT INTO tracker_task_summaries VALUES('bad','p',1,'malformed',NULL,'{}'); INSERT INTO tracker_task_query_sources VALUES('max',NULL,NULL,'backlog','[]',0,'user',NULL,NULL,NULL,NULL);").unwrap();
         connection
             .execute(
-                "INSERT INTO tracker_task_summaries VALUES('p',?1,?2,NULL,'{}')",
+                "INSERT INTO tracker_task_summaries VALUES('max','p',?1,?2,NULL,'{}')",
                 params![
                     i64::MAX,
                     serde_json::json!({"number":i64::MAX,"id":"max"}).to_string()

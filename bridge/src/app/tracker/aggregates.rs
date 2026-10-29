@@ -31,6 +31,12 @@ impl TaskReadContext {
             .ok_or_else(|| format!("unknown project_id: {project_id}"))?;
         let agents = agent_buckets(params)?;
         let basis = source.task_query_basis().stored()?;
+        super::query_selections::ensure_supported_markers(
+            source,
+            project,
+            &project_id,
+            "tasks.counts",
+        )?;
         let counts = source.task_counts(project, &agents).stored()?;
         let project_count = counts.first().ok_or("missing project aggregate")?;
         let buckets: Vec<_> = agents

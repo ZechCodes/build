@@ -310,3 +310,5 @@ mod waiting_on_rpc_mcp_contract;
 mod tracker_query_selections;
 
 mod tracker_query_behavior;
+
+mod tracker_query_exact_text;

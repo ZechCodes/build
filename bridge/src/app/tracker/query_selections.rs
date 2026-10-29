@@ -66,16 +66,26 @@ impl QuerySelections {
         json!([self.order, self.filter])
     }
     pub fn matches_row(&self, row: &Value) -> bool {
-        (self.filter.done_since.is_none() || row["status"] == "done")
-            && self
-                .filter
-                .exclude_assignee
-                .as_ref()
-                .is_none_or(|excluded| row["assignee"] != *excluded)
+        self.filter.done_since.is_none() || row["status"] == "done"
     }
     pub fn provenance(&self) -> Value {
         json!({"linked_workspace_id":self.filter.linked_workspace_id,"tracker_agent_id":self.filter.tracker_agent_id})
     }
+}
+pub(super) fn ensure_supported_markers(
+    source: &impl super::read_source::TaskReadSource,
+    project: &str,
+    project_id: &str,
+    operation: &str,
+) -> Result<(), String> {
+    use super::StoredAnswer;
+    if source.task_query_markers_unsupported(project).stored()? {
+        return Err(format!(
+            "task_query_marker_unsupported:{}",
+            json!({"reason":"task_query_marker_unsupported","scope":"project_markers","project_id":project_id,"domain":"opaque-marker-v1","max_bytes":128,"operation":operation})
+        ));
+    }
+    Ok(())
 }
 fn validate_exclusion(value: Option<&Value>) -> Result<(), String> {
     if let Some(value) = value {
@@ -113,7 +123,17 @@ mod tests {
         }
         let selected=QuerySelections::parse(&json!({"tracker_agent_id":"AgentA","exclude_assignee":{"kind":"agent","agent_id":"AgentA"}})).unwrap();
         assert_eq!(selected.provenance()["tracker_agent_id"], "AgentA");
-        assert!(!selected.matches_row(&json!({"assignee":{"kind":"agent","agent_id":"AgentA"}})));
-        assert!(selected.matches_row(&json!({"assignee":{"kind":"agent","agent_id":"agenta"}})));
+        assert_eq!(
+            selected.filter.exclude_assignee,
+            Some(json!({"kind":"agent","agent_id":"AgentA"}))
+        );
+        let lower = QuerySelections::parse(
+            &json!({"exclude_assignee":{"kind":"agent","agent_id":"agenta"}}),
+        )
+        .unwrap();
+        assert_ne!(
+            selected.filter.exclude_assignee,
+            lower.filter.exclude_assignee
+        );
     }
 }

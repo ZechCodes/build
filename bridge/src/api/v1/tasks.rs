@@ -1221,6 +1221,11 @@ pub(crate) fn refine(error: ApiError) -> ApiError {
     if let Some(encoded) = error
         .message()
         .strip_prefix("task_query_timestamp_unsupported:")
+        .or_else(|| {
+            error
+                .message()
+                .strip_prefix("task_query_marker_unsupported:")
+        })
     {
         if let Ok(details) = serde_json::from_str::<Value>(encoded) {
             return ApiError::Unavailable {

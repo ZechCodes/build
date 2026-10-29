@@ -8,6 +8,15 @@ API work. Proposed operations below are concepts; their RPC and capability
 names are deliberately unassigned. The backend owner must settle and publish
 them with fixtures before consumer dispatch exists.
 
+The lead dispatched #925 for isolated design prototypes and measurements after
+reviewing this matrix. Resumable builds are the direction to evaluate, not an
+approved production service. #925 must measure first-result latency, total
+scan/storage, mutation contention and starvation, including unrelated projects
+advancing the global basis, then obtain a usable bounded progress/resource
+contract before implementation. Pending/restart/refusal does not accept
+indefinite unusability or constitute completed conversion. No journal/snapshot
+fork or eager active-selection producer fanout is authorized.
+
 The source audit used the shared checkout at `2659e413`, including
 `docs/task-query-contract.md` and the actual `trackerTasksPane`,
 `trackerTasksBody`, `trackerAttentionModel`, `trackerBoardModel`,

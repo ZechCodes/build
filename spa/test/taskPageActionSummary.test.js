@@ -201,6 +201,17 @@ it.each([{ id: "foreign-task" }, { project_id: "foreign-project" }, { number: 13
   },
 );
 
+it("refuses a malformed partial task acknowledgment instead of treating it as a legacy no-task reply", async () => {
+  observation.carries = true;
+  const pending = deferred(); session.call.mockImplementation((method) => method === "tasks.get"
+    ? Promise.resolve({ task: full(), timeline }) : pending.promise);
+  await mount(); await vi.waitFor(() => expect(count("tasks.read_through")).toBe(1));
+  const before = await cachedSummary(), detail = await readTaskRecord(scope.deviceId, scope.projectId, taskId);
+  pending.resolve({ task: { read_through: "tc-99" } }); await settle();
+  expect(await cachedSummary()).toEqual(before);
+  expect(await readTaskRecord(scope.deviceId, scope.projectId, taskId)).toEqual(detail);
+});
+
 it("does not let an older no-task read acknowledgment raise the floor after a newer full watch action", async () => {
   const read = deferred(), watch = deferred(), longer = [comment({ ...timeline[0], id: "tc-99" })];
   await writeTaskRecord(scope.deviceId, scope.projectId, taskId, { task: full(), timeline: longer });

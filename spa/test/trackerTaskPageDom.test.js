@@ -375,6 +375,7 @@ describe("task unread navigation", () => {
     const line = host.querySelector(".task-unread-line");
     expect(line.nextElementSibling.classList.contains("task-event")).toBe(true);
     expect(line.previousElementSibling.id).toBe(`comment-${timeline[1].id}`);
+    await vi.waitFor(() => expect(listed("tasks.read_through")).toHaveLength(1));
     expect(listed("tasks.read_through")[0][1].event_id).toBe(timeline[3].id);
 
     const hostRect = vi.spyOn(host, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 600 });
@@ -413,9 +414,11 @@ describe("task unread navigation", () => {
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", stale);
     // Leave tasks.get outstanding across both visits: only the cache can
     // paint, and the accepted mark must outlive the first page instance.
-    call = vi.fn((method) => method === "tasks.get" ? new Promise(() => {}) : Promise.resolve({ task: {
-      read_through: timeline[2].id,
-    } }));
+    // tasks.read_through returns a full task (fixtures/api/v1/tasks.read_through.json),
+    // with identity matching the action's captured project/task/number.
+    call = vi.fn((method) => method === "tasks.get" ? new Promise(() => {}) : Promise.resolve(answerFor({
+      project_id: "proj-1", watched: true, read_through: timeline[2].id,
+    }, timeline)));
     await mount({}, { waitForPaint: false });
     await vi.waitFor(() => expect(host.querySelector(".task-unread-line")).not.toBeNull());
     await vi.waitFor(async () => expect((await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1"))?.task.read_through)

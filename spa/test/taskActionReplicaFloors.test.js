@@ -89,6 +89,15 @@ it("refuses an unissued compatibility reply after a proved action instead of ble
   expect(await Promise.all(allAddresses().map(value))).toEqual(before);
 });
 
+it("allows unissued compatibility before a proved note without forced watch authority or an invented dispatch note", async () => {
+  await seed(task({ watched: false, updated_at: "2026-10-29T13:00:00Z" }));
+  expect(await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, {
+    task: task({ watched: true, title: "Old response", read_through: "tc-30" }),
+  })).toBe(true);
+  for (const replica of await replicas()) expect(replica).toMatchObject({ watched: false, title: "Before", read_through: "tc-30" });
+  expect(await value(order.readsAddress(tracker.taskAddress(scope.deviceId, scope.projectId, taskId)))).not.toHaveProperty("action_read");
+});
+
 it("rolls every legacy and normalized replica and note back if the joint marker publication hits quota", async () => {
   await seed(task()); const before = await Promise.all(allAddresses().map(value));
   const original = IDBObjectStore.prototype.put;

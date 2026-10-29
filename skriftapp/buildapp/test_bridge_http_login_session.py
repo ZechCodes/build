@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import base64
-import re
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import jwt
 import pytest
@@ -19,63 +18,21 @@ from buildapp.clock import utc_now
 from buildapp.db_test_support import add_member
 from buildapp.desktop_auth import BRIDGE_ACCOUNT_KEY, BRIDGE_BINDING_KEY
 from buildapp.models import BridgeHttpFamily, Device
-from buildapp.test_bridge_http_policy import framework_client
+from buildapp.bridge_http_test_support import (
+    build_login_app,
+    framework_client,
+    csrf,
+    real_login,
+    cookie_snapshot,
+    restore,
+)
 
 ORIGIN = "https://bridge.example"
 
 
 @pytest.fixture()
 def login_app(tmp_path, monkeypatch):
-    # The real development dummy primary-login handler finalizes/rotates the
-    # session and invokes the same after_login hook as passkeys.
-    monkeypatch.setattr(
-        framework,
-        "DEV_CONFIG_EDITS",
-        {
-            "  csp_nonce: false": "  csp_nonce: true",
-            "public_base_url: http://localhost:8090": f"public_base_url: {framework.SECURE_ORIGIN}",
-            "redirect_base_url: http://localhost:8080": f"redirect_base_url: {framework.SECURE_ORIGIN}",
-        },
-    )
-    yield from framework.build_skrift_app(tmp_path, monkeypatch)
-
-
-def csrf(page):
-    match = re.search(r'name="_csrf" value="([^"]+)"', page.text)
-    assert match is not None, page.text
-    return match.group(1)
-
-
-def real_login(client):
-    client.cookies.clear()
-    page = client.get("/auth/dummy/login", follow_redirects=False)
-    assert page.status_code == 200, page.text
-    result = client.post(
-        "/auth/dummy-login",
-        data={
-            "_csrf": csrf(page),
-            "email": "login-replay@example.com",
-            "name": "Replay regression",
-        },
-        follow_redirects=False,
-    )
-    assert result.status_code == 302, result.text
-    # Do not follow the redirect: any app request could hide lazy initialization.
-    earliest = cookie_snapshot(client)
-    return UUID(client.get_session_data()[SESSION_USER_ID]), earliest
-
-
-def cookie_snapshot(client):
-    return [
-        (cookie.name, cookie.value, cookie.domain, cookie.path)
-        for cookie in client.cookies.jar
-    ]
-
-
-def restore(client, cookies):
-    client.cookies.clear()
-    for name, value, domain, path in cookies:
-        client.cookies.set(name, value, domain=domain, path=path)
+    yield from build_login_app(tmp_path, monkeypatch)
 
 
 def signed(key, device, purpose, **fields):
@@ -263,3 +220,44 @@ def test_authenticated_legacy_cookie_missing_bridge_identity_cannot_initialize_o
         assert result.status_code == 401, result.text
         assert BRIDGE_BINDING_KEY not in client.get_session_data()
         assert family_count(client) == 0
+
+
+def test_failed_login_identity_persistence_returns_no_authenticated_cookie(
+    login_app, monkeypatch
+):
+    from buildapp import bridge_http_login
+
+    def unavailable_database(request):
+        raise RuntimeError("isolated login identity persistence failure")
+
+    with framework_client(login_app, raise_server_exceptions=False) as client:
+        page = client.get("/auth/dummy/login", follow_redirects=False)
+        monkeypatch.setattr(
+            bridge_http_login, "auth_session_maker", unavailable_database
+        )
+        result = client.post(
+            "/auth/dummy-login",
+            data={
+                "_csrf": csrf(page),
+                "email": "failed-login@example.com",
+                "name": "Failed identity persistence",
+            },
+            follow_redirects=False,
+        )
+        assert result.status_code == 500, result.text
+        session = client.get_session_data()
+        assert SESSION_USER_ID not in session
+        assert BRIDGE_BINDING_KEY not in session
+        assert (
+            client.post(
+                "/api/bridge-discovery/challenges", json={"origin": ORIGIN}
+            ).status_code
+            == 401
+        )
+
+        async def identities(db):
+            from buildapp.models import BridgeHttpClient
+
+            return await db.scalar(select(func.count()).select_from(BridgeHttpClient))
+
+        assert framework.on_database(client, identities) == 0

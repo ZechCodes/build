@@ -1,6 +1,7 @@
 """The production adapter carries the same authority rules as service calls."""
 
 import hashlib
+import secrets
 from uuid import UUID
 
 from litestar.testing import TestClient
@@ -14,8 +15,28 @@ from buildapp.db_test_support import (
     session_backend_config,
     sign_in_member,
 )
-from buildapp.models import BridgeHttpFamily
+from buildapp.models import BridgeHttpFamily, BridgeHttpClient
+from buildapp.desktop_auth import BRIDGE_ACCOUNT_KEY, BRIDGE_BINDING_KEY
+from buildapp.token_hash import token_hash
 from buildapp.test_bridge_http_auth import ISSUER, ORIGIN, paired, signed
+
+
+def authenticated_adapter_context(client):
+    """A hand-assembled adapter unit's explicit completed-login precondition."""
+    user = sign_in_member(client)
+    binding = "browser:" + secrets.token_urlsafe(32)
+    session = client.get_session_data()
+    session.update({BRIDGE_ACCOUNT_KEY: str(user), BRIDGE_BINDING_KEY: binding})
+    client.set_session_data(session)
+
+    async def seed():
+        async with client.app.state.make_session() as db:
+            db.add(BridgeHttpClient(user_id=user, binding_hash=token_hash(binding)))
+            await db.commit()
+
+    with client.portal() as portal:
+        portal.call(seed)
+    return user
 
 
 def test_routes_discover_renew_revoke_and_never_accept_client_authority(monkeypatch):
@@ -30,7 +51,7 @@ def test_routes_discover_renew_revoke_and_never_accept_client_authority(monkeypa
         session_config=session_backend_config(),
     )
     with TestClient(app=app, session_config=session_backend_config()) as client:
-        user = sign_in_member(client)
+        user = authenticated_adapter_context(client)
 
         async def seed():
             async with app.state.make_session() as db:
@@ -149,7 +170,7 @@ def test_discovery_routes_require_membership_and_json_and_bound_body(monkeypatch
             ).status_code
             == 401
         )
-        sign_in_member(client)
+        authenticated_adapter_context(client)
         assert (
             client.post(
                 "/api/bridge-discovery/challenges", json={"origin": "http://host"}

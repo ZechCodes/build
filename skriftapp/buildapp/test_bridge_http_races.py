@@ -26,7 +26,7 @@ async def test_competing_connections_cannot_mint_two_families(tmp_path):
         async with maker() as db:
             user, device, key = await registered(db)
             pending = await auth.create_discovery(
-                db, user, "client", ORIGIN, ISSUER, utc_now()
+                db, user, "browser:client", ORIGIN, ISSUER, utc_now()
             )
             proof = signed(
                 key,
@@ -46,7 +46,7 @@ async def test_competing_connections_cannot_mint_two_families(tmp_path):
                     minted = await auth.complete_discovery(
                         db,
                         user,
-                        "client",
+                        "browser:client",
                         pending["challenge_id"],
                         proof,
                         ISSUER,

@@ -13,7 +13,7 @@ from litestar.exceptions import NotAuthorizedException
 from buildapp import bridge_http_auth as auth
 from buildapp.clock import utc_now
 from buildapp.db_test_support import add_account, add_member
-from buildapp.models import Device
+from buildapp.models import Device, BridgeHttpClient
 
 ISSUER = "https://app.example"
 ORIGIN = "https://bridge.example:8443"
@@ -56,6 +56,23 @@ def signed(key, device, purpose, **fields):
 
 async def registered(db):
     user, device, key = await paired(db)
+    # Unit-service identities represent logins already completed by the supported
+    # authentication hook. No service call may invent a new browser identity.
+    db.add_all(
+        [
+            BridgeHttpClient(user_id=user, binding_hash=auth.hash_token(binding))
+            for binding in (
+                "browser:s",
+                "browser:session-one",
+                "browser:another-session",
+                "browser:client",
+                "browser:fresh",
+                "browser:session",
+                "browser:changed-key",
+            )
+        ]
+    )
+    await db.flush()
     challenge = await auth.registration_challenge(db, device.id, utc_now())
     proof = signed(
         key,
@@ -77,7 +94,7 @@ async def registered(db):
 async def test_discovery_mints_targeted_token_and_refresh_keeps_family(db):
     user, device, key = await registered(db)
     challenge = await auth.create_discovery(
-        db, user, "session-one", ORIGIN, ISSUER, utc_now()
+        db, user, "browser:session-one", ORIGIN, ISSUER, utc_now()
     )
     proof = signed(
         key,
@@ -90,7 +107,13 @@ async def test_discovery_mints_targeted_token_and_refresh_keeps_family(db):
         issuer=ISSUER,
     )
     minted = await auth.complete_discovery(
-        db, user, "session-one", challenge["challenge_id"], proof, ISSUER, utc_now()
+        db,
+        user,
+        "browser:session-one",
+        challenge["challenge_id"],
+        proof,
+        ISSUER,
+        utc_now(),
     )
     assertion = signed(
         key, device, "introspection", token_hash=auth.hash_token(minted["access_token"])
@@ -104,7 +127,7 @@ async def test_discovery_mints_targeted_token_and_refresh_keeps_family(db):
     refreshed = await auth.renew(
         db,
         user,
-        "session-one",
+        "browser:session-one",
         device.id,
         minted["family_id"],
         "epoch-one",
@@ -117,7 +140,7 @@ async def test_discovery_mints_targeted_token_and_refresh_keeps_family(db):
         await auth.renew(
             db,
             user,
-            "another-session",
+            "browser:another-session",
             device.id,
             minted["family_id"],
             "epoch-one",
@@ -130,7 +153,7 @@ async def test_discovery_mints_targeted_token_and_refresh_keeps_family(db):
 async def test_forwarded_proof_cross_account_and_replays_are_refused(db):
     user, device, key = await registered(db)
     challenge = await auth.create_discovery(
-        db, user, "s", "https://evil.example", ISSUER, utc_now()
+        db, user, "browser:s", "https://evil.example", ISSUER, utc_now()
     )
     proof = signed(
         key,
@@ -144,9 +167,11 @@ async def test_forwarded_proof_cross_account_and_replays_are_refused(db):
     )
     with pytest.raises(NotAuthorizedException):
         await auth.complete_discovery(
-            db, user, "s", challenge["challenge_id"], proof, ISSUER, utc_now()
+            db, user, "browser:s", challenge["challenge_id"], proof, ISSUER, utc_now()
         )
-    challenge = await auth.create_discovery(db, user, "s", ORIGIN, ISSUER, utc_now())
+    challenge = await auth.create_discovery(
+        db, user, "browser:s", ORIGIN, ISSUER, utc_now()
+    )
     proof = signed(
         key,
         device,
@@ -159,14 +184,20 @@ async def test_forwarded_proof_cross_account_and_replays_are_refused(db):
     )
     with pytest.raises(NotAuthorizedException):
         await auth.complete_discovery(
-            db, uuid4(), "s", challenge["challenge_id"], proof, ISSUER, utc_now()
+            db,
+            uuid4(),
+            "browser:s",
+            challenge["challenge_id"],
+            proof,
+            ISSUER,
+            utc_now(),
         )
     await auth.complete_discovery(
-        db, user, "s", challenge["challenge_id"], proof, ISSUER, utc_now()
+        db, user, "browser:s", challenge["challenge_id"], proof, ISSUER, utc_now()
     )
     with pytest.raises(NotAuthorizedException):
         await auth.complete_discovery(
-            db, user, "s", challenge["challenge_id"], proof, ISSUER, utc_now()
+            db, user, "browser:s", challenge["challenge_id"], proof, ISSUER, utc_now()
         )
 
 
@@ -196,7 +227,9 @@ def test_origin_canonicalizes_without_fetching():
 @pytest.mark.asyncio
 async def test_logout_endpoint_change_and_membership_revoke_invalidate_tokens(db):
     user, device, key = await registered(db)
-    challenge = await auth.create_discovery(db, user, "s", ORIGIN, ISSUER, utc_now())
+    challenge = await auth.create_discovery(
+        db, user, "browser:s", ORIGIN, ISSUER, utc_now()
+    )
     proof = signed(
         key,
         device,
@@ -208,9 +241,9 @@ async def test_logout_endpoint_change_and_membership_revoke_invalidate_tokens(db
         issuer=ISSUER,
     )
     minted = await auth.complete_discovery(
-        db, user, "s", challenge["challenge_id"], proof, ISSUER, utc_now()
+        db, user, "browser:s", challenge["challenge_id"], proof, ISSUER, utc_now()
     )
-    await auth.revoke_client(db, user, "s", utc_now())
+    await auth.revoke_client(db, user, "browser:s", utc_now())
     assertion = signed(
         key, device, "introspection", token_hash=auth.hash_token(minted["access_token"])
     )
@@ -221,7 +254,7 @@ async def test_logout_endpoint_change_and_membership_revoke_invalidate_tokens(db
         await auth.renew(
             db,
             user,
-            "s",
+            "browser:s",
             device.id,
             minted["family_id"],
             "epoch-one",
@@ -233,17 +266,19 @@ async def test_logout_endpoint_change_and_membership_revoke_invalidate_tokens(db
 @pytest.mark.asyncio
 async def test_logged_out_binding_cannot_start_fresh_discovery(db):
     user, _, _ = await registered(db)
-    await auth.revoke_client(db, user, "logged-out-session", utc_now())
+    await auth.revoke_client(db, user, "browser:logged-out-session", utc_now())
     with pytest.raises(NotAuthorizedException):
         await auth.create_discovery(
-            db, user, "logged-out-session", ORIGIN, ISSUER, utc_now()
+            db, user, "browser:logged-out-session", ORIGIN, ISSUER, utc_now()
         )
 
 
 @pytest.mark.asyncio
 async def test_introspection_assertion_replay_cannot_be_reused(db):
     user, device, key = await registered(db)
-    pending = await auth.create_discovery(db, user, "s", ORIGIN, ISSUER, utc_now())
+    pending = await auth.create_discovery(
+        db, user, "browser:s", ORIGIN, ISSUER, utc_now()
+    )
     proof = signed(
         key,
         device,
@@ -256,7 +291,7 @@ async def test_introspection_assertion_replay_cannot_be_reused(db):
     )
     token = (
         await auth.complete_discovery(
-            db, user, "s", pending["challenge_id"], proof, ISSUER, utc_now()
+            db, user, "browser:s", pending["challenge_id"], proof, ISSUER, utc_now()
         )
     )["access_token"]
     assertion = signed(key, device, "introspection", token_hash=auth.hash_token(token))
@@ -324,7 +359,7 @@ async def test_suspended_account_cannot_mint_or_verify_endpoint(db):
     (await db.get(User, user)).is_active = False
     await db.flush()
     with pytest.raises(NotAuthorizedException):
-        await auth.create_discovery(db, user, "s", ORIGIN, ISSUER, utc_now())
+        await auth.create_discovery(db, user, "browser:s", ORIGIN, ISSUER, utc_now())
     with pytest.raises(NotAuthorizedException):
         await auth.registration_challenge(db, device.id, utc_now())
 
@@ -335,7 +370,9 @@ async def test_endpoint_change_and_alpha_revoke_cannot_renew_old_family(db):
     from sqlalchemy import select
 
     user, device, key = await registered(db)
-    pending = await auth.create_discovery(db, user, "s", ORIGIN, ISSUER, utc_now())
+    pending = await auth.create_discovery(
+        db, user, "browser:s", ORIGIN, ISSUER, utc_now()
+    )
     proof = signed(
         key,
         device,
@@ -347,7 +384,7 @@ async def test_endpoint_change_and_alpha_revoke_cannot_renew_old_family(db):
         issuer=ISSUER,
     )
     minted = await auth.complete_discovery(
-        db, user, "s", pending["challenge_id"], proof, ISSUER, utc_now()
+        db, user, "browser:s", pending["challenge_id"], proof, ISSUER, utc_now()
     )
     challenge = await auth.registration_challenge(db, device.id, utc_now())
     proof = signed(
@@ -369,7 +406,7 @@ async def test_endpoint_change_and_alpha_revoke_cannot_renew_old_family(db):
         await auth.renew(
             db,
             user,
-            "s",
+            "browser:s",
             device.id,
             minted["family_id"],
             "epoch-one",
@@ -381,14 +418,16 @@ async def test_endpoint_change_and_alpha_revoke_cannot_renew_old_family(db):
     await db.flush()
     with pytest.raises(NotAuthorizedException):
         await auth.create_discovery(
-            db, user, "fresh", "https://new.example", ISSUER, utc_now()
+            db, user, "browser:fresh", "https://new.example", ISSUER, utc_now()
         )
 
 
 @pytest.mark.asyncio
 async def test_other_owned_device_cannot_introspect_target_token(db):
     user, device, key = await registered(db)
-    pending = await auth.create_discovery(db, user, "s", ORIGIN, ISSUER, utc_now())
+    pending = await auth.create_discovery(
+        db, user, "browser:s", ORIGIN, ISSUER, utc_now()
+    )
     proof = signed(
         key,
         device,
@@ -400,7 +439,7 @@ async def test_other_owned_device_cannot_introspect_target_token(db):
         issuer=ISSUER,
     )
     minted = await auth.complete_discovery(
-        db, user, "s", pending["challenge_id"], proof, ISSUER, utc_now()
+        db, user, "browser:s", pending["challenge_id"], proof, ISSUER, utc_now()
     )
     other_key = Ed25519PrivateKey.generate()
     other = Device(

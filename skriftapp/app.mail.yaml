@@ -18,6 +18,7 @@ controllers:
   - buildapp.auth_controller:BuildAuthController
   - skrift.admin.controller:AdminController
 middleware:
+  - buildapp.bridge_http_login_guard:BrowserLoginGuard
   - buildapp.bridge_http_policy:BuildBridgeCSPMiddleware
 models:
   - buildapp.models

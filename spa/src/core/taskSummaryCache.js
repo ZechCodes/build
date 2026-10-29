@@ -112,13 +112,20 @@ function preserveMarks(held, task) {
     const mark = newerTaskMarker(held?.[field], next[field]);
     if (isPresentTaskMarker(mark)) next[field] = mark;
   }
-  if (compareTaskMarkers(counterFloor(held), counterFloor(task)) > 0) for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) {
-    if (Object.hasOwn(held, field)) next[field] = held[field];
-  }
+  for (const { floor, fields } of counterFamilies) preserveCounterFamily(next, held, task, floor, fields);
   return next;
 }
 
 const counterFloor = (task) => newerTaskMarker(task?.read_through, task?.watch_started_after);
+const counterFamilies = [
+  { floor: counterFloor, fields: ["unread_count"] },
+  { floor: (task) => task?.read_through, fields: ["unread_mentions", "unread_agent_comments"] },
+];
+
+function preserveCounterFamily(next, held, task, floor, fields) {
+  if (compareTaskMarkers(floor(held), floor(task)) <= 0) return;
+  for (const field of fields) if (Object.hasOwn(held, field)) next[field] = held[field];
+}
 
 const markerFields = ["read_through", "watch_started_after", "dismissed_through"];
 const strongerMarks = (held, incoming) => markerFields.some((field) => compareTaskMarkers(incoming[field], held?.[field]) > 0);
@@ -139,7 +146,7 @@ const needsCounterRefresh = (held, incoming, olderContent) => held?.needs_unread
   && (olderContent || !coversMarks(held.task, incoming));
 
 const countersOvertaken = (held, incoming, read) => !olderRow(held, incoming, read)
-  && compareTaskMarkers(counterFloor(held?.task), counterFloor(incoming)) > 0;
+  && counterFamilies.some(({ floor }) => compareTaskMarkers(floor(held?.task), floor(incoming)) > 0);
 
 const olderRow = (held, task, read) => held?.read_order > read || Date.parse(held?.task?.updated_at) > Date.parse(task.updated_at);
 

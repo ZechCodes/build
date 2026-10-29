@@ -35,3 +35,27 @@ it.each([["tc-a-b", "te-a-c"], ["tc-\ue000", "te-\u{10000}"], [null, ""]])(
     expect(task.unread_count).toBe(0);
   },
 );
+
+it("uses fresh counters for equal-suffix markers with different prefixes", async () => {
+  await land(1, { ...row("tc-A", 1), updated_at: "2026-10-29T00:00:01Z" });
+  await land(2, { ...row("te-A", 2), updated_at: "2026-10-29T00:00:02Z" });
+  const held = await summaries.readSummaryQuery(scope, {});
+  expect(held.tasks[0]).toMatchObject({ read_through: "tc-A", unread_count: 2 });
+  expect(held.stale).toBe(false);
+});
+
+it("selects the counters whose combined read/watch floor covers crossed fields", async () => {
+  await land(1, { ...row(null, 5), read_through: "tc-10", watch_started_after: "te-15" });
+  await land(2, { ...row(null, 4), read_through: "tc-20", watch_started_after: "te-05" });
+  const held = await summaries.readSummaryQuery(scope, {});
+  expect(held.tasks[0]).toMatchObject({ read_through: "tc-20", watch_started_after: "te-15", unread_count: 4 });
+  expect(held.stale).toBe(false);
+});
+
+it("requires refresh when retaining older counters against a newer content snapshot", async () => {
+  await land(1, { ...row("tc-20", 1), updated_at: "2026-10-29T00:00:01Z" });
+  await land(2, { ...row("tc-10", 4), updated_at: "2026-10-29T00:00:02Z" });
+  const held = await summaries.readSummaryQuery(scope, {});
+  expect(held.tasks[0].unread_count).toBe(1);
+  expect(held.stale).toBe(true);
+});

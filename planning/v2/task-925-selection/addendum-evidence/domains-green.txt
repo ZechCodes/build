@@ -1,0 +1,8 @@
+test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) ... ok
+test_i64_prototype_acceptance_is_not_js_consumer_support (test_contract_domains.ConsumerDomainWitnesses.test_i64_prototype_acceptance_is_not_js_consumer_support) ... ok
+test_raw_intersection_does_not_implement_ascii_normalization (test_contract_domains.ConsumerDomainWitnesses.test_raw_intersection_does_not_implement_ascii_normalization) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.036s
+
+OK

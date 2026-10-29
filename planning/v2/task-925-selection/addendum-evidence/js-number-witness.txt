@@ -1,0 +1,1 @@
+{"node":"v26.12.1","parsed":[9007199254740991,9007199254740992,9007199254740992],"firstSafe":true,"largerAlias":true,"conclusion":"Existing Number/JSON parse path cannot distinguish the two larger canonical numbers; numeric-domain refusal is required."}

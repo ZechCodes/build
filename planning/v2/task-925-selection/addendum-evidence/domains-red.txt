@@ -1,0 +1,68 @@
+test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) ...
+  test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) (source='API', selected='api') ... ERROR
+  test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) (source='É', selected='é') ... ERROR
+  test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) (source='API\x00X', selected='api\x00x') ... ERROR
+  test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) (source='x\x00y', selected='x�y') ... ERROR
+  test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) (source='\x00', selected='\x00') ... ERROR
+  test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) (source='�', selected='�') ... ERROR
+test_i64_prototype_acceptance_is_not_js_consumer_support (test_contract_domains.ConsumerDomainWitnesses.test_i64_prototype_acceptance_is_not_js_consumer_support) ... ok
+test_raw_intersection_does_not_implement_ascii_normalization (test_contract_domains.ConsumerDomainWitnesses.test_raw_intersection_does_not_implement_ascii_normalization) ... ok
+
+======================================================================
+ERROR: test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) (source='API', selected='api')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_contract_domains.py", line 38, in test_declared_prenormalized_label_domain_witnesses
+    self.assertEqual(self.selected_total(ascii_fold(source), ascii_fold(selected)), expected)
+                                         ^^^^^^^^^^
+NameError: name 'ascii_fold' is not defined
+
+======================================================================
+ERROR: test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) (source='É', selected='é')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_contract_domains.py", line 38, in test_declared_prenormalized_label_domain_witnesses
+    self.assertEqual(self.selected_total(ascii_fold(source), ascii_fold(selected)), expected)
+                                         ^^^^^^^^^^
+NameError: name 'ascii_fold' is not defined
+
+======================================================================
+ERROR: test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) (source='API\x00X', selected='api\x00x')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_contract_domains.py", line 38, in test_declared_prenormalized_label_domain_witnesses
+    self.assertEqual(self.selected_total(ascii_fold(source), ascii_fold(selected)), expected)
+                                         ^^^^^^^^^^
+NameError: name 'ascii_fold' is not defined
+
+======================================================================
+ERROR: test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) (source='x\x00y', selected='x�y')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_contract_domains.py", line 38, in test_declared_prenormalized_label_domain_witnesses
+    self.assertEqual(self.selected_total(ascii_fold(source), ascii_fold(selected)), expected)
+                                         ^^^^^^^^^^
+NameError: name 'ascii_fold' is not defined
+
+======================================================================
+ERROR: test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) (source='\x00', selected='\x00')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_contract_domains.py", line 38, in test_declared_prenormalized_label_domain_witnesses
+    self.assertEqual(self.selected_total(ascii_fold(source), ascii_fold(selected)), expected)
+                                         ^^^^^^^^^^
+NameError: name 'ascii_fold' is not defined
+
+======================================================================
+ERROR: test_declared_prenormalized_label_domain_witnesses (test_contract_domains.ConsumerDomainWitnesses.test_declared_prenormalized_label_domain_witnesses) (source='�', selected='�')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-925-sel-9b989528-438b-4523-8eee-6cf53075e8bf/Build/planning/v2/task-925-selection/test_contract_domains.py", line 38, in test_declared_prenormalized_label_domain_witnesses
+    self.assertEqual(self.selected_total(ascii_fold(source), ascii_fold(selected)), expected)
+                                         ^^^^^^^^^^
+NameError: name 'ascii_fold' is not defined
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.013s
+
+FAILED (errors=6)

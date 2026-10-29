@@ -1,0 +1,42 @@
+New addendum only; original research packet821a605438 remains byte-for-byte unchanged.
+No optional timing run, retained-generation implementation or measurements.
+
+nice -n 10 python -m unittest discover -s planning/v2/task-925-selection -p 'test_contract_domains.py' -v
+  First exit1: test-only ascii_fold helper not yet defined (TDD red), domains-red.txt.
+  After defining declared pre-normalization adapter: exit0, 3 tests, domains-green.txt.
+  Explicit witnesses: API/api and API\0v2/api\0v2 match after ASCII-only fold;
+  É/é, whitespace and NUL/U+FFFD stay distinct; raw prototype case gap remains;
+  unchanged prototype accepts unsafe i64 values, which is not JS support.
+
+nice -n 10 python -m unittest discover -s planning/v2/task-925-selection -p 'test_*.py' -v
+  exit0, 25 tests -> all-tests.txt.
+
+nice -n 10 node --input-type=module (inline assertions)
+  JSON.parse('[9007199254740991,9007199254740992,9007199254740993]')
+  asserts first is safe; latter two are unsafe and equal after existing Number parse.
+  exit0 -> js-number-witness.txt. Node version recorded; no SPA gate/runtime change.
+
+nice -n 10 semgrep --config auto --error planning/v2/task-925-selection/test_contract_domains.py
+  exit0, no findings -> semgrep.txt.
+
+Original packet immutability assertion:
+  enumerate all 35 original tracked paths via git ls-tree821a605438;
+  git diff821a605438 -- each-original-path is empty -> original-packet-unchanged.txt.
+
+First staged diff --check exit2 on trailing whitespace in captured red unittest
+output; archived new text normalized, original /tmp log retained. Repeated staged
+diff --check exit0. No old evidence file was changed.
+
+Actual inline Node witness body:
+  import assert from 'node:assert/strict';
+  const values = JSON.parse('[9007199254740991,9007199254740992,9007199254740993]');
+  assert.equal(Number.isSafeInteger(values[0]), true);
+  assert.equal(Number.isSafeInteger(values[1]), false);
+  assert.equal(Number.isSafeInteger(values[2]), false);
+  assert.equal(values[1], values[2]);
+  console.log(JSON.stringify({node:process.version, parsed:values, firstSafe:true,
+    largerAlias:true, conclusion:'Existing Number/JSON parse path cannot distinguish the two larger canonical numbers; numeric-domain refusal is required.'}));
+
+nice -n 10 gitleaks dir --no-banner --redact planning/v2/task-925-selection
+  exit0, no leaks. Fresh independent Sol scope and architecture disposition:
+  approve narrow design handoff only, no implementation/dependency/cost approval.

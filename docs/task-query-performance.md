@@ -52,7 +52,149 @@ pages and current log allocation. Neither is an incremental allocator or logical
 payload measurement. First-after-reopen flags apply to the first metadata write;
 other first-operation kinds run after that metadata write.
 
-## Recorded debug evidence
+## Current canonical-source debug evidence: cf06f73a
+
+The canonical source-row and raw-ID marker repair changed production read/write
+paths after the earlier cohorts below. **The historical `622f449b` debug and
+`2c2b3f31f` release results do not qualify this repaired implementation.** Keep
+those values as revision-specific evidence, without interpreting cross-run
+variation as the causal cost of the repair.
+
+`/tmp/task900-cargo-canonical-full.log` explicitly records
+`source_head=cf06f73af8b94ee30d4671043fb35bc2a30cd930`,
+`command=nice -n 10 cargo test -- --nocapture` and `process_exit=0`.
+Both new default cost/carrier cases and all six inherited write cases passed;
+release timing remains ignored during this full correctness run. Values are
+absolute debug observations, with concurrent within-binary tests and shared
+process memory; this was not an isolated timing cohort.
+
+| New query cost operation | n | Wall ms, median [range] | Thread CPU ms, median [range] |
+| --- | ---: | ---: | ---: |
+| Empty startup | 1 | 60.137 | 58.054 |
+| Seed 100 assigned tasks | 1 | 263.325 | 260.459 |
+| Forced definition repair/backfill, 100 tasks | 1 | 193.308 | 191.473 |
+| Completed reopen | 3 | 16.064 [16.051–16.172] | 15.925 [15.907–16.029] |
+| Ordinary metadata write | 9 | 2.888 [2.513–4.899] | 2.808 [2.498–4.842] |
+| History append | 9 | 2.126 [2.041–2.859] | 2.112 [2.026–2.830] |
+| Read-marker write | 9 | 2.623 [2.573–3.488] | 2.598 [2.555–3.460] |
+| Workspace/tracker relation write | 9 | 2.513 [2.486–3.359] | 2.496 [2.471–3.319] |
+
+The three first-after-reopen metadata writes were 4.899, 4.873 and 4.817 ms.
+Raw reported RSS/HWM was 52,244 KiB after empty startup, 76,032 KiB after repair,
+and 75,704 KiB at the end; the largest reported value in this fixture was
+76,392 KiB. These raw `/proc` snapshots are retained as observed, without
+inferring a monotonic allocator peak or an isolated memory delta. DB+WAL+SHM
+lengths were 3,525,168 bytes after repair and 3,492,208 / 3,430,408 / 3,430,408
+bytes after successive cycles. Free pages and log allocation remain included.
+
+The unchanged inherited fixture retains the small (17-byte body) and huge
+(10,000 initial comments; 5,159,994 body bytes / 7,240,464 serialized canonical
+input bytes) definitions described below. Each added comment is 214 bytes.
+
+| Inherited Store operation | n per size | Small wall ms, median [range] | Huge wall ms, median [range] |
+| --- | ---: | ---: | ---: |
+| Initial migration/startup | 1 | 72.905 | 314.986 |
+| First five appends | 5 | 4.280 [3.711–11.578] | 163.189 [159.976–170.674] |
+| Completed reopen | 5 | 18.435 [16.631–51.229] | 16.432 [16.222–20.399] |
+| First append after reopen | 5 | 2.446 [2.336–4.656] | 160.386 [156.932–166.995] |
+| Warm append after reopen | 10 | 1.321 [1.288–1.551] | 160.228 [157.217–166.557] |
+| First changed-metadata plus comment write | 1 | 21.714 | 171.586 |
+| Warm changed-metadata plus comment write | 4 | 10.239 [8.793–11.166] | 158.285 [157.337–158.692] |
+| First changed write after schema invalidation | 5 | 10.428 [8.677–20.955] | 163.997 [163.392–167.604] |
+| Warm changed write after schema invalidation | 10 | 3.295 [3.117–5.016] | 158.520 [157.105–162.487] |
+
+Small/huge migration thread CPU was 67.201 / 309.942 ms respectively. Maximum
+reported raw HWM across the concurrent inherited write fixture was 96,844 KiB.
+These are public Store writes; the separate inherited raw-SQL cache-pressure
+probes do not substitute for them.
+
+Current debug carrier correctness observations, 100 samples per row, with the
+same max serialized-result byte semantics and lock contention described below:
+
+| Tasks | Method | Max result bytes | p99 ms | Max ms |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | tasks.counts | 7,652 | 13.402 | 14.193 |
+| 1 | tasks.lookup | 877 | 3.218 | 3.400 |
+| 100 | tasks.counts | 7,656 | 12.146 | 12.626 |
+| 100 | tasks.lookup | 888 | 3.449 | 3.451 |
+| 5,000 | tasks.counts | 7,758 | 13.232 | 13.334 |
+| 5,000 | tasks.lookup | 892 | 3.286 | 3.287 |
+
+## Current canonical-source isolated release evidence: cf06f73a
+
+Both freshly built release gates passed at exact source
+`cf06f73af8b94ee30d4671043fb35bc2a30cd930`. The parent recorded build exit **0**
+in `/tmp/task900-release-canonical-build.log`; the direct-run logs
+`/tmp/task900-release-canonical-summary.log` and
+`/tmp/task900-release-canonical-query.log` each explicitly record the source
+head, binary SHA-256, exact command and `process_exit=0`. All owned builds,
+scans and tests stopped before the serial direct runs. Each gate ran once,
+without retries. Whole-machine idle was not independently established.
+
+Commands from `bridge/` (binary filenames were reused by Cargo; the content
+hashes distinguish this new cohort from the historical binaries below):
+
+```sh
+nice -n 10 cargo test --release --features testing --test bounded_task_query_perf --test bounded_task_carrier_perf --no-run
+nice -n 10 target/release/deps/bounded_task_carrier_perf-fe5c6190a1faf97e bounded_reads_carrier_max_and_p99_with_both_locks_held --ignored --exact --nocapture --test-threads=1
+nice -n 10 target/release/deps/bounded_task_query_perf-a9b710faaf70c464 aggregate_lookup_carrier_release_latency_gate --ignored --exact --nocapture --test-threads=1
+```
+
+| Current release executable | SHA-256 |
+| --- | --- |
+| `bounded_task_carrier_perf-fe5c6190a1faf97e` | `2d97de90d321ec9ad76741e32d5490d8776b37ba1bea1daa5b4866f4ca9d0678` |
+| `bounded_task_query_perf-a9b710faaf70c464` | `869d7d685166203b265c8eb4fa89e9d9f9065d57dbb123f0309e9b443252fdb7` |
+
+Each row below contains 100 serial requests while the actual app mutex, Store
+writer mutex and independent SQLite write lock are held. **Bytes is the maximum
+serialized result JSON size across those samples**, excluding the RPC and
+encryption envelopes. Result byte gates do not bound the entire encrypted
+frame. Timing includes carrier admission, matching encrypted response and client
+decode, excluding seed/setup. Both gates enforce every observed sample at most
+100 ms; summary/choice results must fit 1 MiB and aggregate/lookup results 64 KiB.
+
+All 12 summary/filter-choice scenarios (1,200 requests) passed:
+
+| Tasks | Scenario | Returned rows | Max result bytes | p99 ms | Max ms |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | Summary default limit 100 | 1 | 955 | 0.863 | 1.205 |
+| 1 | Summary limit 500 | 1 | 955 | 0.520 | 0.521 |
+| 1 | Summary absent-label filter | 0 | 283 | 0.219 | 0.236 |
+| 1 | Label filter choices | 2 | 79 | 0.205 | 0.223 |
+| 100 | Summary default limit 100 | 100 | 67,768 | 23.388 | 26.668 |
+| 100 | Summary limit 500 | 100 | 67,768 | 24.241 | 27.996 |
+| 100 | Summary absent-label filter | 0 | 285 | 6.836 | 7.149 |
+| 100 | Label filter choices | 100 | 1,351 | 0.478 | 0.558 |
+| 5,000 | Summary default limit 100 | 100 | 68,412 | 23.706 | 25.643 |
+| 5,000 | Summary limit 500 | 500 | 340,012 | 96.666 | 98.262 |
+| 5,000 | Summary absent-label filter | 0 | 513 | 27.049 | 27.192 |
+| 5,000 | Label filter choices | 100 | 1,351 | 0.533 | 0.563 |
+
+The largest observed summary sample was **98.262 ms**, with p99 **96.666 ms**
+and maximum result size **340,012 bytes** for the 5,000-task / 500-row fixture.
+Its **1.738 ms** margin below the gate is narrow. This pass does not demonstrate
+headroom under additional load, a universal bound for other fixture shapes, or
+performance equivalence to the historical cohort.
+
+All six populated-aggregate/identity-fallback lookup scenarios (600 requests)
+also passed:
+
+| Tasks | Method | Max result bytes | p99 ms | Max ms |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | tasks.counts | 7,652 | 1.332 | 1.535 |
+| 1 | tasks.lookup | 877 | 0.477 | 0.496 |
+| 100 | tasks.counts | 7,656 | 1.350 | 1.520 |
+| 100 | tasks.lookup | 888 | 0.490 | 0.525 |
+| 5,000 | tasks.counts | 7,758 | 1.430 | 1.480 |
+| 5,000 | tasks.lookup | 892 | 0.503 | 0.554 |
+
+The aggregate/lookup cohort's maximum was 1.535 ms (one-task counts); maximum
+p99 was 1.430 ms (5,000-task counts), and maximum result size was 7,758 bytes.
+Lookup's maximum was 0.554 ms. These are absolute fixture observations, not a
+causal comparison with #890, the exact base, or either historical cohort.
+They do not waive startup, storage or write costs recorded above.
+
+## Historical debug evidence: 622f449b
 
 The completed full-suite log `/tmp/task900-cargo-final-fixed.log` records source
 `622f449bffadef4b2f3046b61288c53d2a307ff9`; the parent recorded process exit **0**.
@@ -121,9 +263,9 @@ passed, with no 100 ms performance assertion in this mode):
 | 5,000 | tasks.counts | 7,758 | 12.009 | 12.677 |
 | 5,000 | tasks.lookup | 892 | 3.085 | 3.215 |
 
-## Completed isolated release evidence
+## Historical isolated release evidence: 2c2b3f31f
 
-Both required gates passed at exact source
+For this historical cohort, both required gates passed at exact source
 `2c2b3f31fbcd797681747af6f0f16e603085455d`. The build and both direct-executable
 processes exited **0**, as recorded by the parent. Logs are
 `/tmp/task900-release-build.log`, `/tmp/task900-release-summary.log` and

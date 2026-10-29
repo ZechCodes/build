@@ -160,6 +160,28 @@ pub(super) fn remove(conn: &Connection, id: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
+const QUERY_FACT_REFRESH: &str = r#"INSERT INTO tracker_task_query_facts
+ SELECT task_id,project_key,number,COALESCE(?3,0),
+ ?4,
+ CASE json_extract(record,'$.priority') WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END,
+ ?5,unfinished,watched,
+ unfinished AND (user_ready OR (watched AND COALESCE(json_extract(record,'$.unread_mentions'),0)>0)),
+ unfinished AND (?11 OR user_ready OR
+ (watched AND COALESCE(json_extract(record,'$.unread_count'),0)>0 AND COALESCE(json_extract(record,'$.unread_agent_comments'),0)>0
+ AND CASE WHEN ?9 IS NULL THEN
+ EXISTS(SELECT 1 FROM tracker_task_summary_facts f INDEXED BY tracker_summary_meaningful WHERE f.task_id=s.task_id AND f.meaningful=1)
+ ELSE EXISTS(SELECT 1 FROM tracker_task_summary_facts f INDEXED BY tracker_summary_meaningful WHERE f.task_id=s.task_id AND f.meaningful=1 AND f.ulid>?9) END)),
+ blocked,(?12 IS NOT NULL OR ?15),
+ undelivered,?2,
+ ?13,
+ CASE WHEN unfinished THEN COALESCE(json_extract(record,'$.unread_count'),0) ELSE 0 END,
+ CASE WHEN ?12='agent' AND length(CAST(?13 AS BLOB))>0 THEN ?13 END,?6,?7,?8,?12,?16
+ FROM (SELECT *,?10 unfinished,
+ COALESCE(json_extract(record,'$.watched'),0) watched,COALESCE(json_extract(record,'$.dependencies.blocked'),0) blocked,
+ COALESCE(?12='user',0) AND NOT COALESCE(json_extract(record,'$.dependencies.blocked'),0) user_ready,
+ ?14 undelivered
+ FROM tracker_task_summaries WHERE task_id=?1) s"#;
+
 pub(super) fn refresh(conn: &Connection, id: &str) -> Result<(), StoreError> {
     let record: Option<String> = conn
         .query_row(
@@ -194,26 +216,24 @@ pub(super) fn refresh(conn: &Connection, id: &str) -> Result<(), StoreError> {
         "DELETE FROM tracker_task_query_facts WHERE task_id=?1",
         [id],
     )?;
-    conn.execute(r#"INSERT INTO tracker_task_query_facts
- SELECT task_id,project_key,number,COALESCE(?3,0),
- ?4,
- CASE json_extract(record,'$.priority') WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END,
- ?5,unfinished,watched,
- unfinished AND (user_ready OR (watched AND COALESCE(json_extract(record,'$.unread_mentions'),0)>0)),
- unfinished AND (?11 OR user_ready OR
- (watched AND COALESCE(json_extract(record,'$.unread_count'),0)>0 AND COALESCE(json_extract(record,'$.unread_agent_comments'),0)>0
- AND EXISTS(SELECT 1 FROM tracker_task_summary_facts f WHERE f.task_id=s.task_id AND f.meaningful=1
- AND (?9 IS NULL OR f.ulid>?9)))),
- blocked,(?12 IS NOT NULL OR ?15),
- undelivered,?2,
- ?13,
- CASE WHEN unfinished THEN COALESCE(json_extract(record,'$.unread_count'),0) ELSE 0 END,
- CASE WHEN ?12='agent' AND length(CAST(?13 AS BLOB))>0 THEN ?13 END,?6,?7,?8,?12,?16
- FROM (SELECT *,?10 unfinished,
- COALESCE(json_extract(record,'$.watched'),0) watched,COALESCE(json_extract(record,'$.dependencies.blocked'),0) blocked,
- COALESCE(?12='user',0) AND NOT COALESCE(json_extract(record,'$.dependencies.blocked'),0) user_ready,
- ?14 undelivered
- FROM tracker_task_summaries WHERE task_id=?1) s"#,params![id,review_mode,millis(updated).unwrap_or(0),millis(anchor).unwrap_or(i64::MAX),millis(done),invalid(updated),invalid(anchor),invalid(done),source.dismissed_ulid,source.unfinished,source.in_review,source.assignee_kind,source.assignee_agent_id,source.pending_present,source.pending_held,source.invalid_markers])?;
+    conn.prepare_cached(QUERY_FACT_REFRESH)?.execute(params![
+        id,
+        review_mode,
+        millis(updated).unwrap_or(0),
+        millis(anchor).unwrap_or(i64::MAX),
+        millis(done),
+        invalid(updated),
+        invalid(anchor),
+        invalid(done),
+        source.dismissed_ulid,
+        source.unfinished,
+        source.in_review,
+        source.assignee_kind,
+        source.assignee_agent_id,
+        source.pending_present,
+        source.pending_held,
+        source.invalid_markers
+    ])?;
     contribute(conn, id, 1)?;
     advance(conn)
 }
@@ -275,3 +295,7 @@ fn millis(timestamp: QueryTimestamp) -> Option<i64> {
 fn invalid(timestamp: QueryTimestamp) -> bool {
     matches!(timestamp, QueryTimestamp::Unsupported)
 }
+
+#[cfg(test)]
+#[path = "query_projection_cost_tests.rs"]
+mod cost_tests;

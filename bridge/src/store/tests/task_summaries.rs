@@ -1607,3 +1607,6 @@ mod query_attention;
 
 #[path = "task_summaries/query_timestamp_sources.rs"]
 mod query_timestamp_sources;
+
+#[path = "task_summaries/query_choices.rs"]
+mod query_choices;

@@ -238,7 +238,7 @@ impl ReadTransaction<'_> {
         limit: usize,
     ) -> Result<Vec<TaskFilterChoice>, StoreError> {
         let mut statement = self.connection().prepare(
-            "SELECT CASE WHEN length(CAST(choice_key AS BLOB))<=512 THEN choice_key ELSE '' END, CASE WHEN length(CAST(choice_key AS BLOB))<=512 AND length(CAST(value AS BLOB))<=1024 THEN value END FROM tracker_task_filter_values
+            "SELECT CASE WHEN length(CAST(choice_key AS BLOB))<=CASE WHEN ?2='assignee' THEN 1024 ELSE 512 END THEN choice_key ELSE '' END, CASE WHEN length(CAST(choice_key AS BLOB))<=CASE WHEN ?2='assignee' THEN 1024 ELSE 512 END AND length(CAST(value AS BLOB))<=1024 THEN value END FROM tracker_task_filter_values
              WHERE project_key = ?1 AND dimension = ?2 AND choice_key > ?3
              ORDER BY choice_key LIMIT ?4",
         )?;
@@ -255,7 +255,7 @@ impl ReadTransaction<'_> {
             let (key, raw) = row?;
             let raw = raw.ok_or_else(|| {
                 StoreError::TaskSummaryInvalid(
-                    "filter choice key exceeds 512 bytes or value exceeds 1024 bytes".into(),
+                    "filter choice key exceeds its bound (1024 assignee, 512 otherwise) or value exceeds 1024 bytes".into(),
                 )
             })?;
             let value = super::tracker::decode(&raw, "tracker_task_filter_choices", project)?;
@@ -294,7 +294,7 @@ fn validate_filter_choice(dimension: &str, value: &Value) -> Result<(), StoreErr
 }
 
 fn valid_assignee_choice(value: &Value) -> bool {
-    if value.as_str() == Some("none") {
+    if matches!(value.as_str(), Some("none" | "any")) {
         return true;
     }
     let Ok(assignee) = serde_json::from_value::<crate::tracker::Assignee>(value.clone()) else {

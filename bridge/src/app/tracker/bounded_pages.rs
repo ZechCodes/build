@@ -55,7 +55,7 @@ impl<'a> BoundedPage<'a> {
             .and_then(|cursor| URL_SAFE_NO_PAD.decode(cursor).ok())
             .ok_or(unreadable)?;
         let parts: Vec<String> = serde_json::from_slice(&raw).map_err(|_| unreadable)?;
-        if parts.len() != 2 || parts[0].len() > 512 || parts[1] != self.signature(&parts[0]) {
+        if parts.len() != 2 || parts[0].len() > 1024 || parts[1] != self.signature(&parts[0]) {
             return Err(unreadable.into());
         }
         Ok(parts[0].clone())

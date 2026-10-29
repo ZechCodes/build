@@ -46,6 +46,11 @@ fn desired(conn: &Connection, id: &str) -> Result<Choices, StoreError> {
         super::super::super::tracker::decode(&record, "tracker_task_summaries", id)?;
     let context: Value =
         super::super::super::tracker::decode(&context, "tracker_task_summaries/context", id)?;
+    let (labels, status, kind, agent_id, pending): (String, String, Option<String>, Option<String>, bool) = conn.query_row(
+        "SELECT labels_json,status,assignee_kind,assignee_agent_id,pending_present FROM tracker_task_query_sources WHERE task_id=?1",
+        [id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)))?;
+    let labels: Value =
+        super::super::super::tracker::decode(&labels, "tracker_task_query_sources/labels", id)?;
     let mut result = BTreeMap::new();
     let mut add = |dimension: &str, key: String, value: Value| {
         let encoded = value.to_string();
@@ -60,7 +65,7 @@ fn desired(conn: &Connection, id: &str) -> Result<Choices, StoreError> {
     };
     if record["_summary_invalid_labels"].as_bool() == Some(true) {
         add("label", format!("!invalid:{id}"), Value::Null);
-    } else if let Some(labels) = record["labels"].as_array() {
+    } else if let Some(labels) = labels.as_array() {
         for label in labels.iter().filter_map(Value::as_str) {
             add(
                 "label",
@@ -70,14 +75,18 @@ fn desired(conn: &Connection, id: &str) -> Result<Choices, StoreError> {
         }
     }
     for dimension in ["status", "state"] {
-        let value = record[dimension].clone();
+        let value = if dimension == "status" {
+            Value::String(status.clone())
+        } else {
+            record[dimension].clone()
+        };
         add(
             dimension,
             value.as_str().unwrap_or_default().to_string(),
             value,
         );
     }
-    let assignee = assignee(&record, &context);
+    let assignee = assignee(kind.as_deref(), agent_id.as_deref(), pending, &context);
     let key = if assignee.is_null() {
         format!("!invalid:{id}")
     } else {
@@ -87,17 +96,14 @@ fn desired(conn: &Connection, id: &str) -> Result<Choices, StoreError> {
     Ok(result)
 }
 
-fn assignee(record: &Value, context: &Value) -> Value {
+fn assignee(kind: Option<&str>, agent_id: Option<&str>, pending: bool, context: &Value) -> Value {
     if context["invalid_assignee"].as_i64() == Some(1) {
         return Value::Null;
     }
-    let assignee = &record["assignee"];
-    if assignee.is_null() {
-        Value::String("none".into())
-    } else if assignee["kind"].as_str() == Some("agent") {
-        serde_json::json!({"agent_id":assignee["agent_id"],"kind":"agent"})
-    } else {
-        assignee.clone()
+    match kind {
+        None => Value::String(if pending { "any" } else { "none" }.into()),
+        Some("agent") => serde_json::json!({"agent_id":agent_id,"kind":"agent"}),
+        Some(kind) => serde_json::json!({"kind":kind}),
     }
 }
 

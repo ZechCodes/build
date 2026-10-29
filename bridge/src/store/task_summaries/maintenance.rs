@@ -95,8 +95,8 @@ pub(super) fn task_written_unchecked(conn: &Connection, task: &Task) -> Result<(
     keyed(conn, &statements().card, &task.id)?;
     keyed(conn, &statements().metadata, &task.id)?;
     keyed(conn, &statements().dependencies, &task.id)?;
-    sql::refresh_choices(conn, &task.id)?;
     query_sources::metadata_refresh(conn, &task.id)?;
+    sql::refresh_choices(conn, &task.id)?;
     query_projection::refresh(conn, &task.id)?;
     query_projection::refresh_relations(conn, task)?;
     query_projection::refresh_review_mode(conn, &task.id)
@@ -165,6 +165,7 @@ pub(crate) fn metadata_refresh(conn: &Connection, id: &str) -> Result<(), StoreE
     if ready(conn)? {
         keyed(conn, &statements().metadata, id)?;
         query_sources::metadata_refresh(conn, id)?;
+        sql::refresh_choices(conn, id)?;
         query_projection::refresh(conn, id)?;
         query_projection::refresh_review_mode(conn, id)?;
     }

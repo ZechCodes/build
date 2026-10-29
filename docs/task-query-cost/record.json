@@ -1,0 +1,24 @@
+{
+  "runner_exit": 0,
+  "parser_exit": 0,
+  "direct_processes": 24,
+  "all_direct_process_exits": 0,
+  "raw_operation_samples": 552,
+  "timing_reruns": 0,
+  "runner_sha256": "27ddc94566aa75bc390e3ef26af180bf08f4f26bb00fa381a133881e4a9ab724",
+  "full_raw_log": "/tmp/task900-cost-cohort.log",
+  "full_raw_log_sha256": "e704bfe8beed8a09fb0978b7e648de297c39135dc3d4619c96622bde1b884641",
+  "ordered_raw_logs": "/tmp/task900-cost-cohort-55784b05",
+  "inherited_runner_niceness": 10,
+  "child_command_nice_increment": 10,
+  "effective_child_niceness": "not directly sampled; Linux clamp implies19 for inherited10 + increment10",
+  "cost_acceptance": "not granted by measurement; explicit lead disposition required",
+  "limits": [
+    "No matched RSS or storage fixture",
+    "No matched empty-store startup fixture",
+    "No whole-machine idle proof or OS cache flush",
+    "Fresh process does not imply disk-cold cache",
+    "Three process rounds; within-process writes share state",
+    "Wall and CPU values do not establish a causal explanation for the observed deltas"
+  ]
+}

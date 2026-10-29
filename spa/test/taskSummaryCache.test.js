@@ -24,6 +24,31 @@ it("canonicalizes sets and aliases while preserving opaque ID and non-ASCII labe
   expect(summaries.summaryQueryAddress(scope, a)).not.toEqual(summaries.summaryQueryAddress(scope, { ...b, labels: ["é", "api"] }));
   expect(summaries.summaryQueryAddress(scope, a)).not.toEqual(summaries.summaryQueryAddress(scope, { ...b, assignees: [{ kind: "agent", agent_id: "agenta" }, "none"] }));
   expect(summaries.summaryQueryAddress(scope, { states: [] })).toEqual(summaries.summaryQueryAddress(scope, {}));
+  expect(summaries.summaryQueryAddress(scope, { label: " api " })).not.toEqual(summaries.summaryQueryAddress(scope, { label: "api" }));
+  expect(summaries.summaryQueryAddress(scope, { state: " open " })).not.toEqual(summaries.summaryQueryAddress(scope, { state: "open" }));
+});
+
+it("checks action acceptance in the same transaction as invalidation and preserves full-task absences", async () => {
+  await land(await open(), page([row("task-1", { watched: true, done_at: "yesterday" })]));
+  expect(await summaries.writeSummaryTask(scope, { id: "task-1", title: "rejected" }, 2, { accept: () => false })).toBe(false);
+  expect((await summaries.readSummaryQuery(scope, query)).stale).toBe(false);
+  await summaries.writeSummaryTask(scope, { id: "task-1", title: "confirmed", status: "ready" }, 3, { fullTask: true });
+  expect((await summaries.readSummaryQuery(scope, query)).tasks[0]).toMatchObject({ title: "confirmed", watched: false, done_at: null });
+});
+
+it("accepts explicit newer review authority on an immediate patch", async () => {
+  const review = (version) => ({ task_id: "task-1", version, status: "open" });
+  await land(await open(), page([row("task-1", { review_summary: review(1) })]));
+  await summaries.writeSummaryTask(scope, { id: "task-1", review_summary: review(2) }, 2);
+  expect((await summaries.readSummaryQuery(scope, query)).tasks[0].review_summary.version).toBe(2);
+});
+
+it("allows an older cross-query read to advance review version without rolling ordinary fields back", async () => {
+  const review = (version) => ({ task_id: "task-1", version, status: "open" });
+  await land(await open(query, 3), page([row("task-1", { title: "new title", review_summary: review(1) })]));
+  const other = { states: ["closed"] };
+  await land(await open(other, 1), page([row("task-1", { title: "old title", review_summary: review(2) })]));
+  expect((await summaries.readSummaryQuery(scope, query)).tasks[0]).toMatchObject({ title: "new title", review_summary: { version: 2 } });
 });
 
 it("normalizes entities independently from query membership and reads only cached records", async () => {

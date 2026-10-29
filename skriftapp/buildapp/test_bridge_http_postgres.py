@@ -12,10 +12,11 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from litestar.exceptions import NotAuthorizedException
-from sqlalchemy import func, select, text
+from litestar.exceptions import NotAuthorizedException, TooManyRequestsException
+from sqlalchemy import DDL, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.exc import DBAPIError
 
 from buildapp import bridge_http_auth as auth
 from buildapp.bridge_http_models import (
@@ -51,7 +52,16 @@ async def postgres_sessions():
             assert (
                 int(await connection.scalar(text("SHOW server_version_num"))) >= 160000
             )
-            await connection.execute(text(f'CREATE DATABASE "{database}"'))
+            await connection.execute(
+                DDL(
+                    "CREATE DATABASE %(database)s",
+                    context={
+                        "database": connection.dialect.identifier_preparer.quote_identifier(
+                            database
+                        )
+                    },
+                )
+            )
         await create_skrift_tables(engine)
         yield async_sessionmaker(engine, expire_on_commit=False)
     finally:
@@ -61,7 +71,14 @@ async def postgres_sessions():
                 isolation_level="AUTOCOMMIT"
             )
             await connection.execute(
-                text(f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
+                DDL(
+                    "DROP DATABASE IF EXISTS %(database)s WITH (FORCE)",
+                    context={
+                        "database": connection.dialect.identifier_preparer.quote_identifier(
+                            database
+                        )
+                    },
+                )
             )
         await admin.dispose()
 
@@ -245,7 +262,13 @@ async def test_postgres_endpoint_predecessor_cas_rejects_the_losing_registration
         minted = await complete(db, user, binding, pending, proof)
         proofs = []
         for epoch in ("epoch-two", "epoch-three"):
-            challenge = await auth.registration_challenge(db, device.id, utc_now())
+            challenge = await auth.registration_challenge(
+                db,
+                device.id,
+                signed(key, device, "registration-challenge"),
+                ISSUER,
+                utc_now(),
+            )
             proofs.append(
                 signed(
                     key,
@@ -346,7 +369,10 @@ async def test_postgres_logout_serializes_with_issuance_and_revokes_every_grant(
             await second.rollback()
     async with maker() as db:
         client = await db.scalar(
-            select(BridgeHttpClient).where(BridgeHttpClient.user_id == user)
+            select(BridgeHttpClient).where(
+                BridgeHttpClient.user_id == user,
+                BridgeHttpClient.binding_hash == auth.hash_token(binding),
+            )
         )
         assert client.revoked_at is not None
         families = (await db.scalars(select(BridgeHttpFamily))).all()
@@ -362,3 +388,160 @@ async def test_postgres_logout_serializes_with_issuance_and_revokes_every_grant(
             await assert_inactive(db, device, key, token)
         with pytest.raises(NotAuthorizedException):
             await auth.create_discovery(db, user, binding, ORIGIN, ISSUER, utc_now())
+
+
+async def allocate(db, device, proof):
+    return await auth.registration_challenge(db, device.id, proof, ISSUER, utc_now())
+
+
+async def pending_registration_count(db, device):
+    return await db.scalar(
+        select(func.count())
+        .select_from(BridgeHttpChallenge)
+        .where(
+            BridgeHttpChallenge.device_id == device.id,
+            BridgeHttpChallenge.purpose == "registration",
+            BridgeHttpChallenge.consumed_at.is_(None),
+        )
+    )
+
+
+async def proof_replay_count(db, device, proof):
+    claims = auth.verify(proof, device, "registration-challenge", ISSUER, utc_now())
+    return await db.scalar(
+        select(func.count())
+        .select_from(BridgeHttpReplay)
+        .where(
+            BridgeHttpReplay.device_id == device.id,
+            BridgeHttpReplay.jti == claims["jti"],
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_postgres_duplicate_allocation_proof_mints_exactly_one_nonce(
+    postgres_sessions,
+):
+    maker = postgres_sessions
+    _, device, key, _ = await owner_with_login(maker)
+    proof = signed(key, device, "registration-challenge")
+    async with maker() as first, maker() as second:
+        first_pid = await first.scalar(text("SELECT pg_backend_pid()"))
+        second_pid = await second.scalar(text("SELECT pg_backend_pid()"))
+        allocated = await allocate(first, device, proof)
+        competing = asyncio.create_task(allocate(second, device, proof))
+        try:
+            await assert_blocked(maker, second_pid, first_pid)
+            await first.commit()
+            with pytest.raises(NotAuthorizedException):
+                await asyncio.wait_for(competing, timeout=5)
+            # Even a caller committing after catching the refusal cannot allocate.
+            await second.commit()
+        finally:
+            competing.cancel()
+            await asyncio.gather(competing, return_exceptions=True)
+            await first.rollback()
+            await second.rollback()
+    async with maker() as db:
+        assert await pending_registration_count(db, device) == 1
+        assert await proof_replay_count(db, device, proof) == 1
+        assert await db.get(BridgeHttpChallenge, UUID(allocated["challenge_id"]))
+
+
+@pytest.mark.asyncio
+async def test_postgres_distinct_allocation_proofs_cannot_race_past_eight_pending(
+    postgres_sessions,
+):
+    maker = postgres_sessions
+    _, device, key, _ = await owner_with_login(maker)
+    pending = []
+    async with maker() as db:
+        for _ in range(7):
+            pending.append(
+                await allocate(
+                    db, device, signed(key, device, "registration-challenge")
+                )
+            )
+        await db.commit()
+    accepted_proof = signed(key, device, "registration-challenge")
+    refused_proof = signed(key, device, "registration-challenge")
+    async with maker() as first, maker() as second:
+        first_pid = await first.scalar(text("SELECT pg_backend_pid()"))
+        second_pid = await second.scalar(text("SELECT pg_backend_pid()"))
+        await allocate(first, device, accepted_proof)
+        competing = asyncio.create_task(allocate(second, device, refused_proof))
+        try:
+            await assert_blocked(maker, second_pid, first_pid)
+            await first.commit()
+            with pytest.raises(TooManyRequestsException):
+                await asyncio.wait_for(competing, timeout=5)
+            await second.commit()
+        finally:
+            competing.cancel()
+            await asyncio.gather(competing, return_exceptions=True)
+            await first.rollback()
+            await second.rollback()
+    async with maker() as db:
+        assert await pending_registration_count(db, device) == 8
+        assert await proof_replay_count(db, device, accepted_proof) == 1
+        assert await proof_replay_count(db, device, refused_proof) == 0
+        spent = await db.get(BridgeHttpChallenge, UUID(pending[0]["challenge_id"]))
+        await auth._spend(db, spent, pending[0]["nonce"], utc_now())
+        await db.commit()
+        # Capacity refusal does not burn a valid proof; its later retry can spend.
+        await allocate(db, device, refused_proof)
+        await db.commit()
+    async with maker() as db:
+        assert await pending_registration_count(db, device) == 8
+        assert await proof_replay_count(db, device, refused_proof) == 1
+
+
+FAILURE_FUNCTION = DDL("""
+CREATE FUNCTION fail_nonce_allocation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'injected bridge nonce allocation failure'; END;
+$$
+""")
+IMMEDIATE_FAILURE = DDL("""
+CREATE TRIGGER fail_nonce_write BEFORE INSERT ON bridge_http_challenges
+FOR EACH ROW EXECUTE FUNCTION fail_nonce_allocation()
+""")
+COMMIT_FAILURE = DDL("""
+CREATE CONSTRAINT TRIGGER fail_nonce_write AFTER INSERT ON bridge_http_challenges
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION fail_nonce_allocation()
+""")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_at_commit", [False, True], ids=["write", "commit"])
+async def test_postgres_nonce_and_replay_are_atomic_when_database_write_or_commit_fails(
+    postgres_sessions, fail_at_commit
+):
+    maker = postgres_sessions
+    _, device, key, _ = await owner_with_login(maker)
+    proof = signed(key, device, "registration-challenge")
+    async with maker() as db:
+        await db.execute(FAILURE_FUNCTION)
+        await db.execute(COMMIT_FAILURE if fail_at_commit else IMMEDIATE_FAILURE)
+        await db.commit()
+        if fail_at_commit:
+            allocated = await allocate(db, device, proof)
+            assert allocated["nonce"]
+            with pytest.raises(DBAPIError):
+                await db.commit()
+            await db.rollback()
+        else:
+            with pytest.raises(DBAPIError):
+                await allocate(db, device, proof)
+            # The function's SAVEPOINT must preserve the caller's ability to commit.
+            await db.commit()
+    async with maker() as db:
+        assert await pending_registration_count(db, device) == 0
+        assert await proof_replay_count(db, device, proof) == 0
+        await db.execute(DDL("DROP TRIGGER fail_nonce_write ON bridge_http_challenges"))
+        await db.commit()
+        await allocate(db, device, proof)
+        await db.commit()
+    async with maker() as db:
+        assert await pending_registration_count(db, device) == 1
+        assert await proof_replay_count(db, device, proof) == 1

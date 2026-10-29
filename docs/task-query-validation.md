@@ -369,3 +369,62 @@ independent Astra disposition on the complete final head must close the two
 new range/choice findings; original `0d3` findings remain separately recorded as
 closed at the `484` inspection. Final review dispositions and pre-push scan are
 recorded on #900 rather than inferred from this implementation ledger.
+
+
+## Failed serial gate and descendant validation
+
+The coordinator serial gate `e4a105b5125b01a96030233a91f18e25bfb4cc02` failed:
+Cargo exited **101** (6,003 passed, 1 failed, 24 ignored; primary RunFailed count
+expected 2/observed 1, followed by a secondary PoisonError), and SPA exited
+**1** (11,973 passed, 1 failed; sender SQL-read method parity omitted counts and
+lookup). Other attachment-reported gate components exited 0. The serial attempt
+from reviewed `777322d0f` against unchanged dev `12b8f869` was not pushed. Its
+old reviews and accepted cost evidence remain attributed to that head; this
+failed user gate is not relabeled as passing.
+
+[The serial-gate record](task-query-serial-gate.md) preserves the original gate,
+SQL credit repair `228d921e3`, and identical-overlay controlled runtime proof on
+base and candidate. Both controlled runs exited **101** only at the old immediate
+expected-2/observed-1 assertion after cleanup, without poisoning. They show the
+same admissible model/pump-before-ticket-settlement ordering, not the unique
+schedule or incidence of the original gate failure and not an explanation for
+an earlier 209 ms `agent.deliver` frame. The semantic test synchronization repair and
+cfg(test)-only seam are committed as `3a04e3926072b0b756f43c43923e2ffe70bb928a`.
+Their whole seven-case `adk_turn_failures` focused run exited 0 in 60.90 seconds;
+its binary SHA-256 is `d5eaa40e8f1f22b7dc0deb836ac5203898fe6f904ab4ad82268cdc3af5152237`.
+
+The validation map now explicitly covers bridge `SQL_READ_METHODS` → SPA sender
+`SQL_READ_METHODS` parity **and** actual mixed eight-credit admission/release for
+counts/lookup at interactive/background priority across carriers. This shared
+dispatcher gate applies even while the new bounded consumers are held. Source
+commit `228d921e3` has observed RED baseline 1/25 and expanded 4/27 failures,
+then **85/85 focused SPA cases passing**, plus focused ESLint/Semgrep exit 0;
+commands, source boundaries and logs are in the serial-gate record. This is an
+integration finding in a category also encountered in #890, not a reason to
+waive the cross-tier gate.
+
+The first planned focused compile at
+`/tmp/task900-managed-semantic-sync-green.log` was cancelled with actual exit
+**130 before test execution** after independent review caught a moved
+post-coordinator-window input assertion; it is not a pass. The repaired source
+keeps strict failure/comment/input assertions both before and after the
+original coordinator-two-notice wait. The fresh whole `adk_turn_failures`
+focused run at `/tmp/task900-managed-semantic-sync-final-green.log` exited
+**0**, **7 passed**. Full Cargo/lint/format/scans and fresh independent
+exact-head scope/code/Astra dispositions are required for the frozen final
+candidate; their source SHA, commands and actual exits are recorded on #900.
+Affected SPA suites are the requested SPA scope;
+no complete-SPA rerun is implied. No new read-latency run is required for a
+confirmed cfg(test)-only runtime seam/test repair under the lead's stated
+boundary. Existing consumer activation holds and exact backend semantics remain
+unchanged.
+
+
+Zech's scoped cost acceptance for exact `777322d0f` is preserved at
+#887/c/tc-01M64M7EMJ8JEB717BMD9SB3SC, resolving
+#887/c/tc-01M64CAH9X97A98FYEJAZCAS1V. Its measurement limits and added costs
+remain documented. The serial repair changes client admission and test-only
+Rust synchronization, with no change to non-test Rust query/Store behavior;
+this source boundary explains retaining the existing read-latency evidence,
+not a new timing or blanket acceptance claim. Final reviewed-descendant
+readiness and serial integration remain separate from that scoped decision.

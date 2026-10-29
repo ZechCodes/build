@@ -1,0 +1,254 @@
+# Canonical sources for bounded task-query predicates
+
+This audit follows the request-changes review of
+`0d3e81643f66846db76258809ff4888a1c8a3d76` against base
+`12b8f869bd94e259666df69f1a8c0cde5c695982`. Findings below refer to that exact
+reviewed head; the production repair is now committed as
+`eca9e4692` (sources) and
+`f2769d34ddf9cfb9614a6b2d475b6b2f992d7f32` (query/RPC integration). This is an implementation
+source audit, not independent final scope/code/Astra approval. The integration symbols below have been inspected in the working repair source.
+Focused regression outcomes below belong to the frozen integrated working-tree
+repair and emitted test binary, before production commits; they are not
+clean-head whole-suite runs. Full/lint/release gates and independent final
+reviews remain separate requirements.
+
+## Preserved review findings
+
+Astra requested changes for two independent P2 findings at `0d3e81643`:
+
+1. **Unsupported canonical timestamps became supported.**
+   `bridge/src/store/task_summaries/query_projection.rs:156–159` parsed display
+   summary values. `sql.rs:152–154` and `sql/activity.rs:9–10` applied SQLite text
+   `substr`, which stops at embedded NUL. A canonical timestamp such as
+   `2026-10-01T00:00:00Z\u0000junk` could become a supported timestamp; a leading
+   NUL could become Unknown. Classification must precede display normalization
+   and survive every retained-state refresh and repair.
+2. **Lossy assignee IDs corrupted exact aggregates and exclusion.**
+   `query_projection.rs:189–191` used an ID shortened by `sql.rs:117`.
+   `AgentA\u0000suffix` could contribute to `AgentA`; `\u0000AgentA` could
+   contribute to the empty project bucket and count the task twice. Both inputs
+   fit the existing nonempty/128-byte ID boundary. Exact positive/exclusion
+   predicates and bucket keys must use the canonical identity.
+
+These findings are not replaced by the earlier code/scope approvals. They stay
+request-changes findings until repairs, regressions and fresh independent
+exact-head reviews establish otherwise. The original timestamp-domain and
+search exclusions remain in force.
+
+## Source-to-predicate map
+
+All line references in this table are at `0d3e81643`, relative to `bridge/src/`.
+“Safe by type/source” records inspected structural guarantees, not an additional
+runtime test claim.
+
+| Canonical source and inspected path | Affected new predicate | Finding / safe inputs | Intended repair boundary; verification status |
+| --- | --- | --- | --- |
+| `Task.updated_at:String`; `store/task_summaries/maintenance.rs::task_written_unchecked` binds the full scalar; `sql.rs:152` caps display; `query_projection.rs:156` reparses it | Updated order; final anchor fallback | NUL and overlong valid prefixes must remain Unsupported rather than become Known/Unknown. Missing/null/empty retain the declared Unknown behavior where applicable. | `query_sources::task_written` captures ≤38-byte source or an Unsupported sentinel; `query_projection::refresh` parses retained cells. History/metadata/dependency refreshes reuse them. **Focused source/RPC evidence below passed.** |
+| `Task.created_at:String`; `sql.rs:152`; independently `sql/activity.rs:10`; `query_projection.rs::anchor` | Anchor fallback; Done fallback | Only Unknown created input may fall through to updated. Unsupported nonempty created input cannot silently fall through. | `query_sources::task_written` replaces canonical cells on every supported task change; `query_projection::anchor` consumes created classification independently of display/context strings. **Focused source/RPC evidence below passed.** |
+| `Task.done_at:Option<String>`; `sql.rs:154`; `sql/activity.rs:9,24–26` | Inclusive `done_since` cutoff | Done chooses input if present, otherwise selected move event, otherwise created. Empty present input is Unknown and still wins source selection. Unsupported selected input cannot fall through. | `query_sources::task_written` retains input presence and bounded source; `query_sources::done` checks canonical `status_done` before selecting input/event/created. **Focused source/RPC evidence below passed.** |
+| Canonical move-event `at`; `sql.rs::fact_rows` at `98–101`; `sql/activity.rs:24–26` | Event-derived Done cutoff | The selected fact is ordered by canonical `at DESC,id DESC`; classification must describe that same winner. | `query_sources::done` selects the same indexed fact winner with `typeof(at)` and BLOB-byte-length guards before returning ≤38 bytes. **Focused source/RPC evidence below passed.** |
+| Retained session pair; `sql/activity.rs::full`, `append_update`, `patch_card`; `query_projection.rs::anchor` | Anchor order | A pair of safe integers with start ≤ last directly supplies the anchor. This numeric branch bypasses created/updated fallback only for anchor. Updated order independently checks updated input. | `query_projection::anchor` retains safe-pair precedence; `query_source_done_event_fallback_and_valid_session_bypass_use_selected_sources` covers bypass versus independent updated refusal. **Passed in the 11-case source run below.** |
+| `Task.assignee` typed enum plus exact agent-ID String; `sql.rs:115–118`; `query_projection.rs:189–191`; app `tracker/selections.rs::matches_row`, `query_selections.rs::matches_row` | Agent bucket; positive assignee; exact assignee exclusion; held | Kind is typed. IDs may contain NUL within existing byte bounds. Empty project-bucket sentinel must not alias an agent ID. | `query_sources::task_written` captures kind/exact bounded ID; `query_projection::refresh` uses it for contribution keys, with an empty-agent guard; `CanonicalSelection::apply` and `task_query_matches` use exact matching cells. **Focused source/RPC evidence below passed.** |
+| `Task.status:String`; `sql.rs:124`, `sql/activity.rs:9`; `query_projection.rs:158,183,192`; `tracker/selections.rs::matches_row` | Unfinished/counts; attention; history/static stream selectors; Done cutoff | Unlike state/priority, status is an arbitrary String in the stored Task. `done\u0000suffix` must not become Done; `in_review\u0000suffix` must not become In review. | `query_sources::task_written` derives unfinished/In-review/Done from full canonical status. Supported bounded status remains exact; overlong display becomes a nonmatching sentinel with `status_truncated`, exposed by `CanonicalSelection::apply` as `summary_truncated:true`. **Focused source/RPC evidence below passed.** |
+| `Task.labels:Vec<String>`; `sql.rs:125–126,156–157`; `tracker/selections.rs::matches_row` | Positive label selection composed with new selectors | `api\u0000suffix` can fit 40 bytes and be shortened to `api`. Existing oversized/invalid-label flags do not establish NUL-safe equality. | `query_sources::task_written` retains bounded `labels_json`; `CanonicalSelection::apply` restores exact labels before selection. Existing invalid-label refusal still owns unsupported count/size/shape. **Focused source/RPC evidence below passed.** |
+| `Task.read_through`, `watch_started_after`, `dismissed_through`: optional Strings; `sql.rs:135–142`; `sql/activity.rs:5–6`; `query_projection.rs:184–186` | Watched unread totals; unread asks/comments; legacy attention dismissal | Canonical `tracker/summary.rs::when` uses `split_once('-')` and preserves the suffix. Text `substr` can lose NUL before/inside the suffix. Native `app/tracker/tracking.rs:122–135` stores raw `event_id`. | `sql::opaque_suffix` uses BLOB first-hyphen slicing; `sql/activity::bounded_marker` preserves NULL versus empty; `query_sources::task_written` retains raw bounded marks/dismissed suffix and invalid-marker flag. `ensure_supported_markers` and indexed project preflight refuse overlong count/attention dependencies. **Focused source/RPC evidence below passed.** |
+| Canonical comment/event ID String; `sql.rs::fact_rows` at `98` | Unread, mention and meaningful-after-dismissal comparisons | Typed record IDs can carry nonstandard bytes in imported records. Their suffix derivation must match `tracker/summary.rs::when`; capped display IDs are not ordering authority. | `sql::fact_rows` calls `sql::opaque_suffix` for canonical IDs; retained indexed suffix comparisons preserve full first-hyphen suffix. **Focused source/RPC evidence below passed.** |
+| `Task.watched:bool`; exact canonical JSON boolean at `sql.rs:155`; retained activity context | Watched selection; unread and attention gates | **Safe by type/source:** supported typed producers cannot supply an arbitrary string as watched. This does not make marker comparisons safe. | Keep typed boolean and exact marker-derived counters separate. Covered by the source marker matrix and `query_attention::attention_distinguishes_agent_traffic_requests_read_and_watch_floors` in the 79-case run below. |
+| Dependency projection from canonical task state/status and dependency endpoints; `sql.rs::dependencies`, `refresh_dependencies`; `query_projection.rs:193–194` | Blocked; user-ready attention; agent static streams | **Safe by source:** dependency SQL compares canonical task scalar columns and emits a boolean. It does not derive blockers from display status. | `producer_transactions::native_blocker_lifecycle_refreshes_counterparts_and_rolls_back_on_projection_failure` and `query_attention::user_blocking_review_and_finished_reasons_match_source` passed in the 79-case run below. |
+| Canonical delivery-intent state and target; `sql.rs::enrich_patch`, `refresh_metadata`; `query_projection.rs:187,195` | Undelivered; held; pending-assignment positive selectors | State membership is checked before display, with provisioning displayed as queued. Target is arbitrary JSON in `DeliveryIntent`; display `target.kind`/agent ID are capped. Leading NUL in a nonempty kind can change held. | `query_sources::metadata_refresh` retains exact pending-state existence and JavaScript kind-truthiness booleans. `query_projection::refresh` consumes them; metadata output preserves bounded target IDs without NUL-prefix aliases. **Focused source/RPC evidence below passed.** |
+| `ReviewMode` enum/default; `query_projection.rs::refresh_review_mode` reads canonical review JSON | `exclude_review_mode` | **Safe by type/source:** supported typed modes are snapshot/pull_request; missing historical mode defaults to snapshot. No summary display field is used for this predicate. | `query_projection::snapshot_review_default_and_rebuild_keep_exact_counts` and `producer_reviews::native_pr_publication_opinion_and_projection_failure_are_atomic` passed in the 79-case run below. |
+| `TaskState` enum and `TaskPriority` enum; `tracker.rs:98,126`; `sql.rs:124,127`; `query_projection.rs:180,192` | State filters; priority order; unfinished | **Safe by type/source:** supported typed producers serialize fixed enum strings. Arbitrary raw SQL corruption is outside automatic producer guarantees. Canonical status remains a separate unsafe String input. | Safe-input guarantee is inspection of typed serialization, not an extra arbitrary-input runtime test; enum semantics are unchanged. |
+| `Task.links.workspace_ids` and `Task.trackers`; `query_projection.rs::refresh_relations` | Linked-workspace/tracker membership and provenance | **Safe by source:** exact typed canonical vectors populate independent membership rows; capped display arrays do not determine membership. | `query_projection::query_projection_counts_memberships_and_generation_follow_transaction` and `query_projection::imported_project_reparent_moves_counts_and_all_relation_keys` passed in the 79-case run below. |
+| Canonical `TaskEventKind`, `Actor`, comment author and boolean ask fields; full canonical JSON `payload.by`; `sql.rs::fact_rows` | Meaningful/activity/unread/ask classification | **Safe by type/source:** these predicates compare canonical fields before display; enum kinds/actors and boolean asks are typed. `payload.by` equality uses the full canonical JSON value. Fact-ID/marker ordering remains a separate dependency. | `query_attention::dismissal_ignores_bookkeeping_until_meaningful_workspace_activity` and `query_attention::imported_unknown_event_notify_flag_does_not_create_a_canonical_ask` passed in the 79-case run below. |
+
+## Bounded read and maintenance boundary
+
+The repair must not move canonical task-body parsing, full relation decoding or
+history replay into a query. Summary pages continue through indexed order ranges
+and bounded candidate admission; per-candidate matching uses bounded structural
+rows and exact relation seeks. Counts remain materialized bucket point reads;
+lookup remains a project-number point read. Unsupported-source preflight must be
+an indexed maintained fact, not a project drain.
+
+Task writes already possess the typed task and can retain small structural cells
+before lossy display serialization. Ordinary history maintenance must reuse
+those cells plus bounded retained-fact seeks; it must not reopen a canonical task
+body to recover facts discarded earlier. A selected Done event can use the
+existing indexed `done_move` winner. Exact suffix extraction must preserve
+canonical bytes; a BLOB-safe slice can avoid SQLite text-NUL truncation without
+restricting which otherwise supported ID characters are legal.
+
+Overlong inputs are not permission to fabricate a bounded prefix as an exact
+identity, marker, status, label or timestamp. Existing declared resource domains
+and explicit refusal reasons must govern them. Any additional domain boundary
+needs to be recorded with its affected primitive and evidence. There is no new
+search schema, matching capability or claimed bounded search conversion here.
+
+## Consumer integration gap: opaque marker presence
+
+The backend target is additive `opaque-marker-v1` semantics from the canonical
+Rust source. It distinguishes absent markers from present empty markers.
+`bridge/src/tracker/summary.rs:89–102` uses `Option::or_else`: `None` permits the
+latest Watched-event fallback, while `Some("")` supplies an explicit empty
+baseline and bypasses that fallback. `summary.rs:162–169` compares the complete
+suffix after the first hyphen without a prefix-regex restriction.
+
+This does **not** match every existing SPA helper. The primary integration
+regression requirement is #891/c/tc-01M647J3K88WM89J6KE1KQ77PM; the earlier
+#891/c/tc-01M647EAW69ZYAKA845QVCQG29 records the initial incompatibility against
+frozen foundation checkpoint
+`5a04b2658204ad794fb97910e9412d88aa0aca86`, which remains unchanged by this audit:
+
+- `spa/src/core/taskSummaryCache.js::preserveMarks` at lines 66–77 preserves a
+  selected marker only when truthy; `coversMarks` at lines 83–84 compares against
+  `incoming[field] || null`. `strongerMarks` at lines 81–82 also gates on
+  truthiness.
+- `spa/src/core/trackerUnread.js::latestTaskMark` at lines 6–15 uses the existing
+  `tc`/`te` nonempty suffix regex through `taskUnreadKey`; empty markers become
+  null. `taskWatchBaseline` at lines 20–24 uses `if (persisted)` and therefore
+  falls back to Watched events for an empty persisted marker.
+
+A second source difference concerns suffix extraction and comparison.
+`tracker/summary.rs::when` keeps the entire suffix after the **first** hyphen, or
+the whole string if no hyphen exists. The frozen SPA's
+`trackerUnread.js::taskUnreadKey` accepts only `tc`/`te` IDs with a nonempty suffix
+that contains no further hyphen. Separately,
+`spa/src/core/trackerAttentionModel.js::orderedId` at line 45 uses
+`split("-", 2).at(-1)`, discarding later segments of a multi-hyphen ID. JavaScript
+string comparison also uses UTF-16 ordering, whereas canonical Rust string
+ordering follows UTF-8 bytes. Existing ASCII ULID examples do not prove parity
+for opaque Unicode strings. Do not validate the additive profile solely against
+one of these incompatible consumer comparators.
+
+The source comparison exposes a compatibility boundary, not authority to change
+SPA behavior silently. The lead selected canonical Some-empty/None semantics
+for the additive backend profile and was informed of the current-consumer
+incompatibility. Backend profile pinning does not authorize an unexamined
+consumer-visible change and is not a claim of parity with these legacy helpers.
+
+Before selector activation, #891 must supply regressions for absent versus
+present-empty markers, NUL, whitespace, Unicode/UTF-8, no-hyphen and multi-hyphen
+markers, including marker floors, ordering and coverage; compare watched/unread
+behavior against **both** the frozen consumer and canonical Rust source; and
+obtain an explicit review disposition for any visible differences. The
+foundation checkpoint is not updated by this document. Backend executable
+canonical-versus-query empty-marker and first-hyphen/full-suffix cases passed;
+exact names and backend results are recorded below. Consumer behavior/review remains
+pending. Search and other
+legacy compatibility exclusions remain unchanged.
+
+## Shared repair and evidence checklist
+
+The same canonical derivation must serve native task/history/metadata producers,
+explicit import/repair and startup rebuild. A source change that leaves the same
+capped display prefix still needs to refresh structural facts, counts and basis.
+Rollback must restore old contributions and generation together; reassignment,
+reparenting and deletion must retire the old contribution. Reopening after an
+intact repair must preserve the correct facts.
+
+Inspected fingerprint ownership includes `query_sources.rs`;
+`tracker_task_query_sources` is owned by the query TABLES/schema manifest and
+`reset_projection` table list. Producer wiring captures source cells before
+display in `maintenance::task_written_unchecked`, refreshes canonical pending
+booleans on task/metadata writes, and reuses retained sources on history and
+dependency updates.
+
+Fingerprint/manifest ownership includes the new structural source schema and
+producer definitions. A persisted projection built from the lossy definitions
+must rebuild through bounded reset/backfill before read-pool admission; marking
+only an in-memory fast path fixed is insufficient. Existing migration ordering
+rebuilds history facts before task reductions. Final source verification must
+confirm any new module is included in the definition fingerprint and table
+reset/manifest ownership.
+
+Exact names below are relative to
+`store::tests::task_summaries::query_timestamp_sources` (store cases) and
+`app::tests::tracker_query_exact_text` (RPC cases). Names were checked against the
+working source; results come from the completed logs and owner-confirmed exits
+below, not from the tests' presence.
+
+| Required regression category | Exact focused cases | Verified evidence |
+| --- | --- | --- |
+| Canonical timestamp NUL/long prefix; updated/created/input-Done/event-Done; safe session bypass | Store `query_source_timestamp_bytes_reject_nuls_and_overlong_valid_prefixes`; `query_source_project_gate_cannot_skip_bad_old_excluded_rows_and_clears_after_correction`; `query_source_done_event_fallback_and_valid_session_bypass_use_selected_sources` | Passed: source 11/11 and/or RPC 6/6 as applicable; exits 0 |
+| Exact assignee buckets, positive/exclusion, pending target and creator identity with NUL | Store `query_source_exact_agent_buckets_preserve_nul_prefix_and_suffix_through_history_and_reopen`; RPC `nul_prefix_and_suffix_assignees_keep_exact_counts_positive_groups_exclusions_and_repair`; `pending_target_output_preserves_exact_assignee_id_without_inventing_membership`; `created_by_and_identity_dictionary_keep_structural_nul_ids_exact` | Passed: source 11/11 and/or RPC 6/6 as applicable; exits 0 |
+| Canonical status and labels versus capped display | Store `query_source_status_done_prefix_is_not_completion_and_labels_remain_exact`; RPC `status_and_label_nul_suffixes_do_not_join_ordinary_static_groups` | Passed: source 11/11 and/or RPC 6/6 as applicable; exits 0 |
+| Read/watch/dismiss and retained fact-ID suffixes | Store `query_source_read_watch_dismiss_and_fact_suffixes_preserve_nul_bytes`; `query_source_marker_profile_matches_canonical_first_hyphen_without_truthy_normalization`; RPC `watch_floor_missing_and_explicit_empty_remain_distinct_in_actual_counts` | Passed: source 11/11 and/or RPC 6/6 as applicable; exits 0 |
+| Marker UTF-8 byte boundary, project-wide scope, read-only structured refusal and recovery | Store `query_source_marker_domain_uses_utf8_bytes_and_project_scope_and_clears_after_repair`; RPC `marker_byte_domain_refusals_are_project_wide_nonretryable_and_read_only` | Passed: source 11/11 and/or RPC 6/6 as applicable; exits 0 |
+| Held/undelivered canonical target/state composition | Store `query_source_pending_kind_truthiness_preserves_leading_nul`; RPC pending-target case above | Passed: source 11/11 and/or RPC 6/6 as applicable; exits 0 |
+| Shared stale-definition restart/reopen and canonical bytes unchanged across repaired layers | Store `query_source_old_prefix_projection_rebuilds_all_layers_without_canonical_rewrites` | Passed: source 11/11 and/or RPC 6/6 as applicable; exits 0 |
+| Atomic reassignment, invalid-source rollback, correction, deletion and no empty-agent project-bucket alias | Store `query_source_reassignment_marker_failure_rolls_back_and_empty_agent_cannot_duplicate_project`; assignee RPC case above | Passed: source 11/11 and/or RPC 6/6 as applicable; exits 0 |
+| Bounded projection-only queries and no canonical-body/history scan in ordinary history maintenance | Inspected `query_sources::load/done`, `query_reads::task_summary_by_number`, partial-index validity seeks, `maintenance::history_append`; earlier producer poisoned-body regression remains separate evidence | Source inspected; focused source/RPC runs passed; broader gates separately attributed |
+| Consumer opaque-marker-v1 activation: absent/empty/NUL/whitespace/Unicode/multi-hyphen floors/order/coverage; frozen-consumer versus canonical behavior | Primary #891/c/tc-01M647J3K88WM89J6KE1KQ77PM; earlier #891/c/tc-01M647EAW69ZYAKA845QVCQG29; checkpoint `5a04b2658204ad794fb97910e9412d88aa0aca86` unchanged | Pending #891 integration and review before activation |
+| Fresh independent scope/code/Astra reviews at repaired exact head | Parent review coordination | Pending |
+
+Observed intermediate evidence is retained rather than relabeled as success:
+`/tmp/task900-all-source-red.log` records the initial eight store regressions
+failing; `/tmp/task900-query-exact-text-red.log` records the initial two RPC
+regressions failing. A subsequent combined attempt in
+`/tmp/task900-all-source-green.log` reached 10 store passes and one failure in
+`query_source_marker_profile_matches_canonical_first_hyphen_without_truthy_normalization`
+for `read None` (query unread 1 versus canonical 2). Its filename is not a passing
+result (exit 101). A root-owned read-only SQLite reproduction isolated empty-BLOB slicing
+returning NULL in this helper path, collapsing an explicit empty watch baseline
+into absent/fallback behavior; the helper requires an explicit zero-byte branch.
+A follow-up compile at `/tmp/task900-all-source-green2.log` was intentionally
+cancelled with exit **143** before test execution to add the trailing-hyphen
+empty-suffix case; it is not a pass. The final helper explicitly separates NULL
+input, zero-byte input, and an empty suffix after the first hyphen.
+The later profile/upgrade/rollback cases have test-first source, but no
+separately observed initial-red claim is made for those cases. Final repaired
+outcomes below supersede the failed attempt without erasing it.
+
+The canonical marker profile store case runs each of read/watch/dismiss through
+None, empty, whitespace/tab, NUL, Unicode, no-hyphen, multi-hyphen and
+trailing-hyphen/empty-suffix examples;
+it compares query unread totals with canonical `unread_since_mark`, compares
+legacy-attention membership with canonical `after` and bookkeeping predicates,
+and verifies persisted marker presence/bytes. The RPC watch-floor case checks
+None → empty → None yields totals 1 → 2 → 1 and lookup preserves null versus
+empty. Both executable cases passed in the completed runs below; the backend
+case does not substitute for #891's pending current-consumer comparison.
+
+
+## Completed focused repair evidence
+
+The production owner confirmed all three final process exits as **0**:
+
+- `/tmp/task900-all-source-green3.log`: **11 passed, 0 failed**, all source
+  regressions named above. Cargo emitted
+  `bridge/target/debug/deps/build_bridge-0521f5ae737d1028` from the frozen
+  integrated working-tree repair source.
+- `/tmp/task900-all-source-rpc-green.log`: **6 passed, 0 failed**, all RPC
+  exact-text regressions named above, run directly through that same emitted
+  binary without another compilation.
+- `/tmp/task900-all-source-projection-green.log`: **79 passed, 0 failed**, the
+  complete `store::tests::task_summaries` projection group through the same
+  emitted binary, including the 11 new source cases. This is a group run, not
+  the complete bridge suite.
+
+The emitted binary SHA-256 is
+`edf81e7cb31b3a9314d52e4e3e3cd3e3e914e27e6f21268df346633d9095a1fe`. The
+compiled integrated production/test working tree was subsequently committed in
+`eca9e4692` and `f2769d34ddf9cfb9614a6b2d475b6b2f992d7f32`; it was not
+rebuilt as a clean-head whole-suite run for these focused results.
+
+The source run includes canonical-versus-query comparisons for every marker
+case and the shared startup rebuild test. The latter verifies rebuilt
+structural sources, query facts, aggregate buckets, retained activity context,
+display unread values and timestamp-invalid flags while canonical task/comment
+record strings remain byte-for-byte unchanged. The rollback case verifies that
+a projection failure preserves canonical task data, old bucket contribution,
+invalid-marker state and basis, then checks successful correction and deletion.
+
+These are working-tree focused outcomes, not an assertion that the complete
+suite ran on a subsequently named clean commit. Additional gate attribution
+belongs to the parent validation ledger (`task-query-validation.md`).
+The document author inspected sources/logs and ran no tests for this audit.
+Full-suite, clippy/format, release/performance and fresh exact-head independent
+scope/code/Astra dispositions remain pending unless independently recorded in
+that ledger. Neither P2 is treated as finally review-approved by this audit.
+
+Earlier parser-only evidence remains in `task-query-timestamp-domain.md`; it does
+not prove canonical source selection, aggregate maintenance or any of the
+request-changes repairs above. Final validation must name the actual source head
+and distinguish new focused regressions from earlier whole-suite evidence.

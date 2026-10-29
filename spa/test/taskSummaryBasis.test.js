@@ -75,3 +75,13 @@ it("rejects results issued before pending or acknowledged mutation epoch changes
   epoch += 1; held.resolve(page("A")); expect(await pending).toBe(false);
   await reader.refresh(); expect((await reader.read()).basis).toBe("B");
 });
+
+it("requires authoritative requested anchor and exact relation provenance", async () => {
+  const filters = { order: "anchor", linked_workspace_id: "ws-1", tracker_agent_id: "A" };
+  const ticket = await summaries.beginSummaryQuery(scope, filters, 1);
+  await expect(summaries.landSummaryPage(ticket, page("B"), { read: 1 })).rejects.toThrow();
+  const matched_memberships = { linked_workspace_id: "ws-1", tracker_agent_id: "A" };
+  await expect(summaries.landSummaryPage(ticket, page("B", [row({ matched_memberships, order_anchor_ms: 1.1 })]), { read: 1 })).rejects.toThrow();
+  expect(await summaries.landSummaryPage(ticket, page("B", [row({ matched_memberships, order_anchor_ms: null })]), { read: 1 })).toBe(true);
+  expect((await summaries.readSummaryQuery(scope, filters)).tasks[0].order_anchor_ms).toBeNull();
+});

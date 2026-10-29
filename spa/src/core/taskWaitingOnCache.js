@@ -8,6 +8,7 @@ import {
 } from "./trackerCache.js";
 import { filterTasks, sortTasks } from "./trackerFilters.js";
 import { assigneeKey } from "./trackerModel.js";
+import { summaryTaskMutation } from "./taskSummaryCache.js";
 
 const listKinds = new Set([TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TRACKER_TASKS_PAGE_KIND]);
 const newer = (held, incoming) => Date.parse(held?.updated_at) > Date.parse(incoming?.updated_at);
@@ -46,13 +47,17 @@ export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { 
   if (!listed.some((address) => address.kind === TRACKER_TASKS_KIND)) listed.push(catalogue);
   const addresses = [taskAddress(deviceId, projectId, task.id), ...listed, ...listed.map(readsAddress), taskWaitingOnGenerationAddress(deviceId, projectId), readsAddress(taskAddress(deviceId, projectId, task.id))];
   const read = await nextTaskRead();
-  return mergeCachedRecordsTogether(addresses, (records) => {
+  const summary = summaryTaskMutation({ deviceId, projectId }, task, read, { accept, fullTask: true });
+  return mergeCachedRecordsTogether([...addresses, ...summary.addresses], (allRecords) => {
     if (!accept()) return null;
+    const normalized = summary.reduce(allRecords.slice(addresses.length));
+    if (!normalized) return null;
+    const records = allRecords.slice(0, addresses.length);
     const detail = detailWithResponse(records[0]?.value, answer);
     const lists = listed.map((address, index) => listWithResponse(address, records[index + 1]?.value, task, read));
     const notes = lists.map((list, index) => list ? withWritten(records[listed.length + index + 1]?.value, [task.id], read) : null);
     return [detail, ...lists, ...notes, detail ? nextReverseGeneration(records.at(-2)?.value) : null,
-      detail ? withWritten(records.at(-1)?.value, [task.id], read) : null];
+      detail ? withWritten(records.at(-1)?.value, [task.id], read) : null, ...normalized];
   });
 }
 

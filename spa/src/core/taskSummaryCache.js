@@ -211,14 +211,34 @@ export async function landSummaryPage(ticket, page, { read, accept = () => true 
 /** Immediate action result or optimistic patch. The shared row and project
  * invalidation commit together, fencing every older query without enumerating
  * inactive query records. Callers own rollback/confirmation of optimistic edits. */
-export function writeSummaryTask(scope, task, read, { accept = () => true, fullTask = false } = {}) {
-  if (!task?.id || !Number.isSafeInteger(read) || read <= 0) throw new Error("Invalid summary write");
-  return mergeCachedRecordsTogether([summaryAddress(scope, task.id), invalidationAddress(scope)], ([held, invalidation]) => {
-    if (!accept()) return null;
-    const row = summaryValue(held?.value, summaryPatch(held?.value?.task, task, fullTask), read);
-    if (!row) return null;
-    return [row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) }];
-  });
+export function writeSummaryTask(scope, task, read, options = {}) {
+  const mutation = summaryTaskMutation(scope, task, read, options);
+  return mergeCachedRecordsTogether(mutation.addresses, mutation.reduce);
+}
+
+/** A bounded transaction fragment for action owners updating other replicas.
+ * The reducer receives whole cache records and returns values, exactly like
+ * mergeCachedRecordsTogether. Compose it in that same transaction; a refused
+ * reducer must refuse the entire action. No query membership is manufactured,
+ * and an action acknowledgment never supplies a projection basis.
+ * fullTask explicitly selects authoritative omissions; compact patches retain
+ * fields they omit. Both paths use the same PR, marker and counter authority. */
+export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false } = {}) {
+  validateSummaryMutation(scope, task, read, fullTask);
+  return {
+    addresses: [summaryAddress(scope, task.id), invalidationAddress(scope)],
+    reduce: ([held, invalidation]) => {
+      if (!accept()) return null;
+      const row = summaryValue(held?.value, summaryPatch(held?.value?.task, task, fullTask), read);
+      return [row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) }];
+    },
+  };
+}
+
+function validateSummaryMutation(scope, task, read, fullTask) {
+  if (typeof task?.id !== "string" || !task.id || !Number.isSafeInteger(read) || read <= 0) throw new Error("Invalid summary write");
+  if (typeof fullTask !== "boolean") throw new Error("Expected an explicit full-task or compact-patch mode");
+  if (Object.hasOwn(task, "project_id") && task.project_id !== scope.projectId) throw new Error("Foreign project summary write");
 }
 
 /** Cache-only reconstruction. Loaded membership never claims a project total

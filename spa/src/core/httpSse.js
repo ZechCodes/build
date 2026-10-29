@@ -1,18 +1,20 @@
 // No durable cursor: the owner refreshes current state after a broken stream.
 // Consumer promises apply backpressure directly; no extra client event queue.
 const MAX_EVENT_BYTES = 1024 * 1024;
-const encodedBytes = (value) => new TextEncoder().encode(value).length;
+const utf8Bytes = (character) => {
+  const point = character.codePointAt(0);
+  if (point <= 0x7f) return 1;
+  if (point <= 0x7ff) return 2;
+  return point <= 0xffff ? 3 : 4;
+};
 
 function eventParser(consume) {
   let event = "message";
   let lines = [];
-  let size = 0;
   return async (line) => {
-    size += encodedBytes(line) + 1;
-    if (size > MAX_EVENT_BYTES) throw new Error("SSE event exceeds its byte limit");
     if (line === "") {
       if (lines.length) await consume({ event, data: JSON.parse(lines.join("\n")) });
-      event = "message"; lines = []; size = 0;
+      event = "message"; lines = [];
       return;
     }
     if (line.startsWith(":")) return;
@@ -27,18 +29,32 @@ function eventParser(consume) {
 
 function lineParser(consume) {
   let pending = "";
-  let skipLf = false;
-  return async (text) => {
-    for (const character of text) {
-      if (skipLf && character === "\n") { skipLf = false; continue; }
-      skipLf = character === "\r";
-      if (character === "\r" || character === "\n") {
-        await consume(pending); pending = "";
-      } else {
-        pending += character;
-        if (pending.length > MAX_EVENT_BYTES) throw new Error("SSE line exceeds its byte limit");
+  let pendingCr = false;
+  let wireBytes = 0;
+  const count = (bytes) => {
+    wireBytes += bytes;
+    if (wireBytes > MAX_EVENT_BYTES) throw new Error("SSE event exceeds its byte limit");
+  };
+  const endLine = async (endingBytes) => {
+    count(endingBytes);
+    await consume(pending);
+    if (pending === "") wireBytes = 0;
+    pending = "";
+  };
+  return {
+    async write(text) {
+      for (const character of text) {
+        if (pendingCr) {
+          pendingCr = false;
+          await endLine(character === "\n" ? 2 : 1);
+          if (character === "\n") continue;
+        }
+        if (character === "\r") pendingCr = true;
+        else if (character === "\n") await endLine(1);
+        else { count(utf8Bytes(character)); pending += character; }
       }
-    }
+    },
+    async finish() { if (pendingCr) await endLine(1); },
   };
 }
 
@@ -52,9 +68,9 @@ export async function readTransientEvents(response, consume, onActivity = () => 
   try {
     while (true) {
       const { value, done } = await reader.read();
-      if (done) { await take(decoder.decode()); return; }
+      if (done) { await take.write(decoder.decode()); await take.finish(); return; }
       onActivity();
-      await take(decoder.decode(value, { stream: true }));
+      await take.write(decoder.decode(value, { stream: true }));
     }
   } finally {
     await reader.cancel().catch(() => {});

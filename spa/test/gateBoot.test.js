@@ -36,6 +36,7 @@ vi.mock("../src/api.js", async (importOriginal) => ({
 // connection.js is the wire; this suite is about the page before the wire says
 // anything. Nothing here opens a session, so no context ever lands.
 vi.mock("../src/connection.js", () => ({
+  chooseDeviceTransport: async () => null,
   openDeviceSessions: (...args) => ({
     first: account.openSession(...args),
     settled: Promise.resolve([]),

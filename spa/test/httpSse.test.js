@@ -38,4 +38,14 @@ describe("bounded transient SSE reader", () => {
   it("rejects non-event responses", async () => {
     await expect(readTransientEvents(new Response("{}"), () => {})).rejects.toThrow();
   });
+
+  it("counts exact CRLF wire bytes including framing at the event limit", async () => {
+    const prefix = 'event: changes\r\ndata: {"text":"';
+    const suffix = '"}\r\n\r\n';
+    const padding = 1024 * 1024 - prefix.length - suffix.length;
+    const events = [];
+    await readTransientEvents(response(prefix + "x".repeat(padding) + suffix), (event) => events.push(event));
+    expect(events).toHaveLength(1);
+    await expect(readTransientEvents(response(prefix + "x".repeat(padding + 1) + suffix), () => {})).rejects.toThrow();
+  });
 });

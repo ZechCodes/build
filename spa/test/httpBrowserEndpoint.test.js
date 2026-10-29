@@ -64,4 +64,18 @@ describe("browser HTTP endpoint", () => {
     await expect(endpoint.request(opening, { path: "/v1/health", method: "GET" }, {})).rejects.toThrow();
     endpoint.close();
   });
+
+  it("honors an explicit disabled deadline through response-body completion", async () => {
+    vi.useFakeTimers();
+    let resolve;
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json(opening)).mockImplementationOnce(() => new Promise((done) => { resolve = done; })).mockResolvedValue(new Response(null, { status: 204 }));
+    const endpoint = createBrowserHttpEndpoint({ grant: grant(), fetchImpl });
+    const held = await endpoint.open("range");
+    let settled = false;
+    const pending = endpoint.request(held, { path: "/v1/slow", method: "GET" }, { timeoutMs: null, subscriptionId: "stream" }).then((value) => { settled = true; return value; });
+    await vi.advanceTimersByTimeAsync(13000);
+    expect(settled).toBe(false);
+    resolve(json({ ok: true, result: {} }));
+    await pending; endpoint.close();
+  });
 });

@@ -106,6 +106,7 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
     await awaitRefresh(method, options);
     const route = routes.request(method, params);
     const heldOptions = optionsOf(options) || {};
+    const timeoutMs = Object.hasOwn(heldOptions, "timeoutMs") ? heldOptions.timeoutMs : defaultTimeout(method);
     const assertCurrent = () => { check(); if (heldOptions.assertCurrent) heldOptions.assertCurrent(); };
     assertCurrent();
     if (controllers.size >= 128) throw Object.assign(httpFailure("busy"), { retryable: true });
@@ -117,14 +118,14 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
       return await httpRequest(async (requestSignal) => {
         assertCurrent();
         sent = true;
-        const frame = await endpoint.request(opening, route, { ...heldOptions, signal: requestSignal, subscriptionId: subscription.binding });
+        const frame = await endpoint.request(opening, route, { ...heldOptions, timeoutMs, signal: requestSignal, subscriptionId: subscription.binding });
         assertCurrent();
         if (!bridgeEpoch.accepts(frame)) { lose(); throw endedOpeningError(method, true); }
         if (typeof frame.error === "string") throw refusal(frame);
         if (frame.ok !== true) throw httpFailure("protocol", true);
         publishWrite(frame);
         return heldOptions.write ? frame : frame.result;
-      }, { signal, timeoutMs: Object.hasOwn(heldOptions, "timeoutMs") ? heldOptions.timeoutMs : 12000, isCurrent: current });
+      }, { signal, timeoutMs, isCurrent: current });
     } catch (error) {
       if (!error.bridgeRefusal) error.uncertain = sent;
       throw error;
@@ -156,3 +157,5 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
     fail: close, close,
   };
 }
+
+const defaultTimeout = (method) => method === "workspace.get" ? null : 12000;

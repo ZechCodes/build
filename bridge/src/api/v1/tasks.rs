@@ -27,6 +27,8 @@ use serde_json::Value;
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
         v1_method!("tasks.list", tasks_list, TasksListParams, TasksList),
+        v1_method!("tasks.counts", tasks_counts, TasksCountsParams, TasksCounts),
+        v1_method!("tasks.lookup", tasks_lookup, TasksLookupParams, TasksLookup),
         v1_method!(
             "tasks.filterChoices",
             tasks_filter_choices,
@@ -124,6 +126,31 @@ pub struct TasksListParams {
 /// The validated public filters keep their established normalized wire shape.
 #[derive(Deserialize)]
 struct TasksListInput {
+    #[serde(default, deserialize_with = "provided")]
+    watched: Option<bool>,
+    #[serde(default, deserialize_with = "provided")]
+    attention_rule: Option<String>,
+    #[serde(default, deserialize_with = "provided")]
+    linked_workspace_id: Option<String>,
+    #[serde(default, deserialize_with = "provided")]
+    tracker_agent_id: Option<String>,
+    #[serde(default, deserialize_with = "provided")]
+    exclude_review_mode: Option<String>,
+    #[serde(default, deserialize_with = "provided")]
+    order: Option<String>,
+    #[serde(default, deserialize_with = "provided")]
+    done_since: Option<i64>,
+    #[serde(default, deserialize_with = "provided")]
+    unfinished: Option<bool>,
+    #[serde(default, deserialize_with = "provided")]
+    blocked: Option<bool>,
+    #[serde(default, deserialize_with = "provided")]
+    held: Option<bool>,
+    #[serde(default, deserialize_with = "provided")]
+    undelivered: Option<bool>,
+    #[serde(default, deserialize_with = "nonnull_value")]
+    exclude_assignee: Option<Value>,
+
     project_id: String,
     #[serde(default)]
     summary: Option<bool>,
@@ -149,6 +176,16 @@ struct TasksListInput {
     cursor: Option<Option<String>>,
 }
 
+fn nonnull_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Err(serde::de::Error::custom("selector cannot be null"));
+    }
+    Ok(Some(value))
+}
+
 fn nullable_provided<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
 ) -> Result<Option<Option<T>>, D::Error> {
@@ -159,6 +196,26 @@ impl TryFrom<TasksListInput> for TasksListParams {
     type Error = String;
 
     fn try_from(input: TasksListInput) -> Result<Self, Self::Error> {
+        if input.summary != Some(true)
+            && [
+                input.watched.is_some(),
+                input.attention_rule.is_some(),
+                input.linked_workspace_id.is_some(),
+                input.tracker_agent_id.is_some(),
+                input.exclude_review_mode.is_some(),
+                input.order.is_some(),
+                input.done_since.is_some(),
+                input.unfinished.is_some(),
+                input.blocked.is_some(),
+                input.held.is_some(),
+                input.undelivered.is_some(),
+                input.exclude_assignee.is_some(),
+            ]
+            .into_iter()
+            .any(|present| present)
+        {
+            return Err("task selectors require summary:true".into());
+        }
         if input.summary == Some(true) {
             for (name, null) in [
                 ("limit", input.limit == Some(None)),
@@ -201,6 +258,19 @@ impl TryFrom<TasksListInput> for TasksListParams {
         }
         Ok(Self {
             filters: TasksListFilters {
+                watched: input.watched,
+                attention_rule: input.attention_rule,
+                linked_workspace_id: input.linked_workspace_id,
+                tracker_agent_id: input.tracker_agent_id,
+                exclude_review_mode: input.exclude_review_mode,
+                order: input.order,
+                done_since: input.done_since,
+                unfinished: input.unfinished,
+                blocked: input.blocked,
+                held: input.held,
+                undelivered: input.undelivered,
+                exclude_assignee: input.exclude_assignee,
+
                 project_id: input.project_id,
                 summary: input.summary,
                 state: input.state.flatten(),
@@ -220,6 +290,31 @@ impl TryFrom<TasksListInput> for TasksListParams {
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct TasksListFilters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watched: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_rule: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracker_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude_review_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_since: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unfinished: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undelivered: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude_assignee: Option<Value>,
+
     pub project_id: String,
     /// Lightweight, bounded pages (3.26.0, `tasks.listSummaries`). Defaults
     /// to false, preserving legacy tasks.list rows and unbounded reads.
@@ -271,6 +366,49 @@ pub struct TasksListFilters {
     /// filter answered (1.25.0). Absent is the top of the list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+}
+
+/// Exact project aggregates, with at most 100 explicit agent buckets.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TasksCountsParams {
+    pub project_id: String,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskAgentCounts {
+    pub agent_id: String,
+    pub unfinished_open_count: u64,
+    pub watched_unread_total: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TasksCounts {
+    pub project_id: String,
+    pub unfinished_open_count: u64,
+    pub watched_unread_total: u64,
+    pub agents: Vec<TaskAgentCounts>,
+    pub basis: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TasksLookupParams {
+    pub project_id: String,
+    pub number: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TasksLookup {
+    pub project_id: String,
+    pub number: u64,
+    pub task: Option<TaskSummaryView>,
+    pub identities: std::collections::BTreeMap<String, crate::tracker::TaskAgentIdentity>,
+    pub basis: String,
 }
 
 /// Distinct facets: category is `label`; workflow column is `status`.
@@ -777,6 +915,8 @@ pub struct LegacyTasksList {
 /// An explicit discriminator preserves the shape of empty summary pages.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TaskSummaries {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<String>,
     #[serde(deserialize_with = "summary_true")]
     pub summary: bool,
     pub project_id: String,
@@ -809,9 +949,34 @@ pub struct TaskSummaryDependencies {
     pub blocks_count: u64,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskMatchedMemberships {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracker_agent_id: Option<String>,
+}
+
+/// Summary-only additive mode; canonical legacy review summaries stay unchanged.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskSummaryReviewView {
+    #[serde(flatten)]
+    pub summary: crate::reviews::records::ReviewSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
+
 /// List/card/badge/navigation data only. Detail content stays on tasks.get.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TaskSummaryView {
+    #[serde(
+        default,
+        deserialize_with = "nullable_provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub order_anchor_ms: Option<Option<i64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_memberships: Option<TaskMatchedMemberships>,
     pub id: String,
     pub project_id: String,
     pub number: u64,
@@ -849,7 +1014,7 @@ pub struct TaskSummaryView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_activity_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review_summary: Option<crate::reviews::records::ReviewSummary>,
+    pub review_summary: Option<TaskSummaryReviewView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deferred_assignment: Option<DeferredAssignmentView>,
 }
@@ -1036,13 +1201,14 @@ const INVALID: [&str; 40] = [
 /// The store is not there, or a reference did not survive its fencing. Neither
 /// is the caller's fault in a way retrying would fix, and neither is a missing
 /// entity.
-const UNAVAILABLE: [&str; 6] = [
+const UNAVAILABLE: [&str; 7] = [
     "tasks need a durable store",
     "task summary exceeds",
     "filter choice exceeds",
     "invalid task summary",
     "invalid summary identity",
     "bounded task response exceeds",
+    "task point response exceeds",
 ];
 
 /// Name the refusal this family raised, where the sentence says what
@@ -1051,6 +1217,12 @@ const UNAVAILABLE: [&str; 6] = [
 ///
 /// [`ApiError::classify`]: crate::api::ApiError::classify
 pub(crate) fn refine(error: ApiError) -> ApiError {
+    if error.message().starts_with("task_query_basis_changed") {
+        return ApiError::conflict(
+            error.message(),
+            Some(serde_json::json!({"reason":"task_query_basis_changed","restart":true})),
+        );
+    }
     let message = error.message().to_string();
     if message == "conflict: operation_id already used with different assignment" {
         return ApiError::conflict(message, None);
@@ -1220,6 +1392,20 @@ fn tasks_list(app: &mut AppState, params: TasksListParams) -> Result<Answer<Task
     answer(app.tasks_list(&params.wire())).map_err(refine)
 }
 
+fn tasks_counts(
+    app: &mut AppState,
+    params: TasksCountsParams,
+) -> Result<Answer<TasksCounts>, ApiError> {
+    answer(app.tasks_counts(&params.wire())).map_err(refine)
+}
+
+fn tasks_lookup(
+    app: &mut AppState,
+    params: TasksLookupParams,
+) -> Result<Answer<TasksLookup>, ApiError> {
+    answer(app.tasks_lookup(&params.wire())).map_err(refine)
+}
+
 fn tasks_filter_choices(
     app: &mut AppState,
     params: TasksFilterChoicesParams,
@@ -1323,6 +1509,20 @@ fn tasks_columns(
 mod tests {
     use super::super::testing::fixture_round_trips;
     use super::*;
+
+    #[test]
+    fn query_basis_change_is_a_restartable_conflict() {
+        let reply = refine(ApiError::classify(
+            "task_query_basis_changed: restart this query".into(),
+        ))
+        .into_reply(serde_json::json!("r-basis"));
+        assert_eq!(reply["error_code"], "conflict");
+        assert_eq!(reply["retryable"], false);
+        assert_eq!(
+            reply["details"],
+            serde_json::json!({"reason":"task_query_basis_changed","restart":true})
+        );
+    }
 
     #[test]
     fn bounded_read_refusals_are_typed() {

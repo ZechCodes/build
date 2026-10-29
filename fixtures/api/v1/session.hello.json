@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.26.0",
+    "api_version": "3.27.0",
     "ack_confirm_methods": [],
     "capabilities": [
       "agent.add",
@@ -149,14 +149,24 @@
       "tasks.commentUserMentions",
       "tasks.commentUserNotifies",
       "tasks.context",
+      "tasks.counts",
       "tasks.create",
       "tasks.createdUserMentions",
       "tasks.doneSinceLeft",
       "tasks.filterChoices",
       "tasks.get",
       "tasks.list",
+      "tasks.listAttention",
+      "tasks.listExcludeAssignee",
+      "tasks.listLinkedWorkspace",
+      "tasks.listOrder",
       "tasks.listPaged",
+      "tasks.listReadiness",
+      "tasks.listReviewMode",
       "tasks.listSummaries",
+      "tasks.listTracked",
+      "tasks.listWatched",
+      "tasks.lookup",
       "tasks.read_through",
       "tasks.reopen",
       "tasks.review.act",
@@ -300,5 +310,20 @@
     "since": "3.22.0",
     "capability": "compaction.harnessThresholds",
     "subscription_kind": "compaction.changed"
+  },
+  "exact_task_queries": {
+    "since": "3.27.0",
+    "capabilities": [
+      "tasks.counts",
+      "tasks.lookup",
+      "tasks.listWatched",
+      "tasks.listAttention",
+      "tasks.listLinkedWorkspace",
+      "tasks.listTracked",
+      "tasks.listReviewMode",
+      "tasks.listOrder",
+      "tasks.listReadiness",
+      "tasks.listExcludeAssignee"
+    ]
   }
 }

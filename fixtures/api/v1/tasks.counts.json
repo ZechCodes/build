@@ -1,0 +1,68 @@
+{
+  "method": "tasks.counts",
+  "since": "3.27.0",
+  "max_agent_ids": 100,
+  "max_result_bytes": 65536,
+  "max_bucket_reads": 101,
+  "params": {
+    "project_id": "proj-1",
+    "agent_ids": [
+      "agent-1"
+    ]
+  },
+  "result": {
+    "project_id": "proj-1",
+    "unfinished_open_count": 12,
+    "watched_unread_total": 5,
+    "agents": [
+      {
+        "agent_id": "agent-1",
+        "unfinished_open_count": 3,
+        "watched_unread_total": 2
+      }
+    ],
+    "basis": "opaque-task-query-basis"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "unavailable",
+    "internal"
+  ],
+  "note": "Exact materialized project and explicit agent buckets, including zero-valued unknown agents. Agent IDs are deduplicated and sorted. Basis is consistent across persisted projection reads only. Mutation replies do not return this basis; clients retain immediate effects using a local mutation epoch and refresh authoritative aggregates after acknowledgment, without arithmetic overlays.",
+  "basis_fencing": {
+    "comparison": "Opaque persisted store-incarnation/projection-generation basis. Compare equality only within the same store; foreign-store tokens are incomparable. Never parse, lexically order, increment, subtract or perform arithmetic on a basis.",
+    "mutation_reply": "No query basis is returned by mutation acknowledgment.",
+    "scenarios": [
+      {
+        "name": "late aggregate before acknowledgment",
+        "steps": [
+          "Issue aggregate read at local mutation epoch N, capturing basis B.",
+          "Start user read/watch/assignment mutation; increment local epoch to N+1.",
+          "Old aggregate read arrives before acknowledgment.",
+          "Reject old aggregate installation because its captured local epoch N is obsolete."
+        ]
+      },
+      {
+        "name": "late aggregate after acknowledgment",
+        "steps": [
+          "Issue aggregate read at epoch N.",
+          "Start user mutation; increment local epoch to N+1.",
+          "Mutation acknowledgment arrives without query basis.",
+          "Old aggregate arrives after acknowledgment; reject because epoch N is obsolete.",
+          "Issue fresh aggregate read after acknowledgment at epoch N+1.",
+          "Install fresh totals directly; no arithmetic overlay or double count."
+        ]
+      },
+      {
+        "name": "second mutation while refreshed read is pending",
+        "steps": [
+          "After acknowledgment, issue fresh aggregate read at epoch N+1.",
+          "Another user mutation begins; increment epoch to N+2.",
+          "Read issued at N+1 arrives; reject despite being newer than the original read.",
+          "After second acknowledgment, refresh again and install authoritative totals directly."
+        ]
+      }
+    ]
+  }
+}

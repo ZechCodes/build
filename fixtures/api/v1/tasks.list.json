@@ -570,7 +570,8 @@
               "workspace_id": "ws-3f2a91c4",
               "version": 3,
               "status": "open",
-              "latest_published_snapshot_id": "snapshot-1"
+              "latest_published_snapshot_id": "snapshot-1",
+              "mode": "pull_request"
             },
             "dependencies": {
               "blocked": false,
@@ -678,7 +679,8 @@
               "workspace_id": "ws-3f2a91c4",
               "version": 3,
               "status": "open",
-              "latest_published_snapshot_id": "snapshot-1"
+              "latest_published_snapshot_id": "snapshot-1",
+              "mode": "pull_request"
             },
             "dependencies": {
               "blocked": false,
@@ -788,7 +790,8 @@
               "workspace_id": "ws-3f2a91c4",
               "version": 3,
               "status": "open",
-              "latest_published_snapshot_id": "snapshot-1"
+              "latest_published_snapshot_id": "snapshot-1",
+              "mode": "pull_request"
             },
             "dependencies": {
               "blocked": false,
@@ -885,6 +888,162 @@
         }
       },
       "note": "Unwatched rows still state watched:false, without unread/activity counters; workflow Done and closed state retain separate timestamps."
+    },
+    {
+      "params": {
+        "project_id": "proj-1",
+        "summary": true,
+        "linked_workspace_id": "workspace-1",
+        "tracker_agent_id": "agent-1",
+        "order": "anchor",
+        "limit": 100
+      },
+      "result": {
+        "project_id": "proj-1",
+        "summary": true,
+        "tasks": [
+          {
+            "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "project_id": "proj-1",
+            "number": 12,
+            "title": "Kanban drag does not persist",
+            "state": "open",
+            "status": "in_progress",
+            "labels": [
+              "bug",
+              "ui"
+            ],
+            "priority": "high",
+            "assignee": {
+              "kind": "agent",
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+            },
+            "created_by": {
+              "kind": "user"
+            },
+            "created_at": "2026-09-19T09:00:00Z",
+            "updated_at": "2026-09-19T10:12:00Z",
+            "closed_at": null,
+            "watched": true,
+            "unread_count": 2,
+            "session_started_ms": 1789808400000,
+            "last_activity_ms": 1789812720000,
+            "trackers": [
+              "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+            ],
+            "done_at": null,
+            "summary_truncated": true,
+            "links": {
+              "workspace_ids": [
+                "ws-3f2a91c4"
+              ],
+              "parent_task_id": null
+            },
+            "review_summary": {
+              "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+              "workspace_id": "ws-3f2a91c4",
+              "version": 3,
+              "status": "open",
+              "latest_published_snapshot_id": "snapshot-1",
+              "mode": "pull_request"
+            },
+            "dependencies": {
+              "blocked": false,
+              "waiting_on_count": 0,
+              "blocks_count": 0
+            },
+            "read_through": "tc-01K5ZQ9A1B2C3D4E5F6G7H8J9K",
+            "unread_agent_comments": 1,
+            "unread_mentions": 1,
+            "attachment_count": 0,
+            "matched_memberships": {
+              "linked_workspace_id": "workspace-1",
+              "tracker_agent_id": "agent-1"
+            },
+            "order_anchor_ms": 1735716600000
+          },
+          {
+            "id": "task-unknown-anchor",
+            "project_id": "proj-1",
+            "number": 1,
+            "title": "Kanban drag does not persist",
+            "state": "open",
+            "status": "in_progress",
+            "labels": [
+              "bug",
+              "ui"
+            ],
+            "priority": "high",
+            "assignee": {
+              "kind": "agent",
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+            },
+            "created_by": {
+              "kind": "user"
+            },
+            "created_at": "2026-09-19T09:00:00Z",
+            "updated_at": "2026-09-19T10:12:00Z",
+            "closed_at": null,
+            "watched": true,
+            "unread_count": 2,
+            "session_started_ms": 1789808400000,
+            "last_activity_ms": 1789812720000,
+            "trackers": [
+              "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+            ],
+            "done_at": null,
+            "summary_truncated": true,
+            "links": {
+              "workspace_ids": [
+                "ws-3f2a91c4"
+              ],
+              "parent_task_id": null
+            },
+            "review_summary": {
+              "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+              "workspace_id": "ws-3f2a91c4",
+              "version": 3,
+              "status": "open",
+              "latest_published_snapshot_id": "snapshot-1",
+              "mode": "pull_request"
+            },
+            "dependencies": {
+              "blocked": false,
+              "waiting_on_count": 0,
+              "blocks_count": 0
+            },
+            "read_through": "tc-01K5ZQ9A1B2C3D4E5F6G7H8J9K",
+            "unread_agent_comments": 1,
+            "unread_mentions": 1,
+            "attachment_count": 0,
+            "matched_memberships": {
+              "linked_workspace_id": "workspace-1",
+              "tracker_agent_id": "agent-1"
+            },
+            "order_anchor_ms": null
+          }
+        ],
+        "identities": {
+          "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E": {
+            "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E",
+            "name": "Fix drag",
+            "ordinal": 1,
+            "workspace_id": "ws-3f2a91c4",
+            "workspace_name": "spa-flaky-tests",
+            "provider": "codex_app_server",
+            "available": true
+          }
+        },
+        "user_session": {
+          "session_started_ms": 1758272400000,
+          "last_activity_ms": 1758276720000,
+          "previous_session_ended_ms": 1758218400000,
+          "gap_ms": 21600000,
+          "now_ms": 1758277020000
+        },
+        "basis": "opaque-task-query-basis"
+      },
+      "note": "Exact membership provenance survives truncated display relations. order_anchor_ms is authoritative query comparator data: integer including created-at fallback, explicit null when unknown (sorts last); present only for order:anchor."
     }
   ],
   "errors": [
@@ -954,5 +1113,251 @@
       },
       "note": "Oversized stored data is an explicit unavailable error. The refusal has no result or continuation and cannot silently omit a task."
     }
-  ]
+  ],
+  "exact_queries": {
+    "since": "3.27.0",
+    "capabilities": {
+      "watched": "tasks.listWatched",
+      "attention_rule": "tasks.listAttention",
+      "linked_workspace_id": "tasks.listLinkedWorkspace",
+      "tracker_agent_id": "tasks.listTracked",
+      "exclude_review_mode": "tasks.listReviewMode",
+      "order": "tasks.listOrder",
+      "exclude_assignee": "tasks.listExcludeAssignee",
+      "done_since": "tasks.listOrder",
+      "unfinished": "tasks.listReadiness",
+      "blocked": "tasks.listReadiness",
+      "held": "tasks.listReadiness",
+      "undelivered": "tasks.listReadiness"
+    },
+    "summary_required": true,
+    "null_selectors": "invalid_params",
+    "selectors": {
+      "watched": "boolean",
+      "attention_rule": [
+        "asked",
+        "legacy"
+      ],
+      "linked_workspace_id": "nonempty string <=128 bytes",
+      "tracker_agent_id": "nonempty string <=128 bytes",
+      "exclude_review_mode": [
+        "pull_request",
+        "snapshot"
+      ],
+      "order": [
+        "number",
+        "updated",
+        "priority",
+        "anchor"
+      ],
+      "done_since": "inclusive epoch milliseconds; done status only",
+      "unfinished": "boolean",
+      "blocked": "boolean",
+      "held": "boolean",
+      "undelivered": "boolean",
+      "exclude_assignee": "exact agent/user/project_agent assignee object; no extra fields"
+    },
+    "ordering": {
+      "number": "number DESC (default)",
+      "updated": "updated_at DESC, number DESC",
+      "priority": "priority DESC, number DESC",
+      "anchor": "anchor ASC, number DESC; missing anchor sorts last"
+    },
+    "basis": "opaque persisted project projection generation shared by list/counts/lookup reads only; mutation replies do not return it",
+    "cursor": "bound to store/project/all normalized selectors/order/projection generation; no snapshots across writes",
+    "generation_mismatch": {
+      "error_code": "conflict",
+      "retryable": false,
+      "details": {
+        "reason": "task_query_basis_changed",
+        "restart": true
+      }
+    },
+    "matched_memberships": "Per-row exact linked_workspace_id/tracker_agent_id match provenance, independent of truncated display links/trackers.",
+    "search": "No substring/locale search capability is advertised.",
+    "immediate_effects": "Client local mutation epoch plus post-ack authoritative refresh; no arithmetic count overlays.",
+    "agent_surface_streams": {
+      "note": "Each stream has its own explicit continuation. These example project active statuses are backlog/in_progress; consumers derive the complete non-review/non-Done selection from configured project columns, never from loaded task rows. Working/Assigned are retargeted together from cached working observation. Closed wins over all open groups. Assignment wins over tracking across every state/status.",
+      "active_statuses": [
+        "backlog",
+        "in_progress"
+      ],
+      "streams": [
+        {
+          "group": "Working (cached agent working only)",
+          "params": {
+            "project_id": "proj-1",
+            "summary": true,
+            "order": "priority",
+            "limit": 100,
+            "assignee": {
+              "kind": "agent",
+              "agent_id": "agent-1"
+            },
+            "state": "open",
+            "statuses": [
+              "backlog",
+              "in_progress"
+            ],
+            "blocked": false,
+            "undelivered": false
+          }
+        },
+        {
+          "group": "Assigned (cached agent not working)",
+          "params": {
+            "project_id": "proj-1",
+            "summary": true,
+            "order": "priority",
+            "limit": 100,
+            "assignee": {
+              "kind": "agent",
+              "agent_id": "agent-1"
+            },
+            "state": "open",
+            "statuses": [
+              "backlog",
+              "in_progress"
+            ],
+            "blocked": false
+          }
+        },
+        {
+          "group": "Assigned (cached agent working)",
+          "params": {
+            "project_id": "proj-1",
+            "summary": true,
+            "order": "priority",
+            "limit": 100,
+            "assignee": {
+              "kind": "agent",
+              "agent_id": "agent-1"
+            },
+            "state": "open",
+            "statuses": [
+              "backlog",
+              "in_progress"
+            ],
+            "blocked": false,
+            "undelivered": true
+          }
+        },
+        {
+          "group": "Blocked",
+          "params": {
+            "project_id": "proj-1",
+            "summary": true,
+            "order": "priority",
+            "limit": 100,
+            "assignee": {
+              "kind": "agent",
+              "agent_id": "agent-1"
+            },
+            "state": "open",
+            "statuses": [
+              "backlog",
+              "in_progress"
+            ],
+            "blocked": true
+          }
+        },
+        {
+          "group": "Tracked",
+          "params": {
+            "project_id": "proj-1",
+            "summary": true,
+            "order": "priority",
+            "limit": 100,
+            "tracker_agent_id": "agent-1",
+            "exclude_assignee": {
+              "kind": "agent",
+              "agent_id": "agent-1"
+            }
+          }
+        },
+        {
+          "group": "In review",
+          "params": {
+            "project_id": "proj-1",
+            "summary": true,
+            "order": "priority",
+            "limit": 100,
+            "assignee": {
+              "kind": "agent",
+              "agent_id": "agent-1"
+            },
+            "state": "open",
+            "status": "in_review"
+          }
+        },
+        {
+          "group": "Done",
+          "params": {
+            "project_id": "proj-1",
+            "summary": true,
+            "order": "priority",
+            "limit": 100,
+            "assignee": {
+              "kind": "agent",
+              "agent_id": "agent-1"
+            },
+            "state": "open",
+            "status": "done"
+          }
+        },
+        {
+          "group": "Closed",
+          "params": {
+            "project_id": "proj-1",
+            "summary": true,
+            "order": "priority",
+            "limit": 100,
+            "assignee": {
+              "kind": "agent",
+              "agent_id": "agent-1"
+            },
+            "state": "closed"
+          }
+        }
+      ],
+      "history": "Tracked has no state/status filter and excludes assigned agent exactly, including finished rows; Done and Closed remain independent streams."
+    },
+    "review_summary_mode": "Summary rows preserve additive review_summary.mode; canonical legacy review summaries are unchanged. Missing canonical stored review mode is snapshot for exclusion.",
+    "order_anchor_ms": "Only order:anchor rows: integer actual comparator anchor (including source fallback), explicit null for unknown sentinel sorting last. Other orders omit this field.",
+    "basis_fencing": {
+      "comparison": "Opaque persisted store-incarnation/projection-generation basis. Compare equality only within the same store; foreign-store tokens are incomparable. Never parse, lexically order, increment, subtract or perform arithmetic on a basis.",
+      "mutation_reply": "No query basis is returned by mutation acknowledgment.",
+      "scenarios": [
+        {
+          "name": "late aggregate before acknowledgment",
+          "steps": [
+            "Issue aggregate read at local mutation epoch N, capturing basis B.",
+            "Start user read/watch/assignment mutation; increment local epoch to N+1.",
+            "Old aggregate read arrives before acknowledgment.",
+            "Reject old aggregate installation because its captured local epoch N is obsolete."
+          ]
+        },
+        {
+          "name": "late aggregate after acknowledgment",
+          "steps": [
+            "Issue aggregate read at epoch N.",
+            "Start user mutation; increment local epoch to N+1.",
+            "Mutation acknowledgment arrives without query basis.",
+            "Old aggregate arrives after acknowledgment; reject because epoch N is obsolete.",
+            "Issue fresh aggregate read after acknowledgment at epoch N+1.",
+            "Install fresh totals directly; no arithmetic overlay or double count."
+          ]
+        },
+        {
+          "name": "second mutation while refreshed read is pending",
+          "steps": [
+            "After acknowledgment, issue fresh aggregate read at epoch N+1.",
+            "Another user mutation begins; increment epoch to N+2.",
+            "Read issued at N+1 arrives; reject despite being newer than the original read.",
+            "After second acknowledgment, refresh again and install authoritative totals directly."
+          ]
+        }
+      ]
+    }
+  }
 }

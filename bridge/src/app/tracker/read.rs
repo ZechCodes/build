@@ -99,7 +99,10 @@ impl TaskReadContext {
         method: &str,
         params: &Value,
     ) -> Result<TaskReadFence, String> {
-        let project_id = if matches!(method, "tasks.list" | "tasks.filterChoices") {
+        let project_id = if matches!(
+            method,
+            "tasks.list" | "tasks.filterChoices" | "tasks.counts" | "tasks.lookup"
+        ) {
             require_str(params, "project_id")?
         } else {
             let id = require_str(params, "task_id")?;

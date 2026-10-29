@@ -9,14 +9,31 @@ import {
 import { filterTasks, sortTasks } from "./trackerFilters.js";
 import { assigneeKey } from "./trackerModel.js";
 import { summaryTaskMutation } from "./taskSummaryCache.js";
+import { isPresentTaskMarker, newerTaskMarker } from "./taskOpaqueMarkers.js";
 
 const listKinds = new Set([TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TRACKER_TASKS_PAGE_KIND]);
 const newer = (held, incoming) => Date.parse(held?.updated_at) > Date.parse(incoming?.updated_at);
 
-function detailWithResponse(held, answer) {
-  if (newer(held?.task, answer.task)) return null;
-  const timeline = Object.hasOwn(answer, "timeline") ? answer.timeline : held?.timeline;
-  return preserveTaskFloors(held, { ...held, task: answer.task, timeline: timeline || [] });
+const watchFields = ["watch_started_after", "unread_count", "unread_mentions", "unread_agent_comments", "session_started_ms", "last_activity_ms"];
+
+function olderActionTask(held, incoming, read) {
+  const next = { ...held, watched: incoming.watched === true };
+  for (const field of ["read_through", "dismissed_through"]) {
+    const marker = newerTaskMarker(held?.[field], incoming[field]);
+    if (isPresentTaskMarker(marker)) next[field] = marker;
+  }
+  if (next.watched) {
+    const floor = newerTaskMarker(held.watched ? held.watch_started_after : null, incoming.watch_started_after);
+    if (isPresentTaskMarker(floor)) next.watch_started_after = floor;
+  } else for (const field of watchFields) delete next[field];
+  return preserveTaskReviewSummary(held, incoming, { readOrder: read, keepHeld: true, allowMissing: false, baseRow: next });
+}
+
+function detailWithResponse(held, answer, read) {
+  const older = newer(held?.task, answer.task);
+  const task = older ? olderActionTask(held.task, answer.task, read) : answer.task;
+  const timeline = !older && Object.hasOwn(answer, "timeline") ? answer.timeline : held?.timeline;
+  return preserveTaskFloors(held, { ...held, task, timeline: timeline || [] });
 }
 
 function queryMatches(address, task) {
@@ -31,11 +48,11 @@ function queryMatches(address, task) {
 function listWithResponse(address, held, task, read) {
   const rows = held?.tasks || [];
   const prior = rows.find((row) => row.id === task.id);
-  if (newer(prior, task)) return null;
-  const includes = queryMatches(address, task);
+  const incoming = newer(prior, task) ? olderActionTask(prior, task, read) : task;
+  const includes = queryMatches(address, incoming);
   if (!prior && (!includes || address.kind === TRACKER_TASKS_PAGE_KIND)) return null;
   const remaining = rows.filter((row) => row.id !== task.id);
-  const next = preserveTaskReviewSummary(prior, task, { readOrder: read, allowMissing: true });
+  const next = preserveTaskReviewSummary(prior, incoming, { readOrder: read, allowMissing: true });
   return { columns: [], ...held, read_order: Math.max(held?.read_order || 0, read), tasks: sortTasks(includes ? [...remaining, next] : remaining) };
 }
 
@@ -58,7 +75,7 @@ export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { 
   const addresses = [taskAddress(deviceId, projectId, task.id), ...listed, ...listed.map(readsAddress), taskWaitingOnGenerationAddress(deviceId, projectId), readsAddress(taskAddress(deviceId, projectId, task.id))];
   const read = await nextTaskRead();
   const actionRead = issuedRead ?? read;
-  const summary = summaryTaskMutation({ deviceId, projectId }, task, read, { accept, fullTask: true });
+  const summary = summaryTaskMutation({ deviceId, projectId }, task, read, { accept, fullTask: true, confirmedAction: true });
   return mergeCachedRecordsTogether([...addresses, ...summary.addresses], (allRecords) => {
     if (!accept()) return null;
     const records = allRecords.slice(0, addresses.length);
@@ -66,7 +83,7 @@ export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { 
     if (olderAction(heldNote, actionRead)) return null;
     const normalized = summary.reduce(allRecords.slice(addresses.length));
     if (!normalized) return null;
-    const detail = detailWithResponse(records[0]?.value, answer);
+    const detail = detailWithResponse(records[0]?.value, answer, read);
     const lists = listed.map((address, index) => listWithResponse(address, records[index + 1]?.value, task, read));
     const notes = lists.map((list, index) => list ? withWritten(records[listed.length + index + 1]?.value, [task.id], read) : null);
     return [detail, ...lists, ...notes, detail ? nextReverseGeneration(records.at(-2)?.value) : null,

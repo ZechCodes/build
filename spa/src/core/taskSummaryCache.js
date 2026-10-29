@@ -158,7 +158,7 @@ function markerAuthority(held, incoming, read, counters) {
   const olderContent = Date.parse(incoming.updated_at) < Date.parse(before?.updated_at);
   const stronger = strongerMarks(before, incoming);
   const stale = olderContent && stronger || countersOvertaken(held, incoming, read)
-    || needsCounterRefresh(held, incoming, olderContent, counters.source)
+    || needsCounterRefresh(held, incoming, olderContent, counters)
     || incompleteActionCounters(held, incoming, counters);
   const source = olderContent ? Object.fromEntries(markerFields.map((field) => [field, incoming[field]])) : incoming;
   return { source: stronger ? source : before, stale: Boolean(stale) };
@@ -166,8 +166,8 @@ function markerAuthority(held, incoming, read, counters) {
 
 const completeCounterFields = (task, fields) => fields.every((field) => Number.isSafeInteger(task?.[field]) && task[field] >= 0);
 const completeCounters = (task) => counterFamilies.every(({ fields }) => completeCounterFields(task, fields));
-const needsCounterRefresh = (held, incoming, olderContent, source) => held?.needs_unread_refresh
-  && (olderContent || !coversMarks(held.task, incoming) || !completeCounters(source));
+const needsCounterRefresh = (held, incoming, olderContent, counters) => held?.needs_unread_refresh
+  && (counters.action || olderContent || !coversMarks(held.task, incoming) || !completeCounters(counters.source));
 
 function incompleteActionCounters(held, incoming, { source, fullTask, action }) {
   if (!action) return false;
@@ -186,11 +186,15 @@ function summaryValue(held, task, read, counters = { source: task, fullTask: fal
   const reviewed = preserveTaskReviewSummary(before, task, {
     readOrder: read, keepHeld: older, allowMissing: !older, baseRow: older ? before : task,
   });
+  // Only the action owner, after checking its per-task dispatch note in the
+  // joint transaction, can accept watch state across older ordinary content.
+  // A stale summary page never receives this authority.
+  const confirmed = counters.confirmedAction ? { ...reviewed, watched: task.watched } : reviewed;
   // Marks and their paired counters have their own authority, independently
   // of ordinary row request order. Preserve held fields while accepting a
   // stronger incoming mark, including an older dispatch's read report.
   const authority = markerAuthority(held, task, read, counters);
-  const next = preserveMarks(authority.source, preserveMarks(before, reviewed));
+  const next = preserveMarks(authority.source, preserveMarks(before, confirmed));
   return { task: next, read_order: Math.max(read, held?.read_order || 0), needs_unread_refresh: next.watched !== false && authority.stale };
 }
 
@@ -232,8 +236,8 @@ export function writeSummaryTask(scope, task, read, options = {}) {
  * and an action acknowledgment never supplies a projection basis.
  * fullTask explicitly selects authoritative omissions; compact patches retain
  * fields they omit. Both paths use the same PR, marker and counter authority. */
-export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false } = {}) {
-  validateSummaryMutation(scope, task, read, fullTask);
+export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false, confirmedAction = false } = {}) {
+  validateSummaryMutation(scope, task, read, fullTask, confirmedAction);
   return {
     addresses: [summaryAddress(scope, task.id), invalidationAddress(scope)],
     reduce: ([held, invalidation]) => {
@@ -242,15 +246,15 @@ export function summaryTaskMutation(scope, task, read, { accept = () => true, fu
       // visible to marker/counter reconciliation before patching held fields.
       const source = fullTask ? { read_through: null, watch_started_after: null, dismissed_through: null, ...task } : task;
       const row = summaryValue(held?.value, summaryPatch(held?.value?.task, source, fullTask), read,
-        { source, fullTask, action: true });
+        { source, fullTask, action: true, confirmedAction });
       return [row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) }];
     },
   };
 }
 
-function validateSummaryMutation(scope, task, read, fullTask) {
+function validateSummaryMutation(scope, task, read, fullTask, confirmedAction) {
   if (typeof task?.id !== "string" || !task.id || !Number.isSafeInteger(read) || read <= 0) throw new Error("Invalid summary write");
-  if (typeof fullTask !== "boolean") throw new Error("Expected an explicit full-task or compact-patch mode");
+  if (typeof fullTask !== "boolean" || typeof confirmedAction !== "boolean") throw new Error("Expected explicit task mutation authority flags");
   if (Object.hasOwn(task, "project_id") && task.project_id !== scope.projectId) throw new Error("Foreign project summary write");
 }
 

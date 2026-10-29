@@ -169,3 +169,49 @@ it("checks fallback read-floor acceptance inside a delayed cache transaction", a
   expect(retargeted).toBe(true);
   expect((await readTaskRecord(scope.deviceId, scope.projectId, taskId)).task.read_through).toBe("tc-01");
 });
+
+it("keeps newer detail body/title/timeline while an older full read acknowledgment advances its floor", async () => {
+  observation.carries = true;
+  const pending = deferred(), newer = full({ title: "Newer title", body: "Newer body", watched: true,
+    updated_at: "2026-10-29T13:00:00Z", watch_started_after: "" });
+  await writeTaskRecord(scope.deviceId, scope.projectId, taskId, { task: newer, timeline });
+  const read = await nextTaskRead(), query = await beginSummaryQuery(scope, {}, read);
+  await landSummaryPage(query, { summary: true, basis: "newer-content", tasks: [normalized({ title: newer.title,
+    updated_at: newer.updated_at, watched: true, watch_started_after: "" })] }, { read });
+  session.call.mockImplementation((method) => method === "tasks.get" ? Promise.resolve({ task: newer, timeline }) : pending.promise);
+  await mount(); await vi.waitFor(() => expect(count("tasks.read_through")).toBe(1));
+  pending.resolve({ task: full({ title: "Old title", body: "Old body", watched: true, read_through: "tc-30\0", watch_started_after: "", unread_count: 0 }) });
+  await settle();
+  const detail = await readTaskRecord(scope.deviceId, scope.projectId, taskId);
+  expect(detail.task).toMatchObject({ title: "Newer title", body: "Newer body", read_through: "tc-30\0" });
+  expect(detail.timeline).toEqual(timeline);
+  expect((await cachedSummary()).task).toMatchObject({ title: "Newer title", read_through: "tc-30\0" });
+});
+
+it.each([{ id: "foreign-task" }, { project_id: "foreign-project" }, { number: 13 }])(
+  "rejects a full acknowledgment for a different captured task identity %#", async (patch) => {
+    const pending = deferred(); session.call.mockImplementation((method) => method === "tasks.get"
+      ? Promise.resolve({ task: full(), timeline }) : pending.promise);
+    const mounted = await mount(); mounted.button().click(); await vi.waitFor(() => expect(count("tasks.watch")).toBe(1));
+    const before = await cachedSummary();
+    pending.resolve({ task: full({ watched: true, ...patch }) });
+    await settle(); expect(await cachedSummary()).toEqual(before);
+  },
+);
+
+it("does not let an older no-task read acknowledgment raise the floor after a newer full watch action", async () => {
+  const read = deferred(), watch = deferred(), longer = [comment({ ...timeline[0], id: "tc-99" })];
+  await writeTaskRecord(scope.deviceId, scope.projectId, taskId, { task: full(), timeline: longer });
+  session.call.mockImplementation((method) => method === "tasks.get" ? Promise.resolve({ task: full(), timeline: longer })
+    : method === "tasks.watch" ? watch.promise : read.promise);
+  observation.carries = true;
+  const first = await mount(); await vi.waitFor(() => expect(count("tasks.read_through")).toBe(1));
+  first.page.dispose(); first.host.remove(); pages = [];
+  observation.carries = false;
+  const second = await mount(); second.button().click(); await vi.waitFor(() => expect(count("tasks.watch")).toBe(1));
+  watch.resolve({ task: full({ watched: true, watch_started_after: "", read_through: "tc-20", unread_count: 0 }) });
+  await vi.waitFor(async () => expect((await cachedSummary()).task.read_through).toBe("tc-20"));
+  read.resolve({}); await settle();
+  expect((await cachedSummary()).task.read_through).toBe("tc-20");
+  expect((await readTaskRecord(scope.deviceId, scope.projectId, taskId)).task.read_through).toBe("tc-20");
+});

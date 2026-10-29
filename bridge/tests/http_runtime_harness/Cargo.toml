@@ -8,13 +8,13 @@ publish = false
 
 [[test]]
 name = "runtime"
-path = "../http_runtime.rs"
+path = "runtime.rs"
 
 [dependencies]
 serde_json = "1"
-tokio = { version = "1", features = ["sync", "time", "macros", "rt", "test-util"] }
+tokio = { version = "=1.52.3", features = ["sync", "time", "macros", "rt", "test-util"] }
 rustls = { version = "=0.23.41", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
-rustls-pemfile = "=2.2.0"
+aws-lc-rs = "=1.17.0"
 libc = "0.2"
 tempfile = "3"
 rcgen = "=0.13.2"

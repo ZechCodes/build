@@ -1,5 +1,5 @@
 // Independent runtime modules compile before the shared-execution wiring handoff.
-#[path = "../src/http/sse.rs"]
+#[path = "../../src/http/sse.rs"]
 mod sse;
 
 use serde_json::json;
@@ -96,7 +96,7 @@ fn sse_encoding_never_emits_cursor_and_rejects_oversized_or_unclassified_event()
     assert_eq!(SseEvent::heartbeat().as_str(), ": keepalive\n\n");
 }
 
-#[path = "../src/http/settings.rs"]
+#[path = "../../src/http/settings.rs"]
 mod settings;
 
 #[test]
@@ -143,7 +143,7 @@ fn http_flag_and_limits_fail_closed_on_malformed_configuration() {
     .is_none());
 }
 
-#[path = "../src/http/tls.rs"]
+#[path = "../../src/http/tls.rs"]
 mod tls;
 
 #[test]
@@ -171,7 +171,7 @@ fn native_tls_requires_matching_key_and_owner_only_permissions() {
     assert!(tls::load(&cert_path, &key_path).is_err());
 }
 
-#[path = "../src/http/stream_slot.rs"]
+#[path = "../../src/http/stream_slot.rs"]
 mod stream_slot;
 
 #[derive(Clone)]
@@ -241,7 +241,7 @@ fn deleted_stream_tombstone_requires_exact_predecessor() {
     );
 }
 
-#[path = "../src/http/limits.rs"]
+#[path = "../../src/http/limits.rs"]
 mod limits;
 
 #[test]
@@ -272,7 +272,7 @@ fn body_budget_reserves_complete_allowance_and_preserves_small_call_headroom() {
     assert_eq!(budget.available(), limits::TOTAL_BUFFER_BYTES);
 }
 
-#[path = "../src/http/listener.rs"]
+#[path = "../../src/http/listener.rs"]
 mod listener;
 
 #[tokio::test]
@@ -327,7 +327,7 @@ async fn native_listener_serves_tls_and_shuts_down_all_connections() {
         .is_err());
 }
 
-#[path = "../src/http/body.rs"]
+#[path = "../../src/http/body.rs"]
 mod body;
 
 #[tokio::test]
@@ -401,7 +401,7 @@ fn json_output_is_serialized_once_with_explicit_cap_and_reservation_lifetime() {
     assert_eq!(budget.available(), limits::TOTAL_BUFFER_BYTES);
 }
 
-#[path = "../src/http/endpoint_state.rs"]
+#[path = "../../src/http/endpoint_state.rs"]
 mod endpoint_state;
 
 #[test]
@@ -463,7 +463,7 @@ fn endpoint_epoch_survives_restart_rotates_on_policy_disable_and_tracks_registra
     );
 }
 
-#[path = "../src/http/policy.rs"]
+#[path = "../../src/http/policy.rs"]
 mod policy;
 
 #[tokio::test]
@@ -567,7 +567,7 @@ async fn native_policy_checks_authority_exact_cors_and_rejects_compression() {
     );
 }
 
-#[path = "../src/http/discovery_limits.rs"]
+#[path = "../../src/http/discovery_limits.rs"]
 mod discovery_limits;
 
 #[tokio::test(start_paused = true)]
@@ -590,7 +590,7 @@ async fn public_discovery_rate_limit_is_source_and_device_bounded() {
     assert!(limiter.admit(source));
 }
 
-#[path = "../src/http/sse_stream.rs"]
+#[path = "../../src/http/sse_stream.rs"]
 mod sse_stream;
 
 #[tokio::test(start_paused = true)]

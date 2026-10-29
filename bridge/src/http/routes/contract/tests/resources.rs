@@ -203,3 +203,48 @@ fn every_fixture_passes_through_its_actual_resource_decoder_without_loss() {
         assert_eq!(route.params, params, "{}", op.method);
     }
 }
+
+#[test]
+fn six_legacy_resources_have_explicit_placement_and_preserve_declared_input_objects() {
+    // These are route transport tests, not a substitute for the old handlers'
+    // permissive/domain validation or #908's future shared Invocation seam.
+    for (method, verb, path, params) in [
+        (
+            "agent.start",
+            "POST",
+            "/v1/agent-starts",
+            json!({"id":"run-7","agent_id":"a","future":null}),
+        ),
+        (
+            "agent.interrupt",
+            "POST",
+            "/v1/agent-interruptions",
+            json!({"entity_id":"run-7","agent_id":"a","conversation_id":"c","future":true}),
+        ),
+        ("bridge.stats", "GET", "/v1/bridge/diagnostics", json!({})),
+        ("ping", "GET", "/v1/health", json!({})),
+        (
+            "session.hello",
+            "POST",
+            "/v1/session-greetings",
+            json!({"client":{"name":7},"future":[1,2]}),
+        ),
+        (
+            "term.list",
+            "POST",
+            "/v1/terminal-roster-queries",
+            json!({"project_id":"proj-1","future":"retained"}),
+        ),
+    ] {
+        let route = resolve(verb, path, None, params.clone()).unwrap();
+        assert_eq!(route.method, method);
+        assert_eq!(route.params, params, "{method}");
+        assert!(
+            matches!(
+                resolve(verb, path, None, json!([])),
+                Err(RouteError::InvalidParams { .. })
+            ),
+            "{method}"
+        );
+    }
+}

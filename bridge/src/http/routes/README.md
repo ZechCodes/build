@@ -30,7 +30,9 @@ query resources with JSON. Path placeholders use existing selector names and
 one URL-encoded segment each. The decoder decodes once and refuses malformed
 encoding, separators, control characters and dot segments. A body cannot
 contradict a path selector. All remaining fields, including unknown fields,
-reach typed validation. GET resources accept only path selectors and no body
+reach existing validation without new parameter rules. Registered v1 methods
+reject unknown fields; six legacy methods preserve their existing unknown-field
+compatibility, defaults and optional-field behavior. GET resources accept only path selectors and no body
 fields. No route aliases, redirects, absolute URLs, arbitrary Git commands,
 method tunnel, terminal output/control or QA route is exported.
 
@@ -50,8 +52,10 @@ domain parameter/result schemas are explicitly incomplete: the registry has no
 schema reflection. Type names/source links come from `v1_method!`; examples are
 existing wire fixtures checked against the compiled registry. Neither examples
 nor opaque objects claim complete machine-readable parameter constraints.
-Legacy entries link to their implementation until shared execution provides
-their normalized types. Lifecycle/SSE routes are owned by #911 and remain a
+Legacy entries link to their implementation and have no declared parameter
+types at this base. Their unknown fields remain compatible; existing domain
+checks still apply. #908 preserves these objects at its shared execution seam
+with an object-shape check, rather than silently tightening WebRTC semantics. Lifecycle/SSE routes are owned by #911 and remain a
 separate contract. Shared API_VERSION allocation belongs to integration.
 
 ## Metadata and event binding
@@ -104,8 +108,9 @@ ten separately uploaded attachments; it does not carry ten inline payloads.
 Existing decoded limits are still authoritative. The adapter byte limit does
 not equate to resident memory: JSON strings, typed normalization/cloning and
 decoded bytes can coexist. #911 owns the approved 32 MiB aggregate input/output
-wire reservation and separate large-work concurrency permits held through
-running work/cancellation cleanup. Boundary and streaming-body/concurrency tests
+wire reservation and 22 MiB bulk sub-budget, preserving 10 MiB small-RPC headroom, plus
+separate large-work concurrency permits (at most two globally and one per
+Opening) held through running work/cancellation cleanup. Boundary and streaming-body/concurrency tests
 belong to that runtime. No second upload store or sync journal is introduced.
 
 ## Independent validation before runtime handoff
@@ -115,6 +120,12 @@ locked dependencies already present in the bridge, without editing Cargo/lib
 files owned by #911. It tests every route and fixture translation, parser
 rejections, conflict checks, metadata lookup and bounds. The bridge integration
 contract test independently validates generated examples/unknown-param failures
-against the real typed registry. The SPA coverage test scans actual sources,
+against the real typed registry (141 registered methods only). Legacy coverage
+is separately distinguished from typed normalization evidence: six tests in
+bridge/tests/http_resource_legacy.rs characterize the actual old FrameHandler
+seam, with success/compatibility for reads and required/domain refusals for
+agent controls without launching harnesses. They do not claim future Invocation
+validation or successful agent process execution. The SPA coverage
+test scans actual sources,
 including dynamic dispatch sites, without intersecting away unknown methods.
 These tests do not claim listener/auth/admission/SSE integration evidence.

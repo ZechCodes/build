@@ -74,15 +74,55 @@ it("preserves totals on marker refusal and retries only when explicitly refreshe
   expect((await reader.read()).watched_unread_total).toBe(1);
 });
 
-it.each(["pending", "acknowledged", "second mutation"])("rejects pre-mutation count reads after %s epoch changes", async () => {
+it.each([false, true])("rejects pre-mutation count reads when acknowledgment has arrived: %s", async (acknowledged) => {
   const pending = deferred(), rpc = vi.fn().mockResolvedValueOnce(counts()).mockImplementationOnce(() => pending.promise);
   const reader = reads.createTaskAggregateReader(options(rpc));
   await reader.refresh(); const before = await reader.read();
   const request = reader.refresh(); await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(2));
-  epoch = {};
+  epoch = {}; active = false;
+  expect(await reader.refresh()).toBe(false);
+  if (acknowledged) { epoch = {}; active = true; }
   pending.resolve(counts([], { watched_unread_total: 99 }));
   expect(await request).toBe(false);
   expect(await reader.read()).toEqual(before);
+});
+
+it("fences an acknowledgment refresh overtaken by another mutation, then installs fresh authoritative totals", async () => {
+  const pending = deferred(), rpc = vi.fn().mockResolvedValueOnce(counts())
+    .mockImplementationOnce(() => pending.promise).mockResolvedValueOnce(counts([], { watched_unread_total: 1 }));
+  const reader = reads.createTaskAggregateReader(options(rpc));
+  await reader.refresh(); const before = await reader.read();
+  epoch = {}; // First pending intent.
+  epoch = {}; // Its acknowledgment, which has no query basis.
+  const refresh = reader.refresh(); await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(2));
+  epoch = {}; active = false; // A second mutation starts while that refresh is out.
+  pending.resolve(counts([], { watched_unread_total: 99 }));
+  expect(await refresh).toBe(false); expect(await reader.read()).toEqual(before);
+  epoch = {}; active = true;
+  expect(await reader.refresh()).toBe(true);
+  expect((await reader.read()).watched_unread_total).toBe(1);
+  expect(rpc).toHaveBeenCalledTimes(3);
+});
+
+it("admits 100 requested agents and exact unknown-agent zero buckets without roster reads", async () => {
+  const ids = Array.from({ length: 100 }, (_, index) => `agent-${index}`);
+  const rpc = vi.fn().mockResolvedValue(counts(ids));
+  const reader = reads.createTaskAggregateReader(options(rpc));
+  await reader.refresh(ids);
+  expect((await reader.read(ids)).agents).toHaveLength(100);
+  expect(rpc.mock.calls.map(([method]) => method)).toEqual(["tasks.counts"]);
+});
+
+it("allows lookup independently and keeps its confirmed result readable after an offline error", async () => {
+  support = { lookup: true };
+  const rpc = vi.fn().mockResolvedValueOnce(found()).mockRejectedValueOnce(new Error("offline"));
+  const reader = reads.createTaskLookupReader(options(rpc));
+  await reader.refresh(12); const before = await reader.read(12);
+  await expect(reader.refresh(12)).rejects.toThrow("offline");
+  support = {};
+  expect(await reader.refresh(12)).toBe(false);
+  expect(await reader.read(12)).toEqual(before);
+  expect(rpc).toHaveBeenCalledTimes(2);
 });
 
 it("separates unknown, confirmed missing, found and failed lookup, retaining bounded summaries and identities", async () => {

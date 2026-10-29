@@ -1977,7 +1977,7 @@ describe("a session that landed on a relayed pair", () => {
 
 const clearToken = (byte) => Buffer.alloc(32, byte).toString("base64").replace(/=+$/, "");
 const clearSdp = (byte) => `v=0\r\na=fingerprint:sha-256 ${Array(32).fill(byte).join(":")}\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=sctp-port:5000\r\n`;
-async function clearStand({ respond, waitForAnswer = true, onLocal = () => {}, ...options } = {}) {
+async function clearStand({ respond, waitForAnswer = true, onLocal = () => {}, offerSdp = () => clearSdp("AB"), ...options } = {}) {
   const binding = { sessionId: "app-session", createChannelBinding: vi.fn(() => ({
     prove: vi.fn(async (challenge) => {
       if (challenge.session_id !== "app-session") throw new Error("wrong session");
@@ -1989,7 +1989,7 @@ async function clearStand({ respond, waitForAnswer = true, onLocal = () => {}, .
     }), close() {},
   })) };
   class ClearPeer extends FakePeerConnection {
-    async createOffer() { return { type: "offer", sdp: clearSdp("AB") }; }
+    async createOffer() { return { type: "offer", sdp: offerSdp(this.localDescriptions.length) }; }
     async setLocalDescription(description) { await super.setLocalDescription(description); onLocal(this); }
   }
   const { hashSdp } = await import("../src/core/peerBinding.js");
@@ -2296,6 +2296,8 @@ describe("clear negotiation attempt fences", () => {
     const restarted = stood.signalled.filter(([method]) => method === "rtc.offer").map(([, params]) => params);
     expect(restarted.map((params) => params.negotiation)).toEqual([1, 2]);
     expect(restarted[1].peer_nonce).toBe(restarted[0].peer_nonce);
+    expect(restarted[0].peer_token).toBeUndefined();
+    expect(restarted[1].peer_token).toBe(clearToken(2));
     const push = { type: "rtc.ice", candidate: { candidate: "candidate:1 typ host" }, peer_token: clearToken(2), negotiation: 1 };
     stood.candidateSinks[0](push); expect(peer.remoteCandidates).toEqual([]);
     stood.candidateSinks[0]({ ...push, negotiation: 2 }); expect(peer.remoteCandidates).toEqual([push.candidate]);
@@ -2326,11 +2328,117 @@ describe("retired terminal control isolation", () => {
     const old = link.bindTerminal(terminalHandle("old-term"));
     const newer = link.bindTerminal(terminalHandle("new-term")); newer.catch(() => {});
     await expect(old).rejects.toThrow(/replaced/);
-    await vi.waitFor(() => expect(term.sent.length).toBe(2));
+    await vi.waitFor(() => expect(term.sent.length).toBe(1));
     control(term, { ...appChallenge, session_id: "old-term" });
     control(term, { ...appChallenge, session_id: "new-term" });
-    await vi.waitFor(() => expect(term.sent.length).toBe(3));
+    await vi.waitFor(() => expect(term.sent.length).toBe(2));
     control(term, { ...appAck, session_id: "new-term" });
     expect((await newer).isClosed()).toBe(false);
+  });
+});
+
+describe("physical proof write cancellation", () => {
+  it("does not send a superseded terminal begin parked behind channel backpressure", async () => {
+    const stood = await clearStand(); const link = await finishClear(stood); onTestFinished(() => link.close());
+    const term = stood.peer().channels.get("term"); term.bufferedAmount = 2 * 1024 * 1024;
+    const old = link.bindTerminal(terminalHandle("old-term"));
+    await Promise.resolve();
+    const newer = link.bindTerminal(terminalHandle("new-term")); newer.catch(() => {});
+    await expect(old).rejects.toThrow(/replaced/);
+    term.bufferedAmount = 0; term.emit("bufferedamountlow");
+    await vi.waitFor(() => expect(term.sent.length).toBe(1));
+    expect(JSON.parse(term.sent[0]).session_id).toBe("new-term");
+    control(term, { ...appChallenge, session_id: "new-term" });
+    await vi.waitFor(() => expect(term.sent.length).toBe(2));
+    control(term, { ...appAck, session_id: "new-term" }); await newer;
+  });
+});
+
+describe("terminal replacement publication", () => {
+  it("publishes the current bound term and preserves it across a failed replacement", async () => {
+    const stood = await clearStand(); const link = await finishClear(stood); onTestFinished(() => link.close());
+    const term = stood.peer().channels.get("term");
+    expect(link.term).toBeNull();
+    const firstPending = link.bindTerminal(terminalHandle("term-1")); await proveTerminal(term, "term-1", 0);
+    const first = await firstPending; expect(link.term).toBe(first);
+    const bad = link.bindTerminal(terminalHandle("term-bad"));
+    control(term, { ...appAck, session_id: "term-bad" }); await expect(bad).rejects.toThrow();
+    expect(link.term).toBe(first);
+    const start = term.sent.length;
+    const secondPending = link.bindTerminal(terminalHandle("term-2")); await proveTerminal(term, "term-2", start);
+    const second = await secondPending; expect(link.term).toBe(second);
+    term.close(); expect(link.term).toBeNull();
+  });
+
+  it("pauses old outbound admission until replacement proof fails or commits", async () => {
+    const stood = await clearStand(); const link = await finishClear(stood); onTestFinished(() => link.close());
+    const term = stood.peer().channels.get("term");
+    const firstPending = link.bindTerminal(terminalHandle("term-1")); await proveTerminal(term, "term-1", 0); const first = await firstPending;
+    const bad = link.bindTerminal(terminalHandle("term-bad"));
+    const held = first.sendFrame({ old: "resumes on failure" }); held.catch(() => {});
+    await vi.waitFor(() => expect(term.sent.length).toBe(3));
+    expect(term.sent.map((text) => JSON.parse(text).payload).filter(Boolean)).toEqual([]);
+    control(term, { ...appAck, session_id: "term-bad" }); await expect(bad).rejects.toThrow();
+    await held; expect(JSON.parse(term.sent.at(-1)).payload).toEqual({ old: "resumes on failure" });
+    const next = link.bindTerminal(terminalHandle("term-2"));
+    const canceled = first.sendFrame({ old: "never sent after ack" }); const rejected = expect(canceled).rejects.toThrow();
+    const start = term.sent.length;
+    await proveTerminal(term, "term-2", start); await next; await rejected;
+    expect(term.sent.some((text) => JSON.parse(text).payload?.old === "never sent after ack")).toBe(false);
+  });
+});
+
+describe("native attempt callback fencing", () => {
+  it("ignores an old handler and old ufrag after restarting the same native peer", async () => {
+    const stood = await clearStand({ offerSdp: (round) => clearSdp("AB") + `a=ice-ufrag:round-${round}\r\n` });
+    const link = await finishClear(stood); onTestFinished(() => link.close());
+    const peer = stood.peer(); const oldCallback = peer.listeners.icecandidate[0];
+    peer.fail(); await vi.waitFor(() => expect(peer.remoteDescriptions).toHaveLength(2));
+    const candidate = { candidate: "candidate:1 typ host", usernameFragment: "round-0" };
+    peer.gather(candidate);
+    oldCallback({ candidate: { ...candidate, usernameFragment: "round-1" } });
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice")).toEqual([]);
+    peer.gather({ ...candidate, usernameFragment: "round-1" });
+    await vi.waitFor(() => expect(stood.signalled.filter(([method]) => method === "rtc.ice")).toHaveLength(1));
+    expect(stood.signalled.find(([method]) => method === "rtc.ice")[1]).toMatchObject({ peer_token: clearToken(2), negotiation: 2 });
+  });
+
+  it("handles a raw close replayed before role binder initialization", async () => {
+    class ClosingPeer extends FakePeerConnection {
+      async createOffer() { return { type: "offer", sdp: clearSdp("AB") }; }
+      createDataChannel(label, init) {
+        const channel = super.createDataChannel(label, init);
+        const add = channel.addEventListener.bind(channel);
+        let closed = false;
+        channel.addEventListener = (type, callback) => {
+          add(type, callback);
+          if (label === "app" && type === "close" && !closed) { closed = true; channel.readyState = "closed"; callback(); }
+        };
+        return channel;
+      }
+    }
+    const stood = await clearStand({ waitForAnswer: false, RTCPeerConnectionImpl: ClosingPeer });
+    await expect(stood.link).rejects.toThrow(/peer binding closed/);
+    expect(stood.peer().closed).toBe(true);
+  });
+});
+
+describe("finite signaling tail", () => {
+  it.each([false, true])("expires pending ICE work without penalizing empty native gathering (pending=%s)", async (pending) => {
+    vi.useFakeTimers(); onTestFinished(() => vi.useRealTimers());
+    const stood = await clearStand({ openTimeoutMs: 1000,
+      onLocal: (peer) => { peer.iceGatheringState = "gathering"; if (pending) peer.gather({ candidate: "candidate:1 typ host" }); },
+      signalImpl: (method, params) => {
+        if (method === "rtc.offer") return clearAnswer(params);
+        if (method === "rtc.ice") return new Promise(() => {});
+        return Promise.resolve({});
+      } });
+    const link = await finishClear(stood); onTestFinished(() => link.close());
+    await vi.advanceTimersByTimeAsync(1001);
+    await link.whenInitialSignalingComplete();
+    expect(stood.peer().closed).toBe(pending);
+    const before = stood.signalled.length;
+    stood.peer().gather({ candidate: "candidate:late typ host" });
+    expect(stood.signalled.length).toBe(before);
   });
 });

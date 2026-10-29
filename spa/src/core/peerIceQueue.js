@@ -53,6 +53,7 @@ export function createPeerIceQueue({ deliver }) {
       ready = true;
       for (const candidate of held.splice(0)) deliver(candidate);
     },
+    hasPending: () => count > 0,
     reset: clear,
     close() { ended = true; clear(); },
   };

@@ -1,14 +1,13 @@
-import { bindCarrier, openCarrier, peerFrames } from "./carrier.js";
+import { openCarrier, peerFrames } from "./carrier.js";
 import { classifyTransportPath, TURN } from "./transportPath.js";
 import { candidateTypeOf, createRelayHold, directPairStatus, hasLocalHostCandidate, offerHasHostCandidate } from "./iceCandidates.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { createDirectPairMonitor } from "./directPairMonitor.js";
 import { browserCandidateDiagnostic, browserRtcErrorName, candidateDiagnostic, directPairNoTryReason, remoteCandidateOutcome, safeCandidateReason } from "./rtcDiagnostics.js";
-
-import { acceptPeerAnswer, createChannelBinding, createPeerOffer, DTLS_JSON_PROTOCOL } from "./peerBinding.js";
+import { acceptPeerAnswer, createPeerOffer, DTLS_JSON_PROTOCOL } from "./peerBinding.js";
 import { createPeerIceQueue } from "./peerIceQueue.js";
+import { CHANNELS, createRoleBindings, terminalCredentials } from "./peerChannelBindings.js";
 
-const CHANNELS = [["app", 0], ["term", 1]];
 const OPEN_TIMEOUT_MS = 15000;
 const HELD_ICE_PUSH = Symbol("held authenticated ICE push");
 
@@ -130,11 +129,14 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   let initialSignalingComplete = Promise.resolve();
   let currentSignalingComplete = initialSignalingComplete;
   const newLocalCandidates = () => ({
-    generation: negotiationGeneration, gathered: candidateCounts(), delivered: candidateCounts(), failed: candidateCounts(), pending: new Set(),
+    generation: negotiationGeneration, active: true, ufrags: new Set(), gathered: candidateCounts(), delivered: candidateCounts(), failed: candidateCounts(), pending: new Set(),
     completed: false, embeddedHost: false,
   });
   let localCandidates = newLocalCandidates();
-  const rememberLocalOffer = (sdp) => { localCandidates.embeddedHost ||= offerHasHostCandidate(sdp); };
+  const rememberLocalOffer = (sdp) => {
+    localCandidates.embeddedHost ||= offerHasHostCandidate(sdp);
+    localCandidates.ufrags = iceUfrags(sdp);
+  };
   const reportLocalCandidates = async (phase, round = localCandidates) => {
     const stats = nativeGatheringHasNoHosts(round) ? await peerStats() : null;
     const absence = browserOffersNoHosts(round, stats) ? { reason: "browser-no-host-candidates" } : {};
@@ -243,6 +245,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   });
   const releaseIce = () => { outboundIce?.open(); inboundIce?.open(); };
   const receiveIce = (push) => {
+    if (binding && !localCandidates.active) return;
     if (!binding) return holdInbound.offer(push.candidate);
     try {
       if (!selection.ready() || selection.acceptsIce(push)) inboundIce.offer(push);
@@ -278,22 +281,32 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     if (torn) return;
     pushHandlers.get(push.type)?.(push);
   });
-  const outgoingCandidate = (event) => {
-    if (torn) return;
-    if (!event.candidate) {
-      localCandidates.completed = true;
-      void reportLocalCandidates("gathering-complete");
-      if (outboundIce) { try { outboundIce.offer(null); } catch (error) { failIce(error); } }
-      return;
-    }
-    localCandidates.gathered[countedCandidateType(event.candidate)] += 1;
-    diagnostic("local-candidate", { ...browserCandidateDiagnostic(event.candidate), generation: negotiationGeneration });
+  const queueOutgoingCandidate = (candidate) => {
     try {
-      if (outboundIce) outboundIce.offer(event.candidate);
-      else holdOutbound.offer(event.candidate);
+      if (outboundIce) outboundIce.offer(candidate);
+      else if (candidate) holdOutbound.offer(candidate);
     } catch (error) { failIce(error); }
   };
+  const outgoingForRound = (round) => (event) => {
+    if (torn || round !== localCandidates || !round.active) return;
+    if (binding && !candidateMatchesRound(event.candidate, round.ufrags)) return;
+    if (!event.candidate) {
+      round.completed = true;
+      void reportLocalCandidates("gathering-complete", round);
+      queueOutgoingCandidate(null);
+      return;
+    }
+    round.gathered[countedCandidateType(event.candidate)] += 1;
+    diagnostic("local-candidate", { ...browserCandidateDiagnostic(event.candidate), generation: round.generation });
+    queueOutgoingCandidate(event.candidate);
+  };
+  let outgoingCandidate = outgoingForRound(localCandidates);
   peer.addEventListener("icecandidate", outgoingCandidate);
+  const watchNewCandidateRound = () => {
+    peer.removeEventListener("icecandidate", outgoingCandidate);
+    outgoingCandidate = outgoingForRound(localCandidates);
+    peer.addEventListener("icecandidate", outgoingCandidate);
+  };
   /** What ICE says about this path, for everything riding it to read. The
    *  browser runs consent checks of its own (RFC 7675) and takes the state off
    *  `connected` when they stop being answered, so this is a better answer to
@@ -451,6 +464,20 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   // Keep signaling while native gathering finishes, independently of app
   // readiness. A late mDNS host candidate otherwise queues behind a closed
   // rendezvous and the bridge can only report that it received no hosts.
+  const expirePendingIce = (round) => {
+    if (!binding || round !== localCandidates || torn) return;
+    round.active = false;
+    const pending = inboundIce.hasPending() || outboundIce.hasPending() || round.pending.size > 0;
+    inboundIce.reset();
+    outboundIce.reset();
+    holdInbound.reset();
+    holdOutbound.reset();
+    round.pending.clear();
+    if (pending) {
+      fatalError = blockedBy("timeout", "pending ICE setup expired");
+      tearDown("pending ICE setup expired");
+    }
+  };
   const finishSignaling = async (deadline) => {
     let cancelGathering = () => {};
     let cancelDeadline = () => {};
@@ -465,6 +492,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       }, (cancel) => (cancelDeadline = cancel));
       reportLocalCandidates("signaling-complete", round);
     } catch (error) {
+      if (error?.blockedReason === "timeout") expirePendingIce(round);
       reportLocalCandidates(error?.blockedReason === "timeout" ? "timeout" : "cancelled", round);
     } finally {
       cancelGathering();
@@ -515,9 +543,12 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     cancelSignaling();
     negotiationGeneration += 1;
     selection.begin();
+    localCandidates.active = false;
+    localCandidates.pending.clear();
     outboundIce?.reset();
     inboundIce?.reset();
     localCandidates = newLocalCandidates();
+    watchNewCandidateRound();
     renegotiationDeadline = Date.now() + openTimeoutMs;
     let cancelActivity = () => {};
     let negotiationActive = true;
@@ -603,9 +634,10 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   });
   directPairMonitor.start();
   const [rawApp, rawTerm] = carriers;
-  const applicationCarriers = async () => selection.isClear() ? { app: await appBinder.bound(), term: null } : { app: rawApp, term: rawTerm };
+  const applicationCarriers = async () => selection.isClear() ? { app: await appBinder.bound() } : { app: rawApp };
   return {
     ...await applicationCarriers(),
+    get term() { return selection.isClear() ? termBinder.carrier() : rawTerm; },
     onTerminalClose: (listener) => rawTerm.onClose(listener),
     bindTerminal: async (minted) => {
       ensureActive();
@@ -747,7 +779,7 @@ function createPeerSelection(binding) {
       if (!binding) return {};
       const advertised = createPeerOffer({ sdp, negotiation: generation, ...(nonce ? { peerNonce: nonce } : {}) });
       nonce = advertised.peer_nonce;
-      return advertised;
+      return Object.freeze({ ...advertised, ...(selected?.transcript ? { peer_token: selected.transcript.peer_token } : {}) });
     },
     async accept(offerSdp, advertised, answer, ensureActive) {
       const next = binding ? await acceptPeerAnswer({ offerSdp, offer: advertised, answer, previous: selected }) : null;
@@ -763,167 +795,20 @@ function createPeerSelection(binding) {
   };
 }
 
-const CONTROL_LIMIT_BYTES = 64 * 1024;
-const BIND_TIMEOUT_MS = 10000;
-const isBindingControl = (message) => ["channel_challenge_v1", "channel_bound_v1"].includes(message?.type);
-
-function pendingBinding(credentials) {
-  let resolve;
-  let reject;
-  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-  // Setup may still be waiting for its authenticated answer when a malformed
-  // early control fails. The outer setup consumes this rejection afterward.
-  promise.catch(() => {});
-  return { credentials, promise, resolve, reject, state: "challenge", early: null, proof: null, timer: null };
-}
-
-/** Proof controls never enter an application codec. This router also keeps an
- * existing terminal binding usable while its replacement proves possession. */
-function createChannelBinder({ raw, channel, role, credentials = null }) {
-  let selection = null;
-  let pending = credentials ? pendingBinding(credentials) : null;
-  let active = null;
-  let activeBindingId = null;
-  let activeFrames = new Set();
-  let ended = false;
-  const current = (attempt) => !ended && pending === attempt;
-  const fail = (attempt, error) => {
-    if (!current(attempt)) return;
-    pending = null;
-    clearTimeout(attempt.timer);
-    attempt.proof?.close();
-    attempt.reject(error);
-  };
-  const identity = () => {
-    if (channel.id !== role[1] || channel.label !== role[0]) throw new Error("wrong native channel identity");
-    if (channel.readyState !== "open") throw new Error("the binding channel is not open");
-  };
-  const startTimer = () => {
-    if (!pending || pending.timer || channel.readyState !== "open") return;
-    const attempt = pending;
-    attempt.timer = setTimeout(() => fail(attempt, blockedBy("timeout", "the channel binding timed out")), BIND_TIMEOUT_MS);
-  };
-  const endpoint = (listeners) => ({
-    ...raw,
-    onEnvelope(fn) { listeners.add(fn); return () => listeners.delete(fn); },
-  });
-  const finish = async (attempt, message) => {
-    attempt.state = "acknowledging";
-    const codec = await attempt.proof.acceptAck(message);
-    if (!current(attempt)) { codec.close(); return; }
-    identity();
-    const listeners = new Set();
-    const replacement = bindCarrier(endpoint(listeners), codec);
-    const previous = active;
-    active = replacement;
-    activeBindingId = codec.bindingId;
-    activeFrames = listeners;
-    pending = null;
-    clearTimeout(attempt.timer);
-    previous?.retire(new Error("the terminal binding was replaced"));
-    attempt.resolve(replacement);
-  };
-  const prove = async (attempt, message) => {
-    attempt.state = "proving";
-    identity();
-    attempt.proof = attempt.credentials.createChannelBinding({ transcript: selection.transcript,
-      channelId: role[1], channelLabel: role[0] });
-    const control = await attempt.proof.prove(message);
-    if (!current(attempt)) return;
-    identity();
-    attempt.state = "ack";
-    await raw.send(control);
-  };
-  const process = async (attempt, message) => {
-    try {
-      if (attempt.state === "challenge" && message.type === "channel_challenge_v1") await prove(attempt, message);
-      else if (attempt.state === "ack" && message.type === "channel_bound_v1") await finish(attempt, message);
-      else throw new Error("unexpected channel binding control");
-    } catch (error) { fail(attempt, error); }
-  };
-  const resume = () => {
-    startTimer();
-    if (!pending?.early || !selection || channel.readyState !== "open") return;
-    const attempt = pending;
-    const message = attempt.early;
-    attempt.early = null;
-    void process(attempt, message);
-  };
-  const receiveControl = (message) => {
-    const attempt = pending;
-    if (!attempt || message.session_id !== attempt.credentials.sessionId) return;
-    if (new TextEncoder().encode(JSON.stringify(message)).byteLength > CONTROL_LIMIT_BYTES) return fail(attempt, new Error("oversized binding control"));
-    if (!selection || channel.readyState !== "open") {
-      if (attempt.early) return fail(attempt, new Error("too many early binding controls"));
-      attempt.early = message;
-      return;
-    }
-    void process(attempt, message);
-  };
-  const receiveApplication = (message) => {
-    if (active && pending && message?.binding_id !== activeBindingId) return fail(pending, new Error("application payload before replacement binding"));
-    if (active) { for (const listener of [...activeFrames]) listener(message); }
-    else if (pending) fail(pending, new Error("application payload before channel binding"));
-  };
-  const stopFrames = raw.onEnvelope((message) => {
-    if (ended || (selection && selection.protocol !== DTLS_JSON_PROTOCOL)) return;
-    if (isBindingControl(message)) receiveControl(message);
-    else receiveApplication(message);
-  });
-  const close = () => {
-    if (ended) return;
-    if (pending) fail(pending, new Error("the peer binding closed"));
-    ended = true;
-    stopFrames();
-    stopClose();
-    channel.removeEventListener("open", resume);
-    active?.retire(new Error("the peer binding closed"));
-  };
-  const stopClose = raw.onClose(close);
-  channel.addEventListener("open", resume);
-  const initial = pending?.promise;
-  return {
-    select(value) {
-      selection = value;
-      if (value.protocol === DTLS_JSON_PROTOCOL) resume();
-      else if (pending) { clearTimeout(pending.timer); pending.resolve(null); pending = null; }
-    },
-    bound: () => initial,
-    begin(nextCredentials, beginControl) {
-      if (ended) return Promise.reject(new Error("the peer binding closed"));
-      if (pending) fail(pending, new Error("the terminal binding attempt was replaced"));
-      pending = pendingBinding(nextCredentials);
-      const attempt = pending;
-      startTimer();
-      raw.send(beginControl).catch((error) => fail(attempt, error));
-      return attempt.promise;
-    },
-    close,
-  };
-}
-
-function createRoleBindings(binding, carriers, channels) {
-  const idle = { select() {}, close() {}, bound: () => Promise.resolve(null) };
-  if (!binding) return { appBinder: idle, termBinder: idle };
-  return {
-    appBinder: createChannelBinder({ raw: carriers[0], channel: channels[0], role: CHANNELS[0], credentials: binding }),
-    termBinder: createChannelBinder({ raw: carriers[1], channel: channels[1], role: CHANNELS[1] }),
-  };
-}
-
-function terminalCredentials(minted, appBinding) {
-  const credentials = minted.peerBinding || minted;
-  if (credentials.createChannelBinding) return credentials;
-  return {
-    sessionId: credentials.sessionId,
-    createChannelBinding: (options) => createChannelBinding({ ...options, transport: appBinding.transport, ...credentials }),
-  };
-}
-
 function allocatePeerNegotiation(binding, previous) {
   return binding?.allocateNegotiation ? binding.allocateNegotiation() : previous + 1;
 }
 
 function boundedIce(binding, deliver) {
   return binding ? createPeerIceQueue({ deliver }) : null;
+}
+
+function iceUfrags(sdp) {
+  return new Set([...sdp.matchAll(/^a=ice-ufrag:(\S+)/gm)].map((match) => match[1]));
+}
+
+function candidateMatchesRound(candidate, ufrags) {
+  if (!candidate) return true;
+  const fragment = candidate.usernameFragment || candidate.candidate?.match(/(?:^|\s)ufrag\s+(\S+)/)?.[1];
+  return !fragment || ufrags.has(fragment);
 }

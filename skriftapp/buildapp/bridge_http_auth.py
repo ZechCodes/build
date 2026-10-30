@@ -179,8 +179,8 @@ def _validate_registration(claims, endpoint, device):
             refuse()
         if not isinstance(epoch, str) or not 1 <= len(epoch) <= 128:
             refuse()
-        previous = claims.get("previous_endpoint_epoch")
-        if previous != (endpoint.endpoint_epoch if endpoint else None):
+        predecessors = _registration_predecessors(claims)
+        if (endpoint.endpoint_epoch if endpoint else None) not in predecessors:
             # The caller has already supplied an authenticated device proof.
             # Distinguish only this CAS conflict so a daemon can confirm an
             # uncertain identical commit without retrying authorization errors.
@@ -197,6 +197,26 @@ def _validate_registration(claims, endpoint, device):
             refuse()
     except (ValueError, KeyError):
         refuse()
+
+
+def _registration_predecessors(claims):
+    if "previous_endpoint_epochs" not in claims:
+        return [claims.get("previous_endpoint_epoch")]
+    if "previous_endpoint_epoch" in claims:
+        refuse()
+    candidates = claims["previous_endpoint_epochs"]
+    if not isinstance(candidates, list) or not 1 <= len(candidates) <= 8:
+        refuse()
+    checked = []
+    for candidate in candidates:
+        if candidate is not None and (
+            not isinstance(candidate, str) or not 1 <= len(candidate) <= 128
+        ):
+            refuse()
+        if candidate in checked:
+            refuse()
+        checked.append(candidate)
+    return checked
 
 
 async def _get_challenge(db, challenge_id, purpose):

@@ -136,7 +136,10 @@ impl PreparedHttp {
 /// `None`, then best-effort reconcile a previously advertised endpoint. Local
 /// authority is already absent in this path, so hosted unavailability is
 /// reported without reviving or delaying a listener.
-pub async fn reconcile_disabled(identity: &StoredIdentity, state_path: PathBuf) -> Result<(), String> {
+pub async fn reconcile_disabled(
+    identity: &StoredIdentity,
+    state_path: PathBuf,
+) -> Result<(), String> {
     let Some(record) = prepare_record(&state_path, None).await? else {
         return Ok(());
     };
@@ -195,19 +198,18 @@ impl DisableContext {
     }
 }
 
-/// Register from the last locally acknowledged predecessor. If the hosted
-/// commit succeeded but its response or the subsequent local acknowledge was
-/// lost, that predecessor is stale; a second proof naming the desired epoch as
-/// its own predecessor is an idempotent confirmation of exactly that hosted
-/// generation. It cannot advance a host that still has the old predecessor.
+/// Atomically name every bounded generation this exact device/issuer may have
+/// committed, including the desired generation for response-loss recovery.
+/// The hosted CAS refuses any unknown external generation. Only transport
+/// uncertainty is retried, with the identical signed candidate set.
 async fn register_generation(
     registrar: &EndpointRegistrar,
     record: &EndpointRecord,
     enabled: bool,
 ) -> Result<(), ProofError> {
-    reconcile_registration(record, |previous| async move {
+    reconcile_registration(record, |predecessors| async move {
         registrar
-            .register(previous.as_deref(), enabled)
+            .register_candidates(&predecessors, enabled)
             .await
             .map(|_| ())
     })
@@ -219,15 +221,14 @@ async fn reconcile_registration<F, Fut>(
     mut register: F,
 ) -> Result<(), ProofError>
 where
-    F: FnMut(Option<String>) -> Fut,
+    F: FnMut(Vec<Option<String>>) -> Fut,
     Fut: std::future::Future<Output = Result<(), ProofError>>,
 {
-    match register(record.registered_epoch.clone()).await {
+    let predecessors = record.registration_predecessors();
+    match register(predecessors.clone()).await {
         Ok(()) => Ok(()),
-        Err(original @ (ProofError::Unavailable | ProofError::Conflict)) => {
-            register(Some(record.endpoint_epoch.clone()))
-                .await
-                .map_err(|_| original)
+        Err(original @ ProofError::Unavailable) => {
+            register(predecessors).await.map_err(|_| original)
         }
         Err(error) => Err(error),
     }
@@ -287,16 +288,17 @@ mod tests {
             endpoint_epoch: "desired".into(),
             enabled: true,
             registered_epoch: Some("previous".into()),
+            unacknowledged_epochs: Vec::new(),
         }
     }
 
     async fn reconcile_script(
         outcomes: Vec<Result<(), ProofError>>,
-    ) -> (Result<(), ProofError>, Vec<Option<String>>) {
+    ) -> (Result<(), ProofError>, Vec<Vec<Option<String>>>) {
         let outcomes = std::sync::Mutex::new(VecDeque::from(outcomes));
         let attempts = std::sync::Mutex::new(Vec::new());
-        let result = reconcile_registration(&record(), |previous| {
-            attempts.lock().unwrap().push(previous);
+        let result = reconcile_registration(&record(), |predecessors| {
+            attempts.lock().unwrap().push(predecessors);
             std::future::ready(outcomes.lock().unwrap().pop_front().unwrap())
         })
         .await;
@@ -309,31 +311,34 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert_eq!(
             attempts,
-            vec![Some("previous".into()), Some("desired".into())]
+            vec![
+                vec![Some("previous".into()), Some("desired".into())],
+                vec![Some("previous".into()), Some("desired".into())]
+            ]
         );
     }
 
     #[tokio::test]
-    async fn crash_after_hosted_commit_is_confirmed_after_old_predecessor_conflict() {
-        let (result, attempts) = reconcile_script(vec![Err(ProofError::Conflict), Ok(())]).await;
+    async fn crash_after_hosted_commit_is_confirmed_by_the_candidate_set() {
+        let (result, attempts) = reconcile_script(vec![Ok(())]).await;
         assert_eq!(result, Ok(()));
         assert_eq!(
             attempts,
-            vec![Some("previous".into()), Some("desired".into())]
+            vec![vec![Some("previous".into()), Some("desired".into())]]
         );
     }
 
     #[tokio::test]
     async fn unconfirmed_registration_preserves_the_original_failure() {
-        let (result, attempts) = reconcile_script(vec![
-            Err(ProofError::Unavailable),
-            Err(ProofError::Refused),
-        ])
-        .await;
+        let (result, attempts) =
+            reconcile_script(vec![Err(ProofError::Unavailable), Err(ProofError::Refused)]).await;
         assert_eq!(result, Err(ProofError::Unavailable));
         assert_eq!(
             attempts,
-            vec![Some("previous".into()), Some("desired".into())]
+            vec![
+                vec![Some("previous".into()), Some("desired".into())],
+                vec![Some("previous".into()), Some("desired".into())]
+            ]
         );
     }
 
@@ -341,20 +346,19 @@ mod tests {
     async fn authorization_refusal_is_never_retried_as_reconciliation() {
         let (result, attempts) = reconcile_script(vec![Err(ProofError::Refused)]).await;
         assert_eq!(result, Err(ProofError::Refused));
-        assert_eq!(attempts, vec![Some("previous".into())]);
+        assert_eq!(
+            attempts,
+            vec![vec![Some("previous".into()), Some("desired".into())]]
+        );
     }
 
     #[tokio::test]
     async fn newer_rotation_or_disable_cannot_be_overwritten_by_stale_confirmation() {
-        let (result, attempts) = reconcile_script(vec![
-            Err(ProofError::Conflict),
-            Err(ProofError::Conflict),
-        ])
-        .await;
+        let (result, attempts) = reconcile_script(vec![Err(ProofError::Conflict)]).await;
         assert_eq!(result, Err(ProofError::Conflict));
         assert_eq!(
             attempts,
-            vec![Some("previous".into()), Some("desired".into())]
+            vec![vec![Some("previous".into()), Some("desired".into())]]
         );
     }
 
@@ -375,9 +379,9 @@ mod tests {
         let disabled = EndpointRecord::prepare(&path, None).unwrap().unwrap();
 
         let hosted = std::sync::Mutex::new(Some(uncertain.endpoint_epoch.clone()));
-        let reconciled = reconcile_registration(&disabled, |previous| {
+        let reconciled = reconcile_registration(&disabled, |predecessors| {
             let mut current = hosted.lock().unwrap();
-            if previous.as_ref() == current.as_ref() {
+            if predecessors.contains(&current.clone()) {
                 *current = Some(disabled.endpoint_epoch.clone());
                 std::future::ready(Ok(()))
             } else {
@@ -393,9 +397,9 @@ mod tests {
 
         let external = "external-newer-generation".to_string();
         *hosted.lock().unwrap() = Some(external.clone());
-        let refused = reconcile_registration(&disabled, |previous| {
+        let refused = reconcile_registration(&disabled, |predecessors| {
             let current = hosted.lock().unwrap();
-            std::future::ready(if previous.as_ref() == current.as_ref() {
+            std::future::ready(if predecessors.contains(&current.clone()) {
                 Ok(())
             } else {
                 Err(ProofError::Conflict)
@@ -404,5 +408,72 @@ mod tests {
         .await;
         assert_eq!(refused, Err(ProofError::Conflict));
         assert_eq!(*hosted.lock().unwrap(), Some(external));
+    }
+
+    #[test]
+    fn unresolved_generation_bound_fails_before_discarding_recovery_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("endpoint.json");
+        let acknowledged = EndpointRecord::prepare(&path, Some(record().policy))
+            .unwrap()
+            .unwrap();
+        acknowledged.acknowledge(&path).unwrap();
+
+        let mut last = acknowledged;
+        for generation in 0..7 {
+            let mut policy = last.policy.clone();
+            policy.certificate_fingerprint = format!("certificate-{generation}");
+            last = EndpointRecord::prepare(&path, Some(policy))
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(last.registration_predecessors().len(), 8);
+
+        let mut rejected_policy = last.policy.clone();
+        rejected_policy.certificate_fingerprint = "one-generation-too-many".into();
+        assert_eq!(
+            EndpointRecord::prepare(&path, Some(rejected_policy)).unwrap_err(),
+            "HTTP endpoint has too many unresolved registration generations"
+        );
+        let preserved = EndpointRecord::prepare(&path, Some(last.policy.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(preserved.endpoint_epoch, last.endpoint_epoch);
+        assert_eq!(preserved.registration_predecessors().len(), 8);
+
+        preserved.acknowledge(&path).unwrap();
+        let acknowledged = EndpointRecord::prepare(&path, Some(last.policy))
+            .unwrap()
+            .unwrap();
+        assert!(acknowledged.unacknowledged_epochs.is_empty());
+        assert_eq!(
+            acknowledged.registration_predecessors(),
+            vec![Some(acknowledged.endpoint_epoch.clone())]
+        );
+    }
+
+    #[test]
+    fn predecessor_candidates_never_cross_device_or_issuer_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("endpoint.json");
+        let acknowledged = EndpointRecord::prepare(&path, Some(record().policy))
+            .unwrap()
+            .unwrap();
+        acknowledged.acknowledge(&path).unwrap();
+        let mut pending_policy = acknowledged.policy.clone();
+        pending_policy.certificate_fingerprint = "pending".into();
+        EndpointRecord::prepare(&path, Some(pending_policy))
+            .unwrap()
+            .unwrap();
+
+        let mut other_issuer = acknowledged.policy;
+        other_issuer.issuer = "https://other-account.example".into();
+        let replacement = EndpointRecord::prepare(&path, Some(other_issuer))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            replacement.registration_predecessors(),
+            vec![None, Some(replacement.endpoint_epoch.clone())]
+        );
     }
 }

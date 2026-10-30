@@ -216,6 +216,42 @@ impl DeviceProofSigner {
             serde_json::json!({"challenge_id":challenge_id,"nonce":nonce,"origin":self.origin,"endpoint_epoch":self.endpoint_epoch,"previous_endpoint_epoch":previous_epoch,"enabled":enabled}))
     }
 
+    pub fn registration_proof_candidates(
+        &self,
+        challenge_id: &str,
+        nonce: &str,
+        previous_epochs: &[Option<String>],
+        enabled: bool,
+        now: u64,
+    ) -> Result<String, ProofError> {
+        bounded(challenge_id, 128)?;
+        bounded(nonce, 256)?;
+        if previous_epochs.is_empty() || previous_epochs.len() > 8 {
+            return Err(ProofError::InvalidInput);
+        }
+        for (index, epoch) in previous_epochs.iter().enumerate() {
+            if let Some(epoch) = epoch {
+                bounded(epoch, 128)?;
+            }
+            if previous_epochs[..index].contains(epoch) {
+                return Err(ProofError::InvalidInput);
+            }
+        }
+        self.sign(
+            "build-http-registration+jwt",
+            self.registration_url(),
+            now,
+            serde_json::json!({
+                "challenge_id": challenge_id,
+                "nonce": nonce,
+                "origin": self.origin,
+                "endpoint_epoch": self.endpoint_epoch,
+                "previous_endpoint_epochs": previous_epochs,
+                "enabled": enabled,
+            }),
+        )
+    }
+
     pub fn introspection_assertion(
         &self,
         token_hash: &str,
@@ -295,6 +331,24 @@ impl EndpointRegistrar {
         previous_epoch: Option<&str>,
         enabled: bool,
     ) -> Result<RegisteredEndpoint, ProofError> {
+        self.register_with(previous_epoch, None, enabled).await
+    }
+
+    pub async fn register_candidates(
+        &self,
+        previous_epochs: &[Option<String>],
+        enabled: bool,
+    ) -> Result<RegisteredEndpoint, ProofError> {
+        self.register_with(None, Some(previous_epochs), enabled)
+            .await
+    }
+
+    async fn register_with(
+        &self,
+        previous_epoch: Option<&str>,
+        previous_epochs: Option<&[Option<String>]>,
+        enabled: bool,
+    ) -> Result<RegisteredEndpoint, ProofError> {
         let url = self.signer.registration_url();
         let allocation_proof = self.signer.registration_challenge_assertion(unix_now()?)?;
         let challenge: RegistrationChallenge = bounded_json(
@@ -310,13 +364,22 @@ impl EndpointRegistrar {
         if challenge.expires_at <= now || challenge.expires_at > now.saturating_add(65) {
             return Err(ProofError::Refused);
         }
-        let proof = self.signer.registration_proof(
-            &challenge.challenge_id,
-            &challenge.nonce,
-            previous_epoch,
-            enabled,
-            now,
-        )?;
+        let proof = match previous_epochs {
+            Some(previous_epochs) => self.signer.registration_proof_candidates(
+                &challenge.challenge_id,
+                &challenge.nonce,
+                previous_epochs,
+                enabled,
+                now,
+            )?,
+            None => self.signer.registration_proof(
+                &challenge.challenge_id,
+                &challenge.nonce,
+                previous_epoch,
+                enabled,
+                now,
+            )?,
+        };
         let response = self
             .client
             .post(url)

@@ -126,6 +126,14 @@ fn registration_and_introspection_have_disjoint_purpose_and_token_binding() {
     let registration = signer
         .registration_proof("challenge", "nonce", Some("epoch-1"), false, 1_800_000_000)
         .unwrap();
+    let candidates = vec![
+        Some("uncertain-epoch".to_string()),
+        Some("epoch-1".to_string()),
+        Some("epoch-2".to_string()),
+    ];
+    let candidate_registration = signer
+        .registration_proof_candidates("challenge", "nonce", &candidates, false, 1_800_000_000)
+        .unwrap();
     let assertion = signer
         .introspection_assertion(&"a".repeat(64), 1_800_000_000)
         .unwrap();
@@ -143,6 +151,25 @@ fn registration_and_introspection_have_disjoint_purpose_and_token_binding() {
             .as_deref(),
         Some("build-http-introspection+jwt")
     );
+    assert_eq!(
+        jsonwebtoken::decode_header(&candidate_registration)
+            .unwrap()
+            .typ
+            .as_deref(),
+        Some("build-http-registration+jwt")
+    );
+    assert!(signer
+        .registration_proof_candidates("challenge", "nonce", &[], false, 1)
+        .is_err());
+    assert!(signer
+        .registration_proof_candidates(
+            "challenge",
+            "nonce",
+            &[Some("duplicate".into()), Some("duplicate".into())],
+            false,
+            1,
+        )
+        .is_err());
     assert!(signer.introspection_assertion("raw-token", 1).is_err());
     assert!(signer
         .discovery_proof("challenge", "nonce", u64::MAX)

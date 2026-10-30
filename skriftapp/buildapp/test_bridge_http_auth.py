@@ -96,7 +96,7 @@ async def registered(db):
 async def test_registration_confirmation_is_identical_and_cannot_overwrite_disable(db):
     _, device, key = await registered(db)
 
-    async def register(epoch, previous, enabled):
+    async def register(epoch, previous, enabled, *, candidates=None):
         challenge = await auth.registration_challenge(
             db,
             device.id,
@@ -112,14 +112,22 @@ async def test_registration_confirmation_is_identical_and_cannot_overwrite_disab
             nonce=challenge["nonce"],
             origin=ORIGIN,
             endpoint_epoch=epoch,
-            previous_endpoint_epoch=previous,
             enabled=enabled,
+            **(
+                {"previous_endpoint_epochs": candidates}
+                if candidates is not None
+                else {"previous_endpoint_epoch": previous}
+            ),
         )
         return await auth.register_endpoint(db, device.id, proof, ISSUER, utc_now())
 
-    confirmed = await register("epoch-one", "epoch-one", True)
+    confirmed = await register(
+        "epoch-one", None, True, candidates=["epoch-one"]
+    )
     assert confirmed["enabled"] is True
-    disabled = await register("epoch-two", "epoch-one", False)
+    disabled = await register(
+        "epoch-two", None, False, candidates=["uncertain-local", "epoch-one", "epoch-two"]
+    )
     assert disabled["enabled"] is False
 
     with pytest.raises(ClientException) as stale:
@@ -129,6 +137,34 @@ async def test_registration_confirmation_is_identical_and_cannot_overwrite_disab
         await register("epoch-two", "epoch-two", True)
     endpoint = await auth._endpoint(db, device.id)
     assert (endpoint.endpoint_epoch, endpoint.enabled) == ("epoch-two", False)
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"previous_endpoint_epochs": []},
+        {"previous_endpoint_epochs": [f"epoch-{index}" for index in range(9)]},
+        {"previous_endpoint_epochs": ["duplicate", "duplicate"]},
+        {"previous_endpoint_epochs": "not-a-list"},
+        {"previous_endpoint_epochs": [False]},
+        {
+            "previous_endpoint_epoch": "singular",
+            "previous_endpoint_epochs": ["plural"],
+        },
+    ],
+)
+def test_registration_predecessor_candidates_are_strict_and_bounded(claims):
+    with pytest.raises(NotAuthorizedException):
+        auth._registration_predecessors(claims)
+
+
+def test_registration_predecessors_retain_legacy_singular_claims():
+    assert auth._registration_predecessors(
+        {"previous_endpoint_epoch": "legacy"}
+    ) == ["legacy"]
+    assert auth._registration_predecessors(
+        {"previous_endpoint_epochs": ["uncertain", "acknowledged", "desired"]}
+    ) == ["uncertain", "acknowledged", "desired"]
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,11 @@ pub struct EndpointRecord {
     pub endpoint_epoch: String,
     pub enabled: bool,
     pub registered_epoch: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unacknowledged_epochs: Vec<String>,
 }
+
+const MAX_UNACKNOWLEDGED_EPOCHS: usize = 6;
 
 impl EndpointRecord {
     pub fn prepare(path: &Path, desired: Option<EndpointPolicy>) -> Result<Option<Self>, String> {
@@ -47,16 +51,35 @@ impl EndpointRecord {
                 return Ok(Some(old.clone()));
             }
         }
+        let same_authority = old.as_ref().is_some_and(|value| {
+            value.policy.device_id == policy.device_id && value.policy.issuer == policy.issuer
+        });
         let registered_epoch = old
-            .filter(|value| {
-                value.policy.device_id == policy.device_id && value.policy.issuer == policy.issuer
-            })
-            .and_then(|value| value.registered_epoch);
+            .as_ref()
+            .filter(|_| same_authority)
+            .and_then(|value| value.registered_epoch.clone());
+        let mut unacknowledged_epochs = old
+            .as_ref()
+            .filter(|_| same_authority)
+            .map(|value| value.unacknowledged_epochs.clone())
+            .unwrap_or_default();
+        if let Some(old) = old.as_ref().filter(|_| same_authority) {
+            let pending = old.registered_epoch.as_deref() != Some(&old.endpoint_epoch);
+            if pending && !unacknowledged_epochs.contains(&old.endpoint_epoch) {
+                if unacknowledged_epochs.len() >= MAX_UNACKNOWLEDGED_EPOCHS {
+                    return Err(
+                        "HTTP endpoint has too many unresolved registration generations".into(),
+                    );
+                }
+                unacknowledged_epochs.push(old.endpoint_epoch.clone());
+            }
+        }
         let record = Self {
             policy,
             endpoint_epoch: uuid::Uuid::new_v4().to_string(),
             enabled,
             registered_epoch,
+            unacknowledged_epochs,
         };
         before_persist();
         persist(path, &record)?;
@@ -79,8 +102,30 @@ impl EndpointRecord {
             return Err("HTTP endpoint registration was superseded".into());
         }
         current.registered_epoch = Some(self.endpoint_epoch.clone());
+        current.unacknowledged_epochs.clear();
         before_persist();
         persist(path, &current)
+    }
+
+    /// Every hosted generation this exact device/issuer may currently hold,
+    /// plus the desired generation for idempotent response-loss confirmation.
+    /// Unknown external generations are deliberately absent.
+    pub fn registration_predecessors(&self) -> Vec<Option<String>> {
+        let mut candidates = Vec::with_capacity(self.unacknowledged_epochs.len() + 2);
+        for epoch in self.unacknowledged_epochs.iter().rev() {
+            let candidate = Some(epoch.clone());
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
+        if !candidates.contains(&self.registered_epoch) {
+            candidates.push(self.registered_epoch.clone());
+        }
+        let desired = Some(self.endpoint_epoch.clone());
+        if !candidates.contains(&desired) {
+            candidates.push(desired);
+        }
+        candidates
     }
 
     #[cfg(test)]

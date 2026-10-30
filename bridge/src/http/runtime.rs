@@ -1980,6 +1980,21 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn output_write_poll_linearizes_with_opening_close() {
+        assert_output_poll_linearizes_with_close(GatedPollKind::Write).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn output_flush_poll_linearizes_with_opening_close() {
+        assert_output_poll_linearizes_with_close(GatedPollKind::Flush).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn output_shutdown_poll_linearizes_with_opening_close() {
+        assert_output_poll_linearizes_with_close(GatedPollKind::Shutdown).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn matrix_7_encoded_pending_output_keeps_exact_grant_through_deferred_flush_release() {
         let a_live = Arc::new(AtomicBool::new(true));
         let b_live = Arc::new(AtomicBool::new(true));

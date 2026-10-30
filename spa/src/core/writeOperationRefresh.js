@@ -102,14 +102,24 @@ async function refreshAddress(address, { cache, frame, record, authority }) {
   assertActive(authority);
   const value = await READERS[address.kind](address, record, authority, previous);
   assertActive(authority);
-  const written = await cache.observePublication({
+  const task = address.kind === TRACKER_TASK_KIND;
+  const result = await cache.observePublication({
     accept: authority.active,
+    ...(task ? { report: true } : {}),
     canonical: [{ address, value, publication: frame.published || [], guard, ...(contentRead ? { contentRead } : {}) }],
   });
   assertActive(authority);
+  if (task) return assertTaskReceipt(result, address);
+  const written = result;
   if (!written?.some((target) => addressKey(target) === addressKey(address))) {
     throw new Error("The canonical publication was superseded during refresh");
   }
+}
+
+function assertTaskReceipt(result, address) {
+  const outcome = result?.outcomes?.find((item) => addressKey(item.address) === addressKey(address));
+  if (outcome?.reason === "superseded") throw new Error("The canonical publication was superseded during refresh");
+  if (!outcome?.receiptPublished) throw new Error("The canonical task payload lacks complete receipt authority");
 }
 
 /** Resolve closed domain invalidations independently of accepted overlays.

@@ -33,25 +33,30 @@ export function publicationGuardMatches(entry, held) {
   return guard.detailBasis === (note?.value?.rows?.[address.sub] || 0);
 }
 
-export function preparePublicationWrites(entry, held) {
-  if (!isTask(entry)) return [entry];
+export function preparePublication(entry, held) {
+  if (!isTask(entry)) return { writes: [entry], receiptPublished: true };
   const { address, value } = entry;
   const detail = held.get(recordKey(address));
   const fragment = contentFragment(address);
   const shared = fragment.addresses.map((target) => held.get(recordKey(target)));
-  if (!entry.contentRead) return [];
+  if (!entry.contentRead) return { writes: [], reason: "missing-content-authority" };
   const scope = taskScope(address), context = fragment.context(shared);
   const summary = summaryTaskReadMutation(scope, value.task, entry.contentRead);
   const normalized = summary.reduce(summary.addresses.map((target) => held.get(recordKey(target))), {
     context, headerBarrier: detail?.value?.task, ordinaryRead: entry.contentRead,
   });
-  if (!normalized) return [];
+  if (!normalized) return { writes: [], reason: "missing-content-authority" };
   const { content, facts } = selectTaskPublication(entry, detail, context, normalized[0]?.task);
-  if (!completeTaskReceipt(content, facts)) return [];
+  if (!content.task) return { writes: [], reason: "missing-content-authority" };
   const task = withTaskContentComponents(facts.task, content.task);
-  return [...taskPublicationWrites(entry, held, { ...value, task }),
+  const receiptPublished = completeTaskReceipt(content, facts);
+  // Independently admitted ordinary fields can paint while watch authority is
+  // unknown. They do not replace history, advance its note, or carry a receipt.
+  const canonical = receiptPublished ? taskPublicationWrites(entry, held, { ...value, task })
+    : [{ address, value: preserveTaskFloors(detail?.value, { ...detail?.value, task }), publication: [] }];
+  return { receiptPublished, reason: receiptPublished ? undefined : "missing-complete-authority", writes: [...canonical,
     ...fragmentWrites(summary.addresses, normalized, true),
-    ...fragmentWrites(fragment.addresses, fragment.finish(shared, { retire: content.retired }))];
+    ...fragmentWrites(fragment.addresses, fragment.finish(shared, { retire: content.retired }))] };
 }
 
 function selectTaskPublication(entry, detail, context, headerBarrier) {

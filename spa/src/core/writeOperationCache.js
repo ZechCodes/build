@@ -8,7 +8,8 @@ import {
   leaseKey, operationKey, operationNamespace, validPublicationFence,
 } from "./writeOperationProjection.js";
 
-import { publicationReadAddresses, publicationGuardMatches, preparePublicationWrites } from "./writeOperationPublication.js";
+import { publicationReadAddresses, publicationGuardMatches, preparePublication } from "./writeOperationPublication.js";
+import { TRACKER_TASK_KIND } from "./trackerCache.js";
 
 const notifications = createAnnouncer("build-write-operations");
 const terminalStates = new Set(["succeeded", "failed"]);
@@ -66,14 +67,21 @@ function readRecords(store, keys, done) {
 function writeCanonical(records, entries, accept, done) {
   readRecords(records, publicationReadAddresses(entries).map(recordKey), (held) => {
     try {
-      if (!accept()) return done([]);
-      const written = [];
+      if (!accept()) return done([], []);
+      const written = [], outcomes = [];
       for (const entry of entries) {
         validateFences(entry.publication || []);
-        if (!publicationGuardMatches(entry, held)) continue;
-        if (!putPublication(records, preparePublicationWrites(entry, held), held, written)) return;
+        if (!publicationGuardMatches(entry, held)) {
+          outcomes.push({ address: entry.address, payloadWritten: false, receiptPublished: false, reason: "superseded" });
+          continue;
+        }
+        const result = preparePublication(entry, held);
+        if (!putPublication(records, result.writes, held, written)) return;
+        outcomes.push({ address: entry.address,
+          payloadWritten: result.writes.some(({ address }) => recordKey(address) === recordKey(entry.address)),
+          receiptPublished: Boolean(result.receiptPublished), reason: result.reason });
       }
-      done(written);
+      done(written, outcomes);
     } catch (error) { abortForError(records, error); }
   });
 }
@@ -196,16 +204,21 @@ export function createWriteOperationCache(scope) {
     }, { canonical, accept: authority });
   }
 
-  async function observePublication({ canonical = [], accept = () => true } = {}) {
+  async function observePublication({ canonical = [], accept = () => true, report = false } = {}) {
     const changed = [];
-    let written = [];
+    let written = [], outcomes = [];
     await strictTransaction("readwrite", (stores) => {
       changed.length = 0;
       written = [];
+      outcomes = [];
       if (!accept()) return null;
-      writeCanonical(stores.records, canonical, accept, (addresses) => {
+      writeCanonical(stores.records, canonical, accept, (addresses, results) => {
         written = addresses;
+        outcomes = results;
         if (!accept()) return;
+        // Task payload availability cannot retire this or another operation's
+        // layer from an inherited publication vector.
+        if (canonical.some(({ address }) => address.kind === TRACKER_TASK_KIND)) return;
         const read = stores.operations.index("overlayNamespace").getAll(namespace);
         read.onsuccess = () => retirePublished(stores, read.result, accept, changed);
       });
@@ -213,7 +226,7 @@ export function createWriteOperationCache(scope) {
     });
     for (const row of changed) announce(row.operationId, effectsAddresses(row));
     announceWriteOperationCache(written);
-    return written;
+    return report ? { written, outcomes } : written;
   }
 
   function retirePublished(stores, held, accept, changed) {

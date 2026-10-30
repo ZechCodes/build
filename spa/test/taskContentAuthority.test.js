@@ -324,3 +324,20 @@ it("selects genuine same-byte copy proof per component across cache replicas", a
   expect(copied.__task_content_cache.body).toEqual(newerBody.__task_content_cache.body);
   expect(copied.__task_content_cache.bodyHeaderIdentity).toBe(newerBody.__task_content_cache.bodyHeaderIdentity);
 });
+
+it("distinguishes external barrier lifetimes for missing and retained detail recovery", async () => {
+  const summaries = await import("../src/core/taskSummaryCache.js");
+  const land = async () => {
+    const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
+    await summaries.landSummaryPage(ticket, { summary: true, basis: "B", tasks: [task()] }, { read: ticket.generation });
+    return (await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.task;
+  };
+  const first = await land(), missingKey = content.taskFullRefreshKey(undefined, first);
+  const retained = content.retireTaskContent(task(), "body"), retainedKey = content.taskFullRefreshKey(retained, first);
+  expect(content.taskFullRefreshKey(undefined, await land())).toBe(missingKey);
+  await cache.evictEntity(scope.deviceId, scope.projectId);
+  const replacement = await land();
+  expect(content.taskFullRefreshKey(undefined, replacement)).not.toBe(missingKey);
+  expect(content.taskFullRefreshKey(retained, replacement)).not.toBe(retainedKey);
+  expect(content.taskFullRefreshKey(undefined, await land())).toBe(content.taskFullRefreshKey(undefined, replacement));
+});

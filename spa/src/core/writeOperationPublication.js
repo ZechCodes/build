@@ -46,21 +46,31 @@ export function preparePublicationWrites(entry, held) {
     context, headerBarrier: detail?.value?.task, ordinaryRead: entry.contentRead,
   });
   if (!normalized) return [];
-  const header = normalized[0]?.task;
-  const candidate = observeTaskContent(value.task, { contentRead: entry.contentRead, coverage: "full" });
-  const content = reconcileTaskContent(detail?.value?.task, candidate, {
-    context, address, heldWritten: recordWriteOf(detail), headerBarrier: header,
-  });
-  const facts = reconcileTaskReadFacts(scope, detail?.value?.task, value.task, {
-    context, contentRead: entry.contentRead, markerPolicy: "legacy", watchGuard: header,
-  });
-  // A complete receipt needs ordinary content and valid selected watch lineage.
-  // Optional summary-only counters remain independent refresh obligations.
-  if (!content.acceptedHeader || !content.acceptedBody || content.needsFullRefresh || !facts.watchCertain) return [];
+  const { content, facts } = selectTaskPublication(entry, detail, context, normalized[0]?.task);
+  if (!completeTaskReceipt(content, facts)) return [];
   const task = withTaskContentComponents(facts.task, content.task);
   return [...taskPublicationWrites(entry, held, { ...value, task }),
     ...fragmentWrites(summary.addresses, normalized, true),
     ...fragmentWrites(fragment.addresses, fragment.finish(shared, { retire: content.retired }))];
+}
+
+function selectTaskPublication(entry, detail, context, headerBarrier) {
+  const { address, value, contentRead } = entry;
+  const heldTask = detail?.value?.task;
+  const candidate = observeTaskContent(value.task, { contentRead, coverage: "full" });
+  const content = reconcileTaskContent(heldTask, candidate, {
+    context, address, heldWritten: recordWriteOf(detail), headerBarrier,
+  });
+  const facts = reconcileTaskReadFacts(taskScope(address), heldTask, value.task, {
+    context, contentRead, markerPolicy: "legacy", watchGuard: headerBarrier,
+  });
+  return { content, facts };
+}
+
+function completeTaskReceipt(content, facts) {
+  // A complete receipt needs ordinary content and valid selected watch lineage.
+  // Optional summary-only counters remain independent refresh obligations.
+  return content.acceptedHeader && content.acceptedBody && !content.needsFullRefresh && facts.watchCertain;
 }
 
 function fragmentWrites(addresses, values, notify = false) {

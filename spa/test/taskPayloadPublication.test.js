@@ -173,13 +173,25 @@ const sameValues = (left, right) => JSON.stringify(left) === JSON.stringify(righ
 function matchingBlockedSnapshot(rows, completed, expected, keyOf) {
   if (!completed || rows.length !== 1) return false;
   const row = rows[0], state = row.refreshState, refresh = completed.result?.refresh;
-  return row.namespace === expected.record.namespace && row.operationId === refresh?.operationId
-    && row.operationId === expected.record.operationId && row.revision === expected.frame.revision
-    && row.revision === refresh?.revision && row.refreshPending === true && row.overlayActive === true
-    && row.state === "succeeded" && state?.version === 1 && state.revision === row.revision
-    && typeof refresh?.generation === "string" && refresh.generation.length > 0 && state.generation === refresh.generation
-    && sameValues(row.confirmation, expected.frame)
-    && sameValues(state.required, expected.frame.published)
+  return matchingSnapshotOperation(row, expected) && matchingSnapshotGeneration(row, state, refresh)
+    && matchingSnapshotTargets(state, expected, keyOf);
+}
+
+function matchingSnapshotOperation(row, expected) {
+  return row.namespace === expected.record.namespace && row.operationId === expected.record.operationId
+    && row.revision === expected.frame.revision && row.refreshPending === true && row.overlayActive === true
+    && row.state === "succeeded" && sameValues(row.confirmation, expected.frame);
+}
+
+function matchingSnapshotGeneration(row, state, refresh) {
+  if (!state || !refresh) return false;
+  return row.operationId === refresh.operationId && row.revision === refresh.revision
+    && state.version === 1 && state.revision === row.revision && typeof refresh.generation === "string"
+    && refresh.generation.length > 0 && state.generation === refresh.generation;
+}
+
+function matchingSnapshotTargets(state, expected, keyOf) {
+  return sameValues(state.required, expected.frame.published)
     && sameValues(state.targets.map(({ address }) => keyOf(address)).sort(), expected.keys)
     && state.targets.every((target) => target.key === keyOf(target.address) && target.phase === "blocked" && target.receipt === null);
 }

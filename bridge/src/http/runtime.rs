@@ -10,7 +10,7 @@ use axum::{
     body::Body,
     extract::{Path, State},
     http::{
-        header::{AUTHORIZATION, CONTENT_TYPE},
+        header::{ALLOW, AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE},
         HeaderMap, HeaderValue, Request, StatusCode,
     },
     response::{IntoResponse, Response},
@@ -23,8 +23,8 @@ use tokio::time::Instant;
 
 use super::auth::{AuthError, HttpAuthVerifier, VerifiedHttpGrant};
 use crate::execution::{
-    session::{HttpIdentity, SessionLease, VerifiedCaller},
-    ExecutionService,
+    session::{DeliveryError, EncodedEvent, HttpIdentity, ReplySink, SessionLease, VerifiedCaller},
+    ExecutionService, Invocation, RequestMetadata,
 };
 
 const LIFECYCLE_BYTES: usize = 64 * 1024;
@@ -97,7 +97,13 @@ struct HttpState {
     execution: Arc<ExecutionService>,
     verifier: Arc<dyn GrantVerifier>,
     openings: Arc<Mutex<HashMap<String, MountedOpening>>>,
+    buffers: Arc<super::limits::BufferBudget>,
+    #[cfg(test)]
+    output_observer: Arc<Mutex<Option<OutputObserver>>>,
 }
+
+#[cfg(test)]
+type OutputObserver = Arc<dyn Fn(super::listener::OutputAuthority) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct HttpRuntime {
@@ -108,6 +114,24 @@ struct MountedOpening {
     session: SessionLease,
     _generation: String,
     authority: VerifiedAuthority,
+    budget: Arc<super::limits::OpeningBudget>,
+}
+
+struct ResourceReplySink {
+    sender: Mutex<Option<tokio::sync::oneshot::Sender<EncodedEvent>>>,
+    _reservation: Arc<super::limits::BufferReservation>,
+}
+
+impl ReplySink for ResourceReplySink {
+    fn try_send(&self, event: EncodedEvent) -> Result<(), DeliveryError> {
+        self.sender
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(DeliveryError::Closed)?
+            .send(event)
+            .map_err(|_| DeliveryError::Closed)
+    }
 }
 
 impl HttpState {
@@ -164,6 +188,7 @@ impl HttpRuntime {
         Router::new()
             .route("/v1/sessions", post(open_session))
             .route("/v1/sessions/{session_id}", delete(close_session))
+            .fallback(resource_request)
             .with_state(self.state.clone())
     }
 
@@ -184,7 +209,241 @@ fn runtime_with(execution: Arc<ExecutionService>, verifier: Arc<dyn GrantVerifie
             execution,
             verifier,
             openings: Arc::new(Mutex::new(HashMap::new())),
+            buffers: Arc::new(super::limits::BufferBudget::default()),
+            #[cfg(test)]
+            output_observer: Arc::new(Mutex::new(None)),
         },
+    }
+}
+
+async fn resource_request(State(state): State<HttpState>, request: Request<Body>) -> Response {
+    match resource_response(&state, request).await {
+        Ok(response) | Err(response) => response,
+    }
+}
+
+type HttpResult<T> = Result<T, Response>;
+
+async fn resource_response(state: &HttpState, request: Request<Body>) -> HttpResult<Response> {
+    let bearer = bearer(request.headers())
+        .ok_or_else(|| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
+    let authority = state.verifier.verify(bearer).await.map_err(auth_refusal)?;
+    authority
+        .ensure_scope("bridge:read")
+        .map_err(auth_refusal)?;
+    let operation = super::routes::operation(
+        request.method().as_str(),
+        request.uri().path(),
+        request.uri().query(),
+    )
+    .map_err(route_refusal)?;
+    authorize_resource(&authority, operation, request.headers())?;
+    let session_id = resource_session_id(request.headers())?;
+    let output = request
+        .extensions()
+        .get::<super::listener::OutputAuthority>()
+        .cloned()
+        .ok_or_else(|| refusal(StatusCode::SERVICE_UNAVAILABLE, "unavailable"))?;
+    observe_output(state, &output);
+    let (opening_budget, session) = resource_opening(state, session_id, &authority)?;
+    let reservation = Arc::new(
+        state
+            .buffers
+            .reserve(
+                operation.request_max_bytes,
+                operation.response_max_bytes,
+                &opening_budget,
+            )
+            .map_err(|_| refusal(StatusCode::TOO_MANY_REQUESTS, "overloaded"))?,
+    );
+    let verb = request.method().as_str().to_owned();
+    let path = request.uri().path().to_owned();
+    let query = request.uri().query().map(str::to_owned);
+    let metadata = request_metadata(request.headers())?;
+    let body = super::body::read_json_authorized(
+        request.into_body(),
+        operation.request_max_bytes,
+        authority.deadline,
+        || (authority.live)(),
+    )
+    .await
+    .map_err(body_refusal)?;
+    let resolved =
+        super::routes::resolve(&verb, &path, query.as_deref(), body).map_err(route_refusal)?;
+    let invocation = Invocation::decode(resolved.method, &resolved.params)
+        .and_then(|invocation| invocation.with_metadata(metadata))
+        .map_err(api_refusal)?;
+    let (event, call) = execute_resource(state, &session, invocation, reservation.clone()).await?;
+    if event.bytes().len() > resolved.operation.response_max_bytes {
+        return Err(refusal(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "response_too_large",
+        ));
+    }
+    Ok(resource_output(
+        event,
+        call,
+        reservation,
+        output,
+        session,
+        &authority,
+    ))
+}
+
+fn authorize_resource(
+    authority: &VerifiedAuthority,
+    operation: &super::routes::ResourceOperation,
+    headers: &HeaderMap,
+) -> HttpResult<()> {
+    if headers.contains_key(CONTENT_ENCODING) {
+        return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request"));
+    }
+    match crate::api::effects::requires_write_scope(&operation.method) {
+        Some(false) => {}
+        Some(true) => authority
+            .ensure_scope("bridge:write")
+            .map_err(auth_refusal)?,
+        None => return Err(refusal(StatusCode::INTERNAL_SERVER_ERROR, "internal")),
+    }
+    if operation.requires_events {
+        return Err(refusal(StatusCode::CONFLICT, "stream_required"));
+    }
+    match exact_header(headers, "X-Build-Subscription") {
+        Ok(None) => {}
+        Ok(Some(_)) => return Err(refusal(StatusCode::CONFLICT, "stream_replaced")),
+        Err(()) => return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request")),
+    };
+    Ok(())
+}
+
+fn resource_session_id(headers: &HeaderMap) -> HttpResult<&str> {
+    match exact_header(headers, "X-Build-Session") {
+        Ok(Some(session_id)) if !session_id.is_empty() && session_id.len() <= 128 => Ok(session_id),
+        _ => Err(refusal(StatusCode::UNAUTHORIZED, "invalid_credential")),
+    }
+}
+
+fn observe_output(state: &HttpState, output: &super::listener::OutputAuthority) {
+    #[cfg(not(test))]
+    let _ = (state, output);
+    #[cfg(test)]
+    if let Some(observer) = state.output_observer.lock().unwrap().clone() {
+        observer(output.clone());
+    }
+}
+
+fn resource_opening(
+    state: &HttpState,
+    session_id: &str,
+    authority: &VerifiedAuthority,
+) -> HttpResult<(Arc<super::limits::OpeningBudget>, SessionLease)> {
+    let opening_budget = {
+        let mut openings = state.openings.lock().unwrap();
+        let opening = openings
+            .get_mut(session_id)
+            .ok_or_else(|| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
+        if opening.authority.identity != authority.identity || !opening.session.is_live() {
+            return Err(refusal(StatusCode::UNAUTHORIZED, "invalid_credential"));
+        }
+        opening.authority = authority.clone();
+        opening.budget.clone()
+    };
+    let caller = VerifiedCaller::verified_http(
+        authority.identity.clone(),
+        authority.deadline,
+        authority.live.clone(),
+    );
+    let session = state
+        .execution
+        .sessions()
+        .resume(caller, session_id)
+        .map_err(|_| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
+    Ok((opening_budget, session))
+}
+
+async fn execute_resource(
+    state: &HttpState,
+    session: &SessionLease,
+    invocation: Invocation,
+    reservation: Arc<super::limits::BufferReservation>,
+) -> HttpResult<(EncodedEvent, crate::execution::Call)> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let sink = Arc::new(ResourceReplySink {
+        sender: Mutex::new(Some(sender)),
+        _reservation: reservation.clone(),
+    });
+    let context = state
+        .execution
+        .sessions()
+        .request(session, sink, None)
+        .map_err(|_| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
+    let mut call = state
+        .execution
+        .submit(context, invocation)
+        .await
+        .map_err(|_| refusal(StatusCode::SERVICE_UNAVAILABLE, "unavailable"))?;
+    call.reply()
+        .await
+        .map_err(|_| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
+    let event = receiver
+        .await
+        .ok()
+        .filter(EncodedEvent::is_live)
+        .ok_or_else(|| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
+    Ok((event, call))
+}
+
+fn resource_output(
+    event: EncodedEvent,
+    call: crate::execution::Call,
+    reservation: Arc<super::limits::BufferReservation>,
+    output: super::listener::OutputAuthority,
+    session: SessionLease,
+    authority: &VerifiedAuthority,
+) -> Response {
+    let output_session = session;
+    let deadline = authority.deadline;
+    let ticket = output.bind(
+        Arc::new(move || output_session.is_live()),
+        Arc::new(move || deadline),
+    );
+    let bytes = bytes::Bytes::from_owner(ResourceBytes {
+        event,
+        call: Some(call),
+        reservation: Some(reservation),
+        ticket: Some(ticket),
+    });
+    let mut response = Response::new(Body::from(bytes));
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    response
+}
+
+/// Retain the execution call and reservation until the listener confirms that
+/// Hyper's accepted bytes have crossed the production socket flush boundary.
+struct ResourceBytes {
+    event: crate::execution::session::EncodedEvent,
+    call: Option<crate::execution::Call>,
+    reservation: Option<Arc<super::limits::BufferReservation>>,
+    ticket: Option<super::listener::OutputTicket>,
+}
+
+impl AsRef<[u8]> for ResourceBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.event.bytes()
+    }
+}
+
+impl Drop for ResourceBytes {
+    fn drop(&mut self) {
+        if let (Some(ticket), Some(call), Some(reservation)) = (
+            self.ticket.take(),
+            self.call.take(),
+            self.reservation.take(),
+        ) {
+            ticket.release_with((call, reservation));
+        }
     }
 }
 
@@ -350,7 +609,12 @@ async fn open_session(
     let generation = uuid::Uuid::new_v4().to_string();
     let session_id = session.id().to_owned();
     let expires_at = grant_expiry(authority.deadline);
-    let operation_ids: [&str; 0] = [];
+    let operation_ids = super::routes::manifest()
+        .operations
+        .iter()
+        .filter(|operation| !operation.requires_events)
+        .map(|operation| operation.operation_id.as_str())
+        .collect::<Vec<_>>();
     let response = json!({
         "session_id": session_id.clone(),
         "opening_generation": generation.clone(),
@@ -369,6 +633,7 @@ async fn open_session(
             session: session.clone(),
             _generation: generation,
             authority: authority.clone(),
+            budget: Arc::new(super::limits::OpeningBudget::default()),
         },
     );
     drop(openings);
@@ -438,6 +703,89 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
     (!token.is_empty()).then_some(token)
 }
 
+fn exact_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, ()> {
+    let mut values = headers.get_all(name).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    let value = value.to_str().map_err(|_| ())?;
+    if values.next().is_some() {
+        return Err(());
+    }
+    Ok(Some(value))
+}
+
+fn request_metadata(headers: &HeaderMap) -> Result<RequestMetadata, Response> {
+    let request_id = exact_header(headers, "X-Build-Request-Id")
+        .map_err(|_| refusal(StatusCode::BAD_REQUEST, "invalid_request"))?
+        .map(str::to_owned)
+        .filter(|value| !value.is_empty() && value.len() <= 128);
+    if headers.contains_key("X-Build-Request-Id") && request_id.is_none() {
+        return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request"));
+    }
+    let priority = match exact_header(headers, "X-Build-Priority")
+        .map_err(|_| refusal(StatusCode::BAD_REQUEST, "invalid_request"))?
+    {
+        None | Some("user") => crate::timing::Priority::Foreground,
+        Some("background") => crate::timing::Priority::Background,
+        Some(_) => return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request")),
+    };
+    let operation_id = exact_header(headers, "Idempotency-Key")
+        .map_err(|_| refusal(StatusCode::BAD_REQUEST, "invalid_request"))?;
+    let after = exact_header(headers, "X-Build-After")
+        .map_err(|_| refusal(StatusCode::BAD_REQUEST, "invalid_request"))?;
+    let write = match (operation_id, after) {
+        (None, None) => None,
+        (None, Some(_)) => return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request")),
+        (Some(operation_id), after) => {
+            let mut value = json!({"operation_id": operation_id});
+            if let Some(after) = after {
+                value["after"] = serde_json::from_str(after)
+                    .map_err(|_| refusal(StatusCode::BAD_REQUEST, "invalid_request"))?;
+            }
+            Some(
+                serde_json::from_value(value)
+                    .map_err(|_| refusal(StatusCode::BAD_REQUEST, "invalid_request"))?,
+            )
+        }
+    };
+    Ok(RequestMetadata {
+        request_id,
+        priority,
+        write,
+    })
+}
+
+fn route_refusal(error: super::routes::RouteError) -> Response {
+    match error {
+        super::routes::RouteError::NotFound => refusal(StatusCode::NOT_FOUND, "not_found"),
+        super::routes::RouteError::MethodNotAllowed { allow } => {
+            let mut response = refusal(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
+            if let Ok(value) = HeaderValue::from_str(&allow.join(", ")) {
+                response.headers_mut().insert(ALLOW, value);
+            }
+            response
+        }
+        super::routes::RouteError::InvalidParams { .. } => {
+            refusal(StatusCode::BAD_REQUEST, "invalid_params")
+        }
+    }
+}
+
+fn api_refusal(error: crate::api::ApiError) -> Response {
+    let status = match error.code() {
+        "not_found" => StatusCode::NOT_FOUND,
+        "already_exists" | "locked" | "conflict" | "stale_version" | "stale_body" => {
+            StatusCode::CONFLICT
+        }
+        "busy" => StatusCode::TOO_MANY_REQUESTS,
+        "unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+        "internal" => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    refusal(status, error.code())
+}
+
 fn auth_refusal(error: AuthError) -> Response {
     match error {
         AuthError::InvalidCredential
@@ -474,7 +822,7 @@ mod tests {
     use futures_util::stream;
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tower::ServiceExt;
 
     struct WitnessVerifier {
@@ -524,6 +872,37 @@ mod tests {
                 |epoch| json!({"api_version": crate::api::API_VERSION, "bridge_epoch": epoch}),
             ),
         )
+    }
+
+    async fn resource_json(
+        app: &Router,
+        method: &str,
+        uri: impl AsRef<str>,
+        session_id: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri.as_ref())
+            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header("X-Build-Session", session_id);
+        let body = match body {
+            Some(body) => {
+                builder = builder.header(CONTENT_TYPE, "application/json");
+                Body::from(serde_json::to_vec(&body).unwrap())
+            }
+            None => Body::empty(),
+        };
+        let mut request = builder.body(body).unwrap();
+        request
+            .extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 9 * 1024 * 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
     }
 
     #[tokio::test]
@@ -629,7 +1008,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opening_advertises_no_resource_operation_before_routes_are_mounted() {
+    async fn opening_advertises_exactly_the_mounted_non_event_resources() {
         let app = router_with(
             execution(),
             Arc::new(WitnessVerifier {
@@ -645,7 +1024,334 @@ mod tests {
             .await
             .unwrap();
         let opening: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(opening["transport"]["operation_ids"], json!([]));
+        let expected = super::super::routes::manifest()
+            .operations
+            .iter()
+            .filter(|operation| !operation.requires_events)
+            .map(|operation| operation.operation_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(opening["transport"]["operation_ids"], json!(expected));
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_resource_uses_the_shared_execution_service() {
+        let app = router_with(
+            execution(),
+            Arc::new(WitnessVerifier {
+                calls: Arc::new(AtomicUsize::new(0)),
+                authority: Some(authority()),
+            }),
+        );
+        let opened = app
+            .clone()
+            .oneshot(open_request(Body::from(r#"{"api_range":">=3 <4"}"#)))
+            .await
+            .unwrap();
+        assert_eq!(opened.status(), StatusCode::CREATED);
+        let session_id = opening_id(opened).await;
+
+        let mut request = Request::get("/v1/health")
+            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header("X-Build-Session", session_id)
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let reply: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(reply["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn mounted_resources_apply_real_task_file_and_agent_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(dir.path()).unwrap();
+        let repo = crate::git_fixture::init_repo_named(&state_root, "repo");
+        std::fs::write(repo.join("mounted.txt"), "mounted resource\n").unwrap();
+        let context = crate::harness::HarnessContext::resolved(
+            state_root.join("mcp.sock"),
+            state_root.clone(),
+        )
+        .unwrap();
+        let mut app_state = crate::app::AppState::new_unrooted_configured(
+            state_root.join("worktrees"),
+            "main",
+            true,
+            context,
+        )
+        .with_task_store(state_root.join("store"))
+        .unwrap();
+        let project_id = app_state.add_project(repo, "main".into());
+        let execution = ExecutionService::new(crate::app::AppState::handler(Arc::new(Mutex::new(
+            app_state,
+        ))));
+        let runtime = runtime_with(
+            execution,
+            Arc::new(WitnessVerifier {
+                calls: Arc::new(AtomicUsize::new(0)),
+                authority: Some(authority()),
+            }),
+        );
+        let app = runtime.router();
+        let opened = app
+            .clone()
+            .oneshot(open_request(Body::from(r#"{"api_range":">=3 <4"}"#)))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+
+        let (status, created) = resource_json(
+            &app,
+            "POST",
+            format!("/v1/projects/{project_id}/tasks"),
+            &session_id,
+            Some(json!({"title":"Mounted resource task"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created:?}");
+        assert_eq!(created["ok"], true, "{created:?}");
+        let task_id = created["result"]["task"]["id"].as_str().unwrap().to_owned();
+        let (status, read_task) = resource_json(
+            &app,
+            "GET",
+            format!("/v1/tasks/{task_id}"),
+            &session_id,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{read_task:?}");
+        assert_eq!(
+            read_task["result"]["task"]["title"],
+            "Mounted resource task"
+        );
+
+        let (status, file) = resource_json(
+            &app,
+            "POST",
+            "/v1/files/content-queries",
+            &session_id,
+            Some(json!({"project_id":project_id,"path":"mounted.txt"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{file:?}");
+        assert_eq!(file["ok"], true, "{file:?}");
+        assert_eq!(file["result"]["content_b64"], "bW91bnRlZCByZXNvdXJjZQo=");
+
+        let (status, workspace) = resource_json(
+            &app,
+            "POST",
+            "/v1/workspaces",
+            &session_id,
+            Some(json!({"project_id":project_id,"name":"mounted-agent","isolation":"worktree"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{workspace:?}");
+        let workspace_id = workspace["result"]["workspace_id"].as_str().unwrap();
+        let (status, conversation) = resource_json(
+            &app,
+            "POST",
+            format!("/v1/workspaces/{workspace_id}/conversation"),
+            &session_id,
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{conversation:?}");
+        let run_id = conversation["result"]["run_id"].as_str().unwrap();
+        let (status, started) = resource_json(
+            &app,
+            "POST",
+            "/v1/agent-starts",
+            &session_id,
+            Some(json!({"id":run_id})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{started:?}");
+        assert_eq!(started["ok"], true, "{started:?}");
+        assert!(started["result"]["term_id"]
+            .as_str()
+            .is_some_and(|term_id| term_id.starts_with("agent:")));
+        runtime.shutdown();
+    }
+
+    #[tokio::test]
+    async fn read_only_grant_can_read_but_cannot_dispatch_a_mutation() {
+        let mut read_only = authority();
+        read_only.scopes = vec!["bridge:read".into()].into();
+        let app = router_with(
+            execution(),
+            Arc::new(WitnessVerifier {
+                calls: Arc::new(AtomicUsize::new(0)),
+                authority: Some(read_only),
+            }),
+        );
+        let opened = app
+            .clone()
+            .oneshot(open_request(Body::from(r#"{"api_range":">=3 <4"}"#)))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+
+        let mut read = Request::get("/v1/health")
+            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header("X-Build-Session", &session_id)
+            .body(Body::empty())
+            .unwrap();
+        read.extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+        assert_eq!(
+            app.clone().oneshot(read).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let mut write = Request::patch("/v1/settings")
+            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header(CONTENT_TYPE, "application/json")
+            .header("X-Build-Session", session_id)
+            .body(Body::from("{}"))
+            .unwrap();
+        write
+            .extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+        assert_eq!(
+            app.oneshot(write).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_resource_metadata_headers_are_rejected() {
+        let app = router_with(
+            execution(),
+            Arc::new(WitnessVerifier {
+                calls: Arc::new(AtomicUsize::new(0)),
+                authority: Some(authority()),
+            }),
+        );
+        let opened = app
+            .clone()
+            .oneshot(open_request(Body::from(r#"{"api_range":">=3 <4"}"#)))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+
+        let mut request = Request::get("/v1/health")
+            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header("X-Build-Session", session_id)
+            .header("X-Build-Priority", "user")
+            .header("X-Build-Priority", "background")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+
+        assert_eq!(
+            app.oneshot(request).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn resource_requests_reject_content_encoding() {
+        let app = router_with(
+            execution(),
+            Arc::new(WitnessVerifier {
+                calls: Arc::new(AtomicUsize::new(0)),
+                authority: Some(authority()),
+            }),
+        );
+        let opened = app
+            .clone()
+            .oneshot(open_request(Body::from(r#"{"api_range":">=3 <4"}"#)))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+
+        let mut request = Request::get("/v1/health")
+            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header("X-Build-Session", session_id)
+            .header("Content-Encoding", "identity")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+
+        assert_eq!(
+            app.oneshot(request).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_http_request_retains_reservation_until_executor_settlement() {
+        let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let handler = FrameHandler::new(FrameClock::new(), move |_, frame, _| {
+            entered_tx.send(()).unwrap();
+            release_rx.lock().unwrap().recv().unwrap();
+            json!({"id": frame.payload["id"], "ok": true, "result": {}})
+        })
+        .with_greeting_reads(
+            |epoch| json!({"api_version": crate::api::API_VERSION, "bridge_epoch": epoch}),
+        );
+        let runtime = runtime_with(
+            ExecutionService::new(handler),
+            Arc::new(WitnessVerifier {
+                calls: Arc::new(AtomicUsize::new(0)),
+                authority: Some(authority()),
+            }),
+        );
+        let budget = runtime.state.buffers.clone();
+        let initially_available = budget.available();
+        let app = runtime.router();
+        let opened = app
+            .clone()
+            .oneshot(open_request(Body::from(r#"{"api_range":">=3 <4"}"#)))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+
+        let mut request = Request::patch("/v1/settings")
+            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header(CONTENT_TYPE, "application/json")
+            .header("X-Build-Session", session_id)
+            .body(Body::from("{}"))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+        let in_flight = tokio::spawn(app.oneshot(request));
+        entered_rx.recv().await.unwrap();
+        let reserved = budget.available();
+        assert!(reserved < initially_available);
+
+        in_flight.abort();
+        assert!(
+            in_flight.await.unwrap_err().is_cancelled(),
+            "the HTTP future must be gone before inspecting executor ownership"
+        );
+        assert_eq!(
+            budget.available(),
+            reserved,
+            "HTTP cancellation cannot release executor-owned capacity"
+        );
+
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while budget.available() != initially_available {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("settled executor releases the reservation");
     }
 
     #[tokio::test]
@@ -698,6 +1404,159 @@ mod tests {
         let error = socket.write_all(b"buffered opening").await.unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
         drop(response);
+    }
+
+    #[tokio::test]
+    async fn production_tls_socket_cuts_off_buffered_resource_after_revocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let rcgen::CertifiedKey { cert, key_pair } =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        std::fs::write(&cert_path, cert.pem()).unwrap();
+        std::fs::write(&key_path, key_pair.serialize_pem()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let tls = super::super::tls::load(&cert_path, &key_path).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let policy = super::super::policy::HttpPolicy::new(
+            &format!("https://localhost:{port}"),
+            &["https://app.example".to_owned()],
+        )
+        .unwrap();
+        let payload = "x".repeat(7 * 1024 * 1024);
+        let execution = ExecutionService::new(
+            FrameHandler::new(FrameClock::new(), move |_, frame, _| {
+                json!({"id": frame.payload["id"], "ok": true, "result": {"payload": payload.clone()}})
+            })
+            .with_greeting_reads(
+                |epoch| json!({"api_version": crate::api::API_VERSION, "bridge_epoch": epoch}),
+            ),
+        );
+        let live = Arc::new(AtomicBool::new(true));
+        let runtime = runtime_with(
+            execution,
+            Arc::new(WitnessVerifier {
+                calls: Arc::new(AtomicUsize::new(0)),
+                authority: Some(authority_with(
+                    live.clone(),
+                    std::time::Duration::from_secs(60),
+                )),
+            }),
+        );
+        let (authority_tx, mut authority_rx) = tokio::sync::mpsc::unbounded_channel();
+        *runtime.state.output_observer.lock().unwrap() = Some(Arc::new(move |authority| {
+            authority_tx.send(authority).unwrap();
+        }));
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let server_runtime = runtime.clone();
+        let server = tokio::spawn(async move {
+            serve_mounted(listener, tls, policy, server_runtime, stopped).await
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .http1_only()
+            .add_root_certificate(reqwest::Certificate::from_pem(cert.pem().as_bytes()).unwrap())
+            .build()
+            .unwrap();
+        let base = format!("https://localhost:{port}");
+        let opening: serde_json::Value = client
+            .post(format!("{base}/v1/sessions"))
+            .header("origin", "https://app.example")
+            .bearer_auth("account-bound-token")
+            .json(&json!({"api_range":">=3 <4"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let session_id = opening["session_id"].as_str().unwrap().to_owned();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert.der().clone()).unwrap();
+        let client_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        for revoke in [false, true] {
+            let socket = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let mut socket = connector
+                .connect(
+                    rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+                    socket,
+                )
+                .await
+                .unwrap();
+            let request = format!(
+                "PATCH /v1/settings HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: https://app.example\r\nAuthorization: Bearer account-bound-token\r\nX-Build-Session: {session_id}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            );
+            socket.write_all(request.as_bytes()).await.unwrap();
+            let authority = authority_rx.recv().await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    if authority.has_pending_write() {
+                        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                        if authority.has_pending_write() {
+                            break;
+                        }
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the unread production TLS response must park a socket write");
+            if revoke {
+                live.store(false, Ordering::SeqCst);
+            }
+            let mut response = Vec::new();
+            let read = tokio::time::timeout(
+                std::time::Duration::from_secs(4),
+                socket.read_to_end(&mut response),
+            )
+            .await
+            .expect("the socket response must settle");
+            let split = response
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|position| position + 4)
+                .expect("HTTP response has headers");
+            let headers = std::str::from_utf8(&response[..split]).unwrap();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .and_then(|value| value.parse::<usize>().ok())
+                })
+                .expect("bounded resource response has a content length");
+            let received = response.len() - split;
+            if revoke {
+                assert!(
+                    read.is_err() || received < content_length,
+                    "revocation must truncate the parked production socket response"
+                );
+            } else {
+                read.unwrap();
+                assert_eq!(
+                    received, content_length,
+                    "the identical live authority completes the parked response"
+                );
+            }
+        }
+
+        stop.send(true).unwrap();
+        server.await.unwrap().unwrap();
     }
 
     #[tokio::test]

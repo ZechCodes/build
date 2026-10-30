@@ -38,6 +38,7 @@ struct Authority {
 #[derive(Default)]
 struct AuthorityState {
     current: Mutex<Option<Authority>>,
+    releases: Mutex<Vec<(uuid::Uuid, Box<dyn Send>)>>,
     waker: AtomicWaker,
     pending_write: AtomicBool,
 }
@@ -103,6 +104,26 @@ impl OutputAuthority {
         }
         Ok(deadline)
     }
+
+    fn finish_flush(&self) {
+        let released = {
+            let mut releases = self.0.releases.lock().unwrap();
+            std::mem::take(&mut *releases)
+        };
+        if released.is_empty() {
+            return;
+        }
+        let mut current = self.0.current.lock().unwrap();
+        if current
+            .as_ref()
+            .is_some_and(|current| released.iter().any(|(released, _)| *released == current.id))
+        {
+            *current = None;
+        }
+        drop(current);
+        drop(released);
+        self.0.waker.wake();
+    }
 }
 
 impl OutputTicket {
@@ -114,17 +135,21 @@ impl OutputTicket {
         }
     }
 
-    /// Clear this exact response after every clone of its encoded body has
-    /// left Hyper. A successor binding is never affected.
+    /// Keep this exact response's owners until Hyper flushes the bytes it
+    /// accepted from the body into the production socket. A successor binding
+    /// is never cleared by an older response's delayed flush.
     pub fn release(self) {
-        let mut current = self.authority.0.current.lock().unwrap();
-        if current
-            .as_ref()
-            .is_some_and(|current| current.id == self.id)
-        {
-            *current = None;
-            self.authority.0.waker.wake();
-        }
+        self.release_with(());
+    }
+
+    pub(crate) fn release_with(self, owner: impl Send + 'static) {
+        self.authority
+            .0
+            .releases
+            .lock()
+            .unwrap()
+            .push((self.id, Box::new(owner)));
+        self.authority.0.waker.wake();
     }
 }
 
@@ -318,9 +343,21 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for BoundedIo<T> {
             return Poll::Ready(Err(error));
         }
         let result = Pin::new(&mut self.inner).poll_flush(cx);
-        self.checked_write(cx, result)
+        let result = self.checked_write(cx, result);
+        if matches!(result, Poll::Ready(Ok(()))) {
+            self.authority.finish_flush();
+        }
+        result
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
+        if let Err(error) = self.check_authority(cx) {
+            return Poll::Ready(Err(error));
+        }
+        let result = Pin::new(&mut self.inner).poll_shutdown(cx);
+        let result = self.checked_write(cx, result);
+        if matches!(result, Poll::Ready(Ok(()))) {
+            self.authority.finish_flush();
+        }
+        result
     }
 }

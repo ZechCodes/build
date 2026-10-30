@@ -218,6 +218,7 @@ it("gives each explicit header retirement its own stable bounded recovery identi
   const key = content.taskFullRefreshKey(held, barrierOne);
   expect(content.taskFullRefreshKey(held, { ...barrierOne, unread_count: 99 })).toBe(key);
   expect(content.taskFullRefreshKey(held, barrierTwo)).not.toBe(key);
+  expect(content.taskFullRefreshKey(second, barrierOne)).not.toBe(content.taskFullRefreshKey(first, barrierOne));
 });
 
 it("publishes independent PR and read facts beside the selected ordinary detail and list components", async () => {

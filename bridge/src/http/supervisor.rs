@@ -357,4 +357,52 @@ mod tests {
             vec![Some("previous".into()), Some("desired".into())]
         );
     }
+
+    #[tokio::test]
+    async fn changed_intent_reconciles_an_uncertain_prior_commit_without_overwriting_newer_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("endpoint.json");
+        let acknowledged = EndpointRecord::prepare(&path, Some(record().policy))
+            .unwrap()
+            .unwrap();
+        acknowledged.acknowledge(&path).unwrap();
+
+        let mut rotated_policy = acknowledged.policy.clone();
+        rotated_policy.certificate_fingerprint = "rotated-certificate".into();
+        let uncertain = EndpointRecord::prepare(&path, Some(rotated_policy))
+            .unwrap()
+            .unwrap();
+        let disabled = EndpointRecord::prepare(&path, None).unwrap().unwrap();
+
+        let hosted = std::sync::Mutex::new(Some(uncertain.endpoint_epoch.clone()));
+        let reconciled = reconcile_registration(&disabled, |previous| {
+            let mut current = hosted.lock().unwrap();
+            if previous.as_ref() == current.as_ref() {
+                *current = Some(disabled.endpoint_epoch.clone());
+                std::future::ready(Ok(()))
+            } else {
+                std::future::ready(Err(ProofError::Conflict))
+            }
+        })
+        .await;
+        assert_eq!(reconciled, Ok(()));
+        assert_eq!(
+            *hosted.lock().unwrap(),
+            Some(disabled.endpoint_epoch.clone())
+        );
+
+        let external = "external-newer-generation".to_string();
+        *hosted.lock().unwrap() = Some(external.clone());
+        let refused = reconcile_registration(&disabled, |previous| {
+            let current = hosted.lock().unwrap();
+            std::future::ready(if previous.as_ref() == current.as_ref() {
+                Ok(())
+            } else {
+                Err(ProofError::Conflict)
+            })
+        })
+        .await;
+        assert_eq!(refused, Err(ProofError::Conflict));
+        assert_eq!(*hosted.lock().unwrap(), Some(external));
+    }
 }

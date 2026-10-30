@@ -109,3 +109,41 @@ it("preserves a real feed full-body dispatch observation against a native same-m
   expect(after.__task_content_cache.body.read_order).toBe(dispatched);
   expect((await local.readCached(summaryAddress({ deviceId, projectId }, current.id))).value.task.title).toBe(current.title);
 });
+
+it("adopts new proven same-timestamp headers once while suppressing repeated identical header observations", async () => {
+  const tracker = await import("../src/core/trackerCache.js");
+  const local = await import("../src/core/localCache.js");
+  const content = await import("../src/core/taskContentAuthority.js");
+  const { summaryAddress } = await import("../src/core/taskSummaryCache.js");
+  const { createTrackerTaskDetailsFeed } = await import("../src/core/trackerTaskDetailsFeed.js");
+  const held = task("same-timestamp"), scope = { deviceId, projectId }, address = summaryAddress(scope, held.id);
+  await local.writeCached(tracker.taskAddress(deviceId, projectId, held.id), tracker.taskRecord(held, []));
+  const publishHeader = async (title, read_through) => {
+    const contentRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+    const candidate = content.observeTaskContent({ ...held, title, read_through }, { contentRead, coverage: "summary" });
+    await content.mergeTaskContentRecordsTogether(scope, [address], ([prior], context) => ({
+      values: [{ task: content.reconcileTaskContent(prior?.value?.task, candidate, { context }).task }], retire: false,
+    }));
+    return (await local.readCached(address)).value.task;
+  };
+  const requests = [];
+  const callRpc = vi.fn(() => new Promise((_resolve, reject) => { requests.push({ reject }); }));
+  feed = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc });
+  await feed.updateTasks([held]);
+  expect(callRpc).not.toHaveBeenCalled();
+  const first = await publishHeader("First proven header", "tc-1");
+  expect(first.updated_at).toBe(held.updated_at);
+  await feed.updateTasks([first]);
+  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(1));
+  requests[0].reject(new Error("First refusal"));
+  await feed.updateTasks([await publishHeader("First proven header", "tc-2")]);
+  expect(callRpc).toHaveBeenCalledTimes(1);
+  const second = await publishHeader("Changed proven header", "tc-3");
+  expect(second.updated_at).toBe(first.updated_at);
+  await feed.updateTasks([second]);
+  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(2));
+  requests[1].reject(new Error("Second refusal"));
+  await feed.updateTasks([await publishHeader("Changed proven header", "tc-4")]);
+  expect(callRpc).toHaveBeenCalledTimes(2);
+  expect((await tracker.readTaskRecord(deviceId, projectId, held.id)).task.body).toBe(held.body);
+});

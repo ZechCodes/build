@@ -229,7 +229,7 @@ function compatibleFamily(source, family, task, policy) {
     && (!family.floor || policy.compare(source.proof.floor, family.floor(task, policy)) === 0);
 }
 
-function familySelection(sources, rawTasks, family, task, scope, context, policy, selectedWatch, fallback) {
+function familySelection({ sources, rawTasks, family, task, scope, context, policy, selectedWatch, fallback }) {
   const values = sources.map((source) => sourceFamily(source, family, policy, scope, context))
     .filter((value) => value && !retiredIncarnation(value.proof, selectedWatch));
   const barriers = rawTasks.map((raw) => unknownBarrier(raw, family, scope, context, selectedWatch)).filter(Boolean);
@@ -259,17 +259,23 @@ function barrierProof(proof, task) {
 }
 
 function applyFamilies(task, sources, rawTasks, scope, context, policy, selectedWatch, fallback) {
-  const metadata = {}, unknown = {}, paint = {};
+  const stores = { metadata: {}, unknown: {}, paint: {} };
   for (const family of families) {
     for (const field of family.fields) delete task[field];
-    const selected = familySelection(sources, rawTasks, family, task, scope, context, policy, selectedWatch, fallback);
-    if (!selected) continue;
-    if (selected.unknown) unknown[family.name] = selected.proof;
-    else {
-      if (selected.proof) (selected.paint ? paint : metadata)[family.name] = selected.proof;
-      for (const field of family.fields) if (own(selected.task, field)) task[field] = selected.task[field];
-    }
+    const selected = familySelection({ sources, rawTasks, family, task, scope, context, policy, selectedWatch, fallback });
+    applyFamily(task, family, selected, stores);
   }
+  publishFamilyMetadata(task, stores);
+}
+
+function applyFamily(task, family, selected, { metadata, unknown, paint }) {
+  if (!selected) return;
+  if (selected.unknown) { unknown[family.name] = selected.proof; return; }
+  if (selected.proof) (selected.paint ? paint : metadata)[family.name] = selected.proof;
+  for (const field of family.fields) if (own(selected.task, field)) task[field] = selected.task[field];
+}
+
+function publishFamilyMetadata(task, { metadata, unknown, paint }) {
   if (Object.keys(unknown).length) metadata.unknown = unknown;
   if (Object.keys(paint).length) metadata.paint = paint;
   if (Object.keys(metadata).length) task[TASK_FAMILY_CACHE] = metadata;

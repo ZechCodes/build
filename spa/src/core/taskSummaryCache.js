@@ -410,21 +410,33 @@ export function writeSummaryTask(scope, task, read, options = {}) {
 const fullHeaderSource = (task, fullTask) => fullTask ? fullTaskSummary(task) : undefined;
 const fullActionSource = (task) => ({ watched: false, read_through: null, watch_started_after: null, dismissed_through: null, ...task });
 
-function reduceSummaryMutation(records, options, { headerBarrier, headerGuards, watchGuard, context, acknowledgment }) {
-  const [held, invalidation, ...shared] = records, { task, read, fullTask, fragment, address } = options;
+function reduceSummaryMutation(records, options, guards) {
+  const [held, invalidation, ...shared] = records, { read, fragment } = options;
   if (!options.accept()) return null;
-  const before = held?.value, current = context || fragment.context(shared);
-  const intent = summaryMutationIntent(task, fullTask, options.scope, current);
-  const source = intent.task, patched = mutationSummaryPatch(before?.task, source, task, fullTask);
-  const retireWatch = !intent.retired && !hasTaskWatchSnapshot(source) && blindSummaryWatchChanged(before, patched, options);
-  const row = observedSummaryValue(before, patched, source, read,
-    { ...options, source, action: true, context: current, headerBarrier, headerGuards, watchGuard, acknowledgment, blindWatch: retireWatch });
-  if (retireWatch) { row.task = retireTaskWatchFacts(row.task); row.watch_uncertain = true; }
-  const selected = summaryContent(before, row, patched, { context: current, address,
-    written: recordWriteOf(held), contentRead: options.contentRead, headerBarrier, headerGuards, observed: options.rawObservation || Boolean(options.contentRead),
-    headerSource: fullHeaderSource(task, fullTask) });
+  const context = guards.context || fragment.context(shared);
+  const selected = summaryMutationRow(held, options, { ...guards, context });
   return [selected.row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) },
-    ...fragment.finish(shared, { retire: selected.retire, retireWatch })];
+    ...fragment.finish(shared, { retire: selected.retire, retireWatch: selected.retireWatch })];
+}
+
+function summaryMutationRow(held, options, { headerBarrier, headerGuards, watchGuard, context, acknowledgment }) {
+  const before = held?.value, { task, read, fullTask, address } = options;
+  const { source, patched, retireWatch } = summaryMutationProjection(before, options, context);
+  const row = observedSummaryValue(before, patched, source, read,
+    { ...options, source, action: true, context, headerBarrier, headerGuards, watchGuard, acknowledgment, blindWatch: retireWatch });
+  if (retireWatch) { row.task = retireTaskWatchFacts(row.task); row.watch_uncertain = true; }
+  const selected = summaryContent(before, row, patched, { context, address,
+    written: recordWriteOf(held), contentRead: options.contentRead, headerBarrier, headerGuards,
+    observed: options.rawObservation || Boolean(options.contentRead), headerSource: fullHeaderSource(task, fullTask) });
+  return { ...selected, retireWatch };
+}
+
+function summaryMutationProjection(before, options, context) {
+  const { task, fullTask, scope } = options;
+  const intent = summaryMutationIntent(task, fullTask, scope, context);
+  const source = intent.task, patched = mutationSummaryPatch(before?.task, source, task, fullTask);
+  return { source, patched, retireWatch: !intent.retired && !hasTaskWatchSnapshot(source)
+    && blindSummaryWatchChanged(before, patched, options) };
 }
 
 function summaryMutationIntent(task, fullTask, scope, context) {

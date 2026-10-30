@@ -133,12 +133,16 @@ function reduceWatchSettlement(owner, [control, record], { context, note, conten
   const next = { ...control.value, pendingCount: control.value.pendingCount - 1, watchRetirementEpoch: randomToken() };
   const terminalNote = terminalWatchNote(note?.value, trusted, "rejected");
   const after = withTaskWatchIntentNote(settledWatchContext(context, next), trusted.taskId, terminalNote);
-  const eligible = accept() && currentOwnerData(trusted, context) && ownedIntent(trusted, note);
-  const canPublish = eligible && validOwnerRead(trusted, contentRead, after);
-  const acknowledgment = canPublish && capturedOwnerWatchCurrent(trusted, contentRead, control.value)
-    ? watchAcknowledgment(trusted, contentRead, after) : null;
-  return { values: [next, DELETE_CACHED_RECORD], context: after, owner: trusted, acknowledgment, note: terminalNote,
-    canRestore: eligible && matchingBlindEpoch(trusted, control.value), canPublish };
+  const permissions = watchSettlementPermissions(trusted, control.value, { context, note, contentRead, accept, after });
+  return { values: [next, DELETE_CACHED_RECORD], context: after, owner: trusted, note: terminalNote, ...permissions };
+}
+
+function watchSettlementPermissions(owner, control, { context, note, contentRead, accept, after }) {
+  const eligible = accept() && currentOwnerData(owner, context) && ownedIntent(owner, note);
+  const canPublish = eligible && validOwnerRead(owner, contentRead, after);
+  const acknowledgment = canPublish && capturedOwnerWatchCurrent(owner, contentRead, control)
+    ? watchAcknowledgment(owner, contentRead, after) : null;
+  return { acknowledgment, canRestore: eligible && matchingBlindEpoch(owner, control), canPublish };
 }
 
 export function terminalWatchNote(note, owner, disposition) {

@@ -594,3 +594,44 @@ it("retains actual held detail paint while rejecting a pending raw watch lineage
   }
   expect(result.summary).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
 });
+
+it("protects an untagged local false lineage created in an existing lineageless detail from an earlier full acknowledgment", async () => {
+  const first = await runtime();
+  const { detail } = await catalogueOnlyFalse(first);
+  const owner = await first.watch.beginTaskWatchMutation(scope, "task-20", { watched: true, metadataOnly: true });
+  const earlier = await first.content.captureTaskContentRead(scope);
+  const outside = await runtime();
+  const pendingRead = await outside.content.captureTaskContentRead(detail, { revalidate: "full" });
+  expect(pendingRead.ticket.watchPending).toBe(true);
+  await outside.tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-20",
+    outside.tracker.taskRecord(row(20, { title: "Current ordinary bytes", watched: true, watch_started_after: "te-refused" }), []),
+    { contentRead: pendingRead });
+  const lineageless = (await outside.cache.readCached(detail)).value;
+  expect(lineageless.task).not.toHaveProperty("watched");
+  expect(lineageless.task).not.toHaveProperty("watch_started_after");
+  const controlAddress = outside.watch.taskWatchControlAddress(scope);
+  const beforeLocal = (await outside.cache.readCached(controlAddress)).value;
+
+  // Deliberately untagged local write, not a provenance-preserving cache copy:
+  // strip private metadata from actual admitted bytes before choosing false.
+  const local = Object.fromEntries(Object.entries(lineageless.task).filter(([key]) => !key.startsWith("__")));
+  local.watched = false;
+  expect(local).not.toHaveProperty("watch_started_after");
+  await outside.tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-20", { ...lineageless, task: local });
+  const written = (await outside.cache.readCached(detail)).value.task;
+  expect(written).toMatchObject({ title: lineageless.task.title, body: lineageless.task.body, watched: false });
+  expect(written).not.toHaveProperty("watch_started_after");
+  expect(written[outside.watch.TASK_WATCH_CACHE]).toBeUndefined();
+  const afterLocal = (await outside.cache.readCached(controlAddress)).value;
+  const retiredBeforeAck = afterLocal.blindRetirementEpoch !== beforeLocal.blindRetirementEpoch;
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true });
+
+  await outside.watch.settleTaskWatchMutation(owner, { contentRead: earlier,
+    answer: { task: row(20, { watched: true, watch_started_after: "te-ack" }) } });
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  const held = (await outside.cache.readCached(detail)).value.task;
+  expect(held.watched, `blind fence retired before acknowledgment: ${retiredBeforeAck}`).toBe(false);
+  expect(held).not.toHaveProperty("watch_started_after");
+  expect(held[outside.watch.TASK_WATCH_CACHE]?.source).not.toBe("ack");
+  expect(retiredBeforeAck).toBe(true);
+});

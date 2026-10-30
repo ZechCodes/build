@@ -15,14 +15,15 @@ pub(super) mod checkpoint_test {
     struct Barrier {
         reached: Sender<i64>,
         release: Receiver<()>,
+        held: Sender<bool>,
     }
 
     thread_local! {
         static NEXT: RefCell<Option<Barrier>> = const { RefCell::new(None) };
     }
 
-    pub(in crate::store) fn arm(reached: Sender<i64>, release: Receiver<()>) {
-        NEXT.with(|next| *next.borrow_mut() = Some(Barrier { reached, release }));
+    pub(in crate::store) fn arm(reached: Sender<i64>, release: Receiver<()>, held: Sender<bool>) {
+        NEXT.with(|next| *next.borrow_mut() = Some(Barrier { reached, release, held }));
     }
 
     pub(super) fn after_commit(key: &str, through: i64) {
@@ -32,7 +33,8 @@ pub(super) mod checkpoint_test {
         let barrier = NEXT.with(|next| next.borrow_mut().take());
         if let Some(barrier) = barrier {
             let _ = barrier.reached.send(through);
-            let _ = barrier.release.recv_timeout(Duration::from_secs(10));
+            let held_until_release = barrier.release.recv_timeout(Duration::from_secs(10)).is_ok();
+            let _ = barrier.held.send(held_until_release);
         }
     }
 }

@@ -84,9 +84,10 @@ fn write_after_rebuild_checkpoint_remains_in_final_projection() {
     store.connection().execute("INSERT OR REPLACE INTO meta(key,value) VALUES('task_summary_rebuild','1')", []).unwrap();
     let (reached_tx, reached_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
+    let (held_tx, held_rx) = mpsc::channel();
     let database = root.path().join("build.db");
     let rebuild = std::thread::spawn(move || -> Result<(), StoreError> {
-        super::super::task_summaries::checkpoint_test::arm(reached_tx, release_rx);
+        super::super::task_summaries::checkpoint_test::arm(reached_tx, release_rx, held_tx);
         let mut conn = rusqlite::Connection::open(database)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         if super::super::task_summaries::initialize(&mut conn)? {
@@ -94,18 +95,41 @@ fn write_after_rebuild_checkpoint_remains_in_final_projection() {
         }
         Ok(())
     });
+    struct RebuildGuard {
+        release: Option<mpsc::Sender<()>>,
+        worker: Option<std::thread::JoinHandle<Result<(), StoreError>>>,
+    }
+    impl RebuildGuard {
+        fn finish(&mut self) -> std::thread::Result<Result<(), StoreError>> {
+            if let Some(release) = self.release.take() {
+                let _ = release.send(());
+            }
+            self.worker.take().unwrap().join()
+        }
+    }
+    impl Drop for RebuildGuard {
+        fn drop(&mut self) {
+            if let Some(release) = self.release.take() {
+                let _ = release.send(());
+            }
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+    let mut guard = RebuildGuard { release: Some(release_tx), worker: Some(rebuild) };
     let checkpoint = reached_rx.recv_timeout(Duration::from_secs(10));
     if !checkpoint.as_ref().is_ok_and(|through| *through >= rowid) {
-        let _ = release_tx.send(());
-        let _ = rebuild.join();
+        let _ = guard.finish();
         panic!("task checkpoint was not reached: {checkpoint:?}");
     }
     task.title = "written after checkpoint".into();
     task.watched = true;
     let event = TaskEvent::new(&task.id, Actor::User, TaskEventKind::Watched, serde_json::json!({}), support::NOW);
     let write = store.save_tracker_task_activity(&task, &[], &[event]);
-    let _ = release_tx.send(());
-    let rebuilt = rebuild.join().expect("rebuild thread did not panic");
+    let rebuilt = guard.finish().expect("rebuild thread did not panic");
+    let held_until_release = held_rx.recv_timeout(Duration::from_secs(1));
+    assert_eq!(held_until_release, Ok(true), "rebuild barrier timed out or lost its witness before release");
     assert!(write.is_ok(), "normal write must remain available during rebuild: {write:?}");
     assert!(rebuilt.is_ok(), "rebuild failed: {rebuilt:?}");
     assert_eq!(store.load_tracker_task(&task.id).unwrap().unwrap().title, "written after checkpoint");

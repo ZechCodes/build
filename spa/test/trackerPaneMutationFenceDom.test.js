@@ -4,16 +4,39 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, task } from "./trackerWireFixture.js";
 
 let blockedStatus, enteredWrite, writeGate, composerOptions;
+let publicationTrace = null;
+const tracePublication = (entry) => publicationTrace?.push(entry);
+const rowTrace = (record) => ({ exists: Boolean(record), read_order: record?.read_order,
+  tasks: (record?.tasks || (record?.task ? [record.task] : [])).map((row) => ({
+    id: row.id, status: row.status, title: row.title, content: row.__task_content_cache,
+  })) });
+const traceWriter = (name, writer, describe) => async (...args) => {
+  tracePublication({ event: "writer-start", name, ...describe(args) });
+  try {
+    const result = await writer(...args);
+    tracePublication({ event: "writer-return", name, result });
+    return result;
+  } catch (error) {
+    tracePublication({ event: "writer-error", name, message: error.message });
+    throw error;
+  }
+};
 const mockTrackerCache = () => vi.doMock("../src/core/trackerCache.js", async (actual) => {
   const source = await actual();
-  return { ...source, writeTasksQueryRecord: async (...args) => {
-    if (blockedStatus && args[3].tasks.some((row) => row.status === blockedStatus)) {
-      blockedStatus = null;
-      enteredWrite = true;
-      await writeGate.promise;
-    }
-    return source.writeTasksQueryRecord(...args);
-  } };
+  return { ...source,
+    writeTasksRecord: traceWriter("writeTasksRecord", source.writeTasksRecord, (args) => rowTrace(args[2])),
+    writeTaskRecord: traceWriter("writeTaskRecord", source.writeTaskRecord, (args) => rowTrace(args[3])),
+    writeTaskListRecords: traceWriter("writeTaskListRecords", source.writeTaskListRecords, (args) => ({
+      entries: args[2].map(({ address, record, contentRead }) => ({ address, ...rowTrace(record), contentRead })),
+    })),
+    writeTasksQueryRecord: traceWriter("writeTasksQueryRecord", async (...args) => {
+      if (blockedStatus && args[3].tasks.some((row) => row.status === blockedStatus)) {
+        blockedStatus = null;
+        enteredWrite = true;
+        await writeGate.promise;
+      }
+      return source.writeTasksQueryRecord(...args);
+    }, (args) => rowTrace(args[3])) };
 });
 vi.mock("../src/core/changeEvents.js", () => ({
   bridgeCapabilities: () => ({ tasks: {} }), watchChanges: () => ({ dispose() {} }),
@@ -36,6 +59,7 @@ const scope = { deviceId: "move-device", projectId: "move-project" };
 let pane, aggregate, fence, host, mutation, oldAnswer, rpc, paneCall, summaries, cache;
 
 const mountFixture = async () => {
+  publicationTrace = [];
   vi.resetModules();
   // Keep the partial mock's actual cache and content-authority modules in
   // the same lifetime as the fresh pane and its cache subscriptions.
@@ -59,7 +83,8 @@ const mountFixture = async () => {
   await summaries.landSummaryPage(ticket, { summary: true, basis: "before-move", next_cursor: "old-next",
     identities: {}, tasks: [{ id: held.id, project_id: scope.projectId, title: held.title, number: 1,
       state: "open", status: "backlog", review_summary: held.review_summary }] }, { read: order });
-  paneCall = vi.fn(async (method) => {
+  paneCall = vi.fn(async (method, params) => {
+    tracePublication({ event: "rpc", method, params });
     if (method === "tasks.list") return { tasks: [held] };
     if (method === "tasks.get") return { task: held, timeline: [] };
     if (method === "tasks.update") return mutation.promise;
@@ -82,6 +107,7 @@ const disposeFixture = () => {
   pane?.dispose(); aggregate?.dispose();
   writeGate.resolve(); mutation.resolve({}); oldAnswer.resolve({});
   fence?.resetTaskMutationFences();
+  publicationTrace = null;
 };
 afterEach(disposeFixture);
 
@@ -124,17 +150,44 @@ it("keeps mutation fencing and the mounted card intact across fresh module lifet
 });
 
 it("projects optimistic moves and rollback into shared summaries while invalidating old memberships", async () => {
-  host.querySelector('[data-column="backlog"] .task-card')
-    .dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-  await vi.waitFor(async () => expect((await summaries.readSummaryQuery(scope, {})).tasks[0].status).toBe("ready"));
-  const moved = await summaries.readSummaryQuery(scope, {});
-  expect(moved.stale).toBe(true);
-  expect(moved.next_cursor).toBe("old-next");
-  expect(moved.tasks[0].review_summary).toEqual({ mode: "snapshot", status: "open" });
-  await vi.waitFor(() => expect(paneCall).toHaveBeenCalledWith("tasks.update", { task_id: "move-task", status: "ready" }));
-  mutation.reject(new Error("move refused"));
-  await vi.waitFor(async () => expect((await summaries.readSummaryQuery(scope, {})).tasks[0].status).toBe("backlog"));
-  await vi.waitFor(() => expect(fence.taskMutationsPending(scope.deviceId)).toBe(0));
+  const tracker = await import("../src/core/trackerCache.js");
+  const summaryAddress = summaries.summaryAddress(scope, "move-task");
+  const snapshots = [];
+  const addresses = [summaryAddress, tracker.tasksAddress(scope.deviceId, scope.projectId),
+    tracker.tasksQueryAddress(scope.deviceId, scope.projectId, { project_id: scope.projectId, state: "open" })];
+  // Announcements trigger genuine reads; these snapshots report what is visible
+  // when that read completes, not an invented atomic payload for the event.
+  const snapshot = (event, address) => {
+    const entry = { event, address };
+    tracePublication(entry);
+    snapshots.push(cache.readCached(address).then((record) => { entry.cached = rowTrace(record?.value); }));
+  };
+  const stops = addresses.map((address) => cache.subscribeCache(address, () => snapshot("announcement-read", address)));
+  const writeSummary = summaries.writeSummaryTask;
+  const summarySpy = vi.spyOn(summaries, "writeSummaryTask").mockImplementation(
+    traceWriter("writeSummaryTask", writeSummary, (args) => ({ task: args[1], read: args[2] })),
+  );
+  addresses.forEach((address) => snapshot("before-keydown-read", address));
+  try {
+    host.querySelector('[data-column="backlog"] .task-card')
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await vi.waitFor(async () => expect((await summaries.readSummaryQuery(scope, {})).tasks[0].status).toBe("ready"));
+    const moved = await summaries.readSummaryQuery(scope, {});
+    expect(moved.stale).toBe(true);
+    expect(moved.next_cursor).toBe("old-next");
+    expect(moved.tasks[0].review_summary).toEqual({ mode: "snapshot", status: "open" });
+    await vi.waitFor(() => expect(paneCall).toHaveBeenCalledWith("tasks.update", { task_id: "move-task", status: "ready" }));
+    mutation.reject(new Error("move refused"));
+    await vi.waitFor(async () => expect((await summaries.readSummaryQuery(scope, {})).tasks[0].status).toBe("backlog"));
+    await vi.waitFor(() => expect(fence.taskMutationsPending(scope.deviceId)).toBe(0));
+  } finally {
+    addresses.forEach((address) => snapshot("final-read", address));
+    await Promise.all(snapshots);
+    stops.forEach((stop) => stop());
+    summarySpy.mockRestore();
+    console.info("optimistic move publication trace", JSON.stringify(publicationTrace));
+    publicationTrace = null;
+  }
 });
 
 it("projects an actual create action response compactly without claiming full query membership", async () => {

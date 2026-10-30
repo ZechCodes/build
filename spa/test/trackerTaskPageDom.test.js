@@ -50,8 +50,9 @@ vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(
 let away = true;
 let reconnecting = true;
 let movedListeners = new Set();
+let currentSession = null;
 vi.mock("../src/core/deviceReconnect.js", () => ({
-  deviceSession: () => null,
+  deviceSession: () => currentSession,
   deviceWatch: () => ({
     away: () => away,
     reconnecting: () => reconnecting,
@@ -146,6 +147,7 @@ beforeEach(async () => {
   away = true;
   reconnecting = true;
   movedListeners = new Set();
+  currentSession = null;
   notifyError.mockClear();
   openAssigneePicker.mockClear();
   feed.workspaces = [{ id: "ws-1", workspace_id: "ws-1", name: "wire-facade", projectKey: PROJECT_KEY, entity_id: "run-1" }];
@@ -1284,6 +1286,45 @@ describe("a read that fails because the session dropped", () => {
     });
   const note = () => host.querySelector(".read-wait")?.textContent ?? null;
 
+  // Call through the production scheduler and RPC implementation. Demand stacks
+  // distinguish startup repair, mount and reconnect without mocking a reducer.
+  const traceReads = async () => {
+    const trace = [];
+    const scheduler = await import("../src/core/trailingRead.js");
+    const schedule = scheduler.trailingRead;
+    const spy = vi.spyOn(scheduler, "trailingRead").mockImplementation((read, options) => {
+      const run = schedule((...args) => {
+        trace.push({ event: "run", session: currentSession?.name ?? null });
+        return read(...args);
+      }, options);
+      return (...args) => {
+        trace.push({ event: "demand", stack: new Error().stack });
+        return run(...args);
+      };
+    });
+    const rpc = call.getMockImplementation();
+    call.mockImplementation((...args) => {
+      trace.push({ event: "rpc", method: args[0], session: currentSession?.name ?? null,
+        away, reconnecting });
+      return rpc(...args);
+    });
+    return () => {
+      console.info("task startup/reconnect trace", JSON.stringify(trace));
+      spy.mockRestore();
+    };
+  };
+
+  const currentCached = async () => {
+    const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+    const address = trackerCache.taskAddress("dev-1", "proj-1", "task-1");
+    const contentRead = await captureTaskContentRead(address, { revalidate: "full" });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answerFor({ title: "Current cached task" }), { contentRead });
+    const stored = await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1");
+    expect(stored.task.__task_content_cache.header.read_order).toBe(contentRead.readOrder);
+    expect(stored.task.__task_content_cache.body.read_order).toBe(contentRead.readOrder);
+    expect(stored.task.__task_content_cache.needs_full_refresh).toBe(false);
+  };
+
   it("keeps the cached copy and says nothing", async () => {
     await cached();
     refuses = { method: "tasks.get", message: WENT };
@@ -1302,14 +1343,63 @@ describe("a read that fails because the session dropped", () => {
   it("reads again when the machine is back, with nothing polled in between", async () => {
     await cached();
     refuses = { method: "tasks.get", message: WENT };
-    await mount();
-    expect(listed("tasks.get")).toHaveLength(1);
-    refuses = null;
-    await reconnect();
-    expect(listed("tasks.get")).toHaveLength(2);
-    expect(host.querySelector(".task-page-title").textContent).toBe("Kanban drag does not persist");
-    expect(note()).toBeNull();
-    expect(notifyError).not.toHaveBeenCalled();
+    const finishTrace = await traceReads();
+    try {
+      await mount();
+      expect(listed("tasks.get")).toHaveLength(1);
+      // More event-loop turns without a device event must not poll or retry.
+      await flush();
+      expect(listed("tasks.get")).toHaveLength(1);
+      refuses = null;
+      await reconnect();
+      expect(listed("tasks.get")).toHaveLength(2);
+      expect(host.querySelector(".task-page-title").textContent).toBe("Kanban drag does not persist");
+      expect(note()).toBeNull();
+      expect(notifyError).not.toHaveBeenCalled();
+    } finally { finishTrace(); }
+  });
+
+  it("starts one read from a genuinely current cached full detail", async () => {
+    await currentCached();
+    away = false; reconnecting = false;
+    const finishTrace = await traceReads();
+    try {
+      await mount();
+      expect(listed("tasks.get")).toHaveLength(1);
+      expect(host.querySelector(".task-page-title").textContent).toBe("Kanban drag does not persist");
+      await flush();
+      expect(listed("tasks.get")).toHaveLength(1);
+      expect(notifyError).not.toHaveBeenCalled();
+    } finally { finishTrace(); }
+  });
+
+  it("starts a replacement-session read without waiting for the old startup reply", async () => {
+    await currentCached();
+    currentSession = { name: "old" };
+    away = false; reconnecting = false;
+    let oldReply;
+    call.mockImplementation((method) => method !== "tasks.get" ? Promise.resolve({})
+      : currentSession.name === "old" ? new Promise((resolve) => { oldReply = resolve; })
+        : Promise.resolve(answerFor({ title: "Replacement session task" })));
+    const finishTrace = await traceReads();
+    try {
+      await mount();
+      expect(listed("tasks.get")).toHaveLength(1);
+      expect(oldReply).toBeTypeOf("function");
+      currentSession = { name: "replacement" };
+      watchers.find(({ entity }) => entity === "proj-1").refresh();
+      await vi.waitFor(() => expect(host.querySelector(".task-page-title").textContent).toBe("Replacement session task"));
+      expect(listed("tasks.get")).toHaveLength(2);
+      oldReply(answerFor({ title: "Obsolete startup reply" }));
+      await flush();
+      expect(listed("tasks.get")).toHaveLength(2);
+      expect(host.querySelector(".task-page-title").textContent).toBe("Replacement session task");
+      expect((await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1")).task.title).toBe("Replacement session task");
+      expect(notifyError).not.toHaveBeenCalled();
+    } finally {
+      oldReply?.(answerFor({ title: "Obsolete startup reply" }));
+      finishTrace();
+    }
   });
 
   // The bridge answered. The reader has to hear that, dropped session or not.

@@ -194,7 +194,9 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   async function updateTasks(tasks) {
     if (disposed) return;
     const next = new Map((tasks || []).filter((task) => task?.id).map((task) => [task.id, task]));
-    const nextSignature = JSON.stringify([...next].map(([id, task]) => [id, versionOf(task)]));
+    const nextSignature = JSON.stringify([...next].map(([id, task]) => [
+      id, versionOf(task), taskFullRefreshKey(cached.get(id)?.value?.task, task),
+    ]));
     if (signature === nextSignature) return;
     signature = nextSignature;
     generation += 1;

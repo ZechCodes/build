@@ -124,7 +124,7 @@ export function mergeTaskContentRecordsTogether(scope, addresses, reducer, optio
   return mergeCachedRecordsTogether([...addresses, ...fragment.addresses], (all) => {
     const shared = all.slice(addresses.length), result = reducer(all.slice(0, addresses.length), fragment.context(shared));
     return result ? [...result.values, ...fragment.finish(shared, { retire: result.retire === true, retireWatch: result.retireWatch === true })] : null;
-  });
+  }, { onCommit: options?.onCommit });
 }
 
 function validObservation(observation, context, address, heldWritten) {

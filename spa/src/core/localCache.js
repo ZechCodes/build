@@ -548,12 +548,14 @@ export function mergeCachedTogether(addresses, merge) {
 // null/undefined retain their existing no-op meaning.
 export const DELETE_CACHED_RECORD = Symbol("delete cached record");
 
-export function mergeCachedRecordsTogether(addresses, merge) {
+// Optional onCommit is a local synchronous observer after verified commit,
+// before announcements. A committed no-op still returns the legacy false.
+export function mergeCachedRecordsTogether(addresses, merge, { onCommit } = {}) {
   const keys = addresses.map(recordKey);
-  return inRecoveryWriteOrder(keys, () => mergeTogetherInStore(addresses, keys, merge, (record) => record));
+  return inRecoveryWriteOrder(keys, () => mergeTogetherInStore(addresses, keys, merge, (record) => record, onCommit));
 }
 
-function mergeTogetherInStore(addresses, keys, merge, handed) {
+function mergeTogetherInStore(addresses, keys, merge, handed, onCommit) {
   let changed = [];
   return wroteStore((store) => {
     changed = [];
@@ -587,7 +589,13 @@ function mergeTogetherInStore(addresses, keys, merge, handed) {
     });
     return null;
   }, true).then((committed) => {
-    if (committed) for (const key of changed) announce(partsOfKey(key));
+    if (committed) {
+      // A committed no-op is distinct from an abort. The local observer runs
+      // before subscribers can ask again, without changing legacy booleans.
+      try { onCommit?.(); }
+      catch { /* Observer failure cannot suppress committed announcements. */ }
+      for (const key of changed) announce(partsOfKey(key));
+    }
     return Boolean(committed && changed.length);
   });
 }

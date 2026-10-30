@@ -410,11 +410,8 @@ export async function landSummaryPage(ticket, page, { read, accept = () => true,
     return { values: [queryRetired ? null : membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id), read, context), null,
       queryRetired ? null : newerObservation(observation?.value, read, page.basis),
       ...rows.map((row) => row.task?.id ? row : null), ...actors] };
-  }, { watchTaskIds: tasks.map((task) => task.id) });
-  if (queryRetired) {
-    try { onQueryRetired?.(); }
-    catch { /* A local retry hint cannot change a completed publication. */ }
-  }
+  }, { watchTaskIds: tasks.map((task) => task.id),
+    onCommit: () => { if (queryRetired && accept()) onQueryRetired?.(); } });
   return written && !queryRetired;
 }
 

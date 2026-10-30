@@ -128,6 +128,22 @@ acknowledgment or rollback. Overlapping owners, replaced sessions, and stale
 acknowledgments cannot settle another mutation. The local runtime pending guard
 remains local protection; it does not prove cross-tab safety.
 
+The bounded terminal-metadata amendment is approved for implementation, with
+its combined proof still outstanding. Ordinary header selection stays separate
+from a current-intent watch guard selected from an actual stamped replica.
+Fixed per-task latest-intent metadata binds owner, dispatch order and cache
+lifetimes; terminal disposition commits with exact-owner settlement. There is
+no per-owner terminal history.
+
+Existing admitted writers may consult that note in their publication
+transaction to retire an exact matching terminal stamp or an older stamp
+proven strictly superseded by the current same-lifetime intent. They must
+preserve the newer pending protection. Retiring older protection never settles
+that owner, changes its pending count, replays its rollback or certifies stale
+paint. Missing, legacy and cross-lifetime bindings remain uncertain. Cleanup
+of addressed replicas does not alone cover a copy racing address discovery;
+independent cross-connection controls and lazy admitted-row cleanup are required.
+
 Coordination uses a separate empty-entity namespace so ordinary project eviction
 does not erase a still-live mutation. Missing or reset coordination is a sticky
 unknown baseline. Beginning one new owner and settling it back to zero cannot

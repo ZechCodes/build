@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import taskViewFixture from "../../fixtures/api/v1/tasks.read_through.json";
 
 let cache, tracker, index, feedModule, counts, reads;
 const place = { deviceId: "device-ref", projectId: "project-ref" };
@@ -73,9 +74,11 @@ it("reads exact lookup cache only after explicit demand and follows subsequent p
 
 it("does not treat an action-created one-row legacy catalogue as full-list absence proof", async () => {
   const actions = await import("../src/core/taskWaitingOnCache.js");
+  const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+  const contentRead = await captureTaskContentRead(place);
   await actions.cacheTaskWaitingOnResponse(place.deviceId, place.projectId, {
-    task: { ...task, project_id: place.projectId, state: "open", status: "backlog" },
-  });
+    task: { ...structuredClone(taskViewFixture.result.task), ...task, project_id: place.projectId, state: "open", status: "backlog" },
+  }, { contentRead, issuedRead: contentRead.readOrder });
   stop = feedModule.feedReferenceIndex({ subscribeFeed(listener) { listener(feed); return () => {}; } });
   await vi.waitFor(() => expect(resolve(42)?.taskId).toBe(task.id));
   expect(resolve(1)).toBeUndefined();

@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import taskViewFixture from "../../fixtures/api/v1/tasks.read_through.json";
 let cache, aggregate, tracker, order, index, source, reader, stop, release;
 const scope = { deviceId: "fresh-ref", projectId: "project-ref" }, projectKey = "fresh-ref/project-ref";
 const target = { id: "target", project_id: scope.projectId, number: 42, title: "Title" };
@@ -18,8 +19,16 @@ const start = async (rpc) => {
   release = (await import("../src/core/taskReferenceDemand.js")).admitTaskReferenceLookups(scope, [42]);
   reader = aggregate.createTaskLookupReader({ scope, callRpc: rpc, sessionOf: () => "session", capabilities: () => ({ lookup: true }) });
 };
-const listed = async (title, number = 42) => (await import("../src/core/taskWaitingOnCache.js")).cacheTaskWaitingOnResponse(
-  scope.deviceId, scope.projectId, { task: { ...target, id: `task-${number}`, number, title, state: "open", status: "backlog" } });
+// These are actual full-action fixtures, not raw cache writes: the real owner
+// captures the scoped observation before dispatch and forwards that same ticket.
+const publishAction = async (task) => {
+  const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+  const contentRead = await captureTaskContentRead(scope);
+  const answer = { task: { ...structuredClone(taskViewFixture.result.task), project_id: scope.projectId, ...task } };
+  return (await import("../src/core/taskWaitingOnCache.js")).cacheTaskWaitingOnResponse(
+    scope.deviceId, scope.projectId, answer, { contentRead, issuedRead: contentRead.readOrder });
+};
+const listed = (title, number = 42) => publishAction({ ...target, id: `task-${number}`, number, title, state: "open", status: "backlog" });
 
 it("does not let an older point miss or a failed refresh erase a newer created/listed positive", async () => {
   const pending = deferred(), rpc = vi.fn().mockResolvedValueOnce(result()).mockImplementationOnce(() => pending.promise);
@@ -67,11 +76,10 @@ it("does not infer per-row authority from a no-note list maximum", async () => {
 });
 
 it("keeps a stronger same-task point title when a newer page read retains an older legacy body", async () => {
-  const actions = await import("../src/core/taskWaitingOnCache.js");
   const pages = await import("../src/core/trackerPages.js");
   const row = (hour, title, id = target.id) => ({ ...target, id, title, state: "open", status: "backlog",
     updated_at: `2026-10-29T${hour}:00:00Z` });
-  await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: row("13", "Retained T13") });
+  await publishAction(row("13", "Retained T13"));
   await start(vi.fn().mockResolvedValue(result(row("14", "Stronger T14"))));
   await reader.refresh(42);
   await vi.waitFor(() => expect(resolve()?.title).toBe("Stronger T14"));
@@ -99,9 +107,7 @@ it("does not hide a cacheNewTask-shaped new positive behind a stale miss and inh
 });
 
 it("keeps stronger same-ID listed content but does not transfer its timestamp authority across IDs", async () => {
-  const actions = await import("../src/core/taskWaitingOnCache.js");
-  await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: { ...target,
-    title: "Future same identity", updated_at: "2026-10-29T15:00:00Z" } });
+  await publishAction({ ...target, title: "Future same identity", updated_at: "2026-10-29T15:00:00Z" });
   await start(vi.fn().mockResolvedValueOnce(result({ ...target, title: "Older body newer membership", updated_at: "2026-10-29T14:00:00Z" }))
     .mockResolvedValueOnce(result({ ...target, id: "different-task", title: "New logical identity", updated_at: "2026-10-29T13:00:00Z" })));
   await vi.waitFor(() => expect(resolve()?.title).toBe("Future same identity"));
@@ -115,10 +121,9 @@ it("keeps stronger same-ID listed content but does not transfer its timestamp au
 });
 
 it("does not resurrect a stale miss by falling back behind a later span after an unrelated rewrite", async () => {
-  const actions = await import("../src/core/taskWaitingOnCache.js");
   const pages = await import("../src/core/trackerPages.js");
   const row = { ...target, title: "Page-positive", state: "open", status: "backlog", updated_at: "2026-10-29T13:00:00Z" };
-  await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: row });
+  await publishAction(row);
   await start(vi.fn().mockResolvedValue(result())); await reader.refresh(42);
   await vi.waitFor(() => expect(resolve()).toBeNull());
   const read = await order.nextTaskRead();

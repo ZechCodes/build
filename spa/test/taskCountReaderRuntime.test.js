@@ -71,7 +71,9 @@ it("waits for the current greeting and rebinds only the mounted project's task p
   const hello = deferred(); live.greetingWait = hello.promise; live.kinds = [];
   const runtime = mount(); await Promise.resolve();
   expect(live.context.rpc).not.toHaveBeenCalled();
-  live.kinds = ["tasks"]; hello.resolve(); greeted(); await cachedTotal(5);
+  // Real greetingInFlight/armGreeting replaces this object before its event.
+  // Retire the opening read's authority before releasing its pending wait.
+  live.context.greeted = {}; live.kinds = ["tasks"]; hello.resolve(); greeted(); await cachedTotal(5);
   expect([...live.watches]).toHaveLength(1);
   expect([...live.watches][0].kinds).toEqual(["tasks"]);
   expect(live.context.rpc).toHaveBeenCalledTimes(1);

@@ -370,3 +370,21 @@ it("never turns an unticketed or retired-domain raw reply into a blind ordinary 
     expect((await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.task.title).toBe("Current");
   }
 });
+
+it("admits a genuine absent action header and its immediate next assignment without body proof", async () => {
+  const actions = await import("../src/core/taskWaitingOnCache.js"), summaries = await import("../src/core/taskSummaryCache.js"),
+    tracker = await import("../src/core/trackerCache.js");
+  const create = await content.captureTaskContentRead(scope);
+  await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: task({ assignee: { kind: "user" } }) },
+    { contentRead: create, issuedRead: create.readOrder });
+  let row = (await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.task;
+  expect(row.__task_content_cache.header?.read_order).toBe(create.readOrder);
+  expect(row.__task_content_cache.body).toBeUndefined(); expect(row.body).toBeUndefined();
+  expect(await tracker.readTaskRecord(scope.deviceId, scope.projectId, "task-1")).toBeNull();
+  const unassign = await content.captureTaskContentRead(scope);
+  await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: task({ assignee: null }) },
+    { contentRead: unassign, issuedRead: unassign.readOrder });
+  row = (await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.task;
+  expect(row.assignee).toBeNull(); expect(row.__task_content_cache.header.read_order).toBe(unassign.readOrder);
+  expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0].assignee).toBeNull();
+});

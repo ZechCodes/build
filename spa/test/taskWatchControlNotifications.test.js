@@ -14,12 +14,12 @@ beforeEach(() => {
 });
 afterEach(() => { feed?.dispose(); vi.restoreAllMocks(); });
 
-async function conditionalFeed() {
+async function conditionalFeed(size = 7, observeReads = false) {
   const cache = await import("../src/core/localCache.js");
   const tracker = await import("../src/core/trackerCache.js");
   const watch = await import("../src/core/taskWatchAuthority.js");
   const { createTrackerTaskDetailsFeed } = await import("../src/core/trackerTaskDetailsFeed.js");
-  const rows = Array.from({ length: 7 }, (_, index) => ({ id: `task-${index}`, number: index + 1,
+  const rows = Array.from({ length: size }, (_, index) => ({ id: `task-${index}`, number: index + 1,
     project_id: scope.projectId, title: "Cached", body: "Full legacy body", updated_at: "2026-10-29T00:00:00Z" }));
   for (const row of rows) await cache.writeCached(tracker.taskAddress(scope.deviceId, scope.projectId, row.id), tracker.taskRecord(row, []));
   // These are conditional admission-contract stubs, never persisted known-zero
@@ -27,11 +27,20 @@ async function conditionalFeed() {
   let state = { pendingCount: 1, watchEpoch: "pending-epoch", pendingGeneration: "pending", controlGeneration: "known-generation",
     uncertain: false, eligible: false };
   const read = vi.spyOn(watch, "readTaskWatchState").mockImplementation(async () => state);
+  const completedReads = [];
+  if (observeReads) {
+    const trailing = await import("../src/core/trailingRead.js"), original = trailing.trailingRead;
+    vi.spyOn(trailing, "trailingRead").mockImplementation((reader, options) => original((...args) => {
+      const done = Promise.resolve(reader(...args));
+      completedReads.push(done);
+      return done;
+    }, options));
+  }
   const call = vi.fn(() => new Promise(() => {}));
   feed = createTrackerTaskDetailsFeed({ ...scope, callRpc: call });
   await feed.updateTasks(rows);
   expect(call).not.toHaveBeenCalled();
-  return { cache, watch, read, call, rows,
+  return { cache, watch, read, call, rows, completedReads,
     setState: (next) => { state = next; },
     hint: (value = "notification", projectId = scope.projectId) => cache.writeCached(watch.taskWatchControlAddress({ ...scope, projectId }), { hint: value }) };
 }
@@ -85,4 +94,29 @@ it.each(["dispose", "session"])("refuses an eligibility answer queued before %s 
     await state.hint("after-dispose");
     expect(state.read).toHaveBeenCalledTimes(1);
   }
+});
+
+it.each(["session", "context"])("does not carry an eligible trailing control hint into a replacement %s", async (replacement) => {
+  const state = await conditionalFeed(1, true);
+  let resolve;
+  state.call.mockImplementationOnce(() => new Promise((yes) => { resolve = yes; }))
+    .mockImplementation(async () => ({ task: state.rows[0], timeline: [] }));
+  state.setState(eligible);
+  await state.hint("first-read");
+  await vi.waitFor(() => expect(state.call).toHaveBeenCalledTimes(1));
+  state.setState({ ...eligible, watchEpoch: "second-eligible-epoch" });
+  await state.hint("trailing-hint");
+  await vi.waitFor(() => expect(state.read).toHaveBeenCalledTimes(2));
+  await state.read.mock.results[1].value;
+  expect(state.call).toHaveBeenCalledTimes(1);
+  if (replacement === "session") lifetime.session = "replacement-session";
+  else {
+    const contexts = await import("../src/core/deviceContexts.js");
+    const { fakeSession } = await import("./deviceSessionFixture.js");
+    contexts.adoptDeviceSession(fakeSession(scope.deviceId));
+  }
+  resolve({ task: state.rows[0], timeline: [] });
+  await state.completedReads[0];
+  await Promise.all([...state.completedReads]);
+  expect(state.call).toHaveBeenCalledTimes(1);
 });

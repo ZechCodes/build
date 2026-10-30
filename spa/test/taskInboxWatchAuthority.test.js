@@ -98,3 +98,18 @@ it("keeps an optimistic inbox unwatch across a pending read from an independent 
   pending.resolve({ task: { ...row, watched: false } });
   await vi.waitFor(() => expect(runtime.fence.taskMutationsPending(deviceId)).toBe(0));
 });
+
+it("contains a refused inbox owner registration and sends no unwatch RPC", async () => {
+  const mounted = await mountInbox();
+  const watch = await import("../src/core/taskWatchAuthority.js");
+  const notices = await import("../src/core/notify.js");
+  const begin = vi.spyOn(watch, "beginTaskWatchMutation").mockResolvedValue(null);
+  const notice = vi.spyOn(notices, "notifyError").mockImplementation(() => {});
+  mounted.control().click();
+  await vi.waitFor(() => expect(begin).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() => expect(notice).toHaveBeenCalledWith(expect.stringContaining("Couldn't stop watching"), expect.any(String)));
+  expect(runtime.fence.taskMutationsPending(deviceId)).toBe(0);
+  expect(mounted.session.call.mock.calls.filter(([method]) => method === "tasks.unwatch")).toHaveLength(0);
+  expect((await runtime.tracker.readTasksRecord(deviceId, projectId)).tasks[0].watched).toBe(true);
+  expect(mounted.control()).not.toBeNull();
+});

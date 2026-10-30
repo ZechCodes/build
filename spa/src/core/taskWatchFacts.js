@@ -109,11 +109,16 @@ function retainedSource(task, context, scope) {
   return { task, proof: downgrade ? { ...proof, uncertain: true } : proof, observed: false };
 }
 
+const stampedRows = (held, guard) => [held, guard].filter((task) => nonempty(task?.__task_watch_intent));
+
 function watchSources(scope, held, incoming, options) {
-  const stamped = [held, options.watchGuard].find((task) => nonempty(task?.__task_watch_intent));
-  if (stamped) {
-    if (stamped.__task_watch_intent !== options.acknowledgment?.ownerId) return [];
-    return [observation(scope, incoming, options)];
+  const stamped = stampedRows(held, options.watchGuard);
+  if (stamped.length) {
+    const observed = observation(scope, incoming, options);
+    // An invalid descriptor can still describe an ordinarily admissible read.
+    // Only an actual verified ack may release any existing owner's stamp.
+    return observed?.proof.source === "ack" && stamped.some((task) =>
+      task.__task_watch_intent === options.acknowledgment.ownerId) ? [observed] : [];
   }
   if (pending(options.context || {})) return [retainedSource(held, options.context, scope)
     || retainedSource(options.watchGuard, options.context, scope), observation(scope, incoming, options)];
@@ -261,7 +266,7 @@ export function reconcileTaskReadFacts(scope, held, incoming, options = {}) {
   const guard = sameTask(options.watchGuard, incoming.id);
   const sources = watchSources(scope, held, incoming, { ...options, watchGuard: guard });
   const selected = newest(sources);
-  const fallback = held || (scopedTask(scope, guard) ? guard : undefined);
+  const fallback = stampedRows(held, guard)[0] || held || (scopedTask(scope, guard) ? guard : undefined);
   const task = selectedTask(held, incoming, selected, policy, fallback);
   if (task.watched === true) applyFamilies(task, sources, [held, guard, incoming], scope, options.context, policy, selected, fallback);
   return selectedResult(task, selected, options.context, incoming);

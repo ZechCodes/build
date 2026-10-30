@@ -1130,3 +1130,30 @@ it("refuses an obsolete full watch acknowledgment without clearing a newer same-
   expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
   expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0].watched).toBe(false);
 });
+
+it.each(["foreign task", "retired scope"])(
+  "does not borrow a %s pending owner to classify an unrelated cold replica as blind interference", async (kind) => {
+    const tracker = await import("../src/core/trackerCache.js"), watch = await import("../src/core/taskWatchAuthority.js");
+    const { task: wireTask } = await import("./trackerWireFixture.js");
+    const raw = wireTask(task({ watched: false })), target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+    await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([raw], []));
+    const ownerTaskId = kind === "foreign task" ? "task-2" : "task-1";
+    const owner = await watch.beginTaskWatchMutation(scope, ownerTaskId, { watched: true, metadataOnly: true });
+    const contentRead = await content.captureTaskContentRead(scope);
+    const controlAddress = watch.taskWatchControlAddress(scope), before = (await cache.readCached(controlAddress)).value;
+    if (kind === "retired scope") await cache.evictEntity(scope.deviceId, scope.projectId);
+    await tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-1",
+      { task: { ...raw, title: "Independent cold paint", watched: true, watch_started_after: "te-cold" }, timeline: [] });
+    const afterCreation = (await cache.readCached(controlAddress)).value;
+    expect(afterCreation.pendingCount).toBe(1);
+    expect(afterCreation.blindRetirementEpoch).toBe(before.blindRetirementEpoch);
+    const cold = (await cache.readCached(address)).value;
+    expect(cold.task).toMatchObject({ title: "Independent cold paint", watched: true, watch_started_after: "te-cold" });
+    if (kind === "retired scope") {
+      expect(await watch.settleTaskWatchMutation(owner, { contentRead,
+        answer: { task: { ...raw, watched: true, watch_started_after: "te-stale-ack" } } })).toBe(false);
+      expect((await cache.readCached(address)).value).toEqual(cold);
+    } else expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
+    expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+    expect((await cache.readCached(address)).value.task).toMatchObject({ watched: true, watch_started_after: "te-cold" });
+  });

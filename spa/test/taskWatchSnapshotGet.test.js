@@ -139,7 +139,7 @@ it("UNITCONTRACT accepts a first declared as-of proof without changing fresh sti
   expect(read.servedProof()).toBe(true);
   expect(saved).toMatchObject({ watch_uncertain: false, needs_unread_refresh: false });
   expect(saved.task).toMatchObject({ watched: true, unread_count: 0, unread_agent_comments: 0, unread_mentions: 0 });
-  expect(saved.task.__task_watch_snapshot.scopes.watch.sequence).toBe("18446744073709551615");
+  expect(saved.task.__task_watch_snapshot?.scopes?.watch?.sequence).toBe("18446744073709551615");
   expect(await runtime.watch.readTaskWatchState(scope)).toEqual(captured);
 });
 
@@ -187,7 +187,7 @@ it("UNITCONTRACT keeps a captured same-task pending snapshot historical after se
   const blocked = await awaitSaved(read);
   expect(read.servedProof()).toBe(true);
   expect(blocked).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
-  expect(blocked.task.__task_watch_snapshot.scopes.watch).toMatchObject({
+  expect(blocked.task.__task_watch_snapshot?.scopes?.watch).toMatchObject({
     sequence: "18446744073709551615", admission: "historical",
   });
   // Merely rereading or reaching pending0 must not promote that old source.
@@ -195,7 +195,7 @@ it("UNITCONTRACT keeps a captured same-task pending snapshot historical after se
   const recovered = await refreshReply(read, proofReply());
   expect(read.servedProof(1)).toBe(true);
   expect(recovered).toMatchObject({ watch_uncertain: false, needs_unread_refresh: false });
-  expect(recovered.task.__task_watch_snapshot.scopes.watch).toMatchObject({
+  expect(recovered.task.__task_watch_snapshot?.scopes?.watch).toMatchObject({
     sequence: "18446744073709551615", admission: "selected",
   });
   expect(await runtime.watch.readTaskWatchState(scope)).toEqual(settled);
@@ -231,7 +231,7 @@ it("UNITCONTRACT keeps a valid reply historical when the same task becomes pendi
     const saved = await awaitSaved(read);
     expect(read.servedProof()).toBe(true);
     expect(saved).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
-    expect(saved.task.__task_watch_snapshot.scopes.watch.admission).toBe("historical");
+    expect(saved.task.__task_watch_snapshot?.scopes?.watch?.admission).toBe("historical");
     expect(await runtime.watch.readTaskWatchState(scope)).toEqual(pending);
   } finally {
     await runtime.watch.settleTaskWatchMutation(owner, { rollback: true });
@@ -258,7 +258,7 @@ it("UNITCONTRACT refuses captured canonical authority across an unowned same-lin
   const saved = await awaitSaved(read);
   expect(read.servedProof()).toBe(true);
   expect(saved).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
-  expect(saved.task.__task_watch_snapshot.scopes.watch.admission).toBe("historical");
+  expect(saved.task.__task_watch_snapshot?.scopes?.watch?.admission).toBe("historical");
   expect((await runtime.cache.readCanonicalCached(control)).value).toEqual(after);
 });
 

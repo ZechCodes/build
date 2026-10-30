@@ -1026,3 +1026,27 @@ it("preserves the current pending intent note when an unrelated full action publ
     .toMatchObject({ ownerId: owner.id, disposition: "acknowledged" });
   expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
 });
+
+it("keeps a newer normalized unknown family when an old copy matches the retained effective read floor", async () => {
+  const summaries = await import("../src/core/taskSummaryCache.js"), { summaryPatch } = await import("../src/core/taskSummaryProjection.js");
+  const compact = (extra) => summaryPatch(undefined, task({ watched: true, watch_started_after: "te-50", ...extra }));
+  const page = async (raw, basis) => {
+    const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
+    expect(await summaries.landSummaryPage(ticket, { summary: true, basis, tasks: [raw] }, { read: ticket.generation })).toBe(true);
+  };
+  await page(compact({ read_through: "tc-20", unread_count: 2, unread_mentions: 2, unread_agent_comments: 2 }), "A");
+  const summaryAddress = summaries.summaryAddress(scope, "task-1");
+  const old = structuredClone((await cache.readCached(summaryAddress)).value.task);
+  await page(compact({ read_through: "tc-10", unread_count: 9, unread_mentions: 9, unread_agent_comments: 9 }), "B");
+  const before = (await cache.readCached(summaryAddress)).value.task;
+  expect(before.read_through).toBe("tc-20");
+  expect(before).not.toHaveProperty("unread_mentions");
+  expect(before.__task_family_cache.unknown.attention.observed_read_order)
+    .toBeGreaterThan(old.__task_family_cache.paint.attention.observed_read_order);
+  await summaries.writeSummaryTask(scope, old, await order.nextTaskRead());
+  const after = (await cache.readCached(summaryAddress)).value.task;
+  expect(after.read_through).toBe("tc-20");
+  expect(after).not.toHaveProperty("unread_mentions");
+  expect(after).not.toHaveProperty("unread_agent_comments");
+  expect(after.__task_family_cache.unknown.attention).toEqual(before.__task_family_cache.unknown.attention);
+});

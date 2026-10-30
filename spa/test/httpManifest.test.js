@@ -7,9 +7,9 @@ import { createHttpRoutes } from "../src/core/httpRoutes.js";
 describe("reviewed REST manifest consumption", () => {
   it("pins the coordinator-released bytes and exact operation IDs", () => {
     const bytes = readFileSync(new URL("../../fixtures/api/http/resource-manifest.json", import.meta.url));
-    expect(createHash("sha256").update(bytes).digest("hex")).toBe("bcada2539a96e5784e864abf4e17564bb2d7260ac612f729db4dd5b7adbde616");
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("bf75fca58d9ea75db89092d65621d99ca422bda7b164dfcabb3c40a1c713cd97");
     expect(createHttpRoutes(manifest).operationIds()).toEqual(manifest.transport.operation_ids);
-    expect(manifest.operations).toHaveLength(147);
+    expect(manifest.operations).toHaveLength(149);
   });
 
   it.each(manifest.operations)("preserves $method placement and byte limits", (operation) => {

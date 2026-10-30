@@ -14,7 +14,7 @@ import { networkOptions } from "../src/bridge-http-network.mjs";
 const artifact = new URL("../src/bridge-http-resources.json", import.meta.url);
 const manifest = () => JSON.parse(readFileSync(artifact));
 const expectedHash =
-  "bcada2539a96e5784e864abf4e17564bb2d7260ac612f729db4dd5b7adbde616";
+  "bf75fca58d9ea75db89092d65621d99ca422bda7b164dfcabb3c40a1c713cd97";
 
 test("packaged manifest is byte-identical to the coordinator-released committed artifact", () => {
   assert.equal(
@@ -27,16 +27,21 @@ test("packaged manifest is byte-identical to the coordinator-released committed 
     ),
   );
   assert.equal(
-    provenance.sourceCommit,
+    provenance.predecessor.sourceCommit,
     "79d60d9526e6d2acbe8a49bf307395c3bb45c4be",
   );
+  assert.equal(
+    provenance.predecessor.sha256,
+    "bcada2539a96e5784e864abf4e17564bb2d7260ac612f729db4dd5b7adbde616",
+  );
+  assert.equal(provenance.sourceTask, 913);
   assert.equal(provenance.sha256, expectedHash);
 });
 
-test("all147 reviewed operations preserve method, path, body, event and byte-limit contracts", () => {
+test("all 149 reconciled operations preserve method, path, body, event and byte-limit contracts", () => {
   const m = manifest();
   assert.equal(m.version, 1);
-  assert.equal(m.operations.length, 147);
+  assert.equal(m.operations.length, 149);
   assert.deepEqual(
     [...new Set(m.operations.map((o) => o.operationId))].sort(),
     m.transport.operation_ids,

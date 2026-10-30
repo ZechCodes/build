@@ -20,7 +20,9 @@ const eventMethods = new Set([
 const declarations = new Map();
 for (const file of readdirSync(resolve(root, "bridge/src/api/v1")).filter((name) => name.endsWith(".rs"))) {
   const source = read(`bridge/src/api/v1/${file}`);
-  const expression = /v1_method!\(\s*"([^"]+)"\s*,\s*\w+\s*,\s*([\w:<>]+)\s*,\s*([\w:<>]+)\s*\)/g;
+  // Context-aware methods have the same public params/result contract; the
+  // extra caller context is transport metadata, not a domain parameter.
+  const expression = /v1_(?:context_)?method!\(\s*"([^"]+)"\s*,\s*\w+\s*,\s*([\w:<>]+)\s*,\s*([\w:<>]+)\s*\)/g;
   for (const match of source.matchAll(expression)) {
     declarations.set(match[1], { source: `bridge/src/api/v1/${file}`, params: match[2], result: match[3] });
   }
@@ -62,7 +64,7 @@ const headers = {
   session: "X-Build-Session", subscription: "X-Build-Subscription", requestId: "X-Build-Request-Id",
   priority: "X-Build-Priority", operationId: "Idempotency-Key", after: "X-Build-After",
 };
-const limitation = "Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links and verified wire fixtures are authoritative examples, not inferred schemas. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.";
+const limitation = "Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method! and v1_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.";
 const manifest = {
   version: 1, generatedBy: "scripts/http-resource-manifest.mjs", schemaLimitation: limitation,
   headers, terminal: "webrtc", durable_events: false,

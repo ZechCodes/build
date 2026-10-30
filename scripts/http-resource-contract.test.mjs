@@ -49,6 +49,40 @@ test("all refs resolve and all shared fixtures remain unchanged transport exampl
     assert.equal(spec.requestBody.content["application/json"].schema["x-build-schema-complete"], false);
   }
   assert.match(manifest.schemaLimitation, /incomplete/);
+  assert.match(manifest.schemaLimitation, /lexically inventoried.*not derived by Rust semantic analysis/);
+});
+
+test("context-aware declarations retain their existing domain contracts", () => {
+  const expected = {
+    "changes.subscribe": ["SubscriptionSpec<KindNames>", "Subscribed"],
+    "changes.unsubscribe": ["UnsubscribeParams", "Unsubscribed"],
+    "fs.uploadAbort": ["FsUploadIdParams", "FsUploadAbortResult"],
+    "fs.uploadBegin": ["FsUploadBeginParams", "FsUploadBeginResult"],
+    "fs.uploadChunk": ["FsUploadChunkParams", "FsUploadChunkResult"],
+    "fs.uploadFinish": ["FsUploadIdParams", "FsUploadFinishResult"],
+  };
+  for (const [method, [params, result]] of Object.entries(expected)) {
+    const operation = manifest.operations.find((candidate) => candidate.method === method);
+    assert.ok(operation, method);
+    assert.equal(operation.contract.params, params, method);
+    assert.equal(operation.contract.result, result, method);
+  }
+});
+
+test("task inventory drift is reconciled as bounded named JSON queries", () => {
+  const expected = {
+    "tasks.counts": ["/v1/projects/{project_id}/task-count-queries", "TasksCountsParams", "TasksCounts"],
+    "tasks.lookup": ["/v1/projects/{project_id}/task-lookup-queries", "TasksLookupParams", "TasksLookup"],
+  };
+  for (const [method, [path, params, result]] of Object.entries(expected)) {
+    const operation = manifest.operations.find((candidate) => candidate.method === method);
+    assert.deepEqual(
+      [operation.verb, operation.path, operation.body, operation.requestMaxBytes, operation.responseMaxBytes],
+      ["POST", path, "remaining", 1048576, 8388608],
+      method,
+    );
+    assert.deepEqual([operation.contract.params, operation.contract.result], [params, result], method);
+  }
 });
 
 test("the sole event header is required exactly for actual binding-owned resources", () => {

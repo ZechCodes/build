@@ -116,8 +116,11 @@ const metadataUses = {
   "core/navigationVisits.js": [
     ["build.navigation.previous","const TAB_KEY = [\"build.navigation.previous\"] ; const trackers","3206e95b6e23daf65fdc6baad67c4da1b71cd4755605050775f71e498dbdbc37"],
   ],
+  "core/httpSession.js": [
+    ["writes.confirmed",". type !== [\"writes.confirmed\"] && frame .","3b24f398d622d2aa8992d6ad855350470b4dca2fff709938cc6670e90e8f5ebc"],
+  ],
   "core/peerLink.js": [
-    ["rtc.diagnostics","] , [ [\"rtc.diagnostics\"] , receiveCandidateDiagnostic ]","c7899cd886c049dc93c9f8ad50f50713a3ff875e36afa6a48163d31a636970a2"],
+    ["rtc.diagnostics","] , [ [\"rtc.diagnostics\"] , receiveCandidateDiagnostic ]","4448b1282477bfb9c6ed1d5b46934f4b21fb358494a5cfdb2c0e66a5961690a3"],
   ],
   "core/railMode.js": [
     ["build.inbox.view","const RAIL_VIEW_KEY = [\"build.inbox.view\"] ; export const","e73b4ed0b13201a13d5470f2a8ba8950f0368e40b398f6bb3245af4fefb77a16"],
@@ -180,9 +183,9 @@ const metadataUses = {
 // Split public digests into short display parts so secret scanners do not
 // mistake a file name containing "Key" plus a SHA-256 for a credential.
 const sourceFingerprintParts = {
-  "app.js": ["529fcd47", "5365bb97", "5a6dcfc2", "30089f9e", "831863fc", "b89bde77", "bf53ffd3", "1b761c41"],
+  "app.js": ["e9b93f5b", "01a713dd", "1c1f8ef7", "00229053", "d2bf2d3a", "b372d574", "81aaff15", "71dc3f58"],
   "appState.js": ["d24d9edc", "6e4988f0", "8a5289ee", "6c449b3f", "91bdbe42", "7cd43ada", "7a9df6a4", "acd39971"],
-  "connection.js": ["314548c1", "68c90514", "2ee3e9b5", "c53f9798", "22aba77b", "060e5c13", "e5cc23f0", "f1662147"],
+  "connection.js": ["21d40587", "1fe5660e", "ce8a95cc", "c2de3d74", "3fbef4ae", "4d65de15", "b065a79a", "b2febe8b"],
   "core/activityRuns.js": ["2bd80d81", "ad2ddde9", "da2fc194", "95b7b7ba", "4d0a86f4", "29a52906", "009b6fc5", "5221d710"],
   "core/adoption.js": ["350b90d5", "9e535f4b", "15adf2ef", "7eacd8c0", "fb946020", "b6130cb8", "ce729fed", "bb90597e"],
   "core/agentDefaults.js": ["f856d23d", "2c446c14", "c6e4d78e", "e11e737d", "75e1fbc1", "fa79564d", "2ef20a2b", "1cdbbcb0"],
@@ -199,7 +202,7 @@ const sourceFingerprintParts = {
   "core/bridgeUpdates.js": ["279cb932", "0495aa46", "c347f93b", "10a492d5", "8d29b0a9", "e9309a9a", "91de7993", "e5f40ad3"],
   "core/cacheSync.js": ["a8f7ffd7", "25d0a21d", "5160f9e1", "0166e608", "bd45be22", "59951a3c", "685429df", "2f71c39d"],
   "core/captureDecisionView.js": ["f9f42a7d", "d94162aa", "5aea82e5", "85e6bcb2", "73ffce61", "2ac99214", "8b78b55f", "30a7a61a"],
-  "core/changeEvents.js": ["2de56886", "56ad09a9", "9b2c303a", "dfb97b7c", "6b7d67b6", "932183bb", "addc42c1", "313ed272"],
+  "core/changeEvents.js": ["31e123e5", "fc5c2562", "3328faa8", "3edc1018", "0ded97a7", "dd6f3430", "0ba3c6fa", "e1685e73"],
   "core/changesComments.js": ["f258a3f1", "5b42f974", "ba0af04f", "f955c0ff", "1cdd17d3", "353ce276", "c7dd49b6", "eb1c06be"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
@@ -224,6 +227,7 @@ const sourceFingerprintParts = {
   "core/fileUploadsModel.js": ["d11fdd79", "8bb9318c", "fbc2cff2", "29b16930", "9d73b3ee", "89d5d976", "7e2b756a", "69d40aac"],
   "core/githubRepos.js": ["4526fb16", "bfe42e0f", "57b963ea", "fe623873", "0fe9ccce", "521ecc83", "b9117e59", "af64462f"],
   "core/gitPane.js": ["7a5a41a0", "6e603556", "4ba87c41", "f7a231e8", "65fe67f3", "1094f363", "5aacb839", "4e647b57"],
+  "core/httpSession.js": ["d126ceab", "0dd1f2ad", "df3cd6a9", "0af4113e", "228a2843", "14eb6c04", "36b84eb3", "0c8342b1"],
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
   "core/inboxDevices.js": ["f9a293e4", "dff4b2b4", "f5fc7940", "f5c1f48d", "a66a5718", "238826a6", "e3dc6b9f", "4060a79e"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
@@ -234,7 +238,8 @@ const sourceFingerprintParts = {
   "core/navigationVisits.js": ["f8d32f7a", "6bf64af6", "81866475", "02ebd8fc", "3a0be61c", "c9f0d9f3", "e1cc0c06", "dd4dc05a"],
   "core/optimistic.js": ["664afc7e", "9083408c", "39d1e085", "5a531484", "9d315ad7", "dcbe2655", "b119e508", "6f3ef787"],
   "core/pathProbe.js": ["1518fd69", "692eec10", "f8018014", "c81c6ee1", "4edda84e", "efee05d6", "472437de", "73c96fea"],
-  "core/peerLink.js": ["6c6acb27", "28aa36e6", "0258ba0f", "303f308a", "45b3ffb6", "701efb20", "ae563ff7", "6a4ddb2d"],
+  "core/peerIceQueue.js": ["0cd05f87", "5def0e05", "b95fd35a", "3498571e", "7a93f83e", "8da1d594", "8022f75f", "0870be3b"],
+  "core/peerLink.js": ["07cce688", "624c9a99", "9dd6a3d4", "77c8ff8f", "5a325998", "0a67eee0", "a0793c5f", "d8d0e597"],
   "core/projectAgentsCache.js": ["692ce6e6", "29188041", "a638ab36", "772487e7", "397715fe", "dba4c0f5", "4e938ee8", "6bbdb7ff"],
   "core/projectAgentSetting.js": ["cf7d410a", "f3bc1eb4", "1b4e7833", "9dc4cf50", "23b01280", "01636e27", "72e8edb1", "e4a7e379"],
   "core/projectChangesRpc.js": ["613fe381", "59f4a3a4", "08a518ed", "4e535261", "21ca4a58", "5e5011d9", "c0acd52e", "bb8e5014"],
@@ -245,12 +250,13 @@ const sourceFingerprintParts = {
   "core/railMode.js": ["9a3738d3", "e4361bdf", "fef94f86", "f803203f", "efbe6cbf", "8513e3f7", "5fc7602c", "dd4e5e6b"],
   "core/readStateRepair.js": ["cf9c2d3b", "411a9904", "c9edb8e9", "33ae46f6", "d879a630", "a802c545", "b665fb8c", "44cb7422"],
   "core/revisionBodies.js": ["60606411", "ec3a6f2c", "7c923581", "f22c39cd", "43dd8a04", "69ff5c40", "e4e490cb", "e3119193"],
+  "core/rtcTerminalLink.js": ["9e8a6c70", "266666d9", "45b2f045", "4f29f5fc", "6293c562", "d2f0ed25", "15a05fd6", "a43dd438"],
   "core/scopedCompactionEditor.js": ["b5d366f5", "90a2be6a", "b5c01379", "ccad5198", "7298a4cf", "bdcbdc88", "2e022cd4", "847d6330"],
-  "core/session.js": ["3d3cf7dd", "79e4e284", "e35b0919", "e70c73b0", "84b3ec43", "325e1ae6", "fc5b5b9d", "ab43100a"],
-  "core/sessionRpc.js": ["b4643d70", "09686b06", "64a93192", "a5d2f604", "c01907cb", "a777026a", "7364e2d5", "c53f74a9"],
+  "core/session.js": ["3d180500", "f13f38ec", "64d5d01d", "ec44e3c7", "ef80b3cc", "85470f82", "ad7080e1", "69c47137"],
+  "core/sessionRpc.js": ["9458e443", "32f194d1", "d057ac64", "091aa364", "786cd211", "a5e09f54", "6d245883", "f400e9ce"],
   "core/sessionSwitch.js": ["dc232a71", "5b006195", "d7910b8e", "8c59e611", "a36dd264", "8bbcfcc8", "0d8739f3", "371accc7"],
   "core/shell.js": ["c9e2a17e", "6ae389f1", "e7a60035", "dfc83868", "dc85c17d", "564daa9f", "9b3e097b", "391bcd33"],
-  "core/sqlReadCredits.js": ["bd48f63c", "6ba332ba", "579d3bb1", "7246f83f", "80932ec8", "e6567443", "12da1fae", "2144302e"],
+  "core/sqlReadCredits.js": ["ddef65b4", "d7bf12ba", "9baeed1e", "8a959cce", "c88c463a", "41a8d580", "ed1a657e", "93237265"],
   "core/syncDiagnostics.js": ["1060f9ba", "b9d583f7", "93db302a", "9ecabc68", "08ff098a", "2119a4b8", "fdc89f9a", "74403b01"],
   "core/syncLists.js": ["e44aee99", "346eb027", "1e6486f1", "dac9a7ac", "9acdd7b8", "1c4a00f4", "ce196d01", "e22f5292"],
   "core/syncSuccessors.js": ["8f215712", "252114ce", "b5f282bf", "3b818ded", "2bfe5a52", "60ced14f", "965e228e", "9af31a83"],
@@ -302,12 +308,12 @@ const sourceFingerprintParts = {
   "sheets/projectSources.js": ["f9eb9e2b", "9c526294", "46090552", "02740c7a", "25e0f849", "8162d486", "fd90c590", "05524d9d"],
   "sheets/sourceSyncControls.js": ["a0c9eb24", "846213e3", "1cc5b961", "8058d449", "6a46f577", "2b154112", "724dc4e5", "6041f096"],
   "sheets/workspaceSettings.js": ["c93299a4", "e2bfaee7", "3ec925d9", "8b28443f", "66536bf7", "d383d411", "73912a76", "9f6d63ef"],
-  "terminal/manager.js": ["cdd9e9b5", "d1c443ca", "9f34fb9b", "d08eb3d5", "3376d6e3", "75088d4e", "99f76359", "89708a92"],
+  "terminal/manager.js": ["4027a8b0", "af931af9", "3d71d687", "c930e06b", "bd55b938", "ad0db4da", "e20dc150", "60ed795b"],
   "terminal/session.js": ["ce4e3036", "ac5b84b3", "ae7583e9", "2b940e62", "4dfe75b7", "d77a06e7", "dfda65ca", "8c8ede4e"],
   "views/archive.js": ["6f4a7962", "88f34292", "73eafead", "5dc6229b", "5b040b7a", "09baf137", "8cbbce83", "6c83d400"],
   "views/branchView.js": ["7187e42f", "7568f9b3", "c1ee9568", "e2a84770", "c59fb311", "5ff935eb", "bd0092f7", "e3c1c23d"],
   "views/deviceProjects.js": ["e91b4c08", "ccb3430d", "4a15da85", "4d787a64", "3ab0ef2c", "ebe5c184", "86d32e0b", "aa25418a"],
-  "views/deviceSettings.js": ["d8218af8", "b771ae83", "480d62e8", "302ed6b6", "f534e557", "a43d230d", "74466b01", "eecba939"],
+  "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
   "views/files.js": ["06be3768", "e7119790", "efdf9d19", "1f24d56e", "0105300d", "78661f62", "dffa8c08", "d92269a8"],
   "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],
   "views/projectView.js": ["b790e1ad", "c92e3880", "d880307e", "45527ad4", "70eade31", "b21f74d0", "423e637a", "6999aa4e"],
@@ -419,6 +425,10 @@ const dynamicSites = {
     "readCheckoutRecord ( kind )",
     "readCheckoutRecord ( kind )",
     "syncActionRpc ( optionId )"
+  ],
+  "core/httpSession.js": [
+    "adapter . call ( method )",
+    "call ( method )"
   ],
   "core/inboxDevices.js": [
     "context . rpc ( ... asked )"

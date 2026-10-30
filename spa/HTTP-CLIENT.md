@@ -7,12 +7,19 @@ application-binding disposition.
 
 `fixtures/api/http/resource-manifest.json` was imported **from the committed git
 object**, not a working tree, at coordinator-released #915 head
-`79d60d9526e6d2acbe8a49bf307395c3bb45c4be` following #919 review. SHA-256:
+`79d60d9526e6d2acbe8a49bf307395c3bb45c4be` following #919 review. #913
+reconciles the ordinary `tasks.counts` and `tasks.lookup` reads present on dev;
+the resulting SHA-256 is
+`bf75fca58d9ea75db89092d65621d99ca422bda7b164dfcabb3c40a1c713cd97`.
+The predecessor hash remains
 `bcada2539a96e5784e864abf4e17564bb2d7260ac612f729db4dd5b7adbde616`.
 The SPA imports that single canonical artifact; it has no independently maintained
-REST method catalogue. `httpManifest.test.js` checks its bytes, all 147 operation
+REST method catalogue. `httpManifest.test.js` checks its bytes, all 149 operation
 IDs, parameter placement, limits and explicit terminal/signaling/QA exclusions.
 Future manifest updates require a reviewed exact-head handoff and updated pin.
+Task #891 may later add capability-gated, opt-in `watch_snapshot` parameters to
+`tasks.list`, `tasks.lookup` and `tasks.get`; this reconciliation does not add or
+advertise those parameters.
 
 The authenticated Opening must advertise all required operation IDs, resource
 manifest version 1, `terminal: webrtc` and `durable_events: false`. Opening's

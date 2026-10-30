@@ -94,10 +94,12 @@ tasks.attachment	POST	/v1/tasks/{task_id}/attachment-queries
 tasks.close	POST	/v1/tasks/{task_id}/closures
 tasks.columns	GET	/v1/projects/{project_id}/task-columns
 tasks.comment	POST	/v1/tasks/{task_id}/comments
+tasks.counts	POST	/v1/projects/{project_id}/task-count-queries
 tasks.create	POST	/v1/projects/{project_id}/tasks
 tasks.filterChoices	POST	/v1/projects/{project_id}/task-filter-queries
 tasks.get	GET	/v1/tasks/{task_id}
 tasks.list	POST	/v1/projects/{project_id}/task-queries
+tasks.lookup	POST	/v1/projects/{project_id}/task-lookup-queries
 tasks.read_through	PUT	/v1/tasks/{task_id}/read-cursor
 tasks.reopen	POST	/v1/tasks/{task_id}/reopenings
 tasks.review.act	POST	/v1/tasks/{task_id}/review-actions

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generatedBy": "scripts/http-resource-manifest.mjs",
-  "schemaLimitation": "Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links and verified wire fixtures are authoritative examples, not inferred schemas. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+  "schemaLimitation": "Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method! and v1_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
   "headers": {
     "session": "X-Build-Session",
     "subscription": "X-Build-Subscription",
@@ -110,10 +110,12 @@
       "tasks_close",
       "tasks_columns",
       "tasks_comment",
+      "tasks_counts",
       "tasks_create",
       "tasks_filterChoices",
       "tasks_get",
       "tasks_list",
+      "tasks_lookup",
       "tasks_read_through",
       "tasks_reopen",
       "tasks_review_act",
@@ -1983,6 +1985,26 @@
       }
     },
     {
+      "method": "tasks.counts",
+      "operationId": "tasks_counts",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/task-count-queries",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksCountsParams",
+        "result": "TasksCounts"
+      }
+    },
+    {
       "method": "tasks.create",
       "operationId": "tasks_create",
       "verb": "POST",
@@ -2060,6 +2082,26 @@
         "source": "bridge/src/api/v1/tasks.rs",
         "params": "TasksListParams",
         "result": "TasksList"
+      }
+    },
+    {
+      "method": "tasks.lookup",
+      "operationId": "tasks_lookup",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/task-lookup-queries",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/tasks.rs",
+        "params": "TasksLookupParams",
+        "result": "TasksLookup"
       }
     },
     {

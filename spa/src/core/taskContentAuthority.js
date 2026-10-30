@@ -42,6 +42,7 @@ function capturedRead(allocation, address, revalidate, readOrder) {
 }
 
 export const isObservedTaskContent = (task) => Boolean(task?.[OBSERVATION]);
+export const taskContentObservationOf = (task) => task?.[OBSERVATION];
 
 export function observeTaskContent(raw, { contentRead, coverage } = {}) {
   if (!raw?.id || !["summary", "full"].includes(coverage)) throw new Error("Invalid task content observation");
@@ -74,13 +75,15 @@ export function taskContentFragment(scope) {
   };
 }
 
-const retiredWatchControl = (record) => ({ ...(record?.value || initialTaskWatchControl()), watchRetirementEpoch: randomToken() });
+const retiredWatchControl = (record) => ({ ...(record?.value || initialTaskWatchControl()),
+  uncertain: record?.value?.uncertain !== false || !record?.value?.blindRetirementEpoch,
+  watchRetirementEpoch: randomToken(), blindRetirementEpoch: randomToken() });
 
 function contentContext([store, domain, control]) {
   const held = domain?.value || {}, watch = control?.value || {};
   return { storeGeneration: store?.value?.generation, scopeGeneration: held.generation, retirementEpoch: held.retirementEpoch,
     watchGeneration: watch.generation, watchRetirementEpoch: watch.watchRetirementEpoch,
-    watchPendingCount: watch.pendingCount ?? null, watchUncertain: watch.uncertain !== false };
+    watchPendingCount: watch.pendingCount ?? null, watchUncertain: watch.uncertain !== false || !watch.blindRetirementEpoch };
 }
 
 function retirementDomain(held) {

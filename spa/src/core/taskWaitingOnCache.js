@@ -11,6 +11,7 @@ import { assigneeKey } from "./trackerModel.js";
 import { preserveTaskActionMarks, summaryTaskMutation, withTaskWatchLineage } from "./taskSummaryCache.js";
 
 import { observeTaskContent, reconcileTaskContent, withTaskContentComponents, taskContentHeaderBaseline } from "./taskContentAuthority.js";
+import { taskWatchSettlementFragment, retireTaskWatchOwnerStamp } from "./taskWatchAuthority.js";
 
 const listKinds = new Set([TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TRACKER_TASKS_PAGE_KIND]);
 const newer = (held, incoming) => Date.parse(held?.updated_at) > Date.parse(incoming?.updated_at);
@@ -22,7 +23,7 @@ function actionTask(held, incoming, read, projection, options) {
     allowMissing: !newer(held, incoming), baseRow: selected.task || held });
   const task = withTaskWatchLineage({ ...ordinary, read_through: projection.read_through,
     dismissed_through: projection.dismissed_through }, projection);
-  return { task, acceptedBody: selected.acceptedBody };
+  return { task: retireTaskWatchOwnerStamp(task, options.watchOwner), acceptedBody: selected.acceptedBody };
 }
 
 function detailWithResponse(held, answer, read, projection, options) {
@@ -88,36 +89,70 @@ function normalizedAction(summary, shared, guards) {
   return normalized?.[0]?.task?.id ? normalized : null;
 }
 
-export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { accept = () => true, issuedRead, contentRead } = {}) {
+export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { accept = () => true, issuedRead, contentRead, watchOwner } = {}) {
   const task = answer?.task;
-  if (!task?.id || !accept()) return false;
+  if (!task?.id || !watchOwner && !accept()) return false;
+  if (!matchingWatchScope(watchOwner, deviceId, projectId, task.id)) return false;
   validateTaskActionOrder(issuedRead);
   const listed = (await cachedAddresses({ deviceId, entityId: projectId })).filter((address) => listKinds.has(address.kind));
   const catalogue = tasksAddress(deviceId, projectId);
   if (!listed.some((address) => address.kind === TRACKER_TASKS_KIND)) listed.push(catalogue);
   const addresses = [taskAddress(deviceId, projectId, task.id), ...listed, ...listed.map(readsAddress), taskWaitingOnGenerationAddress(deviceId, projectId), readsAddress(taskAddress(deviceId, projectId, task.id))];
   const read = await nextTaskRead();
-  const confirmed = issuedRead !== undefined;
-  const summary = summaryTaskMutation({ deviceId, projectId }, task, read, { accept, fullTask: true, confirmedAction: confirmed, issuedRead, contentRead, rawObservation: true });
-  return mergeCachedRecordsTogether([...addresses, ...summary.addresses], (allRecords) => {
-    if (!accept()) return null;
-    const records = allRecords.slice(0, addresses.length);
-    const heldNote = records.at(-1)?.value;
-    if (olderAction(heldNote, issuedRead)) return null;
-    const shared = allRecords.slice(addresses.length);
-    const context = summary.context(shared);
-    const guards = actionHeaderGuards(records, task, listed.length, context);
-    const normalized = normalizedAction(summary, shared, guards);
-    if (!normalized) return null;
-    const projection = normalized[0].task;
-    const detail = detailWithResponse(records[0]?.value, answer, read, projection, { context, contentRead,
-      address: addresses[0], heldWritten: recordWriteOf(records[0]), headerBarrier: projection, headerGuards: guards.headerGuards });
-    const lists = listed.map((address, index) => listWithResponse(address, records[index + 1]?.value, task, read, projection,
-      { context, contentRead, address, heldWritten: recordWriteOf(records[index + 1]), headerBarrier: projection, headerGuards: guards.headerGuards }));
-    const notes = lists.map((list, index) => list ? withWritten(records[listed.length + index + 1]?.value, [task.id], read) : null);
-    return [detail, ...lists, ...notes, detail ? nextReverseGeneration(records.at(-2)?.value) : null,
-      actionResponseNote(heldNote, task.id, read, issuedRead, detail), ...normalized];
-  });
+  const summary = summaryTaskMutation({ deviceId, projectId }, task, read,
+    { accept, fullTask: true, confirmedAction: issuedRead !== undefined, issuedRead, contentRead, rawObservation: true });
+  const settlement = watchOwner ? taskWatchSettlementFragment(watchOwner) : null;
+  const config = { addresses, listed, summary, settlement, watchOwner, accept, issuedRead, contentRead, answer, task, read, published: false };
+  const written = await mergeCachedRecordsTogether([...addresses, ...summary.addresses, ...(settlement?.addresses || [])],
+    (records) => actionResponseValues(records, config));
+  return written && config.published;
+}
+
+const matchingWatchScope = (owner, deviceId, projectId, taskId) => !owner || owner.scope.deviceId === deviceId
+  && owner.scope.projectId === projectId && owner.taskId === taskId;
+
+function actionResponseValues(all, config) {
+  const { addresses, summary, settlement, contentRead, accept } = config;
+  const records = all.slice(0, addresses.length), shared = all.slice(addresses.length, addresses.length + summary.addresses.length);
+  const context = summary.context(shared), note = records.at(-1);
+  const settled = settlement?.reduce(all.slice(addresses.length + summary.addresses.length), { context, note, contentRead, accept });
+  if (settlement && !settled) return null;
+  const cleanup = settled ? [...records.map((record) => ownerStampCleanup(record?.value, settled.owner)),
+    ...shared.map((record) => ownerStampCleanup(record?.value, settled.owner)), ...settled.values] : null;
+  if (!actionDataAccepted(config, note, settled)) return cleanup;
+  const values = acceptedActionValues(records, shared, config, settled?.context || context, settled?.acknowledgment);
+  if (!values) return cleanup;
+  config.published = true;
+  return [...values, ...(settled?.values || [])];
+}
+
+const actionDataAccepted = (config, note, settled) => config.accept() && !olderAction(note?.value, config.issuedRead)
+  && (!config.settlement || settled.canPublish);
+
+function ownerStampCleanup(value, owner) {
+  if (value?.task) {
+    const task = retireTaskWatchOwnerStamp(value.task, owner);
+    return task === value.task ? null : { ...value, task };
+  }
+  if (!value?.tasks) return null;
+  const tasks = value.tasks.map((task) => retireTaskWatchOwnerStamp(task, owner));
+  return tasks.some((task, index) => task !== value.tasks[index]) ? { ...value, tasks } : null;
+}
+
+function acceptedActionValues(records, shared, config, context, acknowledgment) {
+  const { listed, task, summary, contentRead, answer, read, addresses, issuedRead, watchOwner } = config;
+  const guards = actionHeaderGuards(records, task, listed.length, context);
+  const normalized = normalizedAction(summary, shared, { ...guards, context, acknowledgment });
+  if (!normalized) return null;
+  if (watchOwner) normalized[0] = { ...normalized[0], task: retireTaskWatchOwnerStamp(normalized[0].task, watchOwner) };
+  const projection = normalized[0].task;
+  const detail = detailWithResponse(records[0]?.value, answer, read, projection, { context, contentRead,
+    address: addresses[0], heldWritten: recordWriteOf(records[0]), headerBarrier: projection, headerGuards: guards.headerGuards, watchOwner });
+  const lists = listed.map((address, index) => listWithResponse(address, records[index + 1]?.value, task, read, projection,
+    { context, contentRead, address, heldWritten: recordWriteOf(records[index + 1]), headerBarrier: projection, headerGuards: guards.headerGuards, watchOwner }));
+  const notes = lists.map((list, index) => list ? withWritten(records[listed.length + index + 1]?.value, [task.id], read) : null);
+  return [detail, ...lists, ...notes, detail ? nextReverseGeneration(records.at(-2)?.value) : null,
+    actionResponseNote(records.at(-1)?.value, task.id, read, issuedRead, detail), ...normalized];
 }
 
 export const taskWaitingOnBlocksAddress = (deviceId, projectId, taskId) => ({

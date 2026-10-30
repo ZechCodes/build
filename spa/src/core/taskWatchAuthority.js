@@ -5,8 +5,8 @@ import { randomToken } from "./idbRecords.js";
 import { nextTaskReadTicket, readsAddress, withWritten, TASK_CONTENT_GENERATION_ADDRESS,
   taskContentScopeAddress, taskWatchControlAddress, initialTaskWatchControl } from "./taskReadOrder.js";
 export { taskWatchControlAddress };
-export const TASK_WATCH_CACHE = "__task_watch_cache";
-export const TASK_FAMILY_CACHE = "__task_family_cache";
+import { TASK_WATCH_CACHE, TASK_FAMILY_CACHE } from "./taskWatchFacts.js";
+export { TASK_WATCH_CACHE, TASK_FAMILY_CACHE };
 const catalogueAddress = ({ deviceId, projectId }) => ({ deviceId, entityId: projectId, kind: "tracker-tasks" });
 const detailAddress = ({ deviceId, projectId }, taskId) => ({ deviceId, entityId: projectId, kind: "tracker-task", sub: taskId });
 const ownerAddress = (owner) => ({ deviceId: owner.scope.deviceId, entityId: "", kind: "task-watch-owner",
@@ -14,9 +14,27 @@ const ownerAddress = (owner) => ({ deviceId: owner.scope.deviceId, entityId: "",
 const taskNote = (scope, taskId) => readsAddress(detailAddress(scope, taskId));
 const controlIds = ["generation", "pendingGeneration", "watchRetirementEpoch"];
 const validCount = (value) => Number.isSafeInteger(value) && value >= 0;
+const validBlindEpoch = (value) => typeof value?.blindRetirementEpoch === "string" && value.blindRetirementEpoch.length > 0;
 const validControl = (value) => Boolean(value && validCount(value.pendingCount)
   && controlIds.every((key) => typeof value[key] === "string" && value[key]));
 const newControl = initialTaskWatchControl;
+
+export function blindTaskWatchChanged(before, after) {
+  return Boolean(before && before.id === after?.id && ((before.watched === true) !== (after.watched === true)
+    || Object.hasOwn(before, "watch_started_after") !== Object.hasOwn(after, "watch_started_after")
+    || !Object.is(before.watch_started_after, after.watch_started_after)));
+}
+
+export function retireTaskWatchFacts(task) {
+  const next = { ...task };
+  delete next[TASK_WATCH_CACHE]; delete next[TASK_FAMILY_CACHE];
+  return next;
+}
+
+export function retireTaskWatchOwnerStamp(task, owner) {
+  if (!task || !owner || task.id !== owner.taskId || task.__task_watch_intent !== owner.id) return task;
+  const next = { ...task }; delete next.__task_watch_intent; return next;
+}
 
 export async function readTaskWatchState(scope) {
   const control = (await readCached(taskWatchControlAddress(scope)))?.value;
@@ -25,8 +43,8 @@ export async function readTaskWatchState(scope) {
     watchEpoch: valid ? control.watchRetirementEpoch : null,
     pendingGeneration: valid ? control.pendingGeneration : null,
     controlGeneration: valid ? control.generation : null,
-    uncertain: !valid || control.uncertain !== false,
-    eligible: valid && control.uncertain === false && control.pendingCount === 0 };
+    uncertain: !valid || !validBlindEpoch(control) || control.uncertain !== false,
+    eligible: valid && validBlindEpoch(control) && control.uncertain === false && control.pendingCount === 0 };
 }
 
 const validScope = (scope) => ["deviceId", "projectId"].every((key) => typeof scope?.[key] === "string" && scope[key].length > 0);
@@ -45,7 +63,7 @@ export async function beginTaskWatchMutation(scope, taskId, { watched, metadataO
   validateBegin(scope, taskId, watched, metadataOnly);
   const allocation = await nextTaskReadTicket(scope);
   if (!allocation || !accept()) return null;
-  const owner = { id: randomToken(), scope: { deviceId: scope.deviceId, projectId: scope.projectId }, taskId, intentRead: allocation.readOrder, metadataOnly,
+  const owner = { id: randomToken(), scope: { deviceId: scope.deviceId, projectId: scope.projectId }, taskId, intentRead: allocation.readOrder, metadataOnly, watched,
     storeGeneration: allocation.storeGeneration, scopeGeneration: allocation.scopeGeneration };
   const catalogue = catalogueAddress(scope);
   const addresses = [catalogue, readsAddress(catalogue), taskNote(scope, taskId), taskWatchControlAddress(scope),
@@ -61,14 +79,15 @@ export async function beginTaskWatchMutation(scope, taskId, { watched, metadataO
 
 const watchedRow = (catalogue, id) => catalogue?.tasks?.find((task) => task.id === id);
 const canRegister = (control, existing, note, owner) => validControl(control)
-  && control.pendingCount < Number.MAX_SAFE_INTEGER && !existing && (latestIntent(note)?.intentRead || 0) <= owner.intentRead;
+  && validBlindEpoch(control) && control.pendingCount < Number.MAX_SAFE_INTEGER && !existing
+  && (latestIntent(note)?.intentRead || 0) <= owner.intentRead;
 
 function registerWatchOwner([catalogue, note, task, heldControl, heldOwner], owner, watched) {
   const control = heldControl?.value || newControl();
   if (!canRegister(control, heldOwner, task, owner)) return null;
   const row = watchedRow(catalogue?.value, owner.taskId);
   Object.assign(owner, { controlGeneration: control.generation, pendingGeneration: control.pendingGeneration,
-    beforeWatched: row ? row.watched === true : null });
+    beforeWatched: row ? row.watched === true : null, blindRetirementEpoch: control.blindRetirementEpoch });
   return registrationValues(catalogue?.value, note?.value, task?.value, owner, watched, control);
 }
 
@@ -82,7 +101,7 @@ function registrationValues(catalogue, note, taskNote, owner, watched, control) 
 
 function paintWatch(held, owner, watched) {
   if (!held) return null;
-  return { ...held, read_order: owner.intentRead, tasks: (held.tasks || []).map((task) => {
+  return { ...held, read_order: Math.max(held.read_order || 0, owner.intentRead), tasks: (held.tasks || []).map((task) => {
     if (task.id !== owner.taskId) return task;
     const next = { ...task, watched, __task_watch_intent: owner.id };
     delete next[TASK_WATCH_CACHE]; delete next[TASK_FAMILY_CACHE];
@@ -91,7 +110,7 @@ function paintWatch(held, owner, watched) {
   }) };
 }
 
-const ownerFields = ["id", "taskId", "intentRead", "metadataOnly", "beforeWatched", "storeGeneration", "scopeGeneration", "controlGeneration", "pendingGeneration"];
+const ownerFields = ["id", "taskId", "intentRead", "metadataOnly", "watched", "beforeWatched", "storeGeneration", "scopeGeneration", "controlGeneration", "pendingGeneration", "blindRetirementEpoch"];
 const matchingOwner = (owner, record) => Boolean(record?.value
   && ownerFields.every((key) => record.value[key] === owner[key])
   && ["deviceId", "projectId"].every((key) => record.value.scope?.[key] === owner.scope[key]));
@@ -99,11 +118,61 @@ const matchingOwner = (owner, record) => Boolean(record?.value
 const matchingControl = (owner, control) => validControl(control) && control.pendingCount > 0
   && control.generation === owner.controlGeneration && control.pendingGeneration === owner.pendingGeneration;
 
-// The safe scaffold settles ownership/rollback only. Full acknowledged family
-// publication is composed into this transaction by the action cache integration;
-// an unintegrated answer never reports a successful canonical publication.
+/** Pure settlement fragment: exact owner cleanup and the post-settlement
+ * fence commit beside the action's existing replicas. Cleanup authority is
+ * distinct from permission to publish data from a retired session/scope. */
+export function taskWatchSettlementFragment(owner) {
+  return { addresses: [taskWatchControlAddress(owner.scope), ownerAddress(owner)],
+    reduce: (records, options) => reduceWatchSettlement(owner, records, options) };
+}
+
+function reduceWatchSettlement(owner, [control, record], { context, note, contentRead, accept = () => true }) {
+  if (!matchingOwner(owner, record) || !matchingControl(owner, control?.value)) return null;
+  const trusted = record.value;
+  const next = { ...control.value, pendingCount: control.value.pendingCount - 1, watchRetirementEpoch: randomToken() };
+  const after = settledWatchContext(context, next);
+  const eligible = accept() && currentOwnerData(trusted, context) && ownedIntent(trusted, note);
+  const canPublish = eligible && validOwnerRead(trusted, contentRead, after);
+  const acknowledgment = canPublish && matchingBlindEpoch(trusted, control.value)
+    && contentRead.ticket.watchRetirementEpoch === control.value.watchRetirementEpoch
+    ? watchAcknowledgment(trusted, contentRead, after) : null;
+  return { values: [next, DELETE_CACHED_RECORD], context: after, owner: trusted, acknowledgment,
+    canPublish };
+}
+
+const currentOwnerData = (owner, context) => owner.storeGeneration === context.storeGeneration
+  && owner.scopeGeneration === context.scopeGeneration;
+const matchingBlindEpoch = (owner, control) => validBlindEpoch(owner) && owner.blindRetirementEpoch === control.blindRetirementEpoch;
+const settledWatchContext = (context, control) => ({ ...context, watchGeneration: control.generation,
+  watchRetirementEpoch: control.watchRetirementEpoch, watchPendingCount: control.pendingCount,
+  watchUncertain: control.uncertain !== false || !validBlindEpoch(control) });
+
+function validOwnerRead(owner, contentRead, context) {
+  const ticket = contentRead?.ticket;
+  return Number.isSafeInteger(contentRead?.readOrder) && contentRead.readOrder > owner.intentRead
+    && ["storeGeneration", "scopeGeneration", "watchGeneration"].every((key) => ticket?.[key] && ticket[key] === context[key]);
+}
+
+function watchAcknowledgment(owner, contentRead, context) {
+  return { ownerId: owner.id, taskId: owner.taskId, readOrder: contentRead.readOrder, intentRead: owner.intentRead,
+    storeGeneration: context.storeGeneration, scopeGeneration: context.scopeGeneration, watchGeneration: context.watchGeneration,
+    watchRetirementEpoch: context.watchRetirementEpoch };
+}
+
+const matchingWatchAnswer = (owner, answer) => answer?.task?.id === owner.taskId
+  && answer.task.project_id === owner.scope.projectId && typeof answer.task.body === "string"
+  && (answer.task.watched === true) === owner.watched;
+
+// Matching full acknowledgments use the action cache's one shared transaction.
+// Malformed/no-task answers only release their own pending owner; they cannot
+// establish a watch observation or fabricate a full canonical response.
 export async function settleTaskWatchMutation(owner, { answer, contentRead, rollback = false, accept = () => true } = {}) {
   if (!owner?.id || !owner.scope) return false;
+  if (!rollback && matchingWatchAnswer(owner, answer)) {
+    const { cacheTaskWaitingOnResponse } = await import("./taskWaitingOnCache.js");
+    return cacheTaskWaitingOnResponse(owner.scope.deviceId, owner.scope.projectId, answer,
+      { contentRead, issuedRead: contentRead?.readOrder, accept, watchOwner: owner });
+  }
   const addresses = [taskWatchControlAddress(owner.scope), ownerAddress(owner), catalogueAddress(owner.scope),
     taskNote(owner.scope, owner.taskId), TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress(owner.scope)];
   let restored = false;
@@ -111,17 +180,22 @@ export async function settleTaskWatchMutation(owner, { answer, contentRead, roll
     if (!matchingOwner(owner, record) || !matchingControl(owner, control?.value)) return null;
     const trusted = record.value;
     const eligible = accept() && matchingDataLifetime(trusted, store, domain) && ownedIntent(trusted, note);
-    const next = rollback && eligible ? rollbackWatch(catalogue?.value, trusted) : null;
-    restored = rollback && eligible;
+    const restore = rollback && eligible && matchingBlindEpoch(trusted, control.value);
+    const next = restore ? rollbackWatch(catalogue?.value, trusted) : settledCatalogue(catalogue?.value, trusted);
+    restored = restore;
     return [{ ...control.value, pendingCount: control.value.pendingCount - 1, watchRetirementEpoch: randomToken() },
       DELETE_CACHED_RECORD, next, null, null, null];
   });
-  void answer; void contentRead;
   return written && restored;
 }
 
 function rollbackWatch(held, owner) {
   if (owner.metadataOnly || owner.beforeWatched === null || !held) return null;
   const row = held.tasks?.find((task) => task.id === owner.taskId);
-  return row?.__task_watch_intent === owner.id ? paintWatch(held, owner, owner.beforeWatched) : null;
+  return row?.__task_watch_intent === owner.id ? settledCatalogue(paintWatch(held, owner, owner.beforeWatched), owner) : null;
+}
+
+function settledCatalogue(held, owner) {
+  if (!held?.tasks?.some((task) => task.id === owner.taskId && task.__task_watch_intent === owner.id)) return null;
+  return { ...held, tasks: held.tasks.map((task) => retireTaskWatchOwnerStamp(task, owner)) };
 }

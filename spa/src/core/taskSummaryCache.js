@@ -9,6 +9,9 @@ import { recordWriteOf } from "./localCache.js";
 import { captureTaskContentRead, mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskContentWrite,
   taskContentFragment, withTaskContentComponents, sameTaskContentComponent } from "./taskContentAuthority.js";
 import { summaryPatch, fullTaskSummary } from "./taskSummaryProjection.js";
+import { reconcileTaskReadFacts, TASK_WATCH_CACHE, TASK_FAMILY_CACHE } from "./taskWatchFacts.js";
+import { blindTaskWatchChanged, retireTaskWatchFacts } from "./taskWatchAuthority.js";
+export { reconcileTaskReadFacts } from "./taskWatchFacts.js";
 
 export const TASK_SUMMARY_KIND = "tracker-summary";
 export const TASK_SUMMARY_QUERY_KIND = "tracker-summary-query";
@@ -73,7 +76,7 @@ function acceptsPage(held, ticket, accept) {
 const distinct = (values) => [...new Set(values)];
 const append = (held, incoming, first) => distinct([...(first ? [] : held || []), ...incoming]);
 
-function membership(held, ticket, page, ids, identities, read) {
+function membership(held, ticket, page, ids, identities, read, context) {
   const first = ticket.cursor === null;
   return { ...held,
     ids: append(held.ids, ids, first),
@@ -86,8 +89,25 @@ function membership(held, ticket, page, ids, identities, read) {
     refreshing: false,
     published_generation: ticket.generation,
     observed_read_order: read,
+    watch_observation: queryWatchObservation(ticket.contentRead, context),
   };
 }
+
+const watchContextFields = ["storeGeneration", "scopeGeneration", "watchGeneration", "watchRetirementEpoch"];
+const eligibleWatchContext = (context) => context.watchUncertain === false && context.watchPendingCount === 0
+  && context.localWatchPending !== true;
+const currentWatchIdentity = (proof, context) => watchContextFields.every((field) =>
+  typeof proof?.[field] === "string" && proof[field] && proof[field] === context[field]);
+
+function queryWatchObservation(contentRead, context) {
+  const ticket = contentRead?.ticket;
+  return { ...Object.fromEntries(watchContextFields.map((field) => [field, context[field]])),
+    uncertain: !eligibleWatchContext(context) || !currentWatchIdentity(ticket, context)
+      || ticket.watchUncertain !== false || ticket.watchPending !== false };
+}
+
+const queryWatchOvertaken = (held, context) => held.watch_observation?.uncertain !== false
+  || !eligibleWatchContext(context) || !currentWatchIdentity(held.watch_observation, context);
 
 function queryFields(task) {
   return Object.fromEntries(["matched_memberships", "order_anchor_ms"]
@@ -103,14 +123,15 @@ function entityFields(task) {
 
 function pageRow(held, task, read, basis, options) {
   const incoming = entityFields(task), older = olderRow(held, incoming, read);
-  const value = summaryContent(held, summaryValue(held, incoming, read), incoming, options).row;
+  const row = observedSummaryValue(held, incoming, incoming, read, options);
+  const value = summaryContent(held, row, incoming, options).row;
   if (!value.task) return value;
   const oldAuthority = older && value.watch_read_order !== read;
   const source = oldAuthority ? held?.task : incoming;
   const mixed = changedBasisAuthority(held, basis, source, value.task);
   // A current watch header does not certify the ordinary content retained
   // by a newer timestamp/read. Keep that merge uncertain until content wins.
-  const uncertain = mixed || retainedOrdinaryBasis(held, older, value.watch_read_order === read)
+  const uncertain = value.watch_uncertain === true || mixed || retainedOrdinaryBasis(held, older, value.watch_read_order === read)
     || unprovenPageContent(held, incoming, value, basis);
   return { ...value, basis: uncertain ? undefined : oldAuthority ? held?.basis : basis, basis_uncertain: uncertain };
 }
@@ -152,6 +173,19 @@ function withMonotonicMarks(held, task, watchAuthority) {
 }
 
 const watchFields = ["watch_started_after", "unread_count", "unread_mentions", "unread_agent_comments", "session_started_ms", "last_activity_ms"];
+const readFactFields = ["watched", "read_through", "dismissed_through", ...watchFields, TASK_WATCH_CACHE, TASK_FAMILY_CACHE, "__task_watch_intent"];
+export const sameTaskReadFacts = (before, after) => Boolean(before && after) && readFactFields
+  .filter((field) => field !== TASK_WATCH_CACHE && field !== TASK_FAMILY_CACHE && field !== "__task_watch_intent")
+  .every((field) => Object.hasOwn(before, field) === Object.hasOwn(after, field) && Object.is(before[field], after[field]));
+
+export function withTaskReadFacts(task, source) {
+  const next = { ...task };
+  for (const field of readFactFields) {
+    if (Object.hasOwn(source, field)) next[field] = source[field];
+    else delete next[field];
+  }
+  return next;
+}
 const changedWatchLineage = (before, after) => before?.watched !== after?.watched
   || (before?.watch_started_after ?? null) !== (after?.watch_started_after ?? null);
 
@@ -159,6 +193,10 @@ export function withTaskWatchLineage(task, source) {
   const next = { ...withoutWatchCounters(task), watched: source?.watched === true };
   if (next.watched) for (const field of watchFields) {
     if (Object.hasOwn(source, field)) next[field] = source[field];
+  }
+  for (const field of [TASK_WATCH_CACHE, TASK_FAMILY_CACHE]) {
+    if (Object.hasOwn(source || {}, field)) next[field] = source[field];
+    else delete next[field];
   }
   return next;
 }
@@ -288,6 +326,21 @@ function summaryValue(held, task, read, counters = { source: task, fullTask: fal
     needs_unread_refresh: next.watched !== false && authority.stale };
 }
 
+function observedSummaryValue(held, projected, source, read, options) {
+  if (!options.contentRead) return summaryValue(held, projected, read, options);
+  const facts = reconcileTaskReadFacts(options.scope, held?.task, source, {
+    context: options.context, contentRead: options.contentRead, watchGuard: options.headerBarrier,
+    acknowledgment: options.acknowledgment, markerPolicy: "canonical",
+  });
+  const older = olderRow(held, projected, read);
+  const reviewed = preserveTaskReviewSummary(held?.task, source, {
+    readOrder: read, keepHeld: older, allowMissing: !older, baseRow: projected,
+  });
+  return { task: withTaskReadFacts(reviewed, facts.task), read_order: Math.max(read, held?.read_order || 0),
+    watch_read_order: facts.selectedWatchRead ?? undefined, watch_uncertain: !facts.watchCertain,
+    needs_unread_refresh: facts.needsUnreadRefresh };
+}
+
 const summaryContentBaseline = (held, barrier) => held?.task
   || (barrier && withTaskContentComponents(summaryPatch(undefined, barrier, true), barrier, "summary"));
 
@@ -318,11 +371,11 @@ export async function landSummaryPage(ticket, page, { read, accept = () => true 
     if (!acceptsPage(held, ticket, accept) || invalidatedTicket(invalidation?.value, ticket)) return null;
     if (changedContinuationBasis(held, ticket, page)) return null;
     const rows = tasks.map((task, index) => pageRow(records[index]?.value, task, read, page.basis, { context, address: summaryAddress(ticket.scope, task.id),
-      written: recordWriteOf(records[index]), contentRead: ticket.contentRead }));
+      written: recordWriteOf(records[index]), contentRead: ticket.contentRead, scope: ticket.scope }));
     if (rows.some((row) => !row.task?.id)) return null;
     const actors = identities.map(([, identity], index) => records[tasks.length + index]?.value?.read_order > read
       ? null : { identity, read_order: read });
-    return { values: [membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id), read), null,
+    return { values: [membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id), read, context), null,
       newerObservation(observation?.value, read, page.basis), ...rows, ...actors] };
   });
 }
@@ -343,27 +396,31 @@ export function writeSummaryTask(scope, task, read, options = {}) {
  * fullTask explicitly selects authoritative omissions; compact patches retain
  * fields they omit. Both paths use the same PR, marker and counter authority. */
 const fullHeaderSource = (task, fullTask) => fullTask ? fullTaskSummary(task) : undefined;
-const fullActionSource = (task) => ({ read_through: null, watch_started_after: null, dismissed_through: null, ...task });
+const fullActionSource = (task) => ({ watched: false, read_through: null, watch_started_after: null, dismissed_through: null, ...task });
 
-function reduceSummaryMutation(records, options, { headerBarrier, headerGuards }) {
+function reduceSummaryMutation(records, options, { headerBarrier, headerGuards, context, acknowledgment }) {
   const [held, invalidation, ...shared] = records, { task, read, fullTask, fragment, address } = options;
   if (!options.accept()) return null;
   const source = fullTask ? fullActionSource(task) : task;
   const before = held?.value;
   const patched = summaryPatch(before?.task, source, fullTask);
   if (task.__task_content_cache) patched.__task_content_cache = task.__task_content_cache;
-  const row = summaryValue(before, patched, read, { ...options, source, action: true });
-  const selected = summaryContent(before, row, patched, { context: fragment.context(shared), address,
+  const current = context || fragment.context(shared);
+  const row = observedSummaryValue(before, patched, source, read,
+    { ...options, source, action: true, context: current, headerBarrier, acknowledgment });
+  const retireWatch = !options.rawObservation && !options.contentRead && blindTaskWatchChanged(before?.task, patched);
+  if (retireWatch) row.task = retireTaskWatchFacts(row.task);
+  const selected = summaryContent(before, row, patched, { context: current, address,
     written: recordWriteOf(held), contentRead: options.contentRead, headerBarrier, headerGuards, observed: options.rawObservation || Boolean(options.contentRead),
     headerSource: fullHeaderSource(task, fullTask) });
   return [selected.row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) },
-    ...fragment.finish(shared, { retire: selected.retire })];
+    ...fragment.finish(shared, { retire: selected.retire, retireWatch })];
 }
 
 export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false, confirmedAction = false, issuedRead, contentRead, rawObservation = false } = {}) {
   validateSummaryMutation(scope, task, read, fullTask, confirmedAction);
   const fragment = taskContentFragment(scope), address = summaryAddress(scope, task.id);
-  const options = { task, read, accept, fullTask, confirmedAction, issuedRead, contentRead, rawObservation, fragment, address };
+  const options = { scope, task, read, accept, fullTask, confirmedAction, issuedRead, contentRead, rawObservation, fragment, address };
   return { addresses: [address, invalidationAddress(scope), ...fragment.addresses],
     context: (records) => fragment.context(records.slice(2)),
     reduce: (records, guards = {}) => reduceSummaryMutation(records, options, guards) };
@@ -376,13 +433,14 @@ export function summaryTaskReadMutation(scope, task, contentRead) {
   validateSummaryMutation(scope, task, contentRead.readOrder, true, false);
   const address = summaryAddress(scope, task.id);
   return { addresses: [address, invalidationAddress(scope)],
-    reduce: (records, options) => reduceSummaryRead(records, { ...options, task, contentRead, address }) };
+    reduce: (records, options) => reduceSummaryRead(records, { ...options, scope, task, contentRead, address }) };
 }
 
-function reduceSummaryRead([held, invalidation], { task, contentRead, ordinaryRead = contentRead, address, context, headerBarrier }) {
+function reduceSummaryRead([held, invalidation], { scope, task, contentRead, ordinaryRead = contentRead, address, context, headerBarrier }) {
   const before = held?.value, source = fullActionSource(task);
   const patched = summaryPatch(before?.task, source, true), read = contentRead.readOrder;
-  const row = summaryValue(before, patched, read, { source, fullTask: true, fullRead: true, action: false });
+  const row = observedSummaryValue(before, patched, source, read,
+    { scope, contentRead, context, headerBarrier, source, fullTask: true, fullRead: true, action: false });
   const selected = summaryContent(before, row, patched, { context, address, written: recordWriteOf(held),
     contentRead: ordinaryRead, headerBarrier, headerSource: fullTaskSummary(task) });
   if (!selected.row.task) return null;
@@ -392,7 +450,7 @@ function reduceSummaryRead([held, invalidation], { task, contentRead, ordinaryRe
 const compactSemantics = (task) => JSON.stringify(summaryPatch(undefined, task || {}));
 function readObservationValues(before, row, invalidation, read) {
   const changed = compactSemantics(before?.task) !== compactSemantics(row.task);
-  const uncertain = Boolean(before?.basis_uncertain || changed);
+  const uncertain = Boolean(before?.basis_uncertain || row.watch_uncertain || changed);
   return [{ ...row, basis: uncertain ? undefined : before?.basis, basis_uncertain: uncertain },
     changed ? { read_order: Math.max(read, invalidation?.read_order || 0) } : null];
 }
@@ -405,7 +463,7 @@ function validateSummaryMutation(scope, task, read, fullTask, confirmedAction) {
 
 /** Cache-only reconstruction. Loaded membership never claims a project total
  * and an absent entity is never inferred to be deleted by a partial query. */
-const rowOvertaken = (held, row, read) => row?.needs_unread_refresh || row?.basis_uncertain || differentBasis(held, row)
+const rowOvertaken = (held, row, read) => row?.needs_unread_refresh || row?.watch_uncertain || row?.basis_uncertain || differentBasis(held, row)
   || (row?.read_order || 0) > read && !unchangedBasis(held, row);
 const differentBasis = (held, row) => Boolean(held.basis && row?.basis && held.basis !== row.basis);
 const rowsOvertaken = (held, records) => held.ids.some((id, index) => rowOvertaken(held, records[index]?.value, held.row_reads?.[id] || 0));
@@ -415,14 +473,18 @@ export async function readSummaryQuery(scope, filters) {
   if (!record?.value) return null;
   const held = record.value;
   const ids = held.identity_ids || [];
+  const fragment = taskContentFragment(scope);
   const [invalidation, observation, ...records] = await readCachedMany([
     invalidationAddress(scope), observationAddress(scope), ...held.ids.map((id) => summaryAddress(scope, id)), ...ids.map((id) => identityAddress(scope, id)),
+    ...fragment.addresses,
   ]);
+  const context = fragment.context(records.splice(-fragment.addresses.length));
   const missingIds = held.ids.filter((_id, index) => !records[index]?.value?.task);
   return { ...held,
     complete: held.complete && missingIds.length === 0,
     missing_ids: missingIds,
-    stale: missingIds.length > 0 || queryOvertaken(held, invalidation?.value, observation?.value) || rowsOvertaken(held, records),
+    stale: missingIds.length > 0 || queryWatchOvertaken(held, context)
+      || queryOvertaken(held, invalidation?.value, observation?.value) || rowsOvertaken(held, records),
     tasks: records.slice(0, held.ids.length).flatMap((record, index) => record?.value?.task
       ? [{ ...record.value.task, ...held.row_fields?.[held.ids[index]] }] : []),
     identities: Object.fromEntries(ids.flatMap((id, index) => {

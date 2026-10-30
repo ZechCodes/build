@@ -59,6 +59,7 @@ use std::time::Duration;
 use build_bridge::app::AppState;
 use build_bridge::carrier::FrameIntake;
 use build_bridge::config::{self, BridgeConfig};
+use build_bridge::execution::ExecutionService;
 use build_bridge::harness::HarnessContext;
 use build_bridge::liveness::DedicatedRuntime;
 use build_bridge::notify::Notifier;
@@ -574,6 +575,98 @@ async fn observe_http_service(
     }
 }
 
+async fn start_http_service(
+    runtime: &RuntimePaths,
+    stored: Option<&identity::StoredIdentity>,
+    execution: Arc<ExecutionService>,
+    liveness: &DedicatedRuntime,
+) -> Option<HttpService> {
+    let settings =
+        build_bridge::http::settings::HttpSettings::resolve(|name| std::env::var(name).ok())
+            .unwrap_or_else(|error| exit_startup(format!("invalid HTTP configuration: {error}")));
+    let state_path = runtime.tasks_dir.join("http-endpoint.json");
+    let prepared = match settings {
+        None => {
+            if let Some(stored) = stored {
+                if let Err(error) = build_bridge::http::supervisor::reconcile_disabled(
+                    stored,
+                    state_path.clone(),
+                )
+                .await
+                {
+                    eprintln!("HTTP endpoint deactivation remains pending: {error}");
+                }
+            }
+            None
+        }
+        Some(settings) => {
+            let stored = stored.unwrap_or_else(|| {
+                exit_startup(
+                    "HTTP requires the file-backed paired identity; provisioned relay-only keys are insufficient"
+                        .into(),
+                )
+            });
+            Some(
+                build_bridge::http::supervisor::PreparedHttp::prepare(
+                    settings,
+                    stored,
+                    &runtime.config.api_url,
+                    &runtime.config.web_url,
+                    state_path,
+                    execution,
+                )
+                .await
+                .unwrap_or_else(|error| exit_startup(format!("cannot start HTTP: {error}"))),
+            )
+        }
+    };
+    prepared.map(|prepared| {
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let task = liveness.spawn(async move { prepared.serve(stopped).await });
+        (stop, task)
+    })
+}
+
+async fn await_daemon_stop(
+    signals: &mut ShutdownSignals,
+    relay_socket: &mut tokio::task::JoinHandle<()>,
+    http_service: &mut Option<HttpService>,
+) {
+    tokio::select! {
+        // Biased so a SIGTERM that lands while the relay task is also ready
+        // is still the branch taken: systemd is about to send SIGKILL, and
+        // one more reconnect is worth nothing next to the roster.
+        biased;
+        () = signals.recv() => {}
+        _ = relay_socket => {}
+        http = observe_http_service(http_service) => {
+            http_service.take();
+            match http {
+                Some(Ok(Ok(()))) => eprintln!("HTTP supervisor stopped unexpectedly"),
+                Some(Ok(Err(error))) => eprintln!("HTTP supervisor failed: {error}"),
+                Some(Err(error)) => eprintln!("HTTP supervisor ended: {error}"),
+                None => unreachable!(),
+            }
+        }
+    }
+}
+
+async fn stop_http_service(service: Option<HttpService>) {
+    let Some((stop, mut task)) = service else {
+        return;
+    };
+    let _ = stop.send(true);
+    match tokio::time::timeout(Duration::from_secs(7), &mut task).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(error))) => eprintln!("HTTP shutdown: {error}"),
+        Ok(Err(error)) => eprintln!("HTTP supervisor ended: {error}"),
+        Err(_) => {
+            task.abort();
+            eprintln!("HTTP shutdown exceeded its bound");
+        }
+    }
+}
+
 async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState) {
     let LoadedIdentity {
         identity,
@@ -664,50 +757,8 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     // reached over either wire is the one session.
     let intake = FrameIntake::with_ledger(handler, transport_keypair, ledger);
     let execution = intake.execution();
-    let http_settings =
-        build_bridge::http::settings::HttpSettings::resolve(|name| std::env::var(name).ok())
-            .unwrap_or_else(|error| exit_startup(format!("invalid HTTP configuration: {error}")));
-    let http_state_path = runtime.tasks_dir.join("http-endpoint.json");
-    let prepared_http = match http_settings {
-        None => {
-            if let Some(stored) = stored.as_ref() {
-                if let Err(error) = build_bridge::http::supervisor::reconcile_disabled(
-                    stored,
-                    http_state_path.clone(),
-                )
-                .await
-                {
-                    eprintln!("HTTP endpoint deactivation remains pending: {error}");
-                }
-            }
-            None
-        }
-        Some(settings) => {
-            let stored = stored.as_ref().unwrap_or_else(|| {
-                exit_startup(
-                    "HTTP requires the file-backed paired identity; provisioned relay-only keys are insufficient"
-                        .into(),
-                )
-            });
-            Some(
-                build_bridge::http::supervisor::PreparedHttp::prepare(
-                    settings,
-                    stored,
-                    &runtime.config.api_url,
-                    &runtime.config.web_url,
-                    http_state_path,
-                    execution.clone(),
-                )
-                .await
-                .unwrap_or_else(|error| exit_startup(format!("cannot start HTTP: {error}"))),
-            )
-        }
-    };
-    let mut http_service = prepared_http.map(|prepared| {
-        let (stop, stopped) = tokio::sync::watch::channel(false);
-        let task = liveness.spawn(async move { prepared.serve(stopped).await });
-        (stop, task)
-    });
+    let mut http_service =
+        start_http_service(&runtime, stored.as_ref(), execution.clone(), &liveness).await;
     let reaper_execution = execution.clone();
     let _execution_reaper = liveness.handle().spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -785,35 +836,8 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     spawn_resume_after_restart(app.clone(), runtime.tasks_dir.clone(), reachable.clone());
 
     let mut going_down = shutdown_signals();
-    tokio::select! {
-        // Biased so a SIGTERM that lands while the relay task is also ready
-        // is still the branch taken: systemd is about to send SIGKILL, and
-        // one more reconnect is worth nothing next to the roster.
-        biased;
-        () = going_down.recv() => {}
-        _ = &mut relay_socket => {}
-        http = observe_http_service(&mut http_service) => {
-            http_service.take();
-            match http {
-                Some(Ok(Ok(()))) => eprintln!("HTTP supervisor stopped unexpectedly"),
-                Some(Ok(Err(error))) => eprintln!("HTTP supervisor failed: {error}"),
-                Some(Err(error)) => eprintln!("HTTP supervisor ended: {error}"),
-                None => unreachable!(),
-            }
-        }
-    }
-    if let Some((stop, mut task)) = http_service.take() {
-        let _ = stop.send(true);
-        match tokio::time::timeout(Duration::from_secs(7), &mut task).await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(error))) => eprintln!("HTTP shutdown: {error}"),
-            Ok(Err(error)) => eprintln!("HTTP supervisor ended: {error}"),
-            Err(_) => {
-                task.abort();
-                eprintln!("HTTP shutdown exceeded its bound");
-            }
-        }
-    }
+    await_daemon_stop(&mut going_down, &mut relay_socket, &mut http_service).await;
+    stop_http_service(http_service.take()).await;
     // The one exit the daemon has, whichever way the loop ended: record who was
     // working before the harnesses go with the process. Rolling the binary
     // kills every session on the device at once, and nothing but this says so.

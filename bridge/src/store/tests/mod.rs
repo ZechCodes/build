@@ -29,3 +29,4 @@ mod task_rename;
 mod task_summaries;
 mod tracker;
 mod waiting_on;
+mod watch_snapshot_sequence;

@@ -182,3 +182,50 @@ it("settles the transported page owner while refusing foreign and obsolete owner
   expect((await savedRows(outside))[0].__task_watch_intent).toBeUndefined();
   expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
 });
+
+it("cleans a rejected owner's legitimately transported stamps from existing replicas after rollback", async () => {
+  const api = await runtime();
+  const current = row(20, { watched: false, title: "Current replicated title" });
+  const detail = api.tracker.taskAddress(scope.deviceId, scope.projectId, current.id);
+  const firstRead = await api.content.captureTaskContentRead(detail, { revalidate: "full" });
+  await api.tracker.writeTaskRecord(scope.deviceId, scope.projectId, current.id,
+    api.tracker.taskRecord(current, []), { contentRead: firstRead });
+  const query = api.tracker.tasksQueryAddress(scope.deviceId, scope.projectId, params);
+  expect(await pull(api, async () => ({ tasks: [current] }), {
+    fold: async (stretch) => {
+      await api.pages.foldTasksPage(query, stretch, () => []);
+      return api.pages.foldTasksPage(catalogue(api), stretch, () => []);
+    },
+  })).toBe(true);
+
+  // Repeating the current unwatch state supplies a real owner stamp without
+  // introducing another blind watch transition during these cache-only copies.
+  const owner = await api.watch.beginTaskWatchMutation(scope, current.id, { watched: false });
+  const pending = await api.watch.readTaskWatchState(scope);
+  const copied = (await savedRows(api))[0];
+  expect(copied.__task_watch_intent).toBe(owner.id);
+  const heldDetail = await api.tracker.readTaskRecord(scope.deviceId, scope.projectId, current.id);
+  await api.tracker.writeTaskRecord(scope.deviceId, scope.projectId, current.id, { ...heldDetail, task: copied });
+  const heldQuery = await api.tracker.readTasksQueryRecord(scope.deviceId, scope.projectId, params);
+  await api.tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId, params, { ...heldQuery, tasks: [copied] });
+  // An actual addressed full read takes the retained detail stamp through the
+  // normal detail-to-summary guard, rather than hand-writing summary metadata.
+  const detailRead = await api.content.captureTaskContentRead(detail, { revalidate: "full" });
+  await api.tracker.writeTaskRecord(scope.deviceId, scope.projectId, current.id,
+    api.tracker.taskRecord(current, []), { contentRead: detailRead });
+  expect(await api.watch.readTaskWatchState(scope)).toEqual(pending);
+  const before = await taskReplicas(api);
+  const stampedKinds = before.filter((copy) => taskFrom(copy).__task_watch_intent === owner.id).map(({ address }) => address.kind);
+  expect(stampedKinds).toEqual(expect.arrayContaining(["tracker-task", "tracker-summary", "tracker-tasks", "tracker-tasks-query"]));
+  expect(before.some(({ address }) => address.kind === "tracker-tasks-page")).toBe(true);
+  for (const copy of before) expect(taskFrom(copy).title).toBe(current.title);
+
+  expect(await api.watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
+  expect(await api.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  const after = await taskReplicas(api);
+  expect(after.map(({ address }) => address)).toEqual(before.map(({ address }) => address));
+  for (const copy of after) {
+    expect(taskFrom(copy)).toMatchObject({ title: current.title, watched: false });
+    expect(taskFrom(copy).__task_watch_intent).toBeUndefined();
+  }
+});

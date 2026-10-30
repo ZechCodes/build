@@ -784,3 +784,87 @@ it("retires only the independent watch fence when a blind list rewrite changes w
   await tracker.writeTasksRecord(scope.deviceId, scope.projectId, copied);
   expect((await content.captureTaskContentRead(scope)).ticket.watchRetirementEpoch).toBe(after.ticket.watchRetirementEpoch);
 });
+
+it("keeps marker-only read acknowledgments paired without restamping watch or replacing history", async () => {
+  const tracker = await import("../src/core/trackerCache.js");
+  const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-1", { task: task({ watched: true,
+    watch_started_after: "te-50", read_through: "tc-20", unread_count: 5, unread_mentions: 2,
+    unread_agent_comments: 3, last_activity_ms: 200 }), timeline: ["Held history"] }, { contentRead });
+  const before = (await cache.readCached(address)).value.task;
+  expect(await tracker.advanceTaskReadThrough(scope.deviceId, scope.projectId, "task-1", "tc-30")).toBe(true);
+  const first = (await cache.readCached(address)).value;
+  expect(first.task).toMatchObject({ read_through: "tc-30", watch_started_after: "te-50", unread_count: 5, last_activity_ms: 200 });
+  expect(first.task).not.toHaveProperty("unread_mentions"); expect(first.task).not.toHaveProperty("unread_agent_comments");
+  expect(first.task.__task_watch_cache.observed_read_order).toBe(before.__task_watch_cache.observed_read_order);
+  expect(first.timeline).toEqual(["Held history"]);
+  expect(await tracker.advanceTaskReadThrough(scope.deviceId, scope.projectId, "task-1", "tc-60")).toBe(true);
+  const last = (await cache.readCached(address)).value;
+  expect(last.task).not.toHaveProperty("unread_count");
+  expect(last.task).toMatchObject({ read_through: "tc-60", last_activity_ms: 200 });
+  expect(last.timeline).toEqual(["Held history"]);
+});
+
+it("removes only the settled owner stamp and refuses rollback across an intervening blind watch rewrite", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), watch = await import("../src/core/taskWatchAuthority.js");
+  const target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [task({ watched: true })], columns: [] });
+  const first = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false });
+  expect(await watch.settleTaskWatchMutation(first, { rollback: true })).toBe(true);
+  expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0]).toMatchObject({ watched: true });
+  expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0]).not.toHaveProperty("__task_watch_intent");
+  const second = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false });
+  const held = (await cache.readCached(target)).value;
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { ...held,
+    tasks: held.tasks.map((row) => ({ ...row, watched: true, watch_started_after: "te-intervening" })) });
+  expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0].__task_watch_intent).toBe(second.id);
+  expect(await watch.settleTaskWatchMutation(second, { rollback: true })).toBe(false);
+  const final = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
+  expect(final).toMatchObject({ watched: true, watch_started_after: "te-intervening" });
+  expect(final).not.toHaveProperty("__task_watch_intent");
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true });
+});
+
+it("rolls back only its watch paint while retaining a newer ordinary list read and unrelated read-note high water", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), watch = await import("../src/core/taskWatchAuthority.js");
+  const target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [task({ watched: true })], columns: [] });
+  const owner = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false });
+  const contentRead = await content.captureTaskContentRead(target, { revalidate: "full" });
+  const incoming = task({ title: "New ordinary title", body: "New ordinary body", watched: true });
+  const other = task({ id: "task-2", number: 2, title: "Unrelated current task", watched: false });
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    tracker.tasksRecord([incoming, other], [{ id: "new-columns" }], contentRead.readOrder), { contentRead });
+  await order.noteWritten([target], ["task-2"]);
+  const before = (await cache.readCached(target)).value;
+  const note = await cache.readCached(order.readsAddress(target));
+  expect(before.tasks.find((row) => row.id === "task-1")).toMatchObject({ watched: false, __task_watch_intent: owner.id });
+  expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
+  const after = (await cache.readCached(target)).value;
+  expect(after.read_order).toBe(before.read_order);
+  expect(after.columns).toEqual(before.columns);
+  expect(after.tasks.find((row) => row.id === "task-1")).toMatchObject({ watched: true, title: "New ordinary title", body: "New ordinary body" });
+  expect(after.tasks.find((row) => row.id === "task-1")).not.toHaveProperty("__task_watch_intent");
+  expect(after.tasks.find((row) => row.id === "task-2")).toEqual(before.tasks.find((row) => row.id === "task-2"));
+  expect(await cache.readCached(order.readsAddress(target))).toEqual(note);
+});
+
+it("does not let a byte-identical blind list copy lower independent watch or family paint source clocks", async () => {
+  const tracker = await import("../src/core/trackerCache.js");
+  const target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  const raw = task({ watched: true, watch_started_after: "te-50", read_through: "tc-20", unread_count: 5,
+    unread_mentions: 2, unread_agent_comments: 3 });
+  const publish = async () => {
+    const contentRead = await content.captureTaskContentRead(target, { revalidate: "full" });
+    await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([raw], [], contentRead.readOrder), { contentRead });
+    return contentRead;
+  };
+  await publish();
+  const old = structuredClone(await tracker.readTasksRecord(scope.deviceId, scope.projectId));
+  const current = await publish();
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, old);
+  const row = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
+  expect(row.__task_watch_cache.observed_read_order).toBe(current.readOrder);
+  expect(row.__task_family_cache.paint.total.observed_read_order).toBe(current.readOrder);
+  expect(row.__task_family_cache.paint.attention.observed_read_order).toBe(current.readOrder);
+});

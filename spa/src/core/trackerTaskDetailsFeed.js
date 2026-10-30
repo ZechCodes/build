@@ -9,7 +9,7 @@ import { changedSince } from "./trackerModel.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceSession } from "./deviceReconnect.js";
 import { contextFor, deviceContextIdentity } from "./deviceContexts.js";
-import { captureTaskContentRead } from "./taskContentAuthority.js";
+import { captureTaskContentRead, taskFullRefreshKey } from "./taskContentAuthority.js";
 
 const MAX_READS = 4;
 
@@ -48,6 +48,9 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     return changedSince(refreshed, { task }) ? refreshed || task : task;
   }
   const stillWanted = (id, version) => !disposed && Boolean(taskForRead(id)) && version === versionOf(taskForRead(id));
+  const attemptKey = (id, detail = cached.get(id)?.value) => JSON.stringify([
+    versionOf(taskForRead(id)), taskFullRefreshKey(detail?.task, taskForRead(id)),
+  ]);
   const detailReads = trailingRead(fetchDetail, { generationOf: () => deviceSession(deviceId) });
 
   function startRead(id) {
@@ -79,7 +82,7 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
       pending.delete(id);
       if (!stillWanted(id, version)) continue;
       refreshRequested.delete(id);
-      attempted.set(id, version);
+      attempted.set(id, attemptKey(id));
       startRead(id);
     }
   }
@@ -139,12 +142,12 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
       pump();
       return;
     }
-    if (!changedSince(task, detail)) {
+    if (!changedSince(task, detail) && !taskFullRefreshKey(detail?.task, task)) {
       pending.delete(id);
       return;
     }
     const version = versionOf(task);
-    if (attempted.get(id) === version) return;
+    if (attempted.get(id) === attemptKey(id, detail)) return;
     pending.set(id, version);
     pump();
   }

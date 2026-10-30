@@ -56,7 +56,8 @@ import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
 import { wrapTaskMutationCall } from "./taskMutationFence.js";
 import { cacheTaskWaitingOnResponse } from "./taskWaitingOnCache.js";
 import { contextFor, deviceContextIdentity } from "./deviceContexts.js";
-import { captureTaskContentRead } from "./taskContentAuthority.js";
+import { captureTaskContentRead, taskFullRefreshKey } from "./taskContentAuthority.js";
+import { summaryAddress } from "./taskSummaryCache.js";
 import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./watchToggle.js";
 import { notifyCommandFailure } from "./commandRefusal.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
@@ -166,6 +167,8 @@ export function mountTaskPage(host, options) {
     files: [],
   };
   const referenceLookups = mountTaskReferenceLookups(host, { deviceId: state.deviceId, projectId: state.projectId });
+  let attemptedFullRefresh = null;
+  let contentHeader = null;
   let checklistFocus = null;
   const checklist = createTaskChecklist({
     deviceId: state.deviceId, projectId: state.projectId, taskId: state.taskId,
@@ -524,7 +527,27 @@ export function mountTaskPage(host, options) {
     // that reaches the end (#65).
     watch.settle(watchStateOf(record.task));
     markRead();
+    if (live) requestFullContent(record.task);
   }
+
+  function requestFullContent(task) {
+    const key = taskFullRefreshKey(task, contentHeader);
+    if (!key || key === attemptedFullRefresh) return;
+    attemptedFullRefresh = key;
+    void refresh();
+  }
+
+  const summaryTarget = summaryAddress({ deviceId: state.deviceId, projectId: state.projectId }, state.taskId);
+  let summaryReadSerial = 0;
+  async function readContentHeader() {
+    const serial = ++summaryReadSerial, authority = captureTaskAction(state);
+    const record = await readCached(summaryTarget);
+    if (state.disposed || serial !== summaryReadSerial || !authority.accept()) return;
+    contentHeader = record?.value?.task;
+    requestFullContent(state.task);
+  }
+  const contentHeaderWatcher = subscribeCache(summaryTarget, () => void readContentHeader());
+  void readContentHeader();
 
   async function paintFromCache() {
     const [cached, list, at, checklistSupported, waitingOnSupported] = await Promise.all([
@@ -603,6 +626,8 @@ export function mountTaskPage(host, options) {
 
   async function readTask() {
     if (state.disposed) return;
+    const uncertainty = taskFullRefreshKey(state.task, contentHeader);
+    if (uncertainty) attemptedFullRefresh = uncertainty;
     const authority = captureTaskAction(state);
     try {
       const [checklistBasis, detailBasis, contentRead] = await Promise.all([
@@ -1044,6 +1069,7 @@ export function mountTaskPage(host, options) {
       watcher.dispose();
       stopGreeting();
       taskWatcher?.();
+      contentHeaderWatcher();
       checklistSupportWatcher();
       reviewWatcher();
       referencesWatcher();

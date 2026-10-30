@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
 const failure = JSON.parse(readFileSync(new URL("../../fixtures/api/v1/writes/confirmed-failure.json", import.meta.url)));
-const data = vi.hoisted(() => ({ previous: undefined, addresses: [], detailBasis: 7 }));
+const data = vi.hoisted(() => ({ previous: undefined, addresses: [], detailBasis: 7,
+  contentRead: { readOrder: 11, revalidate: "full" } }));
+vi.mock("../src/core/taskContentAuthority.js", () => ({ captureTaskContentRead: vi.fn(async () => data.contentRead) }));
 vi.mock("../src/core/localCache.js", () => ({
   readCanonicalCached: vi.fn(async () => data.previous),
   cachedAddresses: vi.fn(async () => data.addresses),
@@ -37,7 +39,7 @@ describe("canonical publication refresh", () => {
     await refreshWriteOperation({ cache, frame, record, authority });
     expect(authority.call).toHaveBeenCalledWith("tasks.get", { task_id: "task-A" });
     expect(cache.observePublication).toHaveBeenCalledWith({ accept: authority.active,
-      canonical: [{ address, value: answer, publication: frame.published, guard: { written: "captured-base", detailBasis: 7 } }] });
+      canonical: [{ address, value: answer, publication: frame.published, guard: { written: "captured-base", detailBasis: 7 }, contentRead: data.contentRead }] });
   });
 
   it("does not publish an answer from a replaced opening", async () => {

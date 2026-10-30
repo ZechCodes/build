@@ -6,7 +6,10 @@ import { resetTaskMutationFences, subscribeTaskMutations, taskMutationEpoch, tas
   wrapTaskMutationCall } from "../src/core/taskMutationFence.js";
 
 const mock = vi.hoisted(() => ({ merge: vi.fn(), support: vi.fn() }));
-vi.mock("../src/core/localCache.js", () => ({ mergeCachedAtomically: (...args) => mock.merge(...args) }));
+vi.mock("../src/core/taskContentAuthority.js", () => ({
+  mergeTaskContentRecordsTogether: (...args) => mock.merge(...args),
+  retireTaskContent: (task) => task,
+}));
 vi.mock("../src/core/taskChecklistSupport.js", () => ({ readTaskChecklistSupport: (...args) => mock.support(...args) }));
 vi.mock("../src/core/trackerCache.js", () => ({
   readTaskRecord: async () => null,

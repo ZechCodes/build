@@ -344,6 +344,10 @@ fn projection_complete(conn: &Connection, fingerprint: &str) -> Result<bool, Sto
     )?)
 }
 
+pub(super) fn ready_for_backup(conn: &Connection) -> Result<bool, StoreError> {
+    projection_complete(conn, &projection_definition().fingerprint)
+}
+
 // An unrelated schema migration invalidates the cheap generation check, but
 // must not replay canonical history. Compare the saved installed definitions
 // and repair only missing/changed indexes. Changed tables or obsolete SQL

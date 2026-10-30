@@ -155,3 +155,18 @@ it("advances stale-action read and dismissal marks without pairing stale or curr
   }
   expect(await value(summaries.summaryAddress(scope, id))).toMatchObject({ needs_unread_refresh: true });
 });
+
+it("retains a current combined-total observation still covered by its watch floor while stale-action attention floors advance", async () => {
+  await seed(task({ watch_started_after: "te-30", read_through: "tc-10" }));
+  const issued = await order.nextTaskRead(), current = fresh({ watch_started_after: "te-30", read_through: "tc-10",
+    unread_count: 5, unread_mentions: 4, unread_agent_comments: 3, session_started_ms: 30, last_activity_ms: 40 });
+  await land(current, "current-observation");
+  await publish({ ...current, read_through: "tc-20", unread_count: 1, unread_mentions: 1,
+    unread_agent_comments: 1, session_started_ms: 1, last_activity_ms: 2 }, issued);
+  for (const replica of await replicas()) {
+    expect(replica).toMatchObject({ watch_started_after: "te-30", read_through: "tc-20", unread_count: 5,
+      session_started_ms: 30, last_activity_ms: 40 });
+    expect(replica).not.toHaveProperty("unread_mentions"); expect(replica).not.toHaveProperty("unread_agent_comments");
+  }
+  expect(await value(summaries.summaryAddress(scope, id))).toMatchObject({ needs_unread_refresh: true });
+});

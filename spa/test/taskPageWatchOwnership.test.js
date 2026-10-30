@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { task } from "./trackerWireFixture.js";
 
-const lifetime = vi.hoisted(() => ({ session: "page-watch-session" }));
+const lifetime = vi.hoisted(() => ({ session: "page-watch-session", invalidations: [] }));
 vi.mock("../src/core/deviceReconnect.js", () => ({
   deviceSession: () => lifetime.session,
   deviceWatch: () => ({ away: () => false, reconnecting: () => false, moved: () => () => {} }),
@@ -11,7 +11,10 @@ vi.mock("../src/core/deviceReconnect.js", () => ({
 vi.mock("../src/core/changeEvents.js", () => ({
   onBridgeGreeted: () => () => {}, disarmChangeEvents() {},
   bridgeCapabilities: () => ({ tasks: {}, changes: { subscriptions: true, kinds: ["tasks"] } }),
-  watchChanges: () => ({ dispose() {} }),
+  watchChanges: (options) => {
+    if (options.onChanges) lifetime.invalidations.push(options.onChanges);
+    return { dispose() {} };
+  },
 }));
 vi.mock("../src/core/notify.js", () => ({ notifyError: vi.fn() }));
 
@@ -27,6 +30,7 @@ let page, runtime, response;
 beforeEach(() => {
   vi.resetModules();
   lifetime.session = "page-watch-session";
+  lifetime.invalidations = [];
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = '<div id="watch-page"></div>';
@@ -37,13 +41,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function mountPage() {
+async function mountPage(observeReads = false) {
   runtime = {
     tracker: await import("../src/core/trackerCache.js"),
     content: await import("../src/core/taskContentAuthority.js"),
     watch: await import("../src/core/taskWatchAuthority.js"),
     fence: await import("../src/core/taskMutationFence.js"),
   };
+  const completedReads = [];
+  if (observeReads) {
+    const trailing = await import("../src/core/trailingRead.js"), original = trailing.trailingRead;
+    vi.spyOn(trailing, "trailingRead").mockImplementation((reader, options) => original((...args) => {
+      const done = Promise.resolve(reader(...args));
+      if (reader.name === "readTask") completedReads.push(done);
+      return done;
+    }, options));
+  }
   const address = runtime.tracker.taskAddress(deviceId, projectId, taskId);
   const row = task({ id: taskId, project_id: projectId, number: 42, watched: false, trackers: [], read_through: "tc-10" });
   const contentRead = await runtime.content.captureTaskContentRead(address, { revalidate: "full" });
@@ -58,7 +71,7 @@ async function mountPage() {
   await vi.waitFor(() => expect(writer).toHaveBeenCalledTimes(1));
   await writer.mock.results[0].value;
   await vi.waitFor(() => expect(host.querySelector(".rail-watch")).not.toBeNull());
-  return { address, row, call, host, button: () => host.querySelector(".rail-watch") };
+  return { address, row, call, host, completedReads, button: () => host.querySelector(".rail-watch") };
 }
 
 it("does not dispatch a native page watch when shared owner registration refuses", async () => {
@@ -171,4 +184,39 @@ it("rejects a page eligibility result queued before disposal", async () => {
   resolve({ pendingCount: 0, watchEpoch: "eligible-epoch", controlGeneration: "control-generation", uncertain: false, eligible: true });
   await read.mock.results[0].value;
   expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.get")).toHaveLength(1);
+});
+
+async function queuedPageHint(realInvalidation) {
+  const mounted = await mountPage(true);
+  await mounted.completedReads[0];
+  const cache = await import("../src/core/localCache.js");
+  let epoch = "first-eligible-epoch";
+  const read = vi.spyOn(runtime.watch, "readTaskWatchState").mockImplementation(async () => ({ pendingCount: 0,
+    watchEpoch: epoch, pendingGeneration: "pending-generation", controlGeneration: "control-generation", uncertain: false, eligible: true }));
+  const active = deferred();
+  mounted.call.mockImplementationOnce(() => active.promise)
+    .mockImplementation(async (method) => method === "tasks.get" ? { task: mounted.row, timeline: [] } : {});
+  const address = runtime.watch.taskWatchControlAddress(scope);
+  await cache.writeCached(address, { hint: "first" });
+  await vi.waitFor(() => expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.get")).toHaveLength(2));
+  epoch = "second-eligible-epoch";
+  await cache.writeCached(address, { hint: "trailing" });
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+  await read.mock.results[1].value;
+  lifetime.session = "replacement-session";
+  if (realInvalidation) lifetime.invalidations.at(-1)([{ tasks: { task_ids: [taskId] } }]);
+  active.resolve({ task: mounted.row, timeline: [] });
+  await mounted.completedReads[1];
+  await Promise.all([...mounted.completedReads]);
+  return mounted;
+}
+
+it("does not turn a retired page control hint into a replacement-session read", async () => {
+  const mounted = await queuedPageHint(false);
+  expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.get")).toHaveLength(2);
+});
+
+it("preserves a real new-session invalidation coalesced with an old page control hint", async () => {
+  const mounted = await queuedPageHint(true);
+  expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.get")).toHaveLength(3);
 });

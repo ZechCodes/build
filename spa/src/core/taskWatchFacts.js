@@ -3,6 +3,7 @@
 // ordinary-content timestamp, membership clock or equal snapshot is freshness.
 import { compareTaskMarkers, newerTaskMarker } from "./taskOpaqueMarkers.js";
 import { latestTaskMark, taskUnreadKey } from "./trackerUnread.js";
+import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent, selectTaskWatchIntentGuard } from "./taskWatchIntents.js";
 
 export const TASK_WATCH_CACHE = "__task_watch_cache";
 export const TASK_FAMILY_CACHE = "__task_family_cache";
@@ -57,6 +58,8 @@ function watchProof(task, context, scope) {
 export function isTaskWatchCertain(task, context) {
   const scope = task?.[TASK_WATCH_CACHE]?.scope;
   if (!scope || !scopedTask(scope, task)) return false;
+  const intent = reconcileTaskWatchIntent(scope, task, context?.watchIntentOf?.(task.id), context);
+  if (intent.uncertain) return false;
   const proof = watchProof(task, context, scope);
   return Boolean(proof && !uncertain(proof, context) && (!pending(context) || proof.source === "ack"));
 }
@@ -79,6 +82,11 @@ function observation(scope, task, { contentRead, context, acknowledgment }) {
   const ticket = contentRead.ticket;
   if (!acknowledged && (ticket.watchRetirementEpoch !== context.watchRetirementEpoch
     || ticket.watchPending !== false || pending(context))) return null;
+  return observedSource(scope, task, contentRead, context, acknowledged);
+}
+
+function observedSource(scope, task, contentRead, context, acknowledged) {
+  const ticket = contentRead.ticket;
   const normalized = task.watched === false ? clearedUnwatch(task) : task;
   const proof = { ...sourceIdentity(scope, task, context, contentRead.readOrder),
     source: acknowledged ? "ack" : "read", uncertain: ticket.watchUncertain !== false || context.watchUncertain !== false,
@@ -137,17 +145,31 @@ function copyLineage(target, source) {
 
 function selectedTask(held, incoming, selected, policy, fallback) {
   let task = copyLineage(incoming, selected?.task || fallback || incoming);
-  if (!selected && own(fallback, "__task_watch_intent")) task.__task_watch_intent = fallback.__task_watch_intent;
+  task = selectedIntent(task, selected, fallback);
   for (const field of ["read_through", "dismissed_through"]) {
-    if (!own(held, field) && !own(incoming, field)) continue;
-    const mark = policy.newer(held?.[field], incoming[field]);
-    if (mark === undefined) delete task[field];
-    else task[field] = mark;
+    task = selectedMarker(task, held, incoming, field, policy);
   }
   if (task.watched === false) task = clearedUnwatch(task);
   delete task[TASK_WATCH_CACHE]; delete task[TASK_FAMILY_CACHE];
   if (selected) task[TASK_WATCH_CACHE] = selected.proof;
   return task;
+}
+
+function selectedMarker(task, held, incoming, field, policy) {
+  if (!own(held, field) && !own(incoming, field)) return task;
+  const next = { ...task }, mark = policy.newer(held?.[field], incoming[field]);
+  if (mark === undefined) delete next[field];
+  else next[field] = mark;
+  return next;
+}
+
+function selectedIntent(task, selected, fallback) {
+  const next = { ...task };
+  for (const field of ["__task_watch_intent", TASK_WATCH_INTENT_CACHE]) {
+    delete next[field];
+    if (!selected && own(fallback, field)) next[field] = fallback[field];
+  }
+  return next;
 }
 
 function knownFields(task, family) {
@@ -262,7 +284,8 @@ function selectedResult(task, selected, context, incoming) {
  * task and current post-settlement watch epoch, never bootstrapping uncertainty. */
 export function reconcileTaskReadFacts(scope, held, incoming, options = {}) {
   const policy = markerPolicy(options.markerPolicy || "canonical");
-  held = sameTask(held, incoming.id);
+  const prepared = intentInputs(scope, held, incoming, options);
+  ({ held, incoming, options } = prepared);
   const guard = sameTask(options.watchGuard, incoming.id);
   const sources = watchSources(scope, held, incoming, { ...options, watchGuard: guard });
   const selected = newest(sources);
@@ -270,4 +293,17 @@ export function reconcileTaskReadFacts(scope, held, incoming, options = {}) {
   const task = selectedTask(held, incoming, selected, policy, fallback);
   if (task.watched === true) applyFamilies(task, sources, [held, guard, incoming], scope, options.context, policy, selected, fallback);
   return selectedResult(task, selected, options.context, incoming);
+}
+
+// Intent ordering is a local protection fence, never a watch observation. Each
+// row is reconciled against the note read in this publication transaction.
+function intentInputs(scope, held, incoming, options) {
+  const context = options.context, note = context?.watchIntentOf?.(incoming.id);
+  const actual = [held, incoming, options.watchGuard, ...(options.watchGuards || [])].filter((task) => task?.id === incoming.id);
+  const protection = selectTaskWatchIntentGuard(scope, incoming.id, actual, note, context);
+  const reconcile = (task) => task && reconcileTaskWatchIntent(scope, task, note, context).task;
+  const guarded = protection.guard || options.watchGuard;
+  const pendingOther = protection.pending && protection.pending.ownerId !== options.acknowledgment?.ownerId;
+  return { held: reconcile(sameTask(held, incoming.id)), incoming: reconcile(incoming), options: { ...options,
+    context: pendingOther ? { ...context, localWatchPending: true } : context, watchGuard: reconcile(guarded) } };
 }

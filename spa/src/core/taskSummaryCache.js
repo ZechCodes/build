@@ -11,6 +11,7 @@ import { captureTaskContentRead, mergeTaskContentRecordsTogether, observeTaskCon
 import { summaryPatch, fullTaskSummary } from "./taskSummaryProjection.js";
 import { reconcileTaskReadFacts, TASK_WATCH_CACHE, TASK_FAMILY_CACHE } from "./taskWatchFacts.js";
 import { blindTaskWatchChanged, retireTaskWatchFacts } from "./taskWatchAuthority.js";
+import { TASK_WATCH_INTENT_CACHE } from "./taskWatchIntents.js";
 export { reconcileTaskReadFacts } from "./taskWatchFacts.js";
 
 export const TASK_SUMMARY_KIND = "tracker-summary";
@@ -173,9 +174,9 @@ function withMonotonicMarks(held, task, watchAuthority) {
 }
 
 const watchFields = ["watch_started_after", "unread_count", "unread_mentions", "unread_agent_comments", "session_started_ms", "last_activity_ms"];
-const readFactFields = ["watched", "read_through", "dismissed_through", ...watchFields, TASK_WATCH_CACHE, TASK_FAMILY_CACHE, "__task_watch_intent"];
+const readFactFields = ["watched", "read_through", "dismissed_through", ...watchFields, TASK_WATCH_CACHE, TASK_FAMILY_CACHE, "__task_watch_intent", TASK_WATCH_INTENT_CACHE];
 export const sameTaskReadFacts = (before, after) => Boolean(before && after) && readFactFields
-  .filter((field) => field !== TASK_WATCH_CACHE && field !== TASK_FAMILY_CACHE && field !== "__task_watch_intent")
+  .filter((field) => field !== TASK_WATCH_CACHE && field !== TASK_FAMILY_CACHE && field !== "__task_watch_intent" && field !== TASK_WATCH_INTENT_CACHE)
   .every((field) => Object.hasOwn(before, field) === Object.hasOwn(after, field) && Object.is(before[field], after[field]));
 
 export function withTaskReadFacts(task, source) {
@@ -194,7 +195,7 @@ export function withTaskWatchLineage(task, source) {
   if (next.watched) for (const field of watchFields) {
     if (Object.hasOwn(source, field)) next[field] = source[field];
   }
-  for (const field of [TASK_WATCH_CACHE, TASK_FAMILY_CACHE]) {
+  for (const field of [TASK_WATCH_CACHE, TASK_FAMILY_CACHE, "__task_watch_intent", TASK_WATCH_INTENT_CACHE]) {
     if (Object.hasOwn(source || {}, field)) next[field] = source[field];
     else delete next[field];
   }
@@ -329,7 +330,7 @@ function summaryValue(held, task, read, counters = { source: task, fullTask: fal
 function observedSummaryValue(held, projected, source, read, options) {
   if (!options.contentRead) return summaryValue(held, projected, read, options);
   const facts = reconcileTaskReadFacts(options.scope, held?.task, source, {
-    context: options.context, contentRead: options.contentRead, watchGuard: options.headerBarrier,
+    context: options.context, contentRead: options.contentRead, watchGuard: options.watchGuard || options.headerBarrier, watchGuards: options.headerGuards,
     acknowledgment: options.acknowledgment, markerPolicy: "canonical",
   });
   const older = olderRow(held, projected, read);
@@ -377,7 +378,7 @@ export async function landSummaryPage(ticket, page, { read, accept = () => true 
       ? null : { identity, read_order: read });
     return { values: [membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id), read, context), null,
       newerObservation(observation?.value, read, page.basis), ...rows, ...actors] };
-  });
+  }, { watchTaskIds: tasks.map((task) => task.id) });
 }
 
 /** Immediate action result or optimistic patch. The shared row and project
@@ -398,7 +399,7 @@ export function writeSummaryTask(scope, task, read, options = {}) {
 const fullHeaderSource = (task, fullTask) => fullTask ? fullTaskSummary(task) : undefined;
 const fullActionSource = (task) => ({ watched: false, read_through: null, watch_started_after: null, dismissed_through: null, ...task });
 
-function reduceSummaryMutation(records, options, { headerBarrier, headerGuards, context, acknowledgment }) {
+function reduceSummaryMutation(records, options, { headerBarrier, headerGuards, watchGuard, context, acknowledgment }) {
   const [held, invalidation, ...shared] = records, { task, read, fullTask, fragment, address } = options;
   if (!options.accept()) return null;
   const source = fullTask ? fullActionSource(task) : task;
@@ -407,7 +408,7 @@ function reduceSummaryMutation(records, options, { headerBarrier, headerGuards, 
   if (task.__task_content_cache) patched.__task_content_cache = task.__task_content_cache;
   const current = context || fragment.context(shared);
   const row = observedSummaryValue(before, patched, source, read,
-    { ...options, source, action: true, context: current, headerBarrier, acknowledgment });
+    { ...options, source, action: true, context: current, headerBarrier, headerGuards, watchGuard, acknowledgment });
   const retireWatch = !options.rawObservation && !options.contentRead && blindTaskWatchChanged(before?.task, patched);
   if (retireWatch) row.task = retireTaskWatchFacts(row.task);
   const selected = summaryContent(before, row, patched, { context: current, address,
@@ -419,7 +420,7 @@ function reduceSummaryMutation(records, options, { headerBarrier, headerGuards, 
 
 export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false, confirmedAction = false, issuedRead, contentRead, rawObservation = false } = {}) {
   validateSummaryMutation(scope, task, read, fullTask, confirmedAction);
-  const fragment = taskContentFragment(scope), address = summaryAddress(scope, task.id);
+  const fragment = taskContentFragment(scope, { watchTaskIds: [task.id] }), address = summaryAddress(scope, task.id);
   const options = { scope, task, read, accept, fullTask, confirmedAction, issuedRead, contentRead, rawObservation, fragment, address };
   return { addresses: [address, invalidationAddress(scope), ...fragment.addresses],
     context: (records) => fragment.context(records.slice(2)),

@@ -8,10 +8,10 @@ import {
 } from "./trackerCache.js";
 import { filterTasks, sortTasks } from "./trackerFilters.js";
 import { assigneeKey } from "./trackerModel.js";
-import { preserveTaskActionMarks, summaryTaskMutation, withTaskWatchLineage } from "./taskSummaryCache.js";
+import { preserveTaskActionMarks, summaryTaskMutation, summaryAddress, withTaskWatchLineage } from "./taskSummaryCache.js";
 
-import { observeTaskContent, reconcileTaskContent, withTaskContentComponents, taskContentHeaderBaseline } from "./taskContentAuthority.js";
-import { taskWatchSettlementFragment, retireTaskWatchOwnerStamp } from "./taskWatchAuthority.js";
+import { observeTaskContent, reconcileTaskContent, withTaskContentComponents, taskContentHeaderBaseline, taskContentFragment, withTaskWatchIntentNote } from "./taskContentAuthority.js";
+import { taskWatchSettlementFragment, retireTaskWatchOwnerStamp, terminalWatchNote, retireTaskWatchFacts } from "./taskWatchAuthority.js";
 
 const listKinds = new Set([TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TRACKER_TASKS_PAGE_KIND]);
 const newer = (held, incoming) => Date.parse(held?.updated_at) > Date.parse(incoming?.updated_at);
@@ -117,7 +117,8 @@ function actionResponseValues(all, config) {
   const context = summary.context(shared), note = records.at(-1);
   const settled = settlement?.reduce(all.slice(addresses.length + summary.addresses.length), { context, note, contentRead, accept });
   if (settlement && !settled) return null;
-  const cleanup = settled ? [...records.map((record) => ownerStampCleanup(record?.value, settled.owner)),
+  if (settled) records[records.length - 1] = { ...note, value: settled.note };
+  const cleanup = settled ? [...records.map((record, index) => index === records.length - 1 ? settled.note : ownerStampCleanup(record?.value, settled.owner)),
     ...shared.map((record) => ownerStampCleanup(record?.value, settled.owner)), ...settled.values] : null;
   if (!actionDataAccepted(config, note, settled)) return cleanup;
   const values = acceptedActionValues(records, shared, config, settled?.context || context, settled?.acknowledgment);
@@ -152,7 +153,53 @@ function acceptedActionValues(records, shared, config, context, acknowledgment) 
     { context, contentRead, address, heldWritten: recordWriteOf(records[index + 1]), headerBarrier: projection, headerGuards: guards.headerGuards, watchOwner }));
   const notes = lists.map((list, index) => list ? withWritten(records[listed.length + index + 1]?.value, [task.id], read) : null);
   return [detail, ...lists, ...notes, detail ? nextReverseGeneration(records.at(-2)?.value) : null,
-    actionResponseNote(records.at(-1)?.value, task.id, read, issuedRead, detail), ...normalized];
+    actionResponseNote(watchOwner ? terminalWatchNote(records.at(-1)?.value, watchOwner, "acknowledged") : records.at(-1)?.value, task.id, read, issuedRead, detail), ...normalized];
+}
+
+// Settlement touches only replicas already discoverable by the existing action
+// cache. Copies missed by discovery consult the terminal note when admitted.
+export async function cleanupTaskWatchMutation(owner, { rollback, accept }) {
+  const scope = owner.scope, { deviceId, projectId } = scope;
+  const listed = (await cachedAddresses({ deviceId, entityId: projectId })).filter((address) => listKinds.has(address.kind));
+  const catalogue = tasksAddress(deviceId, projectId);
+  if (!listed.some((address) => address.kind === TRACKER_TASKS_KIND)) listed.push(catalogue);
+  const replicas = [taskAddress(deviceId, projectId, owner.taskId), summaryAddress(scope, owner.taskId), ...listed];
+  const noteAddress = readsAddress(replicas[0]), fragment = taskContentFragment(scope), settlement = taskWatchSettlementFragment(owner);
+  const addresses = [...replicas, noteAddress, ...fragment.addresses, ...settlement.addresses];
+  let restored = false;
+  const written = await mergeCachedRecordsTogether(addresses, (records) => {
+    restored = false;
+    const note = records[replicas.length];
+    const context = withTaskWatchIntentNote(fragment.context(records.slice(replicas.length + 1)), owner.taskId, note?.value);
+    const settled = settlement.reduce(records.slice(-settlement.addresses.length), { context, note, accept });
+    if (!settled) return null;
+    restored = Boolean(rollback && settled.canRestore);
+    const values = records.slice(0, replicas.length).map((record) => settledWatchReplica(record?.value, settled.owner, restored));
+    return [...values, settled.note, ...fragment.finish([]), ...settled.values];
+  });
+  return written && restored;
+}
+
+function settledWatchReplica(value, owner, restore) {
+  const clean = (task) => settledWatchTask(task, owner, restore);
+  if (value?.task) {
+    const task = clean(value.task);
+    if (task === value.task) return null;
+    if (Object.hasOwn(value, "timeline")) return { ...value, task };
+    return { ...value, task, watch_uncertain: true, basis: undefined, basis_uncertain: true,
+      needs_unread_refresh: task.watched !== false };
+  }
+  if (!value?.tasks) return null;
+  const tasks = value.tasks.map(clean);
+  return tasks.some((task, index) => task !== value.tasks[index]) ? { ...value, tasks } : null;
+}
+
+function settledWatchTask(task, owner, restore) {
+  const clean = retireTaskWatchOwnerStamp(task, owner);
+  if (clean === task || !restore || owner.metadataOnly || owner.beforeWatched === null) return clean;
+  const next = retireTaskWatchFacts({ ...clean, watched: owner.beforeWatched });
+  for (const field of ["watch_started_after", "unread_count", "unread_mentions", "unread_agent_comments", "session_started_ms", "last_activity_ms"]) delete next[field];
+  return next;
 }
 
 export const taskWaitingOnBlocksAddress = (deviceId, projectId, taskId) => ({

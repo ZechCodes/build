@@ -3,7 +3,8 @@
 import { mergeCachedRecordsTogether } from "./localCache.js";
 import { randomToken } from "./idbRecords.js";
 import { taskMutationsPending } from "./taskMutationFence.js";
-import { nextTaskRead, nextTaskReadTicket, TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress, taskWatchControlAddress, initialTaskWatchControl } from "./taskReadOrder.js";
+import { nextTaskRead, nextTaskReadTicket, TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress, taskWatchControlAddress, initialTaskWatchControl,
+  taskWatchIntentAddress } from "./taskReadOrder.js";
 export { TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress, taskWatchControlAddress };
 export const TASK_CONTENT_CACHE = "__task_content_cache";
 const OBSERVATION = "__task_content_observation";
@@ -63,16 +64,33 @@ export function retireTaskContent(task, component = "full") {
   return next;
 }
 
-export function taskContentFragment(scope) {
+export function taskContentFragment(scope, { watchTaskIds = [] } = {}) {
+  const ids = distinctWatchTaskIds(watchTaskIds);
   return {
-    addresses: [TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress(scope), taskWatchControlAddress(scope)],
-    context: (records) => ({ ...contentContext(records), localWatchPending: taskMutationsPending(scope.deviceId) > 0 }),
+    addresses: [TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress(scope), taskWatchControlAddress(scope),
+      ...ids.map((id) => taskWatchIntentAddress(scope, id))],
+    context: (records) => contentWatchContext(scope, records, ids),
     finish: ([store, domain, control], { retire = false, retireWatch = false } = {}) => {
-      if (!retire && !retireWatch) return [null, null, null];
+      if (!retire && !retireWatch) return Array(3 + ids.length).fill(null);
       return [store ? null : { generation: randomToken() }, retire ? retirementDomain(domain?.value) : null,
-        retireWatch ? retiredWatchControl(control) : null];
+        retireWatch ? retiredWatchControl(control) : null, ...ids.map(() => null)];
     },
   };
+}
+
+function distinctWatchTaskIds(ids) {
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !id)) throw new Error("Invalid admitted watch intent identities");
+  return [...new Set(ids)];
+}
+
+function contentWatchContext(scope, records, ids) {
+  const notes = new Map(ids.map((id, index) => [id, records[index + 3]?.value]));
+  return { ...contentContext(records), localWatchPending: taskMutationsPending(scope.deviceId) > 0,
+    watchIntentOf: (id) => notes.get(id) };
+}
+
+export function withTaskWatchIntentNote(context, taskId, note) {
+  return { ...context, watchIntentOf: (id) => id === taskId ? note : context.watchIntentOf?.(id) };
 }
 
 const retiredWatchControl = (record) => ({ ...(record?.value || initialTaskWatchControl()),
@@ -83,6 +101,7 @@ function contentContext([store, domain, control]) {
   const held = domain?.value || {}, watch = control?.value || {};
   return { storeGeneration: store?.value?.generation, scopeGeneration: held.generation, retirementEpoch: held.retirementEpoch,
     watchGeneration: watch.generation, watchRetirementEpoch: watch.watchRetirementEpoch,
+    watchPendingGeneration: watch.pendingGeneration,
     watchPendingCount: watch.pendingCount ?? null, watchUncertain: watch.uncertain !== false || !watch.blindRetirementEpoch };
 }
 
@@ -90,8 +109,8 @@ function retirementDomain(held) {
   return { ...held, generation: held?.generation || randomToken(), retirementEpoch: randomToken() };
 }
 
-export function mergeTaskContentRecordsTogether(scope, addresses, reducer) {
-  const fragment = taskContentFragment(scope);
+export function mergeTaskContentRecordsTogether(scope, addresses, reducer, options) {
+  const fragment = taskContentFragment(scope, options);
   return mergeCachedRecordsTogether([...addresses, ...fragment.addresses], (all) => {
     const shared = all.slice(addresses.length), result = reducer(all.slice(0, addresses.length), fragment.context(shared));
     return result ? [...result.values, ...fragment.finish(shared, { retire: result.retire === true, retireWatch: result.retireWatch === true })] : null;

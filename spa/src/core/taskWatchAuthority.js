@@ -1,6 +1,8 @@
 // Shared watch coordination is independent of ordinary content and server
 // bases. Missing/reset coordination is unknown, never proof of no live owner.
 import { DELETE_CACHED_RECORD, mergeCachedRecordsTogether, readCached } from "./localCache.js";
+import { watchIntentBinding, withTaskWatchIntent, sameWatchIntent, reconcileTaskWatchIntent } from "./taskWatchIntents.js";
+import { withTaskWatchIntentNote } from "./taskContentAuthority.js";
 import { randomToken } from "./idbRecords.js";
 import { nextTaskReadTicket, readsAddress, withWritten, TASK_CONTENT_GENERATION_ADDRESS,
   taskContentScopeAddress, taskWatchControlAddress, initialTaskWatchControl } from "./taskReadOrder.js";
@@ -32,8 +34,8 @@ export function retireTaskWatchFacts(task) {
 }
 
 export function retireTaskWatchOwnerStamp(task, owner) {
-  if (!task || !owner || task.id !== owner.taskId || task.__task_watch_intent !== owner.id) return task;
-  const next = { ...task }; delete next.__task_watch_intent; return next;
+  if (!task || !owner) return task;
+  return reconcileTaskWatchIntent(owner.scope, task, null, null, { exactOwner: owner }).task;
 }
 
 export async function readTaskWatchState(scope) {
@@ -56,8 +58,7 @@ function validateBegin(scope, taskId, watched, metadataOnly) {
 const matchingDataLifetime = (owner, store, domain) => owner.storeGeneration === store?.value?.generation
   && owner.scopeGeneration === domain?.value?.generation;
 const latestIntent = (note) => note?.value?.latest_watch_intent;
-const ownedIntent = (owner, note) => latestIntent(note)?.ownerId === owner.id
-  && latestIntent(note)?.intentRead === owner.intentRead;
+const ownedIntent = (owner, note) => sameWatchIntent(watchIntentBinding(owner), latestIntent(note));
 
 export async function beginTaskWatchMutation(scope, taskId, { watched, metadataOnly = false, accept = () => true } = {}) {
   validateBegin(scope, taskId, watched, metadataOnly);
@@ -92,7 +93,7 @@ function registerWatchOwner([catalogue, note, task, heldControl, heldOwner], own
 }
 
 function registrationValues(catalogue, note, taskNote, owner, watched, control) {
-  const stamp = { ownerId: owner.id, intentRead: owner.intentRead };
+  const stamp = { ...watchIntentBinding(owner), disposition: "pending" };
   const next = owner.metadataOnly ? null : paintWatch(catalogue, owner, watched);
   return [next, next ? withWritten(note, [owner.taskId], owner.intentRead) : null,
     { ...taskNote, latest_watch_intent: stamp },
@@ -103,7 +104,7 @@ function paintWatch(held, owner, watched) {
   if (!held) return null;
   return { ...held, read_order: Math.max(held.read_order || 0, owner.intentRead), tasks: (held.tasks || []).map((task) => {
     if (task.id !== owner.taskId) return task;
-    const next = { ...task, watched, __task_watch_intent: owner.id };
+    const next = withTaskWatchIntent({ ...task, watched }, watchIntentBinding(owner));
     delete next[TASK_WATCH_CACHE]; delete next[TASK_FAMILY_CACHE];
     for (const field of ["unread_count", "unread_mentions", "unread_agent_comments", "session_started_ms", "last_activity_ms"]) delete next[field];
     return next;
@@ -130,14 +131,20 @@ function reduceWatchSettlement(owner, [control, record], { context, note, conten
   if (!matchingOwner(owner, record) || !matchingControl(owner, control?.value)) return null;
   const trusted = record.value;
   const next = { ...control.value, pendingCount: control.value.pendingCount - 1, watchRetirementEpoch: randomToken() };
-  const after = settledWatchContext(context, next);
+  const terminalNote = terminalWatchNote(note?.value, trusted, "rejected");
+  const after = withTaskWatchIntentNote(settledWatchContext(context, next), trusted.taskId, terminalNote);
   const eligible = accept() && currentOwnerData(trusted, context) && ownedIntent(trusted, note);
   const canPublish = eligible && validOwnerRead(trusted, contentRead, after);
   const acknowledgment = canPublish && matchingBlindEpoch(trusted, control.value)
     && contentRead.ticket.watchRetirementEpoch === control.value.watchRetirementEpoch
     ? watchAcknowledgment(trusted, contentRead, after) : null;
-  return { values: [next, DELETE_CACHED_RECORD], context: after, owner: trusted, acknowledgment,
-    canPublish };
+  return { values: [next, DELETE_CACHED_RECORD], context: after, owner: trusted, acknowledgment, note: terminalNote,
+    canRestore: eligible && matchingBlindEpoch(trusted, control.value), canPublish };
+}
+
+export function terminalWatchNote(note, owner, disposition) {
+  return sameWatchIntent(note?.latest_watch_intent, watchIntentBinding(owner))
+    ? { ...note, latest_watch_intent: { ...watchIntentBinding(owner), disposition } } : note;
 }
 
 const currentOwnerData = (owner, context) => owner.storeGeneration === context.storeGeneration
@@ -173,29 +180,7 @@ export async function settleTaskWatchMutation(owner, { answer, contentRead, roll
     return cacheTaskWaitingOnResponse(owner.scope.deviceId, owner.scope.projectId, answer,
       { contentRead, issuedRead: contentRead?.readOrder, accept, watchOwner: owner });
   }
-  const addresses = [taskWatchControlAddress(owner.scope), ownerAddress(owner), catalogueAddress(owner.scope),
-    taskNote(owner.scope, owner.taskId), TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress(owner.scope)];
-  let restored = false;
-  const written = await mergeCachedRecordsTogether(addresses, ([control, record, catalogue, note, store, domain]) => {
-    if (!matchingOwner(owner, record) || !matchingControl(owner, control?.value)) return null;
-    const trusted = record.value;
-    const eligible = accept() && matchingDataLifetime(trusted, store, domain) && ownedIntent(trusted, note);
-    const restore = rollback && eligible && matchingBlindEpoch(trusted, control.value);
-    const next = restore ? rollbackWatch(catalogue?.value, trusted) : settledCatalogue(catalogue?.value, trusted);
-    restored = restore;
-    return [{ ...control.value, pendingCount: control.value.pendingCount - 1, watchRetirementEpoch: randomToken() },
-      DELETE_CACHED_RECORD, next, null, null, null];
-  });
-  return written && restored;
+  const { cleanupTaskWatchMutation } = await import("./taskWaitingOnCache.js");
+  return cleanupTaskWatchMutation(owner, { rollback, accept });
 }
 
-function rollbackWatch(held, owner) {
-  if (owner.metadataOnly || owner.beforeWatched === null || !held) return null;
-  const row = held.tasks?.find((task) => task.id === owner.taskId);
-  return row?.__task_watch_intent === owner.id ? settledCatalogue(paintWatch(held, owner, owner.beforeWatched), owner) : null;
-}
-
-function settledCatalogue(held, owner) {
-  if (!held?.tasks?.some((task) => task.id === owner.taskId && task.__task_watch_intent === owner.id)) return null;
-  return { ...held, tasks: held.tasks.map((task) => retireTaskWatchOwnerStamp(task, owner)) };
-}

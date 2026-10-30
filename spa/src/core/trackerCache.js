@@ -24,9 +24,10 @@ import { taskUnreadKey, latestTaskMark } from "./trackerUnread.js";
 import { readsAddress } from "./taskReadOrder.js";
 import { mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskContentWrite,
   taskNeedsFullRefresh, TASK_CONTENT_CACHE, withTaskContentComponents, acceptsTaskContentRead,
-  isObservedTaskContent, taskContentObservationOf } from "./taskContentAuthority.js";
+  isObservedTaskContent, taskContentObservationOf, withTaskWatchIntentNote } from "./taskContentAuthority.js";
 import { summaryTaskReadMutation, withTaskReadFacts, sameTaskReadFacts } from "./taskSummaryCache.js";
 import { reconcileTaskReadFacts } from "./taskWatchFacts.js";
+import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent } from "./taskWatchIntents.js";
 import { blindTaskWatchChanged, retireTaskWatchFacts } from "./taskWatchAuthority.js";
 const normalizedAddress = (deviceId, projectId, taskId) => ({ deviceId, entityId: projectId, kind: "tracker-summary", sub: taskId });
 
@@ -458,14 +459,21 @@ function listMembershipAuthority(record, contentRead, address, context, written)
 }
 
 function taskFactsForWrite(held, raw, address, context, contentRead, watchGuard) {
+  const scope = { deviceId: address.deviceId, projectId: address.entityId };
+  raw = reconcileTaskWatchIntent(scope, raw, context.watchIntentOf?.(raw.id), context).task;
   const annotation = taskContentObservationOf(raw);
   const observed = Boolean(contentRead) || isObservedTaskContent(raw);
-  if (!observed && !sameTaskReadFacts(held, raw)) return blindTaskWatchChanged(held, raw) ? retireTaskWatchFacts(raw) : raw;
+  if (!observed && !sameTaskReadFacts(held, raw) && !hasTaskWatchMetadata(raw)) {
+    return blindTaskWatchChanged(held, raw) ? retireTaskWatchFacts(raw) : raw;
+  }
   const full = Boolean(contentRead) || annotation?.coverage === "full";
   const source = full ? { watched: false, read_through: null, watch_started_after: null, dismissed_through: null, ...raw } : raw;
   return reconcileTaskReadFacts({ deviceId: address.deviceId, projectId: address.entityId }, held, source,
     { context, contentRead: contentRead ?? annotation?.contentRead, watchGuard, markerPolicy: "legacy" }).task;
 }
+
+const hasTaskWatchMetadata = (task) => ["__task_watch_cache", "__task_family_cache", "__task_watch_intent", TASK_WATCH_INTENT_CACHE]
+  .some((field) => Object.hasOwn(task || {}, field));
 
 function selectedListRecord(held, record, rows, results, admitsMembership, positiveOnly) {
   const byId = new Map(rows.map((task) => [task.id, task]));
@@ -478,13 +486,14 @@ function selectedListRecord(held, record, rows, results, admitsMembership, posit
 }
 
 function writeContentLists(deviceId, projectId, entries, accept) {
+  const watchTaskIds = [...new Set(entries.flatMap(({ record }) => (record.tasks || []).map((task) => task.id)))];
   return mergeTaskContentRecordsTogether({ deviceId, projectId }, entries.map(({ address }) => address), (held, context) => {
     if (!accept()) return null;
     const results = entries.map(({ address, record, contentRead }, index) => contentList(held[index]?.value, record,
       address, context, recordWriteOf(held[index]), contentRead));
     return { values: results.map((result) => result?.record || null), retire: results.some((result) => result?.retire),
       retireWatch: results.some((result) => result?.retireWatch) };
-  });
+  }, { watchTaskIds });
 }
 
 function writeContentList(deviceId, projectId, address, record, { accept = () => true, contentRead } = {}) {
@@ -566,8 +575,9 @@ export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = 
   const shared = mutation?.addresses || [normalizedAddress(deviceId, projectId, taskId)];
   return mergeTaskContentRecordsTogether(scope, [address, readsAddress(address), ...shared], ([detail, note, ...records], context) => {
     if (!detailAccepted(detail?.value, note, taskId, { accept, detailBasis })) return null;
-    return mutation ? fullReadDetail(detail, records, record, context, address, contentRead, mutation)
-      : contentDetail(detail, record, records[0]?.value?.task, context, address, contentRead);
+    const current = withTaskWatchIntentNote(context, taskId, note?.value);
+    return mutation ? fullReadDetail(detail, records, record, current, address, contentRead, mutation)
+      : contentDetail(detail, record, records[0]?.value?.task, current, address, contentRead);
   });
 };
 
@@ -585,7 +595,7 @@ export const advanceTaskReadThrough = (deviceId, projectId, taskId, mark, { acce
     const floor = latestTaskMark(held.task.read_through, mark);
     if (floor === held.task.read_through) return null;
     const facts = reconcileTaskReadFacts({ deviceId, projectId }, held.task, { id: taskId, read_through: floor },
-      { context, markerPolicy: "legacy" });
+      { context: withTaskWatchIntentNote(context, taskId, note?.value), markerPolicy: "legacy" });
     return { values: [{ ...held, task: withTaskReadFacts(held.task, facts.task) },
       issuedRead === undefined ? null : { ...note?.value, action_read: issuedRead }] };
   });

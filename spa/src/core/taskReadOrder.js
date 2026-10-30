@@ -95,6 +95,10 @@ export const readsAddress = ({ deviceId, entityId, kind, sub = "" }) => ({
   sub: JSON.stringify([kind, sub]),
 });
 
+export const taskWatchIntentAddress = ({ deviceId, projectId }, taskId) => readsAddress({
+  deviceId, entityId: projectId, kind: "tracker-task", sub: taskId,
+});
+
 let uncounted = 0;
 
 /** The number a read takes before it asks: every later one is newer, in this

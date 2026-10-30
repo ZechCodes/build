@@ -89,10 +89,12 @@ it("projects a full watch acknowledgment into normalized summaries while retaini
 
 it("projects full read acknowledgments without deriving missing attention counters or replacing the timeline", async () => {
   observation.carries = true;
+  let serverCanonicalTask = full();
   const pending = deferred(); session.call.mockImplementation((method) => method === "tasks.get"
-    ? Promise.resolve({ task: full(), timeline }) : pending.promise);
+    ? Promise.resolve({ task: structuredClone(serverCanonicalTask), timeline }) : pending.promise);
   await mount(); await vi.waitFor(() => expect(count("tasks.read_through")).toBe(1));
-  pending.resolve({ task: full({ watched: true, read_through: "tc-05\0", watch_started_after: "", unread_count: 0 }) });
+  serverCanonicalTask = full({ watched: true, read_through: "tc-05\0", watch_started_after: "", unread_count: 0 });
+  pending.resolve({ task: structuredClone(serverCanonicalTask) });
   await settle();
   const summary = await cachedSummary();
   expect(summary.task).toMatchObject({ watched: true, read_through: "tc-05\0", watch_started_after: "", unread_count: 0 });
@@ -194,9 +196,12 @@ it("keeps newer detail body/title/timeline while an older full read acknowledgme
 
 it.each([{ id: "foreign-task" }, { project_id: "foreign-project" }, { number: 13 }])(
   "rejects a full acknowledgment for a different captured task identity %#", async (patch) => {
+    // Let the page dispatch its reads, but keep their independent valid
+    // publications pending while checking the rejected action's exact effects.
     const pending = deferred(); session.call.mockImplementation((method) => method === "tasks.get"
-      ? Promise.resolve({ task: full(), timeline }) : pending.promise);
+      ? new Promise(() => {}) : pending.promise);
     const mounted = await mount(); mounted.button().click(); await vi.waitFor(() => expect(count("tasks.watch")).toBe(1));
+    expect(count("tasks.get")).toBeGreaterThan(0);
     const before = await cachedSummary();
     pending.resolve({ task: full({ watched: true, ...patch }) });
     await settle(); expect(await cachedSummary()).toEqual(before);

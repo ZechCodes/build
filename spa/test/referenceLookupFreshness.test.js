@@ -131,3 +131,19 @@ it("does not resurrect a stale miss by falling back behind a later span after an
   await vi.waitFor(() => expect(index.referenceIndexVersion()).toBeGreaterThan(before));
   expect(resolve()?.title).toBe("Page-positive");
 });
+
+it("notifies subscribers when only a listed timestamp changes the same-task title winner", async () => {
+  const row = (hour) => ({ ...target, title: "Listed title", updated_at: `2026-10-29T${hour}:00:00Z` });
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([row("13")]));
+  await start(vi.fn().mockResolvedValue(result({ ...target, title: "Point title", updated_at: "2026-10-29T14:00:00Z" })));
+  await reader.refresh(42); await vi.waitFor(() => expect(resolve()?.title).toBe("Point title"));
+  const before = index.referenceIndexVersion();
+  let painted = "Point title";
+  const unsubscribe = index.subscribeReferenceIndex(() => { painted = resolve()?.title; });
+  try {
+    await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([row("15")]));
+    await vi.waitFor(() => expect(resolve()?.title).toBe("Listed title"));
+    expect(index.referenceIndexVersion()).toBeGreaterThan(before);
+    expect(painted).toBe("Listed title");
+  } finally { unsubscribe(); }
+});

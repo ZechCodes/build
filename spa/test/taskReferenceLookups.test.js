@@ -293,3 +293,25 @@ it("drains initial siblings after one error before the explicitly queued trailin
   await started; await forced;
   expect(lookupCalls()).toHaveLength(8);
 });
+
+it("does not hash oversized DOM comment IDs or tokenize oversized class attributes", async () => {
+  runtime = await import("../src/core/taskReferenceLookups.js");
+  const oversized = "x".repeat(20_000);
+  host.innerHTML = `<li data-comment-id="${oversized}"><div class="task-comment-body markdown">#42</div></li>
+    <div id="oversized-class" class="${oversized} task-page-body markdown">#43</div>`;
+  const element = host.querySelector('#oversized-class');
+  const classTokens = vi.spyOn(element, "classList", "get");
+  const originalHas = Set.prototype.has;
+  const hashedOversized = [];
+  const hashes = vi.spyOn(Set.prototype, "has").mockImplementation(function(value) {
+    if (value === oversized) hashedOversized.push(value.length);
+    return originalHas.call(this, value);
+  });
+  const follower = runtime.mountTaskReferenceLookups(host, { ...scope, context: live.context }); running.add(follower);
+  try {
+    await follower.update({ body: "#43", rows: [{ type: "comment", key: oversized, body: "#42" }] });
+    expect(hashedOversized).toEqual([]);
+    expect(classTokens).not.toHaveBeenCalled();
+    expect(lookupCalls()).toHaveLength(0);
+  } finally { hashes.mockRestore(); classTokens.mockRestore(); }
+});

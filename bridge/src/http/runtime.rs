@@ -898,9 +898,24 @@ mod tests {
                         self.family_live.clone(),
                         self.b_lifetime,
                     );
+                    if self.b_fixed_lifetime.is_none() {
+                        if let Some(deadline) = &self.b_deadline {
+                            let mut deadline = deadline.lock().unwrap();
+                            authority.deadline = *deadline
+                                .get_or_insert_with(|| Instant::now() + self.b_lifetime);
+                        }
+                    }
+                    Ok(authority)
+                }
+                "grant-b-expiring" => {
+                    let lifetime = self.b_fixed_lifetime.ok_or(AuthError::InvalidCredential)?;
+                    let mut authority = pair_authority(
+                        self.b_live.clone(),
+                        self.family_live.clone(),
+                        lifetime,
+                    );
                     if let Some(deadline) = &self.b_deadline {
                         let mut deadline = deadline.lock().unwrap();
-                        let lifetime = self.b_fixed_lifetime.unwrap_or(self.b_lifetime);
                         authority.deadline =
                             *deadline.get_or_insert_with(|| Instant::now() + lifetime);
                     }
@@ -2453,7 +2468,7 @@ mod tests {
         .expect("live A output reaches the expiry pending-write barrier");
 
         let request_b = format!(
-            "PATCH /v1/settings HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: https://app.example\r\nAuthorization: Bearer grant-b\r\nX-Build-Session: {expiry_session}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            "PATCH /v1/settings HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: https://app.example\r\nAuthorization: Bearer grant-b-expiring\r\nX-Build-Session: {expiry_session}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
         );
         let mut socket_b = request_socket(&connector, port, request_b).await;
         let authority_b =

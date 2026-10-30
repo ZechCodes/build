@@ -562,15 +562,16 @@ function mergeTogetherInStore(addresses, keys, merge, handed) {
     const mergeAll = () => {
       try {
         const next = merge(held.map(handed));
+        const present = new Set(keys.filter((_key, index) => held[index] !== undefined));
         for (const [index, key] of keys.entries()) {
           if (next?.[index] === DELETE_CACHED_RECORD) {
-            if (held[index] !== undefined) { store.delete(key); changed.push(key); }
+            if (present.has(key)) { store.delete(key); present.delete(key); changed.push(key); }
             continue;
           }
           if (next?.[index] == null) continue;
           const record = withBridgeGeneration(addresses[index], { ...writeStamp(), value: next[index] });
           if (!putOrAbort(store, record, key)) return;
-          changed.push(key);
+          present.add(key); changed.push(key);
         }
       } catch (error) {
         abortForError(store, error);

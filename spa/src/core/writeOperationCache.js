@@ -1,7 +1,7 @@
 // Durable operation intent and accepted overlays share the replica transaction
 // boundary, but live in stores that replica resets and lifetime sweeps never clear.
 import { abortForError, putOrAbort } from "./idbDatabase.js";
-import { createAnnouncer, randomToken, recordKey, writeStamp } from "./idbRecords.js";
+import { addressOfParts, createAnnouncer, partsOfKey, prefixRange, randomToken, recordKey, writeStamp } from "./idbRecords.js";
 import { announceWriteOperationCache, recordWriteOf, subscribeCache, transactWriteOperations } from "./localCache.js";
 import {
   activateOperationProjection, clearOperationProjections, deactivateOperationProjection, layerPublished,
@@ -267,16 +267,20 @@ export function createWriteOperationCache(scope) {
       if (!accept()) return null;
       readOperation(stores, operationId, (row) => {
         if (row && !belongs(row)) { result = { state: "unbound" }; return; }
-        const state = refreshOpeningState(row, revision, addresses, scope);
-        result = { state };
-        if (state !== "ready" || !guardPublicationWrite(stores.operations, accept)) return;
-        const opened = openedRefresh(row, addresses);
-        if (!opened.unread.length) { result = { state: "blocked" }; return; }
-        const next = { ...row, refreshPending: true, refreshState: opened.state };
-        if (!putGuardedOperation(stores.operations, next, scope, accept)) return;
-        changed = true;
-        permit = refreshPermit(next, opened.unread, namespace, accept);
-        result = { state: "ready" };
+        readRefreshScopes(stores.records, row, scope, (resolved) => {
+          try {
+            const state = refreshOpeningState(row, revision, addresses, scope, resolved);
+            result = { state };
+            if (state !== "ready" || !guardPublicationWrite(stores.operations, accept)) return;
+            const opened = openedRefresh(row, addresses);
+            if (!opened.unread.length) { result = { state: "blocked" }; return; }
+            const next = { ...row, refreshPending: true, refreshState: opened.state };
+            if (!putGuardedOperation(stores.operations, next, scope, accept)) return;
+            changed = true;
+            permit = refreshPermit(next, opened.unread, namespace, accept);
+            result = { state: "ready" };
+          } catch (error) { abortForError(stores.operations, error); }
+        });
       });
       return null;
     });
@@ -506,25 +510,61 @@ function expectedRefreshProject(row) {
   return projects.length === 1 ? projects[0] : null;
 }
 
-function namedRefreshTargetsMatch(row, targets, scope) {
-  const expected = expectedRefreshTargets(row, scope);
+function readRefreshScopes(records, row, scope, done) {
+  if (!row?.confirmation || expectedRefreshProject(row)) return done(new Map());
+  if (currentRefreshState(row)) return done(storedRefreshScopes(row));
+  const ids = requiredRefreshTaskIds(row);
+  if (!ids.size) return done(new Map());
+  // Only the pre-existing no-project fallback enumerates this device's known
+  // keys. Recheck uniqueness in the operation transaction, without body reads,
+  // so concurrent insertion/eviction cannot turn a caller's project into proof.
+  const request = records.getAllKeys(prefixRange(`${encodeURIComponent(scope.deviceId)}|`));
+  request.onsuccess = () => {
+    try { done(uniqueRefreshScopes(request.result.map((key) => addressOfParts(partsOfKey(key))), ids)); }
+    catch (error) { abortForError(records, error); }
+  };
+}
+
+function requiredRefreshTaskIds(row) {
+  const ids = (row.confirmation.refresh || []).filter(({ kind }) => kind === "task").map(({ id }) => id);
+  for (const { address } of row.overlay || []) if (address?.kind === TRACKER_TASK_KIND) ids.push(address.sub);
+  return new Set(ids);
+}
+
+function uniqueRefreshScopes(addresses, ids) {
+  const scopes = new Map();
+  for (const address of addresses) {
+    if (address.kind !== TRACKER_TASK_KIND || !ids.has(address.sub)) continue;
+    scopes.set(address.sub, scopes.has(address.sub) ? null : address);
+  }
+  return scopes;
+}
+
+function storedRefreshScopes(row) {
+  if (!currentRefreshState(row)) return new Map();
+  const addresses = row.refreshState.targets.map(({ address }) => address);
+  return uniqueRefreshScopes(addresses, requiredRefreshTaskIds(row));
+}
+
+function namedRefreshTargetsMatch(row, targets, scope, resolved = storedRefreshScopes(row)) {
+  const expected = expectedRefreshTargets(row, scope, resolved);
   return Boolean(expected && targets.length === expected.length
     && targets.every((address, index) => sameRefreshAddress(address, expected[index])));
 }
 
-function expectedRefreshTargets(row, scope) {
-  const named = (row.confirmation.refresh || []).map((item) => namedRefreshAddress(row, item, scope));
+function expectedRefreshTargets(row, scope, resolved) {
+  const named = (row.confirmation.refresh || []).map((item) => namedRefreshAddress(row, item, scope, resolved));
   if (named.some((address) => !address)) return null;
   const overlay = effectsAddresses(row).filter((address) => address.deviceId === scope.deviceId && supportedRefreshKind(address.kind));
-  if (!overlay.every((address) => mappedRefreshAddress(row, address, scope))) return null;
+  if (!overlay.every((address) => mappedRefreshAddress(row, address, scope, resolved))) return null;
   return canonicalRefreshTargets([...named, ...overlay]);
 }
 
-function namedRefreshAddress(row, item, scope) {
+function namedRefreshAddress(row, item, scope, resolved) {
   if (!item?.id) return null;
   if (item.kind === "task") {
     const project = expectedRefreshProject(row);
-    return project ? taskAddress(scope.deviceId, project, item.id) : null;
+    return project ? taskAddress(scope.deviceId, project, item.id) : resolved.get(item.id);
   }
   if (item.kind !== "thread") return null;
   const params = row.request?.params || {};
@@ -538,24 +578,30 @@ function persistedThreadAddress(row, scope) {
     conversationId: params.conversation_id, agentId: params.agent_id, threadId: params.thread_id });
 }
 
-function mappedRefreshAddress(row, address, scope) {
+function mappedRefreshAddress(row, address, scope, resolved) {
   if (!validRefreshAddress(address)) return false;
   if (address.kind === "thread") return sameRefreshAddress(address, persistedThreadAddress(row, scope));
-  return address.entityId === expectedRefreshProject(row);
+  const project = expectedRefreshProject(row);
+  return project ? address.entityId === project : sameRefreshAddress(address, resolved.get(address.sub));
 }
 
 function validRefreshState(row, targets) {
   const state = row.refreshState;
-  if (!state || state.version !== 1 || state.revision !== row.revision || !state.generation) return false;
-  if (JSON.stringify(state.required) !== JSON.stringify(row.confirmation.published || [])) return false;
-  return Array.isArray(state.targets) && state.targets.length === targets.length && state.targets.every((target, index) =>
+  return currentRefreshState(row) && state.targets.length === targets.length && state.targets.every((target, index) =>
     target.key === recordKey(targets[index]) && sameRefreshAddress(target.address, targets[index]));
 }
 
-function refreshOpeningState(row, revision, targets, scope) {
+function currentRefreshState(row) {
+  const state = row.refreshState;
+  if (!row.confirmation || !state || state.version !== 1 || state.revision !== row.revision || !state.generation) return false;
+  return Array.isArray(state.targets) && row.confirmation.revision === row.revision
+    && JSON.stringify(state.required) === JSON.stringify(row.confirmation.published || []);
+}
+
+function refreshOpeningState(row, revision, targets, scope, resolved) {
   if (!row || !row.confirmation) return "unbound";
   if (row.revision !== revision || row.confirmation.revision !== revision) return "superseded";
-  if (!namedRefreshTargetsMatch(row, targets, scope)) return "unbound";
+  if (!namedRefreshTargetsMatch(row, targets, scope, resolved)) return "unbound";
   if (row.refreshPending === false) return "complete";
   if (validRefreshState(row, targets)) return refreshPhase(row);
   return "ready";

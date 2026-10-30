@@ -341,3 +341,30 @@ it("distinguishes external barrier lifetimes for missing and retained detail rec
   expect(content.taskFullRefreshKey(retained, replacement)).not.toBe(retainedKey);
   expect(content.taskFullRefreshKey(undefined, await land())).toBe(content.taskFullRefreshKey(undefined, replacement));
 });
+
+it("paints an explicitly retired local full creation as an unknown normalized row", async () => {
+  const summaries = await import("../src/core/taskSummaryCache.js"), local = content.retireTaskContent(task(), "full");
+  const before = await content.captureTaskContentRead(scope);
+  await summaries.writeSummaryTask(scope, local, await order.nextTaskRead(), { fullTask: true });
+  const row = (await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value;
+  expect(row.task).toMatchObject({ id: "task-1", title: "Current" });
+  expect(row.task.body).toBeUndefined(); expect(row.task.__task_content_cache.header).toBeUndefined();
+  expect(row.task.__task_content_cache.retired.header).toBe(local.__task_content_cache.retired.header);
+  const after = await content.captureTaskContentRead(scope);
+  expect(after.ticket.retirementEpoch).not.toBe(before.ticket.retirementEpoch);
+  expect(row.basis).toBeUndefined();
+});
+
+it("never turns an unticketed or retired-domain raw reply into a blind ordinary creation", async () => {
+  const actions = await import("../src/core/taskWaitingOnCache.js"), summaries = await import("../src/core/taskSummaryCache.js"),
+    tracker = await import("../src/core/trackerCache.js");
+  const pending = await content.captureTaskContentRead(scope);
+  // An actual unrelated local rewrite retires the dispatch domain.
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [task({ id: "other-task" })] });
+  for (const options of [{}, { contentRead: pending, issuedRead: pending.readOrder }]) {
+    await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: task({ title: "Stale raw" }) }, options);
+    expect(await tracker.readTaskRecord(scope.deviceId, scope.projectId, "task-1")).toBeNull();
+    expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks.map((row) => row.id)).toEqual(["other-task"]);
+    expect((await cache.readCached(summaries.summaryAddress(scope, "task-1")))?.value?.task).toBeFalsy();
+  }
+});

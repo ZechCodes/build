@@ -935,3 +935,48 @@ it("transports the current pending watch owner through an unrelated full action 
   for (const row of rows) expect(row).toMatchObject({ watched: false, __task_watch_intent: owner.id });
   expect((await watch.readTaskWatchState(scope)).pendingCount).toBe(1);
 });
+
+it("keeps newer independent watch and family paint sources when an old normalized summary is copied locally", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), summaries = await import("../src/core/taskSummaryCache.js");
+  const raw = task({ watched: true, watch_started_after: "te-50", read_through: "tc-20", unread_count: 5,
+    unread_mentions: 2, unread_agent_comments: 3 });
+  const publish = async () => {
+    const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+    await tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-1", { task: raw, timeline: [] }, { contentRead });
+    return contentRead;
+  };
+  await publish();
+  const summaryAddress = summaries.summaryAddress(scope, "task-1");
+  const stale = structuredClone((await cache.readCached(summaryAddress)).value.task);
+  const current = await publish();
+  await summaries.writeSummaryTask(scope, stale, await order.nextTaskRead());
+  const row = (await cache.readCached(summaryAddress)).value.task;
+  expect(row.__task_watch_cache.observed_read_order).toBe(current.readOrder);
+  expect(row.__task_family_cache.paint.total.observed_read_order).toBe(current.readOrder);
+  expect(row.__task_family_cache.paint.attention.observed_read_order).toBe(current.readOrder);
+});
+
+it("does not resurrect a retired normalized attention family from an older local summary copy", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), summaries = await import("../src/core/taskSummaryCache.js");
+  const raw = task({ watched: true, watch_started_after: "te-50", read_through: "tc-20", unread_count: 5,
+    unread_mentions: 2, unread_agent_comments: 3 });
+  const publish = async (raw) => {
+    const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+    await tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-1", { task: raw, timeline: [] }, { contentRead });
+  };
+  await publish(raw);
+  const summaryAddress = summaries.summaryAddress(scope, "task-1");
+  const stale = structuredClone((await cache.readCached(summaryAddress)).value.task);
+  const stronger = { ...raw, read_through: "tc-30" };
+  delete stronger.unread_mentions; delete stronger.unread_agent_comments;
+  await publish(stronger);
+  const before = (await cache.readCached(summaryAddress)).value.task;
+  expect(before).not.toHaveProperty("unread_mentions");
+  expect(before.__task_family_cache.unknown.attention).toBeDefined();
+  await summaries.writeSummaryTask(scope, stale, await order.nextTaskRead());
+  const after = (await cache.readCached(summaryAddress)).value.task;
+  expect(after.read_through).toBe("tc-30");
+  expect(after).not.toHaveProperty("unread_mentions");
+  expect(after).not.toHaveProperty("unread_agent_comments");
+  expect(after.__task_family_cache.unknown.attention).toEqual(before.__task_family_cache.unknown.attention);
+});

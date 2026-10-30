@@ -366,12 +366,13 @@ describe("a pass racing the wire", () => {
       ["s-background", { scope: { kind: "all" }, kinds: ["git", "files", "terminals"], mode: { batch_ms: sync.BACKGROUND_COOLDOWN_MS }, priority: "background" }],
     ]);
     const managerHeld = new Map(), passes = new Map();
-    let generation = 0, seal = null, disposed = false;
+    let generation = 0, seal = null, disposed = false, visibilityChanged = false;
     let rejectFailure;
     const failed = new Promise((_, reject) => { rejectFailure = reject; });
     failed.catch(() => {});
     const ownerCurrent = () => {
       expect(disposed, "push fixture was disposed").toBe(false);
+      expect(visibilityChanged, "visibility changed during the closed push fixture").toBe(false);
       expect(contexts.get(deviceId), "push fixture context changed").toBe(context);
       expect(context?.session, "push fixture session changed").toBe(session);
       expect(bridge.call, "push fixture caller changed").toBe(call);
@@ -400,11 +401,19 @@ describe("a pass racing the wire", () => {
       // same callback stack. Observe it after every listener has returned.
       queueMicrotask(() => { if (!disposed) observePass(sync.passInFlight(deviceId)); });
     });
+    // Visibility is the remaining independent pass trigger in this fixture.
+    // Reject setup without suppressing or replacing its production listener.
+    const rejectVisibility = () => {
+      visibilityChanged = true;
+      rejectFailure(new Error("visibility changed during the closed push fixture"));
+    };
+    document.addEventListener("visibilitychange", rejectVisibility, true);
     const dispose = () => {
       if (disposed) return;
       disposed = true;
       stopWire();
       stopHeld();
+      document.removeEventListener("visibilitychange", rejectVisibility, true);
       wire.releaseAll();
       if (disposePushFixture === dispose) disposePushFixture = null;
       rejectFailure(new Error("push fixture disposed"));
@@ -1063,6 +1072,7 @@ describe("a pass racing the wire", () => {
       const answerFile = wire.hold("fs.read");
       fixture.assertCurrent();
       await flush([{ entity_id: "run-1", files: { paths: ["src/a.js"] } }], "s-background");
+      fixture.assertCurrent();
       expect(calls("fs.read")).toHaveLength(1);
       await flush([{ entity_id: "board", state: { revision: 1, removed: ["run-1"] } }]);
       expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);

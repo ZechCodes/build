@@ -8,7 +8,7 @@ and one push stand-down case. It captures the actual synchronous initial pass,
 requires successful initial/successor results and current-session manager
 acknowledgments of the exact inbox/background specs, drains the subscription
 chain, and seals a stable coverage generation with no pass outstanding. It
-checks that seal before and after the unchanged seed and before the first push.
+checks that seal before and after the unchanged seed and first push.
 Later invalidation is a setup failure; it cannot undo an admitted transaction.
 The original four assertions, file-read gate timing, hand-back, other settle
 calls and runner deadlines remain. Normal finally and afterEach dispose the
@@ -89,7 +89,7 @@ python3 spa/test/diagnostics/run-cache-readiness.py --execute \
   --reservation NEW_COORDINATOR_RESERVATION \
   --start NEW_UTC_START --cutoff NEW_UTC_MINUTE8_CUTOFF \
   --head REVIEWED_FULL_IMMUTABLE_SUCCESSOR_SHA \
-  --root /home/zech/Projects/.build-worktrees/workspaces/proj-1/909-cache-readiness-successor/Build \
+  --root /home/zech/Projects/.build-worktrees/workspaces/proj-1/909-cache-visibility-guard/Build \
   --artifacts /tmp/NEW_UNIQUE_READINESS_ARTIFACT_DIRECTORY
 ```
 
@@ -119,3 +119,69 @@ makes the capture inconclusive. Timeout cleanup fences later actions, stops the
 captured sync before gate release, and records an incomplete fallback even if
 the async test body has not reached finally. Persistence errors never replace
 the raw test error or become a qualified expected RED.
+
+## Closed-fixture pass-start boundary
+
+The helper is not a general observer of every browser pass. The following
+source-order argument is restricted to this exact serial jsdom fixture from
+`beginPushFixture` through completion of the first intended file push:
+
+- `startRequestedPass` is reached from `syncDevice`. The initial
+  `takeLock -> considerDevices -> syncSessionOnce` call installs the initial
+  pass synchronously and the helper captures its actual promise immediately.
+  The fixture deletes navigator.locks, so there is no queued lock grant/timer.
+- The only remaining internally requested passes are required subscription
+  landings. The helper registers its held observer before startCacheSync
+  registers subscriptionLanded. Its observation microtask is queued before
+  the internal listener starts a pass. That pass is published synchronously,
+  and orderedSync first awaits async greetedContext/settledWithin; it cannot
+  finish before the observation microtask. A landing which requests no groups
+  admits no pass and still changes the coverage generation.
+- `finishPass` installs a queued successor synchronously inside the old
+  pass's finally, before its promise settles. The already-attached helper
+  observer sees that successor. Its awaited greeting has multiple promise
+  steps, and this fixture's active owner then reaches asynchronous IndexedDB
+  work, before it can complete. Failed observed results reject setup.
+- Mocked device-state registration only stores listeners in an inert Set.
+  The selected normal/diagnostic bodies neither invoke that Set nor replace
+  the fixed context/session/greeted promise. Consequently session-resume and
+  restore paths cannot originate an unobserved pass. The bodies do not call
+  syncDevice, syncRestoredDevice or taskFeed.refreshFeed; mocked app/appState
+  do not mount gate/connection/UI entry points. The planned diagnostic
+  re-greeting changes the real subscription manager, not that mock context.
+- Cache subscription callbacks call noteEntityCacheChange, which only updates
+  pushFence counters. Thread-reader/refollow callbacks wake existing queues
+  and foreground work. Greeting refetches call the sync watchers' refresh
+  NOTHING callback; their only full-pass effect is actual subscription
+  landing, handled above. No extra polling pass exists in this module.
+- Production also listens to document visibilitychange. Although the selected
+  case/setup never dispatches it, the local helper now explicitly rejects
+  setup on ANY such event using a capture listener installed before sync
+  start. It does not stop propagation, prevent a production pass or replace
+  production behavior. The event permanently invalidates the owner check and
+  rejects pending readiness, so even a visibility-triggered pass that starts
+  and finishes between samples cannot produce a valid seal. The guard is
+  checked before/after seed and first flush and removed by both cleanup paths.
+
+This closes the independent event input locally rather than asserting that
+passInFlight sampling is globally complete. It does not cover arbitrary
+external module calls, changed fixtures or work after this observation window.
+Timeout/teardown is an invalid/incomplete observation, never a successful
+owner certificate. Runtime behavior, including the new guard, remains untested;
+no additional visibility-injection test variant is added to the six-gate plan.
+
+Exact source references for this argument (production files are unchanged
+from 7387):
+
+| Entry / exclusion | Source |
+| --- | --- |
+| Published turn, predecessor-finally successor, awaited greeting | `spa/src/core/cacheSync.js:541`, `:570`, `:584`, `:686`, `:697` |
+| Requested pass, superseded-session resume and restored-session route | `spa/src/core/cacheSync.js:428`, `:476`, `:485`, `:496` |
+| No-lock acquisition, device consideration and initial connection pass | `spa/src/core/cacheSync.js:2495`, `:2529`, `:2544` |
+| Real held-triggered repair; listener installation/removal | `spa/src/core/cacheSync.js:1668`, `:2557`, `:2586`; `spa/src/core/changeEvents.js:461` |
+| Independent visibility entry | `spa/src/core/cacheSync.js:2552` |
+| Greeting replay/refetch and sync watcher's no-op refresh | `spa/src/core/changeEvents.js:895`, `:854`; `spa/src/core/cacheSync.js:1594` |
+| Cache announcement only changes a counter; thread readers only wake work | `spa/src/core/pushFence.js:53`; `spa/src/core/cacheSync.js:356` |
+| External feed refresh is an explicit caller, not invoked by this body | `spa/src/core/taskFeed.js:279`; selected test `spa/test/cacheSyncDelivery.test.js:1058` |
+| Mock app/device entry points, fixed context and per-case reset/cleanup | `spa/test/cacheSyncDelivery.test.js:34`, `:39`, `:48`, `:109`, `:125` |
+| Local observing guard and its lifetime | `spa/test/cacheSyncDelivery.test.js:361` (`beginPushFixture`) |

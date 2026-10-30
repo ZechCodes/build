@@ -151,6 +151,7 @@ async function originalStandDown(env, wire, fixture, trace, release) {
   fixture.assertCurrent();
   trace.event("first-intended-push");
   await env.flush([{ entity_id: "run-1", files: { paths: ["src/a.js"] } }], "s-background");
+  fixture.assertCurrent();
   // These are the original four count/eviction/hand-back assertions.
   expect(env.calls("fs.read")).toHaveLength(1);
   await env.flush([{ entity_id: "board", state: { revision: 1, removed: ["run-1"] } }]);

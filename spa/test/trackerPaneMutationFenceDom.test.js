@@ -296,7 +296,13 @@ it("keeps the optimistic summary ready when an actual pending detail read return
       "producer precondition: the delivered read must reach its real public writer").toBe(true));
     expect(reading.contentRead?.readOrder).toBeGreaterThan(0);
     expect(reading.contentRead.address).toEqual(tracker.taskAddress(scope.deviceId, scope.projectId, "move-task"));
-    expect(reading.contentRead.ticket.readOrder).toBe(reading.contentRead.readOrder);
+    for (const field of ["storeGeneration", "scopeGeneration", "retirementEpoch"]) {
+      expect(reading.contentRead.ticket?.[field]).toEqual(expect.any(String));
+      expect(reading.contentRead.ticket[field].length).toBeGreaterThan(0);
+    }
+    expect(reading.contentRead.revalidate).toBe("full");
+    expect(reading.contentRead.written).toEqual(expect.any(String));
+    expect(reading.contentRead.written.length).toBeGreaterThan(0);
     expect(updatePending).toBe(true);
     expect(fence.taskMutationsPending(scope.deviceId)).toBeGreaterThan(0);
     const beforeReject = await summary();

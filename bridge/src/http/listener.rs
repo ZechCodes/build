@@ -22,6 +22,9 @@ use tokio::time::{timeout, Sleep};
 use tokio_rustls::TlsAcceptor;
 
 use super::{limits, sse::STALLED_WRITE_TIMEOUT};
+use crate::execution::session::Opening;
+
+const AUTHORITY_RECHECK: std::time::Duration = std::time::Duration::from_millis(25);
 
 #[derive(Clone, Copy)]
 pub struct PeerAddress(pub IpAddr);
@@ -33,6 +36,13 @@ struct Authority {
     id: uuid::Uuid,
     check: AuthorityCheck,
     deadline: Option<AuthorityDeadline>,
+    opening: Option<Opening>,
+}
+
+enum AuthorityPoll<R> {
+    Retry,
+    Denied,
+    Complete(Poll<io::Result<R>>, Option<tokio::time::Instant>),
 }
 
 #[derive(Default)]
@@ -55,12 +65,12 @@ pub struct OutputTicket {
 }
 
 impl OutputAuthority {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn has_pending_write(&self) -> bool {
         self.0.pending_write.load(Ordering::Acquire)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn same_connection(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
@@ -69,16 +79,23 @@ impl OutputAuthority {
             id: uuid::Uuid::new_v4(),
             check,
             deadline: None,
+            opening: None,
         });
         self.0.waker.wake();
     }
 
-    pub fn bind(&self, check: AuthorityCheck, deadline: AuthorityDeadline) -> OutputTicket {
+    pub fn bind(
+        &self,
+        check: AuthorityCheck,
+        deadline: AuthorityDeadline,
+        opening: Opening,
+    ) -> OutputTicket {
         let id = uuid::Uuid::new_v4();
         *self.0.current.lock().unwrap() = Some(Authority {
             id,
             check,
             deadline: Some(deadline),
+            opening: Some(opening),
         });
         self.0.waker.wake();
         OutputTicket {
@@ -87,22 +104,65 @@ impl OutputAuthority {
         }
     }
 
-    fn check(&self, cx: &Context<'_>) -> io::Result<Option<tokio::time::Instant>> {
-        self.0.waker.register(cx.waker());
-        let current = self.0.current.lock().unwrap();
-        let Some(current) = current.as_ref() else {
-            return Ok(None);
-        };
-        let deadline = current.deadline.as_ref().map(|deadline| deadline());
-        if !(current.check)()
-            || deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "HTTP output binding ended",
-            ));
+    fn poll_authorized<R>(
+        &self,
+        waker: &std::task::Waker,
+        mut poll: impl FnMut() -> Poll<io::Result<R>>,
+    ) -> io::Result<(Poll<io::Result<R>>, Option<tokio::time::Instant>)> {
+        self.0.waker.register(waker);
+        loop {
+            let (id, opening) = {
+                let current = self.0.current.lock().unwrap();
+                let Some(current) = current.as_ref() else {
+                    return Ok((poll(), None));
+                };
+                (current.id, current.opening.clone())
+            };
+            let attempt = if let Some(opening) = opening {
+                opening
+                    .while_open(|| {
+                        let current = self.0.current.lock().unwrap();
+                        let Some(current) = current.as_ref().filter(|current| current.id == id)
+                        else {
+                            return AuthorityPoll::Retry;
+                        };
+                        let deadline = current.deadline.as_ref().map(|deadline| deadline());
+                        if !(current.check)()
+                            || deadline
+                                .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                        {
+                            AuthorityPoll::Denied
+                        } else {
+                            AuthorityPoll::Complete(poll(), deadline)
+                        }
+                    })
+                    .unwrap_or(AuthorityPoll::Denied)
+            } else {
+                let current = self.0.current.lock().unwrap();
+                let Some(current) = current.as_ref().filter(|current| current.id == id) else {
+                    continue;
+                };
+                let deadline = current.deadline.as_ref().map(|deadline| deadline());
+                if !(current.check)()
+                    || deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                {
+                    AuthorityPoll::Denied
+                } else {
+                    AuthorityPoll::Complete(poll(), deadline)
+                }
+            };
+            match attempt {
+                AuthorityPoll::Retry => continue,
+                AuthorityPoll::Denied => {
+                    self.0.pending_write.store(false, Ordering::Release);
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "HTTP output binding ended",
+                    ));
+                }
+                AuthorityPoll::Complete(result, deadline) => return Ok((result, deadline)),
+            }
         }
-        Ok(deadline)
     }
 
     fn finish_flush(&self) {
@@ -140,6 +200,11 @@ impl OutputTicket {
     /// is never cleared by an older response's delayed flush.
     pub fn release(self) {
         self.release_with(());
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn release_with_for_testing(self, owner: impl Send + 'static) {
+        self.release_with(owner);
     }
 
     pub(crate) fn release_with(self, owner: impl Send + 'static) {
@@ -245,6 +310,7 @@ pub struct BoundedIo<T> {
     authority: OutputAuthority,
     write_deadline: Option<Pin<Box<Sleep>>>,
     authority_deadline: Option<Pin<Box<Sleep>>>,
+    authority_recheck: Option<Pin<Box<Sleep>>>,
 }
 
 impl<T> BoundedIo<T> {
@@ -254,16 +320,15 @@ impl<T> BoundedIo<T> {
             authority,
             write_deadline: None,
             authority_deadline: None,
+            authority_recheck: None,
         }
     }
 
-    fn check_authority(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
-        let deadline = self.authority.check(cx).inspect_err(|_| {
-            self.authority
-                .0
-                .pending_write
-                .store(false, Ordering::Release);
-        })?;
+    fn arm_authority_wakes(
+        &mut self,
+        cx: &mut Context<'_>,
+        deadline: Option<tokio::time::Instant>,
+    ) {
         if let Some(deadline) = deadline {
             let timer = self
                 .authority_deadline
@@ -274,7 +339,23 @@ impl<T> BoundedIo<T> {
         } else {
             self.authority_deadline = None;
         }
-        Ok(())
+        let recheck_at = tokio::time::Instant::now() + AUTHORITY_RECHECK;
+        let recheck = self
+            .authority_recheck
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(recheck_at)));
+        recheck.as_mut().reset(recheck_at);
+        let _ = recheck.as_mut().poll(cx);
+    }
+
+    fn authority_error<R>(&mut self, error: io::Error) -> Poll<io::Result<R>> {
+        self.authority
+            .0
+            .pending_write
+            .store(false, Ordering::Release);
+        self.write_deadline = None;
+        self.authority_deadline = None;
+        self.authority_recheck = None;
+        Poll::Ready(Err(error))
     }
 
     fn checked_write<R>(
@@ -288,6 +369,8 @@ impl<T> BoundedIo<T> {
             .store(result.is_pending(), Ordering::Release);
         if result.is_ready() {
             self.write_deadline = None;
+            self.authority_deadline = None;
+            self.authority_recheck = None;
             return result;
         }
         let timer = self
@@ -298,6 +381,8 @@ impl<T> BoundedIo<T> {
                 .0
                 .pending_write
                 .store(false, Ordering::Release);
+            self.authority_deadline = None;
+            self.authority_recheck = None;
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "HTTP stalled write",
@@ -332,17 +417,26 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for BoundedIo<T> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        if let Err(error) = self.check_authority(cx) {
-            return Poll::Ready(Err(error));
-        }
-        let result = Pin::new(&mut self.inner).poll_write(cx, buf);
+        let authority = self.authority.clone();
+        let waker = cx.waker().clone();
+        let (result, deadline) = match authority
+            .poll_authorized(&waker, || Pin::new(&mut self.inner).poll_write(cx, buf))
+        {
+            Ok(result) => result,
+            Err(error) => return self.authority_error(error),
+        };
+        self.arm_authority_wakes(cx, deadline);
         self.checked_write(cx, result)
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Err(error) = self.check_authority(cx) {
-            return Poll::Ready(Err(error));
-        }
-        let result = Pin::new(&mut self.inner).poll_flush(cx);
+        let authority = self.authority.clone();
+        let waker = cx.waker().clone();
+        let (result, deadline) =
+            match authority.poll_authorized(&waker, || Pin::new(&mut self.inner).poll_flush(cx)) {
+                Ok(result) => result,
+                Err(error) => return self.authority_error(error),
+            };
+        self.arm_authority_wakes(cx, deadline);
         let result = self.checked_write(cx, result);
         if matches!(result, Poll::Ready(Ok(()))) {
             self.authority.finish_flush();
@@ -350,10 +444,15 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for BoundedIo<T> {
         result
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Err(error) = self.check_authority(cx) {
-            return Poll::Ready(Err(error));
-        }
-        let result = Pin::new(&mut self.inner).poll_shutdown(cx);
+        let authority = self.authority.clone();
+        let waker = cx.waker().clone();
+        let (result, deadline) = match authority
+            .poll_authorized(&waker, || Pin::new(&mut self.inner).poll_shutdown(cx))
+        {
+            Ok(result) => result,
+            Err(error) => return self.authority_error(error),
+        };
+        self.arm_authority_wakes(cx, deadline);
         let result = self.checked_write(cx, result);
         if matches!(result, Poll::Ready(Ok(()))) {
             self.authority.finish_flush();

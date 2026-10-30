@@ -121,7 +121,10 @@ fn enabled_http_requires_explicit_bind_origin_and_tls() {
     let resolved = settings::HttpSettings::resolve(|key| values.get(key).map(|v| v.to_string()))
         .unwrap()
         .unwrap();
-    assert_eq!(resolved.bind, "127.0.0.1:9443".parse().unwrap());
+    assert_eq!(
+        resolved.bind,
+        "127.0.0.1:9443".parse::<std::net::SocketAddr>().unwrap()
+    );
     assert_eq!(resolved.origin, "https://bridge.example:9443");
     assert!(resolved.allowed_origins.is_none());
     values.insert("BRIDGE_HTTP_BIND", "localhost:9443");
@@ -278,8 +281,7 @@ fn body_budget_reserves_complete_allowance_and_preserves_small_call_headroom() {
     assert_eq!(budget.available(), limits::TOTAL_BUFFER_BYTES);
 }
 
-#[path = "../../src/http/listener.rs"]
-mod listener;
+use build_bridge::{execution::session::Opening, http::listener};
 
 #[tokio::test]
 async fn native_listener_serves_tls_and_shuts_down_all_connections() {
@@ -642,13 +644,16 @@ async fn pending_socket_output_obeys_authority_deadline_and_exact_ticket_replace
     let (socket, _peer) = tokio::io::duplex(1);
     let authority = listener::OutputAuthority::default();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let opening = Opening::testing();
     let old = authority.bind(
         std::sync::Arc::new(|| true),
         std::sync::Arc::new(move || deadline),
+        opening.clone(),
     );
     let new = authority.bind(
         std::sync::Arc::new(|| true),
         std::sync::Arc::new(move || deadline),
+        opening,
     );
     old.invalidate(); // cannot close current response on reused connection
     let mut io = listener::BoundedIo::new(socket, authority);
@@ -707,7 +712,11 @@ async fn tls_stalled_reader_retains_sse_reservation_until_deadline_teardown() {
                 let authority_tx = authority_tx.clone();
                 async move {
                     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-                    let _ticket = authority.bind(Arc::new(|| true), Arc::new(move || deadline));
+                    let _ticket = authority.bind(
+                        Arc::new(|| true),
+                        Arc::new(move || deadline),
+                        Opening::testing(),
+                    );
                     authority_tx
                         .lock()
                         .unwrap()
@@ -835,7 +844,11 @@ async fn assert_late_prior_response_ticket_cannot_retire_successor(deferred_rele
                     async move {
                         let deadline =
                             tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-                        let ticket = authority.bind(Arc::new(|| true), Arc::new(move || deadline));
+                        let ticket = authority.bind(
+                            Arc::new(|| true),
+                            Arc::new(move || deadline),
+                            Opening::testing(),
+                        );
                         tx.lock()
                             .unwrap()
                             .take()
@@ -856,7 +869,11 @@ async fn assert_late_prior_response_ticket_cannot_retire_successor(deferred_rele
                     async move {
                         let deadline =
                             tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-                        let _ticket = authority.bind(Arc::new(|| true), Arc::new(move || deadline));
+                        let _ticket = authority.bind(
+                            Arc::new(|| true),
+                            Arc::new(move || deadline),
+                            Opening::testing(),
+                        );
                         tx.lock().unwrap().take().unwrap().send(authority).ok();
                         let receiver = rx.lock().unwrap().take().unwrap();
                         axum::body::Body::from_stream(futures_util::stream::unfold(
@@ -910,7 +927,7 @@ async fn assert_late_prior_response_ticket_cannot_retire_successor(deferred_rele
     assert_eq!(response.chunk().await.unwrap().unwrap(), "first event\n");
     let released = Arc::new(AtomicBool::new(false));
     if deferred_release {
-        old_ticket.release_with(Released(released.clone()));
+        old_ticket.release_with_for_testing(Released(released.clone()));
         assert!(
             !released.load(Ordering::SeqCst),
             "prior response owner remains retained before a socket flush"
@@ -962,7 +979,11 @@ async fn exact_output_retirement_wakes_a_parked_socket_without_waiting_for_deadl
     let (socket, _peer) = tokio::io::duplex(1);
     let authority = listener::OutputAuthority::default();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-    let ticket = authority.bind(Arc::new(|| true), Arc::new(move || deadline));
+    let ticket = authority.bind(
+        Arc::new(|| true),
+        Arc::new(move || deadline),
+        Opening::testing(),
+    );
     let mut io = listener::BoundedIo::new(socket, authority.clone());
     io.write_all(&[0]).await.unwrap();
     let writing = tokio::spawn(async move { io.write_all(&[1]).await });

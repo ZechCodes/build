@@ -44,6 +44,11 @@ impl Opening {
         }))
     }
 
+    #[cfg(any(test, feature = "testing"))]
+    pub fn testing() -> Self {
+        Self::new()
+    }
+
     pub fn is_open(&self) -> bool {
         self.0.is_open.load(Ordering::SeqCst)
     }
@@ -179,7 +184,18 @@ impl AuthorizationLease {
 /// Exact authority captured from one freshly verified HTTP request. The
 /// adapter cannot construct or widen it; session/opening liveness remains an
 /// independent fence when this proof is used for dispatch and output.
+#[derive(Clone)]
 pub struct RequestAuthorization(AuthorizationLease);
+
+impl RequestAuthorization {
+    pub(crate) fn is_valid(&self) -> bool {
+        self.0.is_valid()
+    }
+
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.0.deadline()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SessionError {
@@ -371,6 +387,10 @@ pub struct ClientSessions {
 }
 
 impl ClientSessions {
+    // Opening-bound mutations use one lock order everywhere: output gate,
+    // session state, active authorization state, then the session registry.
+    // Transport indexes (including the HTTP map) must never be held while
+    // entering this order or while cleanup hooks run.
     pub fn new(epoch: impl Into<Arc<str>>) -> Self {
         Self {
             epoch: epoch.into(),

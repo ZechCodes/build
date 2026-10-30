@@ -2,7 +2,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use async_trait::async_trait;
@@ -100,6 +103,7 @@ struct HttpState {
     execution: Arc<ExecutionService>,
     verifier: Arc<dyn GrantVerifier>,
     openings: Arc<Mutex<HashMap<String, MountedOpening>>>,
+    accepting: Arc<AtomicBool>,
     buffers: Arc<super::limits::BufferBudget>,
     #[cfg(test)]
     output_observer: Arc<Mutex<Option<OutputObserver>>>,
@@ -122,7 +126,7 @@ pub struct HttpRuntime {
 struct MountedOpening {
     session: SessionLease,
     _generation: String,
-    authority: VerifiedAuthority,
+    identity: HttpIdentity,
     budget: Arc<super::limits::OpeningBudget>,
 }
 
@@ -145,30 +149,34 @@ impl ReplySink for ResourceReplySink {
 
 impl HttpState {
     fn reap_ended(&self) -> usize {
-        let ended = {
-            let openings = self.openings.lock().unwrap();
-            openings
-                .iter()
-                .filter(|(_, opening)| !opening.session.is_live())
-                .map(|(id, _)| id.clone())
-                .collect::<Vec<_>>()
-        };
         #[cfg(test)]
         if let Some(observer) = self.reap_observer.lock().unwrap().clone() {
             observer();
         }
-        let removed = {
-            let mut openings = self.openings.lock().unwrap();
-            ended
-                .into_iter()
-                .filter_map(|id| openings.remove(&id))
+        self.execution.sessions().reap_expired();
+        let ended = {
+            let openings = self.openings.lock().unwrap();
+            openings
+                .iter()
+                .filter(|(_, opening)| !opening.session.opening().is_open())
+                .map(|(id, opening)| (id.clone(), opening.session.clone()))
                 .collect::<Vec<_>>()
         };
-        let count = removed.len();
-        for opening in removed {
-            self.execution.sessions().close(&opening.session);
+        let mut removed = 0;
+        {
+            let mut openings = self.openings.lock().unwrap();
+            for (id, ended) in ended {
+                let exact_closed = openings.get(&id).is_some_and(|current| {
+                    current.session.opening().is(ended.opening())
+                        && !current.session.opening().is_open()
+                });
+                if exact_closed {
+                    openings.remove(&id);
+                    removed += 1;
+                }
+            }
         }
-        count
+        removed
     }
 
     fn retire_all(&self) -> usize {
@@ -206,6 +214,7 @@ impl HttpRuntime {
     }
 
     pub fn shutdown(&self) -> usize {
+        self.state.accepting.store(false, Ordering::SeqCst);
         self.state.verifier.close();
         self.state.retire_all()
     }
@@ -222,6 +231,7 @@ fn runtime_with(execution: Arc<ExecutionService>, verifier: Arc<dyn GrantVerifie
             execution,
             verifier,
             openings: Arc::new(Mutex::new(HashMap::new())),
+            accepting: Arc::new(AtomicBool::new(true)),
             buffers: Arc::new(super::limits::BufferBudget::default()),
             #[cfg(test)]
             output_observer: Arc::new(Mutex::new(None)),
@@ -278,11 +288,15 @@ async fn resource_response(state: &HttpState, request: Request<Body>) -> HttpRes
     let path = request.uri().path().to_owned();
     let query = request.uri().query().map(str::to_owned);
     let metadata = request_metadata(request.headers())?;
+    let body_authorization = request_authorization.clone();
+    let body_deadline = body_authorization
+        .deadline()
+        .ok_or_else(|| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
     let body = super::body::read_json_authorized(
         request.into_body(),
         operation.request_max_bytes,
-        authority.deadline,
-        || (authority.live)(),
+        body_deadline,
+        || body_authorization.is_valid(),
     )
     .await
     .map_err(body_refusal)?;
@@ -305,14 +319,7 @@ async fn resource_response(state: &HttpState, request: Request<Body>) -> HttpRes
             "response_too_large",
         ));
     }
-    Ok(resource_output(
-        event,
-        call,
-        reservation,
-        output,
-        session,
-        &authority,
-    ))
+    Ok(resource_output(event, call, reservation, output))
 }
 
 fn authorize_resource(
@@ -366,28 +373,28 @@ fn resource_opening(
     SessionLease,
     RequestAuthorization,
 )> {
-    let opening_budget = {
-        let mut openings = state.openings.lock().unwrap();
+    let (opening_budget, session) = {
+        let openings = state.openings.lock().unwrap();
         let opening = openings
-            .get_mut(session_id)
+            .get(session_id)
             .ok_or_else(|| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
-        if opening.authority.identity != authority.identity || !opening.session.is_live() {
+        if opening.identity != authority.identity {
             return Err(refusal(StatusCode::UNAUTHORIZED, "invalid_credential"));
         }
-        opening.authority = authority.clone();
-        opening.budget.clone()
+        (opening.budget.clone(), opening.session.clone())
     };
     let caller = VerifiedCaller::verified_http(
         authority.identity.clone(),
         authority.deadline,
         authority.live.clone(),
     );
-    let (session, request_authorization) = state
+    let (resumed, request_authorization) = state
         .execution
         .sessions()
         .resume_with_request_authority(caller, session_id)
         .map_err(|_| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
-    Ok((opening_budget, session, request_authorization))
+    debug_assert!(resumed.opening().is(session.opening()));
+    Ok((opening_budget, resumed, request_authorization))
 }
 
 async fn execute_resource(
@@ -428,15 +435,17 @@ fn resource_output(
     call: crate::execution::Call,
     reservation: Arc<super::limits::BufferReservation>,
     output: super::listener::OutputAuthority,
-    session: SessionLease,
-    authority: &VerifiedAuthority,
 ) -> Response {
-    let output_session = session;
-    let deadline = authority.deadline;
-    let request_live = authority.live.clone();
+    let authorization = call.context().authorization();
+    let cancellation = call.context().cancellation();
+    let opening = call.context().session().opening().clone();
+    let deadline = authorization
+        .deadline()
+        .expect("verified HTTP request authorization has a deadline");
     let ticket = output.bind(
-        Arc::new(move || output_session.opening().is_open() && request_live()),
+        Arc::new(move || !cancellation.is_cancelled() && authorization.is_valid()),
         Arc::new(move || deadline),
+        opening,
     );
     let bytes = bytes::Bytes::from_owner(ResourceBytes {
         event,
@@ -539,19 +548,26 @@ async fn close_session(
     if let Err(error) = authority.ensure_scope("bridge:read") {
         return auth_refusal(error);
     }
-    let removed = {
-        let mut openings = state.openings.lock().unwrap();
+    let session = {
+        let openings = state.openings.lock().unwrap();
         match openings.get(&session_id) {
-            Some(opening) if opening.authority.identity == authority.identity => {
-                openings.remove(&session_id)
+            Some(opening) if opening.identity == authority.identity => {
+                Some(opening.session.clone())
             }
             _ => None,
         }
     };
-    let Some(opening) = removed else {
+    let Some(session) = session else {
         return refusal(StatusCode::NOT_FOUND, "not_found");
     };
-    state.execution.sessions().close(&opening.session);
+    state.execution.sessions().close(&session);
+    let mut openings = state.openings.lock().unwrap();
+    let exact = openings
+        .get(&session_id)
+        .is_some_and(|current| current.session.opening().is(session.opening()));
+    if exact {
+        openings.remove(&session_id);
+    }
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -565,6 +581,9 @@ async fn open_session(
     State(state): State<HttpState>,
     request: Request<axum::body::Body>,
 ) -> Response {
+    if !state.accepting.load(Ordering::SeqCst) {
+        return refusal(StatusCode::UNAUTHORIZED, "invalid_credential");
+    }
     let bearer = match bearer(request.headers()) {
         Some(bearer) => bearer,
         None => return refusal(StatusCode::UNAUTHORIZED, "invalid_credential"),
@@ -609,17 +628,17 @@ async fn open_session(
     }
 
     state.reap_ended();
-    let mut openings = state.openings.lock().unwrap();
-    if openings.len() >= MAX_OPENINGS {
-        return refusal(StatusCode::TOO_MANY_REQUESTS, "overloaded");
-    }
-    if openings
-        .values()
-        .filter(|opening| opening.authority.identity.family_id == authority.identity.family_id)
-        .count()
-        >= MAX_FAMILY_OPENINGS
     {
-        return refusal(StatusCode::TOO_MANY_REQUESTS, "overloaded");
+        let openings = state.openings.lock().unwrap();
+        if openings.len() >= MAX_OPENINGS
+            || openings
+                .values()
+                .filter(|opening| opening.identity.family_id == authority.identity.family_id)
+                .count()
+                >= MAX_FAMILY_OPENINGS
+        {
+            return refusal(StatusCode::TOO_MANY_REQUESTS, "overloaded");
+        }
     }
     let caller = VerifiedCaller::verified_http(
         authority.identity.clone(),
@@ -629,6 +648,22 @@ async fn open_session(
     let session = match state.execution.sessions().open(caller) {
         Ok(session) => session,
         Err(_) => return refusal(StatusCode::UNAUTHORIZED, "invalid_credential"),
+    };
+    let response_caller = VerifiedCaller::verified_http(
+        authority.identity.clone(),
+        authority.deadline,
+        authority.live.clone(),
+    );
+    let response_authorization = match state
+        .execution
+        .sessions()
+        .resume_with_request_authority(response_caller, session.id())
+    {
+        Ok((_, authorization)) => authorization,
+        Err(_) => {
+            state.execution.sessions().close(&session);
+            return refusal(StatusCode::UNAUTHORIZED, "invalid_credential");
+        }
     };
     #[cfg(test)]
     if let Some(observer) = state.open_observer.lock().unwrap().clone() {
@@ -662,21 +697,42 @@ async fn open_session(
             "durable_events": false,
         },
     });
-    openings.insert(
-        session_id,
-        MountedOpening {
-            session: session.clone(),
-            _generation: generation,
-            authority: authority.clone(),
-            budget: Arc::new(super::limits::OpeningBudget::default()),
-        },
-    );
-    drop(openings);
-    let output_session = session;
-    let deadline = authority.deadline;
+    let publish_error = {
+        let mut openings = state.openings.lock().unwrap();
+        if !state.accepting.load(Ordering::SeqCst) {
+            Some(refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))
+        } else if openings.len() >= MAX_OPENINGS
+            || openings
+                .values()
+                .filter(|opening| opening.identity.family_id == authority.identity.family_id)
+                .count()
+                >= MAX_FAMILY_OPENINGS
+        {
+            Some(refusal(StatusCode::TOO_MANY_REQUESTS, "overloaded"))
+        } else {
+            openings.insert(
+                session_id,
+                MountedOpening {
+                    session: session.clone(),
+                    _generation: generation,
+                    identity: authority.identity.clone(),
+                    budget: Arc::new(super::limits::OpeningBudget::default()),
+                },
+            );
+            None
+        }
+    };
+    if let Some(error) = publish_error {
+        state.execution.sessions().close(&session);
+        return error;
+    }
+    let deadline = response_authorization
+        .deadline()
+        .expect("verified HTTP opening authorization has a deadline");
     let ticket = output.bind(
-        Arc::new(move || output_session.is_live()),
+        Arc::new(move || response_authorization.is_valid()),
         Arc::new(move || deadline),
+        session.opening().clone(),
     );
     let encoded = match serde_json::to_vec(&response) {
         Ok(encoded) => encoded,
@@ -983,19 +1039,16 @@ mod tests {
                     if self.b_fixed_lifetime.is_none() {
                         if let Some(deadline) = &self.b_deadline {
                             let mut deadline = deadline.lock().unwrap();
-                            authority.deadline = *deadline
-                                .get_or_insert_with(|| Instant::now() + self.b_lifetime);
+                            authority.deadline =
+                                *deadline.get_or_insert_with(|| Instant::now() + self.b_lifetime);
                         }
                     }
                     Ok(authority)
                 }
                 "grant-b-expiring" => {
                     let lifetime = self.b_fixed_lifetime.ok_or(AuthError::InvalidCredential)?;
-                    let mut authority = pair_authority(
-                        self.b_live.clone(),
-                        self.family_live.clone(),
-                        lifetime,
-                    );
+                    let mut authority =
+                        pair_authority(self.b_live.clone(), self.family_live.clone(), lifetime);
                     if let Some(deadline) = &self.b_deadline {
                         let mut deadline = deadline.lock().unwrap();
                         authority.deadline =
@@ -1942,15 +1995,16 @@ mod tests {
         })
         .await
         .unwrap();
-        let (closed_early, close_done_rx) = tokio::task::spawn_blocking(move || {
-            match close_done_rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                Ok(()) => (true, None),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (false, Some(close_done_rx)),
-                Err(error) => panic!("close completion channel failed: {error}"),
-            }
-        })
-        .await
-        .unwrap();
+        let (closed_early, close_done_rx) =
+            tokio::task::spawn_blocking(move || {
+                match close_done_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                    Ok(()) => (true, None),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (false, Some(close_done_rx)),
+                    Err(error) => panic!("close completion channel failed: {error}"),
+                }
+            })
+            .await
+            .unwrap();
         poll_release_tx.send(()).unwrap();
         let (result, mut io) = polling.await.unwrap();
         if let Some(close_done_rx) = close_done_rx {
@@ -1963,7 +2017,10 @@ mod tests {
             .unwrap();
         }
         closing.await.unwrap();
-        assert!(!closed_early, "close must wait for the one synchronous poll");
+        assert!(
+            !closed_early,
+            "close must wait for the one synchronous poll"
+        );
         assert_eq!(
             result.unwrap(),
             if matches!(kind, GatedPollKind::Write) {
@@ -2209,15 +2266,16 @@ mod tests {
         })
         .await
         .unwrap();
-        let (closed_early, close_done_rx) = tokio::task::spawn_blocking(move || {
-            match close_done_rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                Ok(()) => (true, None),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (false, Some(close_done_rx)),
-                Err(error) => panic!("close completion channel failed: {error}"),
-            }
-        })
-        .await
-        .unwrap();
+        let (closed_early, close_done_rx) =
+            tokio::task::spawn_blocking(move || {
+                match close_done_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                    Ok(()) => (true, None),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (false, Some(close_done_rx)),
+                    Err(error) => panic!("close completion channel failed: {error}"),
+                }
+            })
+            .await
+            .unwrap();
         poll_release_tx.send(()).unwrap();
         let (written, mut gated_io) = writing.await.unwrap();
         if let Some(close_done_rx) = close_done_rx {
@@ -2230,7 +2288,10 @@ mod tests {
             .unwrap();
         }
         closing.await.unwrap();
-        assert!(!closed_early, "close must wait for the one synchronous poll");
+        assert!(
+            !closed_early,
+            "close must wait for the one synchronous poll"
+        );
         assert_eq!(written.unwrap(), expected);
         assert_eq!(
             gated_io.write(&[0]).await.unwrap_err().kind(),

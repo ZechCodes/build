@@ -148,8 +148,8 @@ it("merges stronger markers from an older read independently of ordinary fields"
 
 it("requires revalidation when stronger marks arrive with an older content snapshot", async () => {
   const older = await open({}, 1);
-  await land(await open(query, 3), page([row("task-1", { updated_at: "2026-10-29T13:00:00Z", read_through: "tc-01", unread_count: 5 })]));
-  await land(older, page([row("task-1", { updated_at: "2026-10-29T12:00:00Z", read_through: "tc-03", unread_count: 0 })]));
+  await land(await open(query, 3), page([row("task-1", { watched: true, updated_at: "2026-10-29T13:00:00Z", read_through: "tc-01", unread_count: 5 })]));
+  await land(older, page([row("task-1", { watched: true, updated_at: "2026-10-29T12:00:00Z", read_through: "tc-03", unread_count: 0 })]));
   const held = await summaries.readSummaryQuery(scope, query);
   expect(held.tasks[0]).toMatchObject({ read_through: "tc-03", unread_count: 5 });
   expect(held.stale).toBe(true);
@@ -158,8 +158,8 @@ it("requires revalidation when stronger marks arrive with an older content snaps
 it("retains newer rows and marker authority when an older page enters another query", async () => {
   const other = { states: ["closed"] };
   const older = await open(other, 1);
-  await land(await open(query, 3), page([row("task-1", { title: "new", read_through: "tc-03", watch_started_after: "te-02", dismissed_through: "te-04", unread_count: 0 })]));
-  await land(older, page([row("task-1", { title: "old", read_through: "tc-01", unread_count: 7 })]));
+  await land(await open(query, 3), page([row("task-1", { watched: true, title: "new", read_through: "tc-03", watch_started_after: "te-02", dismissed_through: "te-04", unread_count: 0 })]));
+  await land(older, page([row("task-1", { watched: true, title: "old", read_through: "tc-01", unread_count: 7 })]));
   expect((await summaries.readSummaryQuery(scope, other)).tasks[0]).toMatchObject({ title: "new", read_through: "tc-03", dismissed_through: "te-04", unread_count: 0 });
 });
 
@@ -216,8 +216,8 @@ it("fences late pages with an immediate write while retaining query metadata for
 });
 
 it("preserves marker and unread floors even when a later dispatched read carries older marks", async () => {
-  await land(await open(), page([row("task-1", { read_through: "tc-03", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 })]));
-  await land(await open(query, 2), page([row("task-1", { read_through: "tc-01", unread_count: 5, unread_mentions: 1, unread_agent_comments: 3 })]));
+  await land(await open(), page([row("task-1", { watched: true, read_through: "tc-03", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 })]));
+  await land(await open(query, 2), page([row("task-1", { watched: true, read_through: "tc-01", unread_count: 5, unread_mentions: 1, unread_agent_comments: 3 })]));
   expect((await summaries.readSummaryQuery(scope, query)).tasks[0]).toMatchObject({ read_through: "tc-03", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 });
 });
 

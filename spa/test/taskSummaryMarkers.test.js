@@ -18,7 +18,8 @@ beforeEach(async () => {
 
 it.each(["", " ", "\u0000", "withoutprefix", "other-a-b", "tc-\u{10000}"])(
   "retains exact present opaque floor %j across a later absent response", async (mark) => {
-    await land(1, row(mark, 0)); await land(2, row(null, 9));
+    await land(1, { ...row(mark, 0), watched: true });
+    await land(2, { ...row(null, 9), watched: true });
     const task = (await summaries.readSummaryQuery(scope, {})).tasks[0];
     for (const field of fields) expect(task[field]).toBe(mark);
     expect(task.unread_count).toBe(0);
@@ -27,9 +28,9 @@ it.each(["", " ", "\u0000", "withoutprefix", "other-a-b", "tc-\u{10000}"])(
 
 it.each([["tc-a-b", "te-a-c"], ["tc-\ue000", "te-\u{10000}"], [null, ""]])(
   "advances canonical suffix floor %j to %j independently of dispatch order", async (before, after) => {
-    await land(3, row(before, 7));
+    await land(3, { ...row(before, 7), watched: true });
     const ticket = await summaries.beginSummaryQuery(scope, { states: ["open"] }, 1);
-    await summaries.landSummaryPage(ticket, { summary: true, basis: "B3", tasks: [row(after, 0)] }, { read: 1 });
+    await summaries.landSummaryPage(ticket, { summary: true, basis: "B3", tasks: [{ ...row(after, 0), watched: true }] }, { read: 1 });
     const task = (await summaries.readSummaryQuery(scope, {})).tasks[0];
     for (const field of fields) expect(task[field]).toBe(after);
     expect(task.unread_count).toBe(0);
@@ -53,17 +54,17 @@ it("selects the counters whose combined read/watch floor covers crossed fields",
 });
 
 it("requires refresh when retaining older counters against a newer content snapshot", async () => {
-  await land(1, { ...row("tc-20", 1), updated_at: "2026-10-29T00:00:01Z" });
-  await land(2, { ...row("tc-10", 4), updated_at: "2026-10-29T00:00:02Z" });
+  await land(1, { watched: true, ...row("tc-20", 1), updated_at: "2026-10-29T00:00:01Z" });
+  await land(2, { watched: true, ...row("tc-10", 4), updated_at: "2026-10-29T00:00:02Z" });
   const held = await summaries.readSummaryQuery(scope, {});
   expect(held.tasks[0].unread_count).toBe(1);
   expect(held.stale).toBe(true);
 });
 
 it("keeps attention counter authority separate from the newer watch floor", async () => {
-  await land(1, { ...row(null, 2), read_through: "tc-20", watch_started_after: "te-05",
+  await land(1, { watched: true, ...row(null, 2), read_through: "tc-20", watch_started_after: "te-05",
     unread_mentions: 0, unread_agent_comments: 0, updated_at: "2026-10-29T00:00:01Z" });
-  await land(2, { ...row(null, 0), read_through: "tc-10", watch_started_after: "te-30",
+  await land(2, { watched: true, ...row(null, 0), read_through: "tc-10", watch_started_after: "te-30",
     unread_mentions: 3, unread_agent_comments: 3, updated_at: "2026-10-29T00:00:02Z" });
   const held = await summaries.readSummaryQuery(scope, {});
   expect(held.tasks[0]).toMatchObject({ read_through: "tc-20", watch_started_after: "te-30",

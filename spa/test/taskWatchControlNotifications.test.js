@@ -120,3 +120,25 @@ it.each(["session", "context"])("does not carry an eligible trailing control hin
   await Promise.all([...state.completedReads]);
   expect(state.call).toHaveBeenCalledTimes(1);
 });
+
+it.each(["current control", "new-session refresh"])("preserves legitimate queued demand from a %s", async (demand) => {
+  const state = await conditionalFeed(1, true);
+  let resolve;
+  state.call.mockImplementationOnce(() => new Promise((yes) => { resolve = yes; }))
+    .mockImplementation(async () => ({ task: state.rows[0], timeline: [] }));
+  state.setState(eligible);
+  await state.hint("first-read");
+  await vi.waitFor(() => expect(state.call).toHaveBeenCalledTimes(1));
+  state.setState({ ...eligible, watchEpoch: "second-eligible-epoch" });
+  await state.hint("trailing-hint");
+  await vi.waitFor(() => expect(state.read).toHaveBeenCalledTimes(2));
+  await state.read.mock.results[1].value;
+  if (demand === "new-session refresh") {
+    lifetime.session = "replacement-session";
+    await feed.refresh(state.rows[0].id);
+  }
+  resolve({ task: state.rows[0], timeline: [] });
+  await state.completedReads[0];
+  await Promise.all([...state.completedReads]);
+  expect(state.call).toHaveBeenCalledTimes(2);
+});

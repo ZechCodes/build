@@ -31,6 +31,8 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   const refreshRequested = new Set();
   const refreshTasks = new Map(); // explicitly refreshed tasks can leave the active filter
   const attempted = new Map(); // one failed or stale response per list version
+  const controlReadOrigins = new Map(); // admitted id -> queued control owner
+  const normalReadDemand = new Set();
   let signature = null;
   let generation = 0;
   let readSerial = 0;
@@ -93,6 +95,9 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   }
 
   async function fetchDetail(id) {
+    const origin = controlReadOrigins.get(id);
+    controlReadOrigins.delete(id); normalReadDemand.delete(id);
+    if (origin && !currentControlOwner(origin)) return;
     const version = versionOf(taskForRead(id));
     const context = contextFor(deviceId), identity = deviceContextIdentity(deviceId), session = deviceSession(deviceId);
     const acceptsOwner = () => !disposed && contextFor(deviceId) === context && deviceContextIdentity(deviceId) === identity
@@ -114,9 +119,18 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
    * its timeline. Ask after that response even at the same task version;
    * an outstanding read trails once and retains the mutation read fence. */
   function refresh(id, task = null) {
+    return queueRefresh(id, task, null);
+  }
+
+  function queueRefresh(id, task, origin) {
     if (disposed || !callRpc) return;
     if (task?.id === id) refreshTasks.set(id, task);
     if (!taskForRead(id)) return;
+    if (origin) {
+      if (!normalReadDemand.has(id)) controlReadOrigins.set(id, origin);
+    } else {
+      normalReadDemand.add(id); controlReadOrigins.delete(id);
+    }
     if (active.has(id)) return startRead(id);
     refreshRequested.add(id);
     pending.set(id, versionOf(taskForRead(id)));
@@ -137,6 +151,7 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     }
     const version = versionOf(task);
     if (attempted.get(id) === attemptKey(id, detail)) return;
+    normalReadDemand.add(id); controlReadOrigins.delete(id);
     pending.set(id, version);
     pump();
   }
@@ -184,7 +199,7 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
       lastControlHint = hint;
       // The existing queue owns admission and its four-read bound. A control
       // notification never adds a task which this mounted feed did not admit.
-      for (const id of listed.keys()) refresh(id);
+      for (const id of listed.keys()) queueRefresh(id, null, owner);
     } catch { /* Unknown eligibility is not a reason to retry or ask the wire. */ }
   }
 
@@ -228,6 +243,7 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
         refreshRequested.delete(id);
       }
       attempted.delete(id);
+      controlReadOrigins.delete(id); normalReadDemand.delete(id);
       removed = true;
     }
     listed.clear();
@@ -247,6 +263,7 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
       pending.clear();
       refreshRequested.clear();
       refreshTasks.clear();
+      controlReadOrigins.clear(); normalReadDemand.clear();
       unsubscribe();
       stopControl();
       stopControlLifetime();

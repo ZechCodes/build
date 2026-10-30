@@ -586,7 +586,7 @@ export function mountTaskPage(host, options) {
       const hint = JSON.stringify([watch.controlGeneration, watch.watchEpoch]);
       if (hint === lastWatchControlHint) return;
       lastWatchControlHint = hint;
-      void refresh();
+      void refreshFromWatchControl(owner);
     } catch { /* A failed/unknown eligibility check admits no read or retry. */ }
   }
   function bindWatchControl() {
@@ -668,13 +668,29 @@ export function mountTaskPage(host, options) {
    *  read begun before it. A write awaiting this while a read is out settles
    *  with the read after it, so the page paints what was written. */
   let taskReads = null;
+  let queuedControlRead = null, normalReadDemand = false;
   function refresh() {
+    normalReadDemand = true;
+    return requestTaskRead();
+  }
+  function refreshFromWatchControl(owner) {
+    if (!normalReadDemand) queuedControlRead = owner;
+    return requestTaskRead();
+  }
+  function requestTaskRead() {
     taskReads ||= trailingRead(readTask, { generationOf: () => deviceSession(state.deviceId) });
     return taskReads();
   }
+  function consumeTaskReadDemand() {
+    // A trailing control hint keeps the session which admitted it. Ordinary
+    // invalidation demand remains valid through the existing read owner.
+    const control = queuedControlRead, normal = normalReadDemand;
+    queuedControlRead = null; normalReadDemand = false;
+    return !state.disposed && (normal || !control || control.accept());
+  }
 
   async function readTask() {
-    if (state.disposed) return;
+    if (!consumeTaskReadDemand()) return;
     const uncertainty = taskFullRefreshKey(state.task, contentHeader);
     if (uncertainty) attemptedFullRefresh = uncertainty;
     const authority = captureTaskAction(state);

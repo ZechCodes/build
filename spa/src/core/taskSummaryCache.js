@@ -103,9 +103,13 @@ function pageRow(held, task, read, basis) {
   const oldAuthority = older && value.watch_read_order !== read;
   const source = oldAuthority ? held?.task : incoming;
   const mixed = changedBasisAuthority(held, basis, source, value.task);
-  const uncertain = mixed || oldAuthority && held?.basis_uncertain === true;
+  // A current watch header does not certify the ordinary content retained
+  // by a newer timestamp/read. Keep that merge uncertain until content wins.
+  const uncertain = mixed || retainedOrdinaryBasis(held, older, value.watch_read_order === read);
   return { ...value, basis: uncertain ? undefined : oldAuthority ? held?.basis : basis, basis_uncertain: uncertain };
 }
+
+const retainedOrdinaryBasis = (held, older, currentWatch) => older && (currentWatch || held?.basis_uncertain === true);
 
 const changedBasisAuthority = (held, basis, source, next) => Boolean(held && held.basis !== basis && authorityDiffers(source, next));
 const authorityDiffers = (before, after) => ["read_through", "dismissed_through"]

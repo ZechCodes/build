@@ -55,7 +55,8 @@ it("accepts a newer-read current watch lineage while preserving future-dated ord
   await seed(task({ title: "Future body", updated_at: "2027-10-29T12:00:00Z" }));
   await land(fresh(), "fresh-basis");
   expect((await value(summaries.summaryAddress(scope, id))).task).toMatchObject({ title: "Future body", watch_started_after: freshFloor, unread_count: 2 });
-  expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ stale: false, basis: "fresh-basis" });
+  expect(await value(summaries.summaryAddress(scope, id))).toMatchObject({ needs_unread_refresh: false, basis_uncertain: true });
+  expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ complete: true, stale: true, basis: "fresh-basis" });
 });
 
 it("fills missing new-session counter families from a covering summary beneath a future body timestamp", async () => {
@@ -66,7 +67,8 @@ it("fills missing new-session counter families from a covering summary beneath a
   await land(fresh(), "complete-current-session");
   expect((await value(summaries.summaryAddress(scope, id))).task).toMatchObject({ title: "Future body",
     watch_started_after: freshFloor, unread_count: 2, unread_mentions: 1, unread_agent_comments: 2 });
-  expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ stale: false, basis: "complete-current-session" });
+  expect(await value(summaries.summaryAddress(scope, id))).toMatchObject({ needs_unread_refresh: false, basis_uncertain: true });
+  expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ complete: true, stale: true, basis: "complete-current-session" });
 });
 
 it.each([null, ""])("preserves exact current optional watch floor %j and retires missing old-session counters", async (floor) => {

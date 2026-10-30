@@ -315,3 +315,31 @@ zeros. The reverse watch change from `te-30` to `te-05` with read advancing from
 `/tmp/task-900-watch-prior-family1.log`. A separate unchanged-watch-floor control
 still accepts the total at watch floor 30 while retaining attention counters
 paired with the stronger read floor 20, preserving independent family coverage.
+
+### Watch recovery does not certify retained ordinary content
+
+A current watch observation can recover its counters while a newer cached
+ordinary payload remains protected. Such a row retains `basis_uncertain:true`
+and no certified row basis. A newer local watch request never labels retained
+B1 title/status/content as one complete B2 snapshot. This also applies when the
+watch header is unchanged: a Ready-filter page cannot certify its retained
+`status:done` row merely by advancing the watch observation clock.
+
+`taskSummaryMixedBasis.test.js` observes the c78 failure in RED commit
+`980c45624`, with separate single-case artifacts
+`/tmp/task-900-mixed-basis-red.log` and `/tmp/task-900-mixed-watch-red.log`.
+The tests reopen persisted IndexedDB records and accept another still-partial
+snapshot while retaining uncertainty. A later full summary that actually wins
+ordinary-content authority and covers the marks can restore a single basis.
+The future-body watch tests now explicitly distinguish recovered counter
+families (`needs_unread_refresh:false`) from an uncertified combined snapshot
+(`stale:true`). Their prior incorrect `stale:false` expectations were retained
+as observed single-case failures in
+`/tmp/task-900-mixed-prior-future-body.log` and
+`/tmp/task-900-mixed-prior-complete-counters.log` before correction.
+
+`readSummaryQuery.complete` continues to mean that the fetched page chain is
+exhausted. Snapshot certification additionally requires `!stale`, a matching
+row basis, and no mixed-row uncertainty. Exhaustion alone never certifies
+absence: the actual reference resolver keeps an unlisted task unknown, and
+only an explicit bounded point result with `status:missing` can mark it missing.

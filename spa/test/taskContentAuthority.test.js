@@ -1079,3 +1079,54 @@ it("lazily retires superseded protection on an unticketed normalized summary cop
   expect((await cache.readCached(order.taskWatchIntentAddress(scope, "task-1"))).value.latest_watch_intent)
     .toMatchObject({ ownerId: newer.id, disposition: "pending" });
 });
+
+it.each(["blind ABA", "foreign captured blind token", "missing captured pending generation"])(
+  "refuses own watch authority after %s while retaining separately eligible facts", async (interference) => {
+    const tracker = await import("../src/core/trackerCache.js"), watch = await import("../src/core/taskWatchAuthority.js");
+    const { task: wireTask } = await import("./trackerWireFixture.js");
+    const raw = wireTask(task({ watched: false })), target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+    const listRead = await content.captureTaskContentRead(target, { revalidate: "full" });
+    await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([raw], [], listRead.readOrder), { contentRead: listRead });
+    await tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-1", { task: raw, timeline: ["Existing history"] },
+      { contentRead: await content.captureTaskContentRead(address, { revalidate: "full" }) });
+    const owner = await watch.beginTaskWatchMutation(scope, "task-1", { watched: true, metadataOnly: true });
+    const captured = await content.captureTaskContentRead(scope), contentRead = structuredClone(captured);
+    if (interference === "blind ABA") {
+      for (const watched of [true, false]) await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+        tracker.tasksRecord([{ ...raw, watched, watch_started_after: watched ? "te-blind" : null }], []));
+    } else if (interference === "foreign captured blind token") contentRead.ticket.watchBlindRetirementEpoch = "foreign-token";
+    else delete contentRead.ticket.watchPendingGeneration;
+    const answer = { task: { ...raw, title: "Eligible ordinary title", watched: true, read_through: "tc-90",
+      review_summary: { task_id: "task-1", version: 2, status: "open" } } };
+    expect(await watch.settleTaskWatchMutation(owner, { answer, contentRead })).toBe(true);
+    const detail = (await cache.readCached(address)).value;
+    const row = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
+    for (const task of [detail.task, row]) {
+      expect(task).toMatchObject({ watched: false, read_through: "tc-90", review_summary: { version: 2 } });
+      expect(task).not.toHaveProperty("__task_watch_intent");
+      expect(task.__task_watch_cache).toBeUndefined();
+    }
+    expect(detail.timeline).toEqual(["Existing history"]);
+    expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+    expect(await watch.settleTaskWatchMutation(owner, { answer, contentRead })).toBe(false);
+  });
+
+it("refuses an obsolete full watch acknowledgment without clearing a newer same-task owner", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), watch = await import("../src/core/taskWatchAuthority.js");
+  const { task: wireTask } = await import("./trackerWireFixture.js");
+  const raw = wireTask(task({ watched: false })), target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([raw], []));
+  const older = await watch.beginTaskWatchMutation(scope, "task-1", { watched: true, metadataOnly: true });
+  const olderRead = await content.captureTaskContentRead(scope);
+  const newer = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false, metadataOnly: true });
+  const newerRead = await content.captureTaskContentRead(scope);
+  const noteBefore = (await cache.readCached(order.taskWatchIntentAddress(scope, "task-1"))).value;
+  expect(await watch.settleTaskWatchMutation(older, { answer: { task: { ...raw, watched: true } }, contentRead: olderRead })).toBe(false);
+  expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0].watched).toBe(false);
+  expect((await cache.readCached(order.taskWatchIntentAddress(scope, "task-1"))).value).toEqual(noteBefore);
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true, eligible: false });
+  expect(await watch.settleTaskWatchMutation(older, { rollback: true })).toBe(false);
+  expect(await watch.settleTaskWatchMutation(newer, { answer: { task: raw }, contentRead: newerRead })).toBe(true);
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0].watched).toBe(false);
+});

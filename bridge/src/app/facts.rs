@@ -237,6 +237,8 @@ impl AppState {
     /// checkout, each external worktree the last scan found, and each of a
     /// project's original sources, Git or plain.
     pub(in crate::app) fn worktree_roots(&self) -> WorktreeRoots {
+        #[cfg(test)]
+        let _invocation = crate::workspace::warm_work_counts::roots_invocation();
         self.checkout_subjects()
             .into_iter()
             .map(|(id, subject)| (id, subject.root))

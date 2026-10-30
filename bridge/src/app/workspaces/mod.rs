@@ -1435,6 +1435,11 @@ pub(in crate::app) fn same_path(left: &Path, right: &Path) -> bool {
     record_path_comparison();
     #[cfg(test)]
     record_path_canonicalizations(2);
+    #[cfg(test)]
+    {
+        crate::workspace::warm_work_counts::canonicalize(left);
+        crate::workspace::warm_work_counts::canonicalize(right);
+    }
     match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
         (Ok(left), Ok(right)) => left == right,
         _ => left == right,

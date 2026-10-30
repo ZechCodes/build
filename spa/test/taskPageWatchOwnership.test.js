@@ -140,3 +140,35 @@ it("does not let a stale native page acknowledgment clear another connection's n
   await outside.settleTaskWatchMutation(newer, { rollback: true });
   expect(await outside.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0 });
 });
+
+it("coalesces conditional eligible page control hints and unsubscribes after disposal", async () => {
+  const mounted = await mountPage();
+  const cache = await import("../src/core/localCache.js");
+  // Conditional helper-contract fixture only; no persisted known-zero baseline.
+  const read = vi.spyOn(runtime.watch, "readTaskWatchState").mockResolvedValue({ pendingCount: 0,
+    watchEpoch: "eligible-epoch", pendingGeneration: "pending-generation", controlGeneration: "control-generation", uncertain: false, eligible: true });
+  mounted.call.mockImplementation((method) => method === "tasks.get" ? new Promise(() => {}) : response.promise);
+  const address = runtime.watch.taskWatchControlAddress(scope);
+  await cache.writeCached(address, { hint: "settled" });
+  await vi.waitFor(() => expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.get")).toHaveLength(2));
+  for (let index = 0; index < 4; index += 1) await cache.writeCached(address, { hint: index });
+  expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.get")).toHaveLength(2);
+  page.dispose();
+  const readsBefore = read.mock.calls.length;
+  await cache.writeCached(address, { hint: "after-disposal" });
+  expect(read).toHaveBeenCalledTimes(readsBefore);
+  expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.get")).toHaveLength(2);
+});
+
+it("rejects a page eligibility result queued before disposal", async () => {
+  const mounted = await mountPage();
+  const cache = await import("../src/core/localCache.js");
+  let resolve;
+  const read = vi.spyOn(runtime.watch, "readTaskWatchState").mockImplementation(() => new Promise((yes) => { resolve = yes; }));
+  await cache.writeCached(runtime.watch.taskWatchControlAddress(scope), { hint: "queued" });
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  page.dispose();
+  resolve({ pendingCount: 0, watchEpoch: "eligible-epoch", controlGeneration: "control-generation", uncertain: false, eligible: true });
+  await read.mock.results[0].value;
+  expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.get")).toHaveLength(1);
+});

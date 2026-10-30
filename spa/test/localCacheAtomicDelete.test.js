@@ -48,3 +48,31 @@ it("rolls a deletion and companion writes back without announcing success when a
   spy.mockRestore(); stops.forEach((stop) => stop());
   expect(await cache.readCachedMany(addresses)).toEqual(before); expect(announced).not.toHaveBeenCalled();
 });
+
+it("applies duplicate-address put then delete and delete then put in reducer order", async () => {
+  const address = addresses[0];
+  expect(await cache.mergeCachedRecordsTogether([address, address], () => [{ count: 1 }, cache.DELETE_CACHED_RECORD])).toBe(true);
+  expect(await cache.readCached(address)).toBeUndefined();
+  await cache.writeCached(address, { count: 0 });
+  expect(await cache.mergeCachedRecordsTogether([address, address], () => [cache.DELETE_CACHED_RECORD, { count: 2 }])).toBe(true);
+  expect((await cache.readCached(address)).value).toEqual({ count: 2 });
+});
+
+it("preserves duplicate-key ordering for repeated deletes and null interleavings from present and absent baselines", async () => {
+  const drop = cache.DELETE_CACHED_RECORD;
+  const cases = [
+    { steps: [{ count: 1 }, drop], final: undefined, changedAbsent: true },
+    { steps: [drop, { count: 2 }], final: { count: 2 }, changedAbsent: true },
+    { steps: [drop, drop], final: undefined, changedAbsent: false },
+    { steps: [{ count: 1 }, null, drop, null], final: undefined, changedAbsent: true },
+    { steps: [null, drop, null, { count: 2 }], final: { count: 2 }, changedAbsent: true },
+    { steps: [drop, null, drop], final: undefined, changedAbsent: false },
+  ];
+  for (const present of [false, true]) for (const [index, sample] of cases.entries()) {
+    const address = { ...addresses[0], sub: `matrix-${present}-${index}` };
+    if (present) await cache.writeCached(address, { count: 0 });
+    const changed = await cache.mergeCachedRecordsTogether(sample.steps.map(() => address), () => sample.steps);
+    expect(changed).toBe(present || sample.changedAbsent);
+    expect((await cache.readCached(address))?.value).toEqual(sample.final);
+  }
+});

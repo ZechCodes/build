@@ -4893,7 +4893,7 @@ mod binding_resources {
             let caller = &caller;
             let worker = scope.spawn(move || {
                 started.send(()).unwrap();
-                bus.try_subscribe(&caller, spec("cancelled", Kind::State))
+                bus.try_subscribe(caller, spec("cancelled", Kind::State))
             });
             waiting.recv().unwrap();
             request.cancellation().cancel();

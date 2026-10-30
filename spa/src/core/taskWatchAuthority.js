@@ -27,17 +27,20 @@ export function blindTaskWatchChanged(before, after) {
     || !Object.is(before.watch_started_after, after.watch_started_after)));
 }
 
-// An absent replica has no before bytes, but an existing exact same-task
+// An absent or lineage-less replica has no prior boolean, but an exact same-task
 // intent can still receive an older acknowledgment. Only that current binding
 // makes explicit unowned watch paint a blind-interference event.
 export function blindTaskWatchInterference(scope, before, after, context) {
   if (blindTaskWatchChanged(before, after)) return true;
-  if (!explicitColdWatch(before, after) || !positiveWatchPending(context)) return false;
+  if (!explicitUnavailableWatch(before, after) || !positiveWatchPending(context)) return false;
   const protection = selectTaskWatchIntentGuard(scope, after.id, [], context.watchIntentOf?.(after.id), context);
   return Boolean(protection.pending);
 }
 
-const explicitColdWatch = (before, after) => before == null && typeof after?.watched === "boolean";
+function explicitUnavailableWatch(before, after) {
+  if (typeof after?.watched !== "boolean") return false;
+  return before == null || before.id === after.id && typeof before.watched !== "boolean";
+}
 const positiveWatchPending = (context) => Number.isSafeInteger(context?.watchPendingCount) && context.watchPendingCount > 0;
 
 export function retireTaskWatchFacts(task) {

@@ -304,7 +304,7 @@ export function reconcileTaskReadFacts(scope, held, incoming, options = {}) {
   const sources = watchSources(scope, held, incoming, { ...options, watchGuard: guard });
   const selected = newest(sources);
   const fallback = stampedRows(held, guard)[0] || held || (scopedTask(scope, guard) ? guard : undefined);
-  const omitLineage = unavailablePendingLineage(prepared.pending, selected, held, guard);
+  const omitLineage = unavailablePendingLineage(options.contentRead, prepared.pending, selected, held, guard);
   const task = selectedTask(held, incoming, selected, policy, fallback, omitLineage);
   if (task.watched === true) applyFamilies(task, sources, [held, guard, incoming], scope, options.context, policy, selected, fallback);
   return selectedResult(task, selected, options.context, incoming);
@@ -313,7 +313,7 @@ export function reconcileTaskReadFacts(scope, held, incoming, options = {}) {
 const booleanWatchLineage = (task) => typeof task?.watched === "boolean";
 // A current intent supplies protection, never the desired optimistic value.
 // Without a real local lineage the refused wire family stays unavailable.
-const unavailablePendingLineage = (pendingIntent, selected, held, guard) => Boolean(pendingIntent && !selected
+const unavailablePendingLineage = (contentRead, pendingIntent, selected, held, guard) => Boolean(contentRead && pendingIntent && !selected
   && !booleanWatchLineage(held) && !booleanWatchLineage(guard));
 
 // Intent ordering is a local protection fence, never a watch observation. Each

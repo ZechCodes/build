@@ -23,7 +23,7 @@ import { mergeCachedAtomically, mergeCachedRecordsTogether, readCached, readCach
 import { taskUnreadKey, latestTaskMark } from "./trackerUnread.js";
 import { readsAddress } from "./taskReadOrder.js";
 import { mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskContentWrite,
-  taskNeedsFullRefresh, TASK_CONTENT_CACHE, withTaskContentComponents } from "./taskContentAuthority.js";
+  taskNeedsFullRefresh, TASK_CONTENT_CACHE, withTaskContentComponents, acceptsTaskContentRead } from "./taskContentAuthority.js";
 import { summaryTaskReadMutation, withTaskWatchLineage, preserveTaskActionMarks } from "./taskSummaryCache.js";
 const normalizedAddress = (deviceId, projectId, taskId) => ({ deviceId, entityId: projectId, kind: "tracker-summary", sub: taskId });
 
@@ -422,22 +422,58 @@ export const readTasksCached = (deviceId, projectId) => readListCached(tasksAddr
 export const readTasksQueryCached = (deviceId, projectId, params) =>
   readListCached(tasksQueryAddress(deviceId, projectId, params));
 
-function contentList(held, record, address, context, written) {
+function contentList(held, record, address, context, written, contentRead) {
+  if (contentRead) record = { ...record, read_order: contentRead.readOrder };
+  const admitsMembership = contentRead === undefined || acceptsTaskContentRead(contentRead, { context, address, heldWritten: written });
+  if (!admitsMembership && !held) return null;
   const old = new Map((held?.tasks || []).map((task) => [task.id, task]));
-  const results = (record.tasks || []).map((task) => reconcileTaskContentWrite(old.get(task.id), task,
-    { context, address, heldWritten: written }));
-  const kept = new Set((record.tasks || []).map((task) => task.id));
-  const removed = (held?.tasks || []).some((task) => !kept.has(task.id));
-  return { record: preserveListSummaries(held, { ...record, tasks: results.flatMap((result, index) => result.task ? [withTaskContentComponents(record.tasks[index], result.task)] : []) }),
+  const incoming = (record.tasks || []).filter((task) => admitsMembership || old.has(task.id));
+  const results = incoming.map((task) => reconcileTaskContentWrite(old.get(task.id),
+    contentRead ? observeTaskContent(task, { contentRead, coverage: "full" }) : task, { context, address, heldWritten: written }));
+  const rows = results.flatMap((result, index) => result.task ? [withTaskContentComponents(incoming[index], result.task)] : []);
+  return selectedListRecord(held, record, rows, results, admitsMembership);
+}
+
+function selectedListRecord(held, record, rows, results, admitsMembership) {
+  const byId = new Map(rows.map((task) => [task.id, task]));
+  const tasks = admitsMembership ? rows : held.tasks.map((task) => byId.get(task.id) || task);
+  const removed = admitsMembership && (held?.tasks || []).some((task) => !byId.has(task.id));
+  return { record: preserveListSummaries(held, { ...(admitsMembership ? record : held), tasks }),
     retire: removed || results.some((result) => result.retired) };
 }
 
-function writeContentList(deviceId, projectId, address, record, { accept = () => true } = {}) {
-  return mergeTaskContentRecordsTogether({ deviceId, projectId }, [address], ([held], context) => {
+function writeContentLists(deviceId, projectId, entries, accept) {
+  return mergeTaskContentRecordsTogether({ deviceId, projectId }, entries.map(({ address }) => address), (held, context) => {
     if (!accept()) return null;
-    const next = contentList(held?.value, record, address, context, recordWriteOf(held));
-    return { values: [next.record], retire: next.retire };
+    const results = entries.map(({ address, record, contentRead }, index) => contentList(held[index]?.value, record,
+      address, context, recordWriteOf(held[index]), contentRead));
+    return { values: results.map((result) => result?.record || null), retire: results.some((result) => result?.retire) };
   });
+}
+
+function writeContentList(deviceId, projectId, address, record, { accept = () => true, contentRead } = {}) {
+  return writeContentLists(deviceId, projectId, [{ address, record, contentRead }], accept);
+}
+
+/** The pane's existing query/catalogue replicas publish under one old scope
+ * fence, so the first accepted removal cannot revoke the second one's ticket. */
+export function writeTaskListRecords(deviceId, projectId, entries, { accept = () => true } = {}) {
+  validateListPublications(deviceId, projectId, entries);
+  return writeContentLists(deviceId, projectId, entries, accept);
+}
+
+const localListAddress = (address, deviceId, projectId) => address?.deviceId === deviceId
+  && address.entityId === String(projectId) && [TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND].includes(address.kind);
+
+function validateListPublications(deviceId, projectId, entries) {
+  if (!Array.isArray(entries) || entries.length < 1 || entries.length > 2) throw new Error("Expected one or two task list replicas");
+  const keys = new Set();
+  for (const { address, contentRead } of entries) {
+    if (!localListAddress(address, deviceId, projectId)) throw new Error("Foreign task list publication");
+    const key = JSON.stringify([address.kind, address.sub || ""]);
+    if (keys.has(key) || !contentRead) throw new Error("Expected distinct addressed task list captures");
+    keys.add(key);
+  }
 }
 
 export const writeTasksRecord = (deviceId, projectId, record, options) =>

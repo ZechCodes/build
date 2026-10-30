@@ -88,6 +88,13 @@ function validObservation(observation, context, address, heldWritten) {
   return !sameAddress(read.address, address) || read.written === heldWritten;
 }
 
+/** Whole-record membership requires its own exact addressed capture. The
+ * more permissive per-row header rule cannot establish a list's absence. */
+export function acceptsTaskContentRead(contentRead, { context, address, heldWritten }) {
+  return Boolean(sameAddress(contentRead?.address, address)
+    && validObservation({ contentRead }, context, address, heldWritten));
+}
+
 const sameLifetime = (metadata, context) => metadata.storeGeneration === context?.storeGeneration
   && metadata.scopeGeneration === context?.scopeGeneration;
 const proofOf = (task, component, context) => sameLifetime(cacheOf(task), context) ? cacheOf(task)[component] : undefined;

@@ -20,9 +20,10 @@ afterEach(() => { for (const runtime of runtimes) runtime.db.close(); });
 
 async function runtime() {
   vi.resetModules();
-  const [cache, pages, tracker, watch] = await Promise.all([
+  const [cache, pages, tracker, watch, content] = await Promise.all([
     import("../src/core/localCache.js"), import("../src/core/trackerPages.js"),
     import("../src/core/trackerCache.js"), import("../src/core/taskWatchAuthority.js"),
+    import("../src/core/taskContentAuthority.js"),
   ]);
   let db;
   const opened = await cache.transactWriteOperations("readonly", ({ records }) => { db = records.transaction.db; });
@@ -32,7 +33,7 @@ async function runtime() {
     expect(pages).not.toBe(previous.pages); expect(watch).not.toBe(previous.watch);
     expect(db.name).toBe(previous.db.name);
   }
-  const result = { cache, pages, tracker, watch, db };
+  const result = { cache, pages, tracker, watch, content, db };
   runtimes.push(result);
   return result;
 }
@@ -123,4 +124,61 @@ it("keeps a newer filtered row in the span crossed by an older empty page", asyn
   expect(calls).toBe(2);
   expect((await savedRows(api, address)).map((task) => task.number)).toEqual([20, 4]);
   expect((await savedRows(api, address))[0].read_through).toBe("tc-20");
+});
+
+async function taskReplicas(api) {
+  const kinds = new Set(["tracker-task", "tracker-tasks", "tracker-tasks-query", "tracker-tasks-page", "tracker-summary"]);
+  const addresses = (await api.cache.cachedAddresses({ deviceId: scope.deviceId, entityId: scope.projectId }))
+    .filter((address) => kinds.has(address.kind));
+  const records = await Promise.all(addresses.map(async (address) => ({ address, record: await api.cache.readCached(address) })));
+  return records.filter(({ record }) => record?.value?.task?.id === "task-20"
+    || record?.value?.tasks?.some((task) => task.id === "task-20"));
+}
+const taskFrom = ({ record }) => record.value.task || record.value.tasks.find((task) => task.id === "task-20");
+
+it("settles the transported page owner while refusing foreign and obsolete owners on the same folded replica", async () => {
+  const initiating = await runtime();
+  const detail = initiating.tracker.taskAddress(scope.deviceId, scope.projectId, "task-20");
+  const detailRead = await initiating.content.captureTaskContentRead(detail, { revalidate: "full" });
+  await initiating.tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-20",
+    initiating.tracker.taskRecord(row(), []), { contentRead: detailRead });
+  expect(await pull(initiating, async () => ({ tasks: [row()] }))).toBe(true);
+  const ownerA = await initiating.watch.beginTaskWatchMutation(scope, "task-20", { watched: false });
+  const contentRead = await initiating.content.captureTaskContentRead(scope);
+  const answer = { task: row(20, { watched: false, title: "Earlier acknowledgment title" }) };
+  const outside = await runtime();
+  expect(await pull(outside, async () => ({ tasks: [row(20, { title: "Newer page title" })] }))).toBe(true);
+  expect((await savedRows(outside))[0]).toMatchObject({ watched: false, __task_watch_intent: ownerA.id });
+  const before = await taskReplicas(outside), pendingA = await outside.watch.readTaskWatchState(scope);
+  const foreign = { ...ownerA, id: "foreign-owner" };
+  expect(await outside.watch.settleTaskWatchMutation(foreign, { answer, contentRead })).toBe(false);
+  expect(await taskReplicas(outside)).toEqual(before);
+  expect(await outside.watch.readTaskWatchState(scope)).toEqual(pendingA);
+  expect((await savedRows(outside))[0].__task_watch_intent).toBe(ownerA.id);
+
+  // Committing eligible action data does not certify the unknown baseline or
+  // a full canonical receipt. Inspect exact stamp cleanup and state separately.
+  await outside.watch.settleTaskWatchMutation(ownerA, { answer, contentRead });
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect((await savedRows(outside))[0]).toMatchObject({ watched: false, title: "Newer page title" });
+  const settled = await taskReplicas(outside);
+  expect(settled.some(({ address }) => address.kind === "tracker-task")).toBe(true);
+  expect(settled.some(({ address }) => address.kind === "tracker-summary")).toBe(true);
+  for (const copy of settled) {
+    expect(taskFrom(copy).__task_watch_intent).toBeUndefined();
+    expect(taskFrom(copy)[outside.watch.TASK_WATCH_CACHE]?.uncertain).not.toBe(false);
+  }
+
+  const ownerB = await outside.watch.beginTaskWatchMutation(scope, "task-20", { watched: true });
+  expect(await pull(outside, async () => ({ tasks: [row(20, { watched: false, title: "Latest page title" })] }))).toBe(true);
+  expect((await savedRows(outside))[0]).toMatchObject({ watched: true, __task_watch_intent: ownerB.id });
+  const replacement = await taskReplicas(outside), pendingB = await outside.watch.readTaskWatchState(scope);
+  expect(await initiating.watch.settleTaskWatchMutation(ownerA, { answer, contentRead })).toBe(false);
+  expect(await taskReplicas(outside)).toEqual(replacement);
+  expect(await outside.watch.readTaskWatchState(scope)).toEqual(pendingB);
+  expect((await savedRows(outside))[0].__task_watch_intent).toBe(ownerB.id);
+  expect(await outside.watch.settleTaskWatchMutation(ownerB, { rollback: true })).toBe(true);
+  expect((await savedRows(outside))[0]).toMatchObject({ watched: false, title: "Latest page title" });
+  expect((await savedRows(outside))[0].__task_watch_intent).toBeUndefined();
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
 });

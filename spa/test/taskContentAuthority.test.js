@@ -765,3 +765,22 @@ it("keeps an exhausted empty summary query uncertified while shared watch coordi
   await watch.settleTaskWatchMutation(owner, { rollback: true });
   expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ complete: true, stale: true });
 });
+
+it("retires only the independent watch fence when a blind list rewrite changes watch lineage", async () => {
+  const tracker = await import("../src/core/trackerCache.js");
+  const target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  await seededListReplica(target);
+  const before = await content.captureTaskContentRead(scope);
+  const held = await tracker.readTasksRecord(scope.deviceId, scope.projectId);
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { ...held,
+    tasks: held.tasks.map((row) => ({ ...row, watched: true, watch_started_after: "te-blind" })) });
+  const after = await content.captureTaskContentRead(scope);
+  expect(after.ticket.retirementEpoch).toBe(before.ticket.retirementEpoch);
+  expect(after.ticket.watchRetirementEpoch).not.toBe(before.ticket.watchRetirementEpoch);
+  const row = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
+  expect(row).not.toHaveProperty("__task_watch_cache");
+  expect(row).not.toHaveProperty("__task_family_cache");
+  const copied = await tracker.readTasksRecord(scope.deviceId, scope.projectId);
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, copied);
+  expect((await content.captureTaskContentRead(scope)).ticket.watchRetirementEpoch).toBe(after.ticket.watchRetirementEpoch);
+});

@@ -1,6 +1,6 @@
 // Successful task actions update every replica already used by task views.
 // Lists and their per-row read fences move in the same cache transaction.
-import { cachedAddresses, mergeCachedAtomically, mergeCachedRecordsTogether, readCached } from "./localCache.js";
+import { cachedAddresses, mergeCachedAtomically, mergeCachedRecordsTogether, readCached, recordWriteOf } from "./localCache.js";
 import { nextTaskRead, readsAddress, withWritten } from "./taskReadOrder.js";
 import {
   TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TRACKER_TASKS_PAGE_KIND,
@@ -10,29 +10,37 @@ import { filterTasks, sortTasks } from "./trackerFilters.js";
 import { assigneeKey } from "./trackerModel.js";
 import { preserveTaskActionMarks, summaryTaskMutation, withTaskWatchLineage } from "./taskSummaryCache.js";
 
+import { observeTaskContent, reconcileTaskContent, withTaskContentComponents } from "./taskContentAuthority.js";
+
 const listKinds = new Set([TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TRACKER_TASKS_PAGE_KIND]);
 const newer = (held, incoming) => Date.parse(held?.updated_at) > Date.parse(incoming?.updated_at);
 
-function actionTask(held, incoming, read, projection) {
-  const ordinary = newer(held, incoming)
-    ? preserveTaskReviewSummary(held, incoming, { readOrder: read, keepHeld: true, allowMissing: false, baseRow: held }) : incoming;
-  return withTaskWatchLineage({ ...ordinary, read_through: projection.read_through,
+function actionTask(held, incoming, read, projection, options) {
+  const selected = reconcileTaskContent(held, observeTaskContent(incoming, { contentRead: options.contentRead, coverage: "full" }), options);
+  const ordinary = preserveTaskReviewSummary(held, incoming, { readOrder: read, keepHeld: newer(held, incoming),
+    allowMissing: !newer(held, incoming), baseRow: selected.task || held });
+  const task = withTaskWatchLineage({ ...ordinary, read_through: projection.read_through,
     dismissed_through: projection.dismissed_through }, projection);
+  return { task, acceptedBody: selected.acceptedBody };
 }
 
-function detailWithResponse(held, answer, read, projection) {
-  const older = newer(held?.task, answer.task);
-  const task = actionTask(held?.task, answer.task, read, projection);
-  const timeline = !older && Object.hasOwn(answer, "timeline") ? answer.timeline : held?.timeline;
-  const detail = preserveTaskFloors(held, { ...held, task, timeline: timeline || [] });
-  // Retain the legacy helper's PR authority, then reconcile the original raw
-  // action markers and paired counters canonically, including empty markers.
-  const raw = { ...detail.task };
+function detailWithResponse(held, answer, read, projection, options) {
+  const before = held?.task;
+  const selected = actionTask(before, answer.task, read, projection, options);
+  if (!selected.task?.id || !held && typeof selected.task.body !== "string") return null;
+  const timeline = selected.acceptedBody && Object.hasOwn(answer, "timeline") ? answer.timeline : held?.timeline;
+  const detail = preserveTaskFloors(held, { ...held, task: selected.task, timeline: timeline || [] });
+  const marks = actionDetailMarks(before, detail.task, selected.task);
+  return { ...detail, task: withTaskContentComponents(marks, selected.task) };
+}
+
+function actionDetailMarks(held, detail, task) {
+  const raw = { ...detail };
   for (const field of ["read_through", "watch_started_after", "dismissed_through"]) {
     if (Object.hasOwn(task, field)) raw[field] = task[field];
     else delete raw[field];
   }
-  return { ...detail, task: preserveTaskActionMarks(held?.task, raw, { watchAuthority: true }) };
+  return preserveTaskActionMarks(held, raw, { watchAuthority: true });
 }
 
 function queryMatches(address, task) {
@@ -44,10 +52,10 @@ function queryMatches(address, task) {
   return filterTasks([task], filters).length > 0;
 }
 
-function listWithResponse(address, held, task, read, projection) {
+function listWithResponse(address, held, task, read, projection, options) {
   const rows = held?.tasks || [];
   const prior = rows.find((row) => row.id === task.id);
-  const incoming = preserveTaskActionMarks(prior, actionTask(prior, task, read, projection), { watchAuthority: true });
+  const incoming = preserveTaskActionMarks(prior, actionTask(prior, task, read, projection, options).task, { watchAuthority: true });
   const includes = queryMatches(address, incoming);
   if (!prior && (!includes || address.kind === TRACKER_TASKS_PAGE_KIND)) return null;
   const remaining = rows.filter((row) => row.id !== task.id);
@@ -65,7 +73,12 @@ const actionResponseNote = (held, taskId, read, actionRead, detail) => ({
   ...(detail ? withWritten(held, [taskId], read) : held), ...(actionRead === undefined ? {} : { action_read: actionRead }),
 });
 
-export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { accept = () => true, issuedRead } = {}) {
+function normalizedAction(summary, shared, detail) {
+  const normalized = summary.reduce(shared, { headerBarrier: detail?.value?.task });
+  return normalized?.[0]?.task?.id ? normalized : null;
+}
+
+export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { accept = () => true, issuedRead, contentRead } = {}) {
   const task = answer?.task;
   if (!task?.id || !accept()) return false;
   validateTaskActionOrder(issuedRead);
@@ -75,17 +88,21 @@ export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { 
   const addresses = [taskAddress(deviceId, projectId, task.id), ...listed, ...listed.map(readsAddress), taskWaitingOnGenerationAddress(deviceId, projectId), readsAddress(taskAddress(deviceId, projectId, task.id))];
   const read = await nextTaskRead();
   const confirmed = issuedRead !== undefined;
-  const summary = summaryTaskMutation({ deviceId, projectId }, task, read, { accept, fullTask: true, confirmedAction: confirmed, issuedRead });
+  const summary = summaryTaskMutation({ deviceId, projectId }, task, read, { accept, fullTask: true, confirmedAction: confirmed, issuedRead, contentRead });
   return mergeCachedRecordsTogether([...addresses, ...summary.addresses], (allRecords) => {
     if (!accept()) return null;
     const records = allRecords.slice(0, addresses.length);
     const heldNote = records.at(-1)?.value;
     if (olderAction(heldNote, issuedRead)) return null;
-    const normalized = summary.reduce(allRecords.slice(addresses.length));
+    const shared = allRecords.slice(addresses.length);
+    const normalized = normalizedAction(summary, shared, records[0]);
     if (!normalized) return null;
     const projection = normalized[0].task;
-    const detail = detailWithResponse(records[0]?.value, answer, read, projection);
-    const lists = listed.map((address, index) => listWithResponse(address, records[index + 1]?.value, task, read, projection));
+    const context = summary.context(shared);
+    const detail = detailWithResponse(records[0]?.value, answer, read, projection, { context, contentRead,
+      address: addresses[0], heldWritten: recordWriteOf(records[0]), headerBarrier: projection });
+    const lists = listed.map((address, index) => listWithResponse(address, records[index + 1]?.value, task, read, projection,
+      { context, contentRead, address, heldWritten: recordWriteOf(records[index + 1]), headerBarrier: projection }));
     const notes = lists.map((list, index) => list ? withWritten(records[listed.length + index + 1]?.value, [task.id], read) : null);
     return [detail, ...lists, ...notes, detail ? nextReverseGeneration(records.at(-2)?.value) : null,
       actionResponseNote(heldNote, task.id, read, issuedRead, detail), ...normalized];

@@ -3,7 +3,7 @@
 // wired into legacy surfaces while their backend prerequisites are pending.
 import { beginSummaryQuery, landSummaryPage, readSummaryQuery } from "./taskSummaryCache.js";
 import { canonicalSummaryFilters, summaryFiltersSupported } from "./taskSummaryQuery.js";
-import { nextTaskRead } from "./taskReadOrder.js";
+import { captureTaskContentRead } from "./taskContentAuthority.js";
 
 export function createTaskSummaryReader({ scope, filters, callRpc, capabilities, sessionOf, active = () => true,
   mutationEpoch = () => 0 }) {
@@ -47,9 +47,10 @@ export function createTaskSummaryReader({ scope, filters, callRpc, capabilities,
     refused = false;
     ticketSession = session;
     return track(async () => {
-      const readOrder = await nextTaskRead();
+      const contentRead = await captureTaskContentRead(scope, { revalidate: "summary" });
+      const readOrder = contentRead.readOrder;
       if (!accepts(generation, session)) return false;
-      const next = await beginSummaryQuery(scope, params, readOrder, { accept: () => accepts(generation, session) });
+      const next = await beginSummaryQuery(scope, params, readOrder, { accept: () => accepts(generation, session), contentRead });
       if (!accepts(generation, session)) return false;
       ticket = next;
       return ask(next, readOrder, generation, session);
@@ -62,8 +63,8 @@ export function createTaskSummaryReader({ scope, filters, callRpc, capabilities,
     const next = ticket;
     const held = await read();
     if (!accepts(generation, session) || !canContinue(held, next)) return false;
-    const readOrder = await nextTaskRead();
-    return ask({ ...next, cursor: held.next_cursor }, readOrder, generation, session);
+    const contentRead = await captureTaskContentRead(scope, { revalidate: "summary" });
+    return ask({ ...next, contentRead, cursor: held.next_cursor }, contentRead.readOrder, generation, session);
   }
 
   function more() {

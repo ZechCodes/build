@@ -24,13 +24,14 @@
 // held row written after the page's copy of it keeps its place, and so does a
 // row the page does not name that was written after the page was read.
 
-import { cachedSubKeys, deleteCached, mergeCachedRecordsTogether, readCached } from "./localCache.js";
-import { lastSayIn, nextTaskRead, readsAddress, withStretch } from "./taskReadOrder.js";
+import { cachedSubKeys, deleteCached, readCached, recordWriteOf } from "./localCache.js";
+import { lastSayIn, readsAddress, withStretch } from "./taskReadOrder.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { sortTasks } from "./trackerFilters.js";
 import {
   TRACKER_TASKS_PAGE_KIND, tasksPageAddress, tasksRecord, listAskedAt, preserveReviewSummary, preserveTaskReviewSummary,
 } from "./trackerCache.js";
+import { captureTaskContentRead, mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskContentWrite } from "./taskContentAuthority.js";
 import { userSessionOf } from "./userSessionCache.js";
 
 /** Tasks per page. A tenth of a large tracker, and one page of a small one. */
@@ -119,15 +120,23 @@ function foldedTaskRows(held, stretch, reads) {
  *  first page's read, which every page after it is newer than, or what the
  *  list held already — its number, or the cache's stamp on one that has none —
  *  where that is newer. A page never makes a list look older than it was. */
+function contentPageRows(held, stretch, reads, address, context, written) {
+  const old = new Map((held?.tasks || []).map((task) => [task.id, task]));
+  const results = foldedTaskRows(held, stretch, reads).map((task) => reconcileTaskContentWrite(old.get(task.id), task,
+    { context, address, heldWritten: written }));
+  const rows = results.flatMap((result) => result.task ? [result.task] : []);
+  const ids = new Set(rows.map((task) => task.id));
+  return { rows, retire: results.some((result) => result.retired) || (held?.tasks || []).some((task) => !ids.has(task.id)) };
+}
+
 export const foldTasksPage = (address, stretch, columnsOf) =>
-  mergeCachedRecordsTogether([address, readsAddress(address)], ([heldRecord, readsRecord]) => {
-    const held = heldRecord?.value;
-    const reads = readsRecord?.value;
-    return [
-      tasksRecord(foldedTaskRows(held, stretch, reads), columnsOf(held), foldedOrder(heldRecord, stretch)),
-      withStretch(reads, stretch),
-    ];
-  });
+  mergeTaskContentRecordsTogether({ deviceId: address.deviceId, projectId: address.entityId },
+    [address, readsAddress(address)], ([heldRecord, readsRecord], context) => {
+      const held = heldRecord?.value, reads = readsRecord?.value;
+      const content = contentPageRows(held, stretch, reads, address, context, recordWriteOf(heldRecord));
+      return { values: [tasksRecord(content.rows, columnsOf(held), foldedOrder(heldRecord, stretch)), withStretch(reads, stretch)],
+        retire: content.retire };
+    });
 
 const foldedOrder = (heldRecord, { read = 0, pullRead = read }) => Math.max(listAskedAt(heldRecord), pullRead);
 
@@ -177,10 +186,18 @@ const coversNumbers = (stretch) => stretch.through < stretch.above;
 /** Keep the body and the read that produced it together. Even simultaneous
  * reads of one cursor have their own addresses, so one can never borrow the
  * other's body or cursor. */
-async function landPage(deviceId, projectId, asked, answer, read) {
+async function landPage(deviceId, projectId, asked, answer, contentRead, active) {
+  const read = contentRead.readOrder;
   const address = tasksPageAddress(deviceId, projectId, { ...asked, read_order: read });
-  await mergeCachedRecordsTogether([address], ([held]) =>
-    Number(held?.value?.read_order) > read ? null : [{ ...answer, read_order: read }]);
+  await mergeTaskContentRecordsTogether({ deviceId, projectId }, [address], ([held], context) => {
+    if (!active() || Number(held?.value?.read_order) > read) return null;
+    const old = new Map((held?.value?.tasks || []).map((task) => [task.id, task]));
+    const results = (answer.tasks || []).map((task) => reconcileTaskContentWrite(old.get(task.id),
+      observeTaskContent(task, { contentRead, coverage: "full" }), { context, address, heldWritten: recordWriteOf(held) }));
+    if (results.some((result) => !result.task)) return null;
+    return { values: [{ ...answer, tasks: results.flatMap((result) => result.task ? [result.task] : []), read_order: read,
+      content_read: contentRead }] };
+  });
   return { sub: address.sub, page: (await readCached(address))?.value };
 }
 
@@ -218,10 +235,12 @@ async function forgetOtherPages(deviceId, projectId, params, landed, pullRead) {
  *  the last row laid, until a page lays a row under them. */
 async function pullPage({ ask, deviceId, projectId, params, fold, active, limit }, place) {
   const asked = pageParams(params, place.cursor, limit);
-  const read = await nextTaskRead();
+  const contentRead = await captureTaskContentRead({ deviceId, projectId }, { revalidate: "summary" });
+  const read = contentRead.readOrder;
+  if (!active()) return null;
   const answer = await ask(asked);
   if (!answer || !active()) return null;
-  const { sub, page } = await landPage(deviceId, projectId, asked, answer, read);
+  const { sub, page } = await landPage(deviceId, projectId, asked, answer, contentRead, active);
   if (!Number.isSafeInteger(page?.read_order) || page.read_order !== read || !active()) return null;
   return foldLandedPage({ sub, page, place, read, fold });
 }
@@ -231,6 +250,7 @@ async function foldLandedPage({ sub, page, place, read, fold }) {
   const next = nextCursorOf(page, place.cursor);
   const own = { read: page.read_order, readAt: userSessionOf(page)?.now_ms ?? null };
   const stretch = { ...stretchOf(page, place, own, next), pullRead: place.pullRead ?? read };
+  if (page.content_read) stretch.tasks = stretch.tasks.map((task) => observeTaskContent(task, { contentRead: page.content_read, coverage: "full" }));
   // An exhausted or refused canonical write did not lay this stretch. Keep
   // its cursor out of the walk so a later page cannot conceal the gap.
   if (coversNumbers(stretch) && await fold(stretch, page) === false) return null;

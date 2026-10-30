@@ -5,6 +5,9 @@ import { mergeCachedRecordsTogether, readCached, readCachedMany } from "./localC
 import { canonicalSummaryFilters } from "./taskSummaryQuery.js";
 import { compareTaskMarkers, isPresentTaskMarker, newerTaskMarker } from "./taskOpaqueMarkers.js";
 import { preserveTaskReviewSummary } from "./trackerCache.js";
+import { recordWriteOf } from "./localCache.js";
+import { captureTaskContentRead, mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskContentWrite,
+  taskContentFragment, withTaskContentComponents, sameTaskContentComponent } from "./taskContentAuthority.js";
 import { summaryPatch } from "./taskSummaryProjection.js";
 
 export const TASK_SUMMARY_KIND = "tracker-summary";
@@ -22,7 +25,8 @@ export const summaryQueryAddress = (scope, filters) => address(scope, TASK_SUMMA
 /** Start a refresh without discarding the last successful cached paint.
  * A caller takes generation from nextTaskRead before dispatch. Older tickets
  * cannot reset a newer refresh, including across tabs. */
-export async function beginSummaryQuery(scope, filters, generation, { accept = () => true } = {}) {
+export async function beginSummaryQuery(scope, filters, generation, { accept = () => true, contentRead } = {}) {
+  contentRead ??= await captureTaskContentRead(scope, { revalidate: "summary" });
   if (!Number.isSafeInteger(generation) || generation <= 0) throw new Error("Invalid summary query generation");
   const queryAddress = summaryQueryAddress(scope, filters);
   await mergeCachedRecordsTogether([queryAddress], ([held]) => {
@@ -30,7 +34,7 @@ export async function beginSummaryQuery(scope, filters, generation, { accept = (
     return [{ ids: [], identity_ids: [], next_cursor: null, complete: false,
       ...held?.value, generation, refreshing: true }];
   });
-  return { scope: { ...scope }, address: queryAddress, filters: canonicalSummaryFilters(filters), generation, cursor: null };
+  return { scope: { ...scope }, address: queryAddress, filters: canonicalSummaryFilters(filters), generation, cursor: null, contentRead };
 }
 
 function validatePage(ticket, page) {
@@ -97,17 +101,22 @@ function entityFields(task) {
   return next;
 }
 
-function pageRow(held, task, read, basis) {
+function pageRow(held, task, read, basis, options) {
   const incoming = entityFields(task), older = olderRow(held, incoming, read);
-  const value = summaryValue(held, incoming, read);
+  const value = summaryContent(held, summaryValue(held, incoming, read), incoming, options).row;
+  if (!value.task) return value;
   const oldAuthority = older && value.watch_read_order !== read;
   const source = oldAuthority ? held?.task : incoming;
   const mixed = changedBasisAuthority(held, basis, source, value.task);
   // A current watch header does not certify the ordinary content retained
   // by a newer timestamp/read. Keep that merge uncertain until content wins.
-  const uncertain = mixed || retainedOrdinaryBasis(held, older, value.watch_read_order === read);
+  const uncertain = mixed || retainedOrdinaryBasis(held, older, value.watch_read_order === read)
+    || unprovenPageContent(held, incoming, value, basis);
   return { ...value, basis: uncertain ? undefined : oldAuthority ? held?.basis : basis, basis_uncertain: uncertain };
 }
+
+const unprovenPageContent = (held, incoming, value, basis) => Boolean(held && !value.contentAccepted
+  && (!sameTaskContentComponent(held.task, incoming, "header") || held.basis_uncertain || held.basis !== basis));
 
 const retainedOrdinaryBasis = (held, older, currentWatch) => older && (currentWatch || held?.basis_uncertain === true);
 
@@ -279,6 +288,20 @@ function summaryValue(held, task, read, counters = { source: task, fullTask: fal
     needs_unread_refresh: next.watched !== false && authority.stale };
 }
 
+const summaryContentBaseline = (held, barrier) => held?.task
+  || (barrier && withTaskContentComponents(summaryPatch(undefined, barrier, true), barrier, "summary"));
+
+function summaryContent(held, row, source, { context, address, written, contentRead, headerBarrier, observed = true } = {}) {
+  const baseline = summaryContentBaseline(held, headerBarrier);
+  const projected = summaryPatch(baseline, source, true);
+  if (source?.__task_content_cache) projected.__task_content_cache = source.__task_content_cache;
+  const candidate = observed ? observeTaskContent(projected, { contentRead, coverage: "summary" }) : projected;
+  const selected = reconcileTaskContentWrite(baseline, candidate, { context, address, heldWritten: written, headerBarrier });
+  const task = selected.task || baseline;
+  return { row: { ...row, task: task ? withTaskContentComponents(row.task, task, "summary") : null, contentAccepted: selected.acceptedHeader },
+    retire: selected.retired };
+}
+
 /** Commit membership/cursor, summaries and shared identities together. Failure
  * leaves the previous cursor usable. Empty continuation pages are successful
  * pages; duplicate/late replies never consume another page's cursor.
@@ -290,15 +313,17 @@ export async function landSummaryPage(ticket, page, { read, accept = () => true 
   const identities = Object.entries(page.identities || {});
   const addresses = [ticket.address, invalidationAddress(ticket.scope), observationAddress(ticket.scope), ...tasks.map((task) => summaryAddress(ticket.scope, task.id)),
     ...identities.map(([id]) => identityAddress(ticket.scope, id))];
-  return mergeCachedRecordsTogether(addresses, ([query, invalidation, observation, ...records]) => {
+  return mergeTaskContentRecordsTogether(ticket.scope, addresses, ([query, invalidation, observation, ...records], context) => {
     const held = query?.value;
     if (!acceptsPage(held, ticket, accept) || invalidatedTicket(invalidation?.value, ticket)) return null;
     if (changedContinuationBasis(held, ticket, page)) return null;
-    const rows = tasks.map((task, index) => pageRow(records[index]?.value, task, read, page.basis));
+    const rows = tasks.map((task, index) => pageRow(records[index]?.value, task, read, page.basis, { context, address: summaryAddress(ticket.scope, task.id),
+      written: recordWriteOf(records[index]), contentRead: ticket.contentRead }));
+    if (rows.some((row) => !row.task?.id)) return null;
     const actors = identities.map(([, identity], index) => records[tasks.length + index]?.value?.read_order > read
       ? null : { identity, read_order: read });
-    return [membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id), read), null,
-      newerObservation(observation?.value, read, page.basis), ...rows, ...actors];
+    return { values: [membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id), read), null,
+      newerObservation(observation?.value, read, page.basis), ...rows, ...actors] };
   });
 }
 
@@ -317,20 +342,29 @@ export function writeSummaryTask(scope, task, read, options = {}) {
  * and an action acknowledgment never supplies a projection basis.
  * fullTask explicitly selects authoritative omissions; compact patches retain
  * fields they omit. Both paths use the same PR, marker and counter authority. */
-export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false, confirmedAction = false, issuedRead } = {}) {
+const fullActionSource = (task) => ({ read_through: null, watch_started_after: null, dismissed_through: null, ...task });
+
+function reduceSummaryMutation(records, options, headerBarrier) {
+  const [held, invalidation, ...shared] = records, { task, read, fullTask, fragment, address } = options;
+  if (!options.accept()) return null;
+  const source = fullTask ? fullActionSource(task) : task;
+  const before = held?.value;
+  const patched = summaryPatch(before?.task, source, fullTask);
+  if (task.__task_content_cache) patched.__task_content_cache = task.__task_content_cache;
+  const row = summaryValue(before, patched, read, { ...options, source, action: true });
+  const selected = summaryContent(before, row, patched, { context: fragment.context(shared), address,
+    written: recordWriteOf(held), contentRead: options.contentRead, headerBarrier, observed: fullTask || Boolean(options.contentRead) });
+  return [selected.row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) },
+    ...fragment.finish(shared, { retire: selected.retire })];
+}
+
+export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false, confirmedAction = false, issuedRead, contentRead } = {}) {
   validateSummaryMutation(scope, task, read, fullTask, confirmedAction);
-  return {
-    addresses: [summaryAddress(scope, task.id), invalidationAddress(scope)],
-    reduce: ([held, invalidation]) => {
-      if (!accept()) return null;
-      // Full TaskView omits absent optional floors. Keep that raw absence
-      // visible to marker/counter reconciliation before patching held fields.
-      const source = fullTask ? { read_through: null, watch_started_after: null, dismissed_through: null, ...task } : task;
-      const row = summaryValue(held?.value, summaryPatch(held?.value?.task, source, fullTask), read,
-        { source, fullTask, action: true, confirmedAction, issuedRead });
-      return [row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) }];
-    },
-  };
+  const fragment = taskContentFragment(scope), address = summaryAddress(scope, task.id);
+  const options = { task, read, accept, fullTask, confirmedAction, issuedRead, contentRead, fragment, address };
+  return { addresses: [address, invalidationAddress(scope), ...fragment.addresses],
+    context: (records) => fragment.context(records.slice(2)),
+    reduce: (records, { headerBarrier } = {}) => reduceSummaryMutation(records, options, headerBarrier) };
 }
 
 function validateSummaryMutation(scope, task, read, fullTask, confirmedAction) {

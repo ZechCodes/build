@@ -19,9 +19,12 @@
 // record is written through by the task page itself on first open, which is
 // how every other detail surface warms its own cache.
 
-import { mergeCachedAtomically, mergeCachedRecordsTogether, readCached } from "./localCache.js";
+import { mergeCachedAtomically, mergeCachedRecordsTogether, readCached, readCachedMany, recordWriteOf } from "./localCache.js";
 import { taskUnreadKey, latestTaskMark } from "./trackerUnread.js";
 import { readsAddress } from "./taskReadOrder.js";
+import { mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskContentWrite,
+  taskNeedsFullRefresh, TASK_CONTENT_CACHE } from "./taskContentAuthority.js";
+const normalizedAddress = (deviceId, projectId, taskId) => ({ deviceId, entityId: projectId, kind: "tracker-summary", sub: taskId });
 
 export const TRACKER_TASKS_KIND = "tracker-tasks";
 export const TRACKER_TASKS_QUERY_KIND = "tracker-tasks-query";
@@ -387,9 +390,16 @@ export async function readTasksRecord(deviceId, projectId) {
   return record?.value || null;
 }
 
+function detailWithHeaderBarrier(value, header) {
+  if (!value?.task || !taskNeedsFullRefresh(value.task, header)) return value || null;
+  return { ...value, task: { ...value.task, [TASK_CONTENT_CACHE]: {
+    ...value.task[TASK_CONTENT_CACHE], needs_full_refresh: true, barrier: header?.[TASK_CONTENT_CACHE],
+  } } };
+}
+
 export async function readTaskRecord(deviceId, projectId, taskId) {
-  const record = await readCached(taskAddress(deviceId, projectId, taskId));
-  return record?.value || null;
+  const [record, summary] = await readCachedMany([taskAddress(deviceId, projectId, taskId), normalizedAddress(deviceId, projectId, taskId)]);
+  return detailWithHeaderBarrier(record?.value, summary?.value?.task);
 }
 
 export async function readTasksQueryRecord(deviceId, projectId, params) {
@@ -411,9 +421,26 @@ export const readTasksCached = (deviceId, projectId) => readListCached(tasksAddr
 export const readTasksQueryCached = (deviceId, projectId, params) =>
   readListCached(tasksQueryAddress(deviceId, projectId, params));
 
-export const writeTasksRecord = (deviceId, projectId, record) =>
-  mergeCachedRecordsTogether([tasksAddress(deviceId, projectId)], ([held]) =>
-    [preserveListSummaries(held?.value, record)]);
+function contentList(held, record, address, context, written) {
+  const old = new Map((held?.tasks || []).map((task) => [task.id, task]));
+  const results = (record.tasks || []).map((task) => reconcileTaskContentWrite(old.get(task.id), task,
+    { context, address, heldWritten: written }));
+  const kept = new Set((record.tasks || []).map((task) => task.id));
+  const removed = (held?.tasks || []).some((task) => !kept.has(task.id));
+  return { record: preserveListSummaries(held, { ...record, tasks: results.flatMap((result) => result.task ? [result.task] : []) }),
+    retire: removed || results.some((result) => result.retired) };
+}
+
+function writeContentList(deviceId, projectId, address, record, { accept = () => true } = {}) {
+  return mergeTaskContentRecordsTogether({ deviceId, projectId }, [address], ([held], context) => {
+    if (!accept()) return null;
+    const next = contentList(held?.value, record, address, context, recordWriteOf(held));
+    return { values: [next.record], retire: next.retire };
+  });
+}
+
+export const writeTasksRecord = (deviceId, projectId, record, options) =>
+  writeContentList(deviceId, projectId, tasksAddress(deviceId, projectId), record, options);
 
 /** Capture the accepted action note before asking for a detail. Ordinary reads
  * leave the note in place, so another read cannot erase a mutation fence. */
@@ -426,14 +453,28 @@ export async function captureTaskDetailRead(deviceId, projectId, taskId) {
  * accepted. Keep the accepted mark in the cached task while replacing its
  * other fields and timeline with the newest pull. The transaction makes two
  * tabs' writes obey the same floor. */
-export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = () => true, detailBasis } = {}) => {
+const detailAccepted = (held, note, taskId, options) => options.accept(held)
+  && (options.detailBasis === undefined || options.detailBasis === (note?.value?.rows?.[taskId] || 0));
+
+function publishedDetail(held, record, result, contentRead) {
+  const timeline = result.acceptedBody || !contentRead ? record.timeline : held?.timeline;
+  return preserveTaskFloors(held, { ...record, task: result.task, timeline: timeline || [] });
+}
+
+function contentDetail(detail, record, summary, context, address, contentRead) {
+  const held = detail?.value;
+  const task = contentRead ? observeTaskContent(record.task, { contentRead, coverage: "full" }) : record.task;
+  const result = reconcileTaskContentWrite(held?.task, task, { context, address,
+    heldWritten: recordWriteOf(detail), headerBarrier: summary?.value?.task });
+  if (!result.task || contentRead && !held && typeof result.task.body !== "string") return null;
+  return { values: [publishedDetail(held, record, result, contentRead), null, null], retire: result.retired };
+}
+
+export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = () => true, detailBasis, contentRead } = {}) => {
   const address = taskAddress(deviceId, projectId, taskId);
-  return mergeCachedRecordsTogether([address, readsAddress(address)], ([detail, note]) => {
-    const held = detail?.value;
-    // A writer can be superseded while waiting for the cache transaction.
-    if (!accept(held) || detailBasis !== undefined && detailBasis !== (note?.value?.rows?.[taskId] || 0)) return null;
-    return [preserveTaskFloors(held, record), null];
-  });
+  return mergeTaskContentRecordsTogether({ deviceId, projectId }, [address, readsAddress(address), normalizedAddress(deviceId, projectId, taskId)],
+    ([detail, note, summary], context) => detailAccepted(detail?.value, note, taskId, { accept, detailBasis })
+      ? contentDetail(detail, record, summary, context, address, contentRead) : null);
 };
 
 /** Only an accepted read report may raise the cached floor. Do not touch the
@@ -454,9 +495,8 @@ export const advanceTaskReadThrough = (deviceId, projectId, taskId, mark, { acce
   });
 };
 
-export const writeTasksQueryRecord = (deviceId, projectId, params, record) =>
-  mergeCachedRecordsTogether([tasksQueryAddress(deviceId, projectId, params)], ([held]) =>
-    [preserveListSummaries(held?.value, record)]);
+export const writeTasksQueryRecord = (deviceId, projectId, params, record, options) =>
+  writeContentList(deviceId, projectId, tasksQueryAddress(deviceId, projectId, params), record, options);
 
 /** When the cache last took an answer for a record, or 0 for one it has never
  *  held. A surface showing a cached copy says when that copy was read

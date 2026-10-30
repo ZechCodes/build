@@ -108,9 +108,11 @@ function componentWinner(held, incoming, component, observation, options) {
   if (!covered(observation, component) || !validObservation(observation, options.context, options.address, options.heldWritten)) return false;
   if (component === "body" && typeof incoming.body !== "string") return false;
   const own = proofOf(held, component, options.context), barrier = proofOf(options.headerBarrier, "header", options.context);
+  const ownHeader = component === "body" ? proofOf(held, "header", options.context) : undefined;
   const read = observation.contentRead.readOrder;
   const heldTimestamp = componentTimestamp(held, component, own);
-  if (blockedComponent(own, barrier, incoming, read, heldTimestamp)) return false;
+  if (blockedComponent(own, barrier, incoming, read, heldTimestamp)
+    || blockedComponent(undefined, ownHeader, incoming, read, undefined)) return false;
   return Boolean(own) || revalidates(observation, component, options);
 }
 
@@ -129,6 +131,15 @@ function applyComponent(target, source, component) {
     else delete target[key];
   }
   return target;
+}
+
+export function withTaskContentComponents(target, source, coverage = "full") {
+  const task = { ...target }; applyComponent(task, source, "header");
+  if (coverage === "full") applyComponent(task, source, "body");
+  const metadata = { ...cacheOf(source) };
+  if (coverage === "summary") { delete metadata.body; delete metadata.bodyHeaderIdentity; }
+  task[TASK_CONTENT_CACHE] = metadata; delete task[OBSERVATION];
+  return task;
 }
 
 const componentSnapshot = (task, component) => applyComponent({}, task, component);
@@ -157,17 +168,28 @@ export function reconcileTaskContentWrite(held, candidate, options = {}) {
   return { task, retired, acceptedHeader: false, acceptedBody: false, needsFullRefresh: taskNeedsFullRefresh(task) };
 }
 
-function observationMetadata(held, incoming, observation, accepted, context) {
+function componentIdentity(held, incoming, component, prior) {
+  if (component === "header") return JSON.stringify(componentSnapshot(incoming, component));
+  return sameTaskContentComponent(held, incoming, component) && prior || randomToken();
+}
+
+function observationMetadata(held, incoming, observation, accepted, context, headerBarrier) {
   const metadata = sameLifetime(cacheOf(held), context) ? { ...cacheOf(held) } : { retired: { ...cacheOf(held).retired } };
+  delete metadata.barrier;
   const retired = { ...metadata.retired };
   const identities = { ...metadata.identities }, timestamps = { ...metadata.timestamps };
   for (const component of ["header", "body"]) if (accepted[component]) {
     metadata[component] = { read_order: observation.contentRead.readOrder, updated_at: observation.updated_at };
-    identities[component] = sameTaskContentComponent(held, incoming, component) && identities[component] || randomToken();
+    // Recovery identity describes bytes, not a publication event. It is never
+    // used to admit a write: ticket generations and exact baselines do that.
+    identities[component] = componentIdentity(held, incoming, component, identities[component]);
     timestamps[component] = observation.updated_at;
     delete retired[component];
   }
-  if (accepted.body) metadata.bodyHeaderIdentity = identities.header;
+  if (accepted.body) {
+    metadata.bodyHeaderIdentity = identities.header;
+    metadata.coveredHeaderIdentity = cacheOf(headerBarrier).identities?.header;
+  }
   return { ...metadata, storeGeneration: context?.storeGeneration, scopeGeneration: context?.scopeGeneration, retired, identities, timestamps };
 }
 
@@ -198,29 +220,32 @@ export function reconcileTaskContent(held, candidate, options = {}) {
     return { task: undefined, acceptedHeader: false, acceptedBody: false, needsFullRefresh: true, retired: false };
   }
   const incoming = { ...candidate }; delete incoming[OBSERVATION];
-  const accepted = { header: componentWinner(held, incoming, "header", observation, options),
-    body: componentWinner(held, incoming, "body", observation, options) };
+  const header = componentWinner(held, incoming, "header", observation, options);
+  const accepted = { header, body: header && componentWinner(held, incoming, "body", observation, options) };
   const task = selectedTask(held, incoming, observation, accepted, options);
-  const metadata = observationMetadata(held, incoming, { ...observation, updated_at: incoming.updated_at }, accepted, options.context);
+  const metadata = observationMetadata(held, incoming, { ...observation, updated_at: incoming.updated_at }, accepted, options.context, options.headerBarrier);
   task[TASK_CONTENT_CACHE] = metadata;
   const needsFullRefresh = observation?.coverage === "full" && !accepted.body || fullRefreshNeeded(task, options.headerBarrier);
   metadata.needs_full_refresh = needsFullRefresh;
   return { task, acceptedHeader: accepted.header, acceptedBody: accepted.body, needsFullRefresh, retired: false };
 }
 
+const retiredRefresh = (metadata, barrier) => Boolean(metadata.retired?.body || barrier.retired?.header);
+const coveredHeader = (metadata, identity) => metadata.bodyHeaderIdentity === identity || metadata.coveredHeaderIdentity === identity;
+
 function fullRefreshNeeded(task, barrier) {
   const metadata = cacheOf(task), header = cacheOf(barrier).header;
-  if (metadata.retired?.body || cacheOf(barrier).retired?.header) return true;
+  if (retiredRefresh(metadata, cacheOf(barrier))) return true;
   if (!metadata.body) return Boolean(header);
-  if (!header) return false;
+  if (!header) return Boolean(metadata.header && !coveredHeader(metadata, metadata.identities?.header));
   if (!sameLifetime(metadata, cacheOf(barrier))) return true;
-  return metadata.bodyHeaderIdentity !== cacheOf(barrier).identities?.header;
+  return !coveredHeader(metadata, cacheOf(barrier).identities?.header);
 }
 
 export const taskNeedsFullRefresh = (task, headerBarrier) => Boolean(cacheOf(task).needs_full_refresh || fullRefreshNeeded(task, headerBarrier));
 export function taskFullRefreshKey(task, headerBarrier) {
   if (!taskNeedsFullRefresh(task, headerBarrier)) return null;
-  const metadata = cacheOf(task), barrier = cacheOf(headerBarrier);
+  const metadata = cacheOf(task), barrier = headerBarrier ? cacheOf(headerBarrier) : metadata.barrier || {};
   return JSON.stringify([task?.id ?? headerBarrier?.id, ...refreshLifetime(metadata), ...refreshComponents(metadata, barrier)]);
 }
 

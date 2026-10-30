@@ -86,6 +86,12 @@ it("treats full-task omissions as authoritative while compact patches retain omi
   await summaries.writeSummaryTask(scope, { id: taskId, title: "Compact edit", body: "not a summary" }, await order.nextTaskRead());
   let row = (await value(summaries.summaryAddress(scope, taskId))).task;
   expect(row).toMatchObject({ watched: true, done_at: "yesterday", review_summary: { version: 2 }, deferred_assignment: { state: "waiting" } });
+  // The local compact edit retired its header proof. Revalidate that header
+  // before testing a separate confirmed action's full-task omissions.
+  const contentRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+  const ticket = await summaries.beginSummaryQuery(scope, filters, contentRead.readOrder, { contentRead });
+  await summaries.landSummaryPage(ticket, { summary: true, tasks: [base({ title: "Compact edit" })],
+    basis: "compact-revalidated" }, { read: contentRead.readOrder });
   const answer = full({ title: "Full edit", updated_at: "2026-10-29T12:02:00Z" });
   for (const field of ["watched", "done_at", "review_summary", "deferred_assignment", "attachment_count"]) delete answer[field];
   answer.attachments = [{ path: "one" }, { path: "two" }];
@@ -205,7 +211,9 @@ it("compares raw full-action floors before merging held values and never certifi
   await seed(base({ read_through: "tc-20", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 }));
   const answer = full({ unread_count: 9, unread_mentions: 3, unread_agent_comments: 4, updated_at: "2026-10-29T12:01:00Z" });
   delete answer.read_through; delete answer.watch_started_after;
-  await action(answer);
+  // This legacy absent-floor observation has no confirmed watch-lineage
+  // dispatch authority; it must retain stronger held floors and counters.
+  await unguardedAction(answer);
   expect(await value(summaries.summaryAddress(scope, taskId))).toMatchObject({ needs_unread_refresh: true,
     task: { read_through: "tc-20", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 } });
 });

@@ -96,6 +96,20 @@ it("admits one counts request when an actual opening greeting settles without re
   expect(live.context.rpc).toHaveBeenCalledTimes(1);
 });
 
+it("coalesces the opening greeting announcement after dispatch while its counts request is pending", async () => {
+  const contexts = await vi.importActual("../src/core/deviceContexts.js"), first = deferred();
+  live.realGreeting = contexts;
+  live.context.rpc.mockImplementationOnce(() => first.promise);
+  Object.assign(live.context, { session: live.session, call: live.context.rpc, offline: false });
+  const authority = contexts.greetingInFlight(live.context);
+  mount(); await Promise.resolve(); await Promise.resolve();
+  contexts.adoptBridgeSelection(live.context, { version: "3.27.0", unsupported: null },
+    { capabilities: { tasks: { counts: true } } }, authority);
+  await vi.waitFor(() => expect(live.context.rpc).toHaveBeenCalledTimes(1));
+  greeted(); first.resolve(counts()); await cachedTotal(5);
+  expect(live.context.rpc).toHaveBeenCalledTimes(1);
+});
+
 it("suppresses pending mutations and refreshes once after the final acknowledgment", async () => {
   const write = deferred();
   fence.wrapTaskMutationCall(scope.deviceId, "tasks.read_through", () => write.promise);

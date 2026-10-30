@@ -168,3 +168,13 @@ it("covers an actual full TaskView after its compact summary header without a sh
   expect(content.taskNeedsFullRefresh(result.task, header)).toBe(false);
   expect(content.taskFullRefreshKey(result.task, header)).toBeNull();
 });
+
+it("refuses an absent summary row after an unrelated blind rewrite changes its captured domain", async () => {
+  const summaries = await import("../src/core/taskSummaryCache.js"), tracker = await import("../src/core/trackerCache.js");
+  const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [task({ id: "other-task" })] });
+  expect(await summaries.landSummaryPage(ticket, { summary: true, basis: "snapshot", tasks: [task()] },
+    { read: ticket.generation })).toBe(false);
+  expect(await cache.readCached(summaries.summaryAddress(scope, "task-1"))).toBeNull();
+  expect((await summaries.readSummaryQuery(scope, {})).refreshing).toBe(true);
+});

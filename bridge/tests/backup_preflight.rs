@@ -179,3 +179,32 @@ fn backup_accepts_alias_to_trusted_task_state_root() {
     assert!(output.status.success(), "backup refused a trusted target: {}", String::from_utf8_lossy(&output.stderr));
     assert!(destination.is_file());
 }
+
+#[cfg(unix)]
+#[test]
+fn backup_refuses_symlinked_database_leaf() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().unwrap();
+    let tasks = root.path().join("tasks");
+    drop(Store::new(&tasks).unwrap());
+    let database = tasks.join("build.db");
+    let actual = root.path().join("actual.db");
+    fs::rename(&database, &actual).unwrap();
+    symlink(&actual, &database).unwrap();
+    let destination = root.path().join("backup.db");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_build-bridge"))
+        .env_clear()
+        .env("HOME", root.path())
+        .env("BRIDGE_TASKS_DIR", &tasks)
+        .arg("backup")
+        .arg(&destination)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "backup accepted a symlinked database leaf");
+    assert!(stderr.contains("build.db"), "refusal must identify the database leaf: {stderr}");
+    assert!(!destination.exists(), "refusal must not create a destination");
+}

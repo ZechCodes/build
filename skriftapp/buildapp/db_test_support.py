@@ -50,18 +50,25 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 def in_memory_session_maker() -> async_sessionmaker[AsyncSession]:
     """A session maker over a fresh in-memory database."""
     engine = _new_engine(IN_MEMORY_DATABASE_URL, poolclass=StaticPool)
-    return async_sessionmaker(engine, expire_on_commit=False)
+    return session_maker_for(engine)
 
 
 def file_session_maker(database: Path) -> async_sessionmaker[AsyncSession]:
     """Independent connections to one throwaway file, for competing transactions."""
     engine = _new_engine(f"sqlite+aiosqlite:///{database}")
-    return async_sessionmaker(engine, expire_on_commit=False)
+    return session_maker_for(engine)
 
 
 def postgres_proof_engine(url: str) -> AsyncEngine:
     """One disposable PostgreSQL connection; callers validate local proof URLs."""
     return _new_engine(url, poolclass=NullPool)
+
+
+def session_maker_for(
+    engine: AsyncEngine, *, info: dict[str, str] | None = None
+) -> async_sessionmaker[AsyncSession]:
+    """Sessions over an existing test engine, with optional witness metadata."""
+    return async_sessionmaker(engine, expire_on_commit=False, info=info)
 
 
 def _new_engine(url: str, **options) -> AsyncEngine:

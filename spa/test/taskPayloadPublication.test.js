@@ -911,7 +911,8 @@ it("does not convert a nonowned thread publication into an owned mixed receipt",
       if (input.canonical[0].address.kind !== "thread") return writer.operations.observePublication(input);
       // Deliberately use the preserved general publication API: useful full
       // thread paint is allowed, but no owned permit or reference is supplied.
-      const { refresh: _attempt, ...nonowned } = input;
+      const { refresh: attempt, ...nonowned } = input;
+      expect(attempt).toBeDefined();
       return writer.operations.observePublication(nonowned);
     } };
   const authority = { active: () => true, call: vi.fn(async (method) => method === "tasks.get" ? answerFor(target) : mixed.page) };

@@ -248,6 +248,15 @@ describe("independent watch admission and owner acknowledgment", () => {
     expect(matching).toMatchObject({ acceptedWatch: true, watchCertain: false });
   });
 
+  it.each(["taskId", "readOrder"])("does not release a matching owner stamp through an acknowledgment with invalid %s", (field) => {
+    const context = control({ watchUncertain: true }), contentRead = read(4, context);
+    const held = row({ watched: false, __task_watch_intent: "owner" });
+    const acknowledgment = ack(contentRead, context, { [field]: field === "readOrder" ? 99 : "other-task" });
+    const result = select(held, row(), undefined, { context, contentRead, acknowledgment });
+    expect(result.task).toMatchObject({ watched: false, __task_watch_intent: "owner" });
+    expect(result).toMatchObject({ acceptedWatch: false, watchCertain: false, selectedWatchRead: null });
+  });
+
   it("does not overwrite orphan optimistic paint after control loss reports uncertain zero pending", () => {
     const context = control({ watchUncertain: true });
     const held = row({ watched: false, __task_watch_intent: "lost-owner" });

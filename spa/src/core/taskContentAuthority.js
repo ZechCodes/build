@@ -114,7 +114,13 @@ function componentWinner(held, incoming, component, observation, options) {
   if (Date.parse(componentTimestamp(options.headerBarrier, "header", barrier)) > Date.parse(incoming.updated_at)) return false;
   if (blockedComponent(own, barrier, incoming, read, heldTimestamp)
     || blockedComponent(undefined, ownHeader, incoming, read, undefined)) return false;
-  return Boolean(own) || revalidates(observation, component, options);
+  return establishedComponent(held, own, observation, component, options);
+}
+
+function establishedComponent(held, own, observation, component, options) {
+  // A current domain capture covers IDs discovered by the RPC. Existing
+  // unknown components still require their explicit revalidation path.
+  return Boolean(own) || component === "header" && !held || revalidates(observation, component, options);
 }
 
 function copyFields(target, source, names) {

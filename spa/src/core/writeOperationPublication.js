@@ -86,7 +86,7 @@ function taskPublicationWrites(entry, held, value) {
   const read = Math.max((Number(count?.value) || 0) + 1, Date.now());
   return [
     { address: TASK_READ_COUNT_ADDRESS, value: read, notify: false },
-    { address: noteAddress, value: withWritten(note?.value, [address.sub], read) },
+    { address: noteAddress, value: { ...note?.value, ...withWritten(note?.value, [address.sub], read) } },
     { ...entry, value: preserveTaskFloors(detail?.value, value) },
   ];
 }

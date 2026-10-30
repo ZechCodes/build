@@ -49,3 +49,43 @@ it("does not publish a mounted task page full read after its device session chan
   expect(document.querySelector(".task-page-title")?.textContent).not.toBe("Retired task");
   expect(callRpc).toHaveBeenCalledTimes(1);
 });
+
+it("requests one mounted full revalidation per body uncertainty and does not refill it on read-marker paints or errors", async () => {
+  const tracker = await import("../src/core/trackerCache.js");
+  const local = await import("../src/core/localCache.js");
+  const { mergeTaskContentRecordsTogether, retireTaskContent } = await import("../src/core/taskContentAuthority.js");
+  const notice = vi.spyOn(await import("../src/core/notify.js"), "notifyError");
+  const writer = vi.spyOn(tracker, "writeTaskRecord");
+  const address = tracker.taskAddress(deviceId, projectId, taskId);
+  await local.writeCached(address, tracker.taskRecord(held, []));
+  const requests = [];
+  const callRpc = vi.fn(() => new Promise((resolve, reject) => { requests.push({ resolve, reject }); }));
+  const adopted = vi.fn();
+  const { mountTaskPage } = await import("../src/core/trackerTaskPage.js");
+  page = mountTaskPage(document.querySelector("#task-page"), {
+    deviceId, projectId, projectKey: `${deviceId}|${projectId}`, taskId, callRpc, onTaskRead: adopted,
+    catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }),
+    feed: () => ({ items: [], workspaces: [] }), navigate: vi.fn(),
+  });
+  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(1));
+  requests[0].resolve({ task: held, timeline: [] });
+  await vi.waitFor(() => expect(writer).toHaveBeenCalledTimes(1));
+  await writer.mock.results[0].value;
+  await mergeTaskContentRecordsTogether({ deviceId, projectId }, [address], ([record]) => ({
+    values: [{ ...record.value, task: retireTaskContent(record.value.task, "body") }], retire: true,
+  }));
+  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(2));
+  for (let i = 0; i < 3; i += 1) {
+    const before = adopted.mock.calls.length;
+    await local.mergeCachedAtomically(address, (record) => ({ ...record, task: { ...record.task, read_through: `tc-${i}` } }));
+    await vi.waitFor(() => expect(adopted.mock.calls.length).toBeGreaterThan(before));
+    expect(callRpc).toHaveBeenCalledTimes(2);
+  }
+  requests[1].reject(new Error("Refused full revalidation"));
+  await vi.waitFor(() => expect(notice).toHaveBeenCalledTimes(1));
+  const before = adopted.mock.calls.length;
+  await local.mergeCachedAtomically(address, (record) => ({ ...record, task: { ...record.task, read_through: "tc-last" } }));
+  await vi.waitFor(() => expect(adopted.mock.calls.length).toBeGreaterThan(before));
+  expect(callRpc).toHaveBeenCalledTimes(2);
+  expect((await tracker.readTaskRecord(deviceId, projectId, taskId)).task.body).toBe(held.body);
+});

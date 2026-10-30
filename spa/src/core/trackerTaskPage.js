@@ -31,6 +31,7 @@ import { reviewAddress } from "./taskReviewCache.js";
 import { createReadRetry } from "./transientRead.js";
 import { deviceSession, deviceWatch } from "./deviceReconnect.js";
 import { trailingRead } from "./trailingRead.js";
+import { captureTaskGetRead, dispatchTaskGetRead } from "./taskWatchSnapshotRead.js";
 import { onReaderReturns, readerIsHere } from "./readerPresence.js";
 import { columnsOf, labelsFromText } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
@@ -759,12 +760,14 @@ export function mountTaskPage(host, options) {
     if (!authority) return;
     const reservation = reserveRepairRead(authority, demand.repairKey);
     try {
-      const [checklistBasis, detailBasis, contentRead] = await Promise.all([
+      const [checklistBasis, detailBasis, taskRead] = await Promise.all([
         checklist.readBasis(), captureTaskDetailRead(state.deviceId, state.projectId, state.taskId),
-        captureTaskContentRead(taskAddress(state.deviceId, state.projectId, state.taskId), { revalidate: "full" }),
+        captureTaskGetRead({ address: taskAddress(state.deviceId, state.projectId, state.taskId),
+          call: state.callRpc, accept: () => !state.disposed && authority.accept() }),
       ]);
       if (!acceptsTaskReadDispatch(authority, demand)) return;
-      const answer = await state.callRpc("tasks.get", { task_id: state.taskId });
+      const { contentRead } = taskRead;
+      const { answer } = await dispatchTaskGetRead(taskRead.request);
       if (state.disposed || !authority.accept()) return;
       // The pull is a writer. The subscription above owns the read and paint.
       await writeTaskRecord(state.deviceId, state.projectId, state.taskId, taskRecord(answer.task, answer.timeline), {

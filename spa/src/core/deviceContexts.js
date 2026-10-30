@@ -296,6 +296,20 @@ function armGreeting(context) {
   return token;
 }
 
+/** Capture only an already accepted current greeting. Task replies and cached
+ * records cannot activate this identity or extend its opening. */
+export function captureDeviceGreeting(context) {
+  const authority = greetingAuthorities.get(context);
+  if (!authority?.stands()) return null;
+  const session = context.session, epoch = session.bridgeEpoch?.current();
+  if (!epoch) return null;
+  return Object.freeze({
+    epoch,
+    capabilities: context.adapter?.capabilities,
+    current: () => authority.stands() && context.session === session && session.bridgeEpoch.current() === epoch,
+  });
+}
+
 /** The first hello claims adoption's reserved wait, which the initial cache
  * sync may already hold. Every subsequent hello gets its own authority,
  * superseding even a pending greeting on this same session. */

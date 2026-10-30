@@ -106,7 +106,7 @@ const NO_CAPABILITIES = Object.freeze({
   bodies: Object.freeze({ pages: false, mediaRawPages: false }),
   reviews: NO_REVIEW_SUPPORT,
   tasks: Object.freeze({
-    attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
+    attachments: false, watching: false, watchSnapshotGet: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
     listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false,
   }),
   compaction: Object.freeze({ harnessThresholds: false }),

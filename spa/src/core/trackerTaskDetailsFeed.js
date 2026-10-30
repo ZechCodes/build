@@ -9,7 +9,8 @@ import { changedSince } from "./trackerModel.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceSession } from "./deviceReconnect.js";
 import { contextFor, deviceContextIdentity, onDeviceStateChanged } from "./deviceContexts.js";
-import { captureTaskContentRead, taskFullRefreshKey } from "./taskContentAuthority.js";
+import { taskFullRefreshKey } from "./taskContentAuthority.js";
+import { captureTaskGetRead, dispatchTaskGetRead } from "./taskWatchSnapshotRead.js";
 import { readTaskWatchState, taskWatchControlAddress } from "./taskWatchAuthority.js";
 import { subscribeTaskMutations, taskMutationsPendingFor } from "./taskMutationFence.js";
 
@@ -114,13 +115,13 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     const acceptsOwner = () => !disposed && contextFor(deviceId) === context && deviceContextIdentity(deviceId) === identity
       && deviceSession(deviceId) === session && (!context || context.active());
     try {
-      const [detailBasis, contentRead] = await Promise.all([
+      const [detailBasis, taskRead] = await Promise.all([
         captureTaskDetailRead(deviceId, projectId, id),
-        captureTaskContentRead(address(id), { revalidate: "full" }),
+        captureTaskGetRead({ address: address(id), call: callRpc, accept: acceptsOwner }),
       ]);
       if (!acceptsOwner() || !stillWanted(id, version)) return;
-      const answer = await callRpc("tasks.get", { task_id: id });
-      await writeAnswer(id, answer, { detailBasis, contentRead }, () => acceptsOwner() && stillWanted(id, version));
+      const { answer } = await dispatchTaskGetRead(taskRead.request);
+      await writeAnswer(id, answer, { detailBasis, contentRead: taskRead.contentRead }, () => acceptsOwner() && stillWanted(id, version));
     } catch {
       // The list remains useful offline. A later list version can retry.
     }

@@ -179,6 +179,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       assignProjectAgent: names.has("tasks.assignProjectAgent"),
       attachments: names.has("tasks.attachments"),
       watching: names.has("tasks.watching"),
+      watchSnapshotGet: names.has("tasks.watchSnapshot.get.v1"),
       doneSinceLeft: names.has("tasks.doneSinceLeft"),
       commentUserNotifies: names.has("tasks.commentUserNotifies"),
       listPaged: names.has("tasks.listPaged"),

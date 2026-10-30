@@ -129,3 +129,29 @@ it("does not reset a watch lineage after captured session authority is replaced 
   spy.mockRestore(); expect(session).not.toBe(capturedSession);
   expect(await replicas()).toEqual(before);
 });
+
+it("retains newer same-header counter and activity observations against an earlier-issued action", async () => {
+  await seed(task({ watch_started_after: "te-05", read_through: "tc-10" }));
+  const issued = await order.nextTaskRead(), current = fresh({ watch_started_after: "te-05", read_through: "tc-10",
+    unread_count: 5, unread_mentions: 4, unread_agent_comments: 3, session_started_ms: 30, last_activity_ms: 40 });
+  await land(current, "current-observation");
+  await publish({ ...current, unread_count: 1, unread_mentions: 1, unread_agent_comments: 1,
+    session_started_ms: 1, last_activity_ms: 2 }, issued);
+  for (const replica of await replicas()) expect(replica).toMatchObject({ watch_started_after: "te-05", read_through: "tc-10",
+    unread_count: 5, unread_mentions: 4, unread_agent_comments: 3, session_started_ms: 30, last_activity_ms: 40 });
+});
+
+it("advances stale-action read and dismissal marks without pairing stale or current observation counts with unsupported floors", async () => {
+  await seed(task({ watch_started_after: "te-05", read_through: "tc-10" }));
+  const issued = await order.nextTaskRead(), current = fresh({ watch_started_after: "te-05", read_through: "tc-10",
+    unread_count: 5, unread_mentions: 4, unread_agent_comments: 3, session_started_ms: 30, last_activity_ms: 40 });
+  await land(current, "current-observation");
+  await publish({ ...current, read_through: "tc-20", dismissed_through: "te-20", unread_count: 1,
+    unread_mentions: 1, unread_agent_comments: 1, session_started_ms: 1, last_activity_ms: 2 }, issued);
+  for (const replica of await replicas()) {
+    expect(replica).toMatchObject({ read_through: "tc-20", dismissed_through: "te-20", watch_started_after: "te-05",
+      session_started_ms: 30, last_activity_ms: 40 });
+    for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) expect(replica).not.toHaveProperty(field);
+  }
+  expect(await value(summaries.summaryAddress(scope, id))).toMatchObject({ needs_unread_refresh: true });
+});

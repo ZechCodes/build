@@ -53,10 +53,12 @@ it("fences before optimistic watch painting and retains pending through refusal 
   const pending = deferred(), call = vi.fn((method) => method === "tasks.get" ? Promise.resolve(wire) : pending.promise);
   await mount(call);
   const button = host.querySelector(".rail-watch"), before = taskMutationEpoch(deviceId), painted = [];
-  const original = button.setAttribute;
-  vi.spyOn(button, "setAttribute").mockImplementation(function (name, value) {
-    if (name === "aria-pressed") painted.push({ value: String(value), pending: taskMutationsPending(deviceId) });
-    return original.call(this, name, value);
+  const toggle = await import("../src/core/watchToggle.js"), original = toggle.syncWatchButton;
+  vi.spyOn(toggle, "syncWatchButton").mockImplementation((element, state) => {
+    // Cache paints may rebuild the rail. Observe the actual live control,
+    // including its replacement, rather than a detached original button.
+    if (element && host.contains(element)) painted.push({ value: String(Boolean(state.watching)), pending: taskMutationsPending(deviceId) });
+    return original(element, state);
   });
   button.click();
   expect(taskMutationEpoch(deviceId)).not.toBe(before); expect(taskMutationsPending(deviceId)).toBe(1);
@@ -65,6 +67,7 @@ it("fences before optimistic watch painting and retains pending through refusal 
   pending.reject(new Error("watch refused"));
   await vi.waitFor(() => expect(taskMutationsPending(deviceId)).toBe(0));
   expect(painted).toContainEqual({ value: "false", pending: 1 });
+  expect(host.querySelector(".rail-watch").getAttribute("aria-pressed")).toBe("false");
 });
 
 it("retains optimistic read intent through acknowledgment and guarded cache advancement", async () => {

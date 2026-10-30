@@ -404,7 +404,7 @@ impl AppState {
             if let Some(command) =
                 crate::harness::unsupported_slash_command(provider, &messages[0].body)
             {
-                let error = format!("Build can't run `{command}` on this Codex agent.");
+                let error = format!("`{command}` isn't supported on Codex agents yet, so it wasn't sent. Use a Claude agent, or write out what you want.");
                 return self.refuse_local_command(
                     params,
                     address,

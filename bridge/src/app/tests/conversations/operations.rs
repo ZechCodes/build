@@ -1328,7 +1328,7 @@ fn codex_slash_local_refusal_is_durable_idempotent_and_never_delivered() {
     assert_eq!(answer["operation_status"], "delivered");
     assert_eq!(
         answer["operation_error"],
-        "Build can't run `/daybreak` on this Codex agent."
+        "`/daybreak` isn't supported on Codex agents yet, so it wasn't sent. Use a Claude agent, or write out what you want."
     );
     state.thread_post(&params).unwrap();
     assert_eq!(state.delivery_queue.queued().count(), queued);
@@ -1357,7 +1357,7 @@ fn codex_slash_local_refusal_is_durable_idempotent_and_never_delivered() {
     let error = state
         .thread_post(&json!({"entity_id":run_id,"body":"/daybreak"}))
         .unwrap_err();
-    assert!(error.contains("can't run"));
+    assert_eq!(error, "`/daybreak` isn't supported on Codex agents yet, so it wasn't sent. Use a Claude agent, or write out what you want.");
     assert_eq!(
         primary_thread(&state.runs[&run_id].agents).items.len(),
         before
@@ -1397,7 +1397,7 @@ fn codex_slash_refusal_rolls_back_and_survives_reload_without_provider_input() {
     let response = reloaded.thread_post(&params).unwrap();
     assert_eq!(
         response["operation_error"],
-        "Build can't run `/daybreak` on this Codex agent."
+        "`/daybreak` isn't supported on Codex agents yet, so it wasn't sent. Use a Claude agent, or write out what you want."
     );
     let thread = primary_thread_mut(&mut reloaded.runs.get_mut(&run_id).unwrap().agents);
     assert!(thread
@@ -1423,6 +1423,7 @@ fn codex_slash_refusal_does_not_intercept_other_text_or_providers() {
         (AgentProvider::CodexAppServer, "/daybreak/file"),
         (AgentProvider::CodexAppServer, "/home/zech"),
         (AgentProvider::CodexAppServer, "/tmp/x"),
+        (AgentProvider::CodexAppServer, "/tmp/foo"),
         (AgentProvider::CodexAppServer, "explain /daybreak"),
         (AgentProvider::ClaudeAdk, "/daybreak"),
     ] {
@@ -1469,6 +1470,7 @@ fn codex_slash_unknown_command_names_and_arguments_are_refused() {
     for (index, body) in [
         "/goal do this",
         "/clear",
+        "/tmp",
         "/daybreak",
         "/future-name arg\nmore",
     ]
@@ -1484,7 +1486,7 @@ fn codex_slash_unknown_command_names_and_arguments_are_refused() {
         let name = body.split_whitespace().next().unwrap();
         assert_eq!(
             answer["operation_error"],
-            format!("Build can't run `{name}` on this Codex agent.")
+            format!("`{name}` isn't supported on Codex agents yet, so it wasn't sent. Use a Claude agent, or write out what you want.")
         );
         assert!(state
             .operation_receipt(&format!("unknown-{index}"))

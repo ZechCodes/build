@@ -2330,8 +2330,10 @@ remain viewed across snapshots.
 The provider command table distinguishes native app-server commands from text
 sent to a terminal or stream-json harness. For Codex app-server, `/compact` keeps
 its existing routing; other command-shaped input in standalone human submissions
-(`/name` followed by optional arguments) is refused locally with a visible Build
-notice. Slash paths such as `/home/user/file` remain ordinary input. The request, failed delivery
+(first token `/name` followed by optional arguments) is refused locally with a
+visible Build notice. A token with no further `/` counts as a command, including
+bare single-segment paths such as `/tmp`; slash paths such as `/tmp/foo` or
+`/home/user/file` remain ordinary input. The request, failed delivery
 mark and notice are saved with a terminal operation receipt in one transaction,
 so retries cannot duplicate the notice or deliver the command. No provider turn
 is started or interrupted. Legacy callers without an operation ID receive an

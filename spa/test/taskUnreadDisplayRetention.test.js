@@ -161,7 +161,8 @@ async function mountInboxProducerComponent(expected = 3) {
   follower = followWatchedTasks({ onChange: () => { inboxHost.innerHTML = follower.entries().map(render).join(""); } });
   follower.follow([project]);
   await vi.waitFor(() => expect(follower.entries()[0]?.unreadCount).toBe(expected), WAIT);
-  await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).not.toBeNull(), WAIT);
+  if (expected > 0) await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).not.toBeNull(), WAIT);
+  else await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull(), WAIT);
 }
 
 async function publishCoveringTotal(total) {
@@ -601,5 +602,107 @@ describe("D5 actual producer transaction and non-admission controls", () => {
     expect(await displayedNote()).toEqual(before);
     expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
     expect(follower.entries()[0].unreadCount).toBe(3);
+  });
+});
+
+async function renderInboxPersistAndLeave() {
+  await seedSelectedInputs(); await mountInboxProducerComponent();
+  await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.inbox?.total).toBe(3), WAIT);
+  follower.dispose(); follower = null; inboxHost.replaceChildren();
+}
+
+describe("D5 Inbox production render owner lifecycle counterparts", () => {
+  it.each([[false, null, "unwatch"], [true, "te-90", "new incarnation"]])(
+    "does not revive Inbox3 after unmounted admitted %s/%s (%s) and a blind prior-lineage rewrite",
+    async (watched, floor) => {
+      await renderInboxPersistAndLeave();
+      await admittedLineage(watched, floor);
+      await blindRestorePriorLineage("Inbox blind rewrite after admission");
+      await mountInboxProducerComponent(0);
+      expect(inboxHost.querySelector(".stitle")?.textContent).toContain("Inbox blind rewrite after admission");
+      expect(follower.entries()[0].unreadCount).toBe(0);
+      expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull();
+    });
+
+  it("retains actual Inbox3 on remount after only blind lineage changes", async () => {
+    await renderInboxPersistAndLeave();
+    const blind = { ...await listedTask(), watch_started_after: "te-90" };
+    delete blind.unread_count;
+    expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+      tracker.tasksRecord([blind], columns()))).toBe(true);
+    await blindRestorePriorLineage("Inbox blind-only paint");
+    await mountInboxProducerComponent();
+    expect(inboxHost.querySelector(".stitle")?.textContent).toContain("Inbox blind-only paint");
+    expect(follower.entries()[0].unreadCount).toBe(3);
+  });
+
+  it("keeps actual Inbox3 through unmounted optimistic unwatch and exact rejected rollback", async () => {
+    await renderInboxPersistAndLeave();
+    const watch = await import("../src/core/taskWatchAuthority.js");
+    const owner = await watch.beginTaskWatchMutation(scope, taskId, { watched: false });
+    expect(owner).not.toBeNull();
+    expect((await listedTask()).watched).toBe(false);
+    expect((await displayedNote()).task_unread_display.inbox.total).toBe(3);
+    expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
+    expect((await displayedNote()).latest_watch_intent).toMatchObject({ ownerId: owner.id, disposition: "rejected" });
+    expect((await displayedNote()).task_unread_display.inbox.total).toBe(3);
+    await mountInboxProducerComponent();
+    expect(follower.entries()[0].unreadCount).toBe(3);
+  });
+
+  it.each([false, true])("does not publish a captured Inbox display after admitted unwatch when an existing Inbox slot is %s", async (hasSlot) => {
+    await seedSelectedInputs();
+    if (hasSlot) {
+      await mountInboxProducerComponent();
+      await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.inbox?.total).toBe(3), WAIT);
+    } else expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
+    const held = holdActualDisplayTransactions();
+    try {
+      if (hasSlot) {
+        await publishCoveringTotal(5);
+        await vi.waitFor(() => expect(follower.entries()[0]?.unreadCount).toBe(5), WAIT);
+        expect(inboxHost.querySelector(".inbox-status-unread")).not.toBeNull();
+      } else await mountInboxProducerComponent();
+      await vi.waitFor(() => expect(held.captured).toBeGreaterThan(0), WAIT);
+      const addresses = [tracker.tasksAddress(scope.deviceId, scope.projectId), tracker.taskAddress(scope.deviceId, scope.projectId, taskId)];
+      const before = (await cache.readCachedMany(addresses)).map(cache.recordWriteOf);
+      await admitSummaryOnlyUnwatch();
+      expect((await cache.readCachedMany(addresses)).map(cache.recordWriteOf)).toEqual(before);
+      await held.release();
+      expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
+    } finally { await held.release(); }
+  });
+
+  it("does not recreate actual Inbox display on a fresh renderEntry paint after an admitted unwatch announcement", async () => {
+    await seedSelectedInputs(); await mountInboxProducerComponent();
+    await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.inbox?.total).toBe(3), WAIT);
+    await admitSummaryOnlyUnwatch();
+    await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull(), WAIT);
+    const { inboxRowHtml } = await import("../src/core/inbox.js");
+    inboxHost.innerHTML = follower.entries().map((entry) => follower.renderEntry(entry, () => inboxRowHtml(entry))).join("");
+    expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull();
+    expect(follower.entries()[0].unreadCount).toBe(0);
+    expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
+  });
+
+  it("retires actual Inbox quota-only display memory on admitted unwatch without a persisted Inbox slot", async () => {
+    await seedSelectedInputs();
+    let refused = 0;
+    const put = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (record, key) {
+      if (record?.value?.task_unread_display?.inbox) {
+        refused += 1; throw new DOMException("Inbox display quota refused", "QuotaExceededError");
+      }
+      return put.call(this, record, key);
+    });
+    await mountInboxProducerComponent();
+    await vi.waitFor(() => expect(refused).toBeGreaterThan(0), WAIT);
+    expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
+    expect(follower.entries()[0].unreadCount).toBe(3);
+    await admitSummaryOnlyUnwatch();
+    await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull(), WAIT);
+    expect(follower.entries()[0].unreadCount).toBe(0);
+    expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
+    expect(inboxHost.querySelector(".error, .warn:not([hidden])")).toBeNull();
   });
 });

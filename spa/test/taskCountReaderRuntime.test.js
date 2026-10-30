@@ -38,6 +38,17 @@ const push = () => [...live.watches].forEach(({ refresh }) => refresh());
 const moved = () => [...live.moved].forEach((listener) => listener());
 const greeted = () => [...live.greeted].forEach((listener) => listener(scope.deviceId));
 const cachedTotal = async (total) => vi.waitFor(async () => expect((await readCounts(scope))?.watched_unread_total).toBe(total));
+const recordedGreeting = async () => {
+  const contexts = await vi.importActual("../src/core/deviceContexts.js"), sent = [], entered = vi.fn();
+  live.realGreeting = { whenGreeted: async (context, dispatch) => {
+    entered();
+    const request = await contexts.whenGreeted(context, dispatch);
+    if (request) sent.push(request.sent);
+    return request;
+  } };
+  Object.assign(live.context, { session: live.session, call: live.context.rpc, offline: false });
+  return { contexts, sent, entered };
+};
 
 beforeEach(async () => {
   vi.resetModules();
@@ -108,6 +119,43 @@ it("coalesces the opening greeting announcement after dispatch while its counts 
   await vi.waitFor(() => expect(live.context.rpc).toHaveBeenCalledTimes(1));
   greeted(); first.resolve(counts()); await cachedTotal(5);
   expect(live.context.rpc).toHaveBeenCalledTimes(1);
+});
+
+it("does not retry a rejected actual opening counts request and admits the next legitimate push once", async () => {
+  const { contexts, sent } = await recordedGreeting(), first = deferred();
+  live.context.rpc.mockImplementationOnce(() => first.promise).mockResolvedValue(counts(7));
+  const authority = contexts.greetingInFlight(live.context);
+  mount(); await Promise.resolve(); await Promise.resolve();
+  contexts.adoptBridgeSelection(live.context, { version: "3.27.0", unsupported: null },
+    { capabilities: { tasks: { counts: true } } }, authority);
+  greeted(); await vi.waitFor(() => expect(live.context.rpc).toHaveBeenCalledTimes(1));
+  first.reject(new Error("opening read refused"));
+  await expect(sent[0]).rejects.toThrow("opening read refused");
+  await Promise.resolve();
+  expect(live.context.rpc).toHaveBeenCalledTimes(1);
+  expect(await readCounts(scope)).toBeNull();
+  push(); await cachedTotal(7);
+  expect(live.context.rpc).toHaveBeenCalledTimes(2);
+});
+
+it("keeps replacement greeting ownership when the old actual opening counts request rejects", async () => {
+  const { contexts, sent, entered } = await recordedGreeting(), old = deferred(), replacement = deferred();
+  live.context.rpc.mockImplementationOnce(() => old.promise).mockImplementationOnce(() => replacement.promise);
+  const opening = contexts.greetingInFlight(live.context);
+  const runtime = mount(); await Promise.resolve(); await Promise.resolve();
+  contexts.adoptBridgeSelection(live.context, { version: "3.27.0", unsupported: null },
+    { capabilities: { tasks: { counts: true } } }, opening);
+  greeted(); await vi.waitFor(() => expect(live.context.rpc).toHaveBeenCalledTimes(1));
+  const next = contexts.greetingInFlight(live.context), refresh = runtime.refresh();
+  await vi.waitFor(() => expect(entered).toHaveBeenCalledTimes(2));
+  old.reject(new Error("retired opening read refused"));
+  await expect(sent[0]).rejects.toThrow("retired opening read refused");
+  await Promise.resolve();
+  contexts.adoptBridgeSelection(live.context, { version: "3.27.0", unsupported: null },
+    { capabilities: { tasks: { counts: true } } }, next);
+  await vi.waitFor(() => expect(live.context.rpc).toHaveBeenCalledTimes(2));
+  greeted(); replacement.resolve(counts(4)); await refresh; await cachedTotal(4);
+  expect(live.context.rpc).toHaveBeenCalledTimes(2);
 });
 
 it("suppresses pending mutations and refreshes once after the final acknowledgment", async () => {

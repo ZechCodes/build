@@ -262,3 +262,18 @@ it("recovers a retired normalized header through the existing addressed full-det
   await retireHeader();
   expect(content.taskFullRefreshKey((await tracker.readTaskRecord(scope.deviceId, scope.projectId, seed.id)).task)).not.toBeNull();
 });
+
+it("keeps a retired external future-header timestamp protective during addressed full recovery", async () => {
+  const summaries = await import("../src/core/taskSummaryCache.js");
+  await publish(await observed(task({ updated_at: "2026-10-29T10:00:00Z" })));
+  const future = task({ title: "Future header", updated_at: "2026-10-29T20:00:00Z" });
+  const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
+  await summaries.landSummaryPage(ticket, { summary: true, basis: "future", tasks: [future] }, { read: ticket.generation });
+  const summaryAddress = summaries.summaryAddress(scope, future.id);
+  const held = (await cache.readCached(summaryAddress)).value.task;
+  await summaries.writeSummaryTask(scope, content.retireTaskContent(held, "header"), await order.nextTaskRead());
+  const barrier = (await cache.readCached(summaryAddress)).value.task;
+  const result = await publish(await observed(task({ title: "Intermediate", body: "Intermediate", updated_at: "2026-10-29T15:00:00Z" })), barrier);
+  expect(result).toMatchObject({ acceptedHeader: false, acceptedBody: false, needsFullRefresh: true });
+  expect(result.task).toMatchObject({ title: "Current", body: "Body" });
+});

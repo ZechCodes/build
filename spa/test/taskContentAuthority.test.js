@@ -602,3 +602,76 @@ it("certifies only raw full TaskView compact fields and derives its complete wai
   const detail = await tracker.readTaskRecord(scope.deviceId, scope.projectId, initial.id);
   expect(content.taskFullRefreshKey(detail.task, normalized.task)).toBeNull();
 });
+
+async function seededListReplica(address) {
+  const tracker = await import("../src/core/trackerCache.js");
+  const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+  const record = tracker.tasksRecord([content.observeTaskContent(task(), { contentRead, coverage: "full" })], [{ id: "ready" }], contentRead.readOrder);
+  if (address.kind === tracker.TRACKER_TASKS_KIND) await tracker.writeTasksRecord(scope.deviceId, scope.projectId, record, { contentRead });
+  else await tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId, { state: "open" }, record, { contentRead });
+  return tracker;
+}
+
+it("requires the actual matching addressed scope ticket before a whole-list response can remove membership", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  await seededListReplica(target);
+  const before = (await cache.readCached(target)).value;
+  const foreign = [scope, tracker.tasksQueryAddress(scope.deviceId, scope.projectId, { state: "open" }),
+    tracker.tasksAddress(scope.deviceId, "another-project")];
+  for (const place of foreign) {
+    const contentRead = await content.captureTaskContentRead(place, place.kind ? { revalidate: "full" } : {});
+    await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([], [], contentRead.readOrder), { contentRead });
+    expect((await cache.readCached(target)).value).toEqual(before);
+  }
+});
+
+it("preserves list membership and columns when a same-epoch copied write changes its exact dispatched record baseline", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  await seededListReplica(target);
+  const contentRead = await content.captureTaskContentRead(target, { revalidate: "full" });
+  const held = (await cache.readCached(target)).value;
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { ...held, columns: [{ id: "ready", label: "Changed" }] });
+  const before = (await cache.readCached(target)).value;
+  expect((await content.captureTaskContentRead(scope)).ticket.retirementEpoch).toBe(contentRead.ticket.retirementEpoch);
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([], [], contentRead.readOrder), { contentRead });
+  expect((await cache.readCached(target)).value).toEqual(before);
+});
+
+async function jointListRemoval() {
+  const tracker = await import("../src/core/trackerCache.js");
+  const addresses = [tracker.tasksQueryAddress(scope.deviceId, scope.projectId, { state: "open" }), tracker.tasksAddress(scope.deviceId, scope.projectId)];
+  for (const address of addresses) await seededListReplica(address);
+  const entries = [];
+  for (const address of addresses) {
+    const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+    entries.push({ address, contentRead, record: tracker.tasksRecord([], [], contentRead.readOrder) });
+  }
+  return { tracker, addresses, entries };
+}
+
+it("accepts both fresh list absences under one captured scope epoch and rotates the retirement fence once", async () => {
+  const { tracker, addresses, entries } = await jointListRemoval();
+  const { IDBObjectStore } = await import("fake-indexeddb"), put = IDBObjectStore.prototype.put;
+  let retirements = 0;
+  const spy = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function(record, key) {
+    if (String(key).includes("|task-content-scope|")) retirements += 1;
+    return put.call(this, record, key);
+  });
+  expect(await tracker.writeTaskListRecords(scope.deviceId, scope.projectId, entries)).toBe(true);
+  spy.mockRestore();
+  for (const address of addresses) expect((await cache.readCached(address)).value.tasks).toEqual([]);
+  expect(retirements).toBe(1);
+  expect((await content.captureTaskContentRead(scope)).ticket.retirementEpoch).not.toBe(entries[0].contentRead.ticket.retirementEpoch);
+});
+
+it("rolls back both list absences and their retirement when either joint replica hits quota", async () => {
+  const { tracker, addresses, entries } = await jointListRemoval();
+  const all = [...addresses, content.taskContentScopeAddress(scope)], before = await cache.readCachedMany(all);
+  const { IDBObjectStore } = await import("fake-indexeddb"), put = IDBObjectStore.prototype.put;
+  const spy = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function(record, key) {
+    if (String(key).includes("|tracker-tasks|")) throw new DOMException("Quota", "QuotaExceededError");
+    return put.call(this, record, key);
+  });
+  expect(await tracker.writeTaskListRecords(scope.deviceId, scope.projectId, entries)).toBe(false);
+  spy.mockRestore(); expect(await cache.readCachedMany(all)).toEqual(before);
+});

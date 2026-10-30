@@ -720,6 +720,7 @@ async function unwatchTask(entry) {
       const contentRead = await captureTaskContentRead({ deviceId: entry.deviceId, projectId: entry.projectId });
       if (!accept()) throw new Error("This task's session changed before sending the action.");
       const answer = await verbCall(entry, "stop watching this task")("tasks.unwatch", { task_id: entry.taskId });
+      validateUnwatchAnswer(entry, answer);
       const accepted = await settleTaskWatchMutation(owner, { answer, contentRead, accept });
       if (unwatched.get(entry.key)?.owner !== owner) return;
       if (accepted) unwatched.set(entry.key, { owner, stampMs: Date.parse(answer?.task?.updated_at || "") || entry.updatedMs });
@@ -731,6 +732,14 @@ async function unwatchTask(entry) {
     showRowError(entry.key, error);
     notifyError(failureSummary, messageOf(error));
   });
+}
+
+function validateUnwatchAnswer(entry, answer) {
+  if (!answer || !Object.hasOwn(answer, "task")) return;
+  const task = answer.task;
+  if (task?.id !== entry.taskId || task.project_id !== entry.projectId || task.watched !== false || typeof task.body !== "string") {
+    throw new Error("Expected a matching full task unwatch response");
+  }
 }
 
 /** Catalogue optimism, its row note and shared watch owner commit together. */

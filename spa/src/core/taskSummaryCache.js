@@ -337,13 +337,25 @@ function observedSummaryValue(held, projected, source, read, options) {
     context: options.context, contentRead: options.contentRead, watchGuard: options.watchGuard || options.headerBarrier, watchGuards: options.headerGuards,
     acknowledgment: options.acknowledgment, markerPolicy: "canonical",
   });
-  const older = olderRow(held, projected, read);
-  const reviewed = preserveTaskReviewSummary(held?.task, source, {
-    readOrder: read, keepHeld: older, allowMissing: !older, baseRow: projected,
-  });
+  const reviewed = observedReviewSummary(held, projected, source, read, options);
   return { task: withTaskReadFacts(reviewed, facts.task), read_order: Math.max(read, held?.read_order || 0),
     watch_read_order: facts.selectedWatchRead ?? undefined, watch_uncertain: !facts.watchCertain,
     needs_unread_refresh: facts.needsUnreadRefresh };
+}
+
+const observesReviewSummary = (source, options) => options.action !== true || options.fullTask === true
+  || Object.hasOwn(source, "review_summary") || Object.hasOwn(source, "__review_summary_cache");
+
+function observedReviewSummary(held, projected, source, read, options) {
+  const observed = observesReviewSummary(source, options), older = olderRow(held, projected, read);
+  // A compact edit of ordinary fields observes no PR absence. Reuse the
+  // held PR state without assigning that edit's timestamp or read clock to it.
+  const reviewSource = observed ? source : held?.task;
+  if (!reviewSource) return projected;
+  return preserveTaskReviewSummary(held?.task, reviewSource, {
+    readOrder: observed ? read : undefined, keepHeld: !observed || older,
+    allowMissing: observed && !older, baseRow: projected,
+  });
 }
 
 function summaryCopyFacts(held, source, options) {

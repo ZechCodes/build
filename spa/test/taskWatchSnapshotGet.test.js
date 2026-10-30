@@ -112,8 +112,12 @@ it("UNITCONTRACT sends the independently advertised GET snapshot opt-in from an 
   await awaitSaved(read);
 });
 
-it.each([[], ["tasks.watchSnapshot.v1"], ["tasks.watchSnapshot.lookup.v1"]])(
-  "UNITCONTRACT preserves legacy GET parameters when only these endpoint capabilities are advertised: %j", async (capabilities) => {
+it.each([
+  { label: "none", capabilities: [] },
+  { label: "summary only", capabilities: ["tasks.watchSnapshot.v1"] },
+  { label: "lookup only", capabilities: ["tasks.watchSnapshot.lookup.v1"] },
+])(
+  "UNITCONTRACT preserves legacy GET parameters when endpoint support is $label", async ({ capabilities }) => {
     const read = await beginRead(capabilities);
     expect(read.requests[0]).toEqual({ method: "tasks.get", params: { task_id: taskId } });
     read.answer();

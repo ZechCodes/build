@@ -388,3 +388,25 @@ it("admits a genuine absent action header and its immediate next assignment with
   expect(row.assignee).toBeNull(); expect(row.__task_content_cache.header.read_order).toBe(unassign.readOrder);
   expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0].assignee).toBeNull();
 });
+
+it("keeps existing unknown headers fenced while admitting only truly absent action headers", async () => {
+  await cache.writeCached(address, { task: task(), timeline: [] });
+  const result = await publish(content.observeTaskContent(task({ title: "Unproven replacement", body: "Unproven replacement" }),
+    { contentRead: await content.captureTaskContentRead(scope), coverage: "full" }));
+  expect(result).toMatchObject({ acceptedHeader: false, acceptedBody: false });
+  expect(result.task).toMatchObject({ title: "Current", body: "Body" });
+  expect(result.task.__task_content_cache.header).toBeUndefined();
+});
+
+it("fences a genuine absent action header behind a stronger external header without borrowing its proof", async () => {
+  const pending = content.observeTaskContent(task({ title: "Earlier action" }),
+    { contentRead: await content.captureTaskContentRead(scope), coverage: "full" });
+  const headerRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+  const fragment = content.taskContentFragment(scope), context = fragment.context(await cache.readCachedMany(fragment.addresses));
+  const barrier = content.reconcileTaskContent(undefined, content.observeTaskContent(task({ title: "Current barrier" }),
+    { contentRead: headerRead, coverage: "summary" }), { context }).task;
+  const result = await publish(pending, barrier);
+  expect(result).toMatchObject({ acceptedHeader: false, acceptedBody: false });
+  expect(result.task).toMatchObject({ title: "Current barrier" });
+  expect(result.task.body).toBeUndefined(); expect(result.task.__task_content_cache.header).toBeUndefined();
+});

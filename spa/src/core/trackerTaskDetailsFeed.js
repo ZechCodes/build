@@ -65,15 +65,6 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     return reading;
   }
 
-  function currentRecordWins(current, before, answer) {
-    if ((current?.at || 0) > before) return true;
-    const heldTask = current?.value?.task;
-    const answerTask = answer?.task;
-    return Boolean(heldTask && answerTask
-      && !changedSince(answerTask, current.value)
-      && heldTask.updated_at !== answerTask.updated_at);
-  }
-
   function pump() {
     if (disposed) return;
     for (const [id, version] of pending) {
@@ -90,10 +81,8 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   async function writeAnswer(id, answer, basis, acceptsRead) {
     if (!acceptsRead()) return;
     if (answer?.task?.id !== id) return;
-    // A page or another tab may have written a newer detail while this read
-    // was in flight. Leave its record in place rather than replacing it.
-    const current = await readCached(address(id));
-    if (!acceptsRead() || currentRecordWins(current, basis.before, answer)) return;
+    // The transaction selects ordinary content and independent read/watch/PR
+    // families separately, retaining newer content without dropping new facts.
     await writeTaskRecord(deviceId, projectId, id, taskRecord(answer?.task, answer?.timeline), {
       detailBasis: basis.detailBasis, contentRead: basis.contentRead,
       accept: acceptsRead,
@@ -110,12 +99,9 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
         captureTaskDetailRead(deviceId, projectId, id),
         captureTaskContentRead(address(id), { revalidate: "full" }),
       ]);
-      // A trailing read can start before the prior answer's cache observer
-      // finishes. Capture its baseline from the store, not that observer.
-      const before = (await readCached(address(id)))?.at || 0;
       if (!acceptsOwner() || !stillWanted(id, version)) return;
       const answer = await callRpc("tasks.get", { task_id: id });
-      await writeAnswer(id, answer, { before, detailBasis, contentRead }, () => acceptsOwner() && stillWanted(id, version));
+      await writeAnswer(id, answer, { detailBasis, contentRead }, () => acceptsOwner() && stillWanted(id, version));
     } catch {
       // The list remains useful offline. A later list version can retry.
     }

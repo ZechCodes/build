@@ -35,6 +35,11 @@ def test_migration_adds_constraints_indexes_and_preserves_legacy_approval():
             "SELECT approved,authorization_epoch FROM devices"
         ).one() == (1, 0)
         inspector = sa.inspect(connection)
+        device_id_type = next(
+            column["type"]
+            for column in inspector.get_columns("devices")
+            if column["name"] == "id"
+        )
         for model in (
             models.BridgeHttpEndpoint,
             models.BridgeHttpChallenge,
@@ -55,6 +60,18 @@ def test_migration_adds_constraints_indexes_and_preserves_legacy_approval():
                 fk["options"]["ondelete"] == "CASCADE"
                 for fk in inspector.get_foreign_keys(table.name)
             )
+        for table_name in (
+            "bridge_http_endpoints",
+            "bridge_http_challenges",
+            "bridge_http_families",
+            "bridge_http_replays",
+        ):
+            migrated_type = next(
+                column["type"]
+                for column in inspector.get_columns(table_name)
+                if column["name"] == "device_id"
+            )
+            assert migrated_type._type_affinity is device_id_type._type_affinity
         with Operations.context(MigrationContext.configure(connection)):
             migration.downgrade()
         assert set(sa.inspect(connection).get_table_names()) == {"users", "devices"}

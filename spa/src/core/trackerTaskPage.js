@@ -554,8 +554,7 @@ export function mountTaskPage(host, options) {
   function requestFullContent(task, authority) {
     const key = taskFullRefreshKey(task, contentHeader);
     if (!key || key === attemptedFullRefresh) return;
-    attemptedFullRefresh = key;
-    void requestOwnedTaskRead(authority);
+    void requestOwnedTaskRead(authority, key);
   }
 
   const summaryTarget = summaryAddress({ deviceId: state.deviceId, projectId: state.projectId }, state.taskId);
@@ -670,7 +669,7 @@ export function mountTaskPage(host, options) {
    *  read begun before it. A write awaiting this while a read is out settles
    *  with the read after it, so the page paints what was written. */
   let taskReads = null;
-  let queuedOwnedRead = null, normalReadDemand = false;
+  let queuedOwnedRead = null, queuedRepairRead = null, normalReadDemand = false;
   let lastTaskReadOwner = null;
   function refreshForMount() {
     if (state.disposed || lastTaskReadOwner?.accept()) return;
@@ -680,8 +679,9 @@ export function mountTaskPage(host, options) {
     normalReadDemand = true;
     return requestTaskRead();
   }
-  function requestOwnedTaskRead(owner) {
+  function requestOwnedTaskRead(owner, repairKey = null) {
     if (!normalReadDemand) queuedOwnedRead = owner;
+    if (repairKey) queuedRepairRead = { owner, key: repairKey };
     return requestTaskRead();
   }
   function requestTaskRead() {
@@ -691,25 +691,28 @@ export function mountTaskPage(host, options) {
   function consumeTaskReadDemand() {
     // A trailing control or repair hint keeps its captured owner. Ordinary
     // invalidation demand remains valid through the existing read owner.
-    const owner = queuedOwnedRead, normal = normalReadDemand;
-    queuedOwnedRead = null; normalReadDemand = false;
-    return !state.disposed && (normal || !owner || owner.accept());
+    const owner = queuedOwnedRead, repair = queuedRepairRead, normal = normalReadDemand;
+    queuedOwnedRead = null; queuedRepairRead = null; normalReadDemand = false;
+    if (state.disposed || !normal && owner && !owner.accept()) return null;
+    return { repairKey: repair?.owner.accept() ? repair.key : null };
   }
 
-  function admitTaskReadOwner() {
+  function admitTaskReadOwner(demand) {
     const authority = captureTaskAction(state);
     if (state.disposed || !authority.accept()) return null;
     // Mount joins only a real admitted attempt, including one which failed.
     // This local scheduling marker confers no cached content/watch authority.
     lastTaskReadOwner = authority;
-    const uncertainty = taskFullRefreshKey(state.task, contentHeader);
-    if (uncertainty) attemptedFullRefresh = uncertainty;
+    // Only accepted dispatch consumes the coherent snapshot's repair key.
+    // A retired queued hint must leave that key eligible for its next owner.
+    if (demand.repairKey) attemptedFullRefresh = demand.repairKey;
     return authority;
   }
 
   async function readTask() {
-    if (!consumeTaskReadDemand()) return;
-    const authority = admitTaskReadOwner();
+    const demand = consumeTaskReadDemand();
+    if (!demand) return;
+    const authority = admitTaskReadOwner(demand);
     if (!authority) return;
     try {
       const [checklistBasis, detailBasis, contentRead] = await Promise.all([

@@ -238,3 +238,27 @@ it("publishes independent PR and read facts beside the selected ordinary detail 
   for (const row of rows) expect(row).toMatchObject({ title: "Current", body: "Body", read_through: "tc-20",
     unread_count: 1, review_summary: { version: 2 } });
 });
+
+it("recovers a retired normalized header through the existing addressed full-detail owner", async () => {
+  const summaries = await import("../src/core/taskSummaryCache.js"), tracker = await import("../src/core/trackerCache.js");
+  const seed = task();
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, seed.id, { task: seed, timeline: [] },
+    { contentRead: await content.captureTaskContentRead(address, { revalidate: "full" }) });
+  const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
+  await summaries.landSummaryPage(ticket, { summary: true, basis: "before", tasks: [seed] }, { read: ticket.generation });
+  const retireHeader = async () => {
+    const held = (await cache.readCached(summaries.summaryAddress(scope, seed.id))).value.task;
+    await summaries.writeSummaryTask(scope, content.retireTaskContent({ ...held, title: "Optimistic title" }, "header"), await order.nextTaskRead());
+  };
+  await retireHeader();
+  const before = await tracker.readTaskRecord(scope.deviceId, scope.projectId, seed.id);
+  expect(content.taskFullRefreshKey(before.task)).not.toBeNull();
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, seed.id, { task: seed, timeline: [] },
+    { contentRead: await content.captureTaskContentRead(address, { revalidate: "full" }) });
+  const recovered = await tracker.readTaskRecord(scope.deviceId, scope.projectId, seed.id);
+  expect(content.taskNeedsFullRefresh(recovered.task)).toBe(false);
+  expect(content.taskFullRefreshKey(recovered.task)).toBeNull();
+  // Covering one retirement never covers a subsequent optimistic rewrite.
+  await retireHeader();
+  expect(content.taskFullRefreshKey((await tracker.readTaskRecord(scope.deviceId, scope.projectId, seed.id)).task)).not.toBeNull();
+});

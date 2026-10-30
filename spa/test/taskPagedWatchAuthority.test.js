@@ -348,3 +348,67 @@ it("retires only older copied protection while a newer metadata-only owner and t
   expect(await first.watch.settleTaskWatchMutation(older, { rollback: true })).toBe(false);
   expect(await outside.watch.readTaskWatchState(scope)).toEqual(completed);
 });
+
+it("keeps the terminal intent after a full acknowledgment updates populated detail and rejects a late stamped copy", async () => {
+  const first = await runtime();
+  const order = await import("../src/core/taskReadOrder.js");
+  const detail = first.tracker.taskAddress(scope.deviceId, scope.projectId, "task-20");
+  const seededRead = await first.content.captureTaskContentRead(detail, { revalidate: "full" });
+  await first.tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-20",
+    first.tracker.taskRecord(row(), []), { contentRead: seededRead });
+  expect((await first.tracker.readTaskRecord(scope.deviceId, scope.projectId, "task-20")).task.body).toBe(row().body);
+  expect(await pull(first, async () => ({ tasks: [row()] }))).toBe(true);
+  const owner = await first.watch.beginTaskWatchMutation(scope, "task-20", { watched: false });
+  const prepared = structuredClone((await savedRows(first))[0]);
+  expect(prepared.__task_watch_intent).toBe(owner.id);
+  const contentRead = await first.content.captureTaskContentRead(detail, { revalidate: "full" });
+  const outside = await runtime();
+  const answer = row(20, { watched: false, title: "Acknowledged populated detail", body: "Acknowledged full body" });
+  await outside.watch.settleTaskWatchMutation(owner, { answer: { task: answer }, contentRead });
+  const populated = await outside.tracker.readTaskRecord(scope.deviceId, scope.projectId, "task-20");
+  expect(populated.task).toMatchObject({ title: answer.title, body: answer.body });
+  const terminal = await outside.watch.readTaskWatchState(scope);
+  expect(terminal).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  const note = (await outside.cache.readCached(order.taskWatchIntentAddress(scope, "task-20"))).value;
+  expect(note.latest_watch_intent).toMatchObject({ ownerId: owner.id, intentRead: owner.intentRead, disposition: "acknowledged" });
+
+  const queryParams = { ...params, state: "open" };
+  const query = outside.tracker.tasksQueryAddress(scope.deviceId, scope.projectId, queryParams);
+  expect(await outside.cache.readCached(query)).toBeUndefined();
+  await outside.tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId, queryParams,
+    outside.tracker.tasksRecord([prepared], []));
+  const copied = (await savedRows(outside, query))[0];
+  expect(copied.watched).toBe(false);
+  expect(copied.__task_watch_intent).toBeUndefined();
+  expect(copied[outside.watch.TASK_WATCH_CACHE]?.uncertain).not.toBe(false);
+  expect(await outside.watch.readTaskWatchState(scope)).toEqual(terminal);
+});
+
+it("does not resurrect rolled-back unwatch paint by reclassifying an obsolete copied stamp as a blind edit", async () => {
+  const first = await runtime();
+  expect(await pull(first, async () => ({ tasks: [row()] }))).toBe(true);
+  const owner = await first.watch.beginTaskWatchMutation(scope, "task-20", { watched: false });
+  const prepared = structuredClone((await savedRows(first))[0]);
+  expect(prepared).toMatchObject({ watched: false, __task_watch_intent: owner.id });
+  const outside = await runtime();
+  expect(await outside.watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
+  const restored = (await savedRows(outside))[0];
+  expect(restored.watched).toBe(true);
+  expect(restored.__task_watch_intent).toBeUndefined();
+  const terminal = await outside.watch.readTaskWatchState(scope);
+  const controlAddress = outside.watch.taskWatchControlAddress(scope);
+  const beforeControl = (await outside.cache.readCached(controlAddress)).value;
+  expect(terminal).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+
+  // The incoming bytes are the actual failed optimistic cache copy. Removing
+  // its obsolete tag cannot turn those same bytes into a new user mutation.
+  await outside.tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    outside.tracker.tasksRecord([prepared], []));
+  const held = (await savedRows(outside))[0];
+  expect(held).toMatchObject({ watched: true, title: restored.title });
+  expect(held.__task_watch_intent).toBeUndefined();
+  expect(held[outside.watch.TASK_WATCH_CACHE]).toBeUndefined();
+  expect(held.unread_count).toBeUndefined();
+  expect(await outside.watch.readTaskWatchState(scope)).toEqual(terminal);
+  expect((await outside.cache.readCached(controlAddress)).value.blindRetirementEpoch).toBe(beforeControl.blindRetirementEpoch);
+});

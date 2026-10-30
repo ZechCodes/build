@@ -71,6 +71,7 @@ async function setup() {
   await runtime.tracker.writeTasksRecord(deviceId, projectId, runtime.tracker.tasksRecord([held], columns()));
   const contentRead = await runtime.content.captureTaskContentRead(runtime.address, { revalidate: "full" });
   await runtime.tracker.writeTaskRecord(deviceId, projectId, taskId, runtime.tracker.taskRecord(held, timeline), { contentRead });
+  runtime.actualWriter = runtime.tracker.writeTaskRecord;
   runtime.writer = vi.spyOn(runtime.tracker, "writeTaskRecord");
 }
 
@@ -166,4 +167,102 @@ it.each(["page", "feed"])("recovers an actual deferred %s full read once its exa
   expect(freshTask.__task_content_cache.header.read_order).toBe(freshRead.readOrder);
   expect(freshTask.__task_content_cache.body.read_order).toBe(freshRead.readOrder);
   expect(runtime.gets).toHaveLength(before + 2);
+});
+
+async function deferredRead(kind) {
+  await mount(kind);
+  runtime.holdGets = true;
+  const mutation = deferred(); runtime.requests.push(mutation);
+  const pending = runtime.fence.wrapTaskMutationCall(deviceId, "tasks.update", () => mutation.promise, { projectId, taskId });
+  const before = runtime.gets.length, readsBefore = runtime.reads.length;
+  await optimisticRetirement();
+  await vi.waitFor(() => expect(runtime.gets).toHaveLength(before + 1));
+  return { mutation, pending, before, readsBefore };
+}
+
+async function landDeferredRead(turn) {
+  runtime.gets[turn.before].resolve(answer({ ...held, read_through: "tc-20",
+    review_summary: { task_id: taskId, version: 2, status: "closed", mode: "pull_request" } }));
+  await runtime.reads[turn.readsBefore];
+  const cached = (await runtime.tracker.readTaskRecord(deviceId, projectId, taskId)).task;
+  expect(cached.status).toBe("ready");
+  expect(cached.read_through).toBe("tc-20");
+  expect(cached.review_summary.version).toBe(2);
+}
+
+async function finishRecovery(turn) {
+  await vi.waitFor(() => expect(runtime.gets).toHaveLength(turn.before + 2));
+  runtime.serverTask = { ...held, title: "Settled ready", status: "ready", updated_at: "2026-10-30T00:00:00Z" };
+  runtime.gets[turn.before + 1].resolve(answer(runtime.serverTask));
+  await runtime.reads[turn.readsBefore + 1];
+  expect((await runtime.tracker.readTaskRecord(deviceId, projectId, taskId)).task.title).toBe("Settled ready");
+  expect(runtime.gets).toHaveLength(turn.before + 2);
+}
+
+it.each(["page", "feed"])("recovers a deferred %s read when real commit notification settles before its observer", async (kind) => {
+  const turn = await deferredRead(kind);
+  let committed = false, observerPending = null;
+  // Call the genuine producer/writer. Only observe the callback delivered by
+  // its completed transaction; no callback is manufactured by this test.
+  runtime.writer.mockImplementation((device, project, id, record, options) => runtime.actualWriter(device, project, id, record, {
+    ...options,
+    onOrdinaryDeferred: () => {
+      observerPending = runtime.fence.taskMutationsPendingFor(scope, taskId);
+      options.onOrdinaryDeferred?.();
+    },
+  }));
+  const stop = runtime.local.subscribeCache(runtime.address, () => {
+    committed = true;
+    turn.mutation.resolve({});
+  });
+  try {
+    await landDeferredRead(turn);
+    await turn.pending;
+    expect(committed).toBe(true);
+    expect(observerPending).toBe(0);
+    await finishRecovery(turn);
+  } finally { stop(); }
+});
+
+it.each(["page", "feed"])("waits for both exact mutations before one %s recovery after rejection", async (kind) => {
+  const turn = await deferredRead(kind);
+  const other = deferred(); runtime.requests.push(other);
+  const overlapping = runtime.fence.wrapTaskMutationCall(deviceId, "tasks.update", () => other.promise, { projectId, taskId });
+  const rejected = overlapping.catch((error) => error);
+  await landDeferredRead(turn);
+  turn.mutation.resolve({});
+  await turn.pending;
+  expect(runtime.fence.taskMutationsPendingFor(scope, taskId)).toBe(1);
+  expect(runtime.gets).toHaveLength(turn.before + 1);
+  const error = new Error("Rejected update");
+  other.reject(error);
+  expect(await rejected).toBe(error);
+  expect(runtime.fence.taskMutationsPendingFor(scope, taskId)).toBe(0);
+  await finishRecovery(turn);
+});
+
+it.each(["page", "feed"])("drops a committed deferred %s recovery after disposal", async (kind) => {
+  const turn = await deferredRead(kind);
+  await landDeferredRead(turn);
+  page?.dispose(); feed?.dispose();
+  turn.mutation.resolve({});
+  await turn.pending;
+  await Promise.allSettled(runtime.reads);
+  expect(runtime.fence.taskMutationsPendingFor(scope, taskId)).toBe(0);
+  expect(runtime.gets).toHaveLength(turn.before + 1);
+  expect((await runtime.tracker.readTaskRecord(deviceId, projectId, taskId)).task.status).toBe("ready");
+});
+
+it.each(["page", "feed"])("drops a deferred %s settlement demand after real session replacement", async (kind) => {
+  const turn = await deferredRead(kind);
+  await landDeferredRead(turn);
+  const replacement = fakeSession(deviceId);
+  replacement.call.mockResolvedValue({});
+  expect(runtime.contexts.adoptDeviceSession(replacement)).toBe(runtime.context);
+  expect(runtime.context.session).toBe(replacement);
+  turn.mutation.resolve({});
+  await turn.pending;
+  await Promise.allSettled(runtime.reads);
+  expect(replacement.call).not.toHaveBeenCalled();
+  expect(runtime.gets).toHaveLength(turn.before + 1);
 });

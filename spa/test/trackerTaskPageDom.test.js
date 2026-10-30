@@ -101,7 +101,7 @@ const flush = async () => {
 };
 
 const answerFor = (over = {}, timeline = TIMELINE) => ({
-  task: task({ id: "task-1", number: 12, status: "in_progress", ...over }),
+  task: task({ id: "task-1", project_id: "proj-1", number: 12, status: "in_progress", ...over }),
   timeline,
 });
 
@@ -299,7 +299,7 @@ describe("task unread navigation", () => {
       comment({ id: "tc-01M37FGQD48628P29BG1A4BB02", author: { kind: "agent", agent_id: "agent-1" } }),
     ];
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", read_through: timeline[0].id }),
+      task: task({ id: "task-1", project_id: "proj-1", read_through: timeline[0].id }),
       timeline,
     });
     call = vi.fn((method) => method === "tasks.get" ? new Promise(() => {}) : Promise.resolve({}));
@@ -324,7 +324,7 @@ describe("task unread navigation", () => {
       comment({ id: "tc-01M37FGQD48628P29BG1A4BB02", author: { kind: "agent", agent_id: "agent-1" } }),
     ];
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", read_through: timeline[0].id }),
+      task: task({ id: "task-1", project_id: "proj-1", read_through: timeline[0].id }),
       timeline,
     });
     call = vi.fn((method) => method === "tasks.get" ? new Promise(() => {}) : Promise.resolve({}));
@@ -364,7 +364,7 @@ describe("task unread navigation", () => {
       comment({ id: "tc-01M37FGQD48628P29BG1A4BB04", author: { kind: "agent", agent_id: "agent-1" } }),
     ];
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", read_through: timeline[0].id }),
+      task: task({ id: "task-1", project_id: "proj-1", read_through: timeline[0].id }),
       timeline,
     });
     // Keep the live read pending so this assertion can only pass from the
@@ -443,7 +443,7 @@ describe("task unread navigation", () => {
     for (const [device, project, id] of [
       ["dev-1", "proj-1", "task-1"], ["dev-2", "proj-1", "task-1"],
       ["dev-1", "proj-2", "task-1"], ["dev-1", "proj-1", "task-2"],
-    ]) await trackerCache.writeTaskRecord(device, project, id, answerFor({ id, read_through: first }));
+    ]) await trackerCache.writeTaskRecord(device, project, id, answerFor({ id, project_id: project, read_through: first }));
     await trackerCache.advanceTaskReadThrough("dev-1", "proj-1", "task-1", later);
     await trackerCache.advanceTaskReadThrough("dev-1", "proj-1", "task-1", first);
     await trackerCache.advanceTaskReadThrough("dev-1", "proj-1", "task-1", "comment-3");
@@ -502,7 +502,7 @@ describe("the task", () => {
 
   it("paints from the cache before the bridge answers", async () => {
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", number: 12, title: "From the cache" }),
+      task: task({ id: "task-1", project_id: "proj-1", number: 12, title: "From the cache" }),
       timeline: [],
     });
     let settle;
@@ -549,7 +549,7 @@ describe("the task", () => {
     expect(host.querySelector(".task-page-title")).toBeNull();
 
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", number: 12, title: "Announced detail" }),
+      task: task({ id: "task-1", project_id: "proj-1", number: 12, title: "Announced detail" }),
       timeline: [],
     });
     await flush();
@@ -1279,7 +1279,7 @@ describe("a read that fails because the session dropped", () => {
   const WENT = "your device went offline";
   const cached = () =>
     trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", number: 12, title: "From the cache" }),
+      task: task({ id: "task-1", project_id: "proj-1", number: 12, title: "From the cache" }),
       timeline: [],
     });
   const note = () => host.querySelector(".read-wait")?.textContent ?? null;
@@ -1615,7 +1615,7 @@ describe("the comment box across what arrives while typing", () => {
       comment({ id: `tc-01M37FGQD48628P29BG1A4B${String(at).padStart(3, "0")}`, author: { kind: "user" } }));
     const agent = comment({ id: "tc-01M37FGQD48628P29BG1A4BZZZ", author: { kind: "agent", agent_id: "agent-1" } });
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", read_through: users.at(-1).id }),
+      task: task({ id: "task-1", project_id: "proj-1", read_through: users.at(-1).id }),
       timeline: [...users, agent],
     });
     call = vi.fn((method) => method === "tasks.get" ? new Promise(() => {}) : Promise.resolve({}));
@@ -1625,7 +1625,7 @@ describe("the comment box across what arrives while typing", () => {
     const rows = [...host.querySelectorAll(".task-entry")];
 
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", read_through: users.at(-1).id }),
+      task: task({ id: "task-1", project_id: "proj-1", read_through: users.at(-1).id }),
       timeline: users,
     });
     await vi.waitFor(() => expect(host.querySelector(".task-unread-line")).toBeNull());

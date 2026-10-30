@@ -410,3 +410,31 @@ it("fences a genuine absent action header behind a stronger external header with
   expect(result.task).toMatchObject({ title: "Current barrier" });
   expect(result.task.body).toBeUndefined(); expect(result.task.__task_content_cache.header).toBeUndefined();
 });
+
+it("does not promote a list-only unknown header by treating its missing normalized replica as absent", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), actions = await import("../src/core/taskWaitingOnCache.js"),
+    summaries = await import("../src/core/taskSummaryCache.js");
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [task({ title: "Unknown held" })] });
+  const contentRead = await content.captureTaskContentRead(scope);
+  await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: task({ title: "Raw action" }) },
+    { contentRead, issuedRead: contentRead.readOrder });
+  const normalized = (await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.task;
+  expect(normalized.title).toBe("Unknown held");
+  expect(normalized.__task_content_cache.header).toBeUndefined();
+  expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0].title).toBe("Unknown held");
+});
+
+it("retains a list-only newer header observation over an older action creating normalized state", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), actions = await import("../src/core/taskWaitingOnCache.js"),
+    summaries = await import("../src/core/taskSummaryCache.js");
+  const old = await content.captureTaskContentRead(scope);
+  const listRead = await content.captureTaskContentRead(tracker.tasksAddress(scope.deviceId, scope.projectId), { revalidate: "full" });
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [content.observeTaskContent(task({ title: "Known newer" }),
+    { contentRead: listRead, coverage: "full" })] });
+  await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: task({ title: "Older raw" }) },
+    { contentRead: old, issuedRead: old.readOrder });
+  const normalized = (await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.task;
+  expect(normalized.title).toBe("Known newer");
+  expect(normalized.__task_content_cache.header.read_order).toBe(listRead.readOrder);
+  expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0].title).toBe("Known newer");
+});

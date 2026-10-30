@@ -265,3 +265,53 @@ a token may update only before a proved action note exists, never receives
 forced watch authority across older content, and never promotes arrival order
 into dispatch authority. Acceptance refusal and quota failure publish none of
 the detail, list, page, summary, invalidation, or read-note updates.
+
+### Current watch-session authority
+
+Watch-session identity is distinct from monotonic read and dismissal coverage.
+A current full watch header may replace a lexically larger prior watch floor,
+including when the client missed the intervening unwatch. This preserves raw
+absence, present empty, and lower-valued current markers. The normal manual
+watch path creates a Watched event and fills its absent floor with that event's
+ID (`tracking.rs` and `TaskWrite::event`); imported opaque prior floors can still
+sort above that new event ID.
+
+The local `watch_read_order` records the request that established the current
+watch header. A proved full action uses its issued token after checking the
+per-task action note and captured session inside the joint transaction. A full
+summary uses its local request order independently of the ordinary body
+`updated_at`, so a future-dated imported body cannot prevent watch recovery.
+Body, timeline, and PR preservation retain their existing authority rules.
+Earlier issued action/page replies cannot restore a prior session. Records
+without this metadata conservatively use their existing local read order;
+compact or unissued compatibility patches receive no new reset authority.
+
+Changing the session retires the prior watch counter/activity lineage across
+all action replicas. Read and dismissal markers still advance monotonically;
+if retaining a stronger read floor overtakes the new counters, those counters
+remain unknown rather than inheriting values from the old session. A complete
+covering current summary can recover an independent fresh-basis query without
+ordering or parsing its opaque basis.
+
+`taskWatchLineage.test.js` supplies real-IDB single-case evidence for the
+`opaque-zzzz` to current Watched-ID transition in detail, catalogue, query, page,
+and normalized records, independent summary recovery, future-body recovery,
+null/empty/omitted floors, read/dismiss retention, stale action/page protection,
+and in-transaction session replacement. The action and independent-summary
+witnesses were observed failing before implementation in RED commit
+`5eef64373`; their retained artifacts are
+`/tmp/task-900-watch-lineage-red.log` and
+`/tmp/task-900-watch-summary-red.log`. This records the cache authority repair
+and its focused evidence; it makes no activation or completion claim.
+
+The two prior cross-floor action counter witnesses deliberately change their
+expectations under this session rule. A proved watch change from `te-05` to
+`te-30` with read `tc-10` below held read `tc-20` accepts total 0 at watch floor
+30, but leaves attention counters unknown instead of transplanting old-session
+zeros. The reverse watch change from `te-30` to `te-05` with read advancing from
+10 to 20 accepts the new-session total 4 instead of retaining old-session total
+0. Their original failing single-case outcomes are retained in
+`/tmp/task-900-watch-prior-family0.log` and
+`/tmp/task-900-watch-prior-family1.log`. A separate unchanged-watch-floor control
+still accepts the total at watch floor 30 while retaining attention counters
+paired with the stronger read floor 20, preserving independent family coverage.

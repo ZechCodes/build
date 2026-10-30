@@ -51,15 +51,21 @@ it.each([
 it.each([
   [{ read_through: "tc-20", watch_started_after: "te-05", unread_count: 2 },
     { read_through: "tc-10", watch_started_after: "te-30", unread_count: 0, unread_mentions: 3, unread_agent_comments: 4 },
-    { read_through: "tc-20", watch_started_after: "te-30", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 }],
+    { read_through: "tc-20", watch_started_after: "te-30", unread_count: 0 }, ["unread_mentions", "unread_agent_comments"], true],
   [{ read_through: "tc-10", watch_started_after: "te-30", unread_count: 0, unread_mentions: 2, unread_agent_comments: 3 },
     { read_through: "tc-20", watch_started_after: "te-05", unread_count: 4 },
-    { read_through: "tc-20", watch_started_after: "te-30", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 }],
-])("keeps read-only attention counters separate from the combined read/watch count family %#", async (held, incoming, expected) => {
+    { read_through: "tc-20", watch_started_after: "te-05", unread_count: 4, unread_mentions: 0, unread_agent_comments: 0 }, [], false],
+  [{ read_through: "tc-20", watch_started_after: "te-30", unread_count: 2 },
+    { read_through: "tc-10", watch_started_after: "te-30", unread_count: 0, unread_mentions: 3, unread_agent_comments: 4 },
+    { read_through: "tc-20", watch_started_after: "te-30", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 }, [], true],
+])("keeps read-only attention counters separate from the combined read/watch count family %#", async (held, incoming, expected, unknown, uncertain) => {
   await seed(task(held));
   await publish(task({ ...incoming, updated_at: "2026-10-29T12:01:00Z" }));
-  for (const replica of await replicas()) expect(replica).toMatchObject(expected);
-  expect((await value(summaries.summaryAddress(scope, taskId))).needs_unread_refresh).toBe(true);
+  for (const replica of await replicas()) {
+    expect(replica).toMatchObject(expected);
+    for (const field of unknown) expect(replica).not.toHaveProperty(field);
+  }
+  expect((await value(summaries.summaryAddress(scope, taskId))).needs_unread_refresh).toBe(uncertain);
 });
 
 it("does not attach weaker-floor counters when the retained stronger floor has unknown counters", async () => {

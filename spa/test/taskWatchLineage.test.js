@@ -58,6 +58,17 @@ it("accepts a newer-read current watch lineage while preserving future-dated ord
   expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ stale: false, basis: "fresh-basis" });
 });
 
+it("fills missing new-session counter families from a covering summary beneath a future body timestamp", async () => {
+  await seed(task({ title: "Future body", updated_at: "2027-10-29T12:00:00Z" }));
+  const incoming = fresh(); delete incoming.unread_mentions; delete incoming.unread_agent_comments;
+  await publish(incoming, await order.nextTaskRead());
+  expect((await value(summaries.summaryAddress(scope, id))).needs_unread_refresh).toBe(true);
+  await land(fresh(), "complete-current-session");
+  expect((await value(summaries.summaryAddress(scope, id))).task).toMatchObject({ title: "Future body",
+    watch_started_after: freshFloor, unread_count: 2, unread_mentions: 1, unread_agent_comments: 2 });
+  expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ stale: false, basis: "complete-current-session" });
+});
+
 it.each([null, ""])("preserves exact current optional watch floor %j and retires missing old-session counters", async (floor) => {
   await seed(); const incoming = fresh({ watch_started_after: floor });
   for (const key of ["unread_mentions", "unread_agent_comments", "session_started_ms", "last_activity_ms"]) delete incoming[key];
@@ -66,6 +77,15 @@ it.each([null, ""])("preserves exact current optional watch floor %j and retires
     expect(row.watch_started_after ?? null).toBe(floor);
     expect(row.unread_count).toBe(2);
     for (const key of ["unread_mentions", "unread_agent_comments", "session_started_ms", "last_activity_ms"]) expect(row).not.toHaveProperty(key);
+  }
+});
+
+it("treats a truly omitted full-action watch floor as current absence rather than a held prior session", async () => {
+  await seed(); const incoming = fresh(); delete incoming.watch_started_after;
+  await publish(incoming, await order.nextTaskRead());
+  for (const row of await replicas()) {
+    expect(row.watch_started_after ?? null).toBe(null);
+    expect(row.unread_count).toBe(2);
   }
 });
 
@@ -88,7 +108,7 @@ it("rejects an older issued prior-lineage action after a newer action commits", 
 it("keeps a newer summary lineage when a previously issued action replies later", async () => {
   await seed(); const issued = await order.nextTaskRead(); await land(fresh(), "fresh-basis");
   await publish(task(), issued);
-  expect((await value(summaries.summaryAddress(scope, id))).task).toMatchObject({ watch_started_after: freshFloor, unread_count: 2 });
+  for (const row of await replicas()) expect(row).toMatchObject({ watch_started_after: freshFloor, unread_count: 2 });
 });
 
 it("retains the current lineage against stale prior-lineage summary pages", async () => {

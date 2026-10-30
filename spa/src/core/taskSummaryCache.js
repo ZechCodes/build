@@ -100,10 +100,11 @@ function entityFields(task) {
 function pageRow(held, task, read, basis) {
   const incoming = entityFields(task), older = olderRow(held, incoming, read);
   const value = summaryValue(held, incoming, read);
-  const source = older ? held?.task : incoming;
+  const oldAuthority = older && value.watch_read_order !== read;
+  const source = oldAuthority ? held?.task : incoming;
   const mixed = changedBasisAuthority(held, basis, source, value.task);
-  const uncertain = mixed || older && held?.basis_uncertain === true;
-  return { ...value, basis: uncertain ? undefined : older ? held?.basis : basis, basis_uncertain: uncertain };
+  const uncertain = mixed || oldAuthority && held?.basis_uncertain === true;
+  return { ...value, basis: uncertain ? undefined : oldAuthority ? held?.basis : basis, basis_uncertain: uncertain };
 }
 
 const changedBasisAuthority = (held, basis, source, next) => Boolean(held && held.basis !== basis && authorityDiffers(source, next));
@@ -119,21 +120,39 @@ const unchangedBasis = (held, other) => Boolean(held.basis && held.basis === oth
 const invalidatedTicket = (invalidation, ticket) => invalidation?.read_order > ticket.generation;
 const changedContinuationBasis = (held, ticket, page) => ticket.cursor !== null && held.basis !== page.basis;
 
-export function preserveTaskActionMarks(held, task) {
-  const next = { ...task };
-  for (const field of ["read_through", "watch_started_after", "dismissed_through"]) {
-    if (field === "watch_started_after" && next.watched === false) continue;
-    const mark = newerTaskMarker(held?.[field], next[field]);
-    if (isPresentTaskMarker(mark)) next[field] = mark;
-  }
+export function preserveTaskActionMarks(held, task, { watchAuthority = false } = {}) {
+  if (watchAuthority && changedWatchLineage(held, task)) held = withoutWatchCounters(held || {});
+  const next = withMonotonicMarks(held, task, watchAuthority);
   if (next.watched === false) return withoutWatchCounters(next);
   for (const { floor, fields } of counterFamilies) preserveCounterFamily(next, held, task, floor, fields);
   return next;
 }
 
+function withMonotonicMarks(held, task, watchAuthority) {
+  const next = { ...task };
+  for (const field of ["read_through", "watch_started_after", "dismissed_through"]) {
+    if (field === "watch_started_after" && (next.watched === false || watchAuthority)) continue;
+    const mark = newerTaskMarker(held?.[field], next[field]);
+    if (isPresentTaskMarker(mark)) next[field] = mark;
+  }
+  return next;
+}
+
+const watchFields = ["watch_started_after", "unread_count", "unread_mentions", "unread_agent_comments", "session_started_ms", "last_activity_ms"];
+const changedWatchLineage = (before, after) => before?.watched !== after?.watched
+  || (before?.watch_started_after ?? null) !== (after?.watch_started_after ?? null);
+
+export function withTaskWatchLineage(task, source) {
+  const next = { ...withoutWatchCounters(task), watched: source?.watched === true };
+  if (next.watched) for (const field of watchFields) {
+    if (Object.hasOwn(source, field)) next[field] = source[field];
+  }
+  return next;
+}
+
 function withoutWatchCounters(task) {
   const next = { ...task };
-  for (const key of ["watch_started_after", "unread_count", "unread_mentions", "unread_agent_comments", "session_started_ms", "last_activity_ms"]) delete next[key];
+  for (const key of watchFields) delete next[key];
   return next;
 }
 
@@ -158,9 +177,9 @@ const coversMarks = (held, incoming) => markerFields.every((field) =>
 
 function markerAuthority(held, incoming, read, counters) {
   const before = held?.task;
-  const olderContent = Date.parse(incoming.updated_at) < Date.parse(before?.updated_at);
+  const olderContent = !counters.currentWatchCounters && Date.parse(incoming.updated_at) < Date.parse(before?.updated_at);
   const stronger = strongerMarks(before, incoming);
-  const stale = olderContent && stronger || countersOvertaken(held, incoming, read)
+  const stale = olderContent && stronger || countersOvertaken(held, incoming, read, counters.currentWatchCounters)
     || needsCounterRefresh(held, incoming, olderContent, counters)
     || incompleteActionCounters(held, incoming, counters);
   const source = olderContent ? { ...before, ...Object.fromEntries(markerFields.map((field) => [field, incoming[field]])) } : incoming;
@@ -178,27 +197,58 @@ function incompleteActionCounters(held, incoming, { source, fullTask, action }) 
     && (fullTask || compareTaskMarkers(floor(incoming), floor(held?.task)) > 0));
 }
 
-const countersOvertaken = (held, incoming, read) => !olderRow(held, incoming, read)
+const countersOvertaken = (held, incoming, read, newWatch) => (newWatch || !olderRow(held, incoming, read))
   && counterFamilies.some(({ floor }) => compareTaskMarkers(floor(held?.task), floor(incoming)) > 0);
 
 const olderRow = (held, task, read) => held?.read_order > read || Date.parse(held?.task?.updated_at) > Date.parse(task.updated_at);
 
-function summaryValue(held, task, read, counters = { source: task, fullTask: false, action: false }) {
+function watchAuthorityRead(held, task, read, counters) {
+  if (typeof task.watched !== "boolean") return null;
+  const issued = counters.confirmedAction ? counters.issuedRead : counters.action ? null : read;
+  return issued != null && issued >= (held?.watch_read_order ?? held?.read_order ?? 0) ? issued : null;
+}
+
+const staleWatchLineage = (authority, changed, counters) => authority === null && changed
+  && (counters.confirmedAction || !counters.action);
+
+function watchReconciliation(held, task, read, counters) {
+  const authority = watchAuthorityRead(held, task, read, counters);
+  const changed = changedWatchLineage(held?.task, task);
+  const newWatch = authority !== null && changed;
+  const current = newWatch ? withTaskWatchLineage(task, counters.source) : task;
+  const staleWatch = staleWatchLineage(authority, changed, counters);
+  const incoming = staleWatch ? withTaskWatchLineage(task, held?.task) : current;
+  const base = newWatch ? { ...held, task: withoutWatchCounters(held?.task || {}), needs_unread_refresh: false } : held;
+  return { authority, incoming, base, newWatch };
+}
+
+function reviewedWatchTask(held, task, read, watch, currentWatchCounters) {
   const before = held?.task;
   const older = olderRow(held, task, read);
   const reviewed = preserveTaskReviewSummary(before, task, {
     readOrder: read, keepHeld: older, allowMissing: !older, baseRow: older ? before : task,
   });
-  // Only the action owner, after checking its per-task dispatch note in the
-  // joint transaction, can accept watch state across older ordinary content.
-  // A stale summary page never receives this authority.
-  const confirmed = counters.confirmedAction ? { ...reviewed, watched: task.watched } : reviewed;
+  // Current full watch headers have their own dispatch authority, independent
+  // of the ordinary body's timestamp. Earlier issued pages retain the latest
+  // lineage; confirmed actions also check the joint per-task action note.
+  return currentWatchCounters ? withTaskWatchLineage(reviewed, task)
+    : watch.authority !== null ? { ...reviewed, watched: task.watched, watch_started_after: task.watch_started_after } : reviewed;
+}
+
+function summaryValue(held, task, read, counters = { source: task, fullTask: false, action: false }) {
+  const watch = watchReconciliation(held, task, read, counters);
+  task = watch.incoming;
+  const currentWatchCounters = watch.newWatch || watch.authority !== null && !counters.action;
+  const confirmed = reviewedWatchTask(held, task, read, watch, currentWatchCounters);
   // Marks and their paired counters have their own authority, independently
   // of ordinary row request order. Preserve held fields while accepting a
   // stronger incoming mark, including an older dispatch's read report.
-  const authority = markerAuthority(held, task, read, counters);
-  const next = preserveTaskActionMarks(authority.source, preserveTaskActionMarks(before, confirmed));
-  return { task: next, read_order: Math.max(read, held?.read_order || 0), needs_unread_refresh: next.watched !== false && authority.stale };
+  const authority = markerAuthority(watch.base, task, read, { ...counters, currentWatchCounters });
+  const options = { watchAuthority: watch.authority !== null };
+  const next = preserveTaskActionMarks(authority.source, preserveTaskActionMarks(watch.base?.task, confirmed, options), options);
+  return { task: next, read_order: Math.max(read, held?.read_order || 0),
+    watch_read_order: watch.authority ?? held?.watch_read_order,
+    needs_unread_refresh: next.watched !== false && authority.stale };
 }
 
 /** Commit membership/cursor, summaries and shared identities together. Failure
@@ -239,7 +289,7 @@ export function writeSummaryTask(scope, task, read, options = {}) {
  * and an action acknowledgment never supplies a projection basis.
  * fullTask explicitly selects authoritative omissions; compact patches retain
  * fields they omit. Both paths use the same PR, marker and counter authority. */
-export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false, confirmedAction = false } = {}) {
+export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false, confirmedAction = false, issuedRead } = {}) {
   validateSummaryMutation(scope, task, read, fullTask, confirmedAction);
   return {
     addresses: [summaryAddress(scope, task.id), invalidationAddress(scope)],
@@ -249,7 +299,7 @@ export function summaryTaskMutation(scope, task, read, { accept = () => true, fu
       // visible to marker/counter reconciliation before patching held fields.
       const source = fullTask ? { read_through: null, watch_started_after: null, dismissed_through: null, ...task } : task;
       const row = summaryValue(held?.value, summaryPatch(held?.value?.task, source, fullTask), read,
-        { source, fullTask, action: true, confirmedAction });
+        { source, fullTask, action: true, confirmedAction, issuedRead });
       return [row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) }];
     },
   };

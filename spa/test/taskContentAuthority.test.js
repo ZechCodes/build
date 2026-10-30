@@ -113,3 +113,20 @@ it("leaves a summary header body-free until an explicitly wanted missing detail 
   expect(content.taskNeedsFullRefresh(undefined, header)).toBe(true);
   expect(content.taskFullRefreshKey(undefined, header)).not.toBeNull();
 });
+
+it("bars an intermediate full observation behind the same record's newer accepted header", async () => {
+  await publish(await observed(task({ title: "Header two", body: "Body two", updated_at: "2026-10-29T13:00:00.000100Z" })));
+  const middle = content.observeTaskContent(task({ title: "Header four", body: "Body four", updated_at: "2026-10-29T13:00:00.000500Z" }),
+    { contentRead: await content.captureTaskContentRead(scope), coverage: "full" });
+  const header = content.observeTaskContent(task({ title: "Header five" }),
+    { contentRead: await content.captureTaskContentRead(scope, { revalidate: "summary" }), coverage: "summary" });
+  await publish(header);
+  const result = await publish(middle);
+  expect(result.acceptedHeader).toBe(false);
+  expect(result.acceptedBody).toBe(false);
+  expect(result.task).toMatchObject({ title: "Header five", body: "Body two" });
+  expect(result.needsFullRefresh).toBe(true);
+  const fresh = await publish(await observed(task({ title: "Header five", body: "Body six" })));
+  expect(fresh.acceptedBody).toBe(true);
+  expect(fresh.needsFullRefresh).toBe(false);
+});

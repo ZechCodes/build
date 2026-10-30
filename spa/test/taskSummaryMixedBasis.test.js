@@ -13,7 +13,7 @@ async function reopen() {
 }
 async function land(task, basis, query = filters) {
   const read = await order.nextTaskRead(), ticket = await summaries.beginSummaryQuery(scope, query, read);
-  expect(await summaries.landSummaryPage(ticket, { summary: true, tasks: [task], basis }, { read })).toBe(true);
+  expect(await summaries.landSummaryPage(ticket, { summary: true, tasks: [task], ...(basis === undefined ? {} : { basis }) }, { read })).toBe(true);
   return read;
 }
 const current = (extra = {}) => row({ title: "Current B2 body", status: "ready", updated_at: "2026-10-29T12:00:00Z", ...extra });
@@ -56,4 +56,12 @@ it("keeps recovered watch counters useful without certifying retained ordinary c
   expect(resolverFor(referenceTables(sources), { place: scope }).task(42)).toBeUndefined();
   expect(resolverFor(referenceTables({ ...sources, taskLookups: { [key]: { 42: { status: "missing" } } } }),
     { place: scope }).task(42)).toBeNull();
+});
+
+it("does not treat two absent basis values as proof while ordinary content remains protected", async () => {
+  await land(row(), undefined, {}); await land(current(), undefined);
+  expect(await value()).toMatchObject({ basis_uncertain: true, needs_unread_refresh: false });
+  expect(await summaries.readSummaryQuery(scope, filters)).toMatchObject({ complete: true, stale: true,
+    tasks: [{ status: "done", title: "Body from B1" }] });
+  await reopen(); expect(await value()).toMatchObject({ basis_uncertain: true });
 });

@@ -172,3 +172,19 @@ it("retains a current combined-total observation still covered by its watch floo
   }
   expect(await value(summaries.summaryAddress(scope, id))).toMatchObject({ needs_unread_refresh: true });
 });
+
+it("advances a prior-issued same-header summary read mark without replacing newer observation counters or activity", async () => {
+  await seed(task({ watch_started_after: "te-05", read_through: "tc-10" }));
+  const read = await order.nextTaskRead(), ticket = await summaries.beginSummaryQuery(scope, { states: ["open"] }, read);
+  const current = fresh({ watch_started_after: "te-05", read_through: "tc-10", unread_count: 5,
+    unread_mentions: 4, unread_agent_comments: 3, session_started_ms: 30, last_activity_ms: 40 });
+  await land(current, "current-observation");
+  expect(await summaries.landSummaryPage(ticket, { summary: true, basis: "prior-observation", tasks: [
+    { ...current, read_through: "tc-20", dismissed_through: "te-20", unread_count: 1,
+      unread_mentions: 1, unread_agent_comments: 1, session_started_ms: 1, last_activity_ms: 2 },
+  ] }, { read })).toBe(true);
+  const stored = await value(summaries.summaryAddress(scope, id));
+  expect(stored).toMatchObject({ needs_unread_refresh: true, task: { read_through: "tc-20", dismissed_through: "te-20",
+    watch_started_after: "te-05", session_started_ms: 30, last_activity_ms: 40 } });
+  for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) expect(stored.task).not.toHaveProperty(field);
+});

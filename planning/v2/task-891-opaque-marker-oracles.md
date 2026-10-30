@@ -343,3 +343,44 @@ exhausted. Snapshot certification additionally requires `!stale`, a matching
 row basis, and no mixed-row uncertainty. Exhaustion alone never certifies
 absence: the actual reference resolver keeps an unlisted task unknown, and
 only an explicit bounded point result with `status:missing` can mark it missing.
+
+The mixed-row rule is conservative while ordinary content remains protected,
+even if two nonempty basis strings happen to match. Two absent basis values
+never prove one projection generation. This can keep a mixed row stale until a
+full ordinary snapshot wins; it does not discard the independently recovered
+watch counters.
+
+### Observation authority within an unchanged watch session
+
+Equal watch/header marker values do not prove equal observation freshness.
+A proved action issued before the current `watch_read_order` cannot replace
+its counter or activity observation even when watched state, watch floor,
+read floor, dismissal floor, and body timestamp all match. The current
+observation remains selected across detail, catalogue/query/page, and
+normalized action replicas.
+
+A stale action may still advance monotonic read/dismiss markers. Counter
+families are evaluated against the selected watch header and new read floor:
+only families overtaken by that floor become unknown and require refresh.
+For example, watch floor 30 still covers a read advance from 10 to 20, so its
+current total 5 remains valid while read-only attention counters become
+unknown. Current session/activity values survive; stale values are never
+transplanted or recomputed.
+
+The three real-IDB SINGLE regressions in `taskWatchLineage.test.js` were
+observed failing against c78 source before implementation. RED commits
+`b22c3a6b3` and `a45840503` retain those tests, with artifacts
+`/tmp/task-900-watch-observation-red.log`,
+`/tmp/task-900-watch-observation-advance-red.log`, and
+`/tmp/task-900-watch-observation-control-red.log`. Their corresponding
+`*-green.log` artifacts record the focused repaired outcomes. The earlier
+185-test cohort's observed exit 1 remains separately retained in
+`/tmp/task-900-sol-review-regressions.log`; these single-case checks do not
+claim a combined cohort pass or activation approval.
+
+An additional same-header prior-issued summary-page control verifies the same
+observation fence when a late page advances read/dismiss coverage: current
+activity survives, stronger marks advance, and unsupported counter families
+remain unknown. Its focused outcome is retained in
+`/tmp/task-900-watch-observation-page-green.log`; it needed no further source
+change beyond the observation repair and makes no additional RED-test claim.

@@ -183,12 +183,14 @@ function markerAuthority(held, incoming, read, counters) {
   const before = held?.task;
   const olderContent = !counters.currentWatchCounters && Date.parse(incoming.updated_at) < Date.parse(before?.updated_at);
   const stronger = strongerMarks(before, incoming);
-  const stale = olderContent && stronger || countersOvertaken(held, incoming, read, counters.currentWatchCounters)
-    || needsCounterRefresh(held, incoming, olderContent, counters)
-    || incompleteActionCounters(held, incoming, counters);
+  const stale = olderContent && stronger || uncertainCounters(held, incoming, read, counters, olderContent);
   const source = olderContent ? { ...before, ...Object.fromEntries(markerFields.map((field) => [field, incoming[field]])) } : incoming;
   return { source: stronger ? source : before, stale: Boolean(stale) };
 }
+
+const uncertainCounters = (held, incoming, read, counters, olderContent) => counters.staleWatchCounters
+  || countersOvertaken(held, incoming, read, counters.currentWatchCounters)
+  || needsCounterRefresh(held, incoming, olderContent, counters) || incompleteActionCounters(held, incoming, counters);
 
 const completeCounterFields = (task, fields) => fields.every((field) => Number.isSafeInteger(task?.[field]) && task[field] >= 0);
 const completeCounters = (task) => counterFamilies.every(({ fields }) => completeCounterFields(task, fields));
@@ -212,18 +214,32 @@ function watchAuthorityRead(held, task, read, counters) {
   return issued != null && issued >= (held?.watch_read_order ?? held?.read_order ?? 0) ? issued : null;
 }
 
-const staleWatchLineage = (authority, changed, counters) => authority === null && changed
-  && (counters.confirmedAction || !counters.action);
+const staleWatchObservation = (authority, task, counters) => authority === null
+  && (counters.confirmedAction || !counters.action && typeof task.watched === "boolean");
+
+const advancingCounterFloor = (before, task) => counterFamilies.some(({ floor }) => compareTaskMarkers(floor(task), floor(before)) > 0);
+
+function retainedWatchObservation(task, held) {
+  const next = withTaskWatchLineage(task, held);
+  for (const { floor, fields } of counterFamilies) {
+    if (compareTaskMarkers(floor(next), floor(held)) > 0) for (const field of fields) delete next[field];
+  }
+  return next;
+}
+
+const watchLineageBase = (held, newWatch) => newWatch
+  ? { ...held, task: withoutWatchCounters(held?.task || {}), needs_unread_refresh: false } : held;
 
 function watchReconciliation(held, task, read, counters) {
   const authority = watchAuthorityRead(held, task, read, counters);
   const changed = changedWatchLineage(held?.task, task);
   const newWatch = authority !== null && changed;
   const current = newWatch ? withTaskWatchLineage(task, counters.source) : task;
-  const staleWatch = staleWatchLineage(authority, changed, counters);
-  const incoming = staleWatch ? withTaskWatchLineage(task, held?.task) : current;
-  const base = newWatch ? { ...held, task: withoutWatchCounters(held?.task || {}), needs_unread_refresh: false } : held;
-  return { authority, incoming, base, newWatch };
+  const staleWatch = staleWatchObservation(authority, task, counters);
+  const incoming = staleWatch ? retainedWatchObservation(task, held?.task) : current;
+  const base = watchLineageBase(held, newWatch);
+  return { authority, incoming, base, newWatch,
+    staleWatchCounters: staleWatch && advancingCounterFloor(held?.task, incoming) };
 }
 
 function reviewedWatchTask(held, task, read, watch, currentWatchCounters) {
@@ -247,7 +263,7 @@ function summaryValue(held, task, read, counters = { source: task, fullTask: fal
   // Marks and their paired counters have their own authority, independently
   // of ordinary row request order. Preserve held fields while accepting a
   // stronger incoming mark, including an older dispatch's read report.
-  const authority = markerAuthority(watch.base, task, read, { ...counters, currentWatchCounters });
+  const authority = markerAuthority(watch.base, task, read, { ...counters, currentWatchCounters, staleWatchCounters: watch.staleWatchCounters });
   const options = { watchAuthority: watch.authority !== null };
   const next = preserveTaskActionMarks(authority.source, preserveTaskActionMarks(watch.base?.task, confirmed, options), options);
   return { task: next, read_order: Math.max(read, held?.read_order || 0),

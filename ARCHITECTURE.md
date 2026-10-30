@@ -179,9 +179,10 @@ restricted caller constructors, cancellation and adapter handoff.
 - It answers signaling (`rtc.*`) and attachment writes at once, without
   queueing, so a negotiation never waits behind other work.
 
-The ten SQL-lane methods (`thread.page`, `thread.activity`, `thread.operation`,
+The twelve SQL-lane methods (`thread.page`, `thread.activity`, `thread.operation`,
 `thread.revision`, `tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`,
-`tasks.filterChoices`, `writes.status` and `writes.subscribe`) enter a separate lane
+`tasks.filterChoices`, `tasks.counts`, `tasks.lookup`, `writes.status` and
+`writes.subscribe`) enter a separate lane
 before terminal or write admission. `execution/sql.rs` owns eight dedicated
 threads and a fair queue with at most 16 waiting callers per session opening.
 Callers waiting for a read connection still count against that bound. Excess
@@ -767,7 +768,13 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.26.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.27.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.27.0 adds independently negotiated task counts, number lookup, exact
+  watched/attention/workspace/tracker/review predicates and indexed ordering.
+  Summary pages carry a transactional projection basis; changed-basis cursors
+  require an explicit restart. Static readiness streams preserve client-owned
+  runtime agent grouping. Search remains on its existing legacy contract.
+  See [Task consumer queries](docs/task-query-contract.md).
   3.26.0 adds `tasks.listSummaries`: bounded lightweight task pages selected
   with `tasks.list {summary:true}`, plural task filters, and the independently
   advertised `tasks.filterChoices` verb. Legacy task list responses stay intact.
@@ -2344,6 +2351,19 @@ remain viewed across snapshots.
 | `ClaudeAdk` | `bridge/src/harness/adk.rs`, `bridge/src/harness/adk/` | Claude Code headless over its stream-json session protocol |
 | `CodexAppServer` | `bridge/src/harness/codex_app_server/` | Codex's app-server JSON protocol |
 | `Pi` | `bridge/src/harness/pi.rs` | Pi, with the `build-tools.ts` extension |
+
+The provider command table distinguishes native app-server commands from text
+sent to a terminal or stream-json harness. For Codex app-server, `/compact` keeps
+its existing routing; other command-shaped input in standalone human submissions
+(first token `/name` followed by optional arguments) is refused locally with a
+visible Build notice. A token with no further `/` counts as a command, including
+bare single-segment paths such as `/tmp`; slash paths such as `/tmp/foo` or
+`/home/user/file` remain ordinary input. The request, failed delivery
+mark and notice are saved with a terminal operation receipt in one transaction,
+so retries cannot duplicate the notice or deliver the command. No provider turn
+is started or interrupted. Legacy callers without an operation ID receive an
+error before acceptance. Claude's command path is unchanged. This is command
+feedback, not native Daybreak support; that integration is tracked by #929.
 
 Codex app-server provider errors are turn failures, so an exhausted
 `error` notification (`willRetry: false`) keeps the process and provider thread

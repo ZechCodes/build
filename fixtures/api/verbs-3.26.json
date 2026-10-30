@@ -1,6 +1,6 @@
 {
-  "api_version": "3.25.0",
-  "commit": "c6b1ae4f",
+  "api_version": "3.26.0",
+  "commit": "74be55be",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -95,6 +95,7 @@
     "tasks.columns",
     "tasks.comment",
     "tasks.create",
+    "tasks.filterChoices",
     "tasks.get",
     "tasks.list",
     "tasks.read_through",
@@ -296,9 +297,11 @@
     "tasks.create",
     "tasks.createdUserMentions",
     "tasks.doneSinceLeft",
+    "tasks.filterChoices",
     "tasks.get",
     "tasks.list",
     "tasks.listPaged",
+    "tasks.listSummaries",
     "tasks.read_through",
     "tasks.reopen",
     "tasks.review.act",

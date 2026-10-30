@@ -369,7 +369,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.26.0");
+    assert_eq!(API_VERSION, "3.27.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -525,7 +525,7 @@ fn the_harness_inventory_is_announced_with_its_push() {
 #[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.26.0");
+    assert_eq!(API_VERSION, "3.27.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1481,7 +1481,7 @@ fn thread_page_activity_mode_is_typed_and_optional() {
 
 #[test]
 fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
-    assert_eq!(API_VERSION, "3.26.0");
+    assert_eq!(API_VERSION, "3.27.0");
     assert!(capabilities(false).contains(&"threads.leanActivity"));
     let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
     assert_eq!(fixture["lean_activity"]["since"], "3.20.0");
@@ -1664,7 +1664,7 @@ fn project_source_changes_are_announced_with_a_scope_and_an_item() {
 /// accepts. The legacy shape is the pinned coordinator alone.
 #[test]
 fn project_workers_are_announced_with_their_roster_read_and_purposes() {
-    assert_eq!(API_VERSION, "3.26.0");
+    assert_eq!(API_VERSION, "3.27.0");
     let advertised = capabilities(false);
     assert!(advertised.contains(&"agents.projectWorkers"));
     assert!(advertised.contains(&"agent.list"));
@@ -1752,7 +1752,7 @@ fn sync_base_path_precondition_is_announced_and_typed() {
 /// echoes the client's id.
 #[test]
 fn project_worker_assignment_is_announced_with_its_kind_and_operation_id() {
-    assert_eq!(API_VERSION, "3.26.0");
+    assert_eq!(API_VERSION, "3.27.0");
     assert!(capabilities(false).contains(&"tasks.assignProjectAgent"));
     let assign = read_json(&fixtures_root().join("v1/tasks.assign.json"));
     let example = &assign["project_agent_assignment"];
@@ -1938,4 +1938,120 @@ fn retention_floor_is_an_additive_generation_scoped_contract() {
         let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
         assert_eq!(fixture["result"]["history_start_sequence"], 30);
     }
+}
+
+#[test]
+fn task_aggregate_membership_wire_contract() {
+    let advertised = capabilities(false);
+    for capability in [
+        "tasks.counts",
+        "tasks.lookup",
+        "tasks.listWatched",
+        "tasks.listAttention",
+        "tasks.listLinkedWorkspace",
+        "tasks.listTracked",
+        "tasks.listReviewMode",
+        "tasks.listOrder",
+        "tasks.listReadiness",
+        "tasks.listExcludeAssignee",
+    ] {
+        assert!(advertised.contains(&capability), "missing {capability}");
+    }
+    let (_, handler) = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "tasks.list")
+        .unwrap();
+    for (field, value) in [
+        ("watched", serde_json::json!(true)),
+        ("attention_rule", serde_json::json!("asked")),
+        ("linked_workspace_id", serde_json::json!("workspace-1")),
+        ("tracker_agent_id", serde_json::json!("agent-1")),
+        ("exclude_review_mode", serde_json::json!("snapshot")),
+        ("order", serde_json::json!("anchor")),
+        ("done_since", serde_json::json!(0)),
+        ("unfinished", serde_json::json!(true)),
+        ("blocked", serde_json::json!(false)),
+        ("held", serde_json::json!(false)),
+        ("undelivered", serde_json::json!(false)),
+        ("exclude_assignee", serde_json::json!({"kind":"user"})),
+    ] {
+        let mut params = serde_json::json!({"project_id":"proj-1"});
+        params[field] = value.clone();
+        assert!(
+            handler.parse_params(&params).is_err(),
+            "legacy selector {field}"
+        );
+        params["summary"] = serde_json::json!(true);
+        assert!(
+            handler.parse_params(&params).is_ok(),
+            "summary selector {field}"
+        );
+        params[field] = Value::Null;
+        assert!(
+            handler.parse_params(&params).is_err(),
+            "null selector {field}"
+        );
+    }
+}
+
+#[test]
+fn exact_task_aggregate_fixtures_pin_bounds_and_generation_refusal() {
+    for method in ["tasks.counts", "tasks.lookup"] {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert_eq!(fixture["since"], "3.27.0");
+        assert_eq!(fixture["max_result_bytes"], 65_536);
+        assert!(fixture["result"]["basis"].is_string());
+        if method == "tasks.counts" {
+            assert_eq!(
+                fixture["basis_fencing"]["scenarios"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                3
+            );
+            assert_eq!(
+                fixture["basis_fencing"]["mutation_reply"],
+                "No query basis is returned by mutation acknowledgment."
+            );
+        }
+    }
+}
+
+#[test]
+fn exact_task_stream_fixtures_pin_partition_and_generation_refusal() {
+    let fixture = read_json(&fixtures_root().join("v1/tasks.list.json"));
+    let exact = &fixture["exact_queries"];
+    assert_eq!(exact["summary_required"], true);
+    let (_, handler) = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "tasks.list")
+        .unwrap();
+    for stream in exact["agent_surface_streams"]["streams"]
+        .as_array()
+        .unwrap()
+    {
+        assert!(
+            handler.parse_params(&stream["params"]).is_ok(),
+            "{}",
+            stream["group"]
+        );
+    }
+    let tracked = exact["agent_surface_streams"]["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|stream| stream["group"] == "Tracked")
+        .unwrap();
+    assert_eq!(
+        tracked["params"]["exclude_assignee"]["agent_id"],
+        tracked["params"]["tracker_agent_id"]
+    );
+    assert!(tracked["params"].get("state").is_none());
+    assert!(tracked["params"].get("status").is_none());
+
+    assert_eq!(
+        exact["generation_mismatch"]["details"]["reason"],
+        "task_query_basis_changed"
+    );
+    assert_eq!(exact["generation_mismatch"]["details"]["restart"], true);
 }

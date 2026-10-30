@@ -3,8 +3,8 @@
 use crate::reviews::records::ReviewSummary;
 use crate::store::{
     DeliveryIntent, DependencySummary, DependentsPage, PersistedPlan, PersistedRun,
-    ReadTransaction, Store, StoreError, TaskFilter, TaskFilterChoice, TaskSeek, TaskStretch,
-    TaskSummaryCandidate,
+    ReadTransaction, Store, StoreError, TaskFilter, TaskFilterChoice, TaskQueryFilter,
+    TaskQueryOrder, TaskQueryPosition, TaskSeek, TaskStretch, TaskSummaryCandidate,
 };
 use crate::tracker::{Task, TimelineEntry};
 use serde_json::Value;
@@ -53,9 +53,15 @@ macro_rules! task_queries {
 }
 
 task_queries! {
+    task_summary_by_number(project: &str, number: u64) -> Option<TaskSummaryCandidate>;
+    task_counts(project: &str, agents: &[String]) -> Vec<crate::store::TaskCounts>;
     tracker_list_key() -> String;
+    task_query_basis() -> String;
+    task_query_markers_unsupported(project: &str) -> bool;
+    task_query_unsupported_domain(project: &str, order: TaskQueryOrder, done_since: bool) -> Option<String>;
+    list_task_query_candidates(project: &str, order: TaskQueryOrder, after: Option<TaskQueryPosition>, limit: usize) -> Vec<(TaskSummaryCandidate, TaskQueryPosition)>;
+    task_query_matches(id: &str, filter: &TaskQueryFilter) -> bool;
     task_summary_identity_with_owner(id: &str) -> Option<(crate::tracker::TaskAgentIdentity, Option<String>)>;
-    list_task_summary_candidates(project: &str, below: Option<u64>, limit: usize) -> Vec<TaskSummaryCandidate>;
     list_task_filter_choices(project: &str, dimension: &str, after: Option<&str>, limit: usize) -> Vec<TaskFilterChoice>;
     load_tracker_task(id: &str) -> Option<Task>;
     load_tracker_timeline(id: &str) -> Vec<TimelineEntry>;

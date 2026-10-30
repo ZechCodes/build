@@ -1,0 +1,47 @@
+{
+  "runner_exit": 0,
+  "parser_exit": 0,
+  "direct_processes": 24,
+  "all_direct_process_exits": 0,
+  "raw_operation_samples": 552,
+  "timing_reruns": 0,
+  "runner_sha256": "27ddc94566aa75bc390e3ef26af180bf08f4f26bb00fa381a133881e4a9ab724",
+  "full_raw_log": "/tmp/task900-cost-cohort.log",
+  "full_raw_log_sha256": "e704bfe8beed8a09fb0978b7e648de297c39135dc3d4619c96622bde1b884641",
+  "ordered_raw_logs": "/tmp/task900-cost-cohort-55784b05",
+  "inherited_runner_niceness": 10,
+  "child_command_nice_increment": 10,
+  "effective_child_niceness": "not directly sampled; Linux clamp implies19 for inherited10 + increment10",
+  "cost_acceptance": "not granted by measurement; explicit lead disposition required",
+  "limits": [
+    "No matched RSS or storage fixture",
+    "No matched empty-store startup fixture",
+    "No whole-machine idle proof or OS cache flush",
+    "Fresh process does not imply disk-cold cache",
+    "Three process rounds; within-process writes share state",
+    "Wall and CPU values do not establish a causal explanation for the observed deltas"
+  ],
+  "runner_invocation": "python3 docs/task-query-cost/compare.py run --base /tmp/task900-cost-baseline-manifest.json --candidate /tmp/task900-cost-candidate-manifest.json --output /tmp/task900-cost-cohort-55784b05 > /tmp/task900-cost-runner.log 2>&1",
+  "parser_invocation": "python3 docs/task-query-cost/compare.py parse --output /tmp/task900-cost-cohort-55784b05 > /tmp/task900-cost-parsed-summary.json",
+  "outer_command_nice_prefix": false,
+  "priority_observation": "Runner os.getpriority(PRIO_PROCESS,0) recorded inherited10 before all24subprocesses; no nice prefix on outer Python commands. Per-child effective priority not directly sampled.",
+  "artifact_format_checks": [
+    {
+      "command": "git diff --cached --check -- docs/task-query-cost",
+      "process_exit": 2,
+      "finding": "Initial CSV CRLF line endings reported as trailing whitespace; artifact-format failure only, measurement samples unchanged.",
+      "artifact_commit": "feede514e"
+    },
+    {
+      "command": "git diff --cached --check -- docs/task-query-cost",
+      "process_exit": 0,
+      "finding": "After CSV LF normalization; numerical samples unchanged.",
+      "fix_commit": "7ad0d8117"
+    },
+    {
+      "command": "git diff --check 55784b050e7294b68830bc3c82beeb2a72c86b31..HEAD -- docs/task-query-cost",
+      "process_exit": 0,
+      "finding": "Committed cost artifact range after LF correction."
+    }
+  ]
+}

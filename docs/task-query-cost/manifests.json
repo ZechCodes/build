@@ -1,0 +1,50 @@
+{
+  "base": {
+    "variant": "base",
+    "source_head": "12b8f869bd94e259666df69f1a8c0cde5c695982",
+    "source_status": "",
+    "fixture_sha256": "fb478ebb1b143cc455fbe7f93fa28d72559a3b5e26503dce75f8c8337ee1e92d",
+    "binary": "/tmp/task900-cost-baseline-bin",
+    "binary_sha256": "6550036e7792634905d44f892f3d753a5c961b699bb39271bd84256bba69200c",
+    "build_exit": 0,
+    "build_log": "/tmp/task900-cost-baseline-build.log",
+    "profile": {
+      "opt_level": "3",
+      "debuginfo": 0,
+      "debug_assertions": false,
+      "overflow_checks": false,
+      "test": true
+    },
+    "features": [
+      "testing"
+    ],
+    "api_guard": "3.26.0",
+    "source_root": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-900-cost-baseline/Build",
+    "build_binary": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-summary-f6a425fe-a96d-4e2d-8f98-50a767de5498/Build/bridge/target/release/deps/bounded_task_write_perf-dd9cb7628c39a9a4",
+    "artifact_copy_command": "shutil.copy2(build_binary, /tmp/task900-cost-baseline-bin); chmod0555; SHA256 verified before and after"
+  },
+  "candidate": {
+    "variant": "candidate",
+    "source_root": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-summary-f6a425fe-a96d-4e2d-8f98-50a767de5498/Build",
+    "source_head": "55784b050e7294b68830bc3c82beeb2a72c86b31",
+    "source_status": "",
+    "fixture_sha256": "fb478ebb1b143cc455fbe7f93fa28d72559a3b5e26503dce75f8c8337ee1e92d",
+    "binary": "/tmp/task900-cost-candidate-bin",
+    "build_binary": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-summary-f6a425fe-a96d-4e2d-8f98-50a767de5498/Build/bridge/target/release/deps/bounded_task_write_perf-dd9cb7628c39a9a4",
+    "binary_sha256": "1b05323973754d2e3adea668fd7c4654c76d2642baf7fdd840bd4037147f3e62",
+    "build_exit": 0,
+    "build_log": "/tmp/task900-release-choice-extraction-build.log",
+    "profile": {
+      "opt_level": "3",
+      "debuginfo": 0,
+      "debug_assertions": false,
+      "overflow_checks": false,
+      "test": true
+    },
+    "features": [
+      "testing"
+    ],
+    "api_guard": "3.27.0",
+    "artifact_copy_command": "shutil.copy2(build_binary, /tmp/task900-cost-candidate-bin); chmod0555; SHA256 verified before and after"
+  }
+}

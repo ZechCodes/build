@@ -10,7 +10,7 @@ pub(super) const TABLES: &str = r#"
 CREATE TABLE IF NOT EXISTS tracker_task_summary_facts (
     task_id TEXT NOT NULL, id TEXT NOT NULL, ulid TEXT NOT NULL,
     at TEXT NOT NULL, ts INTEGER, unread INTEGER NOT NULL,
-    activity INTEGER NOT NULL, watched INTEGER NOT NULL, done_move INTEGER NOT NULL,
+    activity INTEGER NOT NULL, meaningful INTEGER NOT NULL DEFAULT 0, watched INTEGER NOT NULL, done_move INTEGER NOT NULL,
     agent_comment INTEGER NOT NULL, mentions INTEGER NOT NULL,
     PRIMARY KEY(task_id,id)
 );
@@ -88,12 +88,17 @@ pub(super) fn fact_rows(table: &str) -> String {
     let (agent_comment, mentions) = if table == "tracker_comments" {
         ("json_extract(record,'$.author.kind')='agent'", "json_extract(record,'$.author.kind')='agent' AND (json_extract(record,'$.mentions_user')=1 OR json_extract(record,'$.notifies_user')=1)")
     } else {
-        ("0", "json_extract(record,'$.kind')='created' AND json_extract(record,'$.actor.kind')='agent' AND (json_extract(record,'$.mentions_user')=1 OR json_extract(record,'$.notifies_user')=1)")
+        ("0", "json_extract(record,'$.kind')='created' AND json_extract(record,'$.actor.kind')='agent' AND json_extract(record,'$.mentions_user')=1")
     };
-    format!("SELECT rowid source_rowid,task_id,id,CASE WHEN instr(id,'-')>0 THEN substr(id,instr(id,'-')+1) ELSE id END ulid,
+    let meaningful = if table == "tracker_comments" {
+        "1".to_string()
+    } else {
+        "NOT (json_extract(record,'$.kind') IN ('blocked','unblocked','dispatch_deferred','dispatch_failed','dispatched') OR (json_extract(record,'$.kind') IN ('linked','unlinked') AND json_type(record,'$.payload.waiting_on') IS NOT NULL) OR (json_extract(record,'$.kind')='tracked' AND COALESCE(json_extract(record,'$.payload.by'),'')='assignment') OR (json_extract(record,'$.kind')='moved' AND COALESCE(json_extract(record,'$.payload.by'),'') IN ('dispatch','report')) OR (json_extract(record,'$.kind')='untracked' AND COALESCE(json_extract(record,'$.payload.by'),'')='finished'))".to_string()
+    };
+    format!("SELECT rowid source_rowid,task_id,id,{suffix} ulid,
             {at} at,{timestamp} ts,
-            COALESCE(({unread}),0) unread,COALESCE(({activity}),0) activity,COALESCE(({watched}),0) watched,COALESCE(({done_move}),0) done_move,COALESCE(({agent_comment}),0) agent_comment,COALESCE(({mentions}),0) mentions
-        FROM {table}",timestamp=timestamp_millis(at))
+            COALESCE(({unread}),0) unread,COALESCE(({activity}),0) activity,COALESCE(({meaningful}),0) meaningful,COALESCE(({watched}),0) watched,COALESCE(({done_move}),0) done_move,COALESCE(({agent_comment}),0) agent_comment,COALESCE(({mentions}),0) mentions
+        FROM {table}",timestamp=timestamp_millis(at),suffix=opaque_suffix("id"))
 }
 
 // Incremental facts, explicit repair and bounded startup backfill all use the
@@ -183,7 +188,7 @@ fn identities() -> &'static str {
 
 fn enrich_patch() -> &'static str {
     r#"json_patch(
-        COALESCE((SELECT json_object('review_summary',json_object('task_id',task_id,
+        COALESCE((SELECT json_object('review_summary',json_object('task_id',task_id,'mode','pull_request',
             'workspace_id',substr(json_extract(record,'$.pull_request.originating_workspace_id'),1,128),
             'version',version,'status',substr(json_extract(record,'$.pull_request.status'),1,64),
             'latest_published_snapshot_id',substr(json_extract(record,'$.pull_request.latest_published_snapshot_id'),1,128)))
@@ -191,13 +196,13 @@ fn enrich_patch() -> &'static str {
                 AND json_type(record,'$.pull_request')='object'),'{}'),
         COALESCE((SELECT CASE WHEN state IN ('waiting','queued','provisioning','failed') THEN
             json_object('deferred_assignment',json_object('id',substr(id,1,128),
-                'target',json_object('kind',substr(json_extract(record,'$.target.kind'),1,32),'agent_id',substr(json_extract(record,'$.target.agent_id'),1,128)),'state',CASE state WHEN 'provisioning' THEN 'queued' ELSE state END,
+                'target',json_object('kind',substr(json_extract(record,'$.target.kind'),1,32),'agent_id',CASE WHEN json_type(record,'$.target.agent_id')='text' AND length(CAST(json_extract(record,'$.target.agent_id') AS BLOB))<=128 THEN json_extract(record,'$.target.agent_id') ELSE substr(json_extract(record,'$.target.agent_id'),1,128) END),'state',CASE state WHEN 'provisioning' THEN 'queued' ELSE state END,
                 'error',substr(json_extract(record,'$.error'),1,512))) ELSE '{}' END
             FROM tracker_delivery_intents WHERE task_id=t.id AND state<>'cancelled' ORDER BY generation DESC LIMIT 1),'{}'))"#
 }
 
 const FACT_COLUMNS: &str =
-    "task_id,id,ulid,at,ts,unread,activity,watched,done_move,agent_comment,mentions";
+    "task_id,id,ulid,at,ts,unread,activity,meaningful,watched,done_move,agent_comment,mentions";
 
 fn fact_insert(table: &str, predicate: &str) -> String {
     format!("INSERT INTO tracker_task_summary_facts({FACT_COLUMNS}) SELECT {FACT_COLUMNS} FROM ({}) WHERE {}", fact_rows(table),predicate.replace("rowid","source_rowid"))
@@ -210,6 +215,7 @@ pub(super) fn insert_facts(table: &str, predicate: &str) -> String {
         "ts",
         "unread",
         "activity",
+        "meaningful",
         "watched",
         "done_move",
         "agent_comment",
@@ -272,7 +278,7 @@ pub(super) fn refresh_metadata(id: &str) -> String {
             '$._summary_invalid_metadata_refs',json(CASE WHEN m.invalid_refs THEN 'true' ELSE 'false' END)),m.assignment_target
         FROM (SELECT t.task_id,{patch} patch,({invalid}) invalid_refs,
             (SELECT CASE WHEN state IN ('waiting','queued','provisioning','failed') THEN
-                json_object('kind',substr(json_extract(record,'$.target.kind'),1,32),'agent_id',substr(json_extract(record,'$.target.agent_id'),1,128)) END
+                json_object('kind',substr(json_extract(record,'$.target.kind'),1,32),'agent_id',CASE WHEN json_type(record,'$.target.agent_id')='text' AND length(CAST(json_extract(record,'$.target.agent_id') AS BLOB))<=128 THEN json_extract(record,'$.target.agent_id') ELSE substr(json_extract(record,'$.target.agent_id'),1,128) END) END
                 FROM tracker_delivery_intents WHERE task_id=t.id AND state<>'cancelled' ORDER BY generation DESC LIMIT 1) assignment_target
             FROM (SELECT task_id,task_id id FROM tracker_task_summaries WHERE task_id={id}) t) m
         WHERE m.task_id=tracker_task_summaries.task_id) WHERE task_id={id};",patch=enrich_patch(),invalid=invalid_metadata_refs())
@@ -330,3 +336,9 @@ pub(super) fn refresh_identities(predicate: &str) -> String {
 pub(super) use activity::{append_update, patch_card, refresh as refresh_activity};
 
 pub(super) use choices::refresh as refresh_choices;
+
+/// Byte-safe equivalent of canonical summary::when: retain every byte after
+/// the first ASCII hyphen, including NUL and subsequent hyphens.
+pub(super) fn opaque_suffix(value: &str) -> String {
+    format!("CASE WHEN ({value}) IS NULL THEN NULL WHEN length(CAST(({value}) AS BLOB))=0 THEN '' ELSE COALESCE(CAST(substr(CAST(({value}) AS BLOB),instr(CAST(({value}) AS BLOB),x'2d')+1) AS TEXT),'') END")
+}

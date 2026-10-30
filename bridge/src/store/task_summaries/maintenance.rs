@@ -1,7 +1,7 @@
 //! Synchronous producer hooks. Call these on the canonical mutation transaction.
 //! Canonical SQL outside supported producers deliberately has no automatic hook.
 
-use super::{sql, StoreError};
+use super::{query_projection, query_sources, sql, StoreError};
 use crate::tracker::Task;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -76,6 +76,7 @@ pub(crate) fn task_written(conn: &Connection, task: &Task) -> Result<(), StoreEr
 }
 
 pub(super) fn task_written_unchecked(conn: &Connection, task: &Task) -> Result<(), StoreError> {
+    query_sources::task_written(conn, task)?;
     let number = i64::try_from(task.number).unwrap_or(i64::MAX);
     let record = compact_task(task).to_string();
     conn.prepare_cached(&statements().task)?.execute(params![
@@ -94,7 +95,11 @@ pub(super) fn task_written_unchecked(conn: &Connection, task: &Task) -> Result<(
     keyed(conn, &statements().card, &task.id)?;
     keyed(conn, &statements().metadata, &task.id)?;
     keyed(conn, &statements().dependencies, &task.id)?;
-    sql::refresh_choices(conn, &task.id)
+    query_sources::metadata_refresh(conn, &task.id)?;
+    sql::refresh_choices(conn, &task.id)?;
+    query_projection::refresh(conn, &task.id)?;
+    query_projection::refresh_relations(conn, task)?;
+    query_projection::refresh_review_mode(conn, &task.id)
 }
 
 fn compact_task(task: &Task) -> Value {
@@ -120,6 +125,7 @@ pub(crate) fn task_remove(conn: &Connection, id: &str) -> Result<(), StoreError>
         return Ok(());
     }
     task_dependents_refresh(conn, id)?;
+    query_projection::remove(conn, id)?;
     keyed(
         conn,
         "DELETE FROM tracker_task_summaries WHERE task_id=?1",
@@ -150,6 +156,7 @@ pub(crate) fn task_dependents_refresh(conn: &Connection, id: &str) -> Result<(),
         .collect::<Result<Vec<_>, _>>()?;
     for dependent in ids {
         keyed(conn, &statements().dependencies, &dependent)?;
+        query_projection::refresh(conn, &dependent)?;
     }
     Ok(())
 }
@@ -157,6 +164,10 @@ pub(crate) fn task_dependents_refresh(conn: &Connection, id: &str) -> Result<(),
 pub(crate) fn metadata_refresh(conn: &Connection, id: &str) -> Result<(), StoreError> {
     if ready(conn)? {
         keyed(conn, &statements().metadata, id)?;
+        query_sources::metadata_refresh(conn, id)?;
+        sql::refresh_choices(conn, id)?;
+        query_projection::refresh(conn, id)?;
+        query_projection::refresh_review_mode(conn, id)?;
     }
     Ok(())
 }
@@ -164,6 +175,7 @@ pub(crate) fn metadata_refresh(conn: &Connection, id: &str) -> Result<(), StoreE
 pub(crate) fn dependency_refresh(conn: &Connection, id: &str) -> Result<(), StoreError> {
     if ready(conn)? {
         keyed(conn, &statements().dependencies, id)?;
+        query_projection::refresh(conn, id)?;
     }
     Ok(())
 }
@@ -203,6 +215,7 @@ pub(crate) fn history_append(
         keyed(conn, &statements().activity, task_id)?;
     }
     keyed(conn, &statements().card, task_id)?;
+    query_projection::refresh(conn, task_id)?;
     Ok(())
 }
 
@@ -226,6 +239,7 @@ pub(crate) fn history_repair(conn: &Connection, task_id: &str) -> Result<(), Sto
     }
     keyed(conn, &statements().activity, task_id)?;
     keyed(conn, &statements().card, task_id)?;
+    query_projection::refresh(conn, task_id)?;
     Ok(())
 }
 

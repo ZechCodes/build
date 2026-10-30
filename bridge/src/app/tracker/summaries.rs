@@ -1,11 +1,13 @@
 //! Lightweight reads touch only bounded materialized rows and shared identities.
 use super::bounded_pages::{BoundedPage, MAX_RESPONSE_BYTES, MAX_ROW_BYTES, RESPONSE_OVERHEAD};
+use super::query_selections::QuerySelections;
 use super::read::TaskReadContext;
 use super::read_source::TaskReadSource;
 use super::selections::TaskSelections;
 use super::StoredAnswer;
 use crate::app::require_str;
 use crate::store::TaskSummaryCandidate;
+use crate::store::{TaskQueryOrder, TaskQueryPosition};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -21,29 +23,49 @@ impl TaskReadContext {
             .get(&project_id)
             .ok_or_else(|| format!("unknown project_id: {project_id}"))?;
         let filters = TaskSelections::parse(params)?;
+        let query = QuerySelections::parse(params)?;
+        let basis = source.task_query_basis().stored()?;
         let key = source.tracker_list_key().stored()?;
         let (page, position) = BoundedPage::parse(
             params,
             &key,
             project,
-            json!(["summary", filters.canonical()]),
+            json!(["summary", filters.canonical(), query.canonical()]),
         )?;
         let below = position
-            .map(|position| {
-                position
-                    .parse::<u64>()
-                    .map_err(|_| "invalid task cursor".to_string())
-            })
+            .map(|position| summary_position(&position, &basis))
             .transpose()?;
+        if query.filter.attention_rule.is_some() {
+            super::query_selections::ensure_supported_markers(
+                source,
+                project,
+                &project_id,
+                "tasks.list",
+            )?;
+        }
+        if let Some(field) = source
+            .task_query_unsupported_domain(project, query.order, query.filter.done_since.is_some())
+            .stored()?
+        {
+            return Err(format!(
+                "task_query_timestamp_unsupported:{}",
+                json!({"reason":"task_query_timestamp_unsupported","scope":"project_order","order":query.order,"project_id":project_id,"domain":"ecmascript-iso-v1","field":field})
+            ));
+        }
         let mut scan = SummaryScan::new(page.limit, below);
-        self.scan_summaries(source, project, &project_id, &filters, &mut scan)?;
+        self.scan_summaries(source, project, &project_id, &filters, &query, &mut scan)?;
         let next = scan
             .more
-            .then(|| scan.below.map(|number| page.cursor(&number.to_string())))
+            .then(|| {
+                scan.below.map(|position| {
+                    page.cursor(
+                        &serde_json::to_string(&(&basis, position)).expect("position serializes"),
+                    )
+                })
+            })
             .flatten();
         let rows = scan.rows;
-        let mut answer =
-            json!({"summary":true,"project_id":project_id,"user_session":self.user_session_json()});
+        let mut answer = json!({"summary":true,"project_id":project_id,"basis":basis,"user_session":self.user_session_json()});
         // Move the already-decoded page instead of serializing every row into
         // a second Value tree while constructing the response envelope.
         answer["tasks"] = Value::Array(rows.tasks);
@@ -61,6 +83,7 @@ impl TaskReadContext {
         project: &str,
         project_id: &str,
         filters: &TaskSelections,
+        query: &QuerySelections,
         scan: &mut SummaryScan,
     ) -> Result<(), String> {
         'pages: loop {
@@ -68,18 +91,23 @@ impl TaskReadContext {
                 .min(32)
                 .min(scan.limit + 1 - scan.rows.tasks.len());
             let candidates = source
-                .list_task_summary_candidates(project, scan.below, take)
+                .list_task_query_candidates(project, query.order, scan.below, take)
                 .stored()?;
             let exhausted = candidates.len() < take;
-            for mut candidate in candidates {
+            for (mut candidate, position) in candidates {
                 if !scan.admits() {
                     scan.more = true;
                     break 'pages;
                 }
-                let number = candidate.row["number"]
-                    .as_u64()
-                    .ok_or("invalid task summary number")?;
-                if filters.matches_row(&candidate.row, candidate.assignment_target.as_ref()) {
+                if summary_matches(source, filters, query, &candidate)? {
+                    candidate.row["matched_memberships"] = query.provenance();
+                    if query.order == TaskQueryOrder::Anchor {
+                        candidate.row["order_anchor_ms"] = if position.sort == i64::MAX {
+                            Value::Null
+                        } else {
+                            json!(position.sort)
+                        };
+                    }
                     self.prepare_summary(
                         source,
                         project_id,
@@ -92,7 +120,7 @@ impl TaskReadContext {
                     }
                 }
                 scan.scanned += 1;
-                scan.below = Some(number);
+                scan.below = Some(position);
             }
             if exhausted {
                 break;
@@ -101,7 +129,7 @@ impl TaskReadContext {
         Ok(())
     }
 
-    fn prepare_summary(
+    pub(super) fn prepare_summary(
         &self,
         source: &impl TaskReadSource,
         project: &str,
@@ -137,6 +165,8 @@ impl TaskReadContext {
                 })
                 .unwrap_or(retained);
             let mut identity = self.identities.identity(id, &durable);
+            // The dictionary key is structural identity, never a display field.
+            identity.agent_id = id.to_string();
             // Display names can change in the live overlay. IDs stay exact.
             identity.workspace_name = identity
                 .workspace_name
@@ -208,16 +238,41 @@ impl TaskReadContext {
     }
 }
 
+fn summary_matches(
+    source: &impl TaskReadSource,
+    filters: &TaskSelections,
+    query: &QuerySelections,
+    candidate: &TaskSummaryCandidate,
+) -> Result<bool, String> {
+    let id = candidate.row["id"]
+        .as_str()
+        .ok_or("invalid task summary id")?;
+    Ok(
+        filters.matches_row(&candidate.row, candidate.assignment_target.as_ref())
+            && query.matches_row(&candidate.row)
+            && source.task_query_matches(id, &query.filter).stored()?,
+    )
+}
+
+fn summary_position(raw: &str, basis: &str) -> Result<TaskQueryPosition, String> {
+    let (cursor_basis, position): (String, TaskQueryPosition) =
+        serde_json::from_str(raw).map_err(|_| "invalid task cursor".to_string())?;
+    if cursor_basis != basis {
+        return Err("task_query_basis_changed: restart this list".into());
+    }
+    Ok(position)
+}
+
 struct SummaryScan {
     rows: SummaryRows,
-    below: Option<u64>,
+    below: Option<TaskQueryPosition>,
     scanned: usize,
     budget: usize,
     limit: usize,
     more: bool,
 }
 impl SummaryScan {
-    fn new(limit: usize, below: Option<u64>) -> Self {
+    fn new(limit: usize, below: Option<TaskQueryPosition>) -> Self {
         Self {
             rows: SummaryRows::default(),
             below,
@@ -300,6 +355,33 @@ fn vocabulary(dimension: &str, after: Option<&str>) -> Vec<crate::store::TaskFil
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn summary_cursor_binds_basis_order_and_exact_position() {
+        let binding = json!(["summary", [], ["anchor", {}]]);
+        let (page, _) =
+            BoundedPage::parse(&json!({}), "secret", "project", binding.clone()).unwrap();
+        let position = TaskQueryPosition {
+            sort: 10,
+            number: 12,
+        };
+        let cursor = page.cursor(&serde_json::to_string(&("store:7", position)).unwrap());
+        let (_, raw) =
+            BoundedPage::parse(&json!({"cursor":cursor}), "secret", "project", binding).unwrap();
+        assert_eq!(
+            summary_position(raw.as_deref().unwrap(), "store:7").unwrap(),
+            position
+        );
+        assert!(summary_position(raw.as_deref().unwrap(), "store:8")
+            .unwrap_err()
+            .starts_with("task_query_basis_changed"));
+        assert!(BoundedPage::parse(
+            &json!({"cursor":cursor}),
+            "secret",
+            "project",
+            json!(["summary", [], ["number", {}]])
+        )
+        .is_err());
+    }
     fn candidate(bytes: usize) -> TaskSummaryCandidate {
         TaskSummaryCandidate {
             row: json!({"title":"x".repeat(bytes)}),

@@ -2,8 +2,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-const owner = vi.hoisted(() => ({ session: "session-before" }));
-vi.mock("../src/core/deviceReconnect.js", () => ({ deviceSession: () => owner.session }));
+const owner = vi.hoisted(() => ({ session: "session-before", checks: 0 }));
+vi.mock("../src/core/deviceReconnect.js", () => ({ deviceSession: () => { owner.checks += 1; return owner.session; } }));
 
 const deviceId = "full-content-producer", projectId = "proj-1";
 const task = (id, extra = {}) => ({ id, project_id: projectId, number: 42,
@@ -18,6 +18,7 @@ let feed;
 beforeEach(() => {
   vi.resetModules();
   owner.session = "session-before";
+  owner.checks = 0;
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
 });
@@ -27,15 +28,18 @@ it("refuses a full detail response from a replaced session while its listed vers
   const tracker = await import("../src/core/trackerCache.js");
   const { createTrackerTaskDetailsFeed } = await import("../src/core/trackerTaskDetailsFeed.js");
   const response = deferred();
+  const writer = vi.spyOn(tracker, "writeTaskRecord");
   const callRpc = vi.fn(() => response.promise);
   feed = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc });
   await feed.updateTasks([task("one")]);
   await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(1));
+  const checksBeforeReply = owner.checks;
   owner.session = "session-after";
   response.resolve({ task: task("one", { title: "Retired session", body: "Retired body" }), timeline: [] });
-  // Wait for the real writer's transaction rather than inspecting a transient
-  // empty cache before the deferred response has had a chance to publish.
-  await new Promise((done) => setTimeout(done, 40));
+  // Observe the retired owner check or await the actual writer; a temporary
+  // empty cache while the producer still awaits work is not evidence.
+  await vi.waitFor(() => expect(writer.mock.calls.length > 0 || owner.checks > checksBeforeReply).toBe(true));
+  if (writer.mock.results[0]) await writer.mock.results[0].value;
   expect(await tracker.readTaskRecord(deviceId, projectId, "one")).toBeNull();
   expect(feed.read().has("one")).toBe(false);
   expect(callRpc).toHaveBeenCalledTimes(1);

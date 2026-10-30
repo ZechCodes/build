@@ -516,12 +516,21 @@ it("refuses every full-read output when the session changes during its joint cac
   spy.mockRestore(); expect(await cache.readCachedMany(addresses)).toEqual(before);
 });
 
-it("rejects a retired-domain full read before publishing either compact or independent detail fields", async () => {
-  const { tracker, initial, summaryAddress, invalidation } = await seededFullObservation();
+it("retains retired ordinary content while a stale full read independently advances read and review facts", async () => {
+  const { tracker, initial, summaryAddress } = await seededFullObservation();
   const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
   await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id, { task: { ...initial, body: "Optimistic body" }, timeline: ["Held history"] });
-  const addresses = [address, summaryAddress, invalidation], before = await cache.readCachedMany(addresses);
+  const before = (await cache.readCached(address)).value;
+  const review_summary = { version: 2, state: "approved" };
   expect(await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id,
-    { task: { ...initial, title: "Stale full read", read_through: "tc-99" }, timeline: ["Stale history"] }, { contentRead })).toBe(false);
-  expect(await cache.readCachedMany(addresses)).toEqual(before);
+    { task: { ...initial, title: "Stale full read", read_through: "tc-99", review_summary }, timeline: ["Stale history"] }, { contentRead })).toBe(true);
+  const detail = (await cache.readCached(address)).value, normalized = (await cache.readCached(summaryAddress)).value;
+  expect(detail.task).toMatchObject({ title: initial.title, body: "Optimistic body", read_through: "tc-99", review_summary });
+  expect(detail.timeline).toEqual(["Held history"]);
+  expect(detail.task.__task_content_cache.header).toEqual(before.task.__task_content_cache.header);
+  expect(detail.task.__task_content_cache.body).toBeUndefined();
+  expect(normalized.task).toMatchObject({ title: initial.title, read_through: "tc-99", review_summary });
+  expect(normalized.task.__task_content_cache.header.read_order).toBeLessThan(contentRead.readOrder);
+  expect(normalized.task.__task_content_cache.body).toBeUndefined();
+  expect(normalized.basis_uncertain).toBe(true);
 });

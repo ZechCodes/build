@@ -83,9 +83,9 @@ async function confirmedOperation(runtime, targets, { operationId = "payload-ope
   const record = await runtime.operations.confirm(operationId, { revision: frame.revision, confirmation: frame, refreshPending: true });
   expect(record.refreshPending).toBe(true);
   expect(record.overlay).toHaveLength(overlay ? 1 : 0);
-  // The current protocol retains overlayActive even for an empty layer list;
-  // empty effects do not finish the separately named refresh obligation.
-  expect(record.overlayActive).toBe(true);
+  // Empty normalized effects have no active layer; their named refresh
+  // obligation remains independently pending.
+  expect(record.overlayActive).toBe(overlay);
   return { record, frame };
 }
 
@@ -112,7 +112,13 @@ async function snapshot(runtime, targets, operationId = "payload-operation") {
     operation: await runtime.operations.get(operationId) };
 }
 
-async function startService(runtime, answer, calls = [], { waitForRefresh = true, read } = {}) {
+function serviceObservation(observation, event, value) {
+  if (!observation) return;
+  try { observation[event]?.(value); }
+  catch (error) { observation.errors.push({ event, message: error.message }); }
+}
+
+async function startService(runtime, answer, calls = [], { waitForRefresh = true, read, observation } = {}) {
   const pending = new Set(), timers = new Map();
   let timerId = 0;
   const session = { onWriteFrame: () => () => {}, callRaw: vi.fn(async (method, params, options) => {
@@ -125,12 +131,27 @@ async function startService(runtime, answer, calls = [], { waitForRefresh = true
       revision: 1, state: "accepted", accepted_epoch: greeting.bridge_epoch }, result: { saved: true } };
   }) };
   const service = runtime.operationService.createWriteOperationService({ ...identity, cache: runtime.operations,
-    setTimeout: (run, wait) => { const id = ++timerId; timers.set(id, { run, wait }); return id; },
-    clearTimeout: (id) => timers.delete(id), random: () => .5,
+    setTimeout: (run, wait) => {
+      const id = ++timerId;
+      timers.set(id, { run: observation ? () => { serviceObservation(observation, "fired", { id }); return run(); } : run, wait });
+      serviceObservation(observation, "scheduled", { id, wait, source: observation ? new Error().stack : undefined });
+      return id;
+    },
+    clearTimeout: (id) => {
+      const removed = timers.delete(id);
+      serviceObservation(observation, "cancelled", { id });
+      return removed;
+    }, random: () => .5,
     onRefresh: (_addresses, frame, record, authority) => {
       const reading = runtime.refresh.refreshWriteOperation({ cache: runtime.operations, frame, record, authority });
       pending.add(reading);
-      reading.then(() => pending.delete(reading), () => pending.delete(reading));
+      reading.then((result) => {
+        pending.delete(reading);
+        serviceObservation(observation, "refreshed", { reading, result, frame, record, authority });
+      }, (error) => {
+        pending.delete(reading);
+        serviceObservation(observation, "refreshFailed", { error });
+      });
       return reading;
     },
   });
@@ -141,9 +162,75 @@ async function startService(runtime, answer, calls = [], { waitForRefresh = true
   };
   const running = { service, session, calls, timers, drain, pending };
   services.push(running);
+  serviceObservation(observation, "created", running);
   await service.bind({ session, greeting });
   if (waitForRefresh) await drain();
   return running;
+}
+
+const sameValues = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+
+function matchingBlockedSnapshot(rows, completed, expected, keyOf) {
+  if (!completed || rows.length !== 1) return false;
+  const row = rows[0], state = row.refreshState, refresh = completed.result?.refresh;
+  return row.namespace === expected.record.namespace && row.operationId === refresh?.operationId
+    && row.operationId === expected.record.operationId && row.revision === expected.frame.revision
+    && row.revision === refresh?.revision && row.refreshPending === true && row.overlayActive === true
+    && row.state === "succeeded" && state?.version === 1 && state.revision === row.revision
+    && typeof refresh?.generation === "string" && refresh.generation.length > 0 && state.generation === refresh.generation
+    && sameValues(row.confirmation, expected.frame)
+    && sameValues(state.required, expected.frame.published)
+    && sameValues(state.targets.map(({ address }) => keyOf(address)).sort(), expected.keys)
+    && state.targets.every((target) => target.key === keyOf(target.address) && target.phase === "blocked" && target.receipt === null);
+}
+
+function timerBoundaryObservation(runtime, expected) {
+  const events = [], errors = [], unread = Promise.withResolvers(), completed = Promise.withResolvers(), probe = Promise.withResolvers();
+  let sequence = 0, currentSnapshot = null, finished = null, accepted = null, timers;
+  const note = (type, fields = {}) => {
+    const event = { sequence: ++sequence, type, ...fields };
+    events.push(event);
+    return event;
+  };
+  const liveTimers = () => [...timers].map(([id, { wait }]) => ({ id, wait }));
+  const observation = {
+    errors, events, unread, completed, probe,
+    scheduled(value) { note("scheduled", value); },
+    cancelled(value) { note("cancelled", { ...value, snapshot: currentSnapshot }); },
+    fired(value) { note("fired", value); },
+    refreshed(value) {
+      finished = note("inner-completed", value);
+      completed.resolve(finished);
+    },
+    refreshFailed({ error }) { completed.resolve(note("inner-failed", { message: error.message })); },
+    created(running) {
+      timers = running.timers;
+      observation.stop = running.service.subscribe((rows) => {
+        try {
+          const event = note("snapshot", { rows: structuredClone(rows) });
+          const row = rows.find(({ operationId }) => operationId === expected.record.operationId);
+          if (!finished && row?.refreshState?.targets?.some(({ phase }) => phase === "unread")) unread.resolve(event);
+          if (accepted || !matchingBlockedSnapshot(rows, finished, expected, runtime.keys.recordKey)) return;
+          accepted = event;
+          event.live = liveTimers();
+          currentSnapshot = event.sequence;
+          queueMicrotask(() => {
+            try { probe.resolve(note("probe", { snapshot: event.sequence, live: liveTimers() })); }
+            catch (error) { errors.push({ event: "probe", message: error.message }); probe.resolve(null); }
+            currentSnapshot = null;
+          });
+        } catch (error) { errors.push({ event: "snapshot", message: error.message }); probe.resolve(null); }
+      });
+    },
+    diagnostic() {
+      return events.map(({ sequence: seq, type, id, wait, snapshot, live, rows, result, source }) => ({
+        sequence: seq, type, id, wait, snapshot, live, refresh: result?.refresh,
+        targets: rows?.flatMap((row) => (row.refreshState?.targets || []).map(({ key, phase }) => ({ key, phase }))),
+        source: source?.split("\n").slice(0, 6),
+      }));
+    },
+  };
+  return observation;
 }
 
 it("publishes admitted task payload under unknown watch authority without a receipt or completion", async () => {
@@ -355,6 +442,76 @@ it("retains a blocked refresh across reopen without retrying or blocking a new u
   await reopenedService.service.reconcile(); await reopenedService.drain();
   expect(calls.filter(({ method }) => method === "tasks.get")).toHaveLength(1);
   await operationUnfinished(reopened);
+});
+
+it("does not retain a retry timer after the blocked refresh is observed by the service", async () => {
+  const writer = await independentRuntime(), target = await seedTask(writer);
+  const { record, frame } = await confirmedOperation(writer, [target]);
+  const expected = { record, frame, keys: [writer.keys.recordKey(target.address)] };
+  const observation = timerBoundaryObservation(writer, expected);
+  const reply = deferred(), dispatched = Promise.withResolvers(), calls = [];
+  const answer = answerFor(target);
+  try {
+    const running = await startService(writer, () => answer, calls, { waitForRefresh: false, observation,
+      read: (method, params) => { dispatched.resolve({ method, params }); return reply.promise; } });
+    expect(await dispatched.promise).toEqual({ method: "tasks.get", params: { task_id: target.row.id } });
+    const earlier = await observation.unread.promise;
+    expect(earlier.rows).toHaveLength(1);
+    expect(earlier.rows[0]).toMatchObject({ operationId: record.operationId, revision: frame.revision,
+      refreshPending: true, refreshState: { targets: [{ key: expected.keys[0], phase: "unread" }] } });
+    // bind has completed its lease; a real retry token, not an inserted timer,
+    // must exist before the genuine reply is released.
+    expect(running.timers.size).toBe(1);
+    reply.resolve(answer);
+    const completed = await observation.completed.promise;
+    expect(completed.type).toBe("inner-completed");
+    expect(completed.authority.active()).toBe(true);
+    expect(completed.result).toMatchObject({ complete: false, refresh: { operationId: record.operationId,
+      revision: frame.revision, generation: expect.any(String), state: "blocked" },
+    outcomes: [{ address: target.address, payloadWritten: true, historyWritten: true,
+      receiptPublished: false, reason: "missing-complete-authority" }] });
+    expect(completed.result.refresh.generation).not.toBe("");
+    expect(earlier.rows[0].refreshState.generation).toBe(completed.result.refresh.generation);
+    expect(completed.result.outcomes.map(({ address }) => writer.keys.recordKey(address)).sort()).toEqual(expected.keys);
+    const canonical = await writer.local.readCanonicalCached(target.address);
+    expect(canonical.value.task.body).toBe(answer.task.body);
+    expect(canonical.publication || []).toEqual([]);
+    const checkpoint = await observation.probe.promise;
+    expect(observation.errors).toEqual([]);
+    expect(checkpoint).not.toBeNull();
+    const accepted = observation.events.find(({ sequence }) => sequence === checkpoint.snapshot);
+    expect(earlier.sequence).toBeLessThan(completed.sequence);
+    expect(completed.sequence).toBeLessThan(accepted.sequence);
+    expect(accepted.rows).toHaveLength(1);
+    expect(accepted.rows[0]).toMatchObject({ namespace: record.namespace, operationId: record.operationId,
+      revision: frame.revision, state: "succeeded", refreshPending: true, overlayActive: true,
+      refreshState: { revision: frame.revision, generation: completed.result.refresh.generation,
+        required: frame.published, targets: [{ key: expected.keys[0], address: target.address, phase: "blocked", receipt: null }] } });
+    expect(accepted.rows[0].refreshState.targets.map(({ key }) => key).sort()).toEqual(expected.keys);
+    expect(accepted.rows[0].confirmation).toEqual(frame);
+    // Without an actually live token this is a failed precondition, never a
+    // zero-timer GREEN that could survive removal of worker.reset.
+    expect(accepted.live).toHaveLength(1);
+    const token = accepted.live[0];
+    const registration = observation.events.find(({ type, id }) => type === "scheduled" && id === token.id);
+    expect(registration.wait).toBe(token.wait);
+    expect(registration.sequence).toBeLessThan(accepted.sequence);
+    const cancellations = observation.events.filter(({ type, id, snapshot }) => type === "cancelled"
+      && id === token.id && snapshot === accepted.sequence);
+    expect(cancellations).toHaveLength(1);
+    expect(cancellations[0].sequence).toBeGreaterThan(accepted.sequence);
+    expect(cancellations[0].sequence).toBeLessThan(checkpoint.sequence);
+    expect(checkpoint.live).toEqual([]);
+    expect(running.timers.size).toBe(0);
+    expect(observation.events.filter(({ type }) => type === "fired")).toEqual([]);
+    expect(calls).toEqual([{ method: "tasks.get", params: { task_id: target.row.id } }]);
+    expect((await writer.local.readCanonicalCached(target.address)).publication || []).toEqual([]);
+    await operationUnfinished(writer);
+  } finally {
+    observation.stop?.();
+    reply.resolve(answer);
+    console.info("D3 timer completion trace", JSON.stringify(observation.diagnostic()));
+  }
 });
 
 it("does not wake a blocked obligation for unrelated or still unknown cache evidence", async () => {

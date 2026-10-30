@@ -169,7 +169,13 @@ export function createSessionRpc({
     } catch {
       return;
     }
-    if (closed || !acceptCarrier(frame.payload, source) || !acceptEpoch(frame.payload)) return;
+    takeFrame(frame, source);
+  };
+
+  // Bound carriers validate their codec before this epoch/correlation boundary;
+  // relay and legacy carriers decrypt explicitly above it.
+  const takeFrame = (frame, source) => {
+    if (closed || closedCarriers.has(source) || !acceptCarrier(frame.payload, source) || !acceptEpoch(frame.payload)) return;
     lastFrameAt = Date.now();
     takePayload(frame.payload, source);
   };
@@ -233,10 +239,21 @@ export function createSessionRpc({
   const readFrom = (held) => {
     if (!held || readers.has(held)) return;
     readers.add(held);
-    held.onEnvelope((envelope) => takeEnvelope(envelope, held));
-    held.onClose(() => {
+    if (held.onFrame) held.onFrame((frame) => takeFrame(frame, held));
+    else held.onEnvelope((envelope) => takeEnvelope(envelope, held));
+    held.onClose((reason) => {
       closedCarriers.add(held);
-      sqlReads.releaseCarrier(held, sqlDeliveryError(new Error("the channel closed")));
+      const error = reason || new Error("the channel closed");
+      sqlReads.releaseCarrier(held, sqlDeliveryError(error));
+      // Bound carriers are exact delivery bindings. A completed handoff on
+      // one cannot receive its answer elsewhere; fail it without waiting for
+      // the path deadline. Legacy migration semantics remain unchanged.
+      if (!held.onFrame) return;
+      for (const [id, waiting] of pending) {
+        if (waiting.sendingCarrier !== held) continue;
+        pending.delete(id);
+        waiting.reject(uncertainDeliveryError(error));
+      }
     });
   };
 
@@ -307,7 +324,7 @@ export function createSessionRpc({
     lastFrameAt: () => lastFrameAt,
 
     /**
-     * One encrypted request, and the reply it is waiting for.
+     * One request on the selected codec, and the reply it is waiting for.
      *
      * `carrier` pins the call to one wire — how signaling stays on the relay
      * while a channel carries everything else. It may be the *promise* of a
@@ -379,24 +396,39 @@ export function createSessionRpc({
         const sending = await wireReady;
         if (closed || pending.get(id) !== waiting) return;
         if (!sending) throw noCarrier();
-        assertCurrent();
+        const payload = { method, id, params, ...(priority === "background" ? { priority } : {}), ...(write ? { write: writeMetadata(write) } : {}) };
+        const ensureCurrent = () => {
+          if (closed || pending.get(id) !== waiting) throw new Error("the request is no longer pending");
+          if (signal?.aborted) throw signal.reason || new DOMException("The request was cancelled", "AbortError");
+          assertCurrent();
+        };
+        const handoff = () => {
+          waiting.sendingCarrier = sending;
+          waiting.handoffAttempted = true;
+          sqlReads.sent(id);
+        };
+        if (sending.sendFrame) {
+          await sending.sendFrame(payload, { signal, assertCurrent: ensureCurrent, onHandoff: handoff }).catch((error) => {
+            throw waiting.handoffAttempted ? uncertainDeliveryError(error) : error;
+          });
+          return;
+        }
+        ensureCurrent();
         const envelope = await transport.encryptFrame({
           sessionKeyB64,
           outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
           frameFields: {
             frame_type: "data",
             sender: "client",
-            payload: { method, id, params, ...(priority === "background" ? { priority } : {}), ...(write ? { write: writeMetadata(write) } : {}) },
+            payload,
           },
         });
         // The session may have been failed, closed, or timed out while its
         // carrier/encryption was pending. Once the outward call has settled,
         // its request must never cross later and mutate the old scope.
         if (closed || pending.get(id) !== waiting) return;
-        assertCurrent();
-        waiting.sendingCarrier = sending;
-        waiting.handoffAttempted = true;
-        sqlReads.sent(id);
+        ensureCurrent();
+        handoff();
         await sending.send(envelope);
       };
       const start = () => {

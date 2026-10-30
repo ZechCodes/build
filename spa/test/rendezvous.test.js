@@ -49,7 +49,7 @@ const fakeTransport = {
     sessionKeyB64: sessionKeyB64 || `key-${sessionId}`,
     sessionInit: { session_id: sessionId, device_id: deviceId },
   }),
-  openSessionAccept: async () => {},
+  openSessionAccept: async ({ envelope }) => ({ sessionId: envelope.for }),
 };
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -98,6 +98,17 @@ async function minted(overrides = {}) {
 }
 
 describe("createRelayRendezvous", () => {
+  it("refuses an authenticated accept for a different pending session", async () => {
+    const stood = stand({ transport: { ...fakeTransport,
+      openSessionAccept: async () => ({ sessionId: "another-authenticated-session" }),
+    } });
+    const pending = stood.rendezvous.mint({ sessionId: "pending-session" });
+    const result = pending.then(() => "incorrectly minted", (error) => error);
+    await answering(stood);
+    expect(await result).toMatchObject({ message: expect.stringMatching(/session.*match/i), dialStep: "session-accept" });
+    stood.rendezvous.close();
+  });
+
   it("opens one authenticated socket and keeps it while it is open", async () => {
     const { rendezvous, tokens, socket } = stand();
     const opening = rendezvous.open();
@@ -188,6 +199,7 @@ describe("createRelayRendezvous", () => {
         ...fakeTransport,
         openSessionAccept: async ({ sessionKeyB64, envelope }) => {
           opened.push({ sessionKeyB64, envelope });
+          return { sessionId: envelope.for };
         },
       },
     });

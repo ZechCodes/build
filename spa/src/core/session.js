@@ -15,6 +15,7 @@
 // session id and key: a session is minted once, not once per socket, and
 // re-keying under a live channel would strand every frame in flight on it.
 
+import { createChannelBinding } from "./peerBinding.js";
 import { compactionWriteError } from "./bridgeApi/v1/compactionParams.js";
 import { ApiError } from "./bridgeApi/v1/index.js";
 import { createSessionRpc, DEFAULT_RPC_TIMEOUT_MS } from "./sessionRpc.js";
@@ -279,6 +280,7 @@ export async function openSession({
   return {
     deviceId,
     sessionId: minted.sessionId,
+    peerBinding: createSessionPeerBinding({ minted, transport, deviceId }),
     bridgeEpoch,
     acceptGreeting: (greeting, options) => bridgeEpoch.acceptGreeting(greeting, options),
     onWriteFrame: (fn) => rpc.onWriteFrame(fn),
@@ -414,4 +416,20 @@ export async function openSession({
       signaling?.close(); // the rendezvous is the caller's; this lease on it is ours
     },
   };
+}
+
+/** Captures credentials rather than publishing the session key to callers.
+ * Generation allocation survives replacing a native peer on this Opening. */
+function createSessionPeerBinding({ minted, transport, deviceId }) {
+  let negotiation = 0;
+  return Object.freeze({
+    sessionId: minted.sessionId,
+    transport,
+    createChannelBinding: (options) => createChannelBinding({ ...options, transport, ...minted, deviceId }),
+    allocateNegotiation() {
+      if (negotiation >= Number.MAX_SAFE_INTEGER) throw new Error("peer negotiation generation exhausted");
+      negotiation += 1;
+      return negotiation;
+    },
+  });
 }

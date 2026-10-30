@@ -58,6 +58,7 @@ vi.mock("../src/terminal/session.js", () => ({
 
 const { App } = await import("../src/app.js");
 const { followTerminalDevice, provideTerminalSessions, resetTerminalManager, terminalManager } = await import("../src/terminal/manager.js");
+const { clearTerminalPeerLinks, configureTerminalPeerLinks, terminalPeerLink } = await import("../src/core/terminalPeerLinks.js");
 
 /** Every device a terminal session was asked for, and whether the mint answers.
  *  Minting one is the connection layer's — it owns that device's rendezvous —
@@ -97,6 +98,7 @@ const live = (deviceId, extra = {}) => contexts.set(deviceId, { deviceId, call: 
 
 beforeEach(() => {
   resetTerminalManager();
+  clearTerminalPeerLinks();
   App.devices = [online("dev-a"), online("dev-b")];
   App.selectedDeviceId = "dev-a";
   App.route = { name: "inbox" };
@@ -108,6 +110,34 @@ beforeEach(() => {
 });
 
 describe("the carrier the terminals are given", () => {
+  it("adopts the clear carrier returned by binding an initially empty term role", async () => {
+    const term = { id: "newly-bound" }; const peerLink = { term: null, recovery: {} };
+    live("dev-a", { peerLink });
+    mints.pending = async (deviceId) => {
+      peerLink.term = term;
+      return { sessionId: "bound-clear", deviceId, carrier: term, peerLink, release: vi.fn() };
+    };
+    const socket = socketOn(); await settle();
+    expect(socket.adoptedWith).toEqual([term]);
+    expect(socket.adoptOptions[0].recovery).toBe(peerLink.recovery);
+  });
+
+  it("follows a lazy HTTP terminal owner without replacing its app connection", async () => {
+    const term = { id: "http-terminal" }; const session = { transport: "http", close: vi.fn() };
+    live("dev-a", { session, peerLink: null }); const context = contexts.get("dev-a");
+    const helper = {
+      term: null, recovery: {}, bridgeEpoch: {}, close: vi.fn(), onClose: () => () => {},
+      mintTerminal: async () => ({ sessionId: "http-term", deviceId: "dev-a", release: vi.fn() }),
+      bindTerminal: async () => { helper.term = term; return term; },
+    };
+    configureTerminalPeerLinks({ open: async () => helper, isCurrent: (value) => contexts.get(value.deviceId) === value });
+    mints.pending = async (deviceId) => terminalPeerLink(contexts.get(deviceId)).mintTerminal();
+    const socket = socketOn(); await settle();
+    expect(socket.adoptedWith).toEqual([term]);
+    expect(context.peerLink).toBe(null); expect(context.session).toBe(session);
+    expect(session.close).not.toHaveBeenCalled();
+  });
+
   it("is watched by nobody here", () => {
     const term = { onClose: vi.fn(), onEnvelope: vi.fn(), send: vi.fn(), close: vi.fn() };
     live("dev-a", { peerLink: { term } });

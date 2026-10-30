@@ -1,0 +1,41 @@
+{
+  "description": "Synthetic public compatibility vector; test key only, never a credential.",
+  "offer_sdp": "v=0\r\na=fingerprint:sha-256 00:01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:0f:10:11:12:13:14:15:16:17:18:19:1a:1b:1c:1d:1e:1f\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n",
+  "answer_sdp": "v=0\r\na=fingerprint:sha-256 ff:01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:0f:10:11:12:13:14:15:16:17:18:19:1a:1b:1c:1d:1e:1f\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n",
+  "session_id": "fixture-app",
+  "test_session_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "challenge": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+  "binding_id": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+  "transcript": {
+    "protocol": "dtls-json-v1",
+    "peer_nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+    "peer_token": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+    "negotiation": 1,
+    "offer_hash": "b33af7aab6a0124011d54a9a26d7957a7b666a1713cbe3c213b69bb4bad131f5",
+    "answer_hash": "5adca55767d42cfb391260a9e5c99588606bdafe2f59e96cf46a2c53e7010e73",
+    "offer_fingerprint": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "answer_fingerprint": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+  },
+  "proof": {
+    "type": "channel_bind_v1",
+    "session_id": "fixture-app",
+    "envelope": {
+      "version": 1,
+      "session_id": "fixture-app",
+      "route_to": "device:fixture-device",
+      "nonce": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUF",
+      "ciphertext": "l4sHpKl2GpgG59UShHRNBsxmcaOv+eERAxCxZ32ilepSq8XBnb3BSIX9MyvaZLCmunCzOBlVS0rqhR3/pWebEIQ6f1JSzCg9VCUwihrOqmxc7DvXHML9khQoUL1dQmdM9rUUrfmmF59syeloWXrMvG++oSNYLq1LxWmEmnz1+PM1/zczXdtXxT79qJwuC7O/6ZMMbH61k/9XeL7BEmSckPLeS4lhMSOl1xqzBDNoNmpBlmTgbteeAqUE1IqFJ0tADCdl87R9ZJV42aNtR0VT7jjMScoLbs9FdJMpRyzdHwGCATGY84TNXp3Y3eId50sorJRoIRR8ifT9WKZlW8JK/OrJuLcEOTB4SpvYWm7cUJvxS7rHFdZqnzLpXAhoMUDEjmJ1HcSZN6nGR6qDX7mP5hVGAwgDRhzlaD9wa/+Iz7IYrjX5lONlqlQA/E+JpSB3fH7p5cDsOFwj3eykdLjYwZdyxB+N0O0DO9r7G37p87/xnyYo5vybbJmpkB3EtPMbr1OM7btPVniS/4hOY0wW5z3z3j9K/u2DzjijHGyEE4Swad5gs2MMcCmMK2LeIxyzw+K8hJXF0paPU7eKz6hyJT6HCb+hUWFWTX9TYNFDAK86HLkOMONnetos9ABLqw9W0GhpGAiJfduhzSNgQPbTAR58U0+RzCI0+kxwwiJeMjtAqJX+vdjHuXzz1ZmUcF8CxfTpcAyUCrRmP/w68oxYhJSldGis7iuovJxilNt2NGSaR44z3ITrMnAYgu0diPwwz4pJviK9KSi7xeyN3q939S6pF6yItEplLda/vtiPdxlzoQe8ZZak3N0+NdFWp3/1kxq3TM8W0vOaZh5jlVHT5FjXmsTprxE2jHqol6b8D7fodsc6vihz6AwdA1CRwTiQ2sQICTSmlBPASHPnjbry+BF9K8N3B4RS04KC/8XLO/KgI3rdKZpRLs8u8/coHz3IgG+xKvPXJBcxhBNwNt62Htgwnqq5WQnCNetoxCJGr6pJH/iBd85Xe+2XGh+wH8jKxh9Z9tadbTuOeoJX9VwWK1Jst3aC55zTvviPl86Qs4ZiTEMbweY"
+    }
+  },
+  "ack": {
+    "type": "channel_bound_v1",
+    "session_id": "fixture-app",
+    "envelope": {
+      "version": 1,
+      "session_id": "fixture-app",
+      "route_to": "session:fixture-app",
+      "nonce": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYG",
+      "ciphertext": "3LmLtEtAudXwYTBKQTd1OlVjHuSt2xFxe3hCFy5ZtI1ZPLP4eZYEJB17U/r7w0sHDkYRGm2TA7+ifwkVuWWeY9VoQ1Vihdre7OfoGq3DvG+0Yuvd3PIKfoU3O9bfUuk8PgqsFX1sP4JJOPsg67BAN5jI36PEvuFCDIcvATRIjERKzRGtWsFTzkP3ope3fyadLFt1gxchQGIgdoJXgEHlAdaae1hgxa8L7qnCQkEPdCLdaubKMLuNqpbEdwDDKNj/v+fOrP5I5pY9e8/o6bXAltR4ev7Rz9v5UFuP2TNugcYEIqVRar0sqRS77Bx9ywI8aWZWdtKtkYtHkln3kMsO6OSZSHcIro3O/WdsTNWwYlIM5p5z6aIsXn8J3HmeLp1el3u6O9a8v5n7PASmx9gz5H+YY/6QQfeewE7j/PQFAISTw26Q63jruT1GPm53ty1u7YwJIEPAc60pvO2Ajxazw6jXU2NKiWGBHMuSPl23kgDiPX5CRAj8eIK6KCflWnK/gxL3gbQvqcxkpKWqBibOb/GN+qb4Qf9jdKSRzUb7DMLNwNUQ5DHsj9OGcG/VFcsJasYA4+Bnapa6vRQMFVChUspY+i3jYlGKMVivw3YNk+uY0XqKz/X9D3oVz5M9VTAL1ol9optGf6WxL7AFjynmhfoTxlyPN7dYF5oeNfKhtCmJegwgxyvgnwzDRhj9n5eur79/7IU2j+5fTRS7ljgMoW52pnIpviNY2u+ID8t2+jfFOw1cwrMb6o+R8aXW9mJTF1PWVSvENuNKS+4Bn+ePUDUquexxuBrnjKrbCuAb957P7dc0rFmB4Xfm54DcGOOObCDRRL2o/F78344saDofwrSg97Zb+CXxnvusEde5qjqVHjamvypJeGjjlrjLHIOQcX4uzVa8+p1vRDyBUVZw+QUn7uz6fUCpwS9Hyps3uaR1nBdbroIcWbmYoSXNBHMFLN3Qz+9iPXJZRWKN9Uyk/+AyOe9BAXB0T5hjeoIkysBvOiw4u6jXGphYWp+Mvq/2pNeDRx+CFPTmVJBJtOqpNMscPj02GWpAW4UiX8Y61n1DpBh7eMUDa5xExYFs/zxQrjtkC8tbR/H9Z0SRhSNjQNr1346zW98gtoPFTXZZWyQspayS/RQ/Q/GydSF73R/4pwVs"
+    }
+  }
+}

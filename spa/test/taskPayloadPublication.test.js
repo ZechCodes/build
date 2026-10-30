@@ -526,8 +526,8 @@ it.each(["copied", "serialized", "foreign-runtime"])("refuses canonical history 
   const target = await seedTask(writer, "brand-task", {}, [heldComment]);
   const { frame, record } = await confirmedOperation(writer, [target]);
   const answer = answerFor(target);
-  let forwarded;
-  const cache = { get: writer.operations.get, observePublication: async (input) => {
+  let forwarded, publicationResult;
+  const cache = { get: writer.operations.get, openRefresh: foreign.operations.openRefresh, observePublication: async (input) => {
     const original = input.canonical[0];
     expect(original.contentRead.ticket).not.toBeNull();
     if (kind === "copied") forwarded = { ...original };
@@ -538,12 +538,18 @@ it.each(["copied", "serialized", "foreign-runtime"])("refuses canonical history 
       forwarded.contentRead = original.contentRead;
     } else forwarded = original;
     if (kind !== "foreign-runtime") expect(forwarded).not.toBe(original);
-    return foreign.operations.observePublication({ ...input, canonical: [forwarded] });
+    publicationResult = await foreign.operations.observePublication({ ...input, canonical: [forwarded] });
+    return publicationResult;
   } };
   const authority = { active: () => true, call: vi.fn(async () => answer) };
   await writer.refresh.refreshWriteOperation({ cache, frame, record, authority }).catch(() => {});
   expect(authority.call).toHaveBeenCalledExactlyOnceWith("tasks.get", { task_id: target.row.id });
   expect(forwarded).toBeDefined();
+  // The real consuming Cache must admit its own permit and reach task/history
+  // selection. A foreign-instance permit rejection would be a false positive.
+  expect(publicationResult?.refresh?.state).toBe("blocked");
+  expect(publicationResult.outcomes).toContainEqual(expect.objectContaining({ address: target.address,
+    payloadWritten: true, historyWritten: false, receiptPublished: false, reason: "missing-complete-authority" }));
   const canonical = await writer.local.readCanonicalCached(target.address);
   expect(canonical.value.timeline).toEqual([heldComment]);
   expect(canonical.publication || []).toEqual([]);

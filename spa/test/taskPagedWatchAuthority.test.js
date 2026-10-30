@@ -412,3 +412,50 @@ it("does not resurrect rolled-back unwatch paint by reclassifying an obsolete co
   expect(await outside.watch.readTaskWatchState(scope)).toEqual(terminal);
   expect((await outside.cache.readCached(controlAddress)).value.blindRetirementEpoch).toBe(beforeControl.blindRetirementEpoch);
 });
+
+it("applies a metadata-only owner's full watch answer after unrelated owned changes to the admission epoch", async () => {
+  const first = await runtime();
+  const order = await import("../src/core/taskReadOrder.js");
+  expect(await pull(first, async () => ({ tasks: [row(20, { watched: false }), row(19, { watched: false })] }))).toBe(true);
+  const ownerB = await first.watch.beginTaskWatchMutation(scope, "task-20", { watched: true, metadataOnly: true });
+  const contentRead = await first.content.captureTaskContentRead(scope);
+  const controlAddress = first.watch.taskWatchControlAddress(scope);
+  const beforeControl = (await first.cache.readCached(controlAddress)).value;
+  const noteAddress = order.taskWatchIntentAddress(scope, "task-20");
+  const beforeNote = (await first.cache.readCached(noteAddress)).value.latest_watch_intent;
+  expect((await savedRows(first)).find((task) => task.id === "task-20").watched).toBe(false);
+
+  const outside = await runtime();
+  const unrelated = await outside.watch.beginTaskWatchMutation(scope, "task-19", { watched: true });
+  expect(await outside.watch.settleTaskWatchMutation(unrelated, { rollback: true })).toBe(true);
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true });
+  // Keep a second actual owner live so B's settlement must preserve its count
+  // and painted row, not merely finish at an uninformative empty owner set.
+  const remaining = await outside.watch.beginTaskWatchMutation(scope, "task-19", { watched: true });
+  const unrelatedRow = structuredClone((await savedRows(outside)).find((task) => task.id === "task-19"));
+  const duringControl = (await outside.cache.readCached(controlAddress)).value;
+  const currentRead = await outside.content.captureTaskContentRead(scope);
+  expect(duringControl.watchRetirementEpoch).not.toBe(contentRead.ticket.watchRetirementEpoch);
+  expect(duringControl.blindRetirementEpoch).toBe(beforeControl.blindRetirementEpoch);
+  expect(duringControl.generation).toBe(beforeControl.generation);
+  expect(duringControl.pendingGeneration).toBe(beforeControl.pendingGeneration);
+  expect(currentRead.ticket.storeGeneration).toBe(contentRead.ticket.storeGeneration);
+  expect(currentRead.ticket.scopeGeneration).toBe(contentRead.ticket.scopeGeneration);
+  expect((await outside.cache.readCached(noteAddress)).value.latest_watch_intent).toEqual(beforeNote);
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 2, uncertain: true, eligible: false });
+
+  await outside.watch.settleTaskWatchMutation(ownerB, { contentRead,
+    answer: { task: row(20, { watched: true, title: "Successful metadata-only watch answer" }) } });
+  const tasks = await savedRows(outside);
+  expect(tasks.find((task) => task.id === "task-19")).toEqual(unrelatedRow);
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true, eligible: false });
+  const answered = tasks.find((task) => task.id === "task-20");
+  expect(answered.title).toBe("Successful metadata-only watch answer");
+  expect(answered.__task_watch_intent).toBeUndefined();
+  expect((await outside.cache.readCached(noteAddress)).value.latest_watch_intent).toMatchObject({ ownerId: ownerB.id, disposition: "acknowledged" });
+  // Desired paint is separate from server-family/canonical receipt certainty.
+  expect(answered.watched).toBe(true);
+  expect(answered[outside.watch.TASK_WATCH_CACHE]?.uncertain).not.toBe(false);
+  expect(await outside.watch.settleTaskWatchMutation(remaining, { rollback: true })).toBe(true);
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+});

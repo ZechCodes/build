@@ -125,3 +125,30 @@ fn backup_refuses_untrusted_state_ancestor_before_creating_destination() {
     );
     assert!(!destination.exists(), "refusal must not create a destination");
 }
+
+#[cfg(unix)]
+#[test]
+fn backup_refuses_symlinked_task_directory() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().unwrap();
+    let actual = root.path().join("actual-tasks");
+    drop(Store::new(&actual).unwrap());
+    let alias = root.path().join("linked-tasks");
+    symlink(&actual, &alias).unwrap();
+    let destination = root.path().join("backup.db");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_build-bridge"))
+        .env_clear()
+        .env("HOME", root.path())
+        .env("BRIDGE_TASKS_DIR", &alias)
+        .arg("backup")
+        .arg(&destination)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "backup accepted a symlinked task directory");
+    assert!(stderr.contains("linked-tasks"), "refusal must name the task directory: {stderr}");
+    assert!(!destination.exists(), "refusal must not create a destination");
+}

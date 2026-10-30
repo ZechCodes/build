@@ -350,8 +350,9 @@ export function reconcileTaskContent(held, candidate, options = {}) {
     return { task: undefined, acceptedHeader: false, acceptedBody: false, needsFullRefresh: true, retired: false };
   }
   const incoming = { ...candidate }; delete incoming[OBSERVATION];
-  const ordinaryDeferred = pendingRetiredHeader(held, incoming, observation, options);
-  const header = !ordinaryDeferred && componentWinner(held, incoming, "header", observation, options);
+  const admittedHeader = componentWinner(held, incoming, "header", observation, options);
+  const ordinaryDeferred = admittedHeader && pendingRetiredHeader(held, incoming, observation, options);
+  const header = admittedHeader && !ordinaryDeferred;
   const accepted = { header, body: header && componentWinner(held, incoming, "body", observation, options) };
   const task = selectedTask(held, incoming, observation, accepted, options);
   const metadata = observationMetadata(held, incoming, { ...observation, updated_at: incoming.updated_at }, accepted, options.context, options.headerBarrier, options.address);

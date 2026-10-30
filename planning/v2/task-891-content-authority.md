@@ -104,6 +104,22 @@ retain their own sources and floor checks. Neither a current watch observation
 nor equal marker values certify the rest of a row or its projection basis.
 Legacy and canonical marker comparator policies remain distinct.
 
+
+An observed row keeps its own captured ticket through action, list, page landing,
+and page folding. A writer must not reclassify an annotated raw row as a blind
+local copy merely because no separate whole-record ticket was supplied. That
+row ticket authorizes only eligible positive facts for the row. List omissions
+require a separately admitted whole-list membership observation; row tickets
+cannot prove deletion, exhaustive coverage, or absence. Retained page rows do
+not acquire a new observation from being folded again.
+
+Copies preserve the original source of unchanged family bytes. A changed blind
+copy retires affected family authority rather than borrowing its copied proof.
+The exact pending-owner stamp also survives replica/fold transport while the
+owner remains unresolved; it is a protection against speculative replacement,
+not a freshness clock. Rollback changes only its own watch paint and preserves
+newer ordinary fields and list read-order high-water marks.
+
 The shared pending protocol is still being implemented and reviewed. Its
 required transaction contains a fixed-size exact-owner record, checked pending
 count, watch epoch, and affected cache writes. Settlement removes only that

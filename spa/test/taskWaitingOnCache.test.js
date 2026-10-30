@@ -16,12 +16,28 @@ beforeEach(async () => {
 });
 
 it("writes mutation replies to detail and every cached list without losing timeline", async () => {
+  const content = await import("../src/core/taskContentAuthority.js");
+  const scope = { deviceId: device, projectId: project };
+  const fullTask = { ...task, body: "The complete task body returned by the wire." };
   const timeline = [{ id: "event", kind: "created" }];
-  await tracker.writeTaskRecord(device, project, task.id, tracker.taskRecord(task, timeline));
   const addresses = [tracker.tasksAddress(device, project), tracker.tasksQueryAddress(device, project, { state: "open" }), tracker.tasksPageAddress(device, project, { limit: 100 })];
-  await Promise.all(addresses.map((address) => cache.writeCached(address, { tasks: [task, { id: "other" }], columns: [{ id: "ready" }], next_cursor: "next" })));
-  const next = { ...task, dependencies: { blocked: true, waiting_on: [{ task_id: "blocker" }] } };
-  await edges.cacheTaskWaitingOnResponse(device, project, { task: next });
+  await Promise.all(addresses.map((address) => cache.writeCached(address, { tasks: [fullTask, { id: "other" }], columns: [{ id: "ready" }], next_cursor: "next" })));
+  const detailRead = await content.captureTaskContentRead(tracker.taskAddress(device, project, task.id), { revalidate: "full" });
+  await tracker.writeTaskRecord(device, project, task.id, tracker.taskRecord(fullTask, timeline), { contentRead: detailRead });
+  // Full action success starts from genuinely observed full replicas, including
+  // the waiting_on body component; copied legacy rows have no such proof.
+  for (const address of addresses) {
+    const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+    await content.mergeTaskContentRecordsTogether(scope, [address], ([held], context) => {
+      const selected = content.reconcileTaskContent(held.value.tasks[0], content.observeTaskContent(fullTask,
+        { contentRead, coverage: "full" }), { context, address, heldWritten: cache.recordWriteOf(held) });
+      expect(selected.acceptedHeader && selected.acceptedBody).toBe(true);
+      return { values: [{ ...held.value, tasks: [selected.task, ...held.value.tasks.slice(1)] }], retire: selected.retired };
+    });
+  }
+  const contentRead = await content.captureTaskContentRead(scope);
+  const next = { ...fullTask, dependencies: { blocked: true, waiting_on: [{ task_id: "blocker" }] } };
+  await edges.cacheTaskWaitingOnResponse(device, project, { task: next }, { contentRead, issuedRead: contentRead.readOrder });
   expect((await tracker.readTaskRecord(device, project, task.id)).timeline).toEqual(timeline);
   for (const address of addresses) {
     const held = (await cache.readCached(address)).value;

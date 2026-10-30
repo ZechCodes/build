@@ -285,12 +285,22 @@ it("keeps accepted same-byte component clocks when an older cached copy is repub
   const pending = content.observeTaskContent(task({ title: "Earlier action", body: "Earlier action" }),
     { contentRead: await content.captureTaskContentRead(scope), coverage: "full" });
   const current = (await publish(await observed(task()))).task;
-  const fragment = content.taskContentFragment(scope), before = fragment.context(await cache.readCachedMany(fragment.addresses));
+  await order.noteWritten([address], ["task-1"]);
+  const fragment = content.taskContentFragment(scope, { watchTaskIds: ["task-1"] });
+  const before = fragment.context(await cache.readCachedMany(fragment.addresses));
+  const note = (await cache.readCached(order.taskWatchIntentAddress(scope, "task-1"))).value;
   await tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-1", { task: first, timeline: [] });
   const copied = await read();
   expect(copied.__task_content_cache.header).toEqual(current.__task_content_cache.header);
   expect(copied.__task_content_cache.body).toEqual(current.__task_content_cache.body);
-  expect(fragment.context(await cache.readCachedMany(fragment.addresses))).toEqual(before);
+  const after = fragment.context(await cache.readCachedMany(fragment.addresses));
+  const { watchIntentOf: beforeLookup, ...beforeFields } = before;
+  const { watchIntentOf: afterLookup, ...afterFields } = after;
+  expect(afterFields).toEqual(beforeFields);
+  expect(beforeLookup("task-1")).toEqual(note);
+  expect(afterLookup("task-1")).toEqual(note);
+  expect(beforeLookup("not-admitted")).toBeUndefined();
+  expect(afterLookup("not-admitted")).toBeUndefined();
   const result = await publish(pending);
   expect(result).toMatchObject({ acceptedHeader: false, acceptedBody: false });
   expect(result.task).toMatchObject({ title: "Current", body: "Body" });

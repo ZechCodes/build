@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-let cache, summaries, order;
+let cache, summaries, content;
 const scope = { deviceId: "mixed-basis-900", projectId: "proj-1" }, filters = { statuses: ["ready"] };
 const row = (extra = {}) => ({ id: "task-1", project_id: scope.projectId, number: 1, title: "Body from B1",
   state: "open", status: "done", watched: false, read_through: null, dismissed_through: null,
@@ -9,10 +9,12 @@ const row = (extra = {}) => ({ id: "task-1", project_id: scope.projectId, number
 const value = async () => (await cache.readCached(summaries.summaryAddress(scope, "task-1")))?.value;
 async function reopen() {
   vi.resetModules(); cache = await import("../src/core/localCache.js");
-  summaries = await import("../src/core/taskSummaryCache.js"); order = await import("../src/core/taskReadOrder.js");
+  summaries = await import("../src/core/taskSummaryCache.js");
+  content = await import("../src/core/taskContentAuthority.js");
 }
 async function land(task, basis, query = filters) {
-  const read = await order.nextTaskRead(), ticket = await summaries.beginSummaryQuery(scope, query, read);
+  const contentRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+  const read = contentRead.readOrder, ticket = await summaries.beginSummaryQuery(scope, query, read, { contentRead });
   expect(await summaries.landSummaryPage(ticket, { summary: true, tasks: [task], ...(basis === undefined ? {} : { basis }) }, { read })).toBe(true);
   return read;
 }

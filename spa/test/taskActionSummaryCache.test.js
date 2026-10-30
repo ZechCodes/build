@@ -59,8 +59,8 @@ it("commits assignment/dependency action summaries with legacy replicas and thei
   await seed();
   const queryBefore = await value(summaries.summaryQueryAddress(scope, filters));
   const answer = full({ title: "Assigned", assignee: { kind: "agent", agent_id: "AgentA" },
-    updated_at: "2026-10-29T12:01:00Z", dependencies: { blocked: false, waiting_on_count: 0, blocks_count: 2,
-      waiting_on: [{ task_id: "expanded" }], blocks: [{ task_id: "full dependent" }] },
+    updated_at: "2026-10-29T12:01:00Z", dependencies: { blocked: false, blocks_count: 2,
+      waiting_on: [], blocks: [{ task_id: "full dependent" }] },
     links: { workspace_ids: ["ws-2"], parent_task_id: "task-parent", commits: ["expanded history"] },
     attachments: [{ path: "large payload" }] });
   expect(await action(answer)).toBe(true);
@@ -79,6 +79,18 @@ it("commits assignment/dependency action summaries with legacy replicas and thei
   expect(row).not.toHaveProperty("basis");
   expect(await value(summaries.summaryQueryAddress(scope, filters))).toEqual(queryBefore);
   expect(await summaries.readSummaryQuery(scope, filters)).toMatchObject({ stale: true, ids: [taskId], next_cursor: "kept-cursor" });
+});
+
+it("derives one waiting dependency from a complete native full-task relation array", async () => {
+  await seed();
+  const waiting = { task_id: "task-blocker", number: 2, title: "Blocker", state: "open",
+    status: "ready", resolved: false, resolved_by: null };
+  const answer = full({ updated_at: "2026-10-29T12:01:00Z",
+    dependencies: { blocked: true, waiting_on: [waiting], blocks_count: 0 } });
+  expect(await action(answer)).toBe(true);
+  const row = await value(summaries.summaryAddress(scope, taskId));
+  expect(row.task.dependencies).toEqual({ blocked: true, waiting_on_count: 1, blocks_count: 0 });
+  expect((await tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId)).task.dependencies.waiting_on).toEqual([waiting]);
 });
 
 it("treats full-task omissions as authoritative while compact patches retain omitted compact facts", async () => {
@@ -175,7 +187,8 @@ it("exposes a guarded bounded mutation fragment that can share a caller transact
   await seed();
   const read = await order.nextTaskRead(), fragment = summaries.summaryTaskMutation(scope, { id: taskId, title: "Fragment" }, read);
   expect(fragment.addresses).toEqual([summaries.summaryAddress(scope, taskId), invalidationAddress(),
-    content.TASK_CONTENT_GENERATION_ADDRESS, content.taskContentScopeAddress(scope)]);
+    content.TASK_CONTENT_GENERATION_ADDRESS, content.taskContentScopeAddress(scope),
+    content.taskWatchControlAddress(scope), order.taskWatchIntentAddress(scope, taskId)]);
   expect(await cache.mergeCachedRecordsTogether(fragment.addresses, fragment.reduce)).toBe(true);
   expect((await value(summaries.summaryAddress(scope, taskId))).task.title).toBe("Fragment");
   const before = await snapshot();

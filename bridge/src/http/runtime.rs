@@ -245,11 +245,12 @@ fn runtime_with(execution: Arc<ExecutionService>, verifier: Arc<dyn GrantVerifie
 
 async fn resource_request(State(state): State<HttpState>, request: Request<Body>) -> Response {
     match resource_response(&state, request).await {
-        Ok(response) | Err(response) => response,
+        Ok(response) => response,
+        Err(response) => *response,
     }
 }
 
-type HttpResult<T> = Result<T, Response>;
+type HttpResult<T> = Result<T, Box<Response>>;
 
 async fn resource_response(state: &HttpState, request: Request<Body>) -> HttpResult<Response> {
     let bearer = bearer(request.headers())
@@ -314,10 +315,7 @@ async fn resource_response(state: &HttpState, request: Request<Body>) -> HttpRes
     )
     .await?;
     if event.bytes().len() > resolved.operation.response_max_bytes {
-        return Err(refusal(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response_too_large",
-        ));
+        return Err(refusal(StatusCode::INTERNAL_SERVER_ERROR, "response_too_large").into());
     }
     Ok(resource_output(event, call, reservation, output))
 }
@@ -328,22 +326,22 @@ fn authorize_resource(
     headers: &HeaderMap,
 ) -> HttpResult<()> {
     if headers.contains_key(CONTENT_ENCODING) {
-        return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request"));
+        return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request").into());
     }
     match crate::api::effects::requires_write_scope(&operation.method) {
         Some(false) => {}
         Some(true) => authority
             .ensure_scope("bridge:write")
             .map_err(auth_refusal)?,
-        None => return Err(refusal(StatusCode::INTERNAL_SERVER_ERROR, "internal")),
+        None => return Err(refusal(StatusCode::INTERNAL_SERVER_ERROR, "internal").into()),
     }
     if operation.requires_events {
-        return Err(refusal(StatusCode::CONFLICT, "stream_required"));
+        return Err(refusal(StatusCode::CONFLICT, "stream_required").into());
     }
     match exact_header(headers, "X-Build-Subscription") {
         Ok(None) => {}
-        Ok(Some(_)) => return Err(refusal(StatusCode::CONFLICT, "stream_replaced")),
-        Err(()) => return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request")),
+        Ok(Some(_)) => return Err(refusal(StatusCode::CONFLICT, "stream_replaced").into()),
+        Err(()) => return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request").into()),
     };
     Ok(())
 }
@@ -351,7 +349,7 @@ fn authorize_resource(
 fn resource_session_id(headers: &HeaderMap) -> HttpResult<&str> {
     match exact_header(headers, "X-Build-Session") {
         Ok(Some(session_id)) if !session_id.is_empty() && session_id.len() <= 128 => Ok(session_id),
-        _ => Err(refusal(StatusCode::UNAUTHORIZED, "invalid_credential")),
+        _ => Err(refusal(StatusCode::UNAUTHORIZED, "invalid_credential").into()),
     }
 }
 
@@ -379,7 +377,7 @@ fn resource_opening(
             .get(session_id)
             .ok_or_else(|| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
         if opening.identity != authority.identity {
-            return Err(refusal(StatusCode::UNAUTHORIZED, "invalid_credential"));
+            return Err(refusal(StatusCode::UNAUTHORIZED, "invalid_credential").into());
         }
         (opening.budget.clone(), opening.session.clone())
     };
@@ -806,20 +804,20 @@ fn exact_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str
     Ok(Some(value))
 }
 
-fn request_metadata(headers: &HeaderMap) -> Result<RequestMetadata, Response> {
+fn request_metadata(headers: &HeaderMap) -> HttpResult<RequestMetadata> {
     let request_id = exact_header(headers, "X-Build-Request-Id")
         .map_err(|_| refusal(StatusCode::BAD_REQUEST, "invalid_request"))?
         .map(str::to_owned)
         .filter(|value| !value.is_empty() && value.len() <= 128);
     if headers.contains_key("X-Build-Request-Id") && request_id.is_none() {
-        return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request"));
+        return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request").into());
     }
     let priority = match exact_header(headers, "X-Build-Priority")
         .map_err(|_| refusal(StatusCode::BAD_REQUEST, "invalid_request"))?
     {
         None | Some("user") => crate::timing::Priority::Foreground,
         Some("background") => crate::timing::Priority::Background,
-        Some(_) => return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request")),
+        Some(_) => return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request").into()),
     };
     let operation_id = exact_header(headers, "Idempotency-Key")
         .map_err(|_| refusal(StatusCode::BAD_REQUEST, "invalid_request"))?;
@@ -827,7 +825,7 @@ fn request_metadata(headers: &HeaderMap) -> Result<RequestMetadata, Response> {
         .map_err(|_| refusal(StatusCode::BAD_REQUEST, "invalid_request"))?;
     let write = match (operation_id, after) {
         (None, None) => None,
-        (None, Some(_)) => return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request")),
+        (None, Some(_)) => return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request").into()),
         (Some(operation_id), after) => {
             let mut value = json!({"operation_id": operation_id});
             if let Some(after) = after {

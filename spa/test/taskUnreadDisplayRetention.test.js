@@ -413,3 +413,69 @@ describe("D5 actual delayed display transaction versus admitted summary source",
     } finally { await held.release(); }
   });
 });
+
+describe("D5 actual consumer choice and mounted retirement", () => {
+  it("persists actual cached timeline2 over listed3 with reversed genuine counter-source orders and retains2 on UNKNOWN", async () => {
+    await seedSelectedInputs();
+    const detailAddress = tracker.taskAddress(scope.deviceId, scope.projectId, taskId);
+    // Dispatch the detail first, but land its newer ordinary task later. The
+    // old renderer selects by the actual cached timeline's ordinary currency,
+    // never by comparing the two counters' client dispatch orders.
+    const detailRead = await content.captureTaskContentRead(detailAddress, { revalidate: "full" });
+    const address = tracker.tasksAddress(scope.deviceId, scope.projectId);
+    const listRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+    expect(listRead.readOrder).toBeGreaterThan(detailRead.readOrder);
+    expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+      tracker.tasksRecord([full()], columns(), listRead.readOrder), { contentRead: listRead })).toBe(true);
+    await mountPane();
+    await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.["tasks-pane"]?.total).toBe(3), WAIT);
+    const timeline = ["tc-16", "tc-17"].map((id) => comment({ id, task_id: taskId,
+      author: { kind: "agent", agent_id: "agent" } }));
+    expect(await tracker.writeTaskRecord(scope.deviceId, scope.projectId, taskId,
+      tracker.taskRecord(full({ updated_at: "2026-10-29T12:00:30Z" }), timeline), { contentRead: detailRead })).toBe(true);
+    const listed = await listedTask(), detailed = await tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId);
+    const totalSource = (task) => task.__task_family_cache?.total || task.__task_family_cache?.paint?.total;
+    expect(totalSource(listed).observed_read_order).toBe(listRead.readOrder);
+    expect(totalSource(detailed.task).observed_read_order).toBe(detailRead.readOrder);
+    const { taskUnreadCount } = await import("../src/core/taskUnread.js");
+    expect(taskUnreadCount(listed, detailed)).toBe(2);
+    await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")?.textContent).toBe("2"), WAIT);
+    await invalidateWithActualIncompleteAction();
+    await vi.waitFor(() => expect(paneHost.querySelector(".task-title")?.textContent).toBe("After incomplete action"), WAIT);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("2");
+    await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.["tasks-pane"]?.total).toBe(2), WAIT);
+  });
+
+  it("does not recreate an old display on a fresh actual Pane paint after an admitted summary-only unwatch announcement", async () => {
+    await seedSelectedInputs(); await mountPane();
+    await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.["tasks-pane"]?.total).toBe(3), WAIT);
+    await admitSummaryOnlyUnwatch();
+    // A genuine admitted unwatch retires the display even though its summary
+    // publication intentionally leaves legacy list/detail bytes unchanged.
+    await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")).toBeNull(), WAIT);
+    pane.feedMoved();
+    expect(paneHost.querySelector(".task-unread")).toBeNull();
+    expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
+    expect((await listedTask()).unread_count).toBe(3);
+  });
+
+  it("retires quota-only mounted display memory on a genuine admitted summary unwatch without requiring a prior persisted slot", async () => {
+    await seedSelectedInputs();
+    let refused = 0;
+    const put = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (record, key) {
+      if (record?.value?.task_unread_display?.["tasks-pane"]) {
+        refused += 1; throw new DOMException("Mounted display quota refused", "QuotaExceededError");
+      }
+      return put.call(this, record, key);
+    });
+    await mountPane();
+    await vi.waitFor(() => expect(refused).toBeGreaterThan(0), WAIT);
+    expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    await admitSummaryOnlyUnwatch();
+    await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")).toBeNull(), WAIT);
+    expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
+    expect(paneHost.querySelector(".error, .warn:not([hidden])")).toBeNull();
+  });
+});

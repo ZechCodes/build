@@ -35,7 +35,8 @@ function capturePlace(place, revalidate) {
 
 function capturedRead(allocation, address, revalidate, readOrder) {
   const ticket = allocation && { storeGeneration: allocation.storeGeneration, scopeGeneration: allocation.scopeGeneration,
-    retirementEpoch: allocation.retirementEpoch };
+    retirementEpoch: allocation.retirementEpoch, watchRetirementEpoch: allocation.watchRetirementEpoch,
+    watchPending: allocation.watchPending };
   return { readOrder, ticket, revalidate, ...(address ? { address, written: allocation?.written } : {}) };
 }
 
@@ -63,21 +64,32 @@ export function retireTaskContent(task, component = "full") {
 export function taskContentFragment(scope) {
   return {
     addresses: [TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress(scope)],
-    context: ([store, domain]) => ({ storeGeneration: store?.value?.generation,
-      scopeGeneration: domain?.value?.generation, retirementEpoch: domain?.value?.retirementEpoch }),
-    finish: ([store, domain], { retire = false } = {}) => {
-      if (!retire) return [null, null];
-      return [store ? null : { generation: randomToken() },
-        { generation: domain?.value?.generation || randomToken(), retirementEpoch: randomToken() }];
+    context: contentContext,
+    finish: ([store, domain], { retire = false, retireWatch = false } = {}) => {
+      if (!retire && !retireWatch) return [null, null];
+      return [store ? null : { generation: randomToken() }, retirementDomain(domain?.value, retire, retireWatch)];
     },
   };
+}
+
+function contentContext([store, domain]) {
+  const held = domain?.value || {};
+  return { storeGeneration: store?.value?.generation, scopeGeneration: held.generation,
+    retirementEpoch: held.retirementEpoch, watchRetirementEpoch: held.watchRetirementEpoch,
+    watchPendingCount: held.watchPendingCount === undefined ? 0 : held.watchPendingCount };
+}
+
+function retirementDomain(held, retire, retireWatch) {
+  return { ...held, generation: held?.generation || randomToken(),
+    retirementEpoch: retire ? randomToken() : held?.retirementEpoch || randomToken(),
+    watchRetirementEpoch: retireWatch ? randomToken() : held?.watchRetirementEpoch || randomToken() };
 }
 
 export function mergeTaskContentRecordsTogether(scope, addresses, reducer) {
   const fragment = taskContentFragment(scope);
   return mergeCachedRecordsTogether([...addresses, ...fragment.addresses], (all) => {
     const shared = all.slice(addresses.length), result = reducer(all.slice(0, addresses.length), fragment.context(shared));
-    return result ? [...result.values, ...fragment.finish(shared, { retire: result.retire === true })] : null;
+    return result ? [...result.values, ...fragment.finish(shared, { retire: result.retire === true, retireWatch: result.retireWatch === true })] : null;
   });
 }
 

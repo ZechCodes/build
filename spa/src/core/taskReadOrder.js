@@ -66,9 +66,21 @@ function sharedContentAllocation(count, store, domain) {
 
 function contentAllocationValues(readOrder, store, domain) {
   const generation = store?.value?.generation || randomToken();
-  const scopeValue = domain?.value || { generation: randomToken(), retirementEpoch: randomToken() };
-  return { ticket: { readOrder, storeGeneration: generation, scopeGeneration: scopeValue.generation,
-    retirementEpoch: scopeValue.retirementEpoch }, values: [readOrder, store ? null : { generation }, domain ? null : scopeValue] };
+  const scopeValue = contentScopeValue(domain?.value);
+  const ticket = contentScopeTicket(readOrder, generation, scopeValue);
+  return { ticket, values: [readOrder, store ? null : { generation },
+    domain?.value?.watchRetirementEpoch ? null : scopeValue] };
+}
+
+function contentScopeValue(held = {}) {
+  return { ...held, generation: held.generation || randomToken(), retirementEpoch: held.retirementEpoch || randomToken(),
+    watchRetirementEpoch: held.watchRetirementEpoch || randomToken() };
+}
+
+function contentScopeTicket(readOrder, generation, scope) {
+  return { readOrder, storeGeneration: generation, scopeGeneration: scope.generation,
+    retirementEpoch: scope.retirementEpoch, watchRetirementEpoch: scope.watchRetirementEpoch,
+    watchPending: scope.watchPendingCount === undefined ? false : scope.watchPendingCount !== 0 };
 }
 
 /** Where the note of what each read had the say on under `address` lives. */

@@ -384,3 +384,19 @@ activity survives, stronger marks advance, and unsupported counter families
 remain unknown. Its focused outcome is retained in
 `/tmp/task-900-watch-observation-page-green.log`; it needed no further source
 change beyond the observation repair and makes no additional RED-test claim.
+
+An older-body stale action needs the same family protection in the final
+marker-authority source. Rebuilding that source from newer held content must
+not restore counters already removed by the observation fence. The narrow
+repair reapplies the existing paired-floor reducer only for that stale
+observation/older-content source; ordinary nonstale older-content rules stay
+unchanged.
+
+RED commit `46cec93bd` observes both variants against source `57bb18b51` in
+`/tmp/task-900-watch-older-observation-red.log` and
+`/tmp/task-900-watch-older-observation-control-red.log`. The real-IDB tests
+assert all five replicas retain newer ordinary title/PR and current activity,
+advance read/dismiss marks, and keep overtaken attention families unknown.
+The watch-30 control retains its still-covered total 5. Detail body/timeline
+remain intact and the normalized row retains no body. Corresponding
+`*-green.log` artifacts record the repaired SINGLE outcomes.

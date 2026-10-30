@@ -184,8 +184,16 @@ function markerAuthority(held, incoming, read, counters) {
   const olderContent = !counters.currentWatchCounters && Date.parse(incoming.updated_at) < Date.parse(before?.updated_at);
   const stronger = strongerMarks(before, incoming);
   const stale = olderContent && stronger || uncertainCounters(held, incoming, read, counters, olderContent);
-  const source = olderContent ? { ...before, ...Object.fromEntries(markerFields.map((field) => [field, incoming[field]])) } : incoming;
+  const source = markerSource(before, incoming, olderContent, counters.staleWatchCounters);
   return { source: stronger ? source : before, stale: Boolean(stale) };
+}
+
+function markerSource(before, incoming, olderContent, staleWatchCounters) {
+  if (!olderContent) return incoming;
+  const source = { ...before, ...Object.fromEntries(markerFields.map((field) => [field, incoming[field]])) };
+  // Keeping the newer body must not resurrect counter families already made
+  // unknown by the older observation's advancing read floor.
+  return staleWatchCounters ? retainedWatchObservation(source, before) : source;
 }
 
 const uncertainCounters = (held, incoming, read, counters, olderContent) => counters.staleWatchCounters

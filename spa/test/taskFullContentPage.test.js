@@ -89,3 +89,45 @@ it("requests one mounted full revalidation per body uncertainty and does not ref
   expect(callRpc).toHaveBeenCalledTimes(2);
   expect((await tracker.readTaskRecord(deviceId, projectId, taskId)).task.body).toBe(held.body);
 });
+
+it("coalesces a header-only summary barrier behind the mounted full read and suppresses identical headers after refusal or disposal", async () => {
+  const local = await import("../src/core/localCache.js");
+  const content = await import("../src/core/taskContentAuthority.js");
+  const { summaryAddress } = await import("../src/core/taskSummaryCache.js");
+  const scope = { deviceId, projectId }, address = summaryAddress(scope, taskId);
+  const publishHeader = async (extra = {}) => {
+    const contentRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+    const candidate = content.observeTaskContent({ ...held, title: "Summary header", updated_at: "2026-10-29T00:00:00.000900Z", ...extra },
+      { contentRead, coverage: "summary" });
+    await content.mergeTaskContentRecordsTogether(scope, [address], ([prior], context) => ({
+      values: [{ task: content.reconcileTaskContent(prior?.value?.task, candidate, { context }).task }], retire: false,
+    }));
+  };
+  const notice = vi.spyOn(await import("../src/core/notify.js"), "notifyError");
+  const requests = [];
+  const callRpc = vi.fn(() => new Promise((resolve, reject) => { requests.push({ resolve, reject }); }));
+  const { mountTaskPage } = await import("../src/core/trackerTaskPage.js");
+  page = mountTaskPage(document.querySelector("#task-page"), {
+    deviceId, projectId, projectKey: `${deviceId}|${projectId}`, taskId, callRpc,
+    catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }),
+    feed: () => ({ items: [], workspaces: [] }), navigate: vi.fn(),
+  });
+  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(1));
+  await publishHeader();
+  expect(callRpc).toHaveBeenCalledTimes(1);
+  requests[0].resolve({ task: held, timeline: [] });
+  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(2));
+  requests[1].reject(new Error("Refused full revalidation"));
+  await vi.waitFor(() => expect(notice).toHaveBeenCalledTimes(1));
+  const read = vi.spyOn(local, "readCached");
+  await publishHeader({ read_through: "tc-next" });
+  await vi.waitFor(() => expect(read.mock.calls.some(([target]) => target.kind === address.kind && target.sub === taskId)).toBe(true));
+  const readIndex = read.mock.calls.findIndex(([target]) => target.kind === address.kind && target.sub === taskId);
+  await read.mock.results[readIndex].value;
+  expect(callRpc).toHaveBeenCalledTimes(2);
+  page.dispose();
+  read.mockClear();
+  await publishHeader({ title: "Changed after dispose" });
+  expect(read.mock.calls.filter(([target]) => target.kind === address.kind && target.sub === taskId)).toHaveLength(0);
+  expect(callRpc).toHaveBeenCalledTimes(2);
+});

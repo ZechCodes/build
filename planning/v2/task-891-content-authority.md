@@ -121,6 +121,17 @@ liveness or clears orphan state. Fresh/reset-store availability and orphan
 recovery remain explicit activation blockers; no recovery implementation or
 new journal, lease service, sweep, or RPC is authorized by this repair.
 
+Display history remains separate from certification. A genuine eligible source
+may retain uncertain family paint under an unknown baseline; its original
+dispatch order may reject older paint but supplies no known counter proof.
+Each family selects one known, paint, or unknown state. Copies cannot promote
+paint, and an incompatible newest source leaves an unknown-source barrier
+rather than reviving an older compatible count. Pending at capture or
+publication denies replacement paint except for the exact verified owner
+acknowledgment. An unresolved optimistic-owner stamp stays protected even if
+coordination was lost; a zero count in replacement coordination cannot release
+it. Only exact settlement or separately approved recovery may do so.
+
 The Inbox writer registers shared ownership before its optimistic cache change.
 The task page registers metadata-only ownership before dispatching watch or
 unwatch, preserving its DOM-only optimism and one RPC/publication. Registration

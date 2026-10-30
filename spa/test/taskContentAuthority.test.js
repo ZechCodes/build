@@ -693,3 +693,19 @@ it("retains newer issued list read dismiss and watch families while accepting an
     unread_count: 5, unread_mentions: 2, unread_agent_comments: 3, last_activity_ms: 200, review_summary: { version: 2 },
   });
 });
+
+it("captures an independent shared watch retirement fence without conflating ordinary retirement", async () => {
+  const first = await content.captureTaskContentRead(scope);
+  expect(first.ticket.watchRetirementEpoch).toEqual(expect.any(String));
+  await content.mergeTaskContentRecordsTogether(scope, [], (_records, context) => {
+    expect(context.watchRetirementEpoch).toBe(first.ticket.watchRetirementEpoch);
+    return { values: [], retireWatch: true };
+  });
+  const second = await content.captureTaskContentRead(scope);
+  expect(second.ticket.watchRetirementEpoch).not.toBe(first.ticket.watchRetirementEpoch);
+  expect(second.ticket.retirementEpoch).toBe(first.ticket.retirementEpoch);
+  await content.mergeTaskContentRecordsTogether(scope, [], () => ({ values: [], retire: true }));
+  const third = await content.captureTaskContentRead(scope);
+  expect(third.ticket.watchRetirementEpoch).toBe(second.ticket.watchRetirementEpoch);
+  expect(third.ticket.retirementEpoch).not.toBe(second.ticket.retirementEpoch);
+});

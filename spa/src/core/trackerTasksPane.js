@@ -30,6 +30,7 @@ import {
 import { subscribeCache } from "./localCache.js";
 import { foldTasksPage, pagesTasks, pullTaskPages } from "./trackerPages.js";
 import { nextTaskRead, noteWritten } from "./taskReadOrder.js";
+import { captureTaskContentRead, observeTaskContent, retireTaskContent } from "./taskContentAuthority.js";
 import { createReadRetry } from "./transientRead.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceSession, deviceWatch } from "./deviceReconnect.js";
@@ -66,6 +67,8 @@ import { writeSummaryTask } from "./taskSummaryCache.js";
 
 export const TASK_PAGE_SIZE = 25;
 const VIEW_IDS = new Set([DASHBOARD_VIEW, LIST_VIEW, BOARD_VIEW]);
+const retireTaskRowHeader = (tasks, taskId) => (tasks || []).map((task) =>
+  task.id === taskId ? retireTaskContent(task, "header") : task);
 
 export function mountTasksPane(host, options) {
   const initialView = VIEW_IDS.has(options.view) ? options.view : options.defaultView || DASHBOARD_VIEW;
@@ -470,15 +473,26 @@ export function mountTasksPane(host, options) {
   }
 
   async function readWholeList(params, filters) {
-    const read = await nextTaskRead();
+    const session = deviceSession(state.deviceId);
+    const current = () => !state.disposed && deviceSession(state.deviceId) === session;
+    const contentRead = await captureTaskContentRead(tasksQueryAddress(state.deviceId, state.projectId, params), { revalidate: "full" });
+    // One response can update two replicas; each full-body proof needs its
+    // own canonical baseline captured before that same request is dispatched.
+    const wholeRead = narrowsTheRead(filters) ? null
+      : await captureTaskContentRead(tasksAddress(state.deviceId, state.projectId), { revalidate: "full" });
+    if (!current()) return;
     const answer = await state.callRpc("tasks.list", params);
-    if (state.disposed) return;
-    const record = tasksRecord(answer?.tasks, state.columns, read);
+    if (!current()) return;
+    const observed = (answer?.tasks || []).map((task) => observeTaskContent(task, { contentRead, coverage: "full" }));
+    const record = tasksRecord(observed, state.columns, contentRead.readOrder);
     // The fetch is a writer only. The matching cache announcement above is
     // what re-reads this record and repaints the pane.
-    await writeTasksQueryRecord(state.deviceId, state.projectId, params, record);
+    await writeTasksQueryRecord(state.deviceId, state.projectId, params, record, { accept: current });
     // An unnarrowed answer is also the authoritative whole-list record.
-    if (!narrowsTheRead(filters)) await writeTasksRecord(state.deviceId, state.projectId, record);
+    if (wholeRead && current()) {
+      const whole = (answer?.tasks || []).map((task) => observeTaskContent(task, { contentRead: wholeRead, coverage: "full" }));
+      await writeTasksRecord(state.deviceId, state.projectId, tasksRecord(whole, state.columns, wholeRead.readOrder), { accept: current });
+    }
     await writeListedUserSession(state.deviceId, answer);
   }
 
@@ -529,8 +543,8 @@ export function mountTasksPane(host, options) {
     const scope = { deviceId: state.deviceId, projectId: state.projectId };
     const heldQuery = state.unscopedShown;
     const heldCatalogue = state.unscoped;
-    const movedQuery = withMovedTask(heldQuery, taskId, status);
-    const movedCatalogue = withMovedTask(heldCatalogue, taskId, status);
+    const movedQuery = retireTaskRowHeader(withMovedTask(heldQuery, taskId, status), taskId);
+    const movedCatalogue = retireTaskRowHeader(withMovedTask(heldCatalogue, taskId, status), taskId);
     state.focusTask = taskId;
     const moved = [tasksQueryAddress(state.deviceId, state.projectId, queryParams()), tasksAddress(state.deviceId, state.projectId)];
     // Newer than any page still out, in this tab or another: one landing
@@ -549,8 +563,8 @@ export function mountTasksPane(host, options) {
       state.focusTask = taskId;
       const restoredAs = await noteWritten(moved, [taskId]);
       await Promise.all([
-        writeTasksQueryRecord(state.deviceId, state.projectId, queryParams(), tasksRecord(heldQuery, state.columns, restoredAs)),
-        writeTasksRecord(state.deviceId, state.projectId, tasksRecord(heldCatalogue, state.columns, restoredAs)),
+        writeTasksQueryRecord(state.deviceId, state.projectId, queryParams(), tasksRecord(retireTaskRowHeader(heldQuery, taskId), state.columns, restoredAs)),
+        writeTasksRecord(state.deviceId, state.projectId, tasksRecord(retireTaskRowHeader(heldCatalogue, taskId), state.columns, restoredAs)),
         writeSummaryTask(scope, { id: taskId, status: task.status }, restoredAs),
       ]);
       notifyError("Could not move this task", messageOf(error));
@@ -636,6 +650,7 @@ export function mountTasksPane(host, options) {
   }
 
   async function cacheNewTask(task) {
+    task = retireTaskContent(task, "full");
     const filedAs = await nextTaskRead();
     const summaryWrite = writeSummaryTask({ deviceId: state.deviceId, projectId: state.projectId }, task,
       filedAs, { fullTask: true });

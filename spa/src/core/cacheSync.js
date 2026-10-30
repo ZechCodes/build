@@ -88,7 +88,7 @@ import {
 import { TASK_RECORD_KIND } from "./taskCache.js";
 import { tasksAddress, tasksRecord, readTasksRecord, writeTasksRecord, preserveTaskReviewSummary } from "./trackerCache.js";
 import { foldTasksPage, pagesTasks, pullTaskPages } from "./trackerPages.js";
-import { nextTaskRead } from "./taskReadOrder.js";
+import { captureTaskContentRead, observeTaskContent } from "./taskContentAuthority.js";
 import { refreshCachedReviews } from "./taskReviewCache.js";
 import { writeListedUserSession } from "./userSessionCache.js";
 import { inboxPushKinds } from "./trackerPush.js";
@@ -961,13 +961,14 @@ const projectIds = (view) => (view.projects || []).map((project) => project.proj
  *  and never an error the reader sees. */
 async function readTasksNow(context, projectId) {
   if (pagesTasks(context.deviceId)) return readTaskPagesNow(context, projectId);
-  const read = await nextTaskRead();
+  const contentRead = await captureTaskContentRead(tasksAddress(context.deviceId, projectId), { revalidate: "full" });
   const answer = await ask(context, "tasks.list", { project_id: projectId }, "background", taskReadScope(context, projectId));
   if (!answer || !context.active()) return;
   const columns = await projectColumns(context, projectId);
   if (!context.active()) return;
+  const observed = (answer.tasks || []).map((task) => observeTaskContent(task, { contentRead, coverage: "full" }));
   await Promise.all([
-    writeTasksRecord(context.deviceId, projectId, tasksRecord(answer.tasks, columns, read)),
+    writeTasksRecord(context.deviceId, projectId, tasksRecord(observed, columns, contentRead.readOrder), { accept: () => context.active() }),
     writeListedUserSession(context.deviceId, answer),
   ]);
 }

@@ -1,0 +1,32 @@
+[package]
+name = "bridge-http-runtime-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[test]]
+name = "runtime"
+path = "runtime.rs"
+
+[dependencies]
+serde_json = "1"
+tokio = { version = "=1.52.3", features = ["sync", "time", "macros", "rt", "test-util"] }
+rustls = { version = "=0.23.41", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
+aws-lc-rs = "=1.17.0"
+libc = "0.2"
+rustix = { version = "=1.1.4", features = ["fs"] }
+tempfile = "3"
+rcgen = "=0.13.2"
+uuid = { version = "1", features = ["v4"] }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+hyper = { version = "=1.10.1", features = ["server", "http1"] }
+hyper-util = { version = "=0.1.20", features = ["server", "http1", "tokio", "service"] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["aws-lc-rs", "tls12"] }
+reqwest = { version = "=0.13.4", default-features = false, features = ["rustls", "json"] }
+tower-http = { version = "=0.6.11", default-features = false, features = ["cors", "limit"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+bytes = "=1.12.1"
+serde = { version = "1", features = ["derive"] }
+tower = { version = "=0.5.3", features = ["util"] }

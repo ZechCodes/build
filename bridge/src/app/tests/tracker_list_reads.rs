@@ -629,3 +629,31 @@ async fn opted_in_get_without_sequence_preserves_detail_and_marks_watch_unavaila
     assert_eq!(task_with_no_unavailable, legacy["result"]["task"]);
     assert_eq!(answer["result"]["timeline"], legacy["result"]["timeline"]);
 }
+
+#[tokio::test]
+async fn get_watch_snapshot_option_keeps_legacy_shape_and_rejects_nonboolean() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, project) = super::tracker::tracked(tmp.path());
+    let task = filed(&mut state, &project, "legacy option control");
+    state.initialize_read_context();
+    let store = state.tracker_store().unwrap().clone();
+    let connection = store.read_pool().acquire().await;
+    let absent = state.read_service().call(
+        req("tasks.get", json!({"task_id":task["id"]})),
+        Some(connection),
+    );
+    let connection = store.read_pool().acquire().await;
+    let disabled = state.read_service().call(
+        req("tasks.get", json!({"task_id":task["id"],"watch_snapshot":false})),
+        Some(connection),
+    );
+    assert_eq!(absent["ok"], true, "{absent}");
+    assert_eq!(disabled["ok"], true, "{disabled}");
+    assert_eq!(disabled["result"], absent["result"], "false must preserve legacy response");
+    let connection = store.read_pool().acquire().await;
+    let invalid = state.read_service().call(
+        req("tasks.get", json!({"task_id":task["id"],"watch_snapshot":"yes"})),
+        Some(connection),
+    );
+    assert_eq!(invalid["ok"], false, "nonboolean option must be rejected: {invalid}");
+}

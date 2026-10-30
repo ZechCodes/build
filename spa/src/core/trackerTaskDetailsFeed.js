@@ -8,6 +8,8 @@ import { TRACKER_TASK_KIND, taskAddress, taskRecord, writeTaskRecord, captureTas
 import { changedSince } from "./trackerModel.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceSession } from "./deviceReconnect.js";
+import { contextFor, deviceContextIdentity } from "./deviceContexts.js";
+import { captureTaskContentRead } from "./taskContentAuthority.js";
 
 const MAX_READS = 4;
 
@@ -82,26 +84,35 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     }
   }
 
-  async function writeAnswer(id, version, answer, before, detailBasis) {
-    if (!stillWanted(id, version)) return;
+  async function writeAnswer(id, answer, basis, acceptsRead) {
+    if (!acceptsRead()) return;
     if (answer?.task?.id !== id) return;
     // A page or another tab may have written a newer detail while this read
     // was in flight. Leave its record in place rather than replacing it.
     const current = await readCached(address(id));
-    if (!stillWanted(id, version) || currentRecordWins(current, before, answer)) return;
-    await writeTaskRecord(deviceId, projectId, id, taskRecord(answer?.task, answer?.timeline), { detailBasis });
+    if (!acceptsRead() || currentRecordWins(current, basis.before, answer)) return;
+    await writeTaskRecord(deviceId, projectId, id, taskRecord(answer?.task, answer?.timeline), {
+      detailBasis: basis.detailBasis, contentRead: basis.contentRead,
+      accept: acceptsRead,
+    });
   }
 
   async function fetchDetail(id) {
     const version = versionOf(taskForRead(id));
+    const context = contextFor(deviceId), identity = deviceContextIdentity(deviceId), session = deviceSession(deviceId);
+    const acceptsOwner = () => !disposed && contextFor(deviceId) === context && deviceContextIdentity(deviceId) === identity
+      && deviceSession(deviceId) === session && (!context || context.active());
     try {
-      const detailBasis = await captureTaskDetailRead(deviceId, projectId, id);
+      const [detailBasis, contentRead] = await Promise.all([
+        captureTaskDetailRead(deviceId, projectId, id),
+        captureTaskContentRead(address(id), { revalidate: "full" }),
+      ]);
       // A trailing read can start before the prior answer's cache observer
       // finishes. Capture its baseline from the store, not that observer.
       const before = (await readCached(address(id)))?.at || 0;
-      if (!stillWanted(id, version)) return;
+      if (!acceptsOwner() || !stillWanted(id, version)) return;
       const answer = await callRpc("tasks.get", { task_id: id });
-      await writeAnswer(id, version, answer, before, detailBasis);
+      await writeAnswer(id, answer, { before, detailBasis, contentRead }, () => acceptsOwner() && stillWanted(id, version));
     } catch {
       // The list remains useful offline. A later list version can retry.
     }

@@ -1,7 +1,7 @@
 // Checklist writes change one marker in the cached task body. The cache's
 // subscription owns the repaint; a later task read confirms the stored body.
-import { mergeCachedAtomically } from "./localCache.js";
 import { readTaskRecord, taskAddress } from "./trackerCache.js";
+import { mergeTaskContentRecordsTogether, retireTaskContent } from "./taskContentAuthority.js";
 import { setMarkdownTaskChecked } from "./markdownTasks.js";
 import { readTaskChecklistSupport } from "./taskChecklistSupport.js";
 import { wrapTaskMutationCall } from "./taskMutationFence.js";
@@ -43,9 +43,10 @@ export function createTaskChecklist({ deviceId, projectId, taskId, call, refresh
   };
 
   async function putBody(before, after) {
-    return mergeCachedAtomically(address, (held) => {
+    return mergeTaskContentRecordsTogether({ deviceId, projectId }, [address], ([record]) => {
+      const held = record?.value;
       if (!held?.task || held.task.body !== before) return null;
-      return { ...held, task: { ...held.task, body: after } };
+      return { values: [{ ...held, task: retireTaskContent({ ...held.task, body: after }, "body") }], retire: true };
     });
   }
 

@@ -56,7 +56,7 @@ import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
 import { wrapTaskMutationCall } from "./taskMutationFence.js";
 import { cacheTaskWaitingOnResponse } from "./taskWaitingOnCache.js";
 import { contextFor, deviceContextIdentity } from "./deviceContexts.js";
-import { nextTaskRead } from "./taskReadOrder.js";
+import { captureTaskContentRead } from "./taskContentAuthority.js";
 import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./watchToggle.js";
 import { notifyCommandFailure } from "./commandRefusal.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
@@ -102,13 +102,16 @@ function matchingTaskAction(task, authority) {
 /** Acknowledged effects belong to their captured owner even after the page
  * leaves. Rendering disposal does not revoke account/device/session authority. */
 async function dispatchTaskAction(authority, method, params, readThrough) {
-  const issuedRead = await nextTaskRead();
+  const contentRead = await captureTaskContentRead({ deviceId: authority.deviceId, projectId: authority.projectId });
+  const issuedRead = contentRead.readOrder;
   if (!authority.accept()) throw new Error("This task's session changed before sending the action.");
   const answer = await authority.callRpc(method, params);
   if (!authority.accept()) throw new Error("This task's session changed while the action was running.");
   if (answer && Object.hasOwn(answer, "task")) {
     matchingTaskAction(answer.task, authority);
-    await cacheTaskWaitingOnResponse(authority.deviceId, authority.projectId, { task: answer.task }, { accept: authority.accept, issuedRead });
+    await cacheTaskWaitingOnResponse(authority.deviceId, authority.projectId, { task: answer.task }, {
+      accept: authority.accept, issuedRead, contentRead,
+    });
   } else if (readThrough !== undefined) {
     await advanceTaskReadThrough(authority.deviceId, authority.projectId, authority.taskId, readThrough,
       { accept: authority.accept, issuedRead });
@@ -600,17 +603,19 @@ export function mountTaskPage(host, options) {
 
   async function readTask() {
     if (state.disposed) return;
+    const authority = captureTaskAction(state);
     try {
-      const [checklistBasis, detailBasis] = await Promise.all([
+      const [checklistBasis, detailBasis, contentRead] = await Promise.all([
         checklist.readBasis(), captureTaskDetailRead(state.deviceId, state.projectId, state.taskId),
+        captureTaskContentRead(taskAddress(state.deviceId, state.projectId, state.taskId), { revalidate: "full" }),
       ]);
-      if (state.disposed) return;
+      if (state.disposed || !authority.accept()) return;
       const answer = await state.callRpc("tasks.get", { task_id: state.taskId });
-      if (state.disposed) return;
+      if (state.disposed || !authority.accept()) return;
       // The pull is a writer. The subscription above owns the read and paint.
       await writeTaskRecord(state.deviceId, state.projectId, state.taskId, taskRecord(answer.task, answer.timeline), {
-        accept: (held) => !state.disposed && checklist.acceptsRead(checklistBasis, held),
-        detailBasis,
+        accept: (held) => !state.disposed && authority.accept() && checklist.acceptsRead(checklistBasis, held),
+        detailBasis, contentRead,
       });
     } catch (error) {
       if (state.disposed) return;

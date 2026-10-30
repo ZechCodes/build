@@ -1,5 +1,6 @@
 import { cachedAddresses, readCanonicalCached, recordWriteOf } from "./localCache.js";
 import { captureTaskDetailRead, taskAddress, TRACKER_TASK_KIND } from "./trackerCache.js";
+import { captureTaskContentRead } from "./taskContentAuthority.js";
 import { threadCacheAddress } from "./conversationCache.js";
 import { threadWindow } from "./threadSync.js";
 
@@ -96,12 +97,14 @@ async function publicationGuard(address, previous) {
 async function refreshAddress(address, { cache, frame, record, authority }) {
   const previous = await readCanonicalCached(address);
   const guard = await publicationGuard(address, previous);
+  const contentRead = address.kind === TRACKER_TASK_KIND
+    ? await captureTaskContentRead(address, { revalidate: "full" }) : undefined;
   assertActive(authority);
   const value = await READERS[address.kind](address, record, authority, previous);
   assertActive(authority);
   const written = await cache.observePublication({
     accept: authority.active,
-    canonical: [{ address, value, publication: frame.published || [], guard }],
+    canonical: [{ address, value, publication: frame.published || [], guard, ...(contentRead ? { contentRead } : {}) }],
   });
   assertActive(authority);
   if (!written?.some((target) => addressKey(target) === addressKey(address))) {

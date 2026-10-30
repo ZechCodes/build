@@ -1,0 +1,229 @@
+// Client observation provenance for ordinary task bytes. These clocks never
+// describe server revisions, timeline completeness, or opaque projection bases.
+import { mergeCachedRecordsTogether } from "./localCache.js";
+import { randomToken } from "./idbRecords.js";
+import { nextTaskRead, nextTaskReadTicket, TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress } from "./taskReadOrder.js";
+export { TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress };
+export const TASK_CONTENT_CACHE = "__task_content_cache";
+const OBSERVATION = "__task_content_observation";
+const headerFields = `id project_id number title state status labels priority assignee created_by created_at updated_at
+closed_at done_at trackers attachment_count summary_truncated deferred_assignment`.split(/\s+/);
+const bodyFields = ["body", "attachments", "identities"];
+const nested = {
+  header: { links: ["workspace_ids", "parent_task_id"], dependencies: ["blocked", "waiting_on_count", "blocks_count"] },
+  body: { links: ["branches", "commits", "conversation_ids"], dependencies: ["waiting_on", "blocks", "blocks_next_cursor"] },
+};
+const fields = { header: headerFields, body: bodyFields };
+const sameAddress = (a, b) => a && b && ["deviceId", "entityId", "kind", "sub"].every((key) => (a[key] ?? "") === (b[key] ?? ""));
+const scopeOf = (place) => ({ deviceId: place.deviceId, projectId: place.projectId ?? place.entityId });
+const cacheOf = (task) => task?.[TASK_CONTENT_CACHE] || {};
+const validScope = (scope) => typeof scope.deviceId === "string" && typeof scope.projectId === "string";
+
+export async function captureTaskContentRead(place, { revalidate = false } = {}) {
+  const { scope, address } = capturePlace(place, revalidate);
+  const allocation = await nextTaskReadTicket(scope, { address });
+  const readOrder = allocation?.readOrder ?? await nextTaskRead();
+  return capturedRead(allocation, address, revalidate, readOrder);
+}
+
+function capturePlace(place, revalidate) {
+  const scope = scopeOf(place), address = place.kind ? { ...place } : undefined;
+  if (!validScope(scope) || ![false, "summary", "full"].includes(revalidate)) throw new Error("Invalid task content capture");
+  if (revalidate === "full" && !address) throw new Error("Full task revalidation needs its canonical address");
+  return { scope, address };
+}
+
+function capturedRead(allocation, address, revalidate, readOrder) {
+  const ticket = allocation && { storeGeneration: allocation.storeGeneration, scopeGeneration: allocation.scopeGeneration,
+    retirementEpoch: allocation.retirementEpoch };
+  return { readOrder, ticket, revalidate, ...(address ? { address, written: allocation?.written } : {}) };
+}
+
+export const isObservedTaskContent = (task) => Boolean(task?.[OBSERVATION]);
+
+export function observeTaskContent(raw, { contentRead, coverage } = {}) {
+  if (!raw?.id || !["summary", "full"].includes(coverage)) throw new Error("Invalid task content observation");
+  const task = { ...raw }; delete task[OBSERVATION];
+  task[OBSERVATION] = { contentRead, coverage };
+  return task;
+}
+
+export function retireTaskContent(task, component = "full") {
+  if (!["header", "body", "full"].includes(component)) throw new Error("Invalid task content retirement");
+  const next = { ...task }, metadata = { ...cacheOf(task) }, retired = { ...metadata.retired };
+  for (const name of component === "full" ? ["header", "body"] : [component]) {
+    metadata.timestamps = { ...metadata.timestamps, [name]: metadata[name]?.updated_at ?? metadata.timestamps?.[name] ?? task.updated_at };
+    delete metadata[name]; retired[name] = randomToken();
+  }
+  next[TASK_CONTENT_CACHE] = { ...metadata, retired };
+  delete next[OBSERVATION];
+  return next;
+}
+
+export function taskContentFragment(scope) {
+  return {
+    addresses: [TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress(scope)],
+    context: ([store, domain]) => ({ storeGeneration: store?.value?.generation,
+      scopeGeneration: domain?.value?.generation, retirementEpoch: domain?.value?.retirementEpoch }),
+    finish: ([store, domain], { retire = false } = {}) => {
+      if (!retire) return [null, null];
+      return [store ? null : { generation: randomToken() },
+        { generation: domain?.value?.generation || randomToken(), retirementEpoch: randomToken() }];
+    },
+  };
+}
+
+export function mergeTaskContentRecordsTogether(scope, addresses, reducer) {
+  const fragment = taskContentFragment(scope);
+  return mergeCachedRecordsTogether([...addresses, ...fragment.addresses], (all) => {
+    const shared = all.slice(addresses.length), result = reducer(all.slice(0, addresses.length), fragment.context(shared));
+    return result ? [...result.values, ...fragment.finish(shared, { retire: result.retire === true })] : null;
+  });
+}
+
+function validObservation(observation, context, address, heldWritten) {
+  const read = observation?.contentRead, ticket = read?.ticket;
+  if (!Number.isSafeInteger(read?.readOrder) || !ticket || !context) return false;
+  if (!["storeGeneration", "scopeGeneration", "retirementEpoch"].every((key) => ticket[key] && ticket[key] === context[key])) return false;
+  return !sameAddress(read.address, address) || read.written === heldWritten;
+}
+
+const sameLifetime = (metadata, context) => metadata.storeGeneration === context?.storeGeneration
+  && metadata.scopeGeneration === context?.scopeGeneration;
+const proofOf = (task, component, context) => sameLifetime(cacheOf(task), context) ? cacheOf(task)[component] : undefined;
+const newerTimestamp = (proof, task) => Date.parse(proof?.updated_at) > Date.parse(task?.updated_at);
+const covered = (observation, component) => component === "header" || observation?.coverage === "full";
+const ownFullBaseline = (observation, options) => observation.contentRead.revalidate === "full"
+  && sameAddress(observation.contentRead.address, options.address);
+const revalidates = (observation, component, options) => component === "header"
+  ? ["summary", "full"].includes(observation.contentRead.revalidate) : ownFullBaseline(observation, options);
+const componentTimestamp = (task, component, own) => own?.updated_at ?? cacheOf(task).timestamps?.[component] ?? task?.updated_at;
+
+function blockedComponent(own, barrier, incoming, read, heldTimestamp) {
+  return own?.read_order > read || barrier?.read_order > read || newerTimestamp(barrier, incoming)
+    || Date.parse(heldTimestamp) > Date.parse(incoming.updated_at);
+}
+
+function componentWinner(held, incoming, component, observation, options) {
+  if (!covered(observation, component) || !validObservation(observation, options.context, options.address, options.heldWritten)) return false;
+  if (component === "body" && typeof incoming.body !== "string") return false;
+  const own = proofOf(held, component, options.context), barrier = proofOf(options.headerBarrier, "header", options.context);
+  const read = observation.contentRead.readOrder;
+  const heldTimestamp = componentTimestamp(held, component, own);
+  if (blockedComponent(own, barrier, incoming, read, heldTimestamp)) return false;
+  return Boolean(own) || revalidates(observation, component, options);
+}
+
+function copyFields(target, source, names) {
+  for (const key of names) {
+    delete target[key];
+    if (Object.hasOwn(source || {}, key)) target[key] = source[key];
+  }
+}
+
+function applyComponent(target, source, component) {
+  copyFields(target, source, fields[component]);
+  for (const [key, names] of Object.entries(nested[component])) {
+    const next = { ...target[key] }; copyFields(next, source?.[key], names);
+    if (Object.keys(next).length) target[key] = next;
+    else delete target[key];
+  }
+  return target;
+}
+
+const componentSnapshot = (task, component) => applyComponent({}, task, component);
+export const sameTaskContentComponent = (before, after, component) => JSON.stringify(componentSnapshot(before, component))
+  === JSON.stringify(componentSnapshot(after, component));
+
+function blindComponent(held, candidate, component, context) {
+  const prior = cacheOf(held), next = cacheOf(candidate);
+  const explicit = next.retired?.[component] && next.retired[component] !== prior.retired?.[component];
+  if (explicit) return true;
+  if (held) return !sameTaskContentComponent(held, candidate, component);
+  return !proofOf(candidate, component, context);
+}
+
+/** Blind local changes retire only their changed component. Exact cached
+ * copies retain their actual observation; they never adopt a receipt clock. */
+export function reconcileTaskContentWrite(held, candidate, options = {}) {
+  if (isObservedTaskContent(candidate)) return reconcileTaskContent(held, candidate, options);
+  let task = { ...candidate, [TASK_CONTENT_CACHE]: { ...cacheOf(held), ...cacheOf(candidate) } }, retired = false;
+  for (const component of ["header", "body"]) if (blindComponent(held, candidate, component, options.context)) {
+    const explicit = cacheOf(candidate).retired?.[component];
+    task = explicit ? task : retireTaskContent(task, component);
+    delete task[TASK_CONTENT_CACHE][component]; retired = true;
+  }
+  if (retired) task[TASK_CONTENT_CACHE].needs_full_refresh = true;
+  return { task, retired, acceptedHeader: false, acceptedBody: false, needsFullRefresh: taskNeedsFullRefresh(task) };
+}
+
+function observationMetadata(held, incoming, observation, accepted, context) {
+  const metadata = sameLifetime(cacheOf(held), context) ? { ...cacheOf(held) } : { retired: { ...cacheOf(held).retired } };
+  const retired = { ...metadata.retired };
+  const identities = { ...metadata.identities }, timestamps = { ...metadata.timestamps };
+  for (const component of ["header", "body"]) if (accepted[component]) {
+    metadata[component] = { read_order: observation.contentRead.readOrder, updated_at: observation.updated_at };
+    identities[component] = sameTaskContentComponent(held, incoming, component) && identities[component] || randomToken();
+    timestamps[component] = observation.updated_at;
+    delete retired[component];
+  }
+  if (accepted.body) metadata.bodyHeaderIdentity = identities.header;
+  return { ...metadata, storeGeneration: context?.storeGeneration, scopeGeneration: context?.scopeGeneration, retired, identities, timestamps };
+}
+
+function retainedTask(held, incoming, observation) {
+  if (held) return { ...held };
+  const task = { ...incoming }; delete task[OBSERVATION]; delete task[TASK_CONTENT_CACHE];
+  if (observation?.coverage === "summary") applyComponent(task, undefined, "body");
+  return task;
+}
+
+function selectedTask(held, incoming, observation, accepted, options) {
+  const task = retainedTask(held, incoming, observation);
+  if (!held && options.headerBarrier && !accepted.body) {
+    applyComponent(task, undefined, "body"); applyComponent(task, options.headerBarrier, "header");
+  }
+  for (const name of ["header", "body"]) if (accepted[name]) applyComponent(task, incoming, name);
+  return task;
+}
+
+const mismatchedTask = (held, candidate) => !candidate?.id || held?.id && held.id !== candidate.id;
+const staleAbsent = (held, observation, options) => observation && !held
+  && !validObservation(observation, options.context, options.address, options.heldWritten);
+
+export function reconcileTaskContent(held, candidate, options = {}) {
+  if (mismatchedTask(held, candidate)) throw new Error("Mismatched task content identity");
+  const observation = candidate[OBSERVATION];
+  if (staleAbsent(held, observation, options)) {
+    return { task: undefined, acceptedHeader: false, acceptedBody: false, needsFullRefresh: true, retired: false };
+  }
+  const incoming = { ...candidate }; delete incoming[OBSERVATION];
+  const accepted = { header: componentWinner(held, incoming, "header", observation, options),
+    body: componentWinner(held, incoming, "body", observation, options) };
+  const task = selectedTask(held, incoming, observation, accepted, options);
+  const metadata = observationMetadata(held, incoming, { ...observation, updated_at: incoming.updated_at }, accepted, options.context);
+  task[TASK_CONTENT_CACHE] = metadata;
+  const needsFullRefresh = observation?.coverage === "full" && !accepted.body || fullRefreshNeeded(task, options.headerBarrier);
+  metadata.needs_full_refresh = needsFullRefresh;
+  return { task, acceptedHeader: accepted.header, acceptedBody: accepted.body, needsFullRefresh, retired: false };
+}
+
+function fullRefreshNeeded(task, barrier) {
+  const metadata = cacheOf(task), header = cacheOf(barrier).header;
+  if (metadata.retired?.body || cacheOf(barrier).retired?.header) return true;
+  if (!metadata.body) return Boolean(header);
+  if (!header) return false;
+  if (!sameLifetime(metadata, cacheOf(barrier))) return true;
+  return metadata.bodyHeaderIdentity !== cacheOf(barrier).identities?.header;
+}
+
+export const taskNeedsFullRefresh = (task, headerBarrier) => Boolean(cacheOf(task).needs_full_refresh || fullRefreshNeeded(task, headerBarrier));
+export function taskFullRefreshKey(task, headerBarrier) {
+  if (!taskNeedsFullRefresh(task, headerBarrier)) return null;
+  const metadata = cacheOf(task), barrier = cacheOf(headerBarrier);
+  return JSON.stringify([task?.id ?? headerBarrier?.id, ...refreshLifetime(metadata), ...refreshComponents(metadata, barrier)]);
+}
+
+const refreshLifetime = (metadata) => [metadata.storeGeneration || "legacy", metadata.scopeGeneration || "legacy"];
+const refreshComponents = (metadata, barrier) => [metadata.retired?.body || "unknown-body", metadata.identities?.body || "unknown-body",
+  barrier.identities?.header || metadata.identities?.header || "unknown-header"];

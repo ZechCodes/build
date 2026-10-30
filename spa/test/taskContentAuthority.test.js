@@ -91,3 +91,25 @@ it("refuses shared content counter overflow without replacing the stored safe hi
   await expect(content.captureTaskContentRead(scope)).rejects.toThrow(/counter|allocation/i);
   expect((await cache.readCached(order.TASK_READ_COUNT_ADDRESS)).value).toBe(Number.MAX_SAFE_INTEGER);
 });
+
+it("keeps retirement recovery identity stable across identical newer header observations", async () => {
+  await publish(await observed(task()));
+  await content.mergeTaskContentRecordsTogether(scope, [address], ([held]) => ({
+    values: [{ task: content.retireTaskContent(held.value.task, "body") }], retire: true,
+  }));
+  const key = content.taskFullRefreshKey(await read()); expect(key).not.toBeNull();
+  for (let index = 0; index < 3; index += 1) {
+    const candidate = content.observeTaskContent(task(), { contentRead: await content.captureTaskContentRead(scope,
+      { revalidate: "summary" }), coverage: "summary" });
+    await publish(candidate); expect(content.taskFullRefreshKey(await read())).toBe(key);
+  }
+});
+
+it("leaves a summary header body-free until an explicitly wanted missing detail asks for recovery", async () => {
+  const fragment = content.taskContentFragment(scope), captured = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+  const header = content.reconcileTaskContent(undefined, content.observeTaskContent(task(), { contentRead: captured, coverage: "summary" }),
+    { context: fragment.context(await cache.readCachedMany(fragment.addresses)) }).task;
+  expect(content.taskNeedsFullRefresh(header)).toBe(false);
+  expect(content.taskNeedsFullRefresh(undefined, header)).toBe(true);
+  expect(content.taskFullRefreshKey(undefined, header)).not.toBeNull();
+});

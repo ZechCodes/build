@@ -125,7 +125,22 @@ required transaction contains a fixed-size exact-owner record, checked pending
 count, watch epoch, and affected cache writes. Settlement removes only that
 owner, once, in the same transaction as its count/fence changes and admissible
 acknowledgment or rollback. Overlapping owners, replaced sessions, and stale
-acknowledgments cannot settle another mutation. The local runtime pending guard
+acknowledgments cannot settle another mutation.
+
+A matching acknowledgment has a narrow task-local exception to ordinary
+admission-epoch equality. Its settlement transaction must verify the exact
+persisted current owner and latest intent, task/scope identity, stable
+store/scope/control/pending generations, current session, and a genuine ticket
+captured after registration. A valid unchanged blind-retirement token must bind
+registration, ticket capture and settlement. Owned begin/cleanup may rotate the
+admission epoch without changing that token; only this verified acknowledgment
+may then bind its supported families to the post-settlement epoch. Ordinary
+observations keep their epoch and pending gates. Missing/legacy tickets,
+unowned watch rewrites (including ABA), invalid tokens or lifetime replacement
+cannot borrow the exception. Sticky uncertainty and counter source/lineage/floor
+checks remain in force. This is client observation provenance, not server
+revision or request-execution ordering.
+ The local runtime pending guard
 remains local protection; it does not prove cross-tab safety.
 
 The bounded terminal-metadata amendment is approved for implementation, with

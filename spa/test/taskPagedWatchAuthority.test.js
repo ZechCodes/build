@@ -294,3 +294,57 @@ it("retires a terminal stamp copied by another connection after actual replica a
     discovery.mockRestore();
   }
 });
+
+it("retires only older copied protection while a newer metadata-only owner and the old owner remain pending", async () => {
+  const first = await runtime();
+  expect(await pull(first, async () => ({ tasks: [row()] }))).toBe(true);
+  const older = await first.watch.beginTaskWatchMutation(scope, "task-20", { watched: false });
+  const prepared = structuredClone((await savedRows(first))[0]);
+  expect(prepared).toMatchObject({ watched: false, __task_watch_intent: older.id });
+  const outside = await runtime();
+  const newer = await outside.watch.beginTaskWatchMutation(scope, "task-20", { watched: true, metadataOnly: true });
+  expect(newer.intentRead).toBeGreaterThan(older.intentRead);
+  const pendingBoth = await outside.watch.readTaskWatchState(scope);
+  expect(pendingBoth).toMatchObject({ pendingCount: 2, uncertain: true, eligible: false });
+  // Metadata-only registration is a barrier, not optimistic cache paint.
+  expect((await savedRows(outside))[0].watched).toBe(false);
+  expect((await savedRows(outside))[0].__task_watch_intent).not.toBe(newer.id);
+
+  const copyToQuery = async () => {
+    const queryParams = { ...params, state: "open" };
+    const address = outside.tracker.tasksQueryAddress(scope.deviceId, scope.projectId, queryParams);
+    await outside.tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId, queryParams,
+      outside.tracker.tasksRecord([prepared], []));
+    return { address, task: (await savedRows(outside, address))[0] };
+  };
+  const pendingCopy = await copyToQuery();
+  expect(await outside.watch.readTaskWatchState(scope)).toEqual(pendingBoth);
+  expect(pendingCopy.task).toMatchObject({ id: "task-20", watched: false, title: prepared.title });
+  expect(pendingCopy.task.__task_watch_intent).toBeUndefined();
+  expect(pendingCopy.task[outside.watch.TASK_WATCH_CACHE]).toBeUndefined();
+  expect(pendingCopy.task.unread_count).toBeUndefined();
+  expect((await outside.content.captureTaskContentRead(scope)).ticket).toMatchObject({ watchPending: true, watchUncertain: true });
+
+  // Settling B cannot settle A. The newer terminal note still supersedes A's
+  // copied protection without replaying the original A rollback to watched=true.
+  expect(await outside.watch.settleTaskWatchMutation(newer, { rollback: true })).toBe(true);
+  const pendingOlder = await outside.watch.readTaskWatchState(scope);
+  expect(pendingOlder).toMatchObject({ pendingCount: 1, uncertain: true, eligible: false });
+  const terminalCopy = await copyToQuery();
+  expect(await outside.watch.readTaskWatchState(scope)).toEqual(pendingOlder);
+  expect(terminalCopy.task).toMatchObject({ watched: false, title: prepared.title });
+  expect(terminalCopy.task.__task_watch_intent).toBeUndefined();
+  expect(terminalCopy.task[outside.watch.TASK_WATCH_CACHE]).toBeUndefined();
+  expect((await outside.content.captureTaskContentRead(scope)).ticket.watchPending).toBe(true);
+
+  expect(await first.watch.settleTaskWatchMutation(older, { rollback: true })).toBe(false);
+  const completed = await outside.watch.readTaskWatchState(scope);
+  expect(completed).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect((await savedRows(outside))[0].watched).toBe(false);
+  const lateCopy = await copyToQuery();
+  expect(lateCopy.task).toMatchObject({ watched: false, title: prepared.title });
+  expect(lateCopy.task.__task_watch_intent).toBeUndefined();
+  expect(await outside.watch.readTaskWatchState(scope)).toEqual(completed);
+  expect(await first.watch.settleTaskWatchMutation(older, { rollback: true })).toBe(false);
+  expect(await outside.watch.readTaskWatchState(scope)).toEqual(completed);
+});

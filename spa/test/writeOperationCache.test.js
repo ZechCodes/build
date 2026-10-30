@@ -495,7 +495,9 @@ it("completes a named publication refresh when no local overlay was normalized",
   await operations.accept("op-a", { ack: {}, revision: 1, owners: publication, overlay: [] });
   const record = await operations.confirm("op-a", { revision: 2, confirmation: frame, refreshPending: true });
   const { refreshWriteOperation } = await import("../src/core/writeOperationRefresh.js");
-  const authority = { active: () => true, call: vi.fn(async () => ({ task: { id: "task-a" }, timeline: [] })) };
+  const fixture = JSON.parse(readFileSync(new URL("../../fixtures/api/v1/tasks.get.json", import.meta.url))).result;
+  const task = { ...fixture.task, id: "task-a", project_id: "project" };
+  const authority = { active: () => true, call: vi.fn(async () => ({ task, timeline: [] })) };
   await expect(refreshWriteOperation({ cache: operations, frame, record, authority })).resolves.toBeUndefined();
   expect((await operations.get("op-a")).overlayActive).toBe(false);
   expect(authority.call).toHaveBeenCalledWith("tasks.get", { task_id: "task-a" });

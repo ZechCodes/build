@@ -825,3 +825,84 @@ describe("D5 real producer ordering, copies, partial updates and recovery", () =
     expect(follower.entries()[0].unreadCount).toBe(3);
   });
 });
+
+// Coordinator4641 conditional branch: exhaustive production routing audit is
+// clean (task891-terra61-inbox-routing-audit.md). Preserve the ORIGINAL unhooked
+// test and its raw1. This separately named correction uses the production
+// patchList/renderEntry callback; it does not seed display during enumeration.
+async function mountInboxProductionPatchComponent() {
+  for (const [kind, held] of [["projects", [project]], ["workspaces", []],
+    ["feed", { projects: [project], workspaces: [], runs: [], items: [] }]]) {
+    await cache.writeCached({ deviceId: scope.deviceId, entityId: "", kind }, held);
+  }
+  const { followWatchedTasks } = await import("../src/core/watchedTaskFollower.js");
+  const { inboxRowHtml } = await import("../src/core/inbox.js");
+  const { patchList } = await import("../src/core/patchList.js");
+  follower = followWatchedTasks({ onChange: () => patchList(inboxHost, follower.entries(), {
+    keyOf: (entry) => entry.key,
+    render: (entry) => follower.renderEntry(entry, () => inboxRowHtml(entry)),
+  }) });
+  follower.follow([project]);
+  await vi.waitFor(() => expect(follower.entries()[0]?.unreadCount).toBe(3), WAIT);
+  await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).not.toBeNull(), WAIT);
+}
+
+describe("D5 coordinator4641 corrected production fixture", () => {
+  it("corrected production patchList renderEntry fixture retains the followed Inbox row's previously displayed 3 when an incomplete full action makes total authority UNKNOWN", async () => {
+    await seedSelectedInputs();
+    await mountInboxProductionPatchComponent();
+    await invalidateWithActualIncompleteAction();
+    await vi.waitFor(() => expect(inboxHost.querySelector(".stitle")?.textContent).toContain("After incomplete action"), WAIT);
+    expect(inboxHost.querySelector(".inbox-status-unread")).not.toBeNull();
+    expect(follower.entries()[0].unreadCount).toBe(3);
+  });
+});
+
+async function admitSameFloorSummaryWithoutCounts(title, updatedAt) {
+  const task = full({ title, read_through: "tc-10", watched: true, watch_started_after: "te-15", updated_at: updatedAt });
+  for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) delete task[field];
+  const read = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+  const ticket = await summaries.beginSummaryQuery(scope, filters, read.readOrder, { contentRead: read });
+  expect(await summaries.landSummaryPage(ticket, { summary: true, tasks: [summaryOf(task)],
+    identities: {}, basis: title }, { read: read.readOrder })).toBe(true);
+  const normalized = await value(summaries.summaryAddress(scope, taskId));
+  expect(normalized.task).toMatchObject({ watched: true, watch_started_after: "te-15",
+    __task_watch_cache: { source: "read", observed_read_order: read.readOrder, taskId, scope } });
+  expect(normalized.needs_unread_refresh).toBe(true);
+  expect(normalized.task).not.toHaveProperty("unread_count");
+  return read.readOrder;
+}
+
+it("does not revive old same-tuple display across an admitted unwatch and rewatch then preserves a genuinely covered value across later same-lineage admission", async () => {
+  await bothActualSlots();
+  const oldSource = (await listedTask()).__task_watch_cache.observed_read_order;
+  const addresses = [tracker.tasksAddress(scope.deviceId, scope.projectId), tracker.taskAddress(scope.deviceId, scope.projectId, taskId)];
+  const oldTokens = (await cache.readCachedMany(addresses)).map(cache.recordWriteOf);
+  await admitSummaryOnlyUnwatch();
+  await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")).toBeNull(), WAIT);
+  await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull(), WAIT);
+  const boundary = await admitSameFloorSummaryWithoutCounts("Rewatch with the SAME previous tuple", "2026-10-29T12:05:00Z");
+  expect(boundary).toBeGreaterThan(oldSource);
+  expect((await cache.readCachedMany(addresses)).map(cache.recordWriteOf)).toEqual(oldTokens);
+  expect((await listedTask()).unread_count).toBe(3);
+  expect((await listedTask()).watch_started_after).toBe("te-15");
+  expect(paneHost.querySelector(".task-unread")).toBeNull();
+  expect(follower.entries()[0].unreadCount).toBe(0);
+  expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull();
+  await publishCoveringTotal(5);
+  await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")?.textContent).toBe("5"), WAIT);
+  await vi.waitFor(() => expect(follower.entries()[0]?.unreadCount).toBe(5), WAIT);
+  const coveredSource = (await listedTask()).__task_watch_cache.observed_read_order;
+  expect(coveredSource).toBeGreaterThan(boundary);
+  const newerSameLineage = await admitSameFloorSummaryWithoutCounts("Later same-lineage observation", "2026-10-29T12:06:00Z");
+  expect(newerSameLineage).toBeGreaterThan(coveredSource);
+  pane.feedMoved();
+  expect(paneHost.querySelector(".task-unread")?.textContent).toBe("5");
+  expect(follower.entries()[0].unreadCount).toBe(5);
+  expect(inboxHost.querySelector(".inbox-status-unread")).not.toBeNull();
+  await vi.waitFor(async () => {
+    const note = await displayedNote();
+    expect(note?.task_unread_display?.["tasks-pane"]?.total).toBe(5);
+    expect(note?.task_unread_display?.inbox?.total).toBe(5);
+  }, WAIT);
+});

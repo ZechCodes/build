@@ -94,3 +94,34 @@ fn backup_of_ready_database_completes_and_keeps_source_unchanged() {
     assert!(destination.is_file());
     assert_eq!(fs::read(&database).unwrap(), before, "backup changed the source database");
 }
+
+#[cfg(unix)]
+#[test]
+fn backup_refuses_untrusted_state_ancestor_before_creating_destination() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let unsafe_parent = root.path().join("untrusted-parent");
+    fs::create_dir(&unsafe_parent).unwrap();
+    fs::set_permissions(&unsafe_parent, fs::Permissions::from_mode(0o777)).unwrap();
+    let tasks = unsafe_parent.join("tasks");
+    drop(Store::new(&tasks).unwrap());
+    let destination = root.path().join("backup.db");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_build-bridge"))
+        .env_clear()
+        .env("HOME", root.path())
+        .env("BRIDGE_TASKS_DIR", &tasks)
+        .arg("backup")
+        .arg(&destination)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "backup accepted an untrusted ancestor");
+    assert!(
+        stderr.contains("untrusted-parent"),
+        "refusal must identify the rejected component: {stderr}"
+    );
+    assert!(!destination.exists(), "refusal must not create a destination");
+}

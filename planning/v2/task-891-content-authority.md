@@ -140,7 +140,8 @@ unowned watch rewrites (including ABA), invalid tokens or lifetime replacement
 cannot borrow the exception. Sticky uncertainty and counter source/lineage/floor
 checks remain in force. This is client observation provenance, not server
 revision or request-execution ordering.
- The local runtime pending guard
+
+The local runtime pending guard
 remains local protection; it does not prove cross-tab safety.
 
 The bounded terminal-metadata amendment is approved for implementation, with

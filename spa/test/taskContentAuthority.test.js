@@ -893,3 +893,45 @@ it("uses annotated rows as positive observations without borrowing their tickets
   ], [], coldRead.readOrder));
   expect((await tracker.readTasksQueryRecord(scope.deviceId, scope.projectId, { state: "open" })).tasks.map((row) => row.id)).toEqual(["task-3"]);
 });
+
+it("preserves coordination counts and uncertainty when a pre-token control cannot restore its exact owner", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), watch = await import("../src/core/taskWatchAuthority.js");
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [task({ watched: true })], columns: [] });
+  const owner = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false });
+  expect(await watch.settleTaskWatchMutation({ ...owner, blindRetirementEpoch: "foreign-token" }, { rollback: true })).toBe(false);
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true });
+  const controlAddress = watch.taskWatchControlAddress(scope), stored = (await cache.readCached(controlAddress)).value;
+  // Persisted older-schema fixture: remove only the newly introduced token.
+  // This never supplies a known baseline or manufactured observation proof.
+  const previousSchema = { ...stored }; delete previousSchema.blindRetirementEpoch;
+  await cache.writeCached(controlAddress, previousSchema);
+  expect(await watch.beginTaskWatchMutation(scope, "task-2", { watched: true, metadataOnly: true })).toBeNull();
+  expect((await cache.readCached(controlAddress)).value).toEqual(previousSchema);
+  expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(false);
+  const after = (await cache.readCached(controlAddress)).value;
+  expect(after).toMatchObject({ generation: stored.generation, pendingGeneration: stored.pendingGeneration, pendingCount: 0, uncertain: true });
+  expect(after).not.toHaveProperty("blindRetirementEpoch");
+  const row = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
+  expect(row.watched).toBe(false); expect(row).not.toHaveProperty("__task_watch_intent");
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+});
+
+it("transports the current pending watch owner through an unrelated full action into every existing replica", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), watch = await import("../src/core/taskWatchAuthority.js");
+  const summaries = await import("../src/core/taskSummaryCache.js"), actions = await import("../src/core/taskWaitingOnCache.js");
+  const { task: wireTask } = await import("./trackerWireFixture.js");
+  const raw = wireTask(task({ watched: true, read_through: "tc-10" }));
+  const target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  const listRead = await content.captureTaskContentRead(target, { revalidate: "full" });
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([raw], [], listRead.readOrder), { contentRead: listRead });
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-1", { task: raw, timeline: ["Existing history"] },
+    { contentRead: await content.captureTaskContentRead(address, { revalidate: "full" }) });
+  const owner = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false });
+  const contentRead = await content.captureTaskContentRead(scope);
+  expect(await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId,
+    { task: { ...raw, title: "Unrelated action title" } }, { contentRead, issuedRead: contentRead.readOrder })).toBe(true);
+  const values = await cache.readCachedMany([target, address, summaries.summaryAddress(scope, "task-1")]);
+  const rows = [values[0].value.tasks[0], values[1].value.task, values[2].value.task];
+  for (const row of rows) expect(row).toMatchObject({ watched: false, __task_watch_intent: owner.id });
+  expect((await watch.readTaskWatchState(scope)).pendingCount).toBe(1);
+});

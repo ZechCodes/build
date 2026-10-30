@@ -37,7 +37,7 @@ export function blindTaskWatchInterference(scope, before, after, context) {
   return Boolean(protection.pending);
 }
 
-const explicitColdWatch = (before, after) => before?.id !== after?.id && typeof after?.watched === "boolean";
+const explicitColdWatch = (before, after) => before == null && typeof after?.watched === "boolean";
 const positiveWatchPending = (context) => Number.isSafeInteger(context?.watchPendingCount) && context.watchPendingCount > 0;
 
 export function retireTaskWatchFacts(task) {

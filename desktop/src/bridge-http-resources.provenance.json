@@ -1,0 +1,8 @@
+{
+  "sourceTask": 915,
+  "sourceCommit": "79d60d9526e6d2acbe8a49bf307395c3bb45c4be",
+  "sourcePath": "fixtures/api/http/resource-manifest.json",
+  "sha256": "bcada2539a96e5784e864abf4e17564bb2d7260ac612f729db4dd5b7adbde616",
+  "reviewTask": 919,
+  "scope": "Reviewed manifest/decoder artifact only; not runtime, hosted authorization, integration or release acceptance."
+}

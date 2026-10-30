@@ -110,7 +110,7 @@ export function installAuthorizationHeader(webRequest, getAccessToken) {
   );
 }
 
-export function createWindowOptions({ development, platform = process.platform }) {
+export function createWindowOptions({ development, platform = process.platform, preload }) {
   return {
     width: 1280,
     height: 800,
@@ -123,6 +123,7 @@ export function createWindowOptions({ development, platform = process.platform }
       titleBarOverlay: { height: 44 },
     } : {}),
     webPreferences: {
+      ...(preload ? {preload} : {}),
       allowRunningInsecureContent: false,
       backgroundThrottling: false,
       contextIsolation: true,

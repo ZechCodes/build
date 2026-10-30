@@ -1050,3 +1050,32 @@ it("keeps a newer normalized unknown family when an old copy matches the retaine
   expect(after).not.toHaveProperty("unread_agent_comments");
   expect(after.__task_family_cache.unknown.attention).toEqual(before.__task_family_cache.unknown.attention);
 });
+
+it("lazily retires superseded protection on an unticketed normalized summary copy without creating newer intent paint", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), watch = await import("../src/core/taskWatchAuthority.js");
+  const summaries = await import("../src/core/taskSummaryCache.js"), actions = await import("../src/core/taskWaitingOnCache.js");
+  const { task: wireTask } = await import("./trackerWireFixture.js");
+  const raw = wireTask(task({ watched: true })), listAddress = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  const listRead = await content.captureTaskContentRead(listAddress, { revalidate: "full" });
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([raw], [], listRead.readOrder), { contentRead: listRead });
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-1", { task: raw, timeline: [] },
+    { contentRead: await content.captureTaskContentRead(address, { revalidate: "full" }) });
+  const older = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false });
+  const actionRead = await content.captureTaskContentRead(scope);
+  expect(await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: raw },
+    { contentRead: actionRead, issuedRead: actionRead.readOrder })).toBe(true);
+  const target = summaries.summaryAddress(scope, "task-1"), saved = structuredClone((await cache.readCached(target)).value.task);
+  expect(saved).toMatchObject({ watched: false, __task_watch_intent: older.id });
+  const newer = await watch.beginTaskWatchMutation(scope, "task-1", { watched: true, metadataOnly: true });
+  const control = await watch.readTaskWatchState(scope);
+  await summaries.writeSummaryTask(scope, saved, await order.nextTaskRead());
+  const row = (await cache.readCached(target)).value;
+  expect(row.task.watched).toBe(false);
+  expect(row.task).not.toHaveProperty("__task_watch_intent");
+  expect(row.task).not.toHaveProperty("__task_watch_intent_cache");
+  expect(row.task.__task_watch_cache).toBeUndefined();
+  expect(row.watch_uncertain).toBe(true);
+  expect(await watch.readTaskWatchState(scope)).toEqual(control);
+  expect((await cache.readCached(order.taskWatchIntentAddress(scope, "task-1"))).value.latest_watch_intent)
+    .toMatchObject({ ownerId: newer.id, disposition: "pending" });
+});

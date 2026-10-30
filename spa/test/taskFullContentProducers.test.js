@@ -110,6 +110,37 @@ it("preserves a real feed full-body dispatch observation against a native same-m
   expect((await local.readCached(summaryAddress({ deviceId, projectId }, current.id))).value.task.title).toBe(current.title);
 });
 
+it.each(["native same-ms timestamp", "later receipt"])("admits independent feed facts across a newer held ordinary observation: %s", async (ordering) => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(1800000000000);
+  try {
+    const tracker = await import("../src/core/trackerCache.js");
+    const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+    const { createTrackerTaskDetailsFeed } = await import("../src/core/trackerTaskDetailsFeed.js");
+    const address = tracker.taskAddress(deviceId, projectId, "independent");
+    const held = task("independent", { title: "Newer held title", body: "Newer held body", state: "open", status: "ready",
+      watched: true, watch_started_after: "", read_through: "tc-10", unread_count: 3,
+      review_summary: { task_id: "independent", version: 1, status: "open", mode: "pull_request" } });
+    const seedRead = await captureTaskContentRead(address, { revalidate: "full" });
+    await tracker.writeTaskRecord(deviceId, projectId, held.id, tracker.taskRecord(held, [{ id: "held-history" }]), { contentRead: seedRead });
+    const response = deferred(), callRpc = vi.fn(() => response.promise);
+    feed = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc });
+    await feed.updateTasks([{ ...held, updated_at: "2026-10-30T00:00:00Z" }]);
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(1));
+    if (ordering === "later receipt") clock.mockReturnValue(1800000001000);
+    const newerRead = await captureTaskContentRead(address, { revalidate: "full" });
+    await tracker.writeTaskRecord(deviceId, projectId, held.id, tracker.taskRecord(held, [{ id: "newer-history" }]), { contentRead: newerRead });
+    response.resolve({ task: { ...held, title: "Older reply title", body: "Older reply body", watched: false,
+      read_through: "tc-20", updated_at: ordering === "native same-ms timestamp" ? "2026-10-29T00:00:00.000100Z" : held.updated_at,
+      review_summary: { task_id: held.id, version: 2, status: "closed", mode: "pull_request" } }, timeline: [{ id: "older-history" }] });
+    await vi.waitFor(async () => expect((await tracker.readTaskRecord(deviceId, projectId, held.id)).task.read_through).toBe("tc-20"));
+    const saved = await tracker.readTaskRecord(deviceId, projectId, held.id);
+    expect(saved.task).toMatchObject({ title: held.title, body: held.body, updated_at: held.updated_at,
+      watched: false, read_through: "tc-20", review_summary: { version: 2, status: "closed" } });
+    expect(saved.timeline).toEqual([{ id: "newer-history" }]);
+    expect(saved.task.__task_content_cache.body.read_order).toBe(newerRead.readOrder);
+  } finally { clock.mockRestore(); }
+});
+
 it("adopts new proven same-timestamp headers once while suppressing repeated identical header observations", async () => {
   const tracker = await import("../src/core/trackerCache.js");
   const local = await import("../src/core/localCache.js");

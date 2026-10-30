@@ -6,7 +6,7 @@ import { threadWindow } from "./threadSync.js";
 import { recordKey } from "./idbRecords.js";
 
 const paramsOf = (record) => record.request?.params || {};
-const taskHistoryReads = new WeakMap();
+const refreshReads = new WeakMap();
 const addressKey = (address) => JSON.stringify([address.deviceId, address.entityId, address.kind, address.sub || ""]);
 const refreshError = () => new Error("The required canonical refresh cannot be mapped to a known record");
 const invalidTaskRefresh = (message) => Object.assign(new Error(message), { error_code: "invalid-task-response" });
@@ -131,18 +131,23 @@ function freezeTree(value) {
 }
 
 function publicationEntry(input, active) {
-  if (input.address.kind !== TRACKER_TASK_KIND) return input;
   const entry = Object.freeze({ ...input, address: Object.freeze({ ...input.address }),
     value: freezeTree(structuredClone(input.value)), guard: Object.freeze({ ...input.guard }),
+    publication: freezeTree(structuredClone(input.publication)),
     contentRead: freezeTree(input.contentRead) });
-  taskHistoryReads.set(entry, Object.freeze({ value: entry.value, active }));
+  refreshReads.set(entry, Object.freeze({ value: entry.value, active }));
   return entry;
 }
 
-// Only the literal tasks.get owner above registers entries. Copies, persisted
-// DTOs and entries produced by another module lifetime have no history proof.
+// Registration belongs only to the actual literal read owners above, after
+// their identity/generation checks. A permit alone conveys no read evidence.
+export function refreshReadOf(entry) {
+  return refreshReads.get(entry) || null;
+}
+
+// A thread read never confers task-history authority.
 export function taskHistoryReadOf(entry) {
-  return taskHistoryReads.get(entry) || null;
+  return entry.address.kind === TRACKER_TASK_KIND ? refreshReadOf(entry) : null;
 }
 
 async function taskRefreshOpening(targets, { cache, frame, record, authority }) {
@@ -181,9 +186,7 @@ async function refreshTaskTargets(targets, input) {
     if (result?.refresh) refresh = result.refresh;
     if (["superseded", "inactive"].includes(refresh.state)) break;
   }
-  // Qualified ReceiptRef creation and all-target finalization await their real
-  // producer/integration. Useful partial reads never complete an obligation.
-  return { complete: false, outcomes, refresh };
+  return { complete: refresh.state === "complete", outcomes, refresh };
 }
 
 /** Resolve closed domain invalidations independently of accepted overlays.

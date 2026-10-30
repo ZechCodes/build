@@ -284,8 +284,13 @@ export function createWriteOperationService(options) {
     const saved = await cache.get(entry.row.operationId);
     if (!entryCurrent(entry) || saved?.revision !== entry.frame.revision || !taskResultMatches(result, saved)) return;
     entry.row = saved;
-    // The negative parked path never clears a task obligation from a resolved
-    // callback. Real ReceiptRef completion remains an integration dependency.
+    if (saved.refreshPending === false && result?.complete === true) {
+      detachRefresh(entry);
+      if (refreshes.get(saved.operationId) === entry) refreshes.delete(saved.operationId);
+      await refreshSnapshot();
+      return;
+    }
+    // A resolved partial callback cannot complete or clear an obligation.
     await watchBlockedRefresh(entry);
     await refreshSnapshot();
   }

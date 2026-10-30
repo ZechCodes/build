@@ -5,11 +5,11 @@ import { createAnnouncer, randomToken, recordKey, writeStamp } from "./idbRecord
 import { announceWriteOperationCache, recordWriteOf, subscribeCache, transactWriteOperations } from "./localCache.js";
 import {
   activateOperationProjection, clearOperationProjections, deactivateOperationProjection, layerPublished,
-  leaseKey, operationKey, operationNamespace, validPublicationFence,
+  leaseKey, operationKey, operationNamespace, publicationCovers, validPublicationFence,
 } from "./writeOperationProjection.js";
 
-import { publicationReadAddresses, publicationGuardMatches, publicationIsActive, preparePublication,
-  taskPublicationEvidenceAddresses } from "./writeOperationPublication.js";
+import { publicationReadAddresses, publicationGuardMatches, publicationIsActive, preparePublication, prepareOwnedPublication,
+  taskPublicationApplicable, taskPublicationEvidenceAddresses } from "./writeOperationPublication.js";
 import { TRACKER_TASK_KIND, taskAddress } from "./trackerCache.js";
 import { threadCacheAddress } from "./conversationCache.js";
 
@@ -306,7 +306,7 @@ export function createWriteOperationCache(scope) {
           try {
             if (!guardPublicationWrite(stores.records, active)) return;
             const plan = ownedPublicationPlan(canonical, held, active);
-            const next = parkedRefresh(row, permit, plan, failure);
+            const next = advancedRefresh(row, plan, failure);
             if (!queuePublicationPlan(stores.records, plan, active)) return;
             if (!putGuardedOperation(stores.operations, next, scope, active)) return;
             result = { written: plan.written, outcomes: plan.outcomes, refresh: refreshOutcome(permit, refreshPhase(next)) };
@@ -321,22 +321,34 @@ export function createWriteOperationCache(scope) {
   }
 
   async function reevaluateRefresh({ operationId, accept = () => true }) {
-    let result = { state: "inactive" };
-    await strictTransaction("readonly", (stores) => {
-      result = { state: "inactive" };
+    let result, changed;
+    await strictTransaction("readwrite", (stores) => {
+      result = { state: "inactive" }; changed = false;
       if (!accept()) return null;
       readOperation(stores, operationId, (row) => {
         if (!row) { result = { state: "unbound" }; return; }
-        readRecords(stores.records, blockedEvidenceAddresses(row).map(recordKey), () => {
-          if (!accept()) return;
-          // A changed cache hint is not positive watch authority. Genuine
-          // proof rearming/ReceiptRef finalization is a separate dependency.
-          result = { state: refreshPhase(row), revision: row.revision, generation: row.refreshState?.generation };
+        result = rowRefreshOutcome(row);
+        if (!reevaluableRefresh(row, scope)) return;
+        reevaluateStoredRefresh(stores, row, accept, (next) => {
+          result = { state: refreshPhase(next), revision: next.revision, generation: next.refreshState.generation };
+          changed = next !== row;
         });
       });
       return null;
     });
+    if (changed) announce(operationId);
     return result;
+  }
+
+  function reevaluateStoredRefresh(stores, row, accept, done) {
+    readRecords(stores.records, ownedPublicationAddresses([], row).map(recordKey), (held) => {
+      try {
+        if (!guardPublicationWrite(stores.operations, accept)) return;
+        const next = reevaluatedRefresh(row, held);
+        if (next !== row && !putGuardedOperation(stores.operations, next, scope, accept)) return;
+        done(next);
+      } catch (error) { abortForError(stores.operations, error); }
+    });
   }
 
   async function watchRefresh({ operationId, generation }, listener) {
@@ -573,15 +585,24 @@ function refreshOutcome(permit, state) {
   return { operationId: permit?.operationId, revision: permit?.revision, generation: permit?.generation, state };
 }
 
+const rowRefreshOutcome = (row) => ({ state: refreshPhase(row), revision: row.revision, generation: row.refreshState?.generation });
+
 function currentRefreshAttempt(row, permit, entries, failure) {
   if (!refreshIdentityMatches(row, permit)) return false;
   const state = row.refreshState;
   const keys = entries.map(({ address }) => recordKey(address));
   if (failure) keys.push(failure.targetKey);
-  return keys.length > 0 && new Set(keys).size === keys.length && keys.every((key) => {
+  const current = keys.length > 0 && new Set(keys).size === keys.length && keys.every((key) => {
     const target = state.targets.find((slot) => slot.key === key);
     return permit.targets.has(key) && target?.phase === "unread" && target.attemptId === permit.targets.get(key);
   });
+  return current && entries.every((entry) => currentRefreshEntry(row, entry));
+}
+
+function currentRefreshEntry(row, entry) {
+  const target = row.refreshState.targets.find(({ key }) => key === recordKey(entry.address));
+  return sameRefreshAddress(target?.address, entry.address)
+    && JSON.stringify(entry.publication || []) === JSON.stringify(row.refreshState.required);
 }
 
 function refreshIdentityMatches(row, permit) {
@@ -600,7 +621,7 @@ function ownedPublicationPlan(entries, held, accept) {
   const plan = { held: new Map(held), records: [], outcomes: [], written: [] };
   for (const entry of entries) {
     validateFences(entry.publication || []);
-    const selected = publicationGuardMatches(entry, plan.held) ? preparePublication(entry, plan.held, accept)
+    const selected = publicationGuardMatches(entry, plan.held) ? prepareOwnedPublication(entry, plan.held, accept)
       : { writes: [], reason: "superseded" };
     for (const write of selected.writes) {
       const record = { ...writeStamp(), value: write.value, publication: write.publication || [] };
@@ -615,19 +636,114 @@ function ownedPublicationPlan(entries, held, accept) {
   return plan;
 }
 
-function parkedRefresh(row, permit, plan, failure) {
+function advancedRefresh(row, plan, failure) {
   const outcomes = new Map(plan.outcomes.map((outcome) => [recordKey(outcome.address), outcome]));
-  const targets = row.refreshState.targets.map((target) => {
-    const outcome = outcomes.get(target.key);
-    const refused = failure?.targetKey === target.key;
-    if (!outcome && !refused) return target;
-    const reason = refused ? failure.reason : outcome.reason || "receipt-reference-unavailable";
-    return { ...target, phase: "blocked", receipt: null,
-      blocked: { reason, seen: { records: evidenceReferences(target.address, plan.held) } } };
-  });
-  // Genuine ReceiptRef creation/revalidation/finalization is deliberately not
-  // implemented in this negative parked path. Pending and layers stay intact.
-  return { ...row, refreshState: { ...row.refreshState, generation: permit.generation, targets } };
+  const targets = row.refreshState.targets.map((target) => updatedRefreshTarget(row, target, outcomes.get(target.key), plan.held, failure));
+  return finalizeRefresh(withRefreshTargets(row, targets), plan.held);
+}
+
+function updatedRefreshTarget(row, target, outcome, held, failure) {
+  if (failure?.targetKey === target.key) return blockedRefreshTarget(target, failure.reason, held);
+  if (!outcome) return target;
+  if (!outcome.receiptPublished) return blockedRefreshTarget(target, outcome.reason || "missing-complete-authority", held);
+  return { ...target, phase: "receipt", blocked: null, receipt: {
+    namespace: row.namespace, operationId: row.operationId, revision: row.revision,
+    generation: row.refreshState.generation, targetKey: target.key, required: structuredClone(row.refreshState.required),
+    records: evidenceReferences(target.address, held),
+  } };
+}
+
+function blockedRefreshTarget(target, reason, held) {
+  return { ...target, phase: "blocked", receipt: null,
+    blocked: { reason, seen: { records: evidenceReferences(target.address, held) } } };
+}
+
+const withRefreshTargets = (row, targets) => ({ ...row, refreshState: { ...row.refreshState, targets } });
+
+function finalizeRefresh(row, held) {
+  const targets = row.refreshState.targets.map((target) => checkedRefreshTarget(row, target, held));
+  const next = withRefreshTargets(row, targets);
+  if (!targets.length || !targets.every(({ phase }) => phase === "receipt")) return next;
+  next.refreshPending = false;
+  next.refreshState.targets = targets.map((target) => ({ ...target, attemptId: null }));
+  if (next.state === "succeeded") next.overlayActive = false;
+  indexOverlay(next);
+  return next;
+}
+
+function checkedRefreshTarget(row, target, held) {
+  if (target.phase !== "receipt" || currentReceipt(row, target, held)) return target;
+  if (refreshTargetReady(row, target, held)) return unreadRefreshTarget(target);
+  return blockedRefreshTarget(target, "receipt-invalidated", held);
+}
+
+function currentReceipt(row, target, held) {
+  const receipt = target.receipt;
+  if (!receiptIdentityMatches(row, target, receipt)) return false;
+  return sameEvidenceReferences(receipt.records, evidenceReferences(target.address, held))
+    && qualifiedRefreshTarget(row, target, held);
+}
+
+function receiptIdentityMatches(row, target, receipt) {
+  if (!receipt || receipt.namespace !== row.namespace || receipt.operationId !== row.operationId) return false;
+  return receipt.revision === row.revision && receipt.generation === row.refreshState.generation && receipt.targetKey === target.key
+    && JSON.stringify(receipt.required) === JSON.stringify(row.refreshState.required);
+}
+
+function sameEvidenceReferences(left, right) {
+  return Array.isArray(left) && left.length === right.length && left.every((reference, index) =>
+    sameRefreshAddress(reference.address, right[index].address) && reference.written === right[index].written);
+}
+
+function qualifiedRefreshTarget(row, target, held) {
+  const canonical = held.get(target.key);
+  if (!canonical || !coversRequiredPublication(canonical.publication, row.refreshState.required)) return false;
+  return target.address.kind === TRACKER_TASK_KIND ? taskPublicationApplicable(target.address, held)
+    : currentThreadWindow(row, target.address, canonical.value);
+}
+
+const coversRequiredPublication = (observed, required) => required.length === 0 || publicationCovers(observed || [], required);
+
+function currentThreadWindow(row, address, value) {
+  if (!Array.isArray(value?.items)) return false;
+  if (address.threadId && value.thread_id !== address.threadId) return false;
+  const generation = row.request?.params?.thread_generation_revision;
+  return generation === undefined || value.thread_generation_revision === generation;
+}
+
+function reevaluableRefresh(row, scope) {
+  if (row.namespace !== operationNamespace(scope) || row.refreshPending !== true || !row.refreshState) return false;
+  const targets = row.refreshState.targets.map(({ address }) => address);
+  return namedRefreshTargetsMatch(row, targets, scope) && validRefreshState(row, targets);
+}
+
+function reevaluatedRefresh(row, held) {
+  const checked = finalizeRefresh(row, held);
+  const targets = checked.refreshState.targets.map((target) => rearmedRefreshTarget(checked, target, held));
+  const next = withRefreshTargets(checked, targets);
+  return sameRefreshProgress(row, next) ? row : next;
+}
+
+function rearmedRefreshTarget(row, target, held) {
+  if (target.phase !== "blocked") return target;
+  const previous = target.blocked.seen.records;
+  if (sameEvidenceReferences(previous, evidenceReferences(target.address, held))) return target;
+  if (!refreshTargetReady(row, target, held)) return target;
+  // This consumes changed applicable evidence only as one read opportunity,
+  // never as a receipt. The literal owner must qualify its new response.
+  return unreadRefreshTarget(target);
+}
+
+const unreadRefreshTarget = (target) => ({ ...target, phase: "unread", attemptId: null, blocked: null, receipt: null });
+
+function refreshTargetReady(row, target, held) {
+  if (target.address.kind === TRACKER_TASK_KIND) return taskPublicationApplicable(target.address, held);
+  return currentThreadWindow(row, target.address, held.get(target.key)?.value);
+}
+
+function sameRefreshProgress(left, right) {
+  return left.refreshPending === right.refreshPending && left.overlayActive === right.overlayActive
+    && JSON.stringify(left.refreshState) === JSON.stringify(right.refreshState);
 }
 
 function evidenceReferences(address, held) {
@@ -637,9 +753,11 @@ function evidenceReferences(address, held) {
 const refreshEvidenceAddresses = (address) => address.kind === TRACKER_TASK_KIND ? taskPublicationEvidenceAddresses(address) : [address];
 
 function blockedEvidenceAddresses(row) {
-  const addresses = (row.refreshState?.targets || []).flatMap((target) => target.blocked?.seen?.records || []).map(({ address }) => address);
+  const addresses = (row.refreshState?.targets || []).flatMap(targetEvidenceReferences).map(({ address }) => address);
   return [...new Map(addresses.map((address) => [recordKey(address), address])).values()];
 }
+
+const targetEvidenceReferences = (target) => target.phase === "receipt" ? target.receipt.records : target.blocked?.seen?.records || [];
 
 function queuePublicationPlan(records, plan, accept) {
   for (const { address, record } of plan.records) {

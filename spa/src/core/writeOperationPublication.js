@@ -4,9 +4,11 @@ import { recordKey } from "./idbRecords.js";
 import { recordWriteOf } from "./localCache.js";
 import { TASK_READ_COUNT_ADDRESS, readsAddress, withWritten } from "./taskReadOrder.js";
 import { TRACKER_TASK_KIND, preserveTaskFloors } from "./trackerCache.js";
-import { acceptsTaskContentRead, observeTaskContent, reconcileTaskContent, taskContentFragment, withTaskContentComponents } from "./taskContentAuthority.js";
+import { acceptsTaskContentRead, observeTaskContent, reconcileTaskContent, taskContentFragment, withTaskContentComponents,
+  TASK_CONTENT_CACHE, taskNeedsFullRefresh } from "./taskContentAuthority.js";
 import { reconcileTaskReadFacts, summaryAddress, summaryTaskReadMutation } from "./taskSummaryCache.js";
-import { taskHistoryReadOf } from "./writeOperationRefresh.js";
+import { isTaskWatchCertain } from "./taskWatchFacts.js";
+import { refreshReadOf, taskHistoryReadOf } from "./writeOperationRefresh.js";
 
 const isTask = ({ address }) => address.kind === TRACKER_TASK_KIND;
 const taskScope = ({ deviceId, entityId }) => ({ deviceId, projectId: entityId });
@@ -39,8 +41,37 @@ export function publicationGuardMatches(entry, held) {
 }
 
 export function publicationIsActive(entry, accept) {
-  const history = taskHistoryReadOf(entry);
-  return accept() && (!history || history.active());
+  const read = refreshReadOf(entry);
+  return accept() && (!read || read.active());
+}
+
+export function prepareOwnedPublication(entry, held, accept) {
+  const selected = preparePublication(entry, held, accept);
+  if (isTask(entry) || genuineRefreshRead(entry, accept)) return selected;
+  // Preserve independently guarded ordinary thread paint without promoting a
+  // copy/foreign entry into canonical qualification or an owned receipt.
+  return { ...selected, receiptPublished: false, reason: "missing-read-authority",
+    writes: selected.writes.map((write) => ({ ...write, publication: [] })) };
+}
+
+function genuineRefreshRead(entry, accept) {
+  const read = refreshReadOf(entry);
+  return Boolean(read && read.value === entry.value && publicationIsActive(entry, accept));
+}
+
+export function taskPublicationApplicable(address, held) {
+  const detail = held.get(recordKey(address)), task = detail?.value?.task;
+  if (!task) return false;
+  const fragment = contentFragment(address);
+  const context = fragment.context(fragment.addresses.map((target) => held.get(recordKey(target))));
+  const metadata = task[TASK_CONTENT_CACHE] || {};
+  const barrier = held.get(recordKey(summaryAddress(taskScope(address), address.sub)))?.value?.task;
+  return currentTaskContent(metadata, context) && !taskNeedsFullRefresh(task, barrier) && isTaskWatchCertain(task, context);
+}
+
+function currentTaskContent(metadata, context) {
+  return Boolean(metadata.header && metadata.body && metadata.storeGeneration === context.storeGeneration
+    && metadata.scopeGeneration === context.scopeGeneration);
 }
 
 export function preparePublication(entry, held, accept) {

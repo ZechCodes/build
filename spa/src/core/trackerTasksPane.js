@@ -539,7 +539,8 @@ export function mountTasksPane(host, options) {
   function moveTask(taskId, status) {
     const task = state.shown.find((candidate) => candidate.id === taskId);
     if (!task || task.status === status) return;
-    return wrapTaskMutationCall(state.deviceId, "tasks.update", () => writeMovedTask(task, status));
+    return wrapTaskMutationCall(state.deviceId, "tasks.update", () => writeMovedTask(task, status),
+      { projectId: state.projectId, taskId });
   }
 
   async function writeMovedTask(task, status) {

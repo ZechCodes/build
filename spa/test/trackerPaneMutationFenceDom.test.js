@@ -216,6 +216,121 @@ it("projects optimistic moves and rollback into shared summaries while invalidat
   await vi.waitFor(() => expect(fence.taskMutationsPending(scope.deviceId)).toBe(0));
 });
 
+it("keeps the optimistic summary ready when an actual pending detail read returns backlog before rejection", async () => {
+  const tracker = await import("../src/core/trackerCache.js");
+  const events = [], reads = [], answers = new WeakMap();
+  let sequence = 0, updatePending = false, failure, writerSpy;
+  const record = (event, fields = {}) => events.push({ sequence: ++sequence, event, ...structuredClone(fields) });
+  const summary = () => summaries.readSummaryQuery(scope, {});
+  const fixtureRpc = paneCall.getMockImplementation();
+  try {
+    // Establish the real startup full publication before gating subsequent RPCs.
+    // This is ordinary content provenance, not a known-zero watch authority seed.
+    await vi.waitFor(async () => {
+      const detail = await tracker.readTaskRecord(scope.deviceId, scope.projectId, "move-task");
+      expect(detail?.task?.__task_content_cache?.body?.read_order).toBeGreaterThan(0);
+      expect(detail.task.__task_content_cache.needs_full_refresh).toBe(false);
+    });
+    expect((await summary()).tasks[0].status).toBe("backlog");
+    expect(fence.taskMutationsPending(scope.deviceId)).toBe(0);
+
+    const writeDetail = tracker.writeTaskRecord;
+    writerSpy = vi.spyOn(tracker, "writeTaskRecord").mockImplementation(async (...args) => {
+      const reading = answers.get(args[3].task);
+      if (reading) {
+        // Record the producer's actual pre-RPC ticket; never recapture it here.
+        reading.contentRead = args[4]?.contentRead;
+        record("detail-writer-start", { read: reading.id, contentRead: reading.contentRead });
+      }
+      try {
+        const result = await writeDetail(...args);
+        if (reading) {
+          reading.completed = true;
+          record("detail-writer-complete", { read: reading.id, result });
+        }
+        return result;
+      } catch (error) {
+        if (reading) record("detail-writer-error", { read: reading.id, message: error.message });
+        throw error;
+      }
+    });
+    paneCall.mockImplementation((method, params) => {
+      if (method === "tasks.update") {
+        updatePending = true;
+        record("update-dispatch", { params });
+        return fixtureRpc(method, params).finally(() => {
+          updatePending = false;
+          record("update-settled");
+        });
+      }
+      if (method !== "tasks.get") return fixtureRpc(method, params);
+      const reading = { id: reads.length + 1, gate: deferred(), pendingAtDispatch: fence.taskMutationsPending(scope.deviceId) };
+      reads.push(reading);
+      record("detail-dispatch", { read: reading.id, pending: reading.pendingAtDispatch, params });
+      // Capture the fixture server's full DTO at this actual dispatch. The
+      // gate controls delivery only; the production producer owns its ticket.
+      const answer = fixtureRpc(method, params).then((value) => structuredClone(value));
+      return reading.gate.promise.then(async () => {
+        const raw = await answer;
+        answers.set(raw.task, reading);
+        record("detail-delivered", { read: reading.id, status: raw.task.status });
+        return raw;
+      });
+    });
+
+    record("move-intent");
+    host.querySelector('[data-column="backlog"] .task-card')
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(fence.taskMutationsPending(scope.deviceId)).toBeGreaterThan(0);
+    await vi.waitFor(async () => expect((await summary()).tasks[0].status).toBe("ready"));
+    await vi.waitFor(() => expect(updatePending, "producer precondition: actual update ACK remains unresolved").toBe(true));
+    const initiallyMoved = await summary();
+    expect(initiallyMoved.tasks[0].status).toBe("ready");
+    record("initial-ready", { status: initiallyMoved.tasks[0].status, pending: fence.taskMutationsPending(scope.deviceId) });
+    await vi.waitFor(() => expect(reads.some((reading) => reading.pendingAtDispatch > 0),
+      "producer precondition: an actual tasks.get must dispatch during the mutation").toBe(true));
+    const reading = reads.find((candidate) => candidate.pendingAtDispatch > 0);
+    record("detail-resolve-intent", { read: reading.id });
+    reading.gate.resolve();
+    await vi.waitFor(() => expect(reading.completed,
+      "producer precondition: the delivered read must reach its real public writer").toBe(true));
+    expect(reading.contentRead?.readOrder).toBeGreaterThan(0);
+    expect(reading.contentRead.address).toEqual(tracker.taskAddress(scope.deviceId, scope.projectId, "move-task"));
+    expect(reading.contentRead.ticket.readOrder).toBe(reading.contentRead.readOrder);
+    expect(updatePending).toBe(true);
+    expect(fence.taskMutationsPending(scope.deviceId)).toBeGreaterThan(0);
+    const beforeReject = await summary();
+    record("before-reject-summary", { status: beforeReject.tasks[0].status, pending: fence.taskMutationsPending(scope.deviceId) });
+    expect(beforeReject.tasks[0].status).toBe("ready");
+  } catch (error) {
+    failure = error;
+    record("assertion-failure", { message: error.message });
+  } finally {
+    if (updatePending) {
+      // No await separates this ordering witness from the rejection itself.
+      record("reject-intent");
+      mutation.reject(new Error("move refused"));
+      try {
+        await vi.waitFor(async () => expect((await summary()).tasks[0].status).toBe("backlog"));
+        await vi.waitFor(() => expect(fence.taskMutationsPending(scope.deviceId)).toBe(0));
+        record("rollback-complete", { status: (await summary()).tasks[0].status, pending: fence.taskMutationsPending(scope.deviceId) });
+      } catch (error) {
+        record("rollback-assertion-failure", { message: error.message });
+        failure ||= error;
+      }
+    }
+    pane.dispose();
+    reads.forEach((reading) => reading.gate.resolve());
+    writerSpy?.mockRestore();
+    const sink = process.env.TASK891_PENDING_MOVE_TRACE;
+    if (sink) {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(sink, JSON.stringify({ test: "pending detail read before rejection", events }, null, 2) + "\n", { flag: "wx" });
+    }
+  }
+  if (failure) throw failure;
+});
+
 it("projects an actual create action response compactly without claiming full query membership", async () => {
   host.querySelector("[data-task-new]").click();
   const created = task({ id: "new-task", project_id: scope.projectId, number: 2, title: "A new task", body: "large body excluded",

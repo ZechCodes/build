@@ -28,7 +28,7 @@ function signatureOf(held) {
     held.workspaces.map((row) => [row.projectKey, row.workspaceId, row.name, row.directories]),
     held.projects.map((row) => [row.projectKey, row.name]),
     [...held.agents].map(([id, agent]) => [id, agent.workspace?.workspaceId, agent.name]),
-    Object.entries(held.tasks).map(([key, list]) => [key, (list || []).map((task) => [task.id, task.number, task.title])]),
+    Object.entries(held.tasks).map(([key, list]) => [key, (list || []).map((task) => [task.id, task.number, task.title, task.updated_at])]),
   ]);
 }
 

@@ -13,6 +13,7 @@ import { trailingRead } from "./trailingRead.js";
 const MAX_DOM_NODES = 256;
 const MAX_SOURCE_ROWS = 256;
 const MAX_DEPTH = 32;
+const MAX_DOM_CLASS_CHARS = 256;
 const MAX_TEXT_BYTES = 16_384;
 const MAX_PART_CHARS = 4096;
 const encoder = new TextEncoder();
@@ -58,10 +59,18 @@ function sourceAdmission(content) {
   return { key: JSON.stringify(parts), body, comments };
 }
 
+function domCommentId(node, inherited) {
+  const value = node.getAttribute("data-comment-id");
+  if (value === null) return inherited;
+  return value.length <= 128 ? value : null;
+}
+
 function scopeAt(node, parent, admission) {
-  const commentId = node.getAttribute("data-comment-id") ?? parent.commentId;
+  const commentId = domCommentId(node, parent.commentId);
+  const rawClass = node.getAttribute("class");
+  if (rawClass?.length > MAX_DOM_CLASS_CHARS) return { inBody: false, commentId: null, skip: true };
   let inBody = parent.inBody;
-  if (node.classList.contains("markdown")) {
+  if (rawClass && node.classList.contains("markdown")) {
     if (node.classList.contains("task-page-body")) inBody = admission.body;
     if (node.classList.contains("task-comment-body")) inBody = commentId?.length <= 128 && admission.comments.has(commentId);
   }
@@ -71,7 +80,7 @@ function scopeAt(node, parent, admission) {
 function nextFrame(frame, stack, context) {
   const { node, depth } = frame;
   if (node.nextSibling) stack.push({ ...frame, node: node.nextSibling });
-  if (node.firstChild && depth < MAX_DEPTH && !protectedTags.has(node.tagName)) {
+  if (node.firstChild && depth < MAX_DEPTH && !context.skip && !protectedTags.has(node.tagName)) {
     return { node: node.firstChild, depth: depth + 1, ...context };
   }
   return stack.pop();

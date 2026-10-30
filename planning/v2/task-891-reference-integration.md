@@ -50,7 +50,10 @@ nodes, to depth 32. It uses no whole-subtree selector or ancestor search. It
 tracks the permitted body/comment scope while walking, skips code, preformatted
 blocks and existing anchors, and examines text chunks of at most 4,096
 characters within the same 16,384-byte text limit. A comment outside the source
-row/byte horizon cannot become eligible merely because its DOM is nearby.
+row/byte horizon cannot become eligible merely because its DOM is nearby. Raw
+class attributes over 256 characters leave that subtree unadmitted before any
+class-token parsing. DOM comment IDs over 128 characters are cleared before
+set membership checks, independently of the stricter source UTF-8 ID bound.
 
 NUL in an HTML attribute can become U+FFFD, and carriage returns can normalize
 to newlines. This reference-admission slice therefore leaves comment parts with

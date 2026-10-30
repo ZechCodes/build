@@ -153,10 +153,74 @@ describe("per-row watch observation selection", () => {
     expect(result.task).toMatchObject({ title: "Incoming title", read_through: "tc-20", review_summary: { version: 9 }, watched: true });
     expect(result.selectedWatchRead).toBe(5);
     expect(result.watchCertain).toBe(true);
-    // Guard read90 is not transplanted. Its mismatched counters cannot replace
-    // the held source3 values still paired with the selected read20/floor50.
-    expect(result.task).toMatchObject({ unread_count: 5, unread_mentions: 2, unread_agent_comments: 3 });
+    // Newest genuine family source wins before pairing. Incompatibility makes
+    // its counters unknown; it cannot resurrect older compatible source3.
+    for (const key of ["unread_count", "unread_mentions", "unread_agent_comments"]) expect(result.task).not.toHaveProperty(key);
+    expect(result.task[TASK_FAMILY_CACHE].unknown.attention.observed_read_order).toBe(5);
+  });
+
+  it("keeps an incompatible newest family unknown across later older and equal-source copies, then allows genuine newer recovery", () => {
+    const guard = observed(5, { read_through: "tc-90" });
+    const initial = select(observed(3), row(), 2, { watchGuard: guard });
+    for (const copied of [observed(3), observed(5)]) {
+      const next = select(initial.task, copied);
+      expect(next.task).not.toHaveProperty("unread_count");
+      expect(next.task[TASK_FAMILY_CACHE].unknown.total.observed_read_order).toBe(5);
+    }
+    const recovered = select(initial.task, row({ unread_count: 1 }), 6);
+    expect(recovered.task.unread_count).toBe(1);
+    expect(family(recovered.task, "total").observed_read_order).toBe(6);
+    expect(recovered.task[TASK_FAMILY_CACHE].unknown).toBeUndefined();
+  });
+
+  it("does not resurrect old known values when a copied unknown barrier has a retired control epoch", () => {
+    const initial = select(observed(3), row(), 2, { watchGuard: observed(5, { read_through: "tc-90" }) });
+    const metadata = structuredClone(initial.task[TASK_FAMILY_CACHE]);
+    metadata.unknown.total.watchRetirementEpoch = "retired-control";
+    const next = select({ ...initial.task, [TASK_FAMILY_CACHE]: metadata }, observed(3));
+    expect(next.task).not.toHaveProperty("unread_count");
+    expect(next.watchCertain).toBe(true);
+  });
+
+  it("does not mint a family observation or unknown barrier from unsupported counter coverage", () => {
+    const incoming = row(); delete incoming.unread_mentions; delete incoming.unread_agent_comments;
+    const result = select(observed(3), incoming, 4);
+    expect(result.task).toMatchObject({ unread_mentions: 2, unread_agent_comments: 3 });
     expect(family(result.task, "attention").observed_read_order).toBe(3);
+    expect(result.task[TASK_FAMILY_CACHE].unknown?.attention).toBeUndefined();
+    expect(result).toMatchObject({ watchCertain: true, needsUnreadRefresh: true });
+  });
+
+  it("retains honest source-ordered uncertain paint without promoting copies into known family proof", () => {
+    const context = control({ watchUncertain: true });
+    const first = select(undefined, row(), 3, { context, contentRead: read(3, context) });
+    expect(first.task).toMatchObject({ unread_count: 5, unread_mentions: 2, unread_agent_comments: 3,
+      session_started_ms: 7, last_activity_ms: 8 });
+    expect(first).toMatchObject({ watchCertain: false, needsUnreadRefresh: true, selectedWatchRead: 3 });
+    for (const name of ["total", "attention", "activity"]) {
+      expect(family(first.task, name)).toBeUndefined();
+      expect(first.task[TASK_FAMILY_CACHE].paint[name].observed_read_order).toBe(3);
+    }
+    const older = select(first.task, row({ unread_count: 99, unread_mentions: 99, unread_agent_comments: 99,
+      session_started_ms: 99, last_activity_ms: 99 }), 2, { context, contentRead: read(2, context) });
+    expect(older.task).toMatchObject({ unread_count: 5, unread_mentions: 2, session_started_ms: 7, last_activity_ms: 8 });
+    const copied = select(undefined, older.task);
+    expect(copied).toMatchObject({ watchCertain: false, needsUnreadRefresh: true });
+    expect(family(copied.task, "total")).toBeUndefined();
+    expect(copied.task[TASK_FAMILY_CACHE].paint.total.observed_read_order).toBe(3);
+    const recovered = select(copied.task, row({ unread_count: 1 }), 4);
+    expect(recovered).toMatchObject({ watchCertain: true, needsUnreadRefresh: false });
+    expect(family(recovered.task, "total").observed_read_order).toBe(4);
+    expect(recovered.task[TASK_FAMILY_CACHE].paint).toBeUndefined();
+  });
+
+  it("retires a previous watch incarnation's unknown barriers on a genuine new incarnation", () => {
+    const initial = select(observed(3), row(), 2, { watchGuard: observed(5, { read_through: "tc-90" }) });
+    const incoming = row({ watch_started_after: "" }); delete incoming.unread_mentions; delete incoming.unread_agent_comments;
+    const result = select(initial.task, incoming, 6);
+    expect(result.task.watch_started_after).toBe("");
+    expect(result.task[TASK_FAMILY_CACHE].unknown).toBeUndefined();
+    expect(result.task).not.toHaveProperty("unread_mentions");
   });
 });
 

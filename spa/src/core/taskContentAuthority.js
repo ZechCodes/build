@@ -2,8 +2,9 @@
 // describe server revisions, timeline completeness, or opaque projection bases.
 import { mergeCachedRecordsTogether } from "./localCache.js";
 import { randomToken } from "./idbRecords.js";
-import { nextTaskRead, nextTaskReadTicket, TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress } from "./taskReadOrder.js";
-export { TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress };
+import { taskMutationsPending } from "./taskMutationFence.js";
+import { nextTaskRead, nextTaskReadTicket, TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress, taskWatchControlAddress, initialTaskWatchControl } from "./taskReadOrder.js";
+export { TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress, taskWatchControlAddress };
 export const TASK_CONTENT_CACHE = "__task_content_cache";
 const OBSERVATION = "__task_content_observation";
 const headerFields = `id project_id number title state status labels priority assignee created_by created_at updated_at
@@ -35,8 +36,8 @@ function capturePlace(place, revalidate) {
 
 function capturedRead(allocation, address, revalidate, readOrder) {
   const ticket = allocation && { storeGeneration: allocation.storeGeneration, scopeGeneration: allocation.scopeGeneration,
-    retirementEpoch: allocation.retirementEpoch, watchRetirementEpoch: allocation.watchRetirementEpoch,
-    watchPending: allocation.watchPending };
+    retirementEpoch: allocation.retirementEpoch, watchGeneration: allocation.watchGeneration,
+    watchRetirementEpoch: allocation.watchRetirementEpoch, watchPending: allocation.watchPending, watchUncertain: allocation.watchUncertain };
   return { readOrder, ticket, revalidate, ...(address ? { address, written: allocation?.written } : {}) };
 }
 
@@ -63,26 +64,27 @@ export function retireTaskContent(task, component = "full") {
 
 export function taskContentFragment(scope) {
   return {
-    addresses: [TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress(scope)],
-    context: contentContext,
-    finish: ([store, domain], { retire = false, retireWatch = false } = {}) => {
-      if (!retire && !retireWatch) return [null, null];
-      return [store ? null : { generation: randomToken() }, retirementDomain(domain?.value, retire, retireWatch)];
+    addresses: [TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress(scope), taskWatchControlAddress(scope)],
+    context: (records) => ({ ...contentContext(records), localWatchPending: taskMutationsPending(scope.deviceId) > 0 }),
+    finish: ([store, domain, control], { retire = false, retireWatch = false } = {}) => {
+      if (!retire && !retireWatch) return [null, null, null];
+      return [store ? null : { generation: randomToken() }, retire ? retirementDomain(domain?.value) : null,
+        retireWatch ? retiredWatchControl(control) : null];
     },
   };
 }
 
-function contentContext([store, domain]) {
-  const held = domain?.value || {};
-  return { storeGeneration: store?.value?.generation, scopeGeneration: held.generation,
-    retirementEpoch: held.retirementEpoch, watchRetirementEpoch: held.watchRetirementEpoch,
-    watchPendingCount: held.watchPendingCount === undefined ? 0 : held.watchPendingCount };
+const retiredWatchControl = (record) => ({ ...(record?.value || initialTaskWatchControl()), watchRetirementEpoch: randomToken() });
+
+function contentContext([store, domain, control]) {
+  const held = domain?.value || {}, watch = control?.value || {};
+  return { storeGeneration: store?.value?.generation, scopeGeneration: held.generation, retirementEpoch: held.retirementEpoch,
+    watchGeneration: watch.generation, watchRetirementEpoch: watch.watchRetirementEpoch,
+    watchPendingCount: watch.pendingCount ?? null, watchUncertain: watch.uncertain !== false };
 }
 
-function retirementDomain(held, retire, retireWatch) {
-  return { ...held, generation: held?.generation || randomToken(),
-    retirementEpoch: retire ? randomToken() : held?.retirementEpoch || randomToken(),
-    watchRetirementEpoch: retireWatch ? randomToken() : held?.watchRetirementEpoch || randomToken() };
+function retirementDomain(held) {
+  return { ...held, generation: held?.generation || randomToken(), retirementEpoch: randomToken() };
 }
 
 export function mergeTaskContentRecordsTogether(scope, addresses, reducer) {

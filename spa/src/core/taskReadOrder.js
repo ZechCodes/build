@@ -37,17 +37,18 @@ export const TASK_READS_KIND = "tracker-task-reads";
  *  entity, like the device list: every list's reads share the one count. */
 export const TASK_READ_COUNT_ADDRESS = Object.freeze({ deviceId: "", entityId: "", kind: "tracker-task-read-count" });
 export const TASK_CONTENT_GENERATION_ADDRESS = Object.freeze({ deviceId: "", entityId: "", kind: "task-content-generation" });
+export const taskWatchControlAddress = ({ deviceId, projectId }) => ({ deviceId, entityId: "", kind: "task-watch-control", sub: projectId });
 export const taskContentScopeAddress = ({ deviceId, projectId }) => ({ deviceId, entityId: projectId, kind: "task-content-scope" });
 
 /** A content observation never certifies a module-local fallback number.
  * Allocate its shared count and capture its store/scope lifetime and optional
  * exact canonical baseline in the same transaction, including absence. */
 export async function nextTaskReadTicket(scope, { address } = {}) {
-  const addresses = [TASK_READ_COUNT_ADDRESS, TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress(scope), ...(address ? [address] : [])];
+  const addresses = [TASK_READ_COUNT_ADDRESS, TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress(scope), taskWatchControlAddress(scope), ...(address ? [address] : [])];
   let ticket = null;
   let invalid = false;
-  const committed = await mergeCachedRecordsTogether(addresses, ([count, store, domain, baseline]) => {
-    const allocation = sharedContentAllocation(count, store, domain);
+  const committed = await mergeCachedRecordsTogether(addresses, ([count, store, domain, watch, baseline]) => {
+    const allocation = sharedContentAllocation(count, store, domain, watch);
     if (!allocation) { invalid = true; return null; }
     ticket = { ...allocation.ticket, ...(address ? { written: recordWriteOf(baseline) } : {}) };
     return [...allocation.values, ...(address ? [null] : [])];
@@ -56,31 +57,34 @@ export async function nextTaskReadTicket(scope, { address } = {}) {
   return committed ? ticket : null;
 }
 
-function sharedContentAllocation(count, store, domain) {
+function sharedContentAllocation(count, store, domain, watch) {
   const held = count ? count.value : 0;
   if (!Number.isSafeInteger(held) || held < 0) return null;
   const readOrder = Math.max(held + 1, Date.now());
   if (!Number.isSafeInteger(readOrder) || readOrder <= 0) return null;
-  return contentAllocationValues(readOrder, store, domain);
+  return contentAllocationValues(readOrder, store, domain, watch);
 }
 
-function contentAllocationValues(readOrder, store, domain) {
+export const initialTaskWatchControl = () => ({ generation: randomToken(), pendingGeneration: randomToken(),
+  watchRetirementEpoch: randomToken(), pendingCount: 0, uncertain: true });
+
+function contentAllocationValues(readOrder, store, domain, control) {
   const generation = store?.value?.generation || randomToken();
-  const scopeValue = contentScopeValue(domain?.value);
-  const ticket = contentScopeTicket(readOrder, generation, scopeValue);
-  return { ticket, values: [readOrder, store ? null : { generation },
-    domain?.value?.watchRetirementEpoch ? null : scopeValue] };
+  const scopeValue = contentScopeValue(domain?.value), watch = control?.value || initialTaskWatchControl();
+  const ticket = contentScopeTicket(readOrder, generation, scopeValue, watch);
+  return { ticket, values: [readOrder, store ? null : { generation }, domain ? null : scopeValue, control ? null : watch] };
 }
 
 function contentScopeValue(held = {}) {
-  return { ...held, generation: held.generation || randomToken(), retirementEpoch: held.retirementEpoch || randomToken(),
-    watchRetirementEpoch: held.watchRetirementEpoch || randomToken() };
+  return { ...held, generation: held.generation || randomToken(), retirementEpoch: held.retirementEpoch || randomToken() };
 }
 
-function contentScopeTicket(readOrder, generation, scope) {
+function contentScopeTicket(readOrder, generation, scope, watch) {
   return { readOrder, storeGeneration: generation, scopeGeneration: scope.generation,
-    retirementEpoch: scope.retirementEpoch, watchRetirementEpoch: scope.watchRetirementEpoch,
-    watchPending: scope.watchPendingCount === undefined ? false : scope.watchPendingCount !== 0 };
+    retirementEpoch: scope.retirementEpoch, watchGeneration: watch.generation,
+    watchRetirementEpoch: watch.watchRetirementEpoch,
+    watchPending: !Number.isSafeInteger(watch.pendingCount) || watch.pendingCount !== 0,
+    watchUncertain: watch.uncertain !== false };
 }
 
 /** Where the note of what each read had the say on under `address` lives. */

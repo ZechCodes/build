@@ -127,6 +127,10 @@ function pageRow(held, task, read, basis, options) {
   const row = observedSummaryValue(held, incoming, incoming, read, options);
   const value = summaryContent(held, row, incoming, options).row;
   if (!value.task) return value;
+  return pageRowBasis(held, incoming, value, { older, read, basis });
+}
+
+function pageRowBasis(held, incoming, value, { older, read, basis }) {
   const oldAuthority = older && value.watch_read_order !== read;
   const source = oldAuthority ? held?.task : incoming;
   const mixed = changedBasisAuthority(held, basis, source, value.task);
@@ -404,12 +408,11 @@ function reduceSummaryMutation(records, options, { headerBarrier, headerGuards, 
   if (!options.accept()) return null;
   const source = fullTask ? fullActionSource(task) : task;
   const before = held?.value;
-  const patched = summaryPatch(before?.task, source, fullTask);
-  if (task.__task_content_cache) patched.__task_content_cache = task.__task_content_cache;
+  const patched = mutationSummaryPatch(before?.task, source, task, fullTask);
   const current = context || fragment.context(shared);
   const row = observedSummaryValue(before, patched, source, read,
     { ...options, source, action: true, context: current, headerBarrier, headerGuards, watchGuard, acknowledgment });
-  const retireWatch = !options.rawObservation && !options.contentRead && blindTaskWatchChanged(before?.task, patched);
+  const retireWatch = blindSummaryWatchChanged(before, patched, options);
   if (retireWatch) row.task = retireTaskWatchFacts(row.task);
   const selected = summaryContent(before, row, patched, { context: current, address,
     written: recordWriteOf(held), contentRead: options.contentRead, headerBarrier, headerGuards, observed: options.rawObservation || Boolean(options.contentRead),
@@ -417,6 +420,15 @@ function reduceSummaryMutation(records, options, { headerBarrier, headerGuards, 
   return [selected.row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) },
     ...fragment.finish(shared, { retire: selected.retire, retireWatch })];
 }
+
+function mutationSummaryPatch(held, source, task, fullTask) {
+  const patched = summaryPatch(held, source, fullTask);
+  if (task.__task_content_cache) patched.__task_content_cache = task.__task_content_cache;
+  return patched;
+}
+
+const blindSummaryWatchChanged = (before, patched, options) => !options.rawObservation && !options.contentRead
+  && blindTaskWatchChanged(before?.task, patched);
 
 export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false, confirmedAction = false, issuedRead, contentRead, rawObservation = false } = {}) {
   validateSummaryMutation(scope, task, read, fullTask, confirmedAction);

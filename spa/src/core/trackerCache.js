@@ -547,14 +547,23 @@ function publishedDetail(held, record, result, contentRead, facts) {
 
 function contentDetail(detail, record, headerBarrier, context, address, contentRead, projection) {
   const held = detail?.value;
-  const task = contentRead ? observeTaskContent(record.task, { contentRead, coverage: "full" }) : record.task;
-  const result = reconcileTaskContentWrite(held?.task, task, { context, address,
-    heldWritten: recordWriteOf(detail), headerBarrier });
-  if (!result.task || contentRead && !held && typeof result.task.body !== "string") return null;
-  const retireWatch = !contentRead && !isObservedTaskContent(record.task) && blindTaskWatchChanged(held?.task, record.task);
+  const result = detailContentSelection(detail, record, headerBarrier, context, address, contentRead);
+  if (!usableDetailSelection(result, held, contentRead)) return null;
+  const retireWatch = blindDetailWatchChanged(held, record, contentRead);
   const facts = taskFactsForWrite(held?.task, record.task, address, context, contentRead, projection || headerBarrier);
   return { values: [publishedDetail(held, record, result, contentRead, facts), null, null], retire: result.retired, retireWatch };
 }
+
+function detailContentSelection(detail, record, headerBarrier, context, address, contentRead) {
+  const task = contentRead ? observeTaskContent(record.task, { contentRead, coverage: "full" }) : record.task;
+  return reconcileTaskContentWrite(detail?.value?.task, task, { context, address,
+    heldWritten: recordWriteOf(detail), headerBarrier });
+}
+
+const usableDetailSelection = (result, held, contentRead) => Boolean(result.task)
+  && !(contentRead && !held && typeof result.task.body !== "string");
+const blindDetailWatchChanged = (held, record, contentRead) => !contentRead && !isObservedTaskContent(record.task)
+  && blindTaskWatchChanged(held?.task, record.task);
 
 const addressedFullRead = (read, address) => read?.revalidate === "full"
   && ["deviceId", "entityId", "kind", "sub"].every((key) => (read.address?.[key] ?? "") === (address[key] ?? ""));

@@ -55,13 +55,17 @@ function watchProof(task, context, scope) {
   return currentSource(proof, task, context, scope) && sameSnapshot(proof.lineage, lineage(task)) ? proof : null;
 }
 
+const taskProofScope = (task) => task?.[TASK_WATCH_CACHE]?.scope;
+const intentUncertain = (scope, task, context) => reconcileTaskWatchIntent(scope, task,
+  context?.watchIntentOf?.(task.id), context).uncertain;
+const certainWatchProof = (proof, context) => Boolean(proof && !uncertain(proof, context)
+  && (!pending(context) || proof.source === "ack"));
+
 export function isTaskWatchCertain(task, context) {
-  const scope = task?.[TASK_WATCH_CACHE]?.scope;
+  const scope = taskProofScope(task);
   if (!scope || !scopedTask(scope, task)) return false;
-  const intent = reconcileTaskWatchIntent(scope, task, context?.watchIntentOf?.(task.id), context);
-  if (intent.uncertain) return false;
-  const proof = watchProof(task, context, scope);
-  return Boolean(proof && !uncertain(proof, context) && (!pending(context) || proof.source === "ack"));
+  if (intentUncertain(scope, task, context)) return false;
+  return certainWatchProof(watchProof(task, context, scope), context);
 }
 
 function ticketMatches(read, scope, task, context) {

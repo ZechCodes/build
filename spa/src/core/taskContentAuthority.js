@@ -155,17 +155,52 @@ function blindComponent(held, candidate, component, context) {
   return !proofOf(candidate, component, context);
 }
 
-/** Blind local changes retire only their changed component. Exact cached
- * copies retain their actual observation; they never adopt a receipt clock. */
+function copiedComponentSource(held, candidate, component, context) {
+  if (!held) return candidate;
+  const before = proofOf(held, component, context), next = proofOf(candidate, component, context);
+  // A cached copy cannot repair an unknown target, even when bytes match.
+  if (!before) return held;
+  return next?.read_order > before.read_order ? candidate : held;
+}
+
+function copyMetadataField(target, source, key) {
+  if (Object.hasOwn(source, key)) target[key] = source[key];
+  else delete target[key];
+}
+
+function copyComponentMetadata(metadata, source, component, context) {
+  const cached = cacheOf(source), proof = proofOf(source, component, context);
+  if (proof) metadata[component] = proof;
+  else delete metadata[component];
+  for (const name of ["retired", "identities", "timestamps"]) {
+    metadata[name] = { ...metadata[name] };
+    copyMetadataField(metadata[name], cached[name] || {}, component);
+  }
+  if (component === "body") for (const key of ["bodyHeaderIdentity", "coveredHeaderIdentity", "coveredHeaderRetirement"]) {
+    copyMetadataField(metadata, cached, key);
+  }
+  if (proof) Object.assign(metadata, { storeGeneration: context.storeGeneration, scopeGeneration: context.scopeGeneration });
+}
+
+function retireWrittenComponent(task, candidate, component) {
+  const next = retireTaskContent(task, component), explicit = cacheOf(candidate).retired?.[component];
+  if (explicit) next[TASK_CONTENT_CACHE].retired[component] = explicit;
+  return next;
+}
+
+/** Exact copies select the actual accepted observation separately for each
+ * unchanged component. Local retirement never borrows another copy's proof. */
 export function reconcileTaskContentWrite(held, candidate, options = {}) {
   if (isObservedTaskContent(candidate)) return reconcileTaskContent(held, candidate, options);
-  let task = { ...candidate, [TASK_CONTENT_CACHE]: { ...cacheOf(held), ...cacheOf(candidate) } }, retired = false;
-  for (const component of ["header", "body"]) if (blindComponent(held, candidate, component, options.context)) {
-    const explicit = cacheOf(candidate).retired?.[component];
-    task = explicit ? task : retireTaskContent(task, component);
-    delete task[TASK_CONTENT_CACHE][component]; retired = true;
+  let task = { ...candidate, [TASK_CONTENT_CACHE]: { ...cacheOf(held || candidate) } }, retired = false;
+  const sources = {};
+  for (const component of ["header", "body"]) {
+    sources[component] = copiedComponentSource(held, candidate, component, options.context);
+    copyComponentMetadata(task[TASK_CONTENT_CACHE], sources[component], component, options.context);
+    if (!blindComponent(held, candidate, component, options.context)) continue;
+    task = retireWrittenComponent(task, candidate, component); retired = true;
   }
-  if (retired) task[TASK_CONTENT_CACHE].needs_full_refresh = true;
+  task[TASK_CONTENT_CACHE].needs_full_refresh = Boolean(retired || cacheOf(sources.body).needs_full_refresh || fullRefreshNeeded(task, options.headerBarrier));
   return { task, retired, acceptedHeader: false, acceptedBody: false, needsFullRefresh: taskNeedsFullRefresh(task) };
 }
 
@@ -251,7 +286,7 @@ export const taskNeedsFullRefresh = (task, headerBarrier) => Boolean(cacheOf(tas
 export function taskFullRefreshKey(task, headerBarrier) {
   if (!taskNeedsFullRefresh(task, headerBarrier)) return null;
   const metadata = cacheOf(task), barrier = headerBarrier ? cacheOf(headerBarrier) : metadata.barrier || {};
-  return JSON.stringify([task?.id ?? headerBarrier?.id, ...refreshLifetime(metadata), ...refreshComponents(metadata, barrier)]);
+  return JSON.stringify([task?.id ?? headerBarrier?.id, ...refreshLifetime(metadata), ...refreshLifetime(barrier), ...refreshComponents(metadata, barrier)]);
 }
 
 const refreshLifetime = (metadata) => [metadata.storeGeneration || "legacy", metadata.scopeGeneration || "legacy"];

@@ -353,15 +353,15 @@ function reduceSummaryMutation(records, options, headerBarrier) {
   if (task.__task_content_cache) patched.__task_content_cache = task.__task_content_cache;
   const row = summaryValue(before, patched, read, { ...options, source, action: true });
   const selected = summaryContent(before, row, patched, { context: fragment.context(shared), address,
-    written: recordWriteOf(held), contentRead: options.contentRead, headerBarrier, observed: fullTask || Boolean(options.contentRead) });
+    written: recordWriteOf(held), contentRead: options.contentRead, headerBarrier, observed: options.rawObservation || Boolean(options.contentRead) });
   return [selected.row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) },
     ...fragment.finish(shared, { retire: selected.retire })];
 }
 
-export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false, confirmedAction = false, issuedRead, contentRead } = {}) {
+export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false, confirmedAction = false, issuedRead, contentRead, rawObservation = false } = {}) {
   validateSummaryMutation(scope, task, read, fullTask, confirmedAction);
   const fragment = taskContentFragment(scope), address = summaryAddress(scope, task.id);
-  const options = { task, read, accept, fullTask, confirmedAction, issuedRead, contentRead, fragment, address };
+  const options = { task, read, accept, fullTask, confirmedAction, issuedRead, contentRead, rawObservation, fragment, address };
   return { addresses: [address, invalidationAddress(scope), ...fragment.addresses],
     context: (records) => fragment.context(records.slice(2)),
     reduce: (records, { headerBarrier } = {}) => reduceSummaryMutation(records, options, headerBarrier) };

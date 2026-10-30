@@ -17,6 +17,7 @@ const newer = (held, incoming) => Date.parse(held?.updated_at) > Date.parse(inco
 
 function actionTask(held, incoming, read, projection, options) {
   const selected = reconcileTaskContent(held, observeTaskContent(incoming, { contentRead: options.contentRead, coverage: "full" }), options);
+  if (!selected.task) return { task: undefined, acceptedBody: false };
   const ordinary = preserveTaskReviewSummary(held, incoming, { readOrder: read, keepHeld: newer(held, incoming),
     allowMissing: !newer(held, incoming), baseRow: selected.task || held });
   const task = withTaskWatchLineage({ ...ordinary, read_through: projection.read_through,
@@ -55,7 +56,9 @@ function queryMatches(address, task) {
 function listWithResponse(address, held, task, read, projection, options) {
   const rows = held?.tasks || [];
   const prior = rows.find((row) => row.id === task.id);
-  const incoming = preserveTaskActionMarks(prior, actionTask(prior, task, read, projection, options).task, { watchAuthority: true });
+  const selected = actionTask(prior, task, read, projection, options).task;
+  if (!selected) return null;
+  const incoming = preserveTaskActionMarks(prior, selected, { watchAuthority: true });
   const includes = queryMatches(address, incoming);
   if (!prior && (!includes || address.kind === TRACKER_TASKS_PAGE_KIND)) return null;
   const remaining = rows.filter((row) => row.id !== task.id);
@@ -88,7 +91,7 @@ export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { 
   const addresses = [taskAddress(deviceId, projectId, task.id), ...listed, ...listed.map(readsAddress), taskWaitingOnGenerationAddress(deviceId, projectId), readsAddress(taskAddress(deviceId, projectId, task.id))];
   const read = await nextTaskRead();
   const confirmed = issuedRead !== undefined;
-  const summary = summaryTaskMutation({ deviceId, projectId }, task, read, { accept, fullTask: true, confirmedAction: confirmed, issuedRead, contentRead });
+  const summary = summaryTaskMutation({ deviceId, projectId }, task, read, { accept, fullTask: true, confirmedAction: confirmed, issuedRead, contentRead, rawObservation: true });
   return mergeCachedRecordsTogether([...addresses, ...summary.addresses], (allRecords) => {
     if (!accept()) return null;
     const records = allRecords.slice(0, addresses.length);

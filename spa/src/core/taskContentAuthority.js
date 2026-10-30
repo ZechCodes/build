@@ -111,6 +111,7 @@ function componentWinner(held, incoming, component, observation, options) {
   const ownHeader = component === "body" ? proofOf(held, "header", options.context) : undefined;
   const read = observation.contentRead.readOrder;
   const heldTimestamp = componentTimestamp(held, component, own);
+  if (Date.parse(componentTimestamp(options.headerBarrier, "header", barrier)) > Date.parse(incoming.updated_at)) return false;
   if (blockedComponent(own, barrier, incoming, read, heldTimestamp)
     || blockedComponent(undefined, ownHeader, incoming, read, undefined)) return false;
   return Boolean(own) || revalidates(observation, component, options);
@@ -173,7 +174,7 @@ function componentIdentity(held, incoming, component, prior) {
   return sameTaskContentComponent(held, incoming, component) && prior || randomToken();
 }
 
-function observationMetadata(held, incoming, observation, accepted, context, headerBarrier) {
+function observationMetadata(held, incoming, observation, accepted, context, headerBarrier, address) {
   const metadata = sameLifetime(cacheOf(held), context) ? { ...cacheOf(held) } : { retired: { ...cacheOf(held).retired } };
   delete metadata.barrier;
   const retired = { ...metadata.retired };
@@ -189,6 +190,8 @@ function observationMetadata(held, incoming, observation, accepted, context, hea
   if (accepted.body) {
     metadata.bodyHeaderIdentity = identities.header;
     metadata.coveredHeaderIdentity = cacheOf(headerBarrier).identities?.header;
+    metadata.coveredHeaderRetirement = ownFullBaseline(observation, { address })
+      ? cacheOf(headerBarrier).retired?.header : undefined;
   }
   return { ...metadata, storeGeneration: context?.storeGeneration, scopeGeneration: context?.scopeGeneration, retired, identities, timestamps };
 }
@@ -223,14 +226,16 @@ export function reconcileTaskContent(held, candidate, options = {}) {
   const header = componentWinner(held, incoming, "header", observation, options);
   const accepted = { header, body: header && componentWinner(held, incoming, "body", observation, options) };
   const task = selectedTask(held, incoming, observation, accepted, options);
-  const metadata = observationMetadata(held, incoming, { ...observation, updated_at: incoming.updated_at }, accepted, options.context, options.headerBarrier);
+  const metadata = observationMetadata(held, incoming, { ...observation, updated_at: incoming.updated_at }, accepted, options.context, options.headerBarrier, options.address);
   task[TASK_CONTENT_CACHE] = metadata;
   const needsFullRefresh = observation?.coverage === "full" && !accepted.body || fullRefreshNeeded(task, options.headerBarrier);
   metadata.needs_full_refresh = needsFullRefresh;
   return { task, acceptedHeader: accepted.header, acceptedBody: accepted.body, needsFullRefresh, retired: false };
 }
 
-const retiredRefresh = (metadata, barrier) => Boolean(metadata.retired?.body || metadata.retired?.header || barrier.retired?.header);
+const retiredBarrier = (metadata, barrier) => Boolean(barrier.retired?.header
+  && metadata.coveredHeaderRetirement !== barrier.retired.header);
+const retiredRefresh = (metadata, barrier) => Boolean(metadata.retired?.body || metadata.retired?.header || retiredBarrier(metadata, barrier));
 const coveredHeader = (metadata, identity) => metadata.bodyHeaderIdentity === identity || metadata.coveredHeaderIdentity === identity;
 
 function fullRefreshNeeded(task, barrier) {
@@ -251,6 +256,6 @@ export function taskFullRefreshKey(task, headerBarrier) {
 
 const refreshLifetime = (metadata) => [metadata.storeGeneration || "legacy", metadata.scopeGeneration || "legacy"];
 const refreshHeader = (metadata, barrier) => [barrier.identities?.header || metadata.identities?.header || "unknown-header",
-  barrier.retired?.header || metadata.retired?.header || "known-header"];
+  barrier.retired?.header || "known-barrier", metadata.retired?.header || "known-header"];
 const refreshComponents = (metadata, barrier) => [metadata.retired?.body || "unknown-body", metadata.identities?.body || "unknown-body",
   ...refreshHeader(metadata, barrier)];

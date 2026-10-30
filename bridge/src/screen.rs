@@ -462,6 +462,8 @@ impl ScreenHandle {
                 match onward {
                     Some(onward) => onward,
                     None => {
+                        // Registration is admitted at this check under the model
+                        // lock. A later replacement retires its delivery proof.
                         if !sender.events_are_live() {
                             return Self::reading(&screen);
                         }
@@ -756,6 +758,8 @@ impl TerminalHandle {
     /// the last thing its agent painted.
     pub fn attach(&self, sender: &SessionSender, viewport: Option<(u16, u16)>) -> AttachSnapshot {
         let _attachment = self.screen.attachment_gate.lock().unwrap();
+        // This check admits the resize. If replacement wins first, it cannot
+        // start; replacement after admission does not cancel an in-flight ioctl.
         if !sender.events_are_live() {
             return self.screen.snapshot();
         }
@@ -1556,7 +1560,10 @@ mod neutral_binding_regressions {
     }
 
     #[derive(Default)]
-    struct TerminalStub(Mutex<Vec<(u16, u16)>>);
+    struct TerminalStub(
+        Mutex<Vec<(u16, u16)>>,
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    );
     impl AgentSession for TerminalStub {
         fn send_turn(&self, _: &crate::harness::Turn) -> Result<(), crate::harness::HarnessError> {
             Ok(())
@@ -1584,12 +1591,86 @@ mod neutral_binding_regressions {
             Ok(())
         }
         fn resize(&self, size: PtySize) -> Result<(), crate::harness::HarnessError> {
+            if let Some((entered, release)) = self.1.lock().unwrap().take() {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
             self.0.lock().unwrap().push((size.cols, size.rows));
             Ok(())
         }
         fn pid(&self) -> Option<u32> {
             None
         }
+    }
+
+    #[test]
+    fn replacement_after_resize_admission_allows_admitted_ioctl() {
+        let sessions = ClientSessions::new("terminal-order-test");
+        let session = sessions
+            .open(VerifiedCaller::verified_relay("device", Opening::new()))
+            .unwrap();
+        let first = sessions
+            .bind_events(&session, StreamClass::Terminal, Arc::new(Sink::default()))
+            .unwrap();
+        let request = sessions
+            .request_for_stream(
+                &session,
+                StreamClass::Terminal,
+                Arc::new(Sink::default()),
+                Some(&first),
+            )
+            .unwrap();
+        let old = SessionSender::from_request(&request);
+        let child = Arc::new(TerminalStub::default());
+        let (entered, arrival) = std::sync::mpsc::channel();
+        let (release, resumed) = std::sync::mpsc::channel();
+        *child.1.lock().unwrap() = Some((entered, resumed));
+        let process: Arc<dyn AgentSession> = child.clone();
+        let screen = ScreenHandle::new("terminal-order-test", 80, 24);
+        let terminal = TerminalHandle::of(&process, &Some(screen.clone())).unwrap();
+        let worker = std::thread::spawn(move || terminal.attach(&old, Some((30, 10))));
+        arrival.recv().unwrap();
+        let output = Arc::new(Sink::default());
+        let second = sessions
+            .replace_events(
+                &session,
+                StreamClass::Terminal,
+                Some(&first),
+                output.clone(),
+            )
+            .unwrap();
+        let successor_request = sessions
+            .request_for_stream(
+                &session,
+                StreamClass::Terminal,
+                Arc::new(Sink::default()),
+                Some(&second),
+            )
+            .unwrap();
+        let successor = SessionSender::from_request(&successor_request);
+        // Model a successor already installed while the admitted ioctl waits.
+        screen
+            .screen
+            .lock()
+            .unwrap()
+            .register("terminal-order-test", &successor);
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(*child.0.lock().unwrap(), vec![(30, 10)]);
+        {
+            let model = screen.screen.lock().unwrap();
+            assert_eq!(model.attached.len(), 1);
+            assert_eq!(
+                model.attached[0].sender.read_scope(),
+                successor.read_scope()
+            );
+        }
+        screen.feed(b"successor still receives output");
+        screen.flush();
+        let received = output.0.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].payload()["type"], "term.output");
+        assert!(received[0].is_live());
     }
 
     #[test]

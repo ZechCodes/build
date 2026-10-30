@@ -233,10 +233,11 @@ pub(in crate::app) fn term_id_suffix(term_id: &str) -> u64 {
 /// [`ensure_agent_tab`]'s, and it is the only agent the worktree gets.
 pub(in crate::app) fn term_create(
     state: &Arc<Mutex<AppState>>,
+    sender: Option<&SessionSender>,
     params: &Value,
     timer: &FrameTimer,
 ) -> Result<Value, String> {
-    create::create(state, params, timer)
+    create::create(state, sender, params, timer)
 }
 
 /// Attach this client to a tab by its wire id — `term-<n>` or
@@ -280,6 +281,7 @@ pub(in crate::app) fn term_attach(
 /// worker.
 pub(in crate::app) fn term_input(
     state: &Arc<Mutex<AppState>>,
+    sender: &SessionSender,
     params: &Value,
     timer: &FrameTimer,
 ) -> Result<Value, String> {
@@ -287,6 +289,9 @@ pub(in crate::app) fn term_input(
     let data = b64decode(&require_str(params, "data")?)?;
     let terminal = {
         let s = timer.lock(state);
+        if !sender.execution_is_live() {
+            return Err("request authorization has ended".into());
+        }
         let key = s.tab_key_of_wire_id(&term_id)?;
         let (live, terminal) = s.session_registry.terminal_access(&key)?;
         if !live {
@@ -294,6 +299,9 @@ pub(in crate::app) fn term_input(
         }
         terminal
     };
+    if !sender.execution_is_live() {
+        return Err("request authorization has ended".into());
+    }
     terminal.write_input(&data)?;
     Ok(json!({ "ok": true }))
 }
@@ -310,6 +318,7 @@ pub(in crate::app) fn term_input(
 /// child that may not answer.
 pub(in crate::app) fn term_resize(
     state: &Arc<Mutex<AppState>>,
+    sender: &SessionSender,
     params: &Value,
     timer: &FrameTimer,
 ) -> Result<Value, String> {
@@ -318,10 +327,16 @@ pub(in crate::app) fn term_resize(
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
     let (live, terminal) = {
         let s = timer.lock(state);
+        if !sender.execution_is_live() {
+            return Err("request authorization has ended".into());
+        }
         let key = s.tab_key_of_wire_id(&term_id)?;
         s.session_registry.terminal_resize_access(&key)?
     };
     if live {
+        if !sender.execution_is_live() {
+            return Err("request authorization has ended".into());
+        }
         terminal.resize(cols, rows)?;
     }
     Ok(json!({ "ok": true, "live": live }))
@@ -735,6 +750,13 @@ mod greeting_tests {
         }
     }
 
+    struct Capture(tokio::sync::mpsc::UnboundedSender<EncodedEvent>);
+    impl ReplySink for Capture {
+        fn try_send(&self, event: EncodedEvent) -> Result<(), DeliveryError> {
+            self.0.send(event).map_err(|_| DeliveryError::Closed)
+        }
+    }
+
     fn producer_state(root: &std::path::Path) -> Arc<Mutex<AppState>> {
         AppState::new_unrooted(root, "main", true, "unused.sock")
             .with_update_service(Arc::new(crate::update::UpdateService::disabled(
@@ -764,7 +786,11 @@ mod greeting_tests {
         })
     }
 
-    async fn shared_hello(service: &ExecutionService, request: RequestContext) -> Value {
+    async fn shared_hello(
+        service: &ExecutionService,
+        request: RequestContext,
+        mut output: tokio::sync::mpsc::UnboundedReceiver<EncodedEvent>,
+    ) -> Value {
         let mut call = tokio::time::timeout(
             Duration::from_secs(5),
             service.submit(
@@ -778,7 +804,10 @@ mod greeting_tests {
         tokio::time::timeout(Duration::from_secs(5), call.reply())
             .await
             .expect("hello execution must settle")
-            .unwrap()
+            .unwrap();
+        let event = output.recv().await.unwrap();
+        assert!(event.is_live());
+        event.payload().clone()
     }
 
     async fn retired(tasks: &[tokio::task::AbortHandle]) {
@@ -824,20 +853,22 @@ mod greeting_tests {
         let old = sessions
             .bind_events(&session, StreamClass::Application, Arc::new(Reply))
             .unwrap();
+        let (sink, output) = tokio::sync::mpsc::unbounded_channel();
         let request = sessions
-            .request(&session, Arc::new(Reply), Some(&old))
+            .request(&session, Arc::new(Capture(sink)), Some(&old))
             .unwrap();
-        assert_eq!(shared_hello(&service, request).await["ok"], true);
+        assert_eq!(shared_hello(&service, request, output).await["ok"], true);
         let first = producer_tasks(
             &state.lock().unwrap(),
             session.id(),
             old.events().read_scope(),
         );
 
+        let (sink, output) = tokio::sync::mpsc::unbounded_channel();
         let request = sessions
-            .request(&session, Arc::new(Reply), Some(&old))
+            .request(&session, Arc::new(Capture(sink)), Some(&old))
             .unwrap();
-        assert_eq!(shared_hello(&service, request).await["ok"], true);
+        assert_eq!(shared_hello(&service, request, output).await["ok"], true);
         retired(&first).await;
         let repeated = producer_tasks(
             &state.lock().unwrap(),
@@ -845,8 +876,9 @@ mod greeting_tests {
             old.events().read_scope(),
         );
 
+        let (sink, delayed_output) = tokio::sync::mpsc::unbounded_channel();
         let delayed = sessions
-            .request(&session, Arc::new(Reply), Some(&old))
+            .request(&session, Arc::new(Capture(sink)), Some(&old))
             .unwrap();
         let successor = sessions
             .replace_events(
@@ -856,10 +888,11 @@ mod greeting_tests {
                 Arc::new(Reply),
             )
             .unwrap();
+        let (sink, output) = tokio::sync::mpsc::unbounded_channel();
         let request = sessions
-            .request(&session, Arc::new(Reply), Some(&successor))
+            .request(&session, Arc::new(Capture(sink)), Some(&successor))
             .unwrap();
-        assert_eq!(shared_hello(&service, request).await["ok"], true);
+        assert_eq!(shared_hello(&service, request, output).await["ok"], true);
         retired(&repeated).await;
         let current = producer_tasks(
             &state.lock().unwrap(),
@@ -867,7 +900,7 @@ mod greeting_tests {
             successor.events().read_scope(),
         );
 
-        let _stale_reply = shared_hello(&service, delayed).await;
+        let _stale_reply = shared_hello(&service, delayed, delayed_output).await;
         old.close();
         handler.cleanup_outputs();
         let retained = producer_tasks(

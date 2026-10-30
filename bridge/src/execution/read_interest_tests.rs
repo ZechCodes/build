@@ -170,11 +170,17 @@ async fn newest_retired_read_interest_does_not_suppress_a_live_folded_caller() {
         2,
         "a surviving fold computes once beside the initial blocked mutation"
     );
-    assert!(timeout(WATCHDOG, older_output.recv())
+    let event = timeout(WATCHDOG, older_output.recv())
         .await
         .unwrap()
-        .unwrap()
-        .is_live());
+        .unwrap();
+    assert!(event.is_live());
+    assert_eq!(
+        event.payload()["id"],
+        json!(older.context().request_order())
+    );
+    assert_eq!(event.payload()["ok"], true);
+    assert_eq!(event.payload()["result"], json!({"served":true}));
     assert!(newest_output.try_recv().is_err());
 }
 
@@ -237,7 +243,7 @@ async fn retired_read_interest_cannot_enter_sql_worker_after_capacity_wait() {
         interested.clone(),
     )
     .await;
-    let (sentinel_sink, _sentinel_output, _sentinel_dropped) = sink();
+    let (sentinel_sink, mut sentinel_output, _sentinel_dropped) = sink();
     let request = service
         .sessions()
         .request(&session, sentinel_sink, None)
@@ -258,6 +264,17 @@ async fn retired_read_interest_cannot_enter_sql_worker_after_capacity_wait() {
         reply(holder).await;
     }
     reply(&mut sentinel).await;
+    let event = timeout(WATCHDOG, sentinel_output.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(event.is_live());
+    assert_eq!(
+        event.payload()["id"],
+        json!(sentinel.context().request_order())
+    );
+    assert_eq!(event.payload()["ok"], true);
+    assert_eq!(event.payload()["result"], json!({"sql":true}));
     let outcome = timeout(WATCHDOG, read.reply()).await;
     drop(read);
     timeout(WATCHDOG, read_dropped).await.unwrap().unwrap();

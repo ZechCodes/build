@@ -1721,7 +1721,7 @@ impl ChangeBus {
         let watch = self.watch_state(&sub);
         let now = Instant::now();
         let mut subscriptions = self.subscriptions.lock().unwrap();
-        if !session.events_are_live() {
+        if !session.execution_is_live() || !session.events_are_live() {
             return Err(crate::api::ApiError::unavailable(
                 "application event binding has ended",
             ));
@@ -4869,6 +4869,38 @@ mod binding_resources {
         ) -> Result<(), crate::execution::session::DeliveryError> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn cancelled_request_waiting_on_subscription_lock_cannot_register() {
+        use crate::execution::session::{ClientSessions, Opening, StreamClass, VerifiedCaller};
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions
+            .open(VerifiedCaller::verified_relay("device", Opening::new()))
+            .unwrap();
+        let events = sessions
+            .bind_events(&session, StreamClass::Application, Arc::new(Sink))
+            .unwrap();
+        let request = sessions
+            .request(&session, Arc::new(Sink), Some(&events))
+            .unwrap();
+        let caller = SessionSender::from_request(&request);
+        let bus = ChangeBus::new(Duration::ZERO);
+        let held = bus.subscriptions.lock().unwrap();
+        std::thread::scope(|scope| {
+            let (started, waiting) = std::sync::mpsc::channel();
+            let bus = &bus;
+            let caller = &caller;
+            let worker = scope.spawn(move || {
+                started.send(()).unwrap();
+                bus.try_subscribe(&caller, spec("cancelled", Kind::State))
+            });
+            waiting.recv().unwrap();
+            request.cancellation().cancel();
+            drop(held);
+            assert!(worker.join().unwrap().is_err());
+        });
+        assert!(bus.list(session.id()).is_empty());
     }
 
     #[test]

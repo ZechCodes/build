@@ -378,6 +378,11 @@ fn session_scoped(
     if !allowed_during_project_deletion(method) && timer.lock(state).project_deletion_in_progress {
         return Some(Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS)));
     }
+    if !sender.execution_is_live() {
+        return Some(Err(ApiError::unavailable(
+            "request authorization has ended",
+        )));
+    }
     let outcome = match method {
         // The greeting: what this bridge can do for the session, and — for the
         // capabilities that need somewhere to send to — the subscription
@@ -392,14 +397,14 @@ fn session_scoped(
         "term.create" => {
             #[cfg(test)]
             pause_terminal_create_after_admission(state, timer);
-            term_create(state, params, timer)
+            term_create(state, Some(sender), params, timer)
         }
         "term.attach" => term_attach(state, sender, params, timer),
         // A write to a child's pty blocks while the child is not draining, so
         // both of these take the handle under the lock and write with it
         // released.
-        "term.input" => term_input(state, params, timer),
-        "term.resize" => term_resize(state, params, timer),
+        "term.input" => term_input(state, sender, params, timer),
+        "term.resize" => term_resize(state, sender, params, timer),
         // Needs the caller's own session: an ack speaks for one client's
         // receive queue, not for the screen.
         "term.ack" => term_ack(state, sender, params, timer),
@@ -1014,5 +1019,58 @@ mod explicit_context_tests {
             .changes()
             .list("waiting-context")
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod request_effect_lock_tests {
+    use super::*;
+    use crate::execution::session::{
+        ClientSessions, DeliveryError, EncodedEvent, Opening, ReplySink, VerifiedCaller,
+    };
+    struct Sink;
+    impl ReplySink for Sink {
+        fn try_send(&self, _: EncodedEvent) -> Result<(), DeliveryError> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn terminal_effects_recheck_cancel_after_app_lock_wait() {
+        for method in ["term.create", "term.input", "term.resize"] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = AppState::new_unrooted(dir.path(), "main", true, "unused.sock").shared();
+            let sessions = ClientSessions::new("epoch");
+            let session = sessions
+                .open(VerifiedCaller::verified_relay("device", Opening::new()))
+                .unwrap();
+            let request = sessions.request(&session, Arc::new(Sink), None).unwrap();
+            let sender = SessionSender::from_request(&request);
+            let held = state.lock().unwrap();
+            std::thread::scope(|scope| {
+                let (started, waiting) = std::sync::mpsc::channel();
+                let state = &state;
+                let sender = &sender;
+                let worker = scope.spawn(move || {
+                    let clock = crate::timing::FrameClock::new();
+                    let timer = clock.frame(method);
+                    started.send(()).unwrap();
+                    let params = json!({"term_id":"missing","data":"","project_id":"missing"});
+                    match method {
+                        "term.create" => term_create(state, Some(sender), &params, &timer),
+                        "term.input" => term_input(state, sender, &params, &timer),
+                        "term.resize" => term_resize(state, sender, &params, &timer),
+                        _ => unreachable!(),
+                    }
+                });
+                waiting.recv().unwrap();
+                request.cancellation().cancel();
+                drop(held);
+                let error = worker.join().unwrap().unwrap_err();
+                assert!(
+                    format!("{error:?}").contains("request authorization has ended"),
+                    "{method}: {error:?}"
+                );
+            });
+        }
     }
 }

@@ -980,3 +980,25 @@ it("does not resurrect a retired normalized attention family from an older local
   expect(after).not.toHaveProperty("unread_agent_comments");
   expect(after.__task_family_cache.unknown.attention).toEqual(before.__task_family_cache.unknown.attention);
 });
+
+it("retains unresolved owner protection when a plain blind list replacement changes its watch paint", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), watch = await import("../src/core/taskWatchAuthority.js");
+  const target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([task({ watched: true })], []));
+  const owner = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false });
+  const stamped = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
+  const before = (await cache.readCached(watch.taskWatchControlAddress(scope))).value;
+  // A plain local writer has no incoming copy of the existing owner metadata.
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    tracker.tasksRecord([task({ title: "Blind replacement", watched: true, watch_started_after: "te-intervening" })], []));
+  const row = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
+  expect(row).toMatchObject({ title: "Blind replacement", watched: true, watch_started_after: "te-intervening",
+    __task_watch_intent: owner.id });
+  expect(row.__task_watch_intent_cache).toEqual(stamped.__task_watch_intent_cache);
+  const after = (await cache.readCached(watch.taskWatchControlAddress(scope))).value;
+  expect(after.pendingCount).toBe(1); expect(after.blindRetirementEpoch).not.toBe(before.blindRetirementEpoch);
+  expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(false);
+  const settled = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
+  expect(settled).toMatchObject({ watched: true, watch_started_after: "te-intervening" });
+  expect(settled).not.toHaveProperty("__task_watch_intent");
+});

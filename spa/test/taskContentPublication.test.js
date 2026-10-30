@@ -11,6 +11,47 @@ beforeEach(() => {
   globalThis.IDBKeyRange = IDBKeyRange;
 });
 
+it("publishes admitted full content with its independent watch read and review fields", async () => {
+  const local = await import("../src/core/localCache.js");
+  const tracker = await import("../src/core/trackerCache.js");
+  const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+  const { TASK_READ_COUNT_ADDRESS } = await import("../src/core/taskReadOrder.js");
+  const { createWriteOperationCache } = await import("../src/core/writeOperationCache.js");
+  const { refreshWriteOperation } = await import("../src/core/writeOperationRefresh.js");
+  const address = tracker.taskAddress(scope.deviceId, projectId, taskId);
+  const contentRead = await captureTaskContentRead(address, { revalidate: "full" });
+  await tracker.writeTaskRecord(scope.deviceId, projectId, taskId, tracker.taskRecord({ ...task,
+    watched: true, read_through: "tc-10", watch_started_after: "te-05", unread_count: 3,
+    unread_mentions: 1, unread_agent_comments: 2, session_started_ms: 10, last_activity_ms: 20,
+    review_summary: { task_id: taskId, version: 1, status: "open", mode: "pull_request" },
+  }, []), { contentRead });
+  const cache = createWriteOperationCache(scope), operationId = "independent-publication";
+  const published = [{ kind: "project", id: projectId, generation: 0, sequence: 7 }];
+  await cache.put({ operationId, revision: 0, owner: { projectId },
+    request: { method: "tasks.comment", params: { task_id: taskId, body: "Accepted comment" } } });
+  await cache.accept(operationId, { revision: 1, ack: {}, overlay: [{ address, kind: "upsert", path: ["timeline"],
+    value: { id: "comment", body: "Accepted comment" } }] });
+  await cache.confirm(operationId, { revision: 2, confirmation: { state: "succeeded", published } });
+  const incoming = { ...task, title: "New task", body: "New full body", updated_at: "2026-10-29T00:01:00Z",
+    watched: false, read_through: "tc-20",
+    review_summary: { task_id: taskId, version: 2, status: "closed", mode: "pull_request" } };
+  const timeline = [{ id: "comment", body: "Accepted comment" }];
+  let issued;
+  const authority = { active: () => true, call: vi.fn(async () => {
+    issued = (await local.readCanonicalCached(TASK_READ_COUNT_ADDRESS)).value;
+    return { task: incoming, timeline };
+  }) };
+  await refreshWriteOperation({ cache, authority, record: await cache.get(operationId),
+    frame: { state: "succeeded", published, refresh: [{ kind: "task", id: taskId }] } });
+  const canonical = await local.readCanonicalCached(address);
+  const { __task_content_cache: proof, ...publicTask } = canonical.value.task;
+  expect(publicTask).toEqual(incoming);
+  expect(proof.body.read_order).toBe(issued);
+  expect(canonical.value.timeline).toEqual(timeline);
+  expect((await cache.get(operationId)).overlayActive).toBe(false);
+  expect(authority.call).toHaveBeenCalledTimes(1);
+});
+
 it("captures canonical task refresh ordinary order before RPC rather than assigning its receipt order", async () => {
   const local = await import("../src/core/localCache.js");
   const tracker = await import("../src/core/trackerCache.js");
@@ -36,25 +77,33 @@ it("captures canonical task refresh ordinary order before RPC rather than assign
 
 it("does not certify a full canonical publication or retire its layer when the incoming body is older", async () => {
   const tracker = await import("../src/core/trackerCache.js");
+  const local = await import("../src/core/localCache.js");
+  const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
   const { createWriteOperationCache } = await import("../src/core/writeOperationCache.js");
   const { refreshWriteOperation } = await import("../src/core/writeOperationRefresh.js");
   const cache = createWriteOperationCache(scope), operationId = "body-publication";
   const address = tracker.taskAddress(scope.deviceId, projectId, taskId);
   const published = [{ kind: "project", id: projectId, generation: 0, sequence: 7 }];
-  await tracker.writeTaskRecord(scope.deviceId, projectId, taskId, tracker.taskRecord(task, []));
+  const contentRead = await captureTaskContentRead(address, { revalidate: "full" });
+  await tracker.writeTaskRecord(scope.deviceId, projectId, taskId, tracker.taskRecord({ ...task,
+    watched: true, read_through: "tc-10", review_summary: { task_id: taskId, version: 1, status: "open" },
+  }, []), { contentRead });
+  const before = await local.readCanonicalCached(address);
   await cache.put({ operationId, revision: 0, owner: { projectId },
     request: { method: "tasks.comment", params: { task_id: taskId, body: "Accepted comment" } } });
   await cache.accept(operationId, { revision: 1, ack: {}, overlay: [{ address, kind: "upsert", path: ["timeline"],
     value: { id: "comment", body: "Accepted comment" } }] });
   await cache.confirm(operationId, { revision: 2, confirmation: { state: "succeeded", published } });
   const authority = { active: () => true, call: vi.fn(async () => ({
-    task: { ...task, title: "Old task", body: "Old full body", updated_at: "2026-10-28T23:59:59Z" },
+    task: { ...task, title: "Old task", body: "Old full body", updated_at: "2026-10-28T23:59:59Z",
+      watched: false, read_through: "tc-20", review_summary: { task_id: taskId, version: 2, status: "closed" } },
     timeline: [{ id: "comment", body: "Accepted comment" }],
   })) };
   await expect(refreshWriteOperation({ cache, authority, record: await cache.get(operationId),
     frame: { state: "succeeded", published, refresh: [{ kind: "task", id: taskId }] } })).rejects.toThrow("superseded");
   expect((await cache.get(operationId)).overlayActive).toBe(true);
   expect((await tracker.readTaskRecord(scope.deviceId, projectId, taskId)).task.body).toBe(task.body);
+  expect(await local.readCanonicalCached(address)).toEqual(before);
   expect(authority.call).toHaveBeenCalledTimes(1);
 });
 

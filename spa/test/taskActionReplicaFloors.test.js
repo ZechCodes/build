@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 
-let cache, tracker, summaries, actions, order;
+let cache, tracker, summaries, actions, order, content;
 const scope = { deviceId: "action-replica-900", projectId: "proj-1" }, taskId = "task-1";
 const task = (extra = {}) => ({ id: taskId, project_id: scope.projectId, number: 1, title: "Before", state: "open",
   status: "ready", watched: true, read_through: "tc-20", watch_started_after: null, dismissed_through: "te-20",
@@ -11,27 +11,48 @@ const listAddresses = () => [tracker.tasksAddress(scope.deviceId, scope.projectI
   tracker.tasksQueryAddress(scope.deviceId, scope.projectId, { state: "open" }),
   tracker.tasksPageAddress(scope.deviceId, scope.projectId, { limit: 100 })];
 async function seed(held) {
-  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, taskId, { task: { ...held, body: "Full held body" }, timeline: [{ id: "history" }] });
-  await Promise.all(listAddresses().map((address) => cache.writeCached(address, tracker.tasksRecord([held], []))));
-  const read = await order.nextTaskRead(), ticket = await summaries.beginSummaryQuery(scope, {}, read);
-  await summaries.landSummaryPage(ticket, { summary: true, tasks: [held], basis: "before" }, { read });
+  // Every replica needs its own addressed full observation; an unobserved
+  // legacy seed cannot authorize ordinary bytes from a later action.
+  const fullTask = { ...held, body: "Full held body", attachments: [] };
+  const detailAddress = tracker.taskAddress(scope.deviceId, scope.projectId, taskId);
+  const detailRead = await content.captureTaskContentRead(detailAddress, { revalidate: "full" });
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, taskId,
+    tracker.taskRecord(fullTask, [{ id: "history" }]), { contentRead: detailRead });
+  for (const address of listAddresses()) {
+    const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+    await content.mergeTaskContentRecordsTogether(scope, [address], ([record], context) => {
+      const selected = content.reconcileTaskContent(record?.value?.tasks?.[0],
+        content.observeTaskContent(fullTask, { contentRead, coverage: "full" }),
+        { context, address, heldWritten: cache.recordWriteOf(record) });
+      expect(selected.acceptedHeader && selected.acceptedBody).toBe(true);
+      return { values: [tracker.tasksRecord([selected.task], [], contentRead.readOrder)], retire: selected.retired };
+    });
+  }
+  const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
+  await summaries.landSummaryPage(ticket, { summary: true, tasks: [held], basis: "before" }, { read: ticket.generation });
 }
 async function replicas() {
   return [(await tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId)).task,
     ...await Promise.all(listAddresses().map(async (address) => (await value(address)).tasks[0])),
     (await value(summaries.summaryAddress(scope, taskId))).task];
 }
-const publish = async (incoming, options = {}) => actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId,
-  { task: { ...incoming, body: "Full incoming body", attachments: [] } }, { issuedRead: await order.nextTaskRead(), ...options });
+async function publish(incoming, options = {}) {
+  const contentRead = await content.captureTaskContentRead(scope);
+  return actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId,
+    { task: { ...incoming, body: "Full incoming body", attachments: [] } },
+    { contentRead, issuedRead: contentRead.readOrder, ...options });
+}
 const allAddresses = () => [tracker.taskAddress(scope.deviceId, scope.projectId, taskId), ...listAddresses(),
   ...listAddresses().map(order.readsAddress), order.readsAddress(tracker.taskAddress(scope.deviceId, scope.projectId, taskId)),
-  summaries.summaryAddress(scope, taskId), { deviceId: scope.deviceId, entityId: scope.projectId, kind: "tracker-summary-invalidation", sub: "" }];
+  summaries.summaryAddress(scope, taskId), summaries.summaryQueryAddress(scope, {}),
+  actions.taskWaitingOnGenerationAddress(scope.deviceId, scope.projectId), { deviceId: scope.deviceId, entityId: scope.projectId, kind: "tracker-summary-invalidation", sub: "" }];
 
 beforeEach(async () => {
   vi.resetModules(); globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
   cache = await import("../src/core/localCache.js"); tracker = await import("../src/core/trackerCache.js");
   summaries = await import("../src/core/taskSummaryCache.js"); actions = await import("../src/core/taskWaitingOnCache.js");
   order = await import("../src/core/taskReadOrder.js");
+  content = await import("../src/core/taskContentAuthority.js");
 });
 
 it.each([
@@ -111,6 +132,10 @@ it("rolls every legacy and normalized replica and note back if the joint marker 
     if (String(key).includes("|tracker-summary|") && record?.value?.task?.title === "Quota") throw new DOMException("Quota", "QuotaExceededError");
     return original.call(this, record, key);
   });
-  expect(await publish(task({ title: "Quota", read_through: "tc-10", unread_count: 9 }))).toBe(false);
-  spy.mockRestore(); expect(await Promise.all(allAddresses().map(value))).toEqual(before);
+  try {
+    expect(await publish(task({ title: "Quota", read_through: "tc-10", unread_count: 9 }))).toBe(false);
+    expect(spy.mock.calls.some(([record, key]) => String(key).includes("|tracker-summary|")
+      && record?.value?.task?.title === "Quota")).toBe(true);
+  } finally { spy.mockRestore(); }
+  expect(await Promise.all(allAddresses().map(value))).toEqual(before);
 });

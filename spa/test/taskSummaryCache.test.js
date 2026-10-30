@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 
-let cache, summaries;
+let cache, summaries, content;
 const scope = { deviceId: "device-891", projectId: "proj-1" };
 const query = { states: ["open"] };
 const row = (id, extra = {}) => ({ id, number: Number(id.slice(-1)), title: id, updated_at: "2026-10-29T12:00:00Z", ...extra });
@@ -15,6 +15,7 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   cache = await import("../src/core/localCache.js");
   summaries = await import("../src/core/taskSummaryCache.js");
+  content = await import("../src/core/taskContentAuthority.js");
 });
 
 it("canonicalizes sets and aliases while preserving opaque ID and non-ASCII label case", () => {
@@ -32,7 +33,10 @@ it("checks action acceptance in the same transaction as invalidation and preserv
   await land(await open(), page([row("task-1", { watched: true, done_at: "yesterday" })]));
   expect(await summaries.writeSummaryTask(scope, { id: "task-1", title: "rejected" }, 2, { accept: () => false })).toBe(false);
   expect((await summaries.readSummaryQuery(scope, query)).stale).toBe(false);
-  await summaries.writeSummaryTask(scope, { id: "task-1", title: "confirmed", status: "ready" }, 3, { fullTask: true });
+  const contentRead = await content.captureTaskContentRead(scope);
+  const confirmed = row("task-1", { project_id: scope.projectId, title: "confirmed", state: "open",
+    status: "ready", body: "Full canonical task body", attachments: [] });
+  expect(await summaries.writeSummaryTask(scope, confirmed, contentRead.readOrder, { fullTask: true, contentRead })).toBe(true);
   expect((await summaries.readSummaryQuery(scope, query)).tasks[0]).toMatchObject({ title: "confirmed", watched: false, done_at: null });
 });
 
@@ -45,9 +49,11 @@ it("accepts explicit newer review authority on an immediate patch", async () => 
 
 it("allows an older cross-query read to advance review version without rolling ordinary fields back", async () => {
   const review = (version) => ({ task_id: "task-1", version, status: "open" });
-  await land(await open(query, 3), page([row("task-1", { title: "new title", review_summary: review(1) })]));
   const other = { states: ["closed"] };
-  await land(await open(other, 1), page([row("task-1", { title: "old title", review_summary: review(2) })]));
+  // Reserve content provenance before the newer publication, not just a lower query generation.
+  const older = await open(other, 1);
+  await land(await open(query, 3), page([row("task-1", { title: "new title", review_summary: review(1) })]));
+  await land(older, page([row("task-1", { title: "old title", review_summary: review(2) })]));
   expect((await summaries.readSummaryQuery(scope, query)).tasks[0]).toMatchObject({ title: "new title", review_summary: { version: 2 } });
 });
 
@@ -134,23 +140,26 @@ it("checks refresh reservation acceptance inside the cache transaction", async (
 });
 
 it("merges stronger markers from an older read independently of ordinary fields", async () => {
+  const older = await open({}, 1);
   await land(await open(query, 3), page([row("task-1", { title: "held", read_through: "tc-01", unread_count: 5 })]));
-  await land(await open({}, 1), page([row("task-1", { title: "old", read_through: "tc-03", unread_count: 0 })]));
+  await land(older, page([row("task-1", { title: "old", read_through: "tc-03", unread_count: 0 })]));
   expect((await summaries.readSummaryQuery(scope, query)).tasks[0]).toMatchObject({ title: "held", read_through: "tc-03", unread_count: 0 });
 });
 
 it("requires revalidation when stronger marks arrive with an older content snapshot", async () => {
+  const older = await open({}, 1);
   await land(await open(query, 3), page([row("task-1", { updated_at: "2026-10-29T13:00:00Z", read_through: "tc-01", unread_count: 5 })]));
-  await land(await open({}, 1), page([row("task-1", { updated_at: "2026-10-29T12:00:00Z", read_through: "tc-03", unread_count: 0 })]));
+  await land(older, page([row("task-1", { updated_at: "2026-10-29T12:00:00Z", read_through: "tc-03", unread_count: 0 })]));
   const held = await summaries.readSummaryQuery(scope, query);
   expect(held.tasks[0]).toMatchObject({ read_through: "tc-03", unread_count: 5 });
   expect(held.stale).toBe(true);
 });
 
 it("retains newer rows and marker authority when an older page enters another query", async () => {
-  await land(await open(query, 3), page([row("task-1", { title: "new", read_through: "tc-03", watch_started_after: "te-02", dismissed_through: "te-04", unread_count: 0 })]));
   const other = { states: ["closed"] };
-  await land(await open(other, 1), page([row("task-1", { title: "old", read_through: "tc-01", unread_count: 7 })]));
+  const older = await open(other, 1);
+  await land(await open(query, 3), page([row("task-1", { title: "new", read_through: "tc-03", watch_started_after: "te-02", dismissed_through: "te-04", unread_count: 0 })]));
+  await land(older, page([row("task-1", { title: "old", read_through: "tc-01", unread_count: 7 })]));
   expect((await summaries.readSummaryQuery(scope, other)).tasks[0]).toMatchObject({ title: "new", read_through: "tc-03", dismissed_through: "te-04", unread_count: 0 });
 });
 

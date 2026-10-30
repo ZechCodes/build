@@ -88,21 +88,32 @@ it("requires authoritative requested anchor and exact relation provenance", asyn
 
 it("does not relabel timestamp-protected entity data with a rejected snapshot basis", async () => {
   await land({}, 1, page("B1", [row({ title: "cached", updated_at: "2026-10-29T12:00:10Z" })]));
+  const before = (await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value;
   await land({}, 2, page("B2", [row({ title: "wire", updated_at: "2026-10-29T12:00:00Z" })]));
   const held = await summaries.readSummaryQuery(scope, {});
   expect(held.tasks[0].title).toBe("cached");
   expect(held.stale).toBe(true);
-  expect((await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.basis).toBe("B1");
+  const entity = (await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value;
+  expect(entity.basis).toBeUndefined();
+  expect(entity.basis_uncertain).toBe(true);
+  expect(entity.task.__task_content_cache.header).toEqual(before.task.__task_content_cache.header);
+  expect(held.basis).toBe("B2");
+  await land({}, 3, page("B3", [row({ title: "revalidated", updated_at: "2026-10-29T12:00:11Z" })]));
+  expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ basis: "B3", stale: false, tasks: [{ title: "revalidated" }] });
+  expect((await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value).toMatchObject({ basis: "B3", basis_uncertain: false });
 });
 
 it.each([
   [{ review_summary: { task_id: "task-1", version: 1, status: "open" } }, { review_summary: { task_id: "task-1", version: 2, status: "open" } }],
   [{ read_through: "tc-10", unread_count: 7 }, { read_through: "tc-20", unread_count: 0 }],
 ])("marks mixed authority from an older different-basis response stale", async (before, after) => {
-  await land({}, 3, page("B1", [row({ title: "held", ...before })]));
-  await land({ states: ["open"] }, 1, page("B2", [row({ title: "old", ...after })]));
+  const older = await summaries.beginSummaryQuery(scope, { states: ["open"] }, 1);
+  const newer = await land({}, 3, page("B1", [row({ title: "held", ...before })]));
+  expect(older.contentRead.readOrder).toBeLessThan(newer.contentRead.readOrder);
+  await summaries.landSummaryPage(older, page("B2", [row({ title: "old", ...after })]), { read: 1 });
   const held = await summaries.readSummaryQuery(scope, {});
-  expect(held.tasks[0].title).toBe("held");
+  expect(held.tasks[0]).toMatchObject({ title: "held", ...after });
+  expect(held.tasks[0].__task_content_cache.header.read_order).toBe(newer.contentRead.readOrder);
   expect(held.stale).toBe(true);
   expect((await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.basis_uncertain).toBe(true);
 });

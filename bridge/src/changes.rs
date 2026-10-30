@@ -4871,6 +4871,8 @@ mod binding_resources {
         }
     }
 
+    // Linux exposes the blocked thread's futex wait through /proc.
+    #[cfg(target_os = "linux")]
     #[test]
     fn cancelled_request_waiting_on_subscription_lock_cannot_register() {
         use crate::execution::session::{ClientSessions, Opening, StreamClass, VerifiedCaller};
@@ -4892,10 +4894,13 @@ mod binding_resources {
             let bus = &bus;
             let caller = &caller;
             let worker = scope.spawn(move || {
-                started.send(()).unwrap();
+                let tid = std::fs::read_link("/proc/thread-self").unwrap();
+                started
+                    .send(tid.file_name().unwrap().to_string_lossy().into_owned())
+                    .unwrap();
                 bus.try_subscribe(caller, spec("cancelled", Kind::State))
             });
-            waiting.recv().unwrap();
+            crate::timing::wait_for_blocked_test_thread(&waiting.recv().unwrap());
             request.cancellation().cancel();
             drop(held);
             assert!(worker.join().unwrap().is_err());

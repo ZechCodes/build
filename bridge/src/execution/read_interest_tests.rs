@@ -360,10 +360,18 @@ async fn true_read_interest_cannot_bypass_request_or_opening_authority() {
         let mutation_delivered = if matches!(end, NarrowedAuthorityEnd::Cancellation)
             && matches!(&mutation_outcome, Ok(Ok(_)))
         {
-            timeout(WATCHDOG, mutation_output.recv())
+            let event = timeout(WATCHDOG, mutation_output.recv())
                 .await
                 .expect("live mutation must deliver its independent reply")
-                .is_some()
+                .expect("live mutation sink remains open");
+            assert!(event.is_live());
+            assert_eq!(
+                event.payload()["id"],
+                json!(mutation.context().request_order())
+            );
+            assert_eq!(event.payload()["ok"], true);
+            assert_eq!(event.payload()["result"], json!({"served":true}));
+            true
         } else {
             false
         };

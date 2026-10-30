@@ -1371,3 +1371,19 @@ mod publication_tests {
         assert!(stats["methods"].as_object().unwrap().is_empty());
     }
 }
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn wait_for_blocked_test_thread(tid: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let path = format!("/proc/self/task/{tid}/wchan");
+    loop {
+        let state = std::fs::read_to_string(&path).expect("test worker must remain alive");
+        if state.contains("futex") {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker did not block on its mutex: {state}"
+        );
+        std::thread::yield_now();
+    }
+}

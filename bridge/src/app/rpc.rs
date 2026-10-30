@@ -1022,7 +1022,8 @@ mod explicit_context_tests {
     }
 }
 
-#[cfg(test)]
+// Linux exposes the blocked thread's futex wait through /proc.
+#[cfg(all(test, target_os = "linux"))]
 mod request_effect_lock_tests {
     use super::*;
     use crate::execution::session::{
@@ -1053,7 +1054,10 @@ mod request_effect_lock_tests {
                 let worker = scope.spawn(move || {
                     let clock = crate::timing::FrameClock::new();
                     let timer = clock.frame(method);
-                    started.send(()).unwrap();
+                    let tid = std::fs::read_link("/proc/thread-self").unwrap();
+                    started
+                        .send(tid.file_name().unwrap().to_string_lossy().into_owned())
+                        .unwrap();
                     let params = json!({"term_id":"missing","data":"","project_id":"missing"});
                     match method {
                         "term.create" => term_create(state, Some(sender), &params, &timer),
@@ -1062,7 +1066,7 @@ mod request_effect_lock_tests {
                         _ => unreachable!(),
                     }
                 });
-                waiting.recv().unwrap();
+                crate::timing::wait_for_blocked_test_thread(&waiting.recv().unwrap());
                 request.cancellation().cancel();
                 drop(held);
                 let error = worker.join().unwrap().unwrap_err();

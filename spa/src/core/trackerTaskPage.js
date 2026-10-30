@@ -697,29 +697,34 @@ export function mountTaskPage(host, options) {
     return { repairKey: repair?.owner.accept() ? repair.key : null };
   }
 
-  function admitTaskReadOwner(demand) {
+  function admitTaskReadOwner() {
     const authority = captureTaskAction(state);
     if (state.disposed || !authority.accept()) return null;
     // Mount joins only a real admitted attempt, including one which failed.
     // This local scheduling marker confers no cached content/watch authority.
     lastTaskReadOwner = authority;
-    // Only accepted dispatch consumes the coherent snapshot's repair key.
-    // A retired queued hint must leave that key eligible for its next owner.
-    if (demand.repairKey) attemptedFullRefresh = demand.repairKey;
     return authority;
+  }
+
+  function acceptsTaskReadDispatch(authority, demand) {
+    if (state.disposed || !authority.accept()) return false;
+    // Only actual dispatch consumes the coherent snapshot's repair key.
+    // Retirement while capturing read bases must not consume it either.
+    if (demand.repairKey) attemptedFullRefresh = demand.repairKey;
+    return true;
   }
 
   async function readTask() {
     const demand = consumeTaskReadDemand();
     if (!demand) return;
-    const authority = admitTaskReadOwner(demand);
+    const authority = admitTaskReadOwner();
     if (!authority) return;
     try {
       const [checklistBasis, detailBasis, contentRead] = await Promise.all([
         checklist.readBasis(), captureTaskDetailRead(state.deviceId, state.projectId, state.taskId),
         captureTaskContentRead(taskAddress(state.deviceId, state.projectId, state.taskId), { revalidate: "full" }),
       ]);
-      if (state.disposed || !authority.accept()) return;
+      if (!acceptsTaskReadDispatch(authority, demand)) return;
       const answer = await state.callRpc("tasks.get", { task_id: state.taskId });
       if (state.disposed || !authority.accept()) return;
       // The pull is a writer. The subscription above owns the read and paint.

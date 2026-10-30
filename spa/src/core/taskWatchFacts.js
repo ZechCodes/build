@@ -151,13 +151,13 @@ function copyLineage(target, source) {
   return task;
 }
 
-function selectedTask(held, incoming, selected, policy, fallback) {
-  let task = copyLineage(incoming, selected?.task || fallback || incoming);
+function selectedTask(held, incoming, selected, policy, fallback, omitLineage) {
+  let task = copyLineage(incoming, omitLineage ? {} : selected?.task || fallback || incoming);
   task = selectedIntent(task, selected, fallback);
   for (const field of ["read_through", "dismissed_through"]) {
     task = selectedMarker(task, held, incoming, field, policy);
   }
-  if (task.watched === false) task = clearedUnwatch(task);
+  if (omitLineage || task.watched === false) task = clearedUnwatch(task);
   delete task[TASK_WATCH_CACHE]; delete task[TASK_FAMILY_CACHE];
   if (selected) task[TASK_WATCH_CACHE] = selected.proof;
   return task;
@@ -304,10 +304,17 @@ export function reconcileTaskReadFacts(scope, held, incoming, options = {}) {
   const sources = watchSources(scope, held, incoming, { ...options, watchGuard: guard });
   const selected = newest(sources);
   const fallback = stampedRows(held, guard)[0] || held || (scopedTask(scope, guard) ? guard : undefined);
-  const task = selectedTask(held, incoming, selected, policy, fallback);
+  const omitLineage = unavailablePendingLineage(prepared.pending, selected, held, guard);
+  const task = selectedTask(held, incoming, selected, policy, fallback, omitLineage);
   if (task.watched === true) applyFamilies(task, sources, [held, guard, incoming], scope, options.context, policy, selected, fallback);
   return selectedResult(task, selected, options.context, incoming);
 }
+
+const booleanWatchLineage = (task) => typeof task?.watched === "boolean";
+// A current intent supplies protection, never the desired optimistic value.
+// Without a real local lineage the refused wire family stays unavailable.
+const unavailablePendingLineage = (pendingIntent, selected, held, guard) => Boolean(pendingIntent && !selected
+  && !booleanWatchLineage(held) && !booleanWatchLineage(guard));
 
 // Intent ordering is a local protection fence, never a watch observation. Each
 // row is reconciled against the note read in this publication transaction.
@@ -318,6 +325,6 @@ function intentInputs(scope, held, incoming, options) {
   const reconcile = (task) => task && reconcileTaskWatchIntent(scope, task, note, context).task;
   const guarded = protection.guard || options.watchGuard;
   const pendingOther = protection.pending && protection.pending.ownerId !== options.acknowledgment?.ownerId;
-  return { held: reconcile(sameTask(held, incoming.id)), incoming: reconcile(incoming), options: { ...options,
+  return { pending: protection.pending, held: reconcile(sameTask(held, incoming.id)), incoming: reconcile(incoming), options: { ...options,
     context: pendingOther ? { ...context, localWatchPending: true } : context, watchGuard: reconcile(guarded) } };
 }

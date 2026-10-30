@@ -112,13 +112,14 @@ async function snapshot(runtime, targets, operationId = "payload-operation") {
     operation: await runtime.operations.get(operationId) };
 }
 
-async function startService(runtime, answer, calls = [], { waitForRefresh = true } = {}) {
+async function startService(runtime, answer, calls = [], { waitForRefresh = true, read } = {}) {
   const pending = new Set(), timers = new Map();
   let timerId = 0;
   const session = { onWriteFrame: () => () => {}, callRaw: vi.fn(async (method, params, options) => {
     calls.push({ method, params });
     options?.assertCurrent?.();
     if (method.startsWith("writes.")) return { journal_incarnation: greeting.journal_incarnation, operations: [] };
+    if (read && ["tasks.get", "thread.page"].includes(method)) return read(method, params);
     if (method === "tasks.get") return answer(params.task_id);
     return { ok: true, bridge_epoch: greeting.bridge_epoch, write: { phase: "ack", operation_id: options.write.operation_id,
       revision: 1, state: "accepted", accepted_epoch: greeting.bridge_epoch }, result: { saved: true } };
@@ -771,4 +772,94 @@ it("rejects old owned multi-target responses after a newer confirmation is admit
   }
   expect((await observer.local.readCanonicalCached(second.address)).value.task.body).toBe(answerFor(second).task.body);
   await blockedOwnedOperation(observer, [first, second], { frame, record });
+});
+
+async function confirmedThreadOperation(runtime, { operationId, taskTarget, taskFirst = true }) {
+  const { threadCacheAddress } = await import("../src/core/conversationCache.js");
+  const { normalizeIntentEffects } = await import("../src/core/writeOperationEffects.js");
+  const params = { entity_id: "payload-workspace", conversation_id: "payload-conversation",
+    thread_id: "payload-thread", thread_generation_revision: 3, body: "Accepted thread draft" };
+  const address = threadCacheAddress({ deviceId: scope.deviceId, entityId: params.entity_id,
+    conversationId: params.conversation_id, threadId: params.thread_id });
+  const oldItem = { type: "message", data: { sequence: 1, role: "user", body: "Held thread message" } };
+  await runtime.local.writeCached(address, { items: [oldItem], deliveredSequence: 1,
+    olderItemsRemain: false, knownTotalItems: 1, activityDigests: [],
+    thread_id: params.thread_id, thread_generation_revision: params.thread_generation_revision });
+  const intent = { operationId, revision: 0, owner: { projectId: scope.projectId },
+    journalIncarnation: greeting.journal_incarnation, request: { method: "thread.post", params } };
+  const { overlay } = await normalizeIntentEffects({ ...intent, deviceId: scope.deviceId });
+  expect(overlay).toHaveLength(1);
+  await runtime.operations.put(intent);
+  await runtime.operations.accept(operationId, { revision: 1, ack: {}, owners: publication(), overlay });
+  const thread = { kind: "thread", id: params.thread_id };
+  const taskName = taskTarget && { kind: "task", id: taskTarget.row.id };
+  const refresh = taskName ? (taskFirst ? [taskName, thread] : [thread, taskName]) : [thread];
+  const frame = { type: "writes.confirmed", operation_id: operationId, bridge_epoch: greeting.bridge_epoch,
+    revision: 2, state: "succeeded", published: publication(), refresh };
+  const record = await runtime.operations.confirm(operationId, { revision: frame.revision, confirmation: frame, refreshPending: true });
+  const item = { type: "message", data: { sequence: 2, role: "user", body: "Canonical thread message",
+    operation_id: operationId } };
+  const page = { items: [oldItem, item], has_more: false, thread_total: 2, thread_last_sequence: 2,
+    thread_id: params.thread_id, thread_generation_revision: params.thread_generation_revision };
+  return { address, record, frame, page, params };
+}
+
+it.each([true, false])("refreshes every task and thread target of a mixed named obligation with taskFirst=%s", async (taskFirst) => {
+  const writer = await independentRuntime(), target = await seedTask(writer, "mixed-task");
+  const other = await seedTask(writer, "mixed-other-task");
+  await confirmedOperation(writer, [other], { operationId: "mixed-other-operation" });
+  const unrelated = await snapshot(writer, [other], "mixed-other-operation");
+  const mixed = await confirmedThreadOperation(writer, { operationId: "mixed-operation", taskTarget: target, taskFirst });
+  const authority = { active: () => true, call: vi.fn(async (method) => {
+    if (method === "tasks.get") return answerFor(target);
+    if (method === "thread.page") return mixed.page;
+    throw new Error(`Unexpected mixed refresh RPC: ${method}`);
+  }) };
+  const result = await writer.refresh.refreshWriteOperation({ cache: writer.operations, ...mixed, authority });
+  // The actual task read must first have admitted useful payload. The next
+  // assertion witnesses the skipped supported named target, not a new API.
+  expect((await writer.local.readCanonicalCached(target.address)).value.task.body).toBe("Admitted body");
+  expect(authority.call).toHaveBeenCalledWith("thread.page", { entity_id: mixed.params.entity_id,
+    conversation_id: mixed.params.conversation_id, thread_id: mixed.params.thread_id,
+    thread_generation_revision: 3, newest: true, limit: 100 });
+  expect(authority.call).toHaveBeenCalledTimes(2);
+  const thread = await writer.local.readCanonicalCached(mixed.address);
+  expect(thread.value.items).toEqual(mixed.page.items);
+  expect(thread.value.thread_id).toBe(mixed.params.thread_id);
+  expect(thread.value.thread_generation_revision).toBe(3);
+  expect(thread.publication).toEqual(mixed.frame.published);
+  expect(result.complete).toBe(false);
+  const row = await writer.operations.get("mixed-operation");
+  expect(row.refreshPending).toBe(true);
+  expect(row.overlayActive).toBe(true);
+  expect(row.overlay).toEqual(mixed.record.overlay);
+  expect(row.refreshState.targets).toHaveLength(2);
+  expect(row.refreshState.targets).toContainEqual(expect.objectContaining({ address: target.address, phase: "blocked", receipt: null }));
+  expect(row.refreshState.targets).toContainEqual(expect.objectContaining({ address: mixed.address, phase: "receipt",
+    receipt: expect.objectContaining({ revision: mixed.frame.revision, generation: row.refreshState.generation,
+      targetKey: writer.keys.recordKey(mixed.address), required: mixed.frame.published }) }));
+  // A retained row flag is insufficient: covering only the thread must not
+  // make projection suppress this operation's still-required accepted layer.
+  const paint = await writer.local.readCached(mixed.address);
+  expect(paint.accepted).toBe(true);
+  expect(paint.value.items).toEqual(mixed.page.items);
+  expect(await snapshot(writer, [other], "mixed-other-operation")).toEqual(unrelated);
+});
+
+it("preserves a genuinely qualified thread-only refresh through service completion", async () => {
+  const writer = await independentRuntime();
+  const thread = await confirmedThreadOperation(writer, { operationId: "qualified-thread-operation" });
+  const calls = [];
+  const running = await startService(writer, () => { throw new Error("Unexpected task read"); }, calls,
+    { read: async (method) => {
+      expect(method).toBe("thread.page");
+      return thread.page;
+    } });
+  expect(calls.filter(({ method }) => method === "thread.page")).toHaveLength(1);
+  const canonical = await writer.local.readCanonicalCached(thread.address);
+  expect(canonical.value.items).toEqual(thread.page.items);
+  expect(canonical.publication).toEqual(thread.frame.published);
+  expect(await writer.operations.get("qualified-thread-operation")).toMatchObject({ refreshPending: false, overlayActive: false });
+  expect((await writer.local.readCached(thread.address)).accepted).not.toBe(true);
+  expect(running.timers.size).toBe(0);
 });

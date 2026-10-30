@@ -193,3 +193,51 @@ it("coalesces an admitted repair key through refusal and admits a genuine later 
   expect((await runtime.tracker.readTaskRecord(deviceId, projectId, taskId)).task.title).toBe("Later retirement repaired");
   expect(mounted.old.gets).toHaveLength(3);
 });
+
+it("coalesces the same accepted repair key while its actual content basis capture is awaiting dispatch", async () => {
+  const mounted = await mountRealPage();
+  mounted.old.gets[0].resolve(answer());
+  await runtime.asks[0];
+  const allocated = deferred(), release = deferred();
+  const capture = runtime.content.captureTaskContentRead;
+  let heldOnce = false;
+  vi.spyOn(runtime.content, "captureTaskContentRead").mockImplementation(async (...args) => {
+    const contentRead = await capture(...args);
+    if (!heldOnce && args[0]?.kind === mounted.address.kind && args[0]?.sub === taskId) {
+      heldOnce = true;
+      allocated.resolve(contentRead);
+      await release.promise;
+    }
+    return contentRead;
+  });
+  try {
+    const key = await retireBody(mounted);
+    const contentRead = await allocated.promise;
+    expect(contentRead.address).toEqual(mounted.address);
+    expect(contentRead.readOrder).toBeGreaterThan(0);
+    expect(contentRead.ticket.storeGeneration).toEqual(expect.any(String));
+    expect(contentRead.ticket.scopeGeneration).toEqual(expect.any(String));
+    expect(contentRead.revalidate).toBe("full");
+    expect(mounted.old.gets).toHaveLength(1); // Only startup crossed the wire.
+    expect(runtime.contexts.contextFor(deviceId)).toBe(mounted.context);
+    expect(mounted.context.session).toBe(mounted.old.session);
+    await reannounceSameKey(mounted, key);
+    expect(mounted.old.gets).toHaveLength(1); // Same K arrived before dispatch.
+
+    // Answer every real subsequent transport dispatch so waiting for the
+    // scheduler cannot hide a duplicate behind an unresolved test promise.
+    const transport = mounted.old.session.call.getMockImplementation();
+    mounted.old.session.call.mockImplementation((...args) => {
+      const response = transport(...args);
+      if (args[0] === "tasks.get") mounted.old.gets.at(-1).resolve(answer("Captured repair"));
+      return response;
+    });
+    release.resolve();
+    await Promise.all(runtime.asks);
+    expect(mounted.writer.mock.calls[1]?.[4]?.contentRead).toBe(contentRead);
+    // One initial get plus ONE repair; a same-owner duplicate K is not a push.
+    expect(mounted.old.gets).toHaveLength(2);
+  } finally {
+    release.resolve();
+  }
+});

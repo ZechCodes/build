@@ -138,3 +138,111 @@ describe("typed durable write effects", () => {
     expect(unknown.overlay).toEqual([]);
   });
 });
+
+const projectionAddress = (params) => threadCacheAddress({ deviceId: scope.deviceId, entityId: params.entity_id,
+  agentId: params.agent_id, conversationId: params.conversation_id, threadId: params.thread_id });
+
+const projectionWindow = (params) => ({ thread_id: params.thread_id, thread_generation_revision: 0,
+  items: [{ type: "message", data: { id: `${params.thread_id}-canonical`, sequence: 1, body: "canonical" } }],
+  deliveredSequence: 1, knownTotalItems: 1 });
+
+async function acceptProjectionThread(owner, id, params, body, sequence, identity = scope) {
+  const record = operation("thread.post", params, { ...identity, operationId: id, draft: { body, attachments: [] } });
+  const frame = { ...ack, write: { ...ack.write, operation_id: id,
+    owners: ack.write.owners.map((owner) => ({ ...owner, sequence })) },
+  result: { message_id: `${id}-message`, accepted_at: "2026-10-21T15:00:00Z", overlay: [{
+    kind: "thread_message", message_id: `${id}-message`, body, sequence, created_at: "2026-10-21T15:00:01Z",
+  }] } };
+  await owner.put(record);
+  const normalized = await effects.normalizeAckEffects(frame, record);
+  expect(normalized.overlay).toHaveLength(1);
+  await owner.accept(id, { ...normalized, revision: 1, ack: frame });
+  return record;
+}
+
+describe("projection composition preservation", () => {
+  it("preserves the original grouped read order and ordered accepted layers through one unapplied retirement", async () => {
+    const first = { ...threadParams, conversation_id: "projection-first-conversation", thread_id: "projection-first" };
+    const second = { ...threadParams, conversation_id: "projection-second-conversation", thread_id: "projection-second" };
+    const absent = projectionAddress({ ...threadParams, conversation_id: "projection-absent-conversation", thread_id: "projection-absent" });
+    const firstAddress = projectionAddress(first), secondAddress = projectionAddress(second);
+    await cache.writeCached(firstAddress, projectionWindow(first));
+    await cache.writeCached(secondAddress, projectionWindow(second));
+    const group = [absent, firstAddress, secondAddress, firstAddress];
+    const canonical = await cache.readCanonicalCachedMany(group);
+    // Accept the higher owner sequence first: layer order must retain the
+    // source's owner sequence rather than its local arrival order.
+    await acceptProjectionThread(operations, "projection-high", first, "higher sequence", 3);
+    const lower = await acceptProjectionThread(operations, "projection-low", first, "lower sequence", 2);
+    await acceptProjectionThread(operations, "projection-other", second, "other thread", 2);
+    const projected = await cache.readCachedMany(group);
+    expect(projected).toHaveLength(group.length);
+    expect(projected[0]).toBeUndefined();
+    expect(projected[1].value.items.map(({ data }) => data.body)).toEqual(["canonical", "lower sequence", "higher sequence"]);
+    expect(projected[2].value.items.map(({ data }) => data.body)).toEqual(["canonical", "other thread"]);
+    expect(projected[3]).toEqual(projected[1]);
+    expect(projected.slice(1).every(({ accepted }) => accepted === true)).toBe(true);
+    expect(await cache.readCanonicalCachedMany(group)).toEqual(canonical);
+    await operations.confirm(lower.operationId, { revision: 2, confirmation: { type: "writes.confirmed",
+      operation_id: lower.operationId, revision: 2, state: "failed", effect: "unapplied", published: [] } });
+    const after = await cache.readCachedMany(group);
+    expect(after[0]).toBeUndefined();
+    expect(after[1].value.items.map(({ data }) => data.body)).toEqual(["canonical", "higher sequence"]);
+    expect(after[2]).toEqual(projected[2]);
+    expect(after[3]).toEqual(after[1]);
+    expect((await operations.get(lower.operationId)).overlayActive).toBe(false);
+    expect((await operations.get("projection-high")).overlayActive).toBe(true);
+    expect((await operations.get("projection-other")).overlayActive).toBe(true);
+    expect(await cache.readCanonicalCachedMany(group)).toEqual(canonical);
+  });
+
+  it("keeps replacement activation visible when the prior same-namespace owner is disposed", async () => {
+    const address = projectionAddress(threadParams);
+    await cache.writeCached(address, projectionWindow(threadParams));
+    const canonical = await cache.readCanonicalCached(address);
+    const record = await acceptProjectionThread(operations, "projection-owned", threadParams, "accepted owner", 2);
+    const { createWriteOperationCache } = await import("../src/core/writeOperationCache.js");
+    const replacement = createWriteOperationCache(scope);
+    replacement.activateProjection();
+    operations.deactivateProjection();
+    expect((await cache.readCached(address)).value.items.map(({ data }) => data.body)).toEqual(["canonical", "accepted owner"]);
+    replacement.deactivateProjection();
+    expect(await cache.readCached(address)).toEqual(canonical);
+    expect((await replacement.get(record.operationId)).overlayActive).toBe(true);
+    replacement.activateProjection();
+    operations.deactivateProjection();
+    expect((await cache.readCached(address)).accepted).toBe(true);
+    expect((await cache.readCached(address)).value.items.map(({ data }) => data.body)).toEqual(["canonical", "accepted owner"]);
+    expect(await cache.readCanonicalCached(address)).toEqual(canonical);
+  });
+
+  it("switches the exact active namespace and clears its layers through the real pending-operation reset", async () => {
+    const address = projectionAddress(threadParams);
+    await cache.writeCached(address, projectionWindow(threadParams));
+    const canonical = await cache.readCanonicalCached(address);
+    await acceptProjectionThread(operations, "projection-primary", threadParams, "primary accepted", 2);
+    const { createWriteOperationCache, wipePendingOperations } = await import("../src/core/writeOperationCache.js");
+    const foreignScope = { ...scope, accountId: "foreign-projection-account" };
+    const foreign = createWriteOperationCache(foreignScope);
+    await acceptProjectionThread(foreign, "projection-foreign", threadParams, "foreign accepted", 2, foreignScope);
+    expect((await cache.readCached(address)).value.items.map(({ data }) => data.body)).toEqual(["canonical", "primary accepted"]);
+    foreign.activateProjection();
+    operations.deactivateProjection();
+    expect((await cache.readCached(address)).value.items.map(({ data }) => data.body)).toEqual(["canonical", "foreign accepted"]);
+    await wipePendingOperations();
+    expect(await cache.readCached(address)).toEqual(canonical);
+    expect(await operations.list()).toEqual([]);
+    expect(await foreign.list()).toEqual([]);
+    // A still-held factory can persist a new accepted row, but the account
+    // reset must not let that write implicitly reactivate its prior scope.
+    await acceptProjectionThread(foreign, "projection-after-reset", threadParams, "accepted after reset", 3, foreignScope);
+    expect(await cache.readCached(address)).toEqual(canonical);
+    operations.activateProjection();
+    expect(await cache.readCached(address)).toEqual(canonical);
+    foreign.activateProjection();
+    expect((await cache.readCached(address)).value.items.map(({ data }) => data.body)).toEqual(["canonical", "accepted after reset"]);
+    foreign.deactivateProjection();
+    expect(await cache.readCached(address)).toEqual(canonical);
+    expect(await cache.readCanonicalCached(address)).toEqual(canonical);
+  });
+});

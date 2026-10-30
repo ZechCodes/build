@@ -906,3 +906,80 @@ it("does not revive old same-tuple display across an admitted unwatch and rewatc
     expect(note?.task_unread_display?.inbox?.total).toBe(5);
   }, WAIT);
 });
+
+function leaveBothActualConsumers() {
+  pane.dispose(); pane = null; follower.dispose(); follower = null;
+  paneHost.replaceChildren(); inboxHost.replaceChildren();
+}
+
+const selectedWatchIdentity = (task) => {
+  const { lineage: _lineage, uncertain: _uncertain, ...identity } = task.__task_watch_cache;
+  return identity;
+};
+
+describe("D5 actual admitted event identity and selected value origin", () => {
+  it("keeps the first shared-note event and diagnoses conflicting lineages independently admitted from the same real capture by summary and catalogue producers", async () => {
+    await bothActualSlots(); leaveBothActualConsumers();
+    const read = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+    const normalized = await observedSummaryMutation(read);
+    expect(normalized).toMatchObject({ watched: true, watch_started_after: "te-15",
+      __task_watch_cache: { source: "read", observed_read_order: read.readOrder, taskId, scope } });
+    const first = await noteRecord();
+    await observedSummaryMutation(read);
+    expect(await noteRecord()).toEqual(first);
+
+    const diagnostic = vi.spyOn(console, "info").mockImplementation(() => {});
+    const conflicting = full({ watched: false, title: "Independent catalogue admission at the SAME source",
+      updated_at: "2026-10-29T12:05:00Z" });
+    expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+      tracker.tasksRecord([conflicting], columns(), read.readOrder), { contentRead: read })).toBe(true);
+    const catalogue = await listedTask();
+    // Existing-ID family admission does not claim list membership. Both real
+    // selectors independently selected this genuine capture, unlike the
+    // earlier normalized equal-read replay that retained its first lineage.
+    expect(catalogue).toMatchObject({ watched: false,
+      __task_watch_cache: { source: "read", observed_read_order: read.readOrder, taskId, scope } });
+    expect(selectedWatchIdentity(catalogue)).toEqual(selectedWatchIdentity(normalized));
+    expect((await value(summaries.summaryAddress(scope, taskId))).task.watched).toBe(true);
+    expect(await noteRecord()).toEqual(first);
+    expect(diagnostic).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not associate an old listed total with the new watch source when the Pane remounts after a same-tuple watch cycle", async () => {
+    await retainOldTotalUnderNewWatch();
+    await remountIncompletePane("New watch source with retained OLD total");
+    expect(paneHost.querySelector(".task-unread")).toBeNull();
+    expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
+  });
+
+  it("does not associate an old listed total with the new watch source when the Inbox remounts after a same-tuple watch cycle", async () => {
+    await retainOldTotalUnderNewWatch();
+    await mountInboxProducerComponent(0);
+    expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull();
+    expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
+  });
+});
+
+async function retainOldTotalUnderNewWatch() {
+  await bothActualSlots(); leaveBothActualConsumers();
+  const original = await listedTask();
+  const oldTotal = original.__task_family_cache.total || original.__task_family_cache.paint?.total;
+  expect(oldTotal).toMatchObject({ observed_read_order: original.__task_watch_cache.observed_read_order });
+  await admitSummaryOnlyUnwatch();
+  await admitSameFloorSummaryWithoutCounts("Rewatch before selecting a value", "2026-10-29T12:05:00Z");
+  const task = full({ title: "New watch source with retained OLD total", updated_at: "2026-10-29T12:06:00Z" });
+  for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) delete task[field];
+  const address = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  const read = await content.captureTaskContentRead(address, { revalidate: "full" });
+  expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    tracker.tasksRecord([task], columns(), read.readOrder), { contentRead: read })).toBe(true);
+  const selected = await listedTask();
+  const selectedTotal = selected.__task_family_cache.total || selected.__task_family_cache.paint?.total;
+  expect(selected).toMatchObject({ watched: true, watch_started_after: "te-15", unread_count: 3,
+    __task_watch_cache: { observed_read_order: read.readOrder, source: "read", taskId, scope } });
+  expect(selectedTotal).toEqual(oldTotal);
+  expect(selectedTotal.observed_read_order).toBeLessThan(read.readOrder);
+  const normalized = (await value(summaries.summaryAddress(scope, taskId))).task;
+  expect(normalized).toMatchObject({ watched: true, watch_started_after: "te-15" });
+  expect(normalized).not.toHaveProperty("unread_count");
+}

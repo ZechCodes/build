@@ -22,7 +22,7 @@ function authorityOf(deviceId, context) {
 export function followProjectTaskCounts({ deviceId, projectId, context }) {
   const identity = deviceContextIdentity(deviceId), watch = deviceWatch(deviceId);
   const authority = authorityOf(deviceId, context);
-  let disposed = false, greetingStands = () => false;
+  let disposed = false, greetingStands = () => false, waitingGreetingAuthority = null;
   const ownsScope = () => !disposed && contextFor(deviceId) === context
     && deviceContextIdentity(deviceId) === identity && context?.active?.() === true;
   const canRead = () => ownsScope() && !watch.away() && Boolean(deviceSession(deviceId))
@@ -37,12 +37,17 @@ export function followProjectTaskCounts({ deviceId, projectId, context }) {
   async function read() {
     if (!canRead()) return false;
     const issued = authority();
-    const request = await whenGreeted(context, (stands) => {
-      if (!canRead() || authority() !== issued) return false;
-      greetingStands = stands;
-      return reader.refresh();
-    });
-    return request ? request.sent : false;
+    waitingGreetingAuthority = issued;
+    try {
+      const request = await whenGreeted(context, (stands) => {
+        if (!canRead() || authority() !== issued) return false;
+        greetingStands = stands;
+        return reader.refresh();
+      });
+      return request ? await request.sent : false;
+    } finally {
+      if (waitingGreetingAuthority === issued) waitingGreetingAuthority = null;
+    }
   }
 
   const run = trailingRead(read, { generationOf: authority });
@@ -78,7 +83,9 @@ export function followProjectTaskCounts({ deviceId, projectId, context }) {
   const stopGreeting = onBridgeGreeted((greetedDevice) => {
     if (greetedDevice !== deviceId || !ownsScope()) return;
     bindPush();
-    void refresh();
+    // The opening read already waits for this greeting and owns its result.
+    // A replacement greeting has a different authority and starts at once.
+    if (waitingGreetingAuthority !== authority()) void refresh();
   });
   const stopMutations = subscribeTaskMutations(deviceId, ({ phase, pending }) => {
     if (phase === "settled" && pending === 0) void refresh();

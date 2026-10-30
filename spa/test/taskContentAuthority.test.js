@@ -6,11 +6,11 @@ const address = { deviceId: scope.deviceId, entityId: scope.projectId, kind: "tr
 const task = (extra = {}) => ({ id: "task-1", project_id: scope.projectId, number: 1, title: "Current", body: "Body",
   state: "open", status: "ready", attachments: [], updated_at: "2026-10-29T13:00:00.000900Z", ...extra });
 const read = async () => (await cache.readCached(address))?.value?.task;
-async function publish(candidate, headerBarrier) {
+async function publish(candidate, headerBarrier, headerGuards) {
   let result;
   await content.mergeTaskContentRecordsTogether(scope, [address], ([held], context) => {
     result = content.reconcileTaskContent(held?.value?.task, candidate,
-      { context, address, heldWritten: cache.recordWriteOf(held), headerBarrier });
+      { context, address, heldWritten: cache.recordWriteOf(held), headerBarrier, headerGuards });
     return { values: [{ task: result.task }], retire: result.retired };
   });
   return result;
@@ -437,4 +437,25 @@ it("retains a list-only newer header observation over an older action creating n
   expect(normalized.title).toBe("Known newer");
   expect(normalized.__task_content_cache.header.read_order).toBe(listRead.readOrder);
   expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0].title).toBe("Known newer");
+});
+
+it("checks crossed replica timestamp and observation guards without synthesizing a header proof", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), firstAddress = tracker.tasksQueryAddress(scope.deviceId, scope.projectId, { state: "open" }),
+    secondAddress = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  const first = await content.captureTaskContentRead(firstAddress, { revalidate: "full" });
+  await tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId, { state: "open" }, { tasks: [
+    content.observeTaskContent(task({ title: "Newer timestamp", updated_at: "2026-10-29T20:00:00Z" }), { contentRead: first, coverage: "full" }),
+  ] });
+  const second = await content.captureTaskContentRead(secondAddress, { revalidate: "full" });
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [
+    content.observeTaskContent(task({ title: "Newer observation", updated_at: "2026-10-29T10:00:00Z" }), { contentRead: second, coverage: "full" }),
+  ] });
+  const guards = [(await tracker.readTasksQueryRecord(scope.deviceId, scope.projectId, { state: "open" })).tasks[0],
+    (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0]];
+  const incoming = content.observeTaskContent(task({ title: "Intermediate timestamp", updated_at: "2026-10-29T15:00:00Z" }),
+    { contentRead: await content.captureTaskContentRead(scope), coverage: "full" });
+  const result = await publish(incoming, guards[1], guards);
+  expect(result).toMatchObject({ acceptedHeader: false, acceptedBody: false });
+  expect(result.task).toMatchObject({ title: "Newer observation", updated_at: "2026-10-29T10:00:00Z" });
+  expect(result.task.__task_content_cache.header).toBeUndefined();
 });

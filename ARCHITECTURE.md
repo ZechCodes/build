@@ -2327,6 +2327,19 @@ remain viewed across snapshots.
 | `CodexAppServer` | `bridge/src/harness/codex_app_server/` | Codex's app-server JSON protocol |
 | `Pi` | `bridge/src/harness/pi.rs` | Pi, with the `build-tools.ts` extension |
 
+The provider command table distinguishes native app-server commands from text
+sent to a terminal or stream-json harness. For Codex app-server, `/compact` keeps
+its existing routing; other command-shaped input in standalone human submissions
+(first token `/name` followed by optional arguments) is refused locally with a
+visible Build notice. A token with no further `/` counts as a command, including
+bare single-segment paths such as `/tmp`; slash paths such as `/tmp/foo` or
+`/home/user/file` remain ordinary input. The request, failed delivery
+mark and notice are saved with a terminal operation receipt in one transaction,
+so retries cannot duplicate the notice or deliver the command. No provider turn
+is started or interrupted. Legacy callers without an operation ID receive an
+error before acceptance. Claude's command path is unchanged. This is command
+feedback, not native Daybreak support; that integration is tracked by #929.
+
 Codex app-server provider errors are turn failures, so an exhausted
 `error` notification (`willRetry: false`) keeps the process and provider thread
 available for the next message. Build classifies `codexErrorInfo`, its upstream

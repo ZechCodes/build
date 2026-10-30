@@ -24,6 +24,7 @@ import { taskUnreadKey, latestTaskMark } from "./trackerUnread.js";
 import { readsAddress } from "./taskReadOrder.js";
 import { mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskContentWrite,
   taskNeedsFullRefresh, TASK_CONTENT_CACHE, withTaskContentComponents } from "./taskContentAuthority.js";
+import { summaryTaskReadMutation, withTaskWatchLineage, preserveTaskActionMarks } from "./taskSummaryCache.js";
 const normalizedAddress = (deviceId, projectId, taskId) => ({ deviceId, entityId: projectId, kind: "tracker-summary", sub: taskId });
 
 export const TRACKER_TASKS_KIND = "tracker-tasks";
@@ -456,25 +457,47 @@ export async function captureTaskDetailRead(deviceId, projectId, taskId) {
 const detailAccepted = (held, note, taskId, options) => options.accept(held)
   && (options.detailBasis === undefined || options.detailBasis === (note?.value?.rows?.[taskId] || 0));
 
-function publishedDetail(held, record, result, contentRead) {
+function publishedDetail(held, record, result, contentRead, projection) {
   const timeline = result.acceptedBody || !contentRead ? record.timeline : held?.timeline;
-  return preserveTaskFloors(held, { ...record, task: withTaskContentComponents(record.task, result.task), timeline: timeline || [] });
+  const independent = projection ? projectedDetailMarks(record.task, projection) : record.task;
+  const next = preserveTaskFloors(held, { ...record, task: withTaskContentComponents(independent, result.task), timeline: timeline || [] });
+  return projection ? { ...next, task: preserveTaskActionMarks(held?.task, projectedDetailMarks(next.task, projection), { watchAuthority: true }) } : next;
 }
 
-function contentDetail(detail, record, summary, context, address, contentRead) {
+const projectedDetailMarks = (task, projection) => withTaskWatchLineage({ ...task,
+  read_through: projection.read_through, dismissed_through: projection.dismissed_through }, projection);
+
+function contentDetail(detail, record, headerBarrier, context, address, contentRead, projection) {
   const held = detail?.value;
   const task = contentRead ? observeTaskContent(record.task, { contentRead, coverage: "full" }) : record.task;
   const result = reconcileTaskContentWrite(held?.task, task, { context, address,
-    heldWritten: recordWriteOf(detail), headerBarrier: summary?.value?.task });
+    heldWritten: recordWriteOf(detail), headerBarrier });
   if (!result.task || contentRead && !held && typeof result.task.body !== "string") return null;
-  return { values: [publishedDetail(held, record, result, contentRead), null, null], retire: result.retired };
+  return { values: [publishedDetail(held, record, result, contentRead, projection), null, null], retire: result.retired };
+}
+
+const addressedFullRead = (read, address) => read?.revalidate === "full"
+  && ["deviceId", "entityId", "kind", "sub"].every((key) => (read.address?.[key] ?? "") === (address[key] ?? ""));
+
+function fullReadDetail(detail, shared, record, context, address, contentRead, mutation) {
+  // An addressed baseline is an ordinary-content guard. Independent fields
+  // retain their established authority when a local write changed that guard.
+  const ordinaryRead = contentRead.written === recordWriteOf(detail) ? contentRead : { ...contentRead, ticket: null };
+  const normalized = mutation.reduce(shared, { context, headerBarrier: detail?.value?.task, ordinaryRead });
+  if (!normalized) return null;
+  const next = contentDetail(detail, record, normalized[0].task, context, address, contentRead, normalized[0].task);
+  return next ? { ...next, values: [...next.values.slice(0, 2), ...normalized] } : null;
 }
 
 export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = () => true, detailBasis, contentRead } = {}) => {
-  const address = taskAddress(deviceId, projectId, taskId);
-  return mergeTaskContentRecordsTogether({ deviceId, projectId }, [address, readsAddress(address), normalizedAddress(deviceId, projectId, taskId)],
-    ([detail, note, summary], context) => detailAccepted(detail?.value, note, taskId, { accept, detailBasis })
-      ? contentDetail(detail, record, summary, context, address, contentRead) : null);
+  const address = taskAddress(deviceId, projectId, taskId), scope = { deviceId, projectId };
+  const mutation = addressedFullRead(contentRead, address) ? summaryTaskReadMutation(scope, record.task, contentRead) : null;
+  const shared = mutation?.addresses || [normalizedAddress(deviceId, projectId, taskId)];
+  return mergeTaskContentRecordsTogether(scope, [address, readsAddress(address), ...shared], ([detail, note, ...records], context) => {
+    if (!detailAccepted(detail?.value, note, taskId, { accept, detailBasis })) return null;
+    return mutation ? fullReadDetail(detail, records, record, context, address, contentRead, mutation)
+      : contentDetail(detail, record, records[0]?.value?.task, context, address, contentRead);
+  });
 };
 
 /** Only an accepted read report may raise the cached floor. Do not touch the

@@ -460,10 +460,10 @@ it("checks crossed replica timestamp and observation guards without synthesizing
   expect(result.task.__task_content_cache.header).toBeUndefined();
 });
 
-async function seededFullObservation() {
+async function seededFullObservation(extra = {}) {
   const tracker = await import("../src/core/trackerCache.js"), summaries = await import("../src/core/taskSummaryCache.js"),
     { summaryPatch } = await import("../src/core/taskSummaryProjection.js");
-  const initial = task({ watched: false });
+  const initial = task({ watched: false, ...extra });
   const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
   await summaries.landSummaryPage(ticket, { summary: true, basis: "B1", tasks: [summaryPatch(undefined, initial, true)] }, { read: ticket.generation });
   await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id, { task: initial, timeline: ["Held history"] },
@@ -533,4 +533,34 @@ it("retains retired ordinary content while a stale full read independently advan
   expect(normalized.task.__task_content_cache.header.read_order).toBeLessThan(contentRead.readOrder);
   expect(normalized.task.__task_content_cache.body).toBeUndefined();
   expect(normalized.basis_uncertain).toBe(true);
+});
+
+it("keeps a known summary basis only when the full read preserves every compact semantic field", async () => {
+  const { tracker, summaries, initial, summaryAddress } = await seededFullObservation({
+    read_through: null, dismissed_through: null, done_at: null, review_summary: null, deferred_assignment: null,
+  });
+  const { summaryPatch } = await import("../src/core/taskSummaryProjection.js");
+  const page = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
+  await summaries.landSummaryPage(page, { summary: true, basis: "B2", tasks: [summaryPatch(undefined, initial, true)] }, { read: page.generation });
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id, { task: initial, timeline: ["Refreshed history"] },
+    { contentRead: await content.captureTaskContentRead(address, { revalidate: "full" }) });
+  expect((await cache.readCached(summaryAddress)).value).toMatchObject({ basis: "B2", basis_uncertain: false });
+  expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ stale: false, complete: true });
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id, { task: { ...initial, read_through: "tc-02" }, timeline: [] },
+    { contentRead: await content.captureTaskContentRead(address, { revalidate: "full" }) });
+  expect((await cache.readCached(summaryAddress)).value).toMatchObject({ basis_uncertain: true });
+  expect((await cache.readCached(summaryAddress)).value.basis).toBeUndefined();
+  expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ stale: true, complete: true });
+});
+
+it("does not certify omitted watched counter families from a full read as complete unread authority", async () => {
+  const { tracker, initial, summaryAddress } = await seededFullObservation({ watched: true, watch_started_after: "te-01",
+    read_through: "tc-01", unread_count: 3, unread_mentions: 2, unread_agent_comments: 1 });
+  const incoming = { ...initial, read_through: "tc-02", unread_count: 1 };
+  delete incoming.unread_mentions; delete incoming.unread_agent_comments;
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id, { task: incoming, timeline: [] },
+    { contentRead: await content.captureTaskContentRead(address, { revalidate: "full" }) });
+  const normalized = (await cache.readCached(summaryAddress)).value;
+  expect(normalized.task.read_through).toBe("tc-02");
+  expect(normalized.needs_unread_refresh).toBe(true);
 });

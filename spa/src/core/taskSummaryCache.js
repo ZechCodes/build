@@ -214,8 +214,8 @@ const completeCounters = (task) => counterFamilies.every(({ fields }) => complet
 const needsCounterRefresh = (held, incoming, olderContent, counters) => held?.needs_unread_refresh
   && (counters.action || olderContent || !coversMarks(held.task, incoming) || !completeCounters(counters.source));
 
-function incompleteActionCounters(held, incoming, { source, fullTask, action }) {
-  if (!action) return false;
+function incompleteActionCounters(held, incoming, { source, fullTask, action, fullRead }) {
+  if (!action && !fullRead) return false;
   return counterFamilies.some(({ floor, fields }) => !completeCounterFields(source, fields)
     && (fullTask || compareTaskMarkers(floor(incoming), floor(held?.task)) > 0));
 }
@@ -365,6 +365,34 @@ export function summaryTaskMutation(scope, task, read, { accept = () => true, fu
   return { addresses: [address, invalidationAddress(scope), ...fragment.addresses],
     context: (records) => fragment.context(records.slice(2)),
     reduce: (records, guards = {}) => reduceSummaryMutation(records, options, guards) };
+}
+
+// Full reads share the independent field reducers with pages, but carry no
+// mutation note or projection basis. The caller supplies the shared transaction
+// context and publishes this row before selecting its full detail components.
+export function summaryTaskReadMutation(scope, task, contentRead) {
+  validateSummaryMutation(scope, task, contentRead.readOrder, true, false);
+  const address = summaryAddress(scope, task.id);
+  return { addresses: [address, invalidationAddress(scope)],
+    reduce: (records, options) => reduceSummaryRead(records, { ...options, task, contentRead, address }) };
+}
+
+function reduceSummaryRead([held, invalidation], { task, contentRead, ordinaryRead = contentRead, address, context, headerBarrier }) {
+  const before = held?.value, source = fullActionSource(task);
+  const patched = summaryPatch(before?.task, source, true), read = contentRead.readOrder;
+  const row = summaryValue(before, patched, read, { source, fullTask: true, fullRead: true, action: false });
+  const selected = summaryContent(before, row, patched, { context, address, written: recordWriteOf(held),
+    contentRead: ordinaryRead, headerBarrier });
+  if (!selected.row.task) return null;
+  return readObservationValues(before, selected.row, invalidation?.value, read);
+}
+
+const compactSemantics = (task) => JSON.stringify(summaryPatch(undefined, task || {}));
+function readObservationValues(before, row, invalidation, read) {
+  const changed = compactSemantics(before?.task) !== compactSemantics(row.task);
+  const uncertain = Boolean(before?.basis_uncertain || changed);
+  return [{ ...row, basis: uncertain ? undefined : before?.basis, basis_uncertain: uncertain },
+    changed ? { read_order: Math.max(read, invalidation?.read_order || 0) } : null];
 }
 
 function validateSummaryMutation(scope, task, read, fullTask, confirmedAction) {

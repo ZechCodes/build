@@ -225,6 +225,35 @@ describe("per-row watch observation selection", () => {
 });
 
 describe("independent watch admission and owner acknowledgment", () => {
+  it("does not overwrite orphan optimistic paint after control loss reports uncertain zero pending", () => {
+    const context = control({ watchUncertain: true });
+    const held = row({ watched: false, __task_watch_intent: "lost-owner" });
+    const result = select(held, row(), 4, { context, contentRead: read(4, context) });
+    expect(result.task.watched).toBe(false);
+    expect(result.task.__task_watch_intent).toBe("lost-owner");
+    expect(result).toMatchObject({ acceptedWatch: false, watchCertain: false, selectedWatchRead: null });
+    expect(result.task[TASK_FAMILY_CACHE]).toBeUndefined();
+  });
+
+  it("does not admit a source captured while pending merely because publication sees zero pending", () => {
+    const before = control({ watchPendingCount: 1 }), context = control({ watchUncertain: true });
+    const held = row({ watched: false });
+    const result = select(held, row(), undefined, { context, contentRead: read(4, before) });
+    expect(result.task.watched).toBe(false);
+    expect(result).toMatchObject({ acceptedWatch: false, watchCertain: false, selectedWatchRead: null });
+    expect(result.task[TASK_FAMILY_CACHE]).toBeUndefined();
+  });
+
+  it("uses one actual cold guard's optimistic lineage without taking its read markers as authority", () => {
+    const context = control({ watchPendingCount: 1 });
+    const guard = row({ watched: false, read_through: "tc-90", __task_watch_intent: "owner" });
+    const result = select(undefined, row({ read_through: "tc-30" }), undefined,
+      { context, contentRead: read(4, context), watchGuard: guard });
+    expect(result.task).toMatchObject({ watched: false, read_through: "tc-30", __task_watch_intent: "owner" });
+    expect(result.task[TASK_WATCH_CACHE]).toBeUndefined();
+    expect(result).toMatchObject({ watchCertain: false, selectedWatchRead: null });
+  });
+
   it.each([
     ["missing control", {}], ["pending", control({ watchPendingCount: 1 })],
     ["orphan/uncertain", control({ watchUncertain: true })], ["missing count", control({ watchPendingCount: null })],

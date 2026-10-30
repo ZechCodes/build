@@ -33,6 +33,7 @@ import {
   recentToggleHtml,
   workspaceEntryKey,
   workspaceIsRecent,
+  TRACKER_TASK,
 } from "./inbox.js";
 import { navigationUnreadEntries } from "./navigationUnread.js";
 import { NO_TASK_UNREAD } from "./taskUnread.js";
@@ -127,6 +128,8 @@ const workspacesBeingFinished = new Set();
 // The watched unfinished tasks, followed through the cache
 // while the rail is mounted.
 let watchedTasks = null;
+const renderedInboxRow = (entry, ui) => entry.kind === TRACKER_TASK && watchedTasks
+  ? watchedTasks.renderEntry(entry, () => inboxRowHtml(entry, ui)) : inboxRowHtml(entry, ui);
 let clock = null;
 // Tasks the user stopped watching from their row, by row key: its exact owner
 // and a null stamp while in flight, then the time the bridge stamped it. A list the sync
@@ -275,7 +278,7 @@ function drawWorkspaceList(list, shown, heldActiveKey) {
   const nowMs = Date.now();
   const active = shown.filter((entry) => !workspaceIsRecent(entry, nowMs, heldActiveKey));
   const recent = shown.filter((entry) => workspaceIsRecent(entry, nowMs, heldActiveKey));
-  patchList(list, active, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  patchList(list, active, { keyOf, render: (entry) => renderedInboxRow(entry, ui) });
   paintRecent(list, recent, ui, "inbox");
 }
 
@@ -334,7 +337,7 @@ function drawProjects(list, shown, heldActiveKey) {
   const folded = new Set(blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.projectKey));
   const ui = { ...rowUi(false), folded };
   const frame = projectsFrame(list);
-  patchList(frame.unsorted, unsorted, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  patchList(frame.unsorted, unsorted, { keyOf, render: (entry) => renderedInboxRow(entry, ui) });
   paintBlocks(frame.blocks, blocks, ui);
 }
 
@@ -375,7 +378,7 @@ function paintBlocks(host, blocks, ui) {
       if (element.nextSibling !== anchor) host.insertBefore(element, anchor);
     }
     const rows = element.querySelector(":scope > .inbox-project-rows");
-    patchList(rows, block.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+    patchList(rows, block.entries, { keyOf, render: (entry) => renderedInboxRow(entry, ui) });
     paintRecent(element, block.recent, ui, block.projectKey);
     anchor = element;
   }
@@ -414,7 +417,7 @@ function paintRecent(host, recent, ui, scope) {
   patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(recent, open, scope)));
   // Inbox Recent keeps the project/name/activity shape. Grouped Recent keeps
   // compact workspaces and separate title/reason lines for watched tasks.
-  patchList(section, open ? recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
+  patchList(section, open ? recent : [], { keyOf, render: (entry) => renderedInboxRow(entry, { ...ui, quiet: true }) });
 }
 
 /** A row key is whatever the daemon minted (a worktree's is derived from a

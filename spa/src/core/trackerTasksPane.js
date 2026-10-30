@@ -55,7 +55,7 @@ import { readUserSession, userSessionAddress, writeListedUserSession } from "./u
 import { needsYouRuleAddress, readNeedsYouRule } from "./needsYouRule.js";
 import { DEFAULT_DASHBOARD_TAB, dashboardTabIds, paintTaskDashboard } from "./trackerDashboardRender.js";
 import { createTrackerTaskDetailsFeed } from "./trackerTaskDetailsFeed.js";
-import { taskUnreadCount } from "./taskUnread.js";
+import { createTaskUnreadDisplayOwner } from "./taskUnreadDisplay.js";
 import { createTrackerAgentActivityFeed } from "./trackerAgentActivityFeed.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { openTaskComposer } from "./taskComposer.js";
@@ -251,12 +251,29 @@ export function mountTasksPane(host, options) {
   ];
   let details;
   let activity;
+  const paintedUnread = new Map();
+  const unreadDisplay = createTaskUnreadDisplayOwner({
+    scope: { deviceId: state.deviceId, projectId: state.projectId }, consumer: "tasks-pane",
+    active: () => !state.disposed, sessionOf: () => deviceSession(state.deviceId), onChange: () => paint(),
+  });
   /** Each watched task's unread, as the bubble on its row, card or dashboard
    *  line says it (#104): off the cached timeline while it is current, and
    *  the list's own count otherwise (core/taskUnread.js). */
   function unreadCounter() {
     const detailById = details?.read() || new Map();
-    return (task) => taskUnreadCount(task, detailById.get(task.id) || null);
+    return (task) => {
+      const detail = detailById.get(task.id) || null;
+      const total = unreadDisplay.preview(task, detail);
+      paintedUnread.set(task.id, { task, detail, total });
+      return total;
+    };
+  }
+  function rememberPaintedUnread() {
+    for (const element of chrome.body.querySelectorAll("[data-task]")) {
+      if (element.closest("[hidden]")) continue;
+      const selected = paintedUnread.get(element.dataset.task);
+      if (selected) unreadDisplay.rendered(selected.task, selected.detail, selected.total, state.displayAddress);
+    }
   }
   const groupedRows = () => {
     const attention = attentionGroups(state.shown, {
@@ -303,7 +320,9 @@ export function mountTasksPane(host, options) {
     });
     remoteChoices.paintContinuation();
     const view = VIEWS[state.view] || VIEWS[LIST_VIEW];
+    paintedUnread.clear();
     view.paint(chrome.body, view.entries(), paintContext(), view.wire);
+    rememberPaintedUnread();
     wireColumnDrops();
     focusPendingTask();
   };
@@ -358,6 +377,10 @@ export function mountTasksPane(host, options) {
       ? filterTasks(state.unscoped, shownFilters())
       : sortTasks(record.tasks);
     state.shown = kept(state.unscopedShown);
+    state.displayAddress = wholeListIsNewer() ? tasksAddress(state.deviceId, state.projectId)
+      : tasksQueryAddress(state.deviceId, state.projectId, params);
+    await unreadDisplay.updateTasks(state.shown);
+    if (state.disposed || serial !== querySerial) return;
     details?.updateTasks(state.shown);
     // On a cold device the background whole-list pass may not have landed
     // yet. Until it does, this cache record is still the only cache-derived
@@ -397,7 +420,10 @@ export function mountTasksPane(host, options) {
     if (!queryLoaded || wholeListIsNewer()) {
       state.unscopedShown = filterTasks(state.unscoped, shownFilters());
       state.shown = kept(state.unscopedShown);
+      state.displayAddress = tasksAddress(state.deviceId, state.projectId);
     }
+    await unreadDisplay.updateTasks(state.shown);
+    if (state.disposed) return;
     details?.updateTasks(state.shown);
     reads.seen(at); // this list is as old as the cache's stamp, not as old as now
     paint();
@@ -818,6 +844,7 @@ export function mountTasksPane(host, options) {
       userSessionWatcher?.();
       ruleWatcher?.();
       details.dispose();
+      unreadDisplay.dispose();
       activity.dispose();
       referencesWatcher();
       queryUnsubscribe?.();

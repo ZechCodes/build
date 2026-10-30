@@ -23,6 +23,7 @@ import { taskAgentIsRunning, watchedTaskEntries } from "./watchedTaskRows.js";
 import { taskUnreadTally } from "./taskUnread.js";
 import { createWatchedTaskDependencies } from "./watchedTaskDependencies.js";
 import { trailingRead } from "./trailingRead.js";
+import { createTaskUnreadDisplayOwner } from "./taskUnreadDisplay.js";
 
 const sessionOf = (deviceId) => contextFor(deviceId)?.session || null;
 const followsDetail = (task) => task?.watched === true && !isFinished(task);
@@ -49,6 +50,8 @@ function followProject(project, onChange, dependencies) {
   let dependenciesReady = false;
   const ready = () => tasksReady && dependenciesReady;
   const notify = () => { if (!disposed && ready()) onChange(); };
+  const display = createTaskUnreadDisplayOwner({ scope: { deviceId, projectId }, consumer: "inbox",
+    active: () => !disposed, sessionOf: () => sessionOf(deviceId), onChange: notify });
   const details = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc: callOn(deviceId), onChange: notify });
 
   async function readTasks() {
@@ -62,6 +65,8 @@ function followProject(project, onChange, dependencies) {
     if (signature === taskSignature) return;
     taskSignature = signature;
     tasks = next;
+    await display.updateTasks(tasks);
+    if (disposed || before !== invalidation || session !== sessionOf(deviceId)) return;
     tasksReady = true;
     notify();
     await details.updateTasks(tasks.filter(followsDetail));
@@ -82,12 +87,19 @@ function followProject(project, onChange, dependencies) {
   return {
     // A reconnect is a new session: reads the old one refused are asked again.
     session: sessionOf(deviceId),
-    source: () => ({ project, tasks: ready() ? tasks : [], details: details.read(), askedOnly, runningAgentIds, projectAgentId, workspaces }),
+    source: () => ({ project, tasks: ready() ? tasks : [], details: details.read(), askedOnly, runningAgentIds, projectAgentId, workspaces,
+      unreadOf: display.preview }),
+    rendered(entry) {
+      const task = tasks.find((one) => one.id === entry.taskId);
+      if (!task) return;
+      display.rendered(task, details.read().get(task.id) || null, entry.unreadCount, tasksAddress(deviceId, projectId));
+    },
     dispose() {
       disposed = true;
       unsubscribe();
       unsubscribeDependencies();
       details.dispose();
+      display.dispose();
     },
   };
 }
@@ -137,6 +149,13 @@ export function followWatchedTasks({ onChange = () => {} } = {}) {
   return {
     follow,
     entries: () => watchedTaskEntries(sources()),
+    /** Only the mounted Inbox renderer records a selected display. Reading
+     * entries, filtering Recent, and the aggregate reader cannot seed it. */
+    renderEntry(entry, renderHtml) {
+      const html = renderHtml();
+      followed.get(`${entry.deviceId}|${entry.projectId}`)?.rendered(entry);
+      return html;
+    },
     /** Where the rail wears each watched task's unread (#104). */
     taskUnread: () => taskUnreadTally(sources()),
     /** Folded project heads also carry running watched tasks with no Needs-you

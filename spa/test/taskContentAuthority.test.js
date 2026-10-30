@@ -151,3 +151,20 @@ it("associates independently published identical headers without a permanent det
   const key = content.taskFullRefreshKey(full.task, changed);
   expect(content.taskFullRefreshKey(full.task, await publishHeader(task({ title: "Changed" })))).toBe(key);
 });
+
+it("covers an actual full TaskView after its compact summary header without a shape-induced refresh loop", async () => {
+  const fixture = (await import("../../fixtures/api/v1/tasks.read_through.json")).default.result.task;
+  const full = { ...fixture, id: "task-1", project_id: scope.projectId };
+  // TaskSummaryView adds compact counts/flags absent from the full TaskView.
+  const compact = { ...full, attachment_count: 0, summary_truncated: false, done_at: null,
+    dependencies: { blocked: false, waiting_on_count: 0, blocks_count: 0 } };
+  for (const field of ["body", "attachments", "identities"]) delete compact[field];
+  compact.links = { workspace_ids: full.links.workspace_ids, parent_task_id: full.links.parent_task_id };
+  const captured = await content.captureTaskContentRead(scope, { revalidate: "summary" }), fragment = content.taskContentFragment(scope);
+  const header = content.reconcileTaskContent(undefined, content.observeTaskContent(compact, { contentRead: captured, coverage: "summary" }),
+    { context: fragment.context(await cache.readCachedMany(fragment.addresses)) }).task;
+  const result = await publish(await observed(full), header);
+  expect(result.acceptedBody).toBe(true);
+  expect(content.taskNeedsFullRefresh(result.task, header)).toBe(false);
+  expect(content.taskFullRefreshKey(result.task, header)).toBeNull();
+});

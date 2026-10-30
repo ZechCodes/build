@@ -130,3 +130,24 @@ it("bars an intermediate full observation behind the same record's newer accepte
   expect(fresh.acceptedBody).toBe(true);
   expect(fresh.needsFullRefresh).toBe(false);
 });
+
+it("associates independently published identical headers without a permanent detail refresh loop", async () => {
+  const headerAddress = { ...address, kind: "tracker-summary" };
+  const publishHeader = async (raw) => {
+    const captured = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+    await content.mergeTaskContentRecordsTogether(scope, [headerAddress], ([held], context) => ({
+      values: [{ task: content.reconcileTaskContent(held?.value?.task,
+        content.observeTaskContent(raw, { contentRead: captured, coverage: "summary" }), { context }).task }],
+    }));
+    return (await cache.readCached(headerAddress)).value.task;
+  };
+  const first = await publishHeader(task());
+  const full = await publish(await observed(task()), first);
+  expect(content.taskNeedsFullRefresh(full.task, first)).toBe(false);
+  const same = await publishHeader(task());
+  expect(content.taskNeedsFullRefresh(full.task, same)).toBe(false);
+  const changed = await publishHeader(task({ title: "Changed" }));
+  expect(content.taskNeedsFullRefresh(full.task, changed)).toBe(true);
+  const key = content.taskFullRefreshKey(full.task, changed);
+  expect(content.taskFullRefreshKey(full.task, await publishHeader(task({ title: "Changed" })))).toBe(key);
+});

@@ -128,11 +128,14 @@ fn backup_refuses_untrusted_state_ancestor_before_creating_destination() {
 
 #[cfg(unix)]
 #[test]
-fn backup_refuses_symlinked_task_directory() {
-    use std::os::unix::fs::symlink;
+fn backup_refuses_alias_to_untrusted_task_state_root() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
 
     let root = tempfile::tempdir().unwrap();
-    let actual = root.path().join("actual-tasks");
+    let unsafe_parent = root.path().join("untrusted-target");
+    fs::create_dir(&unsafe_parent).unwrap();
+    fs::set_permissions(&unsafe_parent, fs::Permissions::from_mode(0o777)).unwrap();
+    let actual = unsafe_parent.join("tasks");
     drop(Store::new(&actual).unwrap());
     let alias = root.path().join("linked-tasks");
     symlink(&actual, &alias).unwrap();
@@ -148,7 +151,31 @@ fn backup_refuses_symlinked_task_directory() {
         .unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "backup accepted a symlinked task directory");
-    assert!(stderr.contains("linked-tasks"), "refusal must name the task directory: {stderr}");
+    assert!(!output.status.success(), "backup accepted an alias to an untrusted target");
+    assert!(stderr.contains("untrusted-target"), "refusal must name the untrusted target: {stderr}");
     assert!(!destination.exists(), "refusal must not create a destination");
+}
+
+#[cfg(unix)]
+#[test]
+fn backup_accepts_alias_to_trusted_task_state_root() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().unwrap();
+    let actual = root.path().join("actual-tasks");
+    drop(Store::new(&actual).unwrap());
+    let alias = root.path().join("linked-tasks");
+    symlink(&actual, &alias).unwrap();
+    let destination = root.path().join("backup.db");
+    let output = Command::new(env!("CARGO_BIN_EXE_build-bridge"))
+        .env_clear()
+        .env("HOME", root.path())
+        .env("BRIDGE_TASKS_DIR", &alias)
+        .arg("backup")
+        .arg(&destination)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "backup refused a trusted target: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(destination.is_file());
 }

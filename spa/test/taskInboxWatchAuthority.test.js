@@ -113,3 +113,41 @@ it("contains a refused inbox owner registration and sends no unwatch RPC", async
   expect((await runtime.tracker.readTasksRecord(deviceId, projectId)).tasks[0].watched).toBe(true);
   expect(mounted.control()).not.toBeNull();
 });
+
+it.each(["foreign task", "foreign project", "null task", "opposite watch", "missing body"])(
+  "rolls back and reports an inbox acknowledgment with %s instead of a matching full task", async (kind) => {
+    const mounted = await mountInbox();
+    const notices = await import("../src/core/notify.js");
+    const watch = await import("../src/core/taskWatchAuthority.js");
+    const notice = vi.spyOn(notices, "notifyError").mockImplementation(() => {});
+    mounted.control().click();
+    await vi.waitFor(() => expect(mounted.session.call).toHaveBeenCalledWith("tasks.unwatch", { task_id: taskId }));
+    const answer = { ...mounted.row, watched: false };
+    if (kind === "foreign task") answer.id = "foreign-task";
+    if (kind === "foreign project") answer.project_id = "foreign-project";
+    if (kind === "opposite watch") answer.watched = true;
+    if (kind === "missing body") delete answer.body;
+    mounted.pending.resolve({ task: kind === "null task" ? null : answer });
+    await vi.waitFor(() => expect(runtime.fence.taskMutationsPending(deviceId)).toBe(0));
+    expect(notice).toHaveBeenCalledWith(expect.stringContaining("Couldn't stop watching"), expect.any(String));
+    expect((await runtime.tracker.readTasksRecord(deviceId, projectId)).tasks[0].watched).toBe(true);
+    expect((await watch.readTaskWatchState({ deviceId, projectId })).pendingCount).toBe(0);
+    expect(mounted.session.call.mock.calls.filter(([method]) => method === "tasks.unwatch")).toHaveLength(1);
+  });
+
+it("retains the legacy no-task inbox acknowledgment without fabricating a full task receipt", async () => {
+  const mounted = await mountInbox();
+  const notices = await import("../src/core/notify.js");
+  const watch = await import("../src/core/taskWatchAuthority.js");
+  const notice = vi.spyOn(notices, "notifyError").mockImplementation(() => {});
+  mounted.control().click();
+  await vi.waitFor(() => expect(mounted.session.call).toHaveBeenCalledWith("tasks.unwatch", { task_id: taskId }));
+  mounted.pending.resolve({});
+  await vi.waitFor(() => expect(runtime.fence.taskMutationsPending(deviceId)).toBe(0));
+  expect(notice).not.toHaveBeenCalled();
+  expect((await runtime.tracker.readTasksRecord(deviceId, projectId)).tasks[0].watched).toBe(false);
+  const shared = await watch.readTaskWatchState({ deviceId, projectId });
+  expect(shared.pendingCount).toBe(0);
+  expect(shared.uncertain).toBe(true);
+  expect(shared.eligible).toBe(false);
+});

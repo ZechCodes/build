@@ -455,6 +455,24 @@ describe("task unread navigation", () => {
 });
 
 describe("the task", () => {
+  it("refuses a full response from another project without publishing or painting it", async () => {
+    call = vi.fn(async () => answerFor({ project_id: "p1", title: "Foreign task" }));
+    await mount();
+    expect(listed("tasks.get")[0][1]).toEqual({ task_id: "task-1" });
+    expect(host.querySelector(".task-page-title")).toBeNull();
+    expect(await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1")).toBeNull();
+  });
+
+  it("publishes and paints a full response matching the mounted project", async () => {
+    call = vi.fn(async () => answerFor({ project_id: "proj-1", title: "Matching task" }));
+    await mount();
+    expect(host.querySelector(".task-page-title").textContent).toBe("Matching task");
+    const held = await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1");
+    expect(held.task.id).toBe("task-1");
+    expect(held.task.project_id).toBe("proj-1");
+    expect(held.task.title).toBe("Matching task");
+  });
+
   it("reads it by id and draws its title and number", async () => {
     await mount();
     expect(listed("tasks.get")[0][1]).toEqual({ task_id: "task-1" });

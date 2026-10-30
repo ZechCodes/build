@@ -35,7 +35,7 @@ const deferred = () => {
 const scope = { deviceId: "move-device", projectId: "move-project" };
 let pane, aggregate, fence, host, mutation, oldAnswer, rpc, paneCall, summaries, cache;
 
-beforeEach(async () => {
+const mountFixture = async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = '<div id="host"></div>';
@@ -72,15 +72,17 @@ beforeEach(async () => {
   aggregate = createTaskAggregateReader({ scope, callRpc: rpc, capabilities: () => ({ counts: true }), sessionOf: () => null,
     active: () => !fence.taskMutationsPending(scope.deviceId), mutationEpoch: () => fence.taskMutationEpoch(scope.deviceId) });
   await aggregate.refresh();
-});
+};
+beforeEach(mountFixture);
 
-afterEach(() => {
+const disposeFixture = () => {
   pane?.dispose(); aggregate?.dispose();
   writeGate.resolve(); mutation.resolve({}); oldAnswer.resolve({});
   fence?.resetTaskMutationFences();
-});
+};
+afterEach(disposeFixture);
 
-it.each(["ack", "rollback"])("fences the whole optimistic move intent through %s, including blocked cache writes", async (outcome) => {
+const exerciseMove = async (outcome) => {
   const reading = aggregate.refresh();
   await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(2));
   blockedStatus = "ready";
@@ -108,6 +110,14 @@ it.each(["ack", "rollback"])("fences the whole optimistic move intent through %s
     await vi.waitFor(() => expect(host.querySelector('[data-column="backlog"] .task-card')).not.toBeNull());
   } else mutation.resolve({});
   await vi.waitFor(() => expect(fence.taskMutationsPending(scope.deviceId)).toBe(0));
+};
+it.each(["ack", "rollback"])("fences the whole optimistic move intent through %s, including blocked cache writes", exerciseMove);
+
+it("keeps mutation fencing and the mounted card intact across fresh module lifetimes", async () => {
+  await exerciseMove("ack");
+  disposeFixture();
+  await mountFixture();
+  await exerciseMove("rollback");
 });
 
 it("projects optimistic moves and rollback into shared summaries while invalidating old memberships", async () => {

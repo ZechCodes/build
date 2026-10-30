@@ -175,6 +175,36 @@ it("refuses an absent summary row after an unrelated blind rewrite changes its c
   await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [task({ id: "other-task" })] });
   expect(await summaries.landSummaryPage(ticket, { summary: true, basis: "snapshot", tasks: [task()] },
     { read: ticket.generation })).toBe(false);
-  expect(await cache.readCached(summaries.summaryAddress(scope, "task-1"))).toBeNull();
+  expect(await cache.readCached(summaries.summaryAddress(scope, "task-1"))).toBeUndefined();
   expect((await summaries.readSummaryQuery(scope, {})).refreshing).toBe(true);
+});
+
+it("never certifies a fallback-only allocation when shared storage later recovers", async () => {
+  await publish(await observed(task()));
+  const unavailable = vi.spyOn(order, "nextTaskReadTicket").mockResolvedValueOnce(null);
+  const pending = await observed(task({ title: "Fallback", body: "Fallback" }));
+  unavailable.mockRestore();
+  await content.captureTaskContentRead(scope);
+  const result = await publish(pending);
+  expect(result).toMatchObject({ acceptedHeader: false, acceptedBody: false });
+  expect(result.task).toMatchObject({ title: "Current", body: "Body" });
+});
+
+it("refuses a corrupt fractional shared count without writing a replacement authority", async () => {
+  await cache.writeCached(order.TASK_READ_COUNT_ADDRESS, 1.5);
+  await expect(content.captureTaskContentRead(scope)).rejects.toThrow(/counter|allocation/i);
+  expect((await cache.readCached(order.TASK_READ_COUNT_ADDRESS)).value).toBe(1.5);
+  expect(await cache.readCached(order.TASK_CONTENT_GENERATION_ADDRESS)).toBeUndefined();
+});
+
+it("does not attribute a newly accepted body to timestamp-protected retired header bytes", async () => {
+  await publish(await observed(task({ updated_at: "2026-10-29T10:00:00Z" })));
+  await publish(content.observeTaskContent(task({ title: "Future header", updated_at: "2026-10-29T20:00:00Z" }),
+    { contentRead: await content.captureTaskContentRead(scope, { revalidate: "summary" }), coverage: "summary" }));
+  await content.mergeTaskContentRecordsTogether(scope, [address], ([held]) => ({
+    values: [{ task: content.retireTaskContent(held.value.task, "header") }], retire: true,
+  }));
+  const result = await publish(await observed(task({ title: "Intermediate", body: "Intermediate", updated_at: "2026-10-29T15:00:00Z" })));
+  expect(result).toMatchObject({ acceptedHeader: false, acceptedBody: false, needsFullRefresh: true });
+  expect(result.task).toMatchObject({ title: "Future header", body: "Body" });
 });

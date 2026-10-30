@@ -208,3 +208,14 @@ it("does not attribute a newly accepted body to timestamp-protected retired head
   expect(result).toMatchObject({ acceptedHeader: false, acceptedBody: false, needsFullRefresh: true });
   expect(result.task).toMatchObject({ title: "Future header", body: "Body" });
 });
+
+it("gives each explicit header retirement its own stable bounded recovery identity", async () => {
+  const held = (await publish(await observed(task()))).task;
+  const first = content.retireTaskContent(held, "header"), second = content.retireTaskContent(first, "header");
+  expect(content.taskFullRefreshKey(first)).not.toBeNull();
+  expect(content.taskFullRefreshKey(second)).not.toBe(content.taskFullRefreshKey(first));
+  const barrierOne = content.retireTaskContent(held, "header"), barrierTwo = content.retireTaskContent(barrierOne, "header");
+  const key = content.taskFullRefreshKey(held, barrierOne);
+  expect(content.taskFullRefreshKey(held, { ...barrierOne, unread_count: 99 })).toBe(key);
+  expect(content.taskFullRefreshKey(held, barrierTwo)).not.toBe(key);
+});

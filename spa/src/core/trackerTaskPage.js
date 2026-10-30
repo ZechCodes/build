@@ -55,8 +55,9 @@ import { taskAttachmentRefusal } from "./taskAttachments.js";
 import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
 import { wrapTaskMutationCall } from "./taskMutationFence.js";
 import { cacheTaskWaitingOnResponse } from "./taskWaitingOnCache.js";
-import { contextFor, deviceContextIdentity } from "./deviceContexts.js";
+import { contextFor, deviceContextIdentity, onDeviceStateChanged } from "./deviceContexts.js";
 import { captureTaskContentRead, taskFullRefreshKey } from "./taskContentAuthority.js";
+import { beginTaskWatchMutation, settleTaskWatchMutation, readTaskWatchState, taskWatchControlAddress } from "./taskWatchAuthority.js";
 import { summaryAddress } from "./taskSummaryCache.js";
 import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./watchToggle.js";
 import { notifyCommandFailure } from "./commandRefusal.js";
@@ -103,6 +104,7 @@ function matchingTaskAction(task, authority) {
 /** Acknowledged effects belong to their captured owner even after the page
  * leaves. Rendering disposal does not revoke account/device/session authority. */
 async function dispatchTaskAction(authority, method, params, readThrough) {
+  if (method === "tasks.watch" || method === "tasks.unwatch") return dispatchTaskWatchAction(authority, method, params);
   const contentRead = await captureTaskContentRead({ deviceId: authority.deviceId, projectId: authority.projectId });
   const issuedRead = contentRead.readOrder;
   if (!authority.accept()) throw new Error("This task's session changed before sending the action.");
@@ -118,6 +120,26 @@ async function dispatchTaskAction(authority, method, params, readThrough) {
       { accept: authority.accept, issuedRead });
   }
   return answer;
+}
+
+async function dispatchTaskWatchAction(authority, method, params) {
+  const scope = { deviceId: authority.deviceId, projectId: authority.projectId };
+  const owner = await beginTaskWatchMutation(scope, authority.taskId, {
+    watched: method === "tasks.watch", metadataOnly: true, accept: authority.accept,
+  });
+  if (!owner) throw new Error("Could not save this task's watch change.");
+  try {
+    const contentRead = await captureTaskContentRead(scope);
+    if (!authority.accept()) throw new Error("This task's session changed before sending the action.");
+    const answer = await authority.callRpc(method, params);
+    if (!authority.accept()) throw new Error("This task's session changed while the action was running.");
+    if (answer && Object.hasOwn(answer, "task")) matchingTaskAction(answer.task, authority);
+    await settleTaskWatchMutation(owner, { answer, contentRead, accept: authority.accept });
+    return answer;
+  } catch (error) {
+    await settleTaskWatchMutation(owner, { rollback: true, accept: authority.accept });
+    throw error;
+  }
 }
 
 /** Mark a routed comment after a cache paint. The row already has a stable ID
@@ -550,6 +572,31 @@ export function mountTaskPage(host, options) {
   }
   const contentHeaderWatcher = subscribeCache(summaryTarget, () => void readContentHeader());
   void readContentHeader();
+
+  let watchControlOwner = null, watchControlSerial = 0, lastWatchControlHint = null;
+  let stopWatchControl = () => {};
+  const sameWatchControlOwner = (owner, next) => owner?.context === next.context
+    && owner?.identity === next.identity && owner?.session === next.session;
+  async function readWatchControl(owner) {
+    const serial = ++watchControlSerial;
+    try {
+      const watch = await readTaskWatchState({ deviceId: state.deviceId, projectId: state.projectId });
+      if (serial !== watchControlSerial || owner !== watchControlOwner || state.disposed || !owner.accept()) return;
+      if (!watch.eligible) return;
+      const hint = JSON.stringify([watch.controlGeneration, watch.watchEpoch]);
+      if (hint === lastWatchControlHint) return;
+      lastWatchControlHint = hint;
+      void refresh();
+    } catch { /* A failed/unknown eligibility check admits no read or retry. */ }
+  }
+  function bindWatchControl() {
+    const next = captureTaskAction(state);
+    if (state.disposed || watchControlOwner && sameWatchControlOwner(watchControlOwner, next)) return;
+    stopWatchControl(); watchControlSerial += 1; lastWatchControlHint = null; watchControlOwner = next;
+    stopWatchControl = subscribeCache(taskWatchControlAddress({ deviceId: state.deviceId, projectId: state.projectId }), () => void readWatchControl(next));
+  }
+  bindWatchControl();
+  const stopWatchControlLifetime = onDeviceStateChanged(bindWatchControl);
 
   async function paintFromCache() {
     const [cached, list, at, checklistSupported, waitingOnSupported] = await Promise.all([
@@ -1072,6 +1119,8 @@ export function mountTaskPage(host, options) {
       stopGreeting();
       taskWatcher?.();
       contentHeaderWatcher();
+      stopWatchControl();
+      stopWatchControlLifetime();
       checklistSupportWatcher();
       reviewWatcher();
       referencesWatcher();

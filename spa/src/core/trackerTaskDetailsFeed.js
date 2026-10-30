@@ -8,8 +8,9 @@ import { TRACKER_TASK_KIND, taskAddress, taskRecord, writeTaskRecord, captureTas
 import { changedSince } from "./trackerModel.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceSession } from "./deviceReconnect.js";
-import { contextFor, deviceContextIdentity } from "./deviceContexts.js";
+import { contextFor, deviceContextIdentity, onDeviceStateChanged } from "./deviceContexts.js";
 import { captureTaskContentRead, taskFullRefreshKey } from "./taskContentAuthority.js";
+import { readTaskWatchState, taskWatchControlAddress } from "./taskWatchAuthority.js";
 
 const MAX_READS = 4;
 
@@ -34,6 +35,8 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   let generation = 0;
   let readSerial = 0;
   let disposed = false;
+  let controlOwner = null, controlSerial = 0, lastControlHint = null;
+  let stopControl = () => {};
 
   const address = (id) => taskAddress(deviceId, projectId, id);
   const nextEpoch = (id) => {
@@ -165,6 +168,35 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     else if (!changed.sub) void scan(); // project eviction may remove every detail
   });
 
+  const controlLifetime = () => ({ context: contextFor(deviceId), identity: deviceContextIdentity(deviceId), session: deviceSession(deviceId) });
+  const sameControlLifetime = (owner, next = controlLifetime()) => owner?.context === next.context
+    && owner?.identity === next.identity && owner?.session === next.session;
+  const currentControlOwner = (owner) => !disposed && owner === controlOwner && sameControlLifetime(owner)
+    && (!owner.context || owner.context.active());
+
+  async function readWatchControl(owner) {
+    const serial = ++controlSerial;
+    try {
+      const watch = await readTaskWatchState({ deviceId, projectId });
+      if (serial !== controlSerial || !currentControlOwner(owner) || !watch.eligible) return;
+      const hint = JSON.stringify([watch.controlGeneration, watch.watchEpoch]);
+      if (hint === lastControlHint) return;
+      lastControlHint = hint;
+      // The existing queue owns admission and its four-read bound. A control
+      // notification never adds a task which this mounted feed did not admit.
+      for (const id of listed.keys()) refresh(id);
+    } catch { /* Unknown eligibility is not a reason to retry or ask the wire. */ }
+  }
+
+  function bindWatchControl() {
+    const next = controlLifetime();
+    if (disposed || controlOwner && sameControlLifetime(controlOwner, next)) return;
+    stopControl(); controlSerial += 1; lastControlHint = null; controlOwner = next;
+    stopControl = subscribeCache(taskWatchControlAddress({ deviceId, projectId }), () => void readWatchControl(next));
+  }
+  bindWatchControl();
+  const stopControlLifetime = onDeviceStateChanged(bindWatchControl);
+
   async function scan() {
     if (disposed) return;
     const current = generation;
@@ -216,6 +248,8 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
       refreshRequested.clear();
       refreshTasks.clear();
       unsubscribe();
+      stopControl();
+      stopControlLifetime();
     },
   };
 }

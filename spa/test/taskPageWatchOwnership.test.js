@@ -33,7 +33,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   page?.dispose();
-  response?.reject(new Error("Page test ended"));
+  response?.resolve({});
   vi.restoreAllMocks();
 });
 

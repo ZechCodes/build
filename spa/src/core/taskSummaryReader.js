@@ -14,6 +14,8 @@ export function createTaskSummaryReader({ scope, filters, callRpc, capabilities,
   let ticketSession = null;
   let pending = null;
   let refused = false;
+  let restartNeeded = false;
+  let recoveryPending = false;
   let ticketEpoch;
   const read = () => readSummaryQuery(scope, params);
   const available = () => !disposed && active() && summaryFiltersSupported(filters, capabilities());
@@ -25,22 +27,32 @@ export function createTaskSummaryReader({ scope, filters, callRpc, capabilities,
     try {
       const answer = await callRpc("tasks.list", { project_id: scope.projectId, summary: true, ...params,
         limit: 100, ...(next.cursor ? { cursor: next.cursor } : {}) });
-      return await landSummaryPage(next, answer, { read: readOrder, accept: () => accepts(generation, session) });
+      return await landSummaryPage(next, answer, { read: readOrder, accept: () => accepts(generation, session),
+        onQueryRetired: () => { if (accepts(generation, session)) restartNeeded = true; } });
     } catch (error) {
       if (accepts(generation, session) && stopsContinuation(error)) refused = true;
       throw error;
     }
   }
 
-  function track(operation) {
+  function track(operation, recovering = false) {
     const promise = operation();
     pending = promise;
-    void promise.then(() => { if (pending === promise) pending = null; }, () => { if (pending === promise) pending = null; });
+    recoveryPending = recovering;
+    const settled = () => {
+      if (pending === promise) { pending = null; recoveryPending = false; }
+    };
+    void promise.then(settled, settled);
     return promise;
   }
 
   function refresh() {
     if (!available()) return Promise.resolve(false);
+    // Recovery uses this existing request owner. Ordinary refreshes keep their
+    // established supersession behavior, including a genuinely new session.
+    if (pending && recoveryPending && accepts(serial, ticketSession)) return pending;
+    const recovering = restartNeeded;
+    restartNeeded = false;
     const generation = ++serial;
     const session = sessionOf();
     ticketEpoch = mutationEpoch();
@@ -54,7 +66,7 @@ export function createTaskSummaryReader({ scope, filters, callRpc, capabilities,
       if (!accepts(generation, session)) return false;
       ticket = next;
       return ask(next, readOrder, generation, session);
-    });
+    }, recovering);
   }
 
   async function continuePage() {
@@ -69,7 +81,9 @@ export function createTaskSummaryReader({ scope, filters, callRpc, capabilities,
 
   function more() {
     if (!available() || !ticket || refused) return Promise.resolve(false);
-    return pending || track(continuePage);
+    if (pending) return pending;
+    if (restartNeeded) return accepts(serial, ticketSession) ? refresh() : Promise.resolve(false);
+    return track(continuePage);
   }
 
   return { read, refresh, more, dispose() { disposed = true; serial += 1; } };

@@ -12,7 +12,7 @@ import { summaryPatch, fullTaskSummary } from "./taskSummaryProjection.js";
 import { reconcileTaskReadFacts, hasTaskWatchSnapshot, TASK_WATCH_CACHE, TASK_FAMILY_CACHE } from "./taskWatchFacts.js";
 import { blindTaskWatchInterference, retireTaskWatchFacts } from "./taskWatchAuthority.js";
 import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent } from "./taskWatchIntents.js";
-import { snapshotPageEvidence, snapshotContinuationEligible } from "./taskSummarySnapshot.js";
+import { snapshotPageEvidence, snapshotContinuationEligible, summaryPageReadRetired } from "./taskSummarySnapshot.js";
 export { reconcileTaskReadFacts } from "./taskWatchFacts.js";
 
 export const TASK_SUMMARY_KIND = "tracker-summary";
@@ -381,29 +381,41 @@ function summaryContent(held, row, source, { context, address, written, contentR
     retire: selected.retired, ordinaryDeferred: selected.ordinaryDeferred };
 }
 
-/** Commit membership/cursor, summaries and shared identities together. Failure
- * leaves the previous cursor usable. Empty continuation pages are successful
- * pages; duplicate/late replies never consume another page's cursor.
- * `accept` checks the captured session/account lifetime inside the transaction. */
-export async function landSummaryPage(ticket, page, { read, accept = () => true }) {
+/** Commit membership/cursor, summaries and shared identities together. Current
+ * empty pages are successful; retired ordinary captures leave the exact query
+ * untouched while independent row families keep their own admission rules.
+ * `accept` checks the captured session/account lifetime inside the transaction.
+ * onQueryRetired is a local next-demand hint, never membership authority. */
+export async function landSummaryPage(ticket, page, { read, accept = () => true, onQueryRetired } = {}) {
   validatePage(ticket, page);
   if (!Number.isSafeInteger(read) || read <= 0) throw new Error("Invalid summary read order");
   const tasks = [...new Map(page.tasks.map((task) => [task.id, task])).values()];
   const identities = Object.entries(page.identities || {});
   const addresses = [ticket.address, invalidationAddress(ticket.scope), observationAddress(ticket.scope), ...tasks.map((task) => summaryAddress(ticket.scope, task.id)),
     ...identities.map(([id]) => identityAddress(ticket.scope, id))];
-  return mergeTaskContentRecordsTogether(ticket.scope, addresses, ([query, invalidation, observation, ...records], context) => {
+  let queryRetired = false;
+  const written = await mergeTaskContentRecordsTogether(ticket.scope, addresses, ([query, invalidation, observation, ...records], context) => {
+    queryRetired = false;
     const held = query?.value;
     if (!acceptsPage(held, ticket, accept) || invalidatedTicket(invalidation?.value, ticket)) return null;
     if (changedContinuationBasis(held, ticket, page)) return null;
+    queryRetired = summaryPageReadRetired(ticket.contentRead, read, context);
     const rows = tasks.map((task, index) => pageRow(records[index]?.value, task, read, page.basis, { context, address: summaryAddress(ticket.scope, task.id),
       written: recordWriteOf(records[index]), contentRead: ticket.contentRead, scope: ticket.scope }));
-    if (rows.some((row) => !row.task?.id)) return null;
+    if (!queryRetired && rows.some((row) => !row.task?.id)) return null;
     const actors = identities.map(([, identity], index) => records[tasks.length + index]?.value?.read_order > read
       ? null : { identity, read_order: read });
-    return { values: [membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id), read, context), null,
-      newerObservation(observation?.value, read, page.basis), ...rows, ...actors] };
+    // Independent row families keep their own admission rules. They cannot
+    // consume a retired query's cursor or rewrite its exact current record.
+    return { values: [queryRetired ? null : membership(held, ticket, page, tasks.map((task) => task.id), identities.map(([id]) => id), read, context), null,
+      queryRetired ? null : newerObservation(observation?.value, read, page.basis),
+      ...rows.map((row) => row.task?.id ? row : null), ...actors] };
   }, { watchTaskIds: tasks.map((task) => task.id) });
+  if (queryRetired) {
+    try { onQueryRetired?.(); }
+    catch { /* A local retry hint cannot change a completed publication. */ }
+  }
+  return written && !queryRetired;
 }
 
 /** Immediate action result or optimistic patch. The shared row and project

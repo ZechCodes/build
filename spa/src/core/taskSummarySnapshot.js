@@ -16,6 +16,15 @@ function capturedPage(contentRead, read, context) {
   return positive(read) && contentRead?.readOrder === read && sameLifetime(contentRead.ticket, context);
 }
 
+/** A known captured ordinary lifetime was replaced while this request was
+ * outstanding. Missing legacy evidence or unsupported query classes are not
+ * retirement signals; they retain their existing compatibility behavior. */
+export function summaryPageReadRetired(contentRead, read, context) {
+  return positive(read) && contentRead?.readOrder === read
+    && lifetimeFields.every((field) => nonempty(contentRead.ticket?.[field]))
+    && !sameLifetime(contentRead.ticket, context);
+}
+
 function addressedQuery(ticket, key) {
   const address = ticket.address, scope = ticket.scope;
   return address?.deviceId === scope.deviceId && address.entityId === String(scope.projectId)

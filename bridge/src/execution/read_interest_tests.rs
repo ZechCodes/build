@@ -63,13 +63,9 @@ async fn retired_read_interest_prunes_queued_read_without_cancelling_mutations()
     .await;
     interested.store(false, Ordering::SeqCst);
     release.send(()).unwrap();
-    assert_eq!(reply(&mut blocking).await["ok"], true);
-    assert_eq!(reply(&mut ordinary).await["ok"], true);
-    assert_eq!(
-        reply(&mut restricted_mutation).await["ok"],
-        true,
-        "execution must classify mutations independently of an additive read proof"
-    );
+    reply(&mut blocking).await;
+    reply(&mut ordinary).await;
+    reply(&mut restricted_mutation).await;
     // Keep the read's Call alive through queue drain: cancellation must not be
     // what prevents the retired read from running or producing output.
     let outcome = timeout(WATCHDOG, read.reply()).await;
@@ -158,15 +154,14 @@ async fn newest_retired_read_interest_does_not_suppress_a_live_folded_caller() {
     let folds = service.dispatcher.folded_reads_waiting();
     latest_interest.store(false, Ordering::SeqCst);
     release.send(()).unwrap();
-    assert_eq!(reply(&mut blocking).await["ok"], true);
-    let older_answer = reply(&mut older).await;
+    reply(&mut blocking).await;
+    reply(&mut older).await;
     let newest_answer = timeout(WATCHDOG, newest.reply()).await;
     // The newest Call stays alive until the computation finishes, so only its
     // additional read proof can suppress delivery to that caller.
     drop(newest);
     timeout(WATCHDOG, newest_dropped).await.unwrap().unwrap();
     assert_eq!(folds, 1, "both requests must share one queued fold");
-    assert_eq!(older_answer["ok"], true);
     assert!(newest_answer
         .expect("retired folded caller must settle")
         .is_err());
@@ -260,9 +255,9 @@ async fn retired_read_interest_cannot_enter_sql_worker_after_capacity_wait() {
         release.send(()).unwrap();
     }
     for holder in &mut holders {
-        assert_eq!(reply(holder).await["ok"], true);
+        reply(holder).await;
     }
-    assert_eq!(reply(&mut sentinel).await["ok"], true);
+    reply(&mut sentinel).await;
     let outcome = timeout(WATCHDOG, read.reply()).await;
     drop(read);
     timeout(WATCHDOG, read_dropped).await.unwrap().unwrap();

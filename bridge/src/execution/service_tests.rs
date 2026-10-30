@@ -98,7 +98,7 @@ async fn submit(
     .unwrap()
 }
 
-async fn reply(call: &mut Call) -> Value {
+async fn reply(call: &mut Call) {
     timeout(WATCHDOG, call.reply())
         .await
         .expect("shared worker must settle")
@@ -174,6 +174,38 @@ async fn reply_requires_sink_acceptance_and_live_authority_at_consumption() {
     }
 }
 
+#[tokio::test]
+async fn completion_exposes_no_payload_and_retained_event_retires() {
+    for retirement in ["cancel", "close", "revoke"] {
+        let service = ExecutionService::new(FrameHandler::new(FrameClock::new(), |_, _, _| {
+            unreachable!("ping is handled at intake")
+        }));
+        let live = Arc::new(AtomicBool::new(true));
+        let session = service
+            .sessions()
+            .open(caller(
+                live.clone(),
+                Instant::now() + Duration::from_secs(60),
+            ))
+            .unwrap();
+        let (output, mut received, _gone) = sink();
+        let mut call = submit(&service, &session, None, output, "ping").await;
+        let event = received.recv().await.unwrap();
+        let _: () = call.reply().await.unwrap();
+        assert!(event.is_live());
+        match retirement {
+            "cancel" => call.cancel(),
+            "close" => service.sessions().close(&session),
+            "revoke" => live.store(false, Ordering::SeqCst),
+            _ => unreachable!(),
+        }
+        assert!(
+            !event.is_live(),
+            "{retirement} retires the retained output proof"
+        );
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn revoked_or_expired_authority_stops_snapshot_before_handler_or_output() {
     for expire in [false, true] {
@@ -240,7 +272,7 @@ async fn event_replacement_fences_running_producer_without_cancelling_reply() {
     let fresh_sent = fresh.events().push(json!({"type":"models.changed"}));
     // Release blocking work before asserting observations, including failures.
     release.send(()).unwrap();
-    let answer = reply(&mut call).await;
+    reply(&mut call).await;
     assert!(
         !stale_sent,
         "old producer reached the replacement event stream"
@@ -248,7 +280,6 @@ async fn event_replacement_fences_running_producer_without_cancelling_reply() {
     fresh_sent.unwrap();
     assert!(old_output.try_recv().is_err());
     assert!(new_output.try_recv().unwrap().is_live());
-    assert_eq!(answer["ok"], true);
     assert!(timeout(WATCHDOG, responses.recv())
         .await
         .unwrap()
@@ -295,10 +326,10 @@ async fn cancelled_queued_mutation_starts_no_effect_and_releases_its_budget() {
     let queued = submit(&service, &session, None, queued_sink, "user.present").await;
     drop(queued);
     release.send(()).unwrap();
-    assert_eq!(reply(&mut blocking).await["ok"], true);
+    reply(&mut blocking).await;
     let (sentinel_sink, _sentinel_output, _sentinel_dropped) = sink();
     let mut sentinel = submit(&service, &session, None, sentinel_sink, "user.present").await;
-    assert_eq!(reply(&mut sentinel).await["ok"], true);
+    reply(&mut sentinel).await;
     timeout(WATCHDOG, queued_dropped)
         .await
         .expect("dead queued caller must release its budget")
@@ -397,10 +428,9 @@ async fn cancelling_newest_folded_caller_still_serves_the_live_older_caller() {
     let folds = service.dispatcher.folded_reads_waiting();
     drop(newer);
     release.send(()).unwrap();
-    assert_eq!(reply(&mut blocking).await["ok"], true);
+    reply(&mut blocking).await;
     assert_eq!(folds, 1, "requests must share one queued computation");
-    let answer = reply(&mut older).await;
-    assert_eq!(answer["ok"], true);
+    reply(&mut older).await;
     assert_eq!(
         effects.load(Ordering::SeqCst),
         2,
@@ -449,7 +479,7 @@ async fn webrtc_intake_and_shared_entry_consume_the_same_dispatch_worker() {
     let mut shared = submit(&service, &session, None, output, "user.present").await;
     let before_release = effects.load(Ordering::SeqCst);
     release.send(()).unwrap();
-    assert_eq!(reply(&mut shared).await["ok"], true);
+    reply(&mut shared).await;
     let legacy = timeout(WATCHDOG, async {
         loop {
             let encrypted = wire.outbound.recv().await.unwrap();
@@ -520,14 +550,19 @@ async fn real_app_handler_respects_shared_update_exclusion_while_ping_survives()
         updates.tick(false).await.unwrap().state,
         UpdateState::Installing
     );
-    let (output, _received, _gone) = sink();
+    let (output, mut received, _gone) = sink();
     let mut mutation = submit(&service, &session, None, output, "user.present").await;
-    let refused = reply(&mut mutation).await;
+    reply(&mut mutation).await;
+    let refused = received.recv().await.unwrap().payload().clone();
     assert_eq!(refused["ok"], false);
     assert_eq!(refused["error_code"], "busy");
-    let (output, _received, _gone) = sink();
+    let (output, mut received, _gone) = sink();
     let mut ping = submit(&service, &session, None, output, "ping").await;
-    assert_eq!(reply(&mut ping).await["result"]["pong"], true);
+    reply(&mut ping).await;
+    assert_eq!(
+        received.recv().await.unwrap().payload()["result"]["pong"],
+        true
+    );
     assert!(updates.admission().try_enter().is_none());
 }
 

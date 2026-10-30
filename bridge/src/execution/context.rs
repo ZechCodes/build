@@ -98,13 +98,13 @@ impl CallContext {
     }
     pub(crate) fn with_reply_observer(
         mut self,
-        observe: impl Fn(&Value) + Send + Sync + 'static,
+        observe: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         let send = self.reply.clone();
         self.reply = Arc::new(move |value| {
-            let accepted = send(value.clone());
+            let accepted = send(value);
             if accepted {
-                observe(&value);
+                observe();
             }
             accepted
         });

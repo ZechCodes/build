@@ -20,7 +20,7 @@ pub struct ExecutionService {
 #[must_use = "retain the call through response completion; dropping cancels delivery"]
 pub struct Call {
     request: RequestContext,
-    outcome: oneshot::Receiver<Value>,
+    outcome: oneshot::Receiver<()>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -30,12 +30,12 @@ pub enum CallError {
 }
 
 impl Call {
-    pub async fn reply(&mut self) -> Result<Value, CallError> {
-        let value = (&mut self.outcome).await.map_err(|_| CallError::Closed)?;
+    pub async fn reply(&mut self) -> Result<(), CallError> {
+        (&mut self.outcome).await.map_err(|_| CallError::Closed)?;
         if !self.request.reply().is_live() {
             return Err(CallError::Closed);
         }
-        Ok(value)
+        Ok(())
     }
     pub fn cancel(&self) {
         self.request.cancellation().cancel();
@@ -90,9 +90,9 @@ impl ExecutionService {
         let frame = invocation.into_frame(context.session().id(), context.request_order());
         let (done, outcome) = oneshot::channel();
         let done = Arc::new(Mutex::new(Some(done)));
-        let sender = CallContext::from_request(&context).with_reply_observer(move |value| {
+        let sender = CallContext::from_request(&context).with_reply_observer(move || {
             if let Some(done) = done.lock().unwrap().take() {
-                let _ = done.send(value.clone());
+                let _ = done.send(());
             }
         });
         let call = Call {

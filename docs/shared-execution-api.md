@@ -22,8 +22,9 @@ adapter creates another application execution pool.
   method is enabled by this extraction; the existing allowlist remains empty.
 - `ExecutionService::submit(RequestContext, Invocation).await` admits work and
   returns `Call`. It does not imply a durable acknowledgment. `Call::reply`
-  observes the final application reply; adapters can instead await their own
-  reply sink. Execution progresses without polling that convenience future.
+  observes final reply acceptance without carrying its payload; adapters can
+  instead await their own reply sink. Execution progresses without polling that
+  convenience future.
 - Retain `Call` through response completion. Dropping it cancels request
   interest and output, while running effects and deferred settlement finish.
   The worker retains the reply sink and its resource guards until actual
@@ -151,8 +152,8 @@ let _completion = call.reply().await?;
 has the same signature. `Call::context()` exposes the captured RequestContext,
 `Call::cancel()` cancels that request, and dropping Call has the same interest
 retirement effect. `Call::reply(&mut self)` returns
-`Result<serde_json::Value, CallError>` asynchronously only after sink acceptance
-and a fresh authority check. This value signals completion; deliver the sink's
+`Result<(), CallError>` asynchronously only after sink acceptance
+and a fresh authority check. Deliver the sink's
 `EncodedEvent` through its checked native write path, since authority can retire
 after `reply` returns. The adapter may instead await its own final-event sink
 while retaining Call. `EncodedEvent: Clone` owns

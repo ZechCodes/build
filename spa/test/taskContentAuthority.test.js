@@ -85,3 +85,9 @@ it("rejects a pre-reset generation ticket and never adopts its ordinary proof af
   expect(result.acceptedHeader).toBe(false); expect(result.acceptedBody).toBe(false);
   expect(result.task?.__task_content_cache?.body).toBeUndefined();
 });
+
+it("refuses shared content counter overflow without replacing the stored safe high-water value", async () => {
+  await cache.writeCached(order.TASK_READ_COUNT_ADDRESS, Number.MAX_SAFE_INTEGER);
+  await expect(content.captureTaskContentRead(scope)).rejects.toThrow(/counter|allocation/i);
+  expect((await cache.readCached(order.TASK_READ_COUNT_ADDRESS)).value).toBe(Number.MAX_SAFE_INTEGER);
+});

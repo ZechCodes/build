@@ -95,7 +95,7 @@ function observation(scope, task, { contentRead, context, acknowledgment }) {
 
 function observedSource(scope, task, contentRead, context, acknowledged) {
   const ticket = contentRead.ticket;
-  const normalized = task.watched === false ? clearedUnwatch(task) : task;
+  const normalized = task.watched === false ? clearWatchDependents(task) : task;
   const proof = { ...sourceIdentity(scope, task, context, contentRead.readOrder),
     source: acknowledged ? "ack" : "read", uncertain: ticket.watchUncertain !== false || context.watchUncertain !== false,
     lineage: lineage(normalized) };
@@ -107,7 +107,7 @@ function sourceIdentity(scope, task, context, readOrder) {
     ...Object.fromEntries(ids.map((key) => [key, context[key]])), observed_read_order: readOrder };
 }
 
-function clearedUnwatch(task) {
+function clearWatchDependents(task) {
   const next = { ...task };
   for (const field of dependentFields) delete next[field];
   return next;
@@ -157,7 +157,7 @@ function selectedTask(held, incoming, selected, policy, fallback, omitLineage) {
   for (const field of ["read_through", "dismissed_through"]) {
     task = selectedMarker(task, held, incoming, field, policy);
   }
-  if (omitLineage || task.watched === false) task = clearedUnwatch(task);
+  if (omitLineage || task.watched === false) task = clearWatchDependents(task);
   delete task[TASK_WATCH_CACHE]; delete task[TASK_FAMILY_CACHE];
   if (selected) task[TASK_WATCH_CACHE] = selected.proof;
   return task;

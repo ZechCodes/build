@@ -1,7 +1,7 @@
 // Shared watch coordination is independent of ordinary content and server
 // bases. Missing/reset coordination is unknown, never proof of no live owner.
 import { DELETE_CACHED_RECORD, mergeCachedRecordsTogether, readCached } from "./localCache.js";
-import { watchIntentBinding, withTaskWatchIntent, sameWatchIntent, reconcileTaskWatchIntent } from "./taskWatchIntents.js";
+import { watchIntentBinding, withTaskWatchIntent, sameWatchIntent, reconcileTaskWatchIntent, selectTaskWatchIntentGuard } from "./taskWatchIntents.js";
 import { withTaskWatchIntentNote } from "./taskContentAuthority.js";
 import { randomToken } from "./idbRecords.js";
 import { nextTaskReadTicket, readsAddress, withWritten, TASK_CONTENT_GENERATION_ADDRESS,
@@ -25,6 +25,17 @@ export function blindTaskWatchChanged(before, after) {
   return Boolean(before && before.id === after?.id && ((before.watched === true) !== (after.watched === true)
     || Object.hasOwn(before, "watch_started_after") !== Object.hasOwn(after, "watch_started_after")
     || !Object.is(before.watch_started_after, after.watch_started_after)));
+}
+
+// An absent replica has no before bytes, but an existing exact same-task
+// intent can still receive an older acknowledgment. Only that current binding
+// makes explicit unowned watch paint a blind-interference event.
+export function blindTaskWatchInterference(scope, before, after, context) {
+  if (blindTaskWatchChanged(before, after)) return true;
+  if (before?.id === after?.id || typeof after?.watched !== "boolean") return false;
+  if (!Number.isSafeInteger(context?.watchPendingCount) || context.watchPendingCount <= 0) return false;
+  const protection = selectTaskWatchIntentGuard(scope, after.id, [], context.watchIntentOf?.(after.id), context);
+  return Boolean(protection.pending);
 }
 
 export function retireTaskWatchFacts(task) {

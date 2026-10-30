@@ -28,7 +28,7 @@ import { mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskConte
 import { summaryTaskReadMutation, withTaskReadFacts, sameTaskReadFacts } from "./taskSummaryCache.js";
 import { reconcileTaskReadFacts, hasTaskWatchSnapshot } from "./taskWatchFacts.js";
 import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent, selectTaskWatchIntentGuard } from "./taskWatchIntents.js";
-import { blindTaskWatchChanged, retireTaskWatchFacts } from "./taskWatchAuthority.js";
+import { blindTaskWatchInterference, retireTaskWatchFacts } from "./taskWatchAuthority.js";
 const normalizedAddress = (deviceId, projectId, taskId) => ({ deviceId, entityId: projectId, kind: "tracker-summary", sub: taskId });
 
 export const TRACKER_TASKS_KIND = "tracker-tasks";
@@ -489,7 +489,7 @@ function isBlindTaskWatchWrite(held, raw, address, context, contentRead) {
   if (contentRead || isObservedTaskContent(raw)) return false;
   const scope = { deviceId: address.deviceId, projectId: address.entityId };
   const intent = reconcileTaskWatchIntent(scope, raw, context.watchIntentOf?.(raw.id), context);
-  return !intent.retired && blindTaskWatchChanged(held, raw) && !hasTaskWatchSnapshot(raw);
+  return !intent.retired && blindTaskWatchInterference(scope, held, raw, context) && !hasTaskWatchSnapshot(raw);
 }
 
 

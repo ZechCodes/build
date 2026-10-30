@@ -10,7 +10,7 @@ import { captureTaskContentRead, mergeTaskContentRecordsTogether, observeTaskCon
   taskContentFragment, withTaskContentComponents, sameTaskContentComponent } from "./taskContentAuthority.js";
 import { summaryPatch, fullTaskSummary } from "./taskSummaryProjection.js";
 import { reconcileTaskReadFacts, hasTaskWatchSnapshot, TASK_WATCH_CACHE, TASK_FAMILY_CACHE } from "./taskWatchFacts.js";
-import { blindTaskWatchChanged, retireTaskWatchFacts } from "./taskWatchAuthority.js";
+import { blindTaskWatchInterference, retireTaskWatchFacts } from "./taskWatchAuthority.js";
 import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent } from "./taskWatchIntents.js";
 export { reconcileTaskReadFacts } from "./taskWatchFacts.js";
 
@@ -436,7 +436,7 @@ function summaryMutationProjection(before, options, context) {
   const intent = summaryMutationIntent(task, fullTask, scope, context);
   const source = intent.task, patched = mutationSummaryPatch(before?.task, source, task, fullTask);
   return { source, patched, retireWatch: !intent.retired && !hasTaskWatchSnapshot(source)
-    && blindSummaryWatchChanged(before, patched, options) };
+    && blindSummaryWatchChanged(before, patched, options, context) };
 }
 
 function summaryMutationIntent(task, fullTask, scope, context) {
@@ -450,8 +450,8 @@ function mutationSummaryPatch(held, source, task, fullTask) {
   return patched;
 }
 
-const blindSummaryWatchChanged = (before, patched, options) => !options.rawObservation && !options.contentRead
-  && blindTaskWatchChanged(before?.task, patched);
+const blindSummaryWatchChanged = (before, patched, options, context) => !options.rawObservation && !options.contentRead
+  && blindTaskWatchInterference(options.scope, before?.task, patched, context);
 
 export function summaryTaskMutation(scope, task, read, { accept = () => true, fullTask = false, confirmedAction = false, issuedRead, contentRead, rawObservation = false } = {}) {
   validateSummaryMutation(scope, task, read, fullTask, confirmedAction);

@@ -38,6 +38,19 @@ canonical record baseline and existing mutation guards still match. A summary
 can establish header provenance, never body or history provenance. Unknown
 content may remain painted while an admitted owner obtains a valid observation.
 
+A genuinely issued raw observation can establish a new, absent header under
+the captured domain fences. Existing unknown or retired headers are distinct
+from absence, including same-task rows in the action transaction's already-read
+replicas. Retained paint comes from an actual row; other rows provide separate
+admission guards rather than a synthetic header assembled from their clocks,
+timestamps, and bytes. This does not establish a new body or history observation.
+
+An unchanged cached copy cannot lower a newer accepted component clock. Header
+and body provenance are selected separately; body associations follow the body
+source. Changed local copies retire affected authority. A full-task shape flag
+does not supply observation authority: blind creation remains valid unproven
+paint, while a refused raw observation cannot fall back to a blind write.
+
 ## Producer and writer boundaries
 
 The repair covers the seven source groups approved on

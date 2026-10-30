@@ -75,3 +75,28 @@ it.each(["fresh", "pending"])("does not certify ordinary full content as a compl
     if (owner) await watch.settleTaskWatchMutation(owner, { rollback: true });
   }
 });
+
+it("preserves an actual terminal watch-intent note when a conditional valid-lineage publication advances its read note", async () => {
+  const summaries = await import("../src/core/taskSummaryCache.js");
+  // Adapter control only: fresh watch authority remains unknown in production.
+  // This stub admits the full publication so its independent note write runs.
+  vi.spyOn(summaries, "reconcileTaskReadFacts").mockReturnValue({
+    task: incoming, acceptedWatch: false, watchCertain: true, needsUnreadRefresh: true,
+  });
+  const state = await canonicalOperation();
+  const watch = await import("../src/core/taskWatchAuthority.js");
+  const { taskWatchIntentAddress } = await import("../src/core/taskReadOrder.js");
+  const noteAddress = taskWatchIntentAddress(scope, taskId);
+  const owner = await watch.beginTaskWatchMutation(scope, taskId, { watched: false, metadataOnly: true });
+  expect(owner).not.toBeNull();
+  await watch.settleTaskWatchMutation(owner, { rollback: true });
+  const before = (await state.cache.readCanonicalCached(noteAddress)).value;
+  expect(before.latest_watch_intent).toEqual(expect.objectContaining({ taskId, disposition: "rejected" }));
+  await state.refresh();
+  const after = (await state.cache.readCanonicalCached(noteAddress)).value;
+  expect(after.latest_watch_intent).toEqual(before.latest_watch_intent);
+  expect(after.rows[taskId]).toBeGreaterThan(before.rows?.[taskId] || 0);
+  expect((await state.cache.readCanonicalCached(state.address)).value.timeline).toEqual(timeline);
+  expect((await state.operations.get(state.operationId)).overlayActive).toBe(false);
+  expect(state.authority.call).toHaveBeenCalledTimes(1);
+});

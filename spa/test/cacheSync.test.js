@@ -1597,18 +1597,29 @@ describe("a refresh requested during a pass", () => {
     tasks: ["tracker-tasks", ""], files: ["tree", ""], terminals: ["terminals", ""],
   };
   const cleanupTask = () => trackerTask({ id: "new-task", project_id: "new-owner" });
+  // TaskView omits false watched and absent floors on the wire; full cache
+  // observations decode exactly these defaults (trackerCache.taskFactsSource).
+  const decodedCleanupTask = () => ({ ...cleanupTask(), watched: false, read_through: null, dismissed_through: null });
   const assertCleanupValue = (kind, variant, value) => {
     const field = { state: "branch", thread: "items", git: "commits", tasks: "tasks", files: "entries", terminals: "tabs" }[kind];
     const expected = {
       "state-only": "new-branch", "thread-append": [cleanupMessage(1), cleanupMessage(2), cleanupMessage(3)],
       "thread-trim": [cleanupMessage(2)], "git-log-only": [{ hash: "new-commit" }],
-      "tasks-invalidation": [cleanupTask()],
+      "tasks-invalidation": [decodedCleanupTask()],
       "files-root": [{ name: "new-file" }], "files-paths": [{ name: "new-file" }], "files-truncated": [{ name: "new-file" }],
       "terminals-only": [{ term_id: "new-tab" }],
     }[variant];
     const publicValue = kind === "tasks"
-      ? value?.tasks?.map(({ __task_content_cache: _content, ...task }) => task) : value?.[field];
+      ? value?.tasks?.map(({ __task_content_cache: _content, __task_watch_cache: _watch, ...task }) => task) : value?.[field];
     expect(publicValue).toEqual(expected);
+    if (kind === "tasks") {
+      const task = value.tasks[0];
+      expect(task.__task_watch_cache).toMatchObject({
+        scope: { deviceId: "dev-1", projectId: "new-owner" }, taskId: "new-task", source: "read", uncertain: true,
+        lineage: [["watched", true, false], ["watch_started_after", false, undefined]],
+      });
+      expect(task.__task_watch_cache.observed_read_order).toBeGreaterThan(0);
+    }
   };
 
   it.each(Object.entries(cleanupPushCases).flatMap(([kind, variants]) => variants.map((variant) => [kind, variant])))
@@ -1621,6 +1632,13 @@ describe("a refresh requested during a pass", () => {
         thread_id: "t-new", thread_generation_revision: 1, deliveredSequence: 2, items: [cleanupMessage(1), cleanupMessage(2)], total: 2,
       });
       await cache.writeCached({ deviceId: "dev-1", entityId: "new-owner", kind: "tree" }, { path: "", entries: [] });
+      if (kind === "tasks") {
+        const serializedTask = JSON.parse(JSON.stringify(cleanupTask()));
+        expect(serializedTask).toEqual(cleanupTask());
+        expect(serializedTask).not.toHaveProperty("watched");
+        expect(serializedTask).not.toHaveProperty("read_through");
+        expect(serializedTask).not.toHaveProperty("dismissed_through");
+      }
       script["tasks.list"] = () => ({ tasks: [cleanupTask()] });
       script["fs.tree"] = () => ({ path: "", entries: [{ name: "new-file" }] });
       const held = holdNextRead("board.list");

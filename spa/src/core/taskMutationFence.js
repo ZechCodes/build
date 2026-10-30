@@ -17,7 +17,7 @@ const taskWrites = new Set([
 const states = new Map();
 const newEpoch = () => Object.freeze({});
 function stateFor(deviceId) {
-  if (!states.has(deviceId)) states.set(deviceId, { epoch: newEpoch(), pending: 0, listeners: new Set() });
+  if (!states.has(deviceId)) states.set(deviceId, { epoch: newEpoch(), pending: 0, tasks: new Map(), listeners: new Set() });
   return states.get(deviceId);
 }
 
@@ -28,15 +28,25 @@ export const taskMutationEpoch = (deviceId) => stateFor(deviceId).epoch;
 /** Number of outstanding task mutations; readers admit dispatch only at zero. */
 export const taskMutationsPending = (deviceId) => stateFor(deviceId).pending;
 
+const taskKey = ({ projectId, taskId } = {}) => typeof projectId === "string" && projectId
+  && typeof taskId === "string" && taskId ? JSON.stringify([projectId, taskId]) : null;
+
+/** Local ordinary-content protection for a lifecycle which knows its task.
+ * This count does not establish shared-cache or server authority. */
+export const taskMutationsPendingFor = (scope, taskId) => {
+  const key = taskKey({ projectId: scope?.projectId, taskId });
+  return key && states.get(scope?.deviceId)?.tasks.get(key) || 0;
+};
+
 export function subscribeTaskMutations(deviceId, listener) {
   const state = stateFor(deviceId);
   state.listeners.add(listener);
   return () => state.listeners.delete(listener);
 }
 
-function announce(state, phase) {
+function announce(state, phase, task) {
   state.epoch = newEpoch();
-  const event = { epoch: state.epoch, pending: state.pending, phase };
+  const event = { epoch: state.epoch, pending: state.pending, phase, ...(task ? { task } : {}) };
   for (const listener of state.listeners) {
     try { listener(event); }
     catch { /* A refresh observer must never change the mutation's outcome. */ }
@@ -47,15 +57,18 @@ function announce(state, phase) {
  * returned promise/value and synchronous exception, without retrying anything.
  * Rejection can mean an uncertain write, so it fences old reads just as an
  * acknowledgment does. Neither outcome supplies an authoritative query basis. */
-export function wrapTaskMutationCall(deviceId, method, dispatch) {
+export function wrapTaskMutationCall(deviceId, method, dispatch, task) {
   if (!isTaskMutationMethod(method)) return dispatch();
+  const key = taskKey(task);
+  if (task !== undefined && !key) throw new Error("Expected an exact task mutation identity");
+  const identity = key ? { projectId: task.projectId, taskId: task.taskId } : undefined;
   const state = stateFor(deviceId);
   state.pending += 1;
-  announce(state, "pending");
+  announce(state, "pending", updateTaskPending(state, identity, key, 1));
   const settle = () => {
     if (states.get(deviceId) !== state) return;
     state.pending -= 1;
-    announce(state, "settled");
+    announce(state, "settled", updateTaskPending(state, identity, key, -1));
   };
   try {
     const result = dispatch();
@@ -66,6 +79,14 @@ export function wrapTaskMutationCall(deviceId, method, dispatch) {
     settle();
     throw error;
   }
+}
+
+function updateTaskPending(state, task, key, change) {
+  if (!key) return undefined;
+  const pending = (state.tasks.get(key) || 0) + change;
+  if (pending) state.tasks.set(key, pending);
+  else state.tasks.delete(key);
+  return { projectId: task.projectId, taskId: task.taskId, pending };
 }
 
 /** Reconnection changes read authority, while calls already accepted by the

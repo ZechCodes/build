@@ -572,7 +572,8 @@ function contentDetail(detail, record, headerBarrier, context, address, contentR
   if (!usableDetailSelection(result, held, contentRead)) return null;
   const retireWatch = blindDetailWatchChanged(held, record, contentRead, address, context);
   const facts = taskFactsForWrite(held?.task, record.task, address, context, contentRead, projection || headerBarrier);
-  return { values: [publishedDetail(held, record, result, contentRead, facts), null, null], retire: result.retired, retireWatch };
+  return { values: [publishedDetail(held, record, result, contentRead, facts), null, null], retire: result.retired, retireWatch,
+    ordinaryDeferred: result.ordinaryDeferred };
 }
 
 function detailContentSelection(detail, record, headerBarrier, context, address, contentRead) {
@@ -593,22 +594,37 @@ function fullReadDetail(detail, shared, record, context, address, contentRead, m
   // An addressed baseline is an ordinary-content guard. Independent fields
   // retain their established authority when a local write changed that guard.
   const ordinaryRead = contentRead.written === recordWriteOf(detail) ? contentRead : { ...contentRead, ticket: null };
-  const normalized = mutation.reduce(shared, { context, headerBarrier: detail?.value?.task, ordinaryRead });
+  let ordinaryDeferred = false;
+  const normalized = mutation.reduce(shared, { context, headerBarrier: detail?.value?.task, ordinaryRead,
+    onOrdinaryDeferred: () => { ordinaryDeferred = true; } });
   if (!normalized) return null;
   const next = contentDetail(detail, record, normalized[0].task, context, address, contentRead, normalized[0].task);
-  return next ? { ...next, values: [...next.values.slice(0, 2), ...normalized] } : { values: [null, null, ...normalized] };
+  const selected = next ? { ...next, values: [...next.values.slice(0, 2), ...normalized] } : { values: [null, null, ...normalized] };
+  return { ...selected, ordinaryDeferred: ordinaryDeferred || next?.ordinaryDeferred === true };
 }
 
-export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = () => true, detailBasis, contentRead } = {}) => {
+/** onOrdinaryDeferred is a local scheduling hint after a committed write,
+ * never authority. Its mounted caller still checks its captured owner. */
+export const writeTaskRecord = async (deviceId, projectId, taskId, record,
+  { accept = () => true, detailBasis, contentRead, onOrdinaryDeferred } = {}) => {
   const address = taskAddress(deviceId, projectId, taskId), scope = { deviceId, projectId };
   const mutation = addressedFullRead(contentRead, address) ? summaryTaskReadMutation(scope, record.task, contentRead) : null;
   const shared = mutation?.addresses || [normalizedAddress(deviceId, projectId, taskId)];
-  return mergeTaskContentRecordsTogether(scope, [address, readsAddress(address), ...shared], ([detail, note, ...records], context) => {
+  let ordinaryDeferred = false;
+  const written = await mergeTaskContentRecordsTogether(scope, [address, readsAddress(address), ...shared], ([detail, note, ...records], context) => {
+    ordinaryDeferred = false;
     if (!detailAccepted(detail?.value, note, taskId, { accept, detailBasis })) return null;
     const current = withTaskWatchIntentNote(context, taskId, note?.value);
-    return mutation ? fullReadDetail(detail, records, record, current, address, contentRead, mutation)
+    const selected = mutation ? fullReadDetail(detail, records, record, current, address, contentRead, mutation)
       : contentDetail(detail, record, records[0]?.value?.task, current, address, contentRead);
+    ordinaryDeferred = selected?.ordinaryDeferred === true;
+    return selected;
   });
+  if (written && ordinaryDeferred) {
+    try { onOrdinaryDeferred?.(); }
+    catch { /* A local refresh observer cannot change a committed write. */ }
+  }
+  return written;
 };
 
 /** Only an accepted read report may raise the cached floor. Do not touch the

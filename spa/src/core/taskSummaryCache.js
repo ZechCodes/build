@@ -376,7 +376,7 @@ function summaryContent(held, row, source, { context, address, written, contentR
   const selected = reconcileTaskContentWrite(baseline, candidate, { context, address, heldWritten: written, headerBarrier, headerGuards });
   const task = selected.task || baseline;
   return { row: { ...row, task: task ? withTaskContentComponents(row.task, task, "summary") : null, contentAccepted: selected.acceptedHeader },
-    retire: selected.retired };
+    retire: selected.retired, ordinaryDeferred: selected.ordinaryDeferred };
 }
 
 /** Commit membership/cursor, summaries and shared identities together. Failure
@@ -484,7 +484,8 @@ export function summaryTaskReadMutation(scope, task, contentRead) {
     reduce: (records, options) => reduceSummaryRead(records, { ...options, scope, task, contentRead, address }) };
 }
 
-function reduceSummaryRead([held, invalidation], { scope, task, contentRead, ordinaryRead = contentRead, address, context, headerBarrier }) {
+function reduceSummaryRead([held, invalidation], { scope, task, contentRead, ordinaryRead = contentRead, address, context, headerBarrier,
+  onOrdinaryDeferred }) {
   const before = held?.value, source = fullActionSource(task);
   const patched = summaryPatch(before?.task, source, true), read = contentRead.readOrder;
   const row = observedSummaryValue(before, patched, source, read,
@@ -492,6 +493,7 @@ function reduceSummaryRead([held, invalidation], { scope, task, contentRead, ord
   const selected = summaryContent(before, row, patched, { context, address, written: recordWriteOf(held),
     contentRead: ordinaryRead, headerBarrier, headerSource: fullTaskSummary(task) });
   if (!selected.row.task) return null;
+  if (selected.ordinaryDeferred) onOrdinaryDeferred?.();
   return readObservationValues(before, selected.row, invalidation?.value, read);
 }
 

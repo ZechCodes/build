@@ -2,7 +2,7 @@
 // describe server revisions, timeline completeness, or opaque projection bases.
 import { mergeCachedRecordsTogether } from "./localCache.js";
 import { randomToken } from "./idbRecords.js";
-import { taskMutationsPending } from "./taskMutationFence.js";
+import { taskMutationsPending, taskMutationsPendingFor } from "./taskMutationFence.js";
 import { nextTaskRead, nextTaskReadTicket, TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress, taskWatchControlAddress, initialTaskWatchControl,
   taskWatchIntentAddress } from "./taskReadOrder.js";
 export { TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress, taskWatchControlAddress };
@@ -23,9 +23,18 @@ const validScope = (scope) => typeof scope.deviceId === "string" && typeof scope
 
 export async function captureTaskContentRead(place, { revalidate = false } = {}) {
   const { scope, address } = capturePlace(place, revalidate);
+  const localMutation = captureLocalTaskMutation(scope, address);
   const allocation = await nextTaskReadTicket(scope, { address });
   const readOrder = allocation?.readOrder ?? await nextTaskRead();
-  return capturedRead(allocation, address, revalidate, readOrder);
+  const read = capturedRead(allocation, address, revalidate, readOrder);
+  if (localMutation) read.localOrdinaryMutation = { ...localMutation,
+    pending: localMutation.pending || taskMutationsPendingFor(scope, localMutation.taskId) > 0 };
+  return read;
+}
+
+function captureLocalTaskMutation(scope, address) {
+  if (address?.kind !== "tracker-task" || !address.sub) return null;
+  return { ...scope, taskId: address.sub, pending: taskMutationsPendingFor(scope, address.sub) > 0 };
 }
 
 function capturePlace(place, revalidate) {
@@ -318,6 +327,22 @@ const mismatchedTask = (held, candidate) => !candidate?.id || held?.id && held.i
 const staleAbsent = (held, observation, options) => observation && !held
   && !validObservation(observation, options.context, options.address, options.heldWritten);
 
+function capturedTaskPending(read, scope, taskId) {
+  const local = read?.localOrdinaryMutation;
+  return local?.pending === true && local.deviceId === scope.deviceId
+    && local.projectId === scope.projectId && local.taskId === taskId;
+}
+
+function pendingRetiredHeader(held, incoming, observation, options) {
+  if (!validObservation(observation, options.context, options.address, options.heldWritten)) return false;
+  const scope = { deviceId: options.address?.deviceId, projectId: options.address?.entityId };
+  const pending = capturedTaskPending(observation.contentRead, scope, incoming.id)
+    || taskMutationsPendingFor(scope, incoming.id) > 0;
+  if (!pending) return false;
+  return [held, options.headerBarrier, ...(options.headerGuards || [])]
+    .some((task) => task?.id === incoming.id && typeof cacheOf(task).retired?.header === "string");
+}
+
 export function reconcileTaskContent(held, candidate, options = {}) {
   if (mismatchedTask(held, candidate)) throw new Error("Mismatched task content identity");
   const observation = candidate[OBSERVATION];
@@ -325,14 +350,15 @@ export function reconcileTaskContent(held, candidate, options = {}) {
     return { task: undefined, acceptedHeader: false, acceptedBody: false, needsFullRefresh: true, retired: false };
   }
   const incoming = { ...candidate }; delete incoming[OBSERVATION];
-  const header = componentWinner(held, incoming, "header", observation, options);
+  const ordinaryDeferred = pendingRetiredHeader(held, incoming, observation, options);
+  const header = !ordinaryDeferred && componentWinner(held, incoming, "header", observation, options);
   const accepted = { header, body: header && componentWinner(held, incoming, "body", observation, options) };
   const task = selectedTask(held, incoming, observation, accepted, options);
   const metadata = observationMetadata(held, incoming, { ...observation, updated_at: incoming.updated_at }, accepted, options.context, options.headerBarrier, options.address);
   task[TASK_CONTENT_CACHE] = metadata;
   const needsFullRefresh = observation?.coverage === "full" && !accepted.body || fullRefreshNeeded(task, options.headerBarrier);
   metadata.needs_full_refresh = needsFullRefresh;
-  return { task, acceptedHeader: accepted.header, acceptedBody: accepted.body, needsFullRefresh, retired: false };
+  return { task, acceptedHeader: accepted.header, acceptedBody: accepted.body, needsFullRefresh, retired: false, ordinaryDeferred };
 }
 
 const retiredBarrier = (metadata, barrier) => Boolean(barrier.retired?.header

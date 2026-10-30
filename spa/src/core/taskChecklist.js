@@ -97,7 +97,7 @@ export function createTaskChecklist({ deviceId, projectId, taskId, call, refresh
           void refresh();
           return false;
         });
-      });
+      }, { projectId, taskId });
     },
     dispose() {
       shared.listeners.delete(onPending);

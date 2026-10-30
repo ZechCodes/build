@@ -20,3 +20,19 @@ export function summaryPatch(held, incoming, fullTask = false) {
   }
   return next;
 }
+
+/** A full TaskView is a different wire shape from a summary. Project only
+ * that response's ordinary fields: its complete waiting_on array proves the
+ * waiting count, while blocks can be paged and use their explicit count.
+ * summary_truncated belongs to TaskSummaryView and has no full-view oracle. */
+export function fullTaskSummary(incoming) {
+  const next = summaryPatch(undefined, incoming, true);
+  delete next.summary_truncated;
+  if (Array.isArray(incoming.attachments)) next.attachment_count = incoming.attachments.length;
+  else delete next.attachment_count;
+  if (next.dependencies) {
+    delete next.dependencies.waiting_on_count;
+    if (Array.isArray(incoming.dependencies?.waiting_on)) next.dependencies.waiting_on_count = incoming.dependencies.waiting_on.length;
+  }
+  return next;
+}

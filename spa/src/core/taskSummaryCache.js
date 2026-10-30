@@ -8,7 +8,7 @@ import { preserveTaskReviewSummary } from "./trackerCache.js";
 import { recordWriteOf } from "./localCache.js";
 import { captureTaskContentRead, mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskContentWrite,
   taskContentFragment, withTaskContentComponents, sameTaskContentComponent } from "./taskContentAuthority.js";
-import { summaryPatch } from "./taskSummaryProjection.js";
+import { summaryPatch, fullTaskSummary } from "./taskSummaryProjection.js";
 
 export const TASK_SUMMARY_KIND = "tracker-summary";
 export const TASK_SUMMARY_QUERY_KIND = "tracker-summary-query";
@@ -291,9 +291,9 @@ function summaryValue(held, task, read, counters = { source: task, fullTask: fal
 const summaryContentBaseline = (held, barrier) => held?.task
   || (barrier && withTaskContentComponents(summaryPatch(undefined, barrier, true), barrier, "summary"));
 
-function summaryContent(held, row, source, { context, address, written, contentRead, headerBarrier, headerGuards, observed = true } = {}) {
+function summaryContent(held, row, source, { context, address, written, contentRead, headerBarrier, headerGuards, headerSource, observed = true } = {}) {
   const baseline = summaryContentBaseline(held, headerBarrier);
-  const projected = summaryPatch(baseline, source, true);
+  const projected = headerSource ?? summaryPatch(baseline, source, true);
   if (source?.__task_content_cache) projected.__task_content_cache = source.__task_content_cache;
   const candidate = observed ? observeTaskContent(projected, { contentRead, coverage: "summary" }) : projected;
   const selected = reconcileTaskContentWrite(baseline, candidate, { context, address, heldWritten: written, headerBarrier, headerGuards });
@@ -342,6 +342,7 @@ export function writeSummaryTask(scope, task, read, options = {}) {
  * and an action acknowledgment never supplies a projection basis.
  * fullTask explicitly selects authoritative omissions; compact patches retain
  * fields they omit. Both paths use the same PR, marker and counter authority. */
+const fullHeaderSource = (task, fullTask) => fullTask ? fullTaskSummary(task) : undefined;
 const fullActionSource = (task) => ({ read_through: null, watch_started_after: null, dismissed_through: null, ...task });
 
 function reduceSummaryMutation(records, options, { headerBarrier, headerGuards }) {
@@ -353,7 +354,8 @@ function reduceSummaryMutation(records, options, { headerBarrier, headerGuards }
   if (task.__task_content_cache) patched.__task_content_cache = task.__task_content_cache;
   const row = summaryValue(before, patched, read, { ...options, source, action: true });
   const selected = summaryContent(before, row, patched, { context: fragment.context(shared), address,
-    written: recordWriteOf(held), contentRead: options.contentRead, headerBarrier, headerGuards, observed: options.rawObservation || Boolean(options.contentRead) });
+    written: recordWriteOf(held), contentRead: options.contentRead, headerBarrier, headerGuards, observed: options.rawObservation || Boolean(options.contentRead),
+    headerSource: fullHeaderSource(task, fullTask) });
   return [selected.row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) },
     ...fragment.finish(shared, { retire: selected.retire })];
 }
@@ -382,7 +384,7 @@ function reduceSummaryRead([held, invalidation], { task, contentRead, ordinaryRe
   const patched = summaryPatch(before?.task, source, true), read = contentRead.readOrder;
   const row = summaryValue(before, patched, read, { source, fullTask: true, fullRead: true, action: false });
   const selected = summaryContent(before, row, patched, { context, address, written: recordWriteOf(held),
-    contentRead: ordinaryRead, headerBarrier });
+    contentRead: ordinaryRead, headerBarrier, headerSource: fullTaskSummary(task) });
   if (!selected.row.task) return null;
   return readObservationValues(before, selected.row, invalidation?.value, read);
 }

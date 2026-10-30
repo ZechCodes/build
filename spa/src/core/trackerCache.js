@@ -486,7 +486,7 @@ function fullReadDetail(detail, shared, record, context, address, contentRead, m
   const normalized = mutation.reduce(shared, { context, headerBarrier: detail?.value?.task, ordinaryRead });
   if (!normalized) return null;
   const next = contentDetail(detail, record, normalized[0].task, context, address, contentRead, normalized[0].task);
-  return next ? { ...next, values: [...next.values.slice(0, 2), ...normalized] } : null;
+  return next ? { ...next, values: [...next.values.slice(0, 2), ...normalized] } : { values: [null, null, ...normalized] };
 }
 
 export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = () => true, detailBasis, contentRead } = {}) => {

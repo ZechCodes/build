@@ -42,16 +42,53 @@ async function seedObservedReview() {
 
 it("retains the versioned review on a compact title-only patch after a genuine metadata-bearing full read", async () => {
   const before = await seedObservedReview();
+  const beforeReviewState = (await normalized()).task.__review_summary_cache;
   const read = await order.nextTaskRead();
   expect(await summaries.writeSummaryTask(scope, { id: taskId, title: "Compact title" }, read)).toBe(true);
   const row = await normalized();
   expect(row.task.title).toBe("Compact title");
   expect(row.task.review_summary).toEqual(review);
   expect(row.task.__review_summary_cache).toMatchObject({ floor: review, cleared: false });
+  expect(row.task.__review_summary_cache).toEqual(beforeReviewState);
+  // An ordinary timestamp is not a newly observed PR absence either.
+  expect(await summaries.writeSummaryTask(scope, { id: taskId, title: "Later compact title",
+    updated_at: "2026-10-29T12:02:00Z" }, await order.nextTaskRead())).toBe(true);
+  expect((await normalized()).task.review_summary).toEqual(review);
+  expect((await normalized()).task.__review_summary_cache).toEqual(beforeReviewState);
   const detail = await tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId);
   expect(detail.task.review_summary).toEqual(review);
   expect(detail.task.body).toBe(before.task.body);
   expect(detail.timeline).toEqual(before.timeline);
+});
+
+it("clears the versioned review on a genuine complete summary page that omits it", async () => {
+  await seedObservedReview();
+  const contentRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+  const ticket = await summaries.beginSummaryQuery(scope, {}, contentRead.readOrder, { contentRead });
+  const { body: _body, attachments: _attachments, identities: _identities, ...task } = fullTask();
+  const summary = { ...task, title: "Complete summary", updated_at: "2026-10-29T12:01:00Z", done_at: null,
+    links: { workspace_ids: [], parent_task_id: null }, attachment_count: 0, summary_truncated: false,
+    dependencies: { blocked: false, waiting_on_count: 0, blocks_count: 0 } };
+  expect(summary).not.toHaveProperty("review_summary");
+  expect(await summaries.landSummaryPage(ticket, { summary: true, project_id: scope.projectId,
+    tasks: [summary], identities: {}, basis: "complete-page",
+    user_session: { session_started_ms: null, last_activity_ms: null, previous_session_ended_ms: null,
+      gap_ms: 28800000, now_ms: 1793275260000 } }, { read: contentRead.readOrder })).toBe(true);
+  const row = await normalized();
+  expect(row.task.title).toBe("Complete summary");
+  expect(row.task).not.toHaveProperty("review_summary");
+  expect(row.task.__review_summary_cache).toMatchObject({ floor: review, cleared: true });
+  expect((await tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId)).task.review_summary).toEqual(review);
+});
+
+it("keeps an explicit compact review null as an intentional clear", async () => {
+  await seedObservedReview();
+  expect(await summaries.writeSummaryTask(scope, { id: taskId, review_summary: null },
+    await order.nextTaskRead())).toBe(true);
+  const row = await normalized();
+  expect(row.task).not.toHaveProperty("review_summary");
+  expect(row.task.__review_summary_cache).toMatchObject({ floor: review, cleared: true });
+  expect((await tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId)).task.review_summary).toEqual(review);
 });
 
 it("clears the versioned review on a genuine later full TaskView acknowledgment that omits it", async () => {

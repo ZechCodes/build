@@ -8,7 +8,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from litestar.exceptions import NotAuthorizedException
+from litestar.exceptions import ClientException, NotAuthorizedException
 
 from buildapp import bridge_http_auth as auth
 from buildapp.clock import utc_now
@@ -90,6 +90,45 @@ async def registered(db):
     await auth.register_endpoint(db, device.id, proof, ISSUER, utc_now())
     await db.commit()
     return user, device, key
+
+
+@pytest.mark.asyncio
+async def test_registration_confirmation_is_identical_and_cannot_overwrite_disable(db):
+    _, device, key = await registered(db)
+
+    async def register(epoch, previous, enabled):
+        challenge = await auth.registration_challenge(
+            db,
+            device.id,
+            signed(key, device, "registration-challenge"),
+            ISSUER,
+            utc_now(),
+        )
+        proof = signed(
+            key,
+            device,
+            "registration",
+            challenge_id=challenge["challenge_id"],
+            nonce=challenge["nonce"],
+            origin=ORIGIN,
+            endpoint_epoch=epoch,
+            previous_endpoint_epoch=previous,
+            enabled=enabled,
+        )
+        return await auth.register_endpoint(db, device.id, proof, ISSUER, utc_now())
+
+    confirmed = await register("epoch-one", "epoch-one", True)
+    assert confirmed["enabled"] is True
+    disabled = await register("epoch-two", "epoch-one", False)
+    assert disabled["enabled"] is False
+
+    with pytest.raises(ClientException) as stale:
+        await register("epoch-one", "epoch-one", True)
+    assert stale.value.status_code == 409
+    with pytest.raises(NotAuthorizedException):
+        await register("epoch-two", "epoch-two", True)
+    endpoint = await auth._endpoint(db, device.id)
+    assert (endpoint.endpoint_epoch, endpoint.enabled) == ("epoch-two", False)
 
 
 @pytest.mark.asyncio

@@ -335,3 +335,31 @@ async fn old_hosted_allocator_rejection_has_no_unsigned_fallback() {
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert!(body["proof"].is_string());
 }
+
+#[tokio::test]
+async fn registration_predecessor_conflict_is_classified_after_authenticated_challenge() {
+    use wiremock::{matchers::path, Mock, ResponseTemplate};
+    let server = wiremock::MockServer::start().await;
+    let registrar = registrar(&server).await;
+    let registration = format!(
+        "/api/devices/{}/http-endpoint",
+        registrar.signer.device_id()
+    );
+    Mock::given(path(format!("{registration}/challenge")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "challenge_id":"challenge",
+            "nonce":"nonce",
+            "expires_at":unix_now().unwrap()+60
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path(&registration))
+        .respond_with(ResponseTemplate::new(409))
+        .mount(&server)
+        .await;
+
+    assert_eq!(
+        registrar.register(Some("stale"), false).await,
+        Err(ProofError::Conflict)
+    );
+}

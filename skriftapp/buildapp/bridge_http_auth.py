@@ -9,7 +9,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from litestar.exceptions import NotAuthorizedException, TooManyRequestsException
+from litestar.exceptions import ClientException, NotAuthorizedException, TooManyRequestsException
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from skrift.db.models.user import User
@@ -181,7 +181,10 @@ def _validate_registration(claims, endpoint, device):
             refuse()
         previous = claims.get("previous_endpoint_epoch")
         if previous != (endpoint.endpoint_epoch if endpoint else None):
-            refuse()
+            # The caller has already supplied an authenticated device proof.
+            # Distinguish only this CAS conflict so a daemon can confirm an
+            # uncertain identical commit without retrying authorization errors.
+            raise ClientException("Bridge endpoint predecessor changed", status_code=409)
         if (
             endpoint
             and epoch == endpoint.endpoint_epoch

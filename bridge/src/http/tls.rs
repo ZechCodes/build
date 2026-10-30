@@ -10,7 +10,18 @@ use sha2::{Digest, Sha256};
 
 const MAX_PEM_BYTES: u64 = 65_536;
 
+pub struct LoadedTls {
+    pub config: Arc<ServerConfig>,
+    pub certificate_fingerprint: String,
+}
+
 pub fn load(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerConfig>, String> {
+    load_identity(cert_path, key_path).map(|loaded| loaded.config)
+}
+
+/// Read each configured file exactly once so the persisted rotation identity
+/// is the certificate installed in this exact server configuration.
+pub fn load_identity(cert_path: &Path, key_path: &Path) -> Result<LoadedTls, String> {
     let cert_bytes = read_pem(cert_path, false)?;
     let key_bytes = read_pem(key_path, true)?;
     let certificates = CertificateDer::pem_slice_iter(&cert_bytes)
@@ -19,6 +30,7 @@ pub fn load(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerConfig>, Stri
     if certificates.is_empty() {
         return Err("HTTP TLS certificate chain is empty".into());
     }
+    let certificate_fingerprint = hex(&Sha256::digest(certificates[0].as_ref()));
     let key = PrivateKeyDer::from_pem_slice(&key_bytes)
         .map_err(|_| "invalid or missing HTTP TLS private key")?;
     let mut config = ServerConfig::builder_with_provider(Arc::new(
@@ -30,16 +42,10 @@ pub fn load(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerConfig>, Stri
     .with_single_cert(certificates, key)
     .map_err(|_| "HTTP TLS certificate and key are incompatible")?;
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    Ok(Arc::new(config))
-}
-
-pub fn certificate_fingerprint(cert_path: &Path) -> Result<String, String> {
-    let cert_bytes = read_pem(cert_path, false)?;
-    let certificate = CertificateDer::pem_slice_iter(&cert_bytes)
-        .next()
-        .ok_or("HTTP TLS certificate chain is empty")?
-        .map_err(|_| "invalid HTTP TLS certificate chain")?;
-    Ok(hex(&Sha256::digest(certificate.as_ref())))
+    Ok(LoadedTls {
+        config: Arc::new(config),
+        certificate_fingerprint,
+    })
 }
 
 fn hex(bytes: &[u8]) -> String {

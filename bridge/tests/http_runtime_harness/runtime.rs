@@ -162,8 +162,14 @@ fn native_tls_requires_matching_key_and_owner_only_permissions() {
         assert!(tls::load(&cert_path, &key_path).is_err());
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let loaded = tls::load(&cert_path, &key_path).unwrap();
-    assert_eq!(loaded.alpn_protocols, vec![b"http/1.1".to_vec()]);
+    let loaded = tls::load_identity(&cert_path, &key_path).unwrap();
+    assert_eq!(loaded.config.alpn_protocols, vec![b"http/1.1".to_vec()]);
+    use sha2::Digest;
+    let expected = sha2::Sha256::digest(cert.der().as_ref())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(loaded.certificate_fingerprint, expected);
     let other = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     std::fs::write(&key_path, other.key_pair.serialize_pem()).unwrap();
     assert!(tls::load(&cert_path, &key_path).is_err());

@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from litestar.exceptions import NotAuthorizedException, TooManyRequestsException
+from litestar.exceptions import ClientException, NotAuthorizedException, TooManyRequestsException
 from sqlalchemy import DDL, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
@@ -329,8 +329,9 @@ async def test_postgres_endpoint_predecessor_cas_rejects_the_losing_registration
         try:
             await assert_blocked(maker, second_pid, first_pid)
             await first.commit()
-            with pytest.raises(NotAuthorizedException):
+            with pytest.raises(ClientException) as conflict:
                 await asyncio.wait_for(competing, timeout=5)
+            assert conflict.value.status_code == 409
         finally:
             competing.cancel()
             await asyncio.gather(competing, return_exceptions=True)

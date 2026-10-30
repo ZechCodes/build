@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use super::auth::HttpAuthVerifier;
-use super::discovery::{CanonicalOrigin, DeviceProofSigner, EndpointRegistrar};
+use super::discovery::{CanonicalOrigin, DeviceProofSigner, EndpointRegistrar, ProofError};
 use super::endpoint_state::{EndpointPolicy, EndpointRecord};
 use super::policy::HttpPolicy;
 use super::runtime::{self, HttpRuntime};
@@ -56,8 +56,9 @@ impl PreparedHttp {
         // Validate every local policy input before persisting or publishing a
         // new endpoint generation.
         let policy = HttpPolicy::new(origin.as_str(), &allowed_origins)?;
-        let tls = super::tls::load(&settings.tls_cert, &settings.tls_key)?;
-        let certificate_fingerprint = super::tls::certificate_fingerprint(&settings.tls_cert)?;
+        let loaded_tls = super::tls::load_identity(&settings.tls_cert, &settings.tls_key)?;
+        let tls = loaded_tls.config;
+        let certificate_fingerprint = loaded_tls.certificate_fingerprint;
         let desired = EndpointPolicy {
             device_id: identity.device_id.clone(),
             issuer: issuer.as_str().to_owned(),
@@ -91,8 +92,7 @@ impl PreparedHttp {
             .map_err(|error| format!("cannot construct HTTP verifier: {error}"))?;
         let registrar = EndpointRegistrar::new(signer)
             .map_err(|error| format!("cannot construct endpoint registrar: {error}"))?;
-        registrar
-            .register(record.registered_epoch.as_deref(), true)
+        register_generation(&registrar, &record, true)
             .await
             .map_err(|error| format!("HTTP endpoint registration failed: {error}"))?;
         acknowledge_record(&state_path, record).await?;
@@ -151,9 +151,9 @@ pub async fn reconcile_disabled(identity: &StoredIdentity, state_path: PathBuf) 
         )
         .map_err(|error| format!("cannot construct HTTP disable signer: {error}"))?,
     );
-    EndpointRegistrar::new(signer)
-        .map_err(|error| format!("cannot construct endpoint registrar: {error}"))?
-        .register(record.registered_epoch.as_deref(), false)
+    let registrar = EndpointRegistrar::new(signer)
+        .map_err(|error| format!("cannot construct endpoint registrar: {error}"))?;
+    register_generation(&registrar, &record, false)
         .await
         .map_err(|error| format!("HTTP endpoint deactivation remains pending: {error}"))?;
     acknowledge_record(&state_path, record).await
@@ -182,9 +182,8 @@ impl DisableContext {
             }
         };
         let result = async {
-            EndpointRegistrar::new(signer)
-                .map_err(|error| error.to_string())?
-                .register(record.registered_epoch.as_deref(), false)
+            let registrar = EndpointRegistrar::new(signer).map_err(|error| error.to_string())?;
+            register_generation(&registrar, &record, false)
                 .await
                 .map_err(|error| error.to_string())?;
             acknowledge_record(&self.state_path, record).await
@@ -193,6 +192,44 @@ impl DisableContext {
         if let Err(error) = result {
             eprintln!("HTTP endpoint deactivation remains pending: {error}");
         }
+    }
+}
+
+/// Register from the last locally acknowledged predecessor. If the hosted
+/// commit succeeded but its response or the subsequent local acknowledge was
+/// lost, that predecessor is stale; a second proof naming the desired epoch as
+/// its own predecessor is an idempotent confirmation of exactly that hosted
+/// generation. It cannot advance a host that still has the old predecessor.
+async fn register_generation(
+    registrar: &EndpointRegistrar,
+    record: &EndpointRecord,
+    enabled: bool,
+) -> Result<(), ProofError> {
+    reconcile_registration(record, |previous| async move {
+        registrar
+            .register(previous.as_deref(), enabled)
+            .await
+            .map(|_| ())
+    })
+    .await
+}
+
+async fn reconcile_registration<F, Fut>(
+    record: &EndpointRecord,
+    mut register: F,
+) -> Result<(), ProofError>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<(), ProofError>>,
+{
+    match register(record.registered_epoch.clone()).await {
+        Ok(()) => Ok(()),
+        Err(original @ (ProofError::Unavailable | ProofError::Conflict)) => {
+            register(Some(record.endpoint_epoch.clone()))
+                .await
+                .map_err(|_| original)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -231,4 +268,93 @@ async fn acknowledge_record(path: &Path, record: EndpointRecord) -> Result<(), S
         }
     }
     unreachable!()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    fn record() -> EndpointRecord {
+        EndpointRecord {
+            policy: EndpointPolicy {
+                device_id: "device".into(),
+                issuer: "https://account.example".into(),
+                origin: "https://device.example".into(),
+                allowed_origins: vec!["https://account.example".into()],
+                certificate_fingerprint: "certificate".into(),
+            },
+            endpoint_epoch: "desired".into(),
+            enabled: true,
+            registered_epoch: Some("previous".into()),
+        }
+    }
+
+    async fn reconcile_script(
+        outcomes: Vec<Result<(), ProofError>>,
+    ) -> (Result<(), ProofError>, Vec<Option<String>>) {
+        let outcomes = std::sync::Mutex::new(VecDeque::from(outcomes));
+        let attempts = std::sync::Mutex::new(Vec::new());
+        let result = reconcile_registration(&record(), |previous| {
+            attempts.lock().unwrap().push(previous);
+            std::future::ready(outcomes.lock().unwrap().pop_front().unwrap())
+        })
+        .await;
+        (result, attempts.into_inner().unwrap())
+    }
+
+    #[tokio::test]
+    async fn lost_success_response_is_confirmed_with_the_desired_epoch() {
+        let (result, attempts) = reconcile_script(vec![Err(ProofError::Unavailable), Ok(())]).await;
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            attempts,
+            vec![Some("previous".into()), Some("desired".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn crash_after_hosted_commit_is_confirmed_after_old_predecessor_conflict() {
+        let (result, attempts) = reconcile_script(vec![Err(ProofError::Conflict), Ok(())]).await;
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            attempts,
+            vec![Some("previous".into()), Some("desired".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_registration_preserves_the_original_failure() {
+        let (result, attempts) = reconcile_script(vec![
+            Err(ProofError::Unavailable),
+            Err(ProofError::Refused),
+        ])
+        .await;
+        assert_eq!(result, Err(ProofError::Unavailable));
+        assert_eq!(
+            attempts,
+            vec![Some("previous".into()), Some("desired".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn authorization_refusal_is_never_retried_as_reconciliation() {
+        let (result, attempts) = reconcile_script(vec![Err(ProofError::Refused)]).await;
+        assert_eq!(result, Err(ProofError::Refused));
+        assert_eq!(attempts, vec![Some("previous".into())]);
+    }
+
+    #[tokio::test]
+    async fn newer_rotation_or_disable_cannot_be_overwritten_by_stale_confirmation() {
+        let (result, attempts) = reconcile_script(vec![
+            Err(ProofError::Conflict),
+            Err(ProofError::Conflict),
+        ])
+        .await;
+        assert_eq!(result, Err(ProofError::Conflict));
+        assert_eq!(
+            attempts,
+            vec![Some("previous".into()), Some("desired".into())]
+        );
+    }
 }

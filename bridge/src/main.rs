@@ -560,6 +560,20 @@ fn task_store_startup_error(tasks_dir: &std::path::Path, error: &str) -> String 
     )
 }
 
+type HttpService = (
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<Result<(), String>>,
+);
+
+async fn observe_http_service(
+    service: &mut Option<HttpService>,
+) -> Option<Result<Result<(), String>, tokio::task::JoinError>> {
+    match service.as_mut() {
+        Some((_, task)) => Some(task.await),
+        None => std::future::pending().await,
+    }
+}
+
 async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState) {
     let LoadedIdentity {
         identity,
@@ -778,6 +792,15 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
         biased;
         () = going_down.recv() => {}
         _ = &mut relay_socket => {}
+        http = observe_http_service(&mut http_service) => {
+            http_service.take();
+            match http {
+                Some(Ok(Ok(()))) => eprintln!("HTTP supervisor stopped unexpectedly"),
+                Some(Ok(Err(error))) => eprintln!("HTTP supervisor failed: {error}"),
+                Some(Err(error)) => eprintln!("HTTP supervisor ended: {error}"),
+                None => unreachable!(),
+            }
+        }
     }
     if let Some((stop, mut task)) = http_service.take() {
         let _ = stop.send(true);
@@ -1430,7 +1453,7 @@ fn mcp_stdio(dev_config: Option<&BridgeConfig>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        kept_identity_note, pair_args, pair_device, pair_said, run_main_runtime,
+        kept_identity_note, observe_http_service, pair_args, pair_device, pair_said, run_main_runtime,
         service_environment, valid_release_repo, LoadedIdentity, NotPaired, PairingOutcome,
         PAIR_STATUS_APPROVED_ELSEWHERE,
     };
@@ -1528,6 +1551,22 @@ mod tests {
         drop(release);
         thread.join().unwrap();
         assert!(completed, "runtime teardown waited for stuck blocking work");
+    }
+
+    #[tokio::test]
+    async fn daemon_observes_http_supervisor_failure_without_a_shutdown_signal() {
+        let (stop, _) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async { Err::<(), _>("listener failed".to_string()) });
+        let mut service = Some((stop, task));
+        let observed = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            observe_http_service(&mut service),
+        )
+        .await
+        .expect("HTTP supervisor completion is observed promptly")
+        .expect("configured HTTP service exists")
+        .expect("HTTP task does not panic");
+        assert_eq!(observed, Err("listener failed".to_string()));
     }
 
     /// `service::manager_for` is the crate's one platform branch: it turns

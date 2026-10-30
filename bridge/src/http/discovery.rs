@@ -25,6 +25,8 @@ pub enum ProofError {
     Unavailable,
     #[error("endpoint registration refused")]
     Refused,
+    #[error("endpoint registration predecessor changed")]
+    Conflict,
 }
 
 /// An origin, not an arbitrary URL. Parsing does no DNS or network access.
@@ -315,15 +317,17 @@ impl EndpointRegistrar {
             enabled,
             now,
         )?;
-        let registered: RegisteredEndpoint = bounded_json(
-            self.client
-                .post(url)
-                .json(&serde_json::json!({"proof":proof}))
-                .send()
-                .await
-                .map_err(|_| ProofError::Unavailable)?,
-        )
-        .await?;
+        let response = self
+            .client
+            .post(url)
+            .json(&serde_json::json!({"proof":proof}))
+            .send()
+            .await
+            .map_err(|_| ProofError::Unavailable)?;
+        if response.status() == reqwest::StatusCode::CONFLICT {
+            return Err(ProofError::Conflict);
+        }
+        let registered: RegisteredEndpoint = bounded_json(response).await?;
         if registered.origin != self.signer.origin()
             || registered.endpoint_epoch != self.signer.endpoint_epoch()
             || registered.enabled != enabled

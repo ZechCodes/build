@@ -717,3 +717,15 @@ it("preserves independent watch coordination when ordinary project data is evict
   expect(second.ticket.watchRetirementEpoch).toBe(first.ticket.watchRetirementEpoch);
   expect(second.ticket.scopeGeneration).not.toBe(first.ticket.scopeGeneration);
 });
+
+it("registers and settles an exact watch owner without upgrading missing coordination to known zero", async () => {
+  const watch = await import("../src/core/taskWatchAuthority.js");
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: null, uncertain: true, eligible: false });
+  const owner = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false, metadataOnly: true });
+  expect(owner).not.toBeNull();
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true, eligible: false });
+  expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(false);
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true });
+});

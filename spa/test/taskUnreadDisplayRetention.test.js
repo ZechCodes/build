@@ -259,3 +259,157 @@ describe("D5 additional actual-owner controls before persistence and lineage imp
     expect(document.querySelector(`[data-key="tracker_task:${taskId}"] .inbox-status-unread`)).toBeNull();
   });
 });
+
+// Public producer lifecycle controls: the consumer must have ACTUALLY rendered
+// and persisted its value before all mounted owners leave. No display/proof
+// state is fabricated. These are separate from the original108 witnesses.
+async function displayedNote() {
+  const { taskWatchIntentAddress } = await import("../src/core/taskReadOrder.js");
+  return value(taskWatchIntentAddress(scope, taskId));
+}
+
+async function renderPersistAndLeave() {
+  await seedSelectedInputs(); await mountPane();
+  await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.["tasks-pane"]?.total).toBe(3), WAIT);
+  pane.dispose(); pane = null; paneHost.replaceChildren();
+}
+
+async function remountIncompletePane(title) {
+  const { mountTasksPane } = await import("../src/core/trackerTasksPane.js");
+  pane = mountTasksPane(paneHost, { deviceId: scope.deviceId, projectId: scope.projectId,
+    projectKey: project.projectKey, projectName: project.name, defaultView: "list", callRpc: rpc,
+    catalog: () => ({ providers: [] }), feed: () => ({ items: [], workspaces: [] }) });
+  await vi.waitFor(() => expect(paneHost.querySelector(".task-title")?.textContent).toBe(title), WAIT);
+}
+
+async function admittedLineage(watched, watchStartedAfter) {
+  const task = full({ title: "Genuine unmounted watch observation", watched,
+    watch_started_after: watchStartedAfter, updated_at: "2026-10-29T12:02:00Z" });
+  for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) delete task[field];
+  const address = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+  expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    tracker.tasksRecord([task], columns(), contentRead.readOrder), { contentRead })).toBe(true);
+  const admitted = await listedTask();
+  expect(admitted.watched).toBe(watched);
+  expect(admitted.__task_watch_cache).toMatchObject({ source: "read", taskId,
+    scope, observed_read_order: contentRead.readOrder });
+  const { hasTaskWatchSnapshot } = await import("../src/core/taskWatchFacts.js");
+  expect(hasTaskWatchSnapshot(admitted)).toBe(true);
+  expect(admitted).not.toHaveProperty("unread_count");
+  return admitted;
+}
+
+async function blindRestorePriorLineage(title) {
+  const task = { ...await listedTask(), title, watched: true, watch_started_after: "te-15",
+    updated_at: "2026-10-29T12:03:00Z" };
+  for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) delete task[field];
+  expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    tracker.tasksRecord([task], columns()))).toBe(true);
+  const listed = await listedTask();
+  expect(listed).toMatchObject({ watched: true, watch_started_after: "te-15", title });
+  expect(listed).not.toHaveProperty("unread_count");
+  expect(listed).not.toHaveProperty("__task_watch_cache");
+  const { taskUnreadCount } = await import("../src/core/taskUnread.js");
+  expect(taskUnreadCount(listed, await tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId))).toBe(0);
+}
+
+describe("D5 unmounted admitted lineage versus blind paint", () => {
+  it.each([[false, null, "unwatch"], [true, "te-90", "new incarnation"]])(
+    "does not revive rendered3 after unmounted admitted %s/%s (%s) followed by a blind prior-lineage rewrite",
+    async (watched, floor) => {
+      await renderPersistAndLeave();
+      await admittedLineage(watched, floor);
+      await blindRestorePriorLineage("Blind rewrite after admitted transition");
+      await remountIncompletePane("Blind rewrite after admitted transition");
+      expect(paneHost.querySelector(".task-unread")).toBeNull();
+    });
+
+  it("retains rendered3 on remount after a blind-only rewrite without an admitted replacement", async () => {
+    await renderPersistAndLeave();
+    // Force an actual blind floor change, then restore the previous raw floor.
+    const blind = { ...await listedTask(), watch_started_after: "te-90" };
+    delete blind.unread_count;
+    expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+      tracker.tasksRecord([blind], columns()))).toBe(true);
+    await blindRestorePriorLineage("Only blind lineage paint changed");
+    await remountIncompletePane("Only blind lineage paint changed");
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+  });
+
+  it("keeps the actual prior display through unmounted optimistic unwatch and exact rejected rollback", async () => {
+    await renderPersistAndLeave();
+    const watch = await import("../src/core/taskWatchAuthority.js");
+    const owner = await watch.beginTaskWatchMutation(scope, taskId, { watched: false });
+    expect(owner).not.toBeNull();
+    expect((await listedTask()).watched).toBe(false);
+    expect((await displayedNote()).task_unread_display["tasks-pane"].total).toBe(3);
+    expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
+    expect((await listedTask()).watched).toBe(true);
+    expect((await displayedNote()).latest_watch_intent).toMatchObject({ ownerId: owner.id, disposition: "rejected" });
+    expect((await displayedNote()).task_unread_display["tasks-pane"].total).toBe(3);
+    await remountIncompletePane("Before incomplete action");
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+  });
+});
+
+function holdActualDisplayTransactions() {
+  const merge = cache.mergeCachedRecordsTogether;
+  const waiting = [];
+  let blocked = true;
+  // Only schedule the actual display transaction later. Its original reducer,
+  // addresses, records and return value still run in the real cache unchanged.
+  const isDisplayTransaction = (addresses) => addresses.length === 6
+    && addresses[0].kind === "tracker-tasks" && addresses[1].kind === "tracker-task"
+    && addresses[2].kind === "tracker-task-reads";
+  vi.spyOn(cache, "mergeCachedRecordsTogether").mockImplementation((addresses, reducer) => {
+    if (!blocked || !isDisplayTransaction(addresses)) return merge(addresses, reducer);
+    return new Promise((resolve, reject) => waiting.push(() => merge(addresses, reducer).then(resolve, reject)));
+  });
+  return {
+    get captured() { return waiting.length; },
+    release() { blocked = false; return Promise.all(waiting.splice(0).map((resume) => resume())); },
+  };
+}
+
+async function admitSummaryOnlyUnwatch() {
+  const task = full({ title: "Summary-only admitted unwatch", watched: false,
+    updated_at: "2026-10-29T12:04:00Z" });
+  for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) delete task[field];
+  const contentRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+  const ticket = await summaries.beginSummaryQuery(scope, filters, contentRead.readOrder, { contentRead });
+  expect(await summaries.landSummaryPage(ticket, { summary: true, tasks: [summaryOf(task)],
+    identities: {}, basis: "d5-real-summary-unwatch" }, { read: contentRead.readOrder })).toBe(true);
+  const normalized = await value(summaries.summaryAddress(scope, taskId));
+  expect(normalized.task).toMatchObject({ watched: false, __task_watch_cache: {
+    source: "read", observed_read_order: contentRead.readOrder, taskId, scope } });
+  expect(normalized.task).not.toHaveProperty("unread_count");
+}
+
+describe("D5 actual delayed display transaction versus admitted summary source", () => {
+  it.each([false, true])("does not publish a captured old display after admitted unwatch when an existing display slot is %s", async (hasSlot) => {
+    await seedSelectedInputs();
+    if (hasSlot) {
+      await mountPane();
+      await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.["tasks-pane"]?.total).toBe(3), WAIT);
+    } else {
+      // This is an absent DISPLAY SLOT, not a fabricated assertion that public
+      // initial producers never wrote the surrounding task-note record.
+      expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
+    }
+    const held = holdActualDisplayTransactions();
+    try {
+      if (hasSlot) {
+        await publishCoveringTotal(5);
+        await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")?.textContent).toBe("5"), WAIT);
+      } else await mountPane();
+      await vi.waitFor(() => expect(held.captured).toBeGreaterThan(0), WAIT);
+      const addresses = [tracker.tasksAddress(scope.deviceId, scope.projectId), tracker.taskAddress(scope.deviceId, scope.projectId, taskId)];
+      const before = (await cache.readCachedMany(addresses)).map(cache.recordWriteOf);
+      await admitSummaryOnlyUnwatch();
+      expect((await cache.readCachedMany(addresses)).map(cache.recordWriteOf)).toEqual(before);
+      await held.release();
+      expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
+    } finally { await held.release(); }
+  });
+});

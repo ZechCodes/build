@@ -1,7 +1,48 @@
 //! Validate the task-state root and its ancestors before backup work.
 
 use super::StoreError;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub(super) struct TrustedSource {
+    pub(super) path: PathBuf,
+    #[cfg(unix)]
+    _ancestors: Vec<rustix::fd::OwnedFd>,
+    #[cfg(unix)]
+    _file: rustix::fd::OwnedFd,
+}
+
+#[cfg(unix)]
+pub(super) fn open_source(dir: &Path) -> Result<TrustedSource, StoreError> {
+    use rustix::fs::{openat, FileType, Mode, OFlags};
+
+    let canonical = std::fs::canonicalize(dir)
+        .map_err(|error| invalid(dir, &error.to_string()))?;
+    let ancestors = validate_task_state_root(&canonical.join("source"))?;
+    let path = canonical.join(super::DB_FILE);
+    let file = openat(
+        ancestors.last().unwrap(),
+        super::DB_FILE,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| rejected(&path, error))?;
+    let stat = rustix::fs::fstat(&file).map_err(|error| rejected(&path, error))?;
+    let uid = unsafe { libc::geteuid() };
+    if stat.st_uid != uid || stat.st_mode & 0o022 != 0
+        || FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+    {
+        return Err(invalid(&path, "untrusted database owner, mode or type"));
+    }
+    Ok(TrustedSource { path, _ancestors: ancestors, _file: file })
+}
+
+#[cfg(not(unix))]
+pub(super) fn open_source(_dir: &Path) -> Result<TrustedSource, StoreError> {
+    Err(StoreError::Io(std::io::Error::other(
+        "backup source validation is unsupported on this platform",
+    )))
+}
+
 
 #[cfg(unix)]
 pub(super) fn validate_task_state_root(dir: &Path) -> Result<Vec<rustix::fd::OwnedFd>, StoreError> {
@@ -58,12 +99,5 @@ fn invalid(path: &Path, reason: &str) -> StoreError {
     StoreError::Io(std::io::Error::other(format!(
         "backup state component {}: {reason}",
         path.display()
-    )))
-}
-
-#[cfg(not(unix))]
-pub(super) fn validate_task_state_root(_dir: &Path) -> Result<(), StoreError> {
-    Err(StoreError::Io(std::io::Error::other(
-        "backup state ancestor validation is unsupported on this platform",
     )))
 }

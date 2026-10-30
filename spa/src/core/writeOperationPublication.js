@@ -4,7 +4,7 @@ import { recordKey } from "./idbRecords.js";
 import { recordWriteOf } from "./localCache.js";
 import { TASK_READ_COUNT_ADDRESS, readsAddress, withWritten } from "./taskReadOrder.js";
 import { TRACKER_TASK_KIND, preserveTaskFloors } from "./trackerCache.js";
-import { observeTaskContent, reconcileTaskContent, taskContentFragment } from "./taskContentAuthority.js";
+import { observeTaskContent, reconcileTaskContent, taskContentFragment, withTaskContentComponents } from "./taskContentAuthority.js";
 import { summaryAddress } from "./taskSummaryCache.js";
 
 const isTask = ({ address }) => address.kind === TRACKER_TASK_KIND;
@@ -41,7 +41,7 @@ export function preparePublicationWrites(entry, held) {
   // A publication retires durable layers only after the complete canonical
   // task is accepted. A retained/mixed body is still a refresh obligation.
   if (!content.acceptedHeader || !content.acceptedBody || content.needsFullRefresh) return [];
-  return [...taskPublicationWrites(entry, held, { ...value, task: content.task }),
+  return [...taskPublicationWrites(entry, held, { ...value, task: withTaskContentComponents(value.task, content.task) }),
     ...fragment.finish(shared, { retire: content.retired }).flatMap((next, index) => next == null ? []
       : [{ address: fragment.addresses[index], value: next, notify: false }])];
 }

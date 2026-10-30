@@ -53,7 +53,7 @@ import { mountTaskReferenceLookups } from "./taskReferenceLookups.js";
 import { mountComposerAttachments } from "./composer.js";
 import { taskAttachmentRefusal } from "./taskAttachments.js";
 import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
-import { wrapTaskMutationCall } from "./taskMutationFence.js";
+import { subscribeTaskMutations, taskMutationsPendingFor, wrapTaskMutationCall } from "./taskMutationFence.js";
 import { cacheTaskWaitingOnResponse } from "./taskWaitingOnCache.js";
 import { contextFor, deviceContextIdentity, onDeviceStateChanged } from "./deviceContexts.js";
 import { captureTaskContentRead, taskFullRefreshKey } from "./taskContentAuthority.js";
@@ -672,6 +672,27 @@ export function mountTaskPage(host, options) {
   let taskReads = null;
   let queuedOwnedRead = null, queuedRepairRead = null, normalReadDemand = false;
   let lastTaskReadOwner = null;
+  let deferredTaskRead = null;
+  const ordinaryScope = { deviceId: state.deviceId, projectId: state.projectId };
+  function recoverDeferredTaskRead() {
+    const owner = deferredTaskRead;
+    if (!owner) return;
+    if (state.disposed || !owner.accept()) { deferredTaskRead = null; return; }
+    if (taskMutationsPendingFor(ordinaryScope, state.taskId)) return;
+    deferredTaskRead = null;
+    void requestOwnedTaskRead(owner);
+  }
+  function deferTaskRead(owner) {
+    if (state.disposed || !owner.accept()) return;
+    deferredTaskRead = owner;
+    // Settlement can occur after commit but before the writer's observer.
+    recoverDeferredTaskRead();
+  }
+  const stopOrdinaryMutations = subscribeTaskMutations(state.deviceId, (event) => {
+    if (event.phase === "retired" || event.phase === "session") { deferredTaskRead = null; return; }
+    if (event.task?.projectId !== state.projectId || event.task.taskId !== state.taskId) return;
+    if (event.phase === "settled" && event.task.pending === 0) recoverDeferredTaskRead();
+  });
   function refreshForMount() {
     if (state.disposed || lastTaskReadOwner?.accept()) return;
     return refresh();
@@ -748,7 +769,7 @@ export function mountTaskPage(host, options) {
       // The pull is a writer. The subscription above owns the read and paint.
       await writeTaskRecord(state.deviceId, state.projectId, state.taskId, taskRecord(answer.task, answer.timeline), {
         accept: (held) => !state.disposed && authority.accept() && checklist.acceptsRead(checklistBasis, held),
-        detailBasis, contentRead,
+        detailBasis, contentRead, onOrdinaryDeferred: () => deferTaskRead(authority),
       });
     } catch (error) {
       if (state.disposed) return;
@@ -774,8 +795,16 @@ export function mountTaskPage(host, options) {
     state.busy = true;
     paint();
     try {
-      await state.callRpc(method, params);
-      await refresh();
+      if (method === "tasks.update") {
+        const owner = captureTaskAction(state);
+        await wrapTaskMutationCall(owner.deviceId, method, async () => {
+          await owner.callRpc(method, params);
+          if (!state.disposed && owner.accept()) await requestOwnedTaskRead(owner);
+        }, { projectId: owner.projectId, taskId: owner.taskId });
+      } else {
+        await state.callRpc(method, params);
+        await refresh();
+      }
     } catch (error) {
       if (!state.disposed) notifyError(whatFailed, messageOf(error));
     } finally {
@@ -1182,6 +1211,8 @@ export function mountTaskPage(host, options) {
       contentHeaderWatcher();
       stopWatchControl();
       stopWatchControlLifetime();
+      stopOrdinaryMutations();
+      deferredTaskRead = null;
       checklistSupportWatcher();
       reviewWatcher();
       referencesWatcher();

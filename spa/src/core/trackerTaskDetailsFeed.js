@@ -11,6 +11,7 @@ import { deviceSession } from "./deviceReconnect.js";
 import { contextFor, deviceContextIdentity, onDeviceStateChanged } from "./deviceContexts.js";
 import { captureTaskContentRead, taskFullRefreshKey } from "./taskContentAuthority.js";
 import { readTaskWatchState, taskWatchControlAddress } from "./taskWatchAuthority.js";
+import { subscribeTaskMutations, taskMutationsPendingFor } from "./taskMutationFence.js";
 
 const MAX_READS = 4;
 
@@ -33,6 +34,9 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   const attempted = new Map(); // one failed or stale response per list version
   const controlReadOrigins = new Map(); // admitted id -> queued control owner
   const normalReadDemand = new Set();
+  const deferredReads = new Map(); // committed deferral -> captured read owner
+  const deferredReadOrigins = new Map(); // queued recovery keeps its owner until dispatch
+  const ordinaryScope = { deviceId, projectId };
   let signature = null;
   let generation = 0;
   let readSerial = 0;
@@ -90,14 +94,21 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     // families separately, retaining newer content without dropping new facts.
     await writeTaskRecord(deviceId, projectId, id, taskRecord(answer?.task, answer?.timeline), {
       detailBasis: basis.detailBasis, contentRead: basis.contentRead,
-      accept: acceptsRead,
+      accept: acceptsRead, onOrdinaryDeferred: () => deferRead(id, acceptsRead),
     });
   }
 
+  function acceptsQueuedRead(id) {
+    const origin = controlReadOrigins.get(id), recovery = deferredReadOrigins.get(id);
+    const normal = normalReadDemand.has(id);
+    controlReadOrigins.delete(id); deferredReadOrigins.delete(id); normalReadDemand.delete(id);
+    if (normal) return true;
+    if (origin && !currentControlOwner(origin)) return false;
+    return !recovery || recovery();
+  }
+
   async function fetchDetail(id) {
-    const origin = controlReadOrigins.get(id);
-    controlReadOrigins.delete(id); normalReadDemand.delete(id);
-    if (origin && !currentControlOwner(origin)) return;
+    if (!acceptsQueuedRead(id)) return;
     const version = versionOf(taskForRead(id));
     const context = contextFor(deviceId), identity = deviceContextIdentity(deviceId), session = deviceSession(deviceId);
     const acceptsOwner = () => !disposed && contextFor(deviceId) === context && deviceContextIdentity(deviceId) === identity
@@ -127,15 +138,46 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     if (task?.id === id) refreshTasks.set(id, task);
     if (!taskForRead(id)) return;
     if (origin) {
-      if (!normalReadDemand.has(id)) controlReadOrigins.set(id, origin);
+      if (!normalReadDemand.has(id)) {
+        controlReadOrigins.set(id, origin); deferredReadOrigins.delete(id);
+      }
     } else {
-      normalReadDemand.add(id); controlReadOrigins.delete(id);
+      normalReadDemand.add(id); controlReadOrigins.delete(id); deferredReadOrigins.delete(id);
     }
+    return enqueueRefresh(id);
+  }
+
+  function enqueueRefresh(id) {
     if (active.has(id)) return startRead(id);
     refreshRequested.add(id);
     pending.set(id, versionOf(taskForRead(id)));
     pump();
   }
+
+  function recoverDeferredRead(id) {
+    const acceptsRead = deferredReads.get(id);
+    if (!acceptsRead) return;
+    if (!acceptsRead() || !taskForRead(id)) { deferredReads.delete(id); return; }
+    if (taskMutationsPendingFor(ordinaryScope, id)) return;
+    deferredReads.delete(id);
+    if (!normalReadDemand.has(id)) {
+      deferredReadOrigins.set(id, acceptsRead); controlReadOrigins.delete(id);
+    }
+    enqueueRefresh(id);
+  }
+
+  function deferRead(id, acceptsRead) {
+    if (!acceptsRead()) return;
+    deferredReads.set(id, acceptsRead);
+    // This check also closes settlement between commit and observer delivery.
+    recoverDeferredRead(id);
+  }
+
+  const stopOrdinaryMutations = subscribeTaskMutations(deviceId, (event) => {
+    if (event.phase === "retired" || event.phase === "session") { deferredReads.clear(); return; }
+    if (event.task?.projectId !== projectId) return;
+    if (event.phase === "settled" && event.task.pending === 0) recoverDeferredRead(event.task.taskId);
+  });
 
   function queueIfBehind(id, detail) {
     if (!callRpc) return;
@@ -151,7 +193,7 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     }
     const version = versionOf(task);
     if (attempted.get(id) === attemptKey(id, detail)) return;
-    normalReadDemand.add(id); controlReadOrigins.delete(id);
+    normalReadDemand.add(id); controlReadOrigins.delete(id); deferredReadOrigins.delete(id);
     pending.set(id, version);
     pump();
   }
@@ -243,7 +285,8 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
         refreshRequested.delete(id);
       }
       attempted.delete(id);
-      controlReadOrigins.delete(id); normalReadDemand.delete(id);
+      deferredReads.delete(id);
+      controlReadOrigins.delete(id); deferredReadOrigins.delete(id); normalReadDemand.delete(id);
       removed = true;
     }
     listed.clear();
@@ -264,6 +307,8 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
       refreshRequested.clear();
       refreshTasks.clear();
       controlReadOrigins.clear(); normalReadDemand.clear();
+      deferredReads.clear(); deferredReadOrigins.clear();
+      stopOrdinaryMutations();
       unsubscribe();
       stopControl();
       stopControlLifetime();

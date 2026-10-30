@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 
-let cache, tracker, summaries, actions, order;
+let cache, tracker, summaries, actions, order, content;
 const scope = { deviceId: "action-summary-900", projectId: "proj-1" };
 const taskId = "task-1", filters = { states: ["open"] };
 const base = (extra = {}) => ({ id: taskId, project_id: scope.projectId, number: 1, title: "Before",
@@ -19,13 +19,26 @@ const full = (extra = {}) => {
 const detailAddress = () => tracker.taskAddress(scope.deviceId, scope.projectId, taskId);
 const invalidationAddress = () => ({ deviceId: scope.deviceId, entityId: scope.projectId, kind: "tracker-summary-invalidation", sub: "" });
 const value = async (address) => (await cache.readCached(address))?.value;
-const action = (task, options) => actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task }, options);
+const unguardedAction = (task, options) => actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task }, options);
+async function action(task, options = {}) {
+  const contentRead = options.contentRead || await content.captureTaskContentRead(scope);
+  return unguardedAction(task, { ...options, contentRead, issuedRead: contentRead.readOrder });
+}
 async function seed(task = base()) {
-  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, taskId, tracker.taskRecord({ ...task, body: "Held body", attachments: [] }, [{ id: "history" }]));
-  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([task], []));
-  const generation = await order.nextTaskRead();
-  const ticket = await summaries.beginSummaryQuery(scope, filters, generation);
+  const summaryRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+  const generation = summaryRead.readOrder;
+  const ticket = await summaries.beginSummaryQuery(scope, filters, generation, { contentRead: summaryRead });
   await summaries.landSummaryPage(ticket, { summary: true, tasks: [task], identities: {}, basis: "opaque-before", next_cursor: "kept-cursor" }, { read: generation });
+  const heldTask = { ...task, body: "Held body", attachments: [] };
+  delete heldTask.attachment_count;
+  const catalogue = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  const listRead = await content.captureTaskContentRead(catalogue, { revalidate: "full" });
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([
+    content.observeTaskContent(heldTask, { contentRead: listRead, coverage: "full" }),
+  ], [], listRead.readOrder));
+  const detailRead = await content.captureTaskContentRead(detailAddress(), { revalidate: "full" });
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, taskId,
+    tracker.taskRecord(heldTask, [{ id: "history" }]), { contentRead: detailRead });
   return ticket;
 }
 async function snapshot() {
@@ -39,6 +52,7 @@ beforeEach(async () => {
   cache = await import("../src/core/localCache.js"); tracker = await import("../src/core/trackerCache.js");
   summaries = await import("../src/core/taskSummaryCache.js"); actions = await import("../src/core/taskWaitingOnCache.js");
   order = await import("../src/core/taskReadOrder.js");
+  content = await import("../src/core/taskContentAuthority.js");
 });
 
 it("commits assignment/dependency action summaries with legacy replicas and their same read order", async () => {
@@ -123,7 +137,9 @@ it("preserves newer ordinary task fields and exact marker/counter authority whil
   await seed(base({ title: "Newer content", updated_at: "2026-10-29T13:00:00Z", read_through: "tc-20\0",
     watch_started_after: "te-30", dismissed_through: "te-40", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0,
     review_summary: { task_id: taskId, version: 5, status: "open", mode: "pull_request" } }));
-  await action(full({ title: "Older content", updated_at: "2026-10-29T12:00:00Z", read_through: "tc-21\0",
+  // This stale legacy observation has no confirmed watch-lineage dispatch
+  // authority; PR versions and monotonic floors still advance independently.
+  await unguardedAction(full({ title: "Older content", updated_at: "2026-10-29T12:00:00Z", read_through: "tc-21\0",
     watch_started_after: "", dismissed_through: null, unread_count: 9, unread_mentions: 3, unread_agent_comments: 4,
     review_summary: { task_id: taskId, version: 6, status: "closed", mode: "pull_request" } }));
   const row = (await value(summaries.summaryAddress(scope, taskId))).task;
@@ -152,9 +168,14 @@ it("rejects a foreign project action without changing either replica family", as
 it("exposes a guarded bounded mutation fragment that can share a caller transaction", async () => {
   await seed();
   const read = await order.nextTaskRead(), fragment = summaries.summaryTaskMutation(scope, { id: taskId, title: "Fragment" }, read);
-  expect(fragment.addresses).toHaveLength(2);
+  expect(fragment.addresses).toEqual([summaries.summaryAddress(scope, taskId), invalidationAddress(),
+    content.TASK_CONTENT_GENERATION_ADDRESS, content.taskContentScopeAddress(scope)]);
   expect(await cache.mergeCachedRecordsTogether(fragment.addresses, fragment.reduce)).toBe(true);
   expect((await value(summaries.summaryAddress(scope, taskId))).task.title).toBe("Fragment");
+  const before = await snapshot();
+  const refused = summaries.summaryTaskMutation(scope, { id: taskId, title: "Refused fragment" }, read, { accept: () => false });
+  expect(await cache.mergeCachedRecordsTogether(refused.addresses, refused.reduce)).toBe(false);
+  expect(await snapshot()).toEqual(before);
   expect(() => summaries.summaryTaskMutation(scope, { id: taskId }, read, { fullTask: "yes" })).toThrow();
 });
 
@@ -166,7 +187,8 @@ it("retains incomplete full-action counter families until a complete covering su
   let held = await value(summaries.summaryAddress(scope, taskId));
   expect(held).toMatchObject({ needs_unread_refresh: true, task: { read_through: "tc-20", unread_count: 3, unread_mentions: 1, unread_agent_comments: 2 } });
   async function refresh(task) {
-    const read = await order.nextTaskRead(), ticket = await summaries.beginSummaryQuery(scope, filters, read);
+    const contentRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+    const read = contentRead.readOrder, ticket = await summaries.beginSummaryQuery(scope, filters, read, { contentRead });
     await summaries.landSummaryPage(ticket, { summary: true, tasks: [task], basis: "opaque-after" }, { read });
   }
   const incomplete = { ...base(), updated_at: answer.updated_at, read_through: "tc-20", unread_count: 0 };
@@ -198,17 +220,18 @@ it("marks counter authority incomplete when a compact patch advances its floor w
 });
 
 it("rejects an older issued action after a newer same-timestamp action committed", async () => {
-  await seed(); const first = await order.nextTaskRead(), second = await order.nextTaskRead();
-  await action(full({ watched: false, title: "Newer action" }), { issuedRead: second });
+  await seed();
+  const first = await content.captureTaskContentRead(scope), second = await content.captureTaskContentRead(scope);
+  await action(full({ watched: false, title: "Newer action" }), { contentRead: second });
   const before = await snapshot();
-  expect(await action(full({ watched: true, title: "Older action" }), { issuedRead: first })).toBe(false);
+  expect(await action(full({ watched: true, title: "Older action" }), { contentRead: first })).toBe(false);
   expect(await snapshot()).toEqual(before);
 });
 
 it.each([true, false])("keeps newer content while accepting an older-body action's read floor and watched=%s", async (watched) => {
   await seed(base({ title: "Newer title", updated_at: "2026-10-29T13:00:00Z", watch_started_after: "" }));
   await action(full({ title: "Old title", body: "Old body", watched, read_through: "tc-30\0", watch_started_after: "",
-    updated_at: "2026-10-29T12:00:00Z", unread_count: 0 }), { issuedRead: await order.nextTaskRead() });
+    updated_at: "2026-10-29T12:00:00Z", unread_count: 0 }));
   const detail = await tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId);
   expect(detail.task).toMatchObject({ title: "Newer title", body: "Held body", read_through: "tc-30\0", watched });
   expect(detail.timeline).toEqual([{ id: "history" }]);
@@ -238,7 +261,7 @@ it("does not grant action watch authority to a stale watched summary page after 
   await seed(base({ updated_at: "2026-10-29T13:00:00Z" }));
   const generation = await order.nextTaskRead(), query = { statuses: ["ready"] };
   const page = await summaries.beginSummaryQuery(scope, query, generation);
-  await action(full({ watched: false, updated_at: "2026-10-29T12:00:00Z" }), { issuedRead: await order.nextTaskRead() });
+  await action(full({ watched: false, updated_at: "2026-10-29T12:00:00Z" }));
   expect((await value(summaries.summaryAddress(scope, taskId))).task.watched).toBe(false);
   expect(await summaries.landSummaryPage(page, { summary: true, basis: "opaque-before", tasks: [base()] }, { read: generation })).toBe(false);
   expect((await value(summaries.summaryAddress(scope, taskId))).task.watched).toBe(false);

@@ -44,7 +44,7 @@ beforeEach(async () => {
   composerOptions = null;
   mutation = deferred(); oldAnswer = deferred();
   fence = await import("../src/core/taskMutationFence.js");
-  const held = task({ id: "move-task", title: "Move me" });
+  const held = task({ id: "move-task", project_id: scope.projectId, title: "Move me" });
   const tracker = await import("../src/core/trackerCache.js");
   await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [held], columns: columns() });
   cache = await import("../src/core/localCache.js");
@@ -125,7 +125,7 @@ it("projects optimistic moves and rollback into shared summaries while invalidat
 
 it("projects an actual create action response compactly without claiming full query membership", async () => {
   host.querySelector("[data-task-new]").click();
-  const created = task({ id: "new-task", number: 2, title: "A new task", body: "large body excluded",
+  const created = task({ id: "new-task", project_id: scope.projectId, number: 2, title: "A new task", body: "large body excluded",
     attachments: [{ id: "file", name: "file" }], dependencies: { blocked: true, waiting_on_count: 1,
       waiting_on: [{ task_id: "prerequisite" }] } });
   composerOptions.onFiled({ task: created }, {});

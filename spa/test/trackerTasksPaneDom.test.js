@@ -8,7 +8,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { columns, task } from "./trackerWireFixture.js";
+import { columns, task as wireTask } from "./trackerWireFixture.js";
+
+// Every pane in this file is mounted on proj-1; successful wire TaskViews
+// must name that same project rather than the shared fixture's p1 default.
+const task = (over = {}) => wireTask({ project_id: "proj-1", ...over });
+const taskPublicFields = ({ __task_content_cache: _content, ...fields }) => fields;
 import { holds, painted } from "./waits.js";
 
 let watchers = [];
@@ -335,7 +340,10 @@ describe("device-scoped waiting assignments from the pane", () => {
       trackerCache.tasksRecord([legacy], columns()));
     await trackerCache.writeTaskRecord("dev-1", "proj-1", blocked.id, { task: legacy, timeline: [] });
     expect((await trackerCache.readTaskRecord("dev-1", "proj-1", blocked.id)).task).not.toHaveProperty("dependencies");
-    expect((await trackerCache.readTasksQueryRecord("dev-1", "proj-1", params)).tasks).toEqual([ready]);
+    const retained = (await trackerCache.readTasksQueryRecord("dev-1", "proj-1", params)).tasks;
+    expect(retained.map(taskPublicFields)).toEqual([ready]);
+    expect(retained[0].__task_content_cache?.header).toBeUndefined();
+    expect(retained[0].__task_content_cache?.body).toBeUndefined();
     document.querySelector("[data-assign-go]").click();
     await flush();
     expect(listed("tasks.assign")).toEqual([]);
@@ -364,7 +372,10 @@ describe("device-scoped waiting assignments from the pane", () => {
       trackerCache.tasksRecord([legacy], columns()));
     await trackerCache.writeTaskRecord("dev-1", "proj-1", blocked.id, { task: legacy, timeline: [] });
     expect((await trackerCache.readTaskRecord("dev-1", "proj-1", blocked.id)).task).not.toHaveProperty("dependencies");
-    expect((await trackerCache.readTasksQueryRecord("dev-1", "proj-1", params)).tasks).toEqual([ready]);
+    const retained = (await trackerCache.readTasksQueryRecord("dev-1", "proj-1", params)).tasks;
+    expect(retained.map(taskPublicFields)).toEqual([ready]);
+    expect(retained[0].__task_content_cache?.header).toBeUndefined();
+    expect(retained[0].__task_content_cache?.body).toBeUndefined();
     document.querySelector("[data-assign-go]").click();
     await flush();
     expect(listed("tasks.assign")).toEqual([]);

@@ -10,6 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { called, passesSettled } from "./waits.js";
+import { task as trackerTask } from "./trackerWireFixture.js";
 
 const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
@@ -1595,16 +1596,19 @@ describe("a refresh requested during a pass", () => {
     state: ["row", ""], thread: ["thread", "ag-new"], git: ["log", ""],
     tasks: ["tracker-tasks", ""], files: ["tree", ""], terminals: ["terminals", ""],
   };
+  const cleanupTask = () => trackerTask({ id: "new-task", project_id: "new-owner" });
   const assertCleanupValue = (kind, variant, value) => {
     const field = { state: "branch", thread: "items", git: "commits", tasks: "tasks", files: "entries", terminals: "tabs" }[kind];
     const expected = {
       "state-only": "new-branch", "thread-append": [cleanupMessage(1), cleanupMessage(2), cleanupMessage(3)],
       "thread-trim": [cleanupMessage(2)], "git-log-only": [{ hash: "new-commit" }],
-      "tasks-invalidation": [{ id: "new-task", project_id: "new-owner" }],
+      "tasks-invalidation": [cleanupTask()],
       "files-root": [{ name: "new-file" }], "files-paths": [{ name: "new-file" }], "files-truncated": [{ name: "new-file" }],
       "terminals-only": [{ term_id: "new-tab" }],
     }[variant];
-    expect(value?.[field]).toEqual(expected);
+    const publicValue = kind === "tasks"
+      ? value?.tasks?.map(({ __task_content_cache: _content, ...task }) => task) : value?.[field];
+    expect(publicValue).toEqual(expected);
   };
 
   it.each(Object.entries(cleanupPushCases).flatMap(([kind, variants]) => variants.map((variant) => [kind, variant])))
@@ -1617,7 +1621,7 @@ describe("a refresh requested during a pass", () => {
         thread_id: "t-new", thread_generation_revision: 1, deliveredSequence: 2, items: [cleanupMessage(1), cleanupMessage(2)], total: 2,
       });
       await cache.writeCached({ deviceId: "dev-1", entityId: "new-owner", kind: "tree" }, { path: "", entries: [] });
-      script["tasks.list"] = () => ({ tasks: [{ id: "new-task", project_id: "new-owner" }] });
+      script["tasks.list"] = () => ({ tasks: [cleanupTask()] });
       script["fs.tree"] = () => ({ path: "", entries: [{ name: "new-file" }] });
       const held = holdNextRead("board.list");
       const refresh = sync.syncDevice("dev-1", "mutation");

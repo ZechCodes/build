@@ -291,6 +291,7 @@ struct Session {
     opening: Opening,
     identity: Identity,
     authorization: AuthorizationLease,
+    active_authorizations: Mutex<Vec<Weak<Mutex<AuthorizationState>>>>,
     state: Mutex<SessionState>,
 }
 
@@ -310,7 +311,49 @@ impl SessionLease {
         self.0.authorization.clone()
     }
     pub fn is_live(&self) -> bool {
-        self.0.authorization.is_valid()
+        if !self.opening().is_open() {
+            return false;
+        }
+        let mut any_live = self.0.authorization.is_valid();
+        self.prune_active_authorizations(&mut any_live);
+        any_live
+    }
+    fn prune_active_authorizations(&self, any_live: &mut bool) -> usize {
+        let mut authorizations = self.0.active_authorizations.lock().unwrap();
+        authorizations.retain(|state| {
+            let Some(state) = state.upgrade() else {
+                return false;
+            };
+            let live = AuthorizationLease {
+                opening: self.opening().clone(),
+                state,
+            }
+            .is_valid();
+            *any_live |= live;
+            live
+        });
+        authorizations.len()
+    }
+    fn capture_authorization(
+        &self,
+        authorization: &AuthorizationLease,
+    ) -> Result<(), SessionError> {
+        let mut authorizations = self.0.active_authorizations.lock().unwrap();
+        authorizations.retain(|state| {
+            let Some(state) = state.upgrade() else {
+                return false;
+            };
+            AuthorizationLease {
+                opening: self.opening().clone(),
+                state,
+            }
+            .is_valid()
+        });
+        if authorizations.len() >= MAX_REQUESTS {
+            return Err(SessionError::Full);
+        }
+        authorizations.push(Arc::downgrade(&authorization.state));
+        Ok(())
     }
 }
 
@@ -350,6 +393,7 @@ impl ClientSessions {
             opening: caller.opening,
             identity: caller.identity,
             authorization,
+            active_authorizations: Mutex::new(Vec::new()),
             state: Mutex::new(SessionState {
                 bindings: [None, None],
                 last_bindings: [None, None],
@@ -368,7 +412,7 @@ impl ClientSessions {
     }
     /// Renewal requires a newly verified proof of the exact HTTP family binding.
     pub fn resume(&self, caller: VerifiedCaller, id: &str) -> Result<SessionLease, SessionError> {
-        self.resume_with_request_authority(caller, id)
+        self.resume_inner(caller, id, true)
             .map(|(session, _)| session)
     }
     pub(crate) fn resume_with_request_authority(
@@ -376,7 +420,17 @@ impl ClientSessions {
         caller: VerifiedCaller,
         id: &str,
     ) -> Result<(SessionLease, RequestAuthorization), SessionError> {
-        self.reap_expired();
+        self.resume_inner(caller, id, false)
+    }
+    fn resume_inner(
+        &self,
+        caller: VerifiedCaller,
+        id: &str,
+        renew_lifecycle: bool,
+    ) -> Result<(SessionLease, RequestAuthorization), SessionError> {
+        if renew_lifecycle {
+            self.reap_expired();
+        }
         let session = self
             .sessions
             .lock()
@@ -410,10 +464,15 @@ impl ClientSessions {
                 retired: false,
             })),
         };
-        let mut authorization = session.0.authorization.state.lock().unwrap();
-        authorization.deadline = caller.deadline;
-        authorization.live = caller.live;
-        drop(authorization);
+        if renew_lifecycle {
+            let renewed = request_authorization.state.lock().unwrap();
+            let mut lifecycle = session.0.authorization.state.lock().unwrap();
+            lifecycle.deadline = renewed.deadline;
+            lifecycle.live = renewed.live.clone();
+            lifecycle.retired = renewed.retired;
+        } else {
+            session.capture_authorization(&request_authorization)?;
+        }
         drop(_state);
         drop(_output);
         Ok((session, RequestAuthorization(request_authorization)))
@@ -480,6 +539,7 @@ impl ClientSessions {
             sink,
             events,
             session.authorization(),
+            true,
         )
     }
     pub(crate) fn request_authorized(
@@ -495,6 +555,7 @@ impl ClientSessions {
             sink,
             events,
             authorization.0,
+            false,
         )
     }
     /// Terminal callers must explicitly request the separately bound stream.
@@ -511,6 +572,7 @@ impl ClientSessions {
             sink,
             events,
             session.authorization(),
+            true,
         )
     }
     fn request_for_stream_with_authority(
@@ -520,11 +582,17 @@ impl ClientSessions {
         sink: Arc<dyn ReplySink>,
         events: Option<&EventBinding>,
         authorization: AuthorizationLease,
+        require_session_authorization: bool,
     ) -> Result<RequestContext, SessionError> {
         self.reap_expired();
         let _output = session.opening().0.output_gate.lock().unwrap();
         let mut state = session.0.state.lock().unwrap();
-        Self::authorize(session)?;
+        if !session.opening().is_open() {
+            return Err(SessionError::Closed);
+        }
+        if require_session_authorization && !session.0.authorization.is_valid() {
+            return Err(SessionError::Unauthorized);
+        }
         if !authorization.opening.is(session.opening()) {
             return Err(SessionError::WrongOpening);
         }
@@ -582,7 +650,7 @@ impl ClientSessions {
         let candidates: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
         candidates
             .into_iter()
-            .filter(|session| !session.is_live() && self.retire(session))
+            .filter(|session| !session.is_live() && self.retire_if_inactive(session))
             .collect()
     }
     pub fn close(&self, session: &SessionLease) {
@@ -590,7 +658,23 @@ impl ClientSessions {
     }
     fn retire(&self, session: &SessionLease) -> bool {
         let output = session.opening().0.output_gate.lock().unwrap();
-        let mut state = session.0.state.lock().unwrap();
+        let state = session.0.state.lock().unwrap();
+        self.retire_locked(session, output, state)
+    }
+    fn retire_if_inactive(&self, session: &SessionLease) -> bool {
+        let output = session.opening().0.output_gate.lock().unwrap();
+        let state = session.0.state.lock().unwrap();
+        if session.is_live() {
+            return false;
+        }
+        self.retire_locked(session, output, state)
+    }
+    fn retire_locked(
+        &self,
+        session: &SessionLease,
+        output: std::sync::MutexGuard<'_, ()>,
+        mut state: std::sync::MutexGuard<'_, SessionState>,
+    ) -> bool {
         session.opening().invalidate_unlocked();
         let bindings = std::mem::take(&mut state.bindings);
         state.last_bindings = [None, None];
@@ -776,7 +860,7 @@ impl ReplyLease {
         self.sink.try_send(EncodedEvent::new(payload, fence)?)
     }
     pub fn is_live(&self) -> bool {
-        !self.cancellation.is_cancelled() && self.session.is_live()
+        !self.cancellation.is_cancelled() && self.session.opening().is_open()
     }
 }
 
@@ -902,7 +986,7 @@ impl OutputFence {
         if !live || !session.opening.is_open() {
             return Err(DeliveryError::Closed);
         }
-        if !session.authorization.is_valid() {
+        if matches!(self.target, OutputTarget::Event(_)) && !session.authorization.is_valid() {
             return Err(DeliveryError::Unauthorized);
         }
         Ok(())
@@ -1069,6 +1153,115 @@ mod tests {
             sessions.resume(caller(), session.id()),
             Err(SessionError::Closed)
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn explicit_renewal_before_expiry_survives_the_original_idle_deadline() {
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions
+            .open(VerifiedCaller::verified_http(
+                identity(),
+                Instant::now() + Duration::from_secs(2),
+                Arc::new(|| true),
+            ))
+            .unwrap();
+        tokio::time::advance(Duration::from_secs(1)).await;
+        sessions
+            .resume(
+                VerifiedCaller::verified_http(
+                    identity(),
+                    Instant::now() + Duration::from_secs(20),
+                    Arc::new(|| true),
+                ),
+                session.id(),
+            )
+            .unwrap();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(sessions.reap_expired().is_empty());
+        assert!(session.is_live());
+        sessions.close(&session);
+        assert!(matches!(
+            sessions.resume(caller(), session.id()),
+            Err(SessionError::Closed)
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expiry_retirement_rechecks_liveness_after_a_stale_observation() {
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions
+            .open(VerifiedCaller::verified_http(
+                identity(),
+                Instant::now() + Duration::from_secs(1),
+                Arc::new(|| true),
+            ))
+            .unwrap();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(!session.is_live(), "reaper observes the old proof expired");
+
+        {
+            let _output = session.opening().0.output_gate.lock().unwrap();
+            let _state = session.0.state.lock().unwrap();
+            let mut lifecycle = session.0.authorization.state.lock().unwrap();
+            lifecycle.deadline = Some(Instant::now() + Duration::from_secs(20));
+            lifecycle.live = Arc::new(|| true);
+            lifecycle.retired = false;
+        }
+
+        assert!(
+            !sessions.retire_if_inactive(&session),
+            "stale expiry observation cannot retire the renewed opening"
+        );
+        assert!(session.is_live());
+        assert!(session.opening().is_open());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fresh_request_cannot_revive_an_opening_after_every_prior_proof_expires() {
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions
+            .open(VerifiedCaller::verified_http(
+                identity(),
+                Instant::now() + Duration::from_secs(1),
+                Arc::new(|| true),
+            ))
+            .unwrap();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(matches!(
+            sessions.resume_with_request_authority(caller(), session.id()),
+            Err(SessionError::Unauthorized)
+        ));
+        assert!(sessions
+            .reap_expired()
+            .iter()
+            .any(|ended| ended.opening().is(session.opening())));
+    }
+
+    #[test]
+    fn pre_dispatch_authorization_captures_are_bounded_and_pruned() {
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions.open(caller()).unwrap();
+        let mut retained = Vec::new();
+        for _ in 0..MAX_REQUESTS {
+            retained.push(
+                sessions
+                    .resume_with_request_authority(caller(), session.id())
+                    .unwrap()
+                    .1,
+            );
+        }
+        assert!(matches!(
+            sessions.resume_with_request_authority(caller(), session.id()),
+            Err(SessionError::Full)
+        ));
+        drop(retained);
+        for _ in 0..MAX_REQUESTS * 2 {
+            drop(
+                sessions
+                    .resume_with_request_authority(caller(), session.id())
+                    .unwrap(),
+            );
+        }
     }
 
     #[tokio::test]

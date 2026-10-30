@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { columns, task } from "./trackerWireFixture.js";
+import { columns, event, task } from "./trackerWireFixture.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 
 const deviceId = "pending-content-adapter", projectId = "proj-1", taskId = "task-42";
@@ -9,7 +9,7 @@ const scope = { deviceId, projectId };
 const held = task({ id: taskId, project_id: projectId, number: 42, title: "Held backlog", body: "Held body",
   status: "backlog", watched: false, read_through: "tc-01", attachments: [], trackers: [],
   review_summary: { task_id: taskId, version: 1, status: "open", mode: "pull_request" } });
-const timeline = [{ id: "held-history", type: "event", kind: "created", at: held.updated_at }];
+const timeline = [event({ id: "held-history", task_id: taskId, at: held.updated_at })];
 const answer = (row) => ({ task: row, timeline });
 const deferred = () => {
   let resolve, reject;

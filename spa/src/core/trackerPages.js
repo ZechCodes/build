@@ -33,6 +33,8 @@ import {
 } from "./trackerCache.js";
 import { captureTaskContentRead, mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskContentWrite, withTaskContentComponents } from "./taskContentAuthority.js";
 import { userSessionOf } from "./userSessionCache.js";
+import { reconcileTaskReadFacts } from "./taskWatchFacts.js";
+import { withTaskReadFacts } from "./taskSummaryCache.js";
 
 /** Tasks per page. A tenth of a large tracker, and one page of a small one. */
 export const TASK_PAGE_LIMIT = 100;
@@ -122,12 +124,24 @@ function foldedTaskRows(held, stretch, reads) {
  *  where that is newer. A page never makes a list look older than it was. */
 function contentPageRows(held, stretch, reads, address, context, written) {
   const old = new Map((held?.tasks || []).map((task) => [task.id, task]));
+  const answered = new Map((stretch.tasks || []).map((task) => [task.id, task]));
   const candidates = foldedTaskRows(held, stretch, reads);
   const results = candidates.map((task) => reconcileTaskContentWrite(old.get(task.id), task,
     { context, address, heldWritten: written }));
-  const rows = results.flatMap((result, index) => result.task ? [withTaskContentComponents(candidates[index], result.task)] : []);
+  const rows = results.flatMap((result, index) => {
+    if (!result.task) return [];
+    const task = candidates[index], raw = answered.get(task.id);
+    const facts = raw && stretch.contentRead ? pageTaskFacts(address, old.get(task.id), raw, stretch.contentRead, context) : task;
+    return [withTaskContentComponents(withTaskReadFacts(task, facts), result.task)];
+  });
   const ids = new Set(rows.map((task) => task.id));
   return { rows, retire: results.some((result) => result.retired) || (held?.tasks || []).some((task) => !ids.has(task.id)) };
+}
+
+function pageTaskFacts(address, held, raw, contentRead, context) {
+  return reconcileTaskReadFacts({ deviceId: address.deviceId, projectId: address.entityId }, held,
+    { watched: false, read_through: null, watch_started_after: null, dismissed_through: null, ...raw },
+    { contentRead, context, markerPolicy: "legacy" }).task;
 }
 
 export const foldTasksPage = (address, stretch, columnsOf) =>
@@ -196,7 +210,8 @@ async function landPage(deviceId, projectId, asked, answer, contentRead, active)
     const results = (answer.tasks || []).map((task) => reconcileTaskContentWrite(old.get(task.id),
       observeTaskContent(task, { contentRead, coverage: "full" }), { context, address, heldWritten: recordWriteOf(held) }));
     if (results.some((result) => !result.task)) return null;
-    return { values: [{ ...answer, tasks: results.flatMap((result, index) => result.task ? [withTaskContentComponents(answer.tasks[index], result.task)] : []), read_order: read,
+    return { values: [{ ...answer, tasks: results.flatMap((result, index) => result.task
+      ? [withTaskContentComponents(pageTaskFacts(address, old.get(answer.tasks[index].id), answer.tasks[index], contentRead, context), result.task)] : []), read_order: read,
       content_read: contentRead }] };
   });
   return { sub: address.sub, page: (await readCached(address))?.value };
@@ -250,7 +265,7 @@ async function pullPage({ ask, deviceId, projectId, params, fold, active, limit 
 async function foldLandedPage({ sub, page, place, read, fold }) {
   const next = nextCursorOf(page, place.cursor);
   const own = { read: page.read_order, readAt: userSessionOf(page)?.now_ms ?? null };
-  const stretch = { ...stretchOf(page, place, own, next), pullRead: place.pullRead ?? read };
+  const stretch = { ...stretchOf(page, place, own, next), pullRead: place.pullRead ?? read, contentRead: page.content_read };
   if (page.content_read) stretch.tasks = stretch.tasks.map((task) => observeTaskContent(task, { contentRead: page.content_read, coverage: "full" }));
   // An exhausted or refused canonical write did not lay this stretch. Keep
   // its cursor out of the walk so a later page cannot conceal the gap.

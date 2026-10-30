@@ -894,7 +894,7 @@ describe("a pass racing the wire", () => {
     await greet();
     board = [branchItem()];
     sync.startCacheSync();
-    await settle();
+    await passesSettled(sync, "dev-1");
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" }, { file: { path: "src/a.js" }, openedAt: 1 });
 
     const answerFile = wire.hold("fs.read");

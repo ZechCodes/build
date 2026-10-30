@@ -4,7 +4,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, task } from "./trackerWireFixture.js";
 
 let blockedStatus, enteredWrite, writeGate, composerOptions;
-vi.mock("../src/core/trackerCache.js", async (actual) => {
+const mockTrackerCache = () => vi.doMock("../src/core/trackerCache.js", async (actual) => {
   const source = await actual();
   return { ...source, writeTasksQueryRecord: async (...args) => {
     if (blockedStatus && args[3].tasks.some((row) => row.status === blockedStatus)) {
@@ -37,6 +37,9 @@ let pane, aggregate, fence, host, mutation, oldAnswer, rpc, paneCall, summaries,
 
 const mountFixture = async () => {
   vi.resetModules();
+  // Keep the partial mock's actual cache and content-authority modules in
+  // the same lifetime as the fresh pane and its cache subscriptions.
+  mockTrackerCache();
   globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = '<div id="host"></div>';
   host = document.querySelector("#host");

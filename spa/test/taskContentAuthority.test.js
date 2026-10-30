@@ -459,3 +459,69 @@ it("checks crossed replica timestamp and observation guards without synthesizing
   expect(result.task).toMatchObject({ title: "Newer observation", updated_at: "2026-10-29T10:00:00Z" });
   expect(result.task.__task_content_cache.header).toBeUndefined();
 });
+
+async function seededFullObservation() {
+  const tracker = await import("../src/core/trackerCache.js"), summaries = await import("../src/core/taskSummaryCache.js"),
+    { summaryPatch } = await import("../src/core/taskSummaryProjection.js");
+  const initial = task({ watched: false });
+  const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
+  await summaries.landSummaryPage(ticket, { summary: true, basis: "B1", tasks: [summaryPatch(undefined, initial, true)] }, { read: ticket.generation });
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id, { task: initial, timeline: ["Held history"] },
+    { contentRead: await content.captureTaskContentRead(address, { revalidate: "full" }) });
+  return { tracker, summaries, initial, summaryAddress: summaries.summaryAddress(scope, initial.id),
+    invalidation: { deviceId: scope.deviceId, entityId: scope.projectId, kind: "tracker-summary-invalidation", sub: "" } };
+}
+
+it("normalizes one admitted full read jointly with detail and covers its actual compact header without a recovery loop", async () => {
+  const { tracker, summaries, initial, summaryAddress } = await seededFullObservation();
+  const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+  const incoming = { ...initial, title: "Canonical full read", body: "Canonical body", attachments: [{ path: "new-file" }] };
+  expect(await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id, { task: incoming, timeline: ["New history"] }, { contentRead })).toBe(true);
+  const normalized = (await cache.readCached(summaryAddress)).value, detail = await tracker.readTaskRecord(scope.deviceId, scope.projectId, initial.id);
+  expect(normalized.task).toMatchObject({ title: "Canonical full read", attachment_count: 1 });
+  expect(normalized.task.body).toBeUndefined(); expect(normalized.task.__task_content_cache.body).toBeUndefined();
+  expect(detail.task).toMatchObject({ title: "Canonical full read", body: "Canonical body" });
+  expect(content.taskNeedsFullRefresh(detail.task, normalized.task)).toBe(false);
+  expect(content.taskFullRefreshKey(detail.task, normalized.task)).toBeNull();
+  expect(normalized.basis).toBeUndefined(); expect(normalized.basis_uncertain).toBe(true);
+  expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ complete: true, stale: true, ids: [initial.id] });
+});
+
+it("rolls back full detail and normalized observation together on normalized quota refusal", async () => {
+  const { tracker, initial, summaryAddress, invalidation } = await seededFullObservation();
+  const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+  const addresses = [address, summaryAddress, invalidation], before = await cache.readCachedMany(addresses);
+  const { IDBObjectStore } = await import("fake-indexeddb"), put = IDBObjectStore.prototype.put;
+  const spy = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function(record, key) {
+    if (String(key).includes("|tracker-summary|") && record?.value?.task?.title === "Quota full read") throw new DOMException("Quota", "QuotaExceededError");
+    return put.call(this, record, key);
+  });
+  expect(await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id,
+    { task: { ...initial, title: "Quota full read" }, timeline: ["Must roll back"] }, { contentRead })).toBe(false);
+  spy.mockRestore(); expect(await cache.readCachedMany(addresses)).toEqual(before);
+});
+
+it("refuses every full-read output when the session changes during its joint cache reads", async () => {
+  const { tracker, initial, summaryAddress, invalidation } = await seededFullObservation();
+  const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+  const addresses = [address, summaryAddress, invalidation], before = await cache.readCachedMany(addresses);
+  let accepted = true;
+  const { IDBObjectStore } = await import("fake-indexeddb"), get = IDBObjectStore.prototype.get;
+  const spy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function(key) {
+    if (String(key).includes("|tracker-summary|")) accepted = false;
+    return get.call(this, key);
+  });
+  expect(await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id,
+    { task: { ...initial, title: "Wrong session" }, timeline: ["Wrong session"] }, { contentRead, accept: () => accepted })).toBe(false);
+  spy.mockRestore(); expect(await cache.readCachedMany(addresses)).toEqual(before);
+});
+
+it("rejects a retired-domain full read before publishing either compact or independent detail fields", async () => {
+  const { tracker, initial, summaryAddress, invalidation } = await seededFullObservation();
+  const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id, { task: { ...initial, body: "Optimistic body" }, timeline: ["Held history"] });
+  const addresses = [address, summaryAddress, invalidation], before = await cache.readCachedMany(addresses);
+  expect(await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id,
+    { task: { ...initial, title: "Stale full read", read_through: "tc-99" }, timeline: ["Stale history"] }, { contentRead })).toBe(false);
+  expect(await cache.readCachedMany(addresses)).toEqual(before);
+});

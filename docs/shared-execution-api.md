@@ -142,7 +142,7 @@ let invocation = Invocation::decode(method, &params)?
         write: None,
     })?;
 let mut call = execution.submit(request, invocation).await?;
-let reply = call.reply().await?;
+let _completion = call.reply().await?;
 // Retain call until the sink's encoded reply has finished its native write.
 ```
 
@@ -151,8 +151,11 @@ let reply = call.reply().await?;
 has the same signature. `Call::context()` exposes the captured RequestContext,
 `Call::cancel()` cancels that request, and dropping Call has the same interest
 retirement effect. `Call::reply(&mut self)` returns
-`Result<serde_json::Value, CallError>` asynchronously; the adapter may instead
-await its own final-event sink while retaining Call. `EncodedEvent: Clone` owns
+`Result<serde_json::Value, CallError>` asynchronously only after sink acceptance
+and a fresh authority check. This value signals completion; deliver the sink's
+`EncodedEvent` through its checked native write path, since authority can retire
+after `reply` returns. The adapter may instead await its own final-event sink
+while retaining Call. `EncodedEvent: Clone` owns
 encoded bytes and its proof, so response bodies can retain it directly rather
 than serializing the Value again. Sinks must not call back into session methods
 while synchronously enqueuing under an output gate.

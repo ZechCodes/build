@@ -31,7 +31,11 @@ pub enum CallError {
 
 impl Call {
     pub async fn reply(&mut self) -> Result<Value, CallError> {
-        (&mut self.outcome).await.map_err(|_| CallError::Closed)
+        let value = (&mut self.outcome).await.map_err(|_| CallError::Closed)?;
+        if !self.request.reply().is_live() {
+            return Err(CallError::Closed);
+        }
+        Ok(value)
     }
     pub fn cancel(&self) {
         self.request.cancellation().cancel();

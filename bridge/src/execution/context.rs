@@ -102,8 +102,11 @@ impl CallContext {
     ) -> Self {
         let send = self.reply.clone();
         self.reply = Arc::new(move |value| {
-            observe(&value);
-            send(value)
+            let accepted = send(value.clone());
+            if accepted {
+                observe(&value);
+            }
+            accepted
         });
         self
     }

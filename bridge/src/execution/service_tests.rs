@@ -136,6 +136,44 @@ fn single_worker(handler: FrameHandler) -> Arc<ExecutionService> {
     ExecutionService::from_dispatcher(Arc::new(Dispatcher::with_capacity(handler, 8, 1)))
 }
 
+#[tokio::test]
+async fn reply_requires_sink_acceptance_and_live_authority_at_consumption() {
+    for retirement in ["reject", "cancel", "close", "revoke", "none"] {
+        let service = ExecutionService::new(FrameHandler::new(FrameClock::new(), |_, _, _| {
+            unreachable!("ping is handled at intake")
+        }));
+        let live = Arc::new(AtomicBool::new(true));
+        let session = service
+            .sessions()
+            .open(caller(
+                live.clone(),
+                Instant::now() + Duration::from_secs(60),
+            ))
+            .unwrap();
+        let (output, mut received, _gone) = sink();
+        if retirement == "reject" {
+            received.close();
+        }
+        let mut call = submit(&service, &session, None, output, "ping").await;
+        if retirement != "reject" {
+            assert!(
+                received.try_recv().is_ok(),
+                "sink accepted the completed reply"
+            );
+        }
+        match retirement {
+            "cancel" => call.cancel(),
+            "close" => service.sessions().close(&session),
+            "revoke" => live.store(false, Ordering::SeqCst),
+            _ => {}
+        }
+        let result = timeout(WATCHDOG, call.reply())
+            .await
+            .expect("reply settles");
+        assert_eq!(result.is_ok(), retirement == "none", "{retirement}");
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn revoked_or_expired_authority_stops_snapshot_before_handler_or_output() {
     for expire in [false, true] {

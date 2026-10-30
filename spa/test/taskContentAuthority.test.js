@@ -729,3 +729,39 @@ it("registers and settles an exact watch owner without upgrading missing coordin
   expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(false);
   expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true });
 });
+
+it("cleans only the exact watch owner without publishing malformed or foreign task acknowledgments", async () => {
+  const watch = await import("../src/core/taskWatchAuthority.js");
+  const summaries = await import("../src/core/taskSummaryCache.js");
+  await cache.writeCached(address, { task: task({ watched: true }), timeline: ["Held history"] });
+  const before = await cache.readCached(address);
+  const invalid = [task({ id: "foreign-task", watched: false }),
+    task({ project_id: "foreign-project", watched: false }),
+    { id: "task-1", project_id: scope.projectId, watched: false }];
+  for (const answerTask of invalid) {
+    const owner = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false, metadataOnly: true });
+    const contentRead = await content.captureTaskContentRead(scope);
+    expect(await watch.settleTaskWatchMutation(owner, { answer: { task: answerTask }, contentRead })).toBe(false);
+    expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+    expect(await cache.readCached(address)).toEqual(before);
+    expect(await cache.readCached(summaries.summaryAddress(scope, "task-1"))).toBeUndefined();
+    expect(await cache.readCached(summaries.summaryAddress(scope, "foreign-task"))).toBeUndefined();
+    expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(false);
+  }
+});
+
+it("keeps an exhausted empty summary query uncertified while shared watch coordination is unknown or pending", async () => {
+  const summaries = await import("../src/core/taskSummaryCache.js");
+  const watch = await import("../src/core/taskWatchAuthority.js");
+  const publishEmpty = async () => {
+    const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
+    expect(await summaries.landSummaryPage(ticket, { summary: true, basis: "empty-wire-basis", tasks: [] },
+      { read: ticket.generation })).toBe(true);
+    expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ complete: true, ids: [], tasks: [], stale: true });
+  };
+  await publishEmpty();
+  const owner = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false, metadataOnly: true });
+  await publishEmpty();
+  await watch.settleTaskWatchMutation(owner, { rollback: true });
+  expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ complete: true, stale: true });
+});

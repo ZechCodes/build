@@ -219,3 +219,22 @@ it("gives each explicit header retirement its own stable bounded recovery identi
   expect(content.taskFullRefreshKey(held, { ...barrierOne, unread_count: 99 })).toBe(key);
   expect(content.taskFullRefreshKey(held, barrierTwo)).not.toBe(key);
 });
+
+it("publishes independent PR and read facts beside the selected ordinary detail and list components", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), listAddress = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  const raw = (version, mark) => task({ read_through: mark, unread_count: 3 - version, watched: true,
+    review_summary: { task_id: "task-1", version, status: "open", mode: "pull_request" } });
+  for (const version of [1, 2]) {
+    const next = raw(version, `tc-${version}0`);
+    await tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-1", { task: next, timeline: [] },
+      { contentRead: await content.captureTaskContentRead(address, { revalidate: "full" }) });
+    const contentRead = await content.captureTaskContentRead(listAddress, { revalidate: "full" });
+    await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([
+      content.observeTaskContent(next, { contentRead, coverage: "full" }),
+    ], [], contentRead.readOrder));
+  }
+  const rows = [(await tracker.readTaskRecord(scope.deviceId, scope.projectId, "task-1")).task,
+    (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0]];
+  for (const row of rows) expect(row).toMatchObject({ title: "Current", body: "Body", read_through: "tc-20",
+    unread_count: 1, review_summary: { version: 2 } });
+});

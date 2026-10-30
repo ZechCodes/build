@@ -1002,3 +1002,27 @@ it("retains unresolved owner protection when a plain blind list replacement chan
   expect(settled).toMatchObject({ watched: true, watch_started_after: "te-intervening" });
   expect(settled).not.toHaveProperty("__task_watch_intent");
 });
+
+it("preserves the current pending intent note when an unrelated full action publishes an existing detail", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), watch = await import("../src/core/taskWatchAuthority.js");
+  const actions = await import("../src/core/taskWaitingOnCache.js"), { task: wireTask } = await import("./trackerWireFixture.js");
+  const raw = wireTask(task({ watched: true, read_through: "tc-10" }));
+  const listAddress = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  const listRead = await content.captureTaskContentRead(listAddress, { revalidate: "full" });
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([raw], [], listRead.readOrder), { contentRead: listRead });
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-1", { task: raw, timeline: ["Existing history"] },
+    { contentRead: await content.captureTaskContentRead(address, { revalidate: "full" }) });
+  const owner = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false });
+  const actionRead = await content.captureTaskContentRead(scope);
+  expect(await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: { ...raw, title: "Unrelated action" } },
+    { contentRead: actionRead, issuedRead: actionRead.readOrder })).toBe(true);
+  // This is a real existing-detail publication, not the no-detail note branch.
+  expect((await cache.readCached(address)).value.task).toMatchObject({ watched: false, __task_watch_intent: owner.id });
+  const note = (await cache.readCached(order.taskWatchIntentAddress(scope, "task-1"))).value;
+  expect(note.latest_watch_intent).toMatchObject({ ownerId: owner.id, intentRead: owner.intentRead, disposition: "pending" });
+  const acknowledgmentRead = await content.captureTaskContentRead(scope);
+  expect(await watch.settleTaskWatchMutation(owner, { answer: { task: { ...raw, watched: false } }, contentRead: acknowledgmentRead })).toBe(true);
+  expect((await cache.readCached(order.taskWatchIntentAddress(scope, "task-1"))).value.latest_watch_intent)
+    .toMatchObject({ ownerId: owner.id, disposition: "acknowledged" });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+});

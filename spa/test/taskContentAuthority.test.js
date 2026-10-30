@@ -709,3 +709,11 @@ it("captures an independent shared watch retirement fence without conflating ord
   expect(third.ticket.watchRetirementEpoch).toBe(second.ticket.watchRetirementEpoch);
   expect(third.ticket.retirementEpoch).not.toBe(second.ticket.retirementEpoch);
 });
+
+it("preserves independent watch coordination when ordinary project data is evicted", async () => {
+  const first = await content.captureTaskContentRead(scope);
+  await cache.evictEntity(scope.deviceId, scope.projectId);
+  const second = await content.captureTaskContentRead(scope);
+  expect(second.ticket.watchRetirementEpoch).toBe(first.ticket.watchRetirementEpoch);
+  expect(second.ticket.scopeGeneration).not.toBe(first.ticket.scopeGeneration);
+});

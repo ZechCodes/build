@@ -588,11 +588,9 @@ async fn start_http_service(
     let prepared = match settings {
         None => {
             if let Some(stored) = stored {
-                if let Err(error) = build_bridge::http::supervisor::reconcile_disabled(
-                    stored,
-                    state_path.clone(),
-                )
-                .await
+                if let Err(error) =
+                    build_bridge::http::supervisor::reconcile_disabled(stored, state_path.clone())
+                        .await
                 {
                     eprintln!("HTTP endpoint deactivation remains pending: {error}");
                 }
@@ -1477,9 +1475,9 @@ fn mcp_stdio(dev_config: Option<&BridgeConfig>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        kept_identity_note, observe_http_service, pair_args, pair_device, pair_said, run_main_runtime,
-        service_environment, valid_release_repo, LoadedIdentity, NotPaired, PairingOutcome,
-        PAIR_STATUS_APPROVED_ELSEWHERE,
+        kept_identity_note, observe_http_service, pair_args, pair_device, pair_said,
+        run_main_runtime, service_environment, valid_release_repo, LoadedIdentity, NotPaired,
+        PairingOutcome, PAIR_STATUS_APPROVED_ELSEWHERE,
     };
     use build_bridge::{config, identity, pairing, relay::DeviceIdentity, transport};
     use wiremock::matchers::{method, path, path_regex};

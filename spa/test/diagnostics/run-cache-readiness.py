@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in six-admission proposal. Never execute without a fresh reservation."""
+"""Opt-in bounded proposals. Never execute without a fresh reservation."""
 import argparse
 import hashlib
 import json
@@ -52,11 +52,11 @@ def children(include_all=False):
     return records
 
 
-def qualify(directory, red, head, source_hash):
+def read_traces(directory, names, mode, head, source_hash):
     traces = {}
-    for name in ("delayed-landing", "invalidation-after-commit"):
+    for name in names:
         data = json.loads((directory / f"{name}.json").read_text())
-        if data.get("head") != head or data.get("mode") != ("red" if red else "green"):
+        if data.get("head") != head or data.get("mode") != mode:
             raise RuntimeError("INCONCLUSIVE artifact head/mode provenance")
         receipt = json.loads((directory / f"{name}.json.receipt").read_text())
         digest = hashlib.sha256((directory / f"{name}.json").read_bytes()).hexdigest()
@@ -73,6 +73,12 @@ def qualify(directory, red, head, source_hash):
         if events[0]["type"] != "capture-registered" or events[-1]["type"] != "end-observation":
             raise RuntimeError("INCONCLUSIVE capture coverage/flush markers")
         traces[name] = events
+    return traces
+
+
+def qualify(directory, red, head, source_hash):
+    traces = read_traces(directory, ("delayed-landing", "invalidation-after-commit"),
+                         "red" if red else "green", head, source_hash)
     events = traces["delayed-landing"]
     types = [event["type"] for event in events]
     ordered = ["initial-complete-before-background-ack"]
@@ -100,9 +106,92 @@ def qualify(directory, red, head, source_hash):
     return {"complete": True, "ordering": ordered}
 
 
+def qualify_visibility(directory, head, source_hash):
+    names = ("visibility-pending", "visibility-sealed", "visibility-disposed")
+    traces = read_traces(directory, names, "visibility", head, source_hash)
+    for name, events in traces.items():
+        def one(kind):
+            matches = [event for event in events if event["type"] == kind]
+            if len(matches) != 1:
+                raise RuntimeError(f"INCONCLUSIVE {name}: expected one {kind}")
+            return matches[0]
+
+        if any(event["type"] == "raw-test-error" for event in events):
+            raise RuntimeError(f"Visibility case failed: {name}")
+        final = one(f"{name}-qualified")
+        bubble_registration = one("bubble-probe-registered")
+        bubble_removal = one("bubble-probe-removed")
+        probe_disposed = one("visibility-probe-disposed")
+        hidden_restored = one("visibility-hidden-spy-restored")
+        if any(event["type"] == "guard-cleanup-fallback" for event in events):
+            raise RuntimeError(f"INCONCLUSIVE fixture guard required fallback cleanup: {name}")
+        registered, removed = one("guard-registered"), one("guard-removed")
+        dispatch, bubble = one("visibility-dispatched"), one("bubble-probe")
+        observed, completed_visibility = one("production-pass-observed"), one("production-pass-completed")
+        if (registered.get("capture") is not True or registered.get("nativeRegistered") is not True
+                or registered.get("origin") != "rejectVisibility"
+                or registered.get("original") is None or registered.get("wrapper") is None
+                or registered.get("original") == registered.get("wrapper")
+                or removed.get("capture") is not True or removed.get("nativeRemoved") is not True
+                or removed.get("reason") != "fixture"
+                or (registered.get("original"), registered.get("wrapper")) != (removed.get("original"), removed.get("wrapper"))):
+            raise RuntimeError(f"INCONCLUSIVE guard registration/removal identity: {name}")
+        event_id = dispatch.get("event")
+        if (event_id is None or any(event.get("event") != event_id for event in (bubble, observed, completed_visibility))
+                or observed.get("pass") is None or observed.get("pass") != dispatch.get("productionPass")
+                or completed_visibility.get("pass") != observed.get("pass") or completed_visibility.get("result") is not True):
+            raise RuntimeError(f"INCONCLUSIVE event/production pass identity: {name}")
+        expected_hits = 0 if name == "visibility-disposed" else 1
+        if (dispatch.get("dispatchReturned") is not True or dispatch.get("defaultPrevented") is not False
+                or bubble.get("defaultPrevented") is not False
+                or bubble.get("eventPhase") != 3
+                or bubble_registration.get("nativeRegistered") is not True
+                or bubble_registration.get("capture") is not False
+                or bubble_registration.get("target") is None
+                or bubble_removal.get("nativeRemoved") is not True
+                or (bubble_registration.get("original"), bubble_registration.get("target"))
+                != (bubble_removal.get("original"), bubble_removal.get("target"))
+                or dispatch.get("guardCallsBefore") != 0 or dispatch.get("guardCallsAfter") != expected_hits
+                or dispatch.get("bubbleCallsAfter") != dispatch.get("bubbleCallsBefore", -2) + 1):
+            raise RuntimeError(f"Visibility event was suppressed or guard calls mismatched: {name}")
+        if not (registered["sequence"] < dispatch["sequence"] < observed["sequence"]
+                < completed_visibility["sequence"] < final["sequence"]
+                and bubble_registration["sequence"] < bubble["sequence"] < dispatch["sequence"]
+                and removed["sequence"] < final["sequence"]
+                < hidden_restored["sequence"] < bubble_removal["sequence"] < probe_disposed["sequence"]):
+            raise RuntimeError(f"INCONCLUSIVE visibility control ordering: {name}")
+        calls = [event for event in events if event["type"] == "guard-called"]
+        if len(calls) != expected_hits:
+            raise RuntimeError(f"INCONCLUSIVE actual guard call coverage: {name}")
+        if calls and (calls[0].get("event") != event_id or calls[0].get("original") != registered.get("original")
+                      or calls[0].get("wrapper") != registered.get("wrapper") or calls[0]["sequence"] >= dispatch["sequence"]):
+            raise RuntimeError(f"INCONCLUSIVE actual guard call identity/order: {name}")
+        if name == "visibility-pending":
+            before = one("initial-complete-before-background-ack")
+            rejected = one("ready-rejected-visibility")
+            invalidated = one("pending-invalidated-visibility")
+            if not before["sequence"] < dispatch["sequence"] < rejected["sequence"] < invalidated["sequence"] < final["sequence"]:
+                raise RuntimeError("INCONCLUSIVE pending-readiness rejection order")
+        else:
+            if not one("barrier-ready")["sequence"] < dispatch["sequence"]:
+                raise RuntimeError("INCONCLUSIVE event occurred before seal")
+            if name == "visibility-sealed":
+                for kind in ("post-seal-invalidated-visibility", "ready-remained-fulfilled"):
+                    if not dispatch["sequence"] < one(kind)["sequence"] < final["sequence"]:
+                        raise RuntimeError("INCONCLUSIVE post-seal visibility invalidation")
+            elif not (removed["sequence"] < one("guard-disposed")["sequence"] < dispatch["sequence"]
+                      < one("dispatch-after-dispose-no-guard-hits")["sequence"] < final["sequence"]):
+                raise RuntimeError("INCONCLUSIVE guard disposal/noninterference order")
+        completed = [event for event in events if event["type"] == "pass-completed"]
+        if not completed or any(event["result"] is not True for event in completed):
+            raise RuntimeError(f"Production visibility pass did not complete successfully: {name}")
+    return {"complete": True, "cases": list(names)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute", action="store_true", required=True)
+    parser.add_argument("--plan", choices=("readiness", "visibility"), default="readiness")
     parser.add_argument("--reservation", required=True)
     parser.add_argument("--start", required=True, help="Explicit coordinator UTC ISO timestamp")
     parser.add_argument("--cutoff", required=True, help="Explicit UTC ISO timestamp, at most start+8min")
@@ -116,6 +205,8 @@ def main():
     start, cutoff = (value.timestamp() for value in timestamps)
     if not 0 < cutoff - start <= 480 or not start <= time.time() < cutoff:
         raise RuntimeError("No current eight-minute admission authorization")
+    if args.plan == "visibility" and cutoff - start > 180:
+        raise RuntimeError("Visibility proposal requires a minute-three admission cutoff")
     if head_at(args.root) != args.head:
         raise RuntimeError("HEAD differs from reviewed successor")
     args.artifacts.mkdir(parents=True, exist_ok=False)
@@ -130,7 +221,9 @@ def main():
     node = Path("/home/zech/.local/share/mise/installs/node/22.23.4/bin/node")
     npm = Path("/home/zech/.cache/node/corepack/v1/npm/12.0.2/bin/npm-cli.js")
     inventory = children()
-    record({"type": "inventory", "reservation": args.reservation, "head": args.head, "processes": inventory,
+    record({"type": "inventory", "reservation": args.reservation, "plan": args.plan,
+            "start": args.start, "cutoff": args.cutoff, "max_admissions": 3 if args.plan == "visibility" else 6,
+            "head": args.head, "processes": inventory,
             "node": str(node), "node_sha256": hashlib.sha256(node.read_bytes()).hexdigest(),
             "npm": str(npm), "npm_sha256": hashlib.sha256(npm.read_bytes()).hexdigest()})
     initial_active = any(item["state"] not in {"T", "t", "Z", "X"} for item in inventory)
@@ -145,6 +238,10 @@ def main():
         ("original-case", spa, original, None),
         ("full-file", spa, vitest + ["test/cacheSyncDelivery.test.js"], None),
     ]
+    if args.plan == "visibility":
+        command = vitest + ["--config", "test/diagnostics/cacheSyncReadiness.config.mjs",
+                            "test/cacheSyncDelivery.test.js", "-t", "909 visibility diagnostic"]
+        steps = steps[:2] + [("visibility", spa, command, "visibility")]
     admitted, stop, completed, ledger_failed = 0, None, set(), False
     sessions = set()
 
@@ -224,7 +321,8 @@ def main():
             completed.add(name)
             await_owned()
             if mode:
-                qualification = qualify(directory, mode == "red", args.head, source_hash)
+                qualification = (qualify_visibility(directory, args.head, source_hash) if mode == "visibility"
+                                 else qualify(directory, mode == "red", args.head, source_hash))
                 expected = 1 if mode == "red" else 0
                 raw = (args.artifacts / f"{name}.log").read_text()
                 if code != expected or (mode == "red" and "EXPECTED_READINESS_RED" not in raw):
@@ -237,12 +335,17 @@ def main():
         safe_record({"type": "stopped-or-inconclusive", "error": stop})
     finally:
         await_owned()
+        try:
+            clean_source()
+        except Exception as error:
+            stop = f"Final source provenance failed: {error}"
+            safe_record({"type": "stopped-or-inconclusive", "error": stop})
         for name, _, _, _ in steps:
             if name not in completed:
                 safe_record({"type": "skipped-or-uncompleted", "name": name, "reason": stop})
-        safe_record({"type": "finished", "admitted": admitted, "stop": stop, "success": stop is None and not ledger_failed and admitted == 6,
+        safe_record({"type": "finished", "admitted": admitted, "stop": stop, "success": stop is None and not ledger_failed and admitted == len(steps),
                      "head_after": head_at(args.root), "fresh_inventory": children()})
-    return 0 if stop is None and not ledger_failed and admitted == 6 else 1
+    return 0 if stop is None and not ledger_failed and admitted == len(steps) else 1
 
 
 if __name__ == "__main__":

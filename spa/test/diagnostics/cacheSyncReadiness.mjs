@@ -1,5 +1,5 @@
 // Opt-in diagnostics only. The normal fixture does not import this controller.
-import { it, expect } from "vitest";
+import { it, expect, vi } from "vitest";
 import { openSync, closeSync, writeFileSync, fsyncSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -19,7 +19,7 @@ function capture(name) {
   let lost = 0, bytes = 0, nextId = 0;
   let ended = false, incomplete = false;
   const identity = (value) => {
-    if (!value || typeof value !== "object") return null;
+    if (!value || (typeof value !== "object" && typeof value !== "function")) return null;
     if (!identities.has(value)) identities.set(value, ++nextId);
     return identities.get(value);
   };
@@ -265,6 +265,273 @@ async function invalidationAfterCommit(env, trace, release, cleanup) {
     // Drain observed repair work so cleanup never strands a deferred pass.
     await completePasses(env, env.sync.passInFlight("dev-1"), trace);
   } finally { fixture.dispose(); observer.dispose(); }
+}
+
+const visibilityError = "visibility changed during the closed push fixture";
+const captureEnabled = (options) => options === true || options?.capture === true;
+
+function visibilityRegistration(target, original, options, trace) {
+  const record = { target, original, options, capture: captureEnabled(options),
+    active: false, additions: 0, removals: 0, calls: 0, wrapper: original };
+  record.guard = record.capture && original?.name === "rejectVisibility";
+  if (record.capture && typeof original === "function") {
+    record.wrapper = function (event) {
+      record.calls += 1;
+      trace.event(record.guard ? "guard-called" : "visibility-capture-called", {
+        original: trace.identity(original), wrapper: trace.identity(record.wrapper),
+        event: trace.identity(event), calls: record.calls, capture: record.capture,
+        eventPhase: event.eventPhase, defaultPrevented: event.defaultPrevented });
+      return original.call(this, event);
+    };
+  }
+  return record;
+}
+
+function listenerTrace(record, trace) {
+  return { original: trace.identity(record.original), wrapper: trace.identity(record.wrapper),
+    target: trace.identity(record.target), capture: record.capture, origin: record.original?.name || null };
+}
+
+// Wrap only capture listeners, delegate with the native this/event/options,
+// and map removal by original identity AND native capture matching. An
+// incorrect fixture removal therefore leaves a callable wrapper behind.
+function visibilityProbe(trace, cleanup) {
+  const add = document.addEventListener, remove = document.removeEventListener;
+  const bubbleTarget = document.defaultView;
+  const bubbleAdd = bubbleTarget.addEventListener, bubbleRemove = bubbleTarget.removeEventListener;
+  const records = [];
+  let bubbleCalls = 0, disposed = false, bubbleInstalled = false;
+  let addSpy, removeSpy, bubble;
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    for (const record of records.filter((held) => held.capture && held.active)) {
+      remove.call(record.target, "visibilitychange", record.wrapper, record.options);
+      record.active = false;
+      trace.event("guard-cleanup-fallback", { ...listenerTrace(record, trace), reason: "cleanup" });
+    }
+    if (bubbleInstalled) {
+      bubbleRemove.call(bubbleTarget, "visibilitychange", bubble, false);
+      trace.event("bubble-probe-removed", { original: trace.identity(bubble), target: trace.identity(bubbleTarget), nativeRemoved: true });
+    }
+    removeSpy?.mockRestore();
+    addSpy?.mockRestore();
+    trace.event("visibility-probe-disposed");
+  };
+  cleanup.push(dispose);
+  addSpy = vi.spyOn(document, "addEventListener").mockImplementation(function (type, listener, options) {
+    if (type !== "visibilitychange") return add.call(this, type, listener, options);
+    let record = records.find((held) => held.target === this && held.original === listener && held.capture === captureEnabled(options));
+    if (!record) { record = visibilityRegistration(this, listener, options, trace); records.push(record); }
+    add.call(this, type, record.wrapper, options);
+    record.active = true;
+    record.additions += 1;
+    trace.event(record.guard ? "guard-registered" : "visibility-listener-registered", {
+      ...listenerTrace(record, trace), nativeRegistered: true });
+  });
+  removeSpy = vi.spyOn(document, "removeEventListener").mockImplementation(function (type, listener, options) {
+    if (type !== "visibilitychange") return remove.call(this, type, listener, options);
+    const record = records.find((held) => held.target === this && held.original === listener && held.capture === captureEnabled(options));
+    remove.call(this, type, record?.wrapper || listener, options);
+    if (!record) {
+      trace.event("visibility-removal-unmatched", { original: trace.identity(listener), capture: captureEnabled(options) });
+      return;
+    }
+    record.active = false;
+    record.removals += 1;
+    trace.event(record.guard ? "guard-removed" : "visibility-listener-removed", {
+      ...listenerTrace(record, trace), nativeRemoved: true, reason: "fixture" });
+  });
+  bubble = (event) => {
+    bubbleCalls += 1;
+    trace.event("bubble-probe", { event: trace.identity(event), defaultPrevented: event.defaultPrevented,
+      eventPhase: event.eventPhase, calls: bubbleCalls });
+  };
+  const guard = () => {
+    const captured = records.filter((record) => record.capture);
+    expect(captured).toHaveLength(1);
+    expect(captured[0].guard).toBe(true);
+    expect(captured[0].additions).toBe(1);
+    return captured[0];
+  };
+  trace.event("visibility-probe-installed");
+  return { guard,
+    listen() {
+      bubbleAdd.call(bubbleTarget, "visibilitychange", bubble, false);
+      bubbleInstalled = true;
+      trace.event("bubble-probe-registered", { original: trace.identity(bubble),
+        target: trace.identity(bubbleTarget), capture: false, nativeRegistered: true });
+    },
+    get bubbleCalls() { return bubbleCalls; },
+    assertRemoved() {
+      const held = guard();
+      expect(held.active).toBe(false);
+      expect(held.removals).toBe(1);
+      return held;
+    },
+  };
+}
+
+function visibleDocument(trace, cleanup) {
+  const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  cleanup.push(() => { hidden.mockRestore(); trace.event("visibility-hidden-spy-restored"); });
+  trace.event("visibility-hidden-spy-installed", { hidden: document.hidden });
+}
+
+function dispatchVisibility(env, probe, trace, expectedGuardCalls) {
+  expect(env.sync.passInFlight("dev-1")).toBeNull();
+  const guard = probe.guard(), guardCallsBefore = guard.calls, bubbleCallsBefore = probe.bubbleCalls;
+  expect(guardCallsBefore).toBe(0);
+  expect(bubbleCallsBefore).toBe(0);
+  const event = new Event("visibilitychange", { bubbles: true, cancelable: true });
+  trace.event("visibility-dispatch", { event: trace.identity(event), hidden: document.hidden });
+  const dispatchReturned = document.dispatchEvent(event);
+  const pass = env.sync.passInFlight("dev-1");
+  trace.event("visibility-dispatched", { event: trace.identity(event), dispatchReturned,
+    defaultPrevented: event.defaultPrevented, guardCallsBefore, guardCallsAfter: guard.calls,
+    bubbleCallsBefore, bubbleCallsAfter: probe.bubbleCalls, productionPass: trace.identity(pass) });
+  expect(dispatchReturned).toBe(true);
+  expect(event.defaultPrevented).toBe(false);
+  expect(probe.bubbleCalls).toBe(bubbleCallsBefore + 1);
+  expect(guard.calls).toBe(guardCallsBefore + expectedGuardCalls);
+  expect(pass).not.toBeNull();
+  trace.event("production-pass-observed", { event: trace.identity(event), pass: trace.identity(pass) });
+  return { event, pass };
+}
+
+async function finishVisibilityPasses(env, dispatch, trace) {
+  await completePasses(env, dispatch.pass, trace);
+  await env.changeEvents.subscriptionsSettledFor("dev-1");
+  await completePasses(env, env.sync.passInFlight("dev-1"), trace);
+  expect(env.sync.passInFlight("dev-1")).toBeNull();
+  trace.event("production-pass-completed", { event: trace.identity(dispatch.event),
+    pass: trace.identity(dispatch.pass), result: true });
+}
+
+async function visibilitySetup(env, trace, cleanup) {
+  const probe = visibilityProbe(trace, cleanup);
+  visibleDocument(trace, cleanup);
+  const wire = env.subscribingBridge();
+  await env.greet();
+  env.setBoard([env.branchItem()]);
+  const observer = observe(env, wire, trace);
+  cleanup.push(observer.dispose);
+  return { probe, wire, observer };
+}
+
+function visibilityFixture(env, wire, probe, trace, cleanup) {
+  const fixture = env.beginPushFixture(wire);
+  cleanup.push(fixture.dispose);
+  void fixture.ready.catch(() => {});
+  probe.guard();
+  probe.listen();
+  trace.event("initial-pass-captured", { pass: trace.identity(fixture.initial),
+    session: trace.identity(env.currentContext()?.session) });
+  return fixture;
+}
+
+async function visibilityPending(env, trace, release, cleanup) {
+  const { probe, wire, observer } = await visibilitySetup(env, trace, cleanup);
+  const background = wire.hold("changes.subscribe", (params) => params.subscription_id === "s-background");
+  release.push(background);
+  const fixture = visibilityFixture(env, wire, probe, trace, cleanup);
+  let readyState = "pending";
+  const readiness = fixture.ready.then((seal) => {
+    readyState = "fulfilled";
+    return { seal };
+  }, (error) => { readyState = "rejected"; return { error }; });
+  await completePasses(env, fixture.initial, trace);
+  await observer.inbox;
+  await completePasses(env, env.sync.passInFlight("dev-1"), trace);
+  await env.called(env.call(), (mock) => mock.mock.calls.some(([method, params]) =>
+    method === "changes.subscribe" && params.subscription_id === "s-background"));
+  expect(observer.held.has("s-background")).toBe(false);
+  expect(observer.held.has("s-inbox")).toBe(true);
+  expect(wire.subscriptions.get("s-inbox").session).toBe(env.currentContext().session);
+  expect(wire.subscriptions.has("s-background")).toBe(false);
+  expect(wire.held.has("s-background")).toBe(true);
+  expect(readyState).toBe("pending");
+  trace.event("initial-complete-before-background-ack", { generation: wire.subscriptionGeneration,
+    managerHeld: [...observer.held], pending: [...wire.pendingSubscriptions].map(trace.identity),
+    inboxSession: trace.identity(wire.subscriptions.get("s-inbox").session), backgroundAcknowledged: false });
+  const dispatch = dispatchVisibility(env, probe, trace, 1);
+  const outcome = await readiness;
+  expect(outcome.error?.message).toBe(visibilityError);
+  trace.event("ready-rejected-visibility", { event: trace.identity(dispatch.event), message: outcome.error.message });
+  expect(() => fixture.assertCurrent()).toThrow(visibilityError);
+  trace.event("pending-invalidated-visibility", { event: trace.identity(dispatch.event) });
+  background();
+  trace.event("background-response-released");
+  await finishVisibilityPasses(env, dispatch, trace);
+  fixture.dispose();
+  probe.assertRemoved();
+  trace.event("visibility-pending-qualified");
+}
+
+async function visibilitySealed(env, trace, release, cleanup) {
+  const { probe, wire } = await visibilitySetup(env, trace, cleanup);
+  const fixture = visibilityFixture(env, wire, probe, trace, cleanup);
+  const seal = await fixture.ready;
+  fixture.assertCurrent();
+  trace.event("barrier-ready", { session: trace.identity(seal.session), generation: seal.generation,
+    passes: seal.passes.map(trace.identity) });
+  const dispatch = dispatchVisibility(env, probe, trace, 1);
+  expect(() => fixture.assertCurrent()).toThrow(visibilityError);
+  trace.event("post-seal-invalidated-visibility", { event: trace.identity(dispatch.event) });
+  expect(await fixture.ready).toBe(seal);
+  trace.event("ready-remained-fulfilled", { event: trace.identity(dispatch.event), sameSeal: true });
+  await finishVisibilityPasses(env, dispatch, trace);
+  fixture.dispose();
+  probe.assertRemoved();
+  trace.event("visibility-sealed-qualified");
+}
+
+async function visibilityDisposed(env, trace, release, cleanup) {
+  const { probe, wire } = await visibilitySetup(env, trace, cleanup);
+  const fixture = visibilityFixture(env, wire, probe, trace, cleanup);
+  const seal = await fixture.ready;
+  fixture.assertCurrent();
+  trace.event("barrier-ready", { session: trace.identity(seal.session), generation: seal.generation,
+    passes: seal.passes.map(trace.identity) });
+  fixture.dispose();
+  const guard = probe.assertRemoved();
+  trace.event("guard-disposed", { original: trace.identity(guard.original), wrapper: trace.identity(guard.wrapper),
+    removed: true, calls: guard.calls });
+  const dispatch = dispatchVisibility(env, probe, trace, 0);
+  trace.event("dispatch-after-dispose-no-guard-hits", { event: trace.identity(dispatch.event), before: 0, after: guard.calls });
+  await finishVisibilityPasses(env, dispatch, trace);
+  trace.event("visibility-disposed-qualified");
+}
+
+export function visibilityCases(env) {
+  for (const [name, run] of [["visibility-pending", visibilityPending], ["visibility-sealed", visibilitySealed], ["visibility-disposed", visibilityDisposed]]) {
+    it(`909 visibility diagnostic ${name}`, async () => {
+      const trace = capture(name);
+      const release = [], cleanup = [];
+      const environment = env();
+      const scope = diagnosticScope(environment, trace);
+      let finished = false;
+      emergencyCleanup = () => {
+        if (!finished) scope.abort();
+        for (const open of release.splice(0).reverse()) open();
+        for (const dispose of cleanup.splice(0).reverse()) dispose();
+        if (!finished) {
+          try { trace.finish(new Error("INCONCLUSIVE: controller outlived test teardown")); }
+          catch (error) { console.error(error); }
+        }
+      };
+      let failure;
+      try {
+        trace.event("fixture-hooks-registered", { sourceHash: environment.sourceHash });
+        await run(scope.environment, trace, release, cleanup);
+      } catch (error) { failure = error; trace.event("raw-test-error", { error: String(error) }); throw error; }
+      finally {
+        finished = true;
+        emergencyCleanup();
+        try { trace.finish(failure); } catch (error) { if (failure) console.error(error); else throw error; }
+      }
+    });
+  }
 }
 
 export function readinessCases(env) {

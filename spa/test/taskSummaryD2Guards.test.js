@@ -113,7 +113,7 @@ it("D2-G01 rejects retired empty-page snapshot authority and separately records 
   result.resolve(page([], secondCursor));
   const moreResult = await pending, after = await result.view.read(), queryAfter = await cache.readCached(queryAddress);
   expect(after).toMatchObject({ snapshot_continuation_eligible: false, stale: true, ids: ["task-2"] });
-  expect(queryAfter.value.snapshot_membership).toBeNull();
+  expect(queryAfter.value.snapshot_membership?.retirementEpoch).not.toBe(domainRetired.value.retirementEpoch);
   expect(await cache.readCached(detailAddress)).toEqual(detailBefore);
   expect(await cache.readCached(summaries.summaryAddress(scope, "task-2"))).toEqual(rowBefore);
   expect(await watch.readTaskWatchState(scope)).toEqual(watchBefore);

@@ -12,7 +12,8 @@ const validIdentity = (value) => typeof value === "string" && value.isWellFormed
 
 function snapshotGreeting(address) {
   const greeting = captureDeviceGreeting(contextFor(address.deviceId));
-  if (greeting?.capabilities?.tasks?.watchSnapshotGet !== true) return null;
+  if (greeting?.capabilities?.writes?.epoch !== true
+    || greeting.capabilities.tasks?.watchSnapshotGet !== true) return null;
   const epoch = greeting.epoch;
   return validIdentity(epoch.bridge_epoch) && validIdentity(epoch.journal_incarnation) ? greeting : null;
 }

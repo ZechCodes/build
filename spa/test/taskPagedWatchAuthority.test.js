@@ -229,3 +229,68 @@ it("cleans a rejected owner's legitimately transported stamps from existing repl
     expect(taskFrom(copy).__task_watch_intent).toBeUndefined();
   }
 });
+
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((yes) => { resolve = yes; });
+  return { promise, resolve };
+};
+
+it("retires a terminal stamp copied by another connection after actual replica address discovery", async () => {
+  const first = await runtime();
+  const actions = await import("../src/core/taskWaitingOnCache.js");
+  const current = row(20, { watched: false, title: "Prepared cached row" });
+  expect(await pull(first, async () => ({ tasks: [current] }))).toBe(true);
+  const owner = await first.watch.beginTaskWatchMutation(scope, current.id, { watched: false });
+  const prepared = structuredClone((await savedRows(first))[0]);
+  expect(prepared.__task_watch_intent).toBe(owner.id);
+  const contentRead = await first.content.captureTaskContentRead(scope);
+  const outside = await runtime();
+  const queryParams = { ...params, state: "open" };
+  const target = outside.tracker.tasksQueryAddress(scope.deviceId, scope.projectId, queryParams);
+  expect(await outside.cache.readCached(target)).toBeUndefined();
+  const discovered = deferred(), resume = deferred();
+  const actualAddresses = first.cache.cachedAddresses;
+  const discovery = vi.spyOn(first.cache, "cachedAddresses").mockImplementationOnce(async (prefix) => {
+    const addresses = await actualAddresses(prefix);
+    discovered.resolve({ prefix, addresses });
+    await resume.promise;
+    return addresses;
+  });
+  let settled;
+  try {
+    settled = actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: current },
+      { contentRead, issuedRead: contentRead.readOrder, watchOwner: owner });
+    const captured = await discovered.promise;
+    expect(captured.prefix).toEqual({ deviceId: scope.deviceId, entityId: scope.projectId });
+    expect(captured.addresses.some((address) => address.kind === target.kind && address.sub === target.sub)).toBe(false);
+    // This actual public writer commits on B's independent IDB connection
+    // after A's address result was read, while A has not settled the owner.
+    await outside.tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId, queryParams,
+      outside.tracker.tasksRecord([prepared], []));
+    expect((await savedRows(outside, target))[0].__task_watch_intent).toBe(owner.id);
+    expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true });
+    resume.resolve();
+    await settled;
+    expect(discovery).toHaveBeenCalledTimes(1);
+    const terminal = await outside.watch.readTaskWatchState(scope);
+    expect(terminal).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+
+    // A future admitted writer must consult terminal ownership in its own
+    // transaction. A's finite address list cannot have cleaned this late copy.
+    const refresh = await outside.content.captureTaskContentRead(target, { revalidate: "full" });
+    await outside.tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId, queryParams,
+      outside.tracker.tasksRecord([row(20, { watched: false, title: "Later admitted query title" })], []),
+      { contentRead: refresh });
+    expect(await outside.watch.readTaskWatchState(scope)).toEqual(terminal);
+    const held = (await savedRows(outside, target))[0];
+    expect(held).toMatchObject({ title: "Later admitted query title", watched: false });
+    expect(held.unread_count).toBeUndefined();
+    expect(held[outside.watch.TASK_WATCH_CACHE]?.uncertain).not.toBe(false);
+    expect(held.__task_watch_intent).toBeUndefined();
+  } finally {
+    resume.resolve();
+    if (settled) await settled;
+    discovery.mockRestore();
+  }
+});

@@ -122,7 +122,10 @@ it.each(["native same-ms timestamp", "later receipt"])("admits independent feed 
       review_summary: { task_id: "independent", version: 1, status: "open", mode: "pull_request" } });
     const seedRead = await captureTaskContentRead(address, { revalidate: "full" });
     await tracker.writeTaskRecord(deviceId, projectId, held.id, tracker.taskRecord(held, [{ id: "held-history" }]), { contentRead: seedRead });
-    const response = deferred(), callRpc = vi.fn(() => response.promise);
+    const response = deferred();
+    // A subsequent recovery is a distinct unresolved request, not a replay of
+    // the already-resolved older server snapshot under a newer dispatch.
+    const callRpc = vi.fn().mockImplementationOnce(() => response.promise).mockImplementation(() => new Promise(() => {}));
     feed = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc });
     await feed.updateTasks([{ ...held, updated_at: "2026-10-30T00:00:00Z" }]);
     await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(1));
@@ -134,11 +137,39 @@ it.each(["native same-ms timestamp", "later receipt"])("admits independent feed 
       review_summary: { task_id: held.id, version: 2, status: "closed", mode: "pull_request" } }, timeline: [{ id: "older-history" }] });
     await vi.waitFor(async () => expect((await tracker.readTaskRecord(deviceId, projectId, held.id)).task.read_through).toBe("tc-20"));
     const saved = await tracker.readTaskRecord(deviceId, projectId, held.id);
+    // The later held observation also owns the newer watch lineage. The
+    // older reply may advance its monotonic read mark and numeric PR version.
     expect(saved.task).toMatchObject({ title: held.title, body: held.body, updated_at: held.updated_at,
-      watched: false, read_through: "tc-20", review_summary: { version: 2, status: "closed" } });
+      watched: true, read_through: "tc-20", review_summary: { version: 2, status: "closed" } });
     expect(saved.timeline).toEqual([{ id: "newer-history" }]);
     expect(saved.task.__task_content_cache.body.read_order).toBe(newerRead.readOrder);
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(2));
   } finally { clock.mockRestore(); }
+});
+
+it("admits a later-dispatched feed watch read and PR observation while retaining a strictly newer timestamp body", async () => {
+  const tracker = await import("../src/core/trackerCache.js");
+  const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+  const { createTrackerTaskDetailsFeed } = await import("../src/core/trackerTaskDetailsFeed.js");
+  const held = task("timestamp", { state: "open", status: "ready", watched: true, watch_started_after: "",
+    read_through: "tc-10", review_summary: { task_id: "timestamp", version: 1, status: "open", mode: "pull_request" } });
+  const seedRead = await captureTaskContentRead(tracker.taskAddress(deviceId, projectId, held.id), { revalidate: "full" });
+  await tracker.writeTaskRecord(deviceId, projectId, held.id, tracker.taskRecord(held, [{ id: "held-history" }]), { contentRead: seedRead });
+  const response = deferred();
+  const callRpc = vi.fn().mockImplementationOnce(() => response.promise).mockImplementation(() => new Promise(() => {}));
+  feed = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc });
+  await feed.updateTasks([{ ...held, updated_at: "2026-10-30T00:00:00Z" }]);
+  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(1));
+  response.resolve({ task: { ...held, title: "Old title", body: "Old body", updated_at: "2026-10-28T23:59:59Z",
+    watched: false, read_through: "tc-20", review_summary: { task_id: held.id, version: 2, status: "closed", mode: "pull_request" } },
+  timeline: [{ id: "old-history" }] });
+  await vi.waitFor(async () => expect((await tracker.readTaskRecord(deviceId, projectId, held.id)).task.read_through).toBe("tc-20"));
+  const saved = await tracker.readTaskRecord(deviceId, projectId, held.id);
+  expect(saved.task).toMatchObject({ title: held.title, body: held.body, updated_at: held.updated_at,
+    watched: false, read_through: "tc-20", review_summary: { version: 2, status: "closed" } });
+  expect(saved.timeline).toEqual([{ id: "held-history" }]);
+  expect(saved.task.__task_content_cache.body.read_order).toBe(seedRead.readOrder);
+  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(2));
 });
 
 it("adopts new proven same-timestamp headers once while suppressing repeated identical header observations", async () => {

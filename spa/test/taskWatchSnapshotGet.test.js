@@ -99,8 +99,8 @@ async function beginRead(capabilities, reply = proofReply()) {
   };
 }
 
-async function awaitSaved(read) {
-  await vi.waitFor(() => expect(read.feed.read().get(taskId)?.task?.title).toBe("Canonical GET body"));
+async function awaitSaved(read, title = "Canonical GET body") {
+  await vi.waitFor(() => expect(read.feed.read().get(taskId)?.task?.title).toBe(title));
   const detail = await runtime.tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId);
   expect(detail.task.body).toBe("Full ordinary content remains useful");
   return (await runtime.cache.readCanonicalCached(runtime.summaries.summaryAddress(scope, taskId))).value;
@@ -172,7 +172,7 @@ async function refreshReply(read, reply) {
   await vi.waitFor(() => expect(read.requests).toHaveLength(index + 1));
   read.answer(index, reply);
   await refreshed;
-  return awaitSaved(read);
+  return awaitSaved(read, reply.task.title);
 }
 
 it("UNITCONTRACT keeps a captured same-task pending snapshot historical after settlement and requires fresh same-sequence recovery", async () => {

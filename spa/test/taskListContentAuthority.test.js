@@ -85,3 +85,60 @@ it("annotates actual task push legacy full rows with the clock captured before R
   expectFullObservation(await tracker.readTasksRecord(DEVICE, PROJECT), afterDispatch);
   expect(rpc.mock.calls.filter(([method]) => method === "tasks.list")).toHaveLength(1);
 });
+
+async function actualListReader(source) {
+  if (source === "sync phase") {
+    const { createTaskPhases } = await import("../src/core/syncTaskPhases.js");
+    return () => createTaskPhases(context, {
+      ask: (_context, method, params) => rpc(method, params), readReviews: async () => {},
+    }).first(PROJECT);
+  }
+  sync = await import("../src/core/cacheSync.js");
+  sync.startCacheSync(); await passesSettled(sync, DEVICE);
+  const watcher = watchers.find(({ kinds }) => kinds.includes("thread"));
+  return () => watcher.onChanges([{ entity_id: PROJECT, tasks: { task_ids: ["content-1"] } }]);
+}
+
+it.each(["sync phase", "task push"])("retains blind-created membership against an empty stale %s reply and accepts fresh absence", async (source) => {
+  const read = await actualListReader(source);
+  script["tasks.list"] = async () => ({ tasks: [row()] });
+  await read();
+  const response = gate(), dispatched = gate();
+  script["tasks.list"] = () => { dispatched.resolve(); return response.promise; };
+  const pending = read(); await dispatched.promise;
+  const held = await tracker.readTasksRecord(DEVICE, PROJECT);
+  const local = { ...row(), id: "local-created", number: 2, title: "Local creation", body: "Local body" };
+  const localColumns = [...columns, { id: "local-column" }];
+  await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([local, ...held.tasks], localColumns, await reads.nextTaskRead()));
+  response.resolve({ tasks: [] }); await pending;
+  const kept = await tracker.readTasksRecord(DEVICE, PROJECT);
+  expect(kept.tasks.map(({ id }) => id)).toEqual(["local-created", "content-1"]);
+  expect(kept.columns).toEqual(localColumns);
+  expect(kept.tasks.find(({ id }) => id === local.id)).toMatchObject({ title: "Local creation", body: "Local body" });
+  script["tasks.list"] = async () => ({ tasks: [] });
+  await read();
+  expect((await tracker.readTasksRecord(DEVICE, PROJECT)).tasks).toEqual([]);
+});
+
+it.each(["sync phase", "task push"])("retains omitted membership and independent facts from a nonempty stale %s reply", async (source) => {
+  const read = await actualListReader(source);
+  const original = { ...row(), read_through: "tc-10", review_summary: { task_id: "content-1", version: 1, status: "open" } };
+  script["tasks.list"] = async () => ({ tasks: [original] });
+  await read();
+  const response = gate(), dispatched = gate();
+  script["tasks.list"] = () => { dispatched.resolve(); return response.promise; };
+  const pending = read(); await dispatched.promise;
+  const held = await tracker.readTasksRecord(DEVICE, PROJECT);
+  const local = { ...row(), id: "local-created", number: 2, title: "Local creation", body: "Local body" };
+  const localColumns = [...columns, { id: "local-column" }];
+  await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([local, ...held.tasks], localColumns, await reads.nextTaskRead()));
+  response.resolve({ tasks: [{ ...original, title: "Rejected stale title", body: "Rejected stale body", read_through: "tc-20",
+    review_summary: { task_id: "content-1", version: 2, status: "open" } }, { ...row(), id: "stale-only" }] });
+  await pending;
+  const kept = await tracker.readTasksRecord(DEVICE, PROJECT);
+  expect(kept.tasks.map(({ id }) => id)).toEqual(["local-created", "content-1"]);
+  expect(kept.columns).toEqual(localColumns);
+  expect(kept.tasks.find(({ id }) => id === original.id)).toMatchObject({ title: original.title, body: original.body,
+    read_through: "tc-20", review_summary: { version: 2 } });
+  expect(kept.tasks.find(({ id }) => id === local.id)).toMatchObject({ title: "Local creation", body: "Local body" });
+});

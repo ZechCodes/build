@@ -968,7 +968,7 @@ async function readTasksNow(context, projectId) {
   if (!context.active()) return;
   const observed = (answer.tasks || []).map((task) => observeTaskContent(task, { contentRead, coverage: "full" }));
   await Promise.all([
-    writeTasksRecord(context.deviceId, projectId, tasksRecord(observed, columns, contentRead.readOrder), { accept: () => context.active() }),
+    writeTasksRecord(context.deviceId, projectId, tasksRecord(observed, columns, contentRead.readOrder), { accept: () => context.active(), contentRead }),
     writeListedUserSession(context.deviceId, answer),
   ]);
 }

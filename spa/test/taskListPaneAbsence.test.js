@@ -11,7 +11,12 @@ vi.mock("../src/core/trackerCache.js", async (actual) => {
     if (args[optionIndex]?.accept) publications.push({ name, contentRead: args[optionIndex].contentRead });
     return result;
   };
-  return { ...source, writeTasksRecord: tracked("writeTasksRecord", 3), writeTasksQueryRecord: tracked("writeTasksQueryRecord", 4) };
+  return { ...source, writeTasksRecord: tracked("writeTasksRecord", 3), writeTasksQueryRecord: tracked("writeTasksQueryRecord", 4),
+    writeTaskListRecords: async (...args) => {
+      const result = await source.writeTaskListRecords(...args);
+      publications.push(...args[2].map(({ address, contentRead }) => ({ name: address.kind, contentRead })));
+      return result;
+    } };
 });
 vi.mock("../src/core/changeEvents.js", () => ({
   bridgeCapabilities: () => ({ tasks: {} }),

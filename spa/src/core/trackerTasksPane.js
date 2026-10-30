@@ -26,6 +26,7 @@ import {
   readTasksQueryCached,
   writeTasksQueryRecord,
   writeTasksRecord,
+  writeTaskListRecords,
 } from "./trackerCache.js";
 import { subscribeCache } from "./localCache.js";
 import { foldTasksPage, pagesTasks, pullTaskPages } from "./trackerPages.js";
@@ -487,12 +488,15 @@ export function mountTasksPane(host, options) {
     const record = tasksRecord(observed, state.columns, contentRead.readOrder);
     // The fetch is a writer only. The matching cache announcement above is
     // what re-reads this record and repaints the pane.
-    await writeTasksQueryRecord(state.deviceId, state.projectId, params, record, { accept: current });
-    // An unnarrowed answer is also the authoritative whole-list record.
-    if (wholeRead && current()) {
+    const entries = [{ address: tasksQueryAddress(state.deviceId, state.projectId, params), record, contentRead }];
+    // Both absence proofs see the same pre-publication scope. Removing a row
+    // from one replica must not retire the sibling response's captured ticket.
+    if (wholeRead) {
       const whole = (answer?.tasks || []).map((task) => observeTaskContent(task, { contentRead: wholeRead, coverage: "full" }));
-      await writeTasksRecord(state.deviceId, state.projectId, tasksRecord(whole, state.columns, wholeRead.readOrder), { accept: current });
+      entries.push({ address: tasksAddress(state.deviceId, state.projectId),
+        record: tasksRecord(whole, state.columns, wholeRead.readOrder), contentRead: wholeRead });
     }
+    await writeTaskListRecords(state.deviceId, state.projectId, entries, { accept: current });
     await writeListedUserSession(state.deviceId, answer);
   }
 

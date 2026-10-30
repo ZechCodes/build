@@ -38,7 +38,7 @@ async function wholeList(context, projectId, ask, columns, priority) {
   if (!context.active()) return false;
   const observed = (answer.tasks || []).map((task) => observeTaskContent(task, { contentRead, coverage: "full" }));
   await Promise.all([
-    writeTasksRecord(context.deviceId, projectId, tasksRecord(observed, value, contentRead.readOrder), { accept: () => context.active() }),
+    writeTasksRecord(context.deviceId, projectId, tasksRecord(observed, value, contentRead.readOrder), { accept: () => context.active(), contentRead }),
     writeListedUserSession(context.deviceId, answer),
   ]);
   return true;

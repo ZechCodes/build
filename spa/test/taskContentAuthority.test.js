@@ -278,3 +278,20 @@ it("keeps a retired external future-header timestamp protective during addressed
   expect(result).toMatchObject({ acceptedHeader: false, acceptedBody: false, needsFullRefresh: true });
   expect(result.task).toMatchObject({ title: "Current", body: "Body" });
 });
+
+it("keeps accepted same-byte component clocks when an older cached copy is republished", async () => {
+  const tracker = await import("../src/core/trackerCache.js");
+  const first = (await publish(await observed(task()))).task;
+  const pending = content.observeTaskContent(task({ title: "Earlier action", body: "Earlier action" }),
+    { contentRead: await content.captureTaskContentRead(scope), coverage: "full" });
+  const current = (await publish(await observed(task()))).task;
+  const fragment = content.taskContentFragment(scope), before = fragment.context(await cache.readCachedMany(fragment.addresses));
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-1", { task: first, timeline: [] });
+  const copied = await read();
+  expect(copied.__task_content_cache.header).toEqual(current.__task_content_cache.header);
+  expect(copied.__task_content_cache.body).toEqual(current.__task_content_cache.body);
+  expect(fragment.context(await cache.readCachedMany(fragment.addresses))).toEqual(before);
+  const result = await publish(pending);
+  expect(result).toMatchObject({ acceptedHeader: false, acceptedBody: false });
+  expect(result.task).toMatchObject({ title: "Current", body: "Body" });
+});

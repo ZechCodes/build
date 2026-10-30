@@ -16,6 +16,7 @@ import { createTerminalFollowController } from "./followController.js";
 import { TerminalSocket } from "./session.js";
 import { isProjectTerminalScope, projectTerminalRpc } from "../core/projectTerminalRpc.js";
 import { createStatusHub } from "./statusHub.js";
+import { terminalPeerLink } from "../core/terminalPeerLinks.js";
 
 let socket = null;
 let followController = null;
@@ -113,17 +114,20 @@ export function terminalManager() {
  * hands both streams back at once; a second listener on the same carrier would
  * run that fallback twice, through two owners of one fact.
  */
-/** The `term` channel one machine's peer link is carrying, or null when it has
- *  none. Nobody else's: another device's channel carries the stream to the
- *  wrong machine. */
-const termChannelOf = (deviceId) => contextFor(deviceId)?.peerLink?.term || null;
+/** The exact terminal peer owner for this machine. HTTP app sessions acquire
+ * their independent RTC parent lazily; ordinary RTC sessions reuse their peer. */
+const peerLinkOf = (deviceId) => terminalPeerLink(contextFor(deviceId));
 
 function stillDesired(target) {
   return terminalDeviceId() === target.deviceId
     && contextFor(target.deviceId) === target.context
     && canAnswer(target.context)
-    && termChannelOf(target.deviceId) === target.carrier;
+    && desiredPeer(target);
 }
+
+const desiredPeer = (target) => target.peerLink
+  ? peerLinkOf(target.deviceId) === target.peerLink
+  : (peerLinkOf(target.deviceId)?.term || null) === target.carrier;
 
 function createFollowController(owner) {
   return createTerminalFollowController({
@@ -155,11 +159,13 @@ export function followTerminalDevice({ freshSession = false } = {}) {
   const context = contextFor(deviceId);
   const answerable = canAnswer(context);
   if (!socket) return answerable;
+  const peerLink = terminalPeerLink(context);
   return followController.request({
     deviceId,
     context,
-    carrier: context?.peerLink?.term || null,
-    recovery: context?.peerLink?.recovery || null,
+    peerLink,
+    carrier: peerLink?.term || null,
+    recovery: peerLink?.recovery || null,
     canAnswer: answerable,
     freshSession,
   });

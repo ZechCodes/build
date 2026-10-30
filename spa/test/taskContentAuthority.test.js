@@ -358,6 +358,8 @@ it("paints an explicitly retired local full creation as an unknown normalized ro
 it("never turns an unticketed or retired-domain raw reply into a blind ordinary creation", async () => {
   const actions = await import("../src/core/taskWaitingOnCache.js"), summaries = await import("../src/core/taskSummaryCache.js"),
     tracker = await import("../src/core/trackerCache.js");
+  const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
+  await summaries.landSummaryPage(ticket, { summary: true, basis: "held", tasks: [task()] }, { read: ticket.generation });
   const pending = await content.captureTaskContentRead(scope);
   // An actual unrelated local rewrite retires the dispatch domain.
   await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [task({ id: "other-task" })] });
@@ -365,6 +367,6 @@ it("never turns an unticketed or retired-domain raw reply into a blind ordinary 
     await actions.cacheTaskWaitingOnResponse(scope.deviceId, scope.projectId, { task: task({ title: "Stale raw" }) }, options);
     expect(await tracker.readTaskRecord(scope.deviceId, scope.projectId, "task-1")).toBeNull();
     expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks.map((row) => row.id)).toEqual(["other-task"]);
-    expect((await cache.readCached(summaries.summaryAddress(scope, "task-1")))?.value?.task).toBeFalsy();
+    expect((await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.task.title).toBe("Current");
   }
 });

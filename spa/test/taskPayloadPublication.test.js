@@ -467,3 +467,87 @@ it("does not retire another operation from a preexisting vector during a partial
   expect((await writer.operations.get("unrelated-operation")).overlayActive).toBe(true);
   await operationUnfinished(writer);
 });
+
+it("aborts queued partial task publication when its accept guard retires during the detail put", async () => {
+  const writer = await independentRuntime(), observer = await independentRuntime();
+  const target = await seedTask(writer);
+  await confirmedOperation(writer, [target]);
+  const entry = await capturedEntry(writer, target), before = await snapshot(observer, [target]);
+  expect(await writer.watch.readTaskWatchState(scope)).toMatchObject({ uncertain: true, eligible: false });
+  const originalPut = IDBObjectStore.prototype.put, detailKey = writer.keys.recordKey(target.address);
+  let active = true, detailQueued = false;
+  vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (record, key) {
+    const request = originalPut.call(this, record, key);
+    if (key === detailKey && record.value?.task?.body === entry.value.task.body) {
+      detailQueued = true;
+      active = false;
+    }
+    return request;
+  });
+  const heard = [];
+  const stop = writer.local.subscribeCache({ deviceId: scope.deviceId, entityId: scope.projectId }, (address) => heard.push(address));
+  const result = await writer.operations.observePublication({ canonical: [entry], report: true, accept: () => active })
+    .then((value) => ({ value }), (error) => ({ error }));
+  stop();
+  expect(detailQueued).toBe(true);
+  expect(active).toBe(false);
+  // The real put was queued before authority ended. Returning from a callback
+  // cannot make that write disappear: the actual transaction must abort.
+  expect(await snapshot(observer, [target])).toEqual(before);
+  expect(heard).toEqual([]);
+  expect(result.value?.written || []).toEqual([]);
+  expect((result.value?.outcomes || []).some((outcome) => outcome.payloadWritten || outcome.receiptPublished)).toBe(false);
+});
+
+it("commits partial task publication while its accept guard remains current", async () => {
+  const writer = await independentRuntime(), observer = await independentRuntime();
+  const target = await seedTask(writer);
+  await confirmedOperation(writer, [target]);
+  const entry = await capturedEntry(writer, target);
+  const heard = [];
+  const stop = writer.local.subscribeCache({ deviceId: scope.deviceId, entityId: scope.projectId }, (address) => heard.push(address));
+  const result = await writer.operations.observePublication({ canonical: [entry], report: true, accept: () => true });
+  stop();
+  const canonical = await observer.local.readCanonicalCached(target.address);
+  expect(canonical.value.task.body).toBe(entry.value.task.body);
+  expect(canonical.value.task.title).toBe(entry.value.task.title);
+  expect(canonical.value.timeline).toEqual([]);
+  expect(canonical.publication || []).toEqual([]);
+  expect(result.written).toContainEqual(target.address);
+  expect(result.outcomes).toContainEqual(expect.objectContaining({ address: target.address, payloadWritten: true, receiptPublished: false }));
+  expect(heard).toContainEqual(target.address);
+  await operationUnfinished(observer);
+});
+
+it.each(["copied", "serialized", "foreign-runtime"])("refuses canonical history provenance from a %s refresh entry", async (kind) => {
+  const writer = await independentRuntime(), foreign = kind === "foreign-runtime" ? await independentRuntime() : writer;
+  const heldComment = comment({ id: "brand-held-history", body: "Retain independently protected history" });
+  const target = await seedTask(writer, "brand-task", {}, [heldComment]);
+  const { frame, record } = await confirmedOperation(writer, [target]);
+  const answer = answerFor(target);
+  let forwarded;
+  const cache = { get: writer.operations.get, observePublication: async (input) => {
+    const original = input.canonical[0];
+    expect(original.contentRead.ticket).not.toBeNull();
+    if (kind === "copied") forwarded = { ...original };
+    else if (kind === "serialized") {
+      forwarded = JSON.parse(JSON.stringify(original));
+      // Preserve the actual ordinary ticket, not history-owner identity. An
+      // ordinary token copied onto a DTO cannot certify its history array.
+      forwarded.contentRead = original.contentRead;
+    } else forwarded = original;
+    if (kind !== "foreign-runtime") expect(forwarded).not.toBe(original);
+    return foreign.operations.observePublication({ ...input, canonical: [forwarded] });
+  } };
+  const authority = { active: () => true, call: vi.fn(async () => answer) };
+  await writer.refresh.refreshWriteOperation({ cache, frame, record, authority }).catch(() => {});
+  expect(authority.call).toHaveBeenCalledExactlyOnceWith("tasks.get", { task_id: target.row.id });
+  expect(forwarded).toBeDefined();
+  const canonical = await writer.local.readCanonicalCached(target.address);
+  expect(canonical.value.timeline).toEqual([heldComment]);
+  expect(canonical.publication || []).toEqual([]);
+  // Foreign ordinary tickets may independently fail admission. The same-owner
+  // copy controls keep the genuine ordinary ticket and prove that distinction.
+  if (kind !== "foreign-runtime") expect(canonical.value.task.body).toBe(answer.task.body);
+  await operationUnfinished(writer);
+});

@@ -44,7 +44,8 @@ beforeEach(async () => {
   composerOptions = null;
   mutation = deferred(); oldAnswer = deferred();
   fence = await import("../src/core/taskMutationFence.js");
-  const held = task({ id: "move-task", project_id: scope.projectId, title: "Move me" });
+  const held = task({ id: "move-task", project_id: scope.projectId, title: "Move me",
+    review_summary: { mode: "snapshot", status: "open" } });
   const tracker = await import("../src/core/trackerCache.js");
   await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [held], columns: columns() });
   cache = await import("../src/core/localCache.js");
@@ -54,7 +55,7 @@ beforeEach(async () => {
   const ticket = await summaries.beginSummaryQuery(scope, {}, order);
   await summaries.landSummaryPage(ticket, { summary: true, basis: "before-move", next_cursor: "old-next",
     identities: {}, tasks: [{ id: held.id, project_id: scope.projectId, title: held.title, number: 1,
-      state: "open", status: "backlog", review_summary: { mode: "snapshot", status: "open" } }] }, { read: order });
+      state: "open", status: "backlog", review_summary: held.review_summary }] }, { read: order });
   paneCall = vi.fn(async (method) => {
     if (method === "tasks.list") return { tasks: [held] };
     if (method === "tasks.get") return { task: held, timeline: [] };

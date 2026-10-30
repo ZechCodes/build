@@ -865,6 +865,88 @@ mod tests {
         authority: Option<VerifiedAuthority>,
     }
 
+    struct NeverWakeWriter;
+
+    impl tokio::io::AsyncWrite for NeverWakeWriter {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Pending
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum GatedPollKind {
+        Write,
+        Flush,
+        Shutdown,
+    }
+
+    struct GatedPollWriter {
+        kind: GatedPollKind,
+        entered: Option<std::sync::mpsc::SyncSender<()>>,
+        release: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+    }
+
+    impl GatedPollWriter {
+        fn block(&mut self, kind: GatedPollKind) {
+            if std::mem::discriminant(&self.kind) != std::mem::discriminant(&kind) {
+                return;
+            }
+            if let Some(entered) = self.entered.take() {
+                entered.send(()).unwrap();
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("matrix controller releases the bounded output poll");
+            }
+        }
+    }
+
+    impl tokio::io::AsyncWrite for GatedPollWriter {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.block(GatedPollKind::Write);
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            self.block(GatedPollKind::Flush);
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            self.block(GatedPollKind::Shutdown);
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
     #[async_trait]
     impl GrantVerifier for WitnessVerifier {
         async fn verify(&self, _bearer: &str) -> Result<VerifiedAuthority, AuthError> {
@@ -1791,7 +1873,113 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    async fn assert_output_poll_linearizes_with_close(kind: GatedPollKind) {
+        let runtime = runtime_with(
+            execution(),
+            Arc::new(WitnessVerifier {
+                calls: Arc::new(AtomicUsize::new(0)),
+                authority: Some(authority()),
+            }),
+        );
+        let app = runtime.router();
+        let opened = app
+            .clone()
+            .oneshot(open_request(Body::from(r#"{"api_range":">=3 <4"}"#)))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+        let session = runtime.state.openings.lock().unwrap()[&session_id]
+            .session
+            .clone();
+        let output = super::super::listener::OutputAuthority::default();
+        let mut request = Request::get("/v1/health")
+            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header("X-Build-Session", &session_id)
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(output.clone());
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let expected = bytes.len();
+        let (poll_entered_tx, poll_entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (poll_release_tx, poll_release_rx) = std::sync::mpsc::sync_channel(1);
+        let writer = GatedPollWriter {
+            kind,
+            entered: Some(poll_entered_tx),
+            release: Arc::new(Mutex::new(poll_release_rx)),
+        };
+        let mut io = super::super::listener::BoundedIo::new(writer, output);
+        let polling = tokio::spawn(async move {
+            let result = match kind {
+                GatedPollKind::Write => io.write(&bytes).await,
+                GatedPollKind::Flush => io.flush().await.map(|()| 0),
+                GatedPollKind::Shutdown => io.shutdown().await.map(|()| 0),
+            };
+            (result, io)
+        });
+        tokio::task::spawn_blocking(move || {
+            poll_entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("the bounded socket operation reaches its inner poll")
+        })
+        .await
+        .unwrap();
+        let (close_started_tx, close_started_rx) = std::sync::mpsc::sync_channel(1);
+        let (close_done_tx, close_done_rx) = std::sync::mpsc::sync_channel(1);
+        let sessions = runtime.state.execution.sessions();
+        let closing = tokio::task::spawn_blocking(move || {
+            close_started_tx.send(()).unwrap();
+            sessions.close(&session);
+            close_done_tx.send(()).unwrap();
+        });
+        tokio::task::spawn_blocking(move || {
+            close_started_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("close starts while one bounded socket poll is active")
+        })
+        .await
+        .unwrap();
+        let (closed_early, close_done_rx) = tokio::task::spawn_blocking(move || {
+            match close_done_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(()) => (true, None),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (false, Some(close_done_rx)),
+                Err(error) => panic!("close completion channel failed: {error}"),
+            }
+        })
+        .await
+        .unwrap();
+        poll_release_tx.send(()).unwrap();
+        let (result, mut io) = polling.await.unwrap();
+        if let Some(close_done_rx) = close_done_rx {
+            tokio::task::spawn_blocking(move || {
+                close_done_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("close completes after the bounded poll releases its gate")
+            })
+            .await
+            .unwrap();
+        }
+        closing.await.unwrap();
+        assert!(!closed_early, "close must wait for the one synchronous poll");
+        assert_eq!(
+            result.unwrap(),
+            if matches!(kind, GatedPollKind::Write) {
+                expected
+            } else {
+                0
+            }
+        );
+        assert_eq!(
+            io.write(&[0]).await.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "the next poll observes opening retirement"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn matrix_7_encoded_pending_output_keeps_exact_grant_through_deferred_flush_release() {
         let a_live = Arc::new(AtomicBool::new(true));
         let b_live = Arc::new(AtomicBool::new(true));
@@ -1903,6 +2091,17 @@ mod tests {
         let closed_bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
             .await
             .unwrap();
+        let mut never_wakes =
+            super::super::listener::BoundedIo::new(NeverWakeWriter, closed_output.clone());
+        let parked_bytes = closed_bytes.clone();
+        let parked = tokio::spawn(async move { never_wakes.write_all(&parked_bytes).await });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !closed_output.has_pending_write() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("output is parked in an inner writer that never wakes itself");
         let mut close = close_request_with_token(&session_id, "grant-b");
         close
             .extensions_mut()
@@ -1910,6 +2109,14 @@ mod tests {
         assert_eq!(
             app.oneshot(close).await.unwrap().status(),
             StatusCode::NO_CONTENT
+        );
+        let parked = tokio::time::timeout(std::time::Duration::from_secs(2), parked)
+            .await
+            .expect("opening invalidation wakes and settles a parked output")
+            .unwrap();
+        assert_eq!(
+            parked.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
         );
         let mut closed_socket =
             super::super::listener::BoundedIo::new(tokio::io::sink(), closed_output);
@@ -1922,6 +2129,101 @@ mod tests {
             std::io::ErrorKind::PermissionDenied,
             "session close remains an independent fence"
         );
+
+        let gate_runtime = runtime_with(
+            execution(),
+            Arc::new(WitnessVerifier {
+                calls: Arc::new(AtomicUsize::new(0)),
+                authority: Some(authority()),
+            }),
+        );
+        let gate_app = gate_runtime.router();
+        let opened = gate_app
+            .clone()
+            .oneshot(open_request(Body::from(r#"{"api_range":">=3 <4"}"#)))
+            .await
+            .unwrap();
+        let gate_session_id = opening_id(opened).await;
+        let gate_session = gate_runtime.state.openings.lock().unwrap()[&gate_session_id]
+            .session
+            .clone();
+        let gate_output = super::super::listener::OutputAuthority::default();
+        let mut request = Request::get("/v1/health")
+            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header("X-Build-Session", &gate_session_id)
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(gate_output.clone());
+        let response = gate_app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let expected = bytes.len();
+        let (poll_entered_tx, poll_entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (poll_release_tx, poll_release_rx) = std::sync::mpsc::sync_channel(1);
+        let writer = GatedPollWriter {
+            kind: GatedPollKind::Write,
+            entered: Some(poll_entered_tx),
+            release: Arc::new(Mutex::new(poll_release_rx)),
+        };
+        let mut gated_io = super::super::listener::BoundedIo::new(writer, gate_output);
+        let writing = tokio::spawn(async move {
+            let result = gated_io.write(&bytes).await;
+            (result, gated_io)
+        });
+        tokio::task::spawn_blocking(move || {
+            poll_entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("the bounded socket poll reaches its inner writer")
+        })
+        .await
+        .unwrap();
+        let (close_started_tx, close_started_rx) = std::sync::mpsc::sync_channel(1);
+        let (close_done_tx, close_done_rx) = std::sync::mpsc::sync_channel(1);
+        let sessions = gate_runtime.state.execution.sessions();
+        let closing = tokio::task::spawn_blocking(move || {
+            close_started_tx.send(()).unwrap();
+            sessions.close(&gate_session);
+            close_done_tx.send(()).unwrap();
+        });
+        tokio::task::spawn_blocking(move || {
+            close_started_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("close starts while one bounded socket poll is active")
+        })
+        .await
+        .unwrap();
+        let (closed_early, close_done_rx) = tokio::task::spawn_blocking(move || {
+            match close_done_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(()) => (true, None),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (false, Some(close_done_rx)),
+                Err(error) => panic!("close completion channel failed: {error}"),
+            }
+        })
+        .await
+        .unwrap();
+        poll_release_tx.send(()).unwrap();
+        let (written, mut gated_io) = writing.await.unwrap();
+        if let Some(close_done_rx) = close_done_rx {
+            tokio::task::spawn_blocking(move || {
+                close_done_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("close completes after the bounded poll releases its gate")
+            })
+            .await
+            .unwrap();
+        }
+        closing.await.unwrap();
+        assert!(!closed_early, "close must wait for the one synchronous poll");
+        assert_eq!(written.unwrap(), expected);
+        assert_eq!(
+            gated_io.write(&[0]).await.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "the next poll observes opening retirement"
+        );
+        assert_output_poll_linearizes_with_close(GatedPollKind::Flush).await;
+        assert_output_poll_linearizes_with_close(GatedPollKind::Shutdown).await;
     }
 
     #[tokio::test]

@@ -60,6 +60,7 @@ const registerDevice = (deviceId) => {
 
 let cache, sync, changeEvents;
 let board = [];
+let disposePushFixture = null;
 
 const ANSWERS = {
   "board.list": () => ({ items: board }),
@@ -122,6 +123,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  disposePushFixture?.();
   sync.stopCacheSync();
   changeEvents.resetChangeEvents();
 });
@@ -253,11 +255,23 @@ describe("a pass racing the wire", () => {
    *  the first time `method` is asked, before it answers. */
   const subscribingBridge = () => {
     const held = new Set();
+    const subscriptions = new Map();
+    const pendingSubscriptions = new Set();
+    const subscriptionListeners = new Set();
+    const latestSubscription = new Map();
+    let subscriptionGeneration = 0;
     const pending = new Map();
     const overrides = new Map();
     const gates = new Map();
     const wire = {
       held,
+      subscriptions,
+      pendingSubscriptions,
+      get subscriptionGeneration() { return subscriptionGeneration; },
+      onSubscription(listener) {
+        subscriptionListeners.add(listener);
+        return () => subscriptionListeners.delete(listener);
+      },
       during: (method, change) => pending.set(method, change),
       /** Answer `method` this way from now on; a throw is a refusal. */
       answering: (method, reply) => overrides.set(method, reply),
@@ -266,11 +280,15 @@ describe("a pass racing the wire", () => {
       hold: (method, match = () => true) => {
         let open;
         const opened = new Promise((done) => { open = done; });
-        gates.set(method, { opened, match });
+        gates.set(method, { opened, match, open });
         return () => {
           gates.delete(method);
           open();
         };
+      },
+      releaseAll: () => {
+        for (const gate of gates.values()) gate.open();
+        gates.clear();
       },
       /** What the bridge pushes for one entity's row: to `s-inbox`, if it is held. */
       pushRow: (entityId) => {
@@ -279,11 +297,40 @@ describe("a pass racing the wire", () => {
         changeEvents.dispatchChangeEvent({ type: "changes", subscription_id: "s-inbox", items: [{ entity_id: entityId, state }] }, "dev-1");
       },
     };
+    const announceSubscription = (phase, request, error = null) => {
+      subscriptionGeneration += 1;
+      for (const listener of [...subscriptionListeners]) listener({ phase, request, error });
+    };
+    const makeSubscriptionRequest = (method, params) => {
+      if (method !== "changes.subscribe" && method !== "changes.unsubscribe") return null;
+      const request = { method, spec: structuredClone(params), session: contexts.get("dev-1")?.session, call: bridge.call };
+      pendingSubscriptions.add(request);
+      latestSubscription.set(params.subscription_id, request);
+      subscriptions.delete(params.subscription_id);
+      announceSubscription("request", request);
+      return request;
+    };
+    const acceptSubscription = (request) => {
+      if (!request || request.method !== "changes.subscribe") return;
+      const id = request.spec.subscription_id;
+      if (latestSubscription.get(id) === request) subscriptions.set(id, request);
+    };
+    const settleSubscription = (request, error) => {
+      if (!request) return;
+      pendingSubscriptions.delete(request);
+      announceSubscription("response", request, error);
+    };
     const reply = async (method, params) => {
-      const answered = await respond(method, params);
-      const gate = gates.get(method);
-      if (gate?.match(params)) await gate.opened;
-      return answered;
+      const request = makeSubscriptionRequest(method, params);
+      let error = null;
+      try {
+        const answered = await respond(method, params);
+        const gate = gates.get(method);
+        if (gate?.match(params)) await gate.opened;
+        acceptSubscription(request);
+        return answered;
+      } catch (refusal) { error = refusal; throw refusal; }
+      finally { settleSubscription(request, error); }
     };
     const respond = async (method, params) => {
       if (method === "session.hello") return HELLO;
@@ -307,6 +354,117 @@ describe("a pass racing the wire", () => {
     bridge.call = vi.fn(reply);
     return wire;
   };
+
+  /** This one push fixture must finish recovery under acknowledged coverage
+   * before adding its open file. RPC quiet and the wire's early held set are
+   * neither an acknowledgment nor successful pass completion. */
+  function beginPushFixture(wire) {
+    const deviceId = "dev-1";
+    const context = contexts.get(deviceId), session = context?.session, call = bridge.call;
+    const expected = new Map([
+      ["s-inbox", { scope: { kind: "all" }, kinds: ["state", "thread", "tasks"], mode: "realtime", priority: "foreground" }],
+      ["s-background", { scope: { kind: "all" }, kinds: ["git", "files", "terminals"], mode: { batch_ms: sync.BACKGROUND_COOLDOWN_MS }, priority: "background" }],
+    ]);
+    const managerHeld = new Map(), passes = new Map();
+    let generation = 0, seal = null, disposed = false;
+    let rejectFailure;
+    const failed = new Promise((_, reject) => { rejectFailure = reject; });
+    failed.catch(() => {});
+    const ownerCurrent = () => {
+      expect(disposed, "push fixture was disposed").toBe(false);
+      expect(contexts.get(deviceId), "push fixture context changed").toBe(context);
+      expect(context?.session, "push fixture session changed").toBe(session);
+      expect(bridge.call, "push fixture caller changed").toBe(call);
+    };
+    const observePass = (pass) => {
+      if (!pass || passes.has(pass)) return;
+      const observed = pass.then((result) => {
+        passes.get(pass).result = result;
+        if (!disposed) observePass(sync.passInFlight(deviceId));
+        expect(result, "push fixture recovery pass failed or stood down").toBe(true);
+      });
+      passes.set(pass, { promise: observed, result: null });
+      observed.catch(rejectFailure);
+    };
+    const stopWire = wire.onSubscription(({ request }) => {
+      const id = request.spec.subscription_id;
+      if (!expected.has(id)) return;
+      generation += 1;
+      managerHeld.delete(id);
+    });
+    const stopHeld = changeEvents.onSubscriptionHeld((device, id) => {
+      if (device !== deviceId || !expected.has(id)) return;
+      generation += 1;
+      managerHeld.set(id, wire.subscriptions.get(id));
+      // The manager's subsequent listener can install a successor in this
+      // same callback stack. Observe it after every listener has returned.
+      queueMicrotask(() => { if (!disposed) observePass(sync.passInFlight(deviceId)); });
+    });
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      stopWire();
+      stopHeld();
+      wire.releaseAll();
+      if (disposePushFixture === dispose) disposePushFixture = null;
+      rejectFailure(new Error("push fixture disposed"));
+    };
+    disposePushFixture = dispose;
+    const coverageCurrent = () => {
+      ownerCurrent();
+      expect([...wire.pendingSubscriptions].filter((request) => expected.has(request.spec.subscription_id)), "subscription acknowledgments still pending").toEqual([]);
+      for (const [id, spec] of expected) {
+        const acknowledged = wire.subscriptions.get(id);
+        expect(acknowledged, `no successful ${id} acknowledgment`).toBeTruthy();
+        expect(acknowledged.session).toBe(session);
+        expect(acknowledged.call).toBe(call);
+        expect(acknowledged.spec).toEqual({ subscription_id: id, ...spec });
+        expect(managerHeld.get(id), `${id} not acknowledged by the subscription manager`).toBe(acknowledged);
+        expect(wire.held.has(id)).toBe(true);
+      }
+    };
+    const assertCurrent = () => {
+      coverageCurrent();
+      expect(seal, "push fixture is not ready").toBeTruthy();
+      expect(generation, "coverage changed after push fixture readiness").toBe(seal.generation);
+      expect(sync.passInFlight(deviceId), "a recovery pass started after readiness").toBeNull();
+      expect(passes.size, "a recovery pass was observed after readiness").toBe(seal.passes.length);
+      for (const { result } of passes.values()) expect(result).toBe(true);
+    };
+    try {
+      sync.startCacheSync();
+      const initial = sync.passInFlight(deviceId);
+      expect(initial, "this synchronous fixture did not start its initial pass").toBeTruthy();
+      observePass(initial);
+      const ready = (async () => {
+        // startCacheSync installs the pass synchronously; that pass registers
+        // watchers after its awaited greeting. Do not mistake the earlier,
+        // empty subscription chain for completed coverage.
+        await Promise.race([passes.get(initial).promise, failed]);
+        for (;;) {
+          const candidate = generation;
+          await Promise.race([changeEvents.subscriptionsSettledFor(deviceId), failed]);
+          ownerCurrent();
+          if (candidate !== generation) continue;
+          coverageCurrent();
+          for (const { promise } of passes.values()) await Promise.race([promise, failed]);
+          for (let pass = sync.passInFlight(deviceId); pass; pass = sync.passInFlight(deviceId)) {
+            observePass(pass);
+            await Promise.race([passes.get(pass).promise, failed]);
+          }
+          await Promise.race([changeEvents.subscriptionsSettledFor(deviceId), failed]);
+          ownerCurrent();
+          if (candidate !== generation) continue;
+          coverageCurrent();
+          seal = Object.freeze({ context, session, generation, passes: Object.freeze([...passes.keys()]) });
+          assertCurrent();
+          return seal;
+        }
+      })();
+      ready.catch(() => {});
+      return { initial, ready, assertCurrent, dispose };
+    } catch (error) { dispose(); throw error; }
+  }
 
   /** The rail as the feed hands it out, read from the records the pass wrote. */
   const watchFeed = async () => {
@@ -893,24 +1051,31 @@ describe("a pass racing the wire", () => {
     wire.answering("fs.read", (params) => ({ path: params.path, size: 3, content_b64: "bmV3" }));
     await greet();
     board = [branchItem()];
-    sync.startCacheSync();
-    await passesSettled(sync, "dev-1");
-    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" }, { file: { path: "src/a.js" }, openedAt: 1 });
+    const fixture = beginPushFixture(wire);
+    try {
+      await fixture.ready;
+      fixture.assertCurrent();
+      await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" }, { file: { path: "src/a.js" }, openedAt: 1 });
+      // A coverage change during the transaction invalidates setup even when
+      // the original seed has already committed; it is never silently retried.
+      fixture.assertCurrent();
 
-    const answerFile = wire.hold("fs.read");
-    await flush([{ entity_id: "run-1", files: { paths: ["src/a.js"] } }], "s-background");
-    expect(calls("fs.read")).toHaveLength(1);
-    await flush([{ entity_id: "board", state: { revision: 1, removed: ["run-1"] } }]);
-    expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);
-    // Hand-back: the same device and session, a fresh sync layer.
-    board = [];
-    sync.startCacheSync();
-    await settle();
-    answerFile();
-    await settle();
+      const answerFile = wire.hold("fs.read");
+      fixture.assertCurrent();
+      await flush([{ entity_id: "run-1", files: { paths: ["src/a.js"] } }], "s-background");
+      expect(calls("fs.read")).toHaveLength(1);
+      await flush([{ entity_id: "board", state: { revision: 1, removed: ["run-1"] } }]);
+      expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);
+      // Hand-back: the same device and session, a fresh sync layer.
+      board = [];
+      sync.startCacheSync();
+      await settle();
+      answerFile();
+      await settle();
 
-    expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);
-    expect(calls("fs.read")).toHaveLength(1);
+      expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);
+      expect(calls("fs.read")).toHaveLength(1);
+    } finally { fixture.dispose(); }
   });
 
   it("does not let the project list it read overwrite one a board item carried since", async () => {

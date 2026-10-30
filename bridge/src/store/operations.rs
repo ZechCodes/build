@@ -1,4 +1,6 @@
 mod delivery_status;
+#[cfg(test)]
+pub(super) mod backup_progress_test;
 
 use super::{
     is_json_record, now_rfc3339, write_run, write_task, PersistedPlan, PersistedRun, Store,
@@ -681,6 +683,8 @@ fn backup_connection(conn: &Connection, destination: &Path) -> Result<(), StoreE
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    #[cfg(test)]
+    let _progress = backup_progress_test::install(conn);
     let quoted = destination.to_string_lossy().replace('\'', "''");
     conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))?;
     Ok(())

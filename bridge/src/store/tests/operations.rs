@@ -640,3 +640,41 @@ fn backup_rechecks_readiness_at_snapshot_after_preflight() {
         "backup accepted a preflight snapshot but copied an unready projection"
     );
 }
+
+#[test]
+fn store_writer_can_commit_while_backup_vacuum_is_in_progress() {
+    use crate::tracker::{Actor, Task};
+    use std::{sync::mpsc, time::Duration};
+
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().join("tasks")).unwrap();
+    let mut draft = Task::drafted("/backup-writer", "before", Actor::User, NOW);
+    draft.body = "fill backup pages ".repeat(150_000);
+    let task = store.create_tracker_task(draft, &[]).unwrap();
+    let destination = root.path().join("backup.db");
+    let (reached_tx, reached_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let backup_store = store.clone();
+    let backup_path = destination.clone();
+    let backup = std::thread::spawn(move || {
+        super::super::operations::backup_progress_test::arm(backup_path.clone(), reached_tx, release_rx);
+        backup_store.backup_to(&backup_path)
+    });
+    let reached = reached_rx.recv_timeout(Duration::from_secs(10));
+    let (written_tx, written_rx) = mpsc::channel();
+    let writer_store = store.clone();
+    let writer = std::thread::spawn(move || {
+        let mut changed = task;
+        changed.title = "during backup".into();
+        let result = writer_store.save_tracker_task_activity(&changed, &[], &[]);
+        let _ = written_tx.send(result);
+    });
+    let written_during = written_rx.recv_timeout(Duration::from_secs(1));
+    let _ = release_tx.send(());
+    let backup_result = backup.join().expect("backup thread did not panic");
+    writer.join().expect("writer thread did not panic");
+    assert!(reached.is_ok(), "VACUUM progress did not observe a nonempty destination");
+    assert!(backup_result.is_ok(), "backup failed: {backup_result:?}");
+    assert!(written_during.is_ok(), "same-Store writer could not commit while VACUUM was paused");
+    assert!(written_during.unwrap().is_ok(), "canonical write failed");
+}

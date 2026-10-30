@@ -225,6 +225,29 @@ describe("per-row watch observation selection", () => {
 });
 
 describe("independent watch admission and owner acknowledgment", () => {
+  it.each(["held", "guard"])("preserves a %s owner's stamp through ordinary reads and lost coordination until exact acknowledgment", (location) => {
+    const owner = row({ watched: false, __task_watch_intent: "latest-owner" });
+    const context = control({ watchPendingCount: 1 });
+    const options = { context, contentRead: read(4, context), ...(location === "guard" ? { watchGuard: owner } : {}) };
+    const first = select(location === "held" ? owner : observed(3), row({ title: "Ordinary read" }), undefined, options);
+    expect(first.task).toMatchObject({ title: "Ordinary read", watched: false, __task_watch_intent: "latest-owner" });
+    expect(first).toMatchObject({ acceptedWatch: false, watchCertain: false, selectedWatchRead: null });
+
+    const reset = control({ watchGeneration: "replacement-control", watchRetirementEpoch: "reset", watchUncertain: true });
+    const secondRead = read(5, reset);
+    const orphan = select(first.task, row({ title: "Post-reset read" }), undefined, { context: reset, contentRead: secondRead });
+    expect(orphan.task).toMatchObject({ title: "Post-reset read", watched: false, __task_watch_intent: "latest-owner" });
+    const stale = select(orphan.task, row(), undefined,
+      { context: reset, contentRead: secondRead, acknowledgment: ack(secondRead, reset, { ownerId: "older-owner" }) });
+    expect(stale.task).toMatchObject({ watched: false, __task_watch_intent: "latest-owner" });
+    expect(stale.acceptedWatch).toBe(false);
+
+    const matching = select(stale.task, row({ watched: false }), undefined,
+      { context: reset, contentRead: secondRead, acknowledgment: ack(secondRead, reset, { ownerId: "latest-owner" }) });
+    expect(matching.task).not.toHaveProperty("__task_watch_intent");
+    expect(matching).toMatchObject({ acceptedWatch: true, watchCertain: false });
+  });
+
   it("does not overwrite orphan optimistic paint after control loss reports uncertain zero pending", () => {
     const context = control({ watchUncertain: true });
     const held = row({ watched: false, __task_watch_intent: "lost-owner" });

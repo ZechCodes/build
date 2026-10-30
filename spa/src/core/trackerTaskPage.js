@@ -25,7 +25,7 @@ import {
   readTasksRecord,
   writeTaskRecord,
 } from "./trackerCache.js";
-import { readCached, subscribeCache } from "./localCache.js";
+import { readCached, readCachedMany, subscribeCache } from "./localCache.js";
 import { mountTaskReviewPage } from "./taskReviewPage.js";
 import { reviewAddress } from "./taskReviewCache.js";
 import { createReadRetry } from "./transientRead.js";
@@ -541,10 +541,12 @@ export function mountTaskPage(host, options) {
   let summaryReadSerial = 0;
   async function readContentHeader() {
     const serial = ++summaryReadSerial, authority = captureTaskAction(state);
-    const record = await readCached(summaryTarget);
+    const [detail, record] = await readCachedMany([
+      taskAddress(state.deviceId, state.projectId, state.taskId), summaryTarget,
+    ]);
     if (state.disposed || serial !== summaryReadSerial || !authority.accept()) return;
     contentHeader = record?.value?.task;
-    requestFullContent(state.task);
+    requestFullContent(detail?.value?.task);
   }
   const contentHeaderWatcher = subscribeCache(summaryTarget, () => void readContentHeader());
   void readContentHeader();

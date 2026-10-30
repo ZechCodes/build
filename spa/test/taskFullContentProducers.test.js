@@ -76,3 +76,36 @@ it("revalidates explicit body uncertainty once without sweeping unchanged legacy
   feed.dispose();
   for (const request of requests.slice(1)) request.reject(new Error("Disposed"));
 });
+
+it("preserves a real feed full-body dispatch observation against a native same-ms older action receipt", async () => {
+  const tracker = await import("../src/core/trackerCache.js");
+  const local = await import("../src/core/localCache.js");
+  const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+  const { TASK_READ_COUNT_ADDRESS } = await import("../src/core/taskReadOrder.js");
+  const { cacheTaskWaitingOnResponse } = await import("../src/core/taskWaitingOnCache.js");
+  const { summaryAddress } = await import("../src/core/taskSummaryCache.js");
+  const { createTrackerTaskDetailsFeed } = await import("../src/core/trackerTaskDetailsFeed.js");
+  const contentRead = await captureTaskContentRead({ deviceId, projectId });
+  const current = task("native", { watched: false, state: "open", status: "ready" });
+  let dispatched;
+  const writer = vi.spyOn(tracker, "writeTaskRecord");
+  const callRpc = vi.fn(async () => {
+    dispatched = (await local.readCanonicalCached(TASK_READ_COUNT_ADDRESS)).value;
+    return { task: current, timeline: [] };
+  });
+  feed = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc });
+  await feed.updateTasks([current]);
+  await vi.waitFor(() => expect(writer).toHaveBeenCalledTimes(1));
+  await writer.mock.results[0].value;
+  const before = (await tracker.readTaskRecord(deviceId, projectId, current.id)).task;
+  expect(before.__task_content_cache?.body?.read_order).toBe(dispatched);
+  expect(dispatched).toBeGreaterThan(contentRead.readOrder);
+  await cacheTaskWaitingOnResponse(deviceId, projectId, { task: { ...current, title: "Older title", body: "Older body",
+    updated_at: "2026-10-29T00:00:00.000100Z" } }, { contentRead, issuedRead: contentRead.readOrder });
+  const after = (await tracker.readTaskRecord(deviceId, projectId, current.id)).task;
+  expect({ title: after.title, body: after.body, updated_at: after.updated_at }).toEqual({
+    title: current.title, body: current.body, updated_at: current.updated_at,
+  });
+  expect(after.__task_content_cache.body.read_order).toBe(dispatched);
+  expect((await local.readCached(summaryAddress({ deviceId, projectId }, current.id))).value.task.title).toBe(current.title);
+});

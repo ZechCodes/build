@@ -38,7 +38,8 @@ function capturePlace(place, revalidate) {
 function capturedRead(allocation, address, revalidate, readOrder) {
   const ticket = allocation && { storeGeneration: allocation.storeGeneration, scopeGeneration: allocation.scopeGeneration,
     retirementEpoch: allocation.retirementEpoch, watchGeneration: allocation.watchGeneration,
-    watchRetirementEpoch: allocation.watchRetirementEpoch, watchPending: allocation.watchPending, watchUncertain: allocation.watchUncertain };
+    watchRetirementEpoch: allocation.watchRetirementEpoch, watchPendingGeneration: allocation.watchPendingGeneration,
+    watchBlindRetirementEpoch: allocation.watchBlindRetirementEpoch, watchPending: allocation.watchPending, watchUncertain: allocation.watchUncertain };
   return { readOrder, ticket, revalidate, ...(address ? { address, written: allocation?.written } : {}) };
 }
 

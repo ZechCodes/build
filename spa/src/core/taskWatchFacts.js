@@ -61,6 +61,10 @@ const intentUncertain = (scope, task, context) => reconcileTaskWatchIntent(scope
 const certainWatchProof = (proof, context) => Boolean(proof && !uncertain(proof, context)
   && (!pending(context) || proof.source === "ack"));
 
+// This classifies an unchanged cached source only. Actual freshness and
+// certification still require the selector's lifetime and shared fence checks.
+export const hasTaskWatchSnapshot = (task) => sameSnapshot(task?.[TASK_WATCH_CACHE]?.lineage, lineage(task));
+
 export function isTaskWatchCertain(task, context) {
   const scope = taskProofScope(task);
   if (!scope || !scopedTask(scope, task)) return false;

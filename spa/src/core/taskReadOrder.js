@@ -82,7 +82,8 @@ function contentScopeValue(held = {}) {
 function contentScopeTicket(readOrder, generation, scope, watch) {
   return { readOrder, storeGeneration: generation, scopeGeneration: scope.generation,
     retirementEpoch: scope.retirementEpoch, watchGeneration: watch.generation,
-    watchRetirementEpoch: watch.watchRetirementEpoch,
+    watchRetirementEpoch: watch.watchRetirementEpoch, watchPendingGeneration: watch.pendingGeneration,
+    watchBlindRetirementEpoch: watch.blindRetirementEpoch,
     watchPending: !Number.isSafeInteger(watch.pendingCount) || watch.pendingCount !== 0,
     watchUncertain: watch.uncertain !== false || !watch.blindRetirementEpoch };
 }

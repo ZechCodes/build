@@ -26,7 +26,7 @@ import { mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskConte
   taskNeedsFullRefresh, TASK_CONTENT_CACHE, withTaskContentComponents, acceptsTaskContentRead,
   isObservedTaskContent, taskContentObservationOf, withTaskWatchIntentNote } from "./taskContentAuthority.js";
 import { summaryTaskReadMutation, withTaskReadFacts, sameTaskReadFacts } from "./taskSummaryCache.js";
-import { reconcileTaskReadFacts } from "./taskWatchFacts.js";
+import { reconcileTaskReadFacts, hasTaskWatchSnapshot } from "./taskWatchFacts.js";
 import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent, selectTaskWatchIntentGuard } from "./taskWatchIntents.js";
 import { blindTaskWatchChanged, retireTaskWatchFacts } from "./taskWatchAuthority.js";
 const normalizedAddress = (deviceId, projectId, taskId) => ({ deviceId, entityId: projectId, kind: "tracker-summary", sub: taskId });
@@ -489,18 +489,9 @@ function isBlindTaskWatchWrite(held, raw, address, context, contentRead) {
   if (contentRead || isObservedTaskContent(raw)) return false;
   const scope = { deviceId: address.deviceId, projectId: address.entityId };
   const intent = reconcileTaskWatchIntent(scope, raw, context.watchIntentOf?.(raw.id), context);
-  return !intent.retired && blindTaskWatchChanged(held, raw) && !unchangedTaskWatchCopy(raw);
+  return !intent.retired && blindTaskWatchChanged(held, raw) && !hasTaskWatchSnapshot(raw);
 }
 
-// Snapshot integrity classifies a cached copy; it grants no source authority.
-// The family reducer still checks its actual clock, lifetime and shared fence.
-function unchangedTaskWatchCopy(task) {
-  const lineage = task?.__task_watch_cache?.lineage;
-  return Array.isArray(lineage) && lineage.length === 2 && ["watched", "watch_started_after"].every((field, index) => {
-    const entry = lineage[index];
-    return entry?.[0] === field && entry[1] === Object.hasOwn(task, field) && Object.is(entry[2], task[field]);
-  });
-}
 
 const hasTaskWatchMetadata = (task) => ["__task_watch_cache", "__task_family_cache", "__task_watch_intent", TASK_WATCH_INTENT_CACHE]
   .some((field) => Object.hasOwn(task || {}, field));

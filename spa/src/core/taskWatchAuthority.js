@@ -135,8 +135,7 @@ function reduceWatchSettlement(owner, [control, record], { context, note, conten
   const after = withTaskWatchIntentNote(settledWatchContext(context, next), trusted.taskId, terminalNote);
   const eligible = accept() && currentOwnerData(trusted, context) && ownedIntent(trusted, note);
   const canPublish = eligible && validOwnerRead(trusted, contentRead, after);
-  const acknowledgment = canPublish && matchingBlindEpoch(trusted, control.value)
-    && contentRead.ticket.watchRetirementEpoch === control.value.watchRetirementEpoch
+  const acknowledgment = canPublish && capturedOwnerWatchCurrent(trusted, contentRead, control.value)
     ? watchAcknowledgment(trusted, contentRead, after) : null;
   return { values: [next, DELETE_CACHED_RECORD], context: after, owner: trusted, acknowledgment, note: terminalNote,
     canRestore: eligible && matchingBlindEpoch(trusted, control.value), canPublish };
@@ -153,6 +152,12 @@ const matchingBlindEpoch = (owner, control) => validBlindEpoch(owner) && owner.b
 const settledWatchContext = (context, control) => ({ ...context, watchGeneration: control.generation,
   watchRetirementEpoch: control.watchRetirementEpoch, watchPendingCount: control.pendingCount,
   watchUncertain: control.uncertain !== false || !validBlindEpoch(control) });
+
+// Admission epochs also rotate for other owners. Only a verified own reply
+// can use the independently captured blind fence; ordinary reads cannot.
+const capturedOwnerWatchCurrent = (owner, read, control) => matchingBlindEpoch(owner, control)
+  && read.ticket.watchBlindRetirementEpoch === owner.blindRetirementEpoch
+  && read.ticket.watchPendingGeneration === owner.pendingGeneration;
 
 function validOwnerRead(owner, contentRead, context) {
   const ticket = contentRead?.ticket;

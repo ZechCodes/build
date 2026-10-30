@@ -52,6 +52,8 @@ pub(super) fn create(
         // The collector records this phase only if an app guard is held.
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("term.create.spawn");
+        #[cfg(test)]
+        crate::timing::note_test_terminal_spawn();
         Tab::spawn_shell(
             &shell_harness_spec(&reserved.shell),
             reserved.key.tab_id.clone(),

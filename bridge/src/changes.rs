@@ -1720,6 +1720,8 @@ impl ChangeBus {
     ) -> Result<SubscribeOutcome, crate::api::ApiError> {
         let watch = self.watch_state(&sub);
         let now = Instant::now();
+        #[cfg(test)]
+        crate::timing::witness_contended_lock(&self.subscriptions);
         let mut subscriptions = self.subscriptions.lock().unwrap();
         if !session.execution_is_live() || !session.events_are_live() {
             return Err(crate::api::ApiError::unavailable(
@@ -4871,8 +4873,6 @@ mod binding_resources {
         }
     }
 
-    // Linux exposes the blocked thread's futex wait through /proc.
-    #[cfg(target_os = "linux")]
     #[test]
     fn cancelled_request_waiting_on_subscription_lock_cannot_register() {
         use crate::execution::session::{ClientSessions, Opening, StreamClass, VerifiedCaller};
@@ -4894,13 +4894,12 @@ mod binding_resources {
             let bus = &bus;
             let caller = &caller;
             let worker = scope.spawn(move || {
-                let tid = std::fs::read_link("/proc/thread-self").unwrap();
-                started
-                    .send(tid.file_name().unwrap().to_string_lossy().into_owned())
-                    .unwrap();
+                crate::timing::install_test_lock_witness(started);
                 bus.try_subscribe(caller, spec("cancelled", Kind::State))
             });
-            crate::timing::wait_for_blocked_test_thread(&waiting.recv().unwrap());
+            waiting
+                .recv_timeout(Duration::from_secs(10))
+                .expect("subscription mutex contention witnessed");
             request.cancellation().cancel();
             drop(held);
             assert!(worker.join().unwrap().is_err());

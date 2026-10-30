@@ -1022,24 +1022,109 @@ mod explicit_context_tests {
     }
 }
 
-// Linux exposes the blocked thread's futex wait through /proc.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod request_effect_lock_tests {
     use super::*;
     use crate::execution::session::{
         ClientSessions, DeliveryError, EncodedEvent, Opening, ReplySink, VerifiedCaller,
     };
+    use std::time::Duration;
     struct Sink;
     impl ReplySink for Sink {
         fn try_send(&self, _: EncodedEvent) -> Result<(), DeliveryError> {
             Ok(())
         }
     }
+    #[derive(Default)]
+    struct ObservedTerminal {
+        writes: std::sync::atomic::AtomicUsize,
+        resizes: std::sync::atomic::AtomicUsize,
+    }
+    impl crate::harness::AgentSession for ObservedTerminal {
+        fn send_turn(&self, _: &crate::harness::Turn) -> Result<(), crate::harness::HarnessError> {
+            Ok(())
+        }
+        fn status(&self) -> crate::harness::AgentStatus {
+            crate::harness::AgentStatus::Waiting
+        }
+        fn quiet_for(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn exited_within(&self, _: Duration) -> bool {
+            false
+        }
+        fn end(&self) {}
+        fn backdate_last_output(&self, _: Duration) {}
+        fn terminal(&self) -> Option<&dyn crate::harness::TerminalView> {
+            Some(self)
+        }
+    }
+    impl crate::harness::TerminalView for ObservedTerminal {
+        fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Vec<u8>> {
+            tokio::sync::broadcast::channel(1).1
+        }
+        fn write_input(&self, _: &[u8]) -> Result<(), crate::harness::HarnessError> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn resize(&self, _: portable_pty::PtySize) -> Result<(), crate::harness::HarnessError> {
+            self.resizes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn pid(&self) -> Option<u32> {
+            None
+        }
+    }
     #[test]
     fn terminal_effects_recheck_cancel_after_app_lock_wait() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
         for method in ["term.create", "term.input", "term.resize"] {
             let dir = tempfile::tempdir().unwrap();
-            let state = AppState::new_unrooted(dir.path(), "main", true, "unused.sock").shared();
+            let mut app = AppState::new(
+                dir.path(),
+                dir.path().join("worktrees"),
+                "main",
+                true,
+                "unused.sock",
+            );
+            let project_id = app.project_at(0).id.clone();
+            let root = AppState::canonical_root(dir.path());
+            let key = crate::app::TabKey {
+                root: root.clone(),
+                tab_id: "term-1".into(),
+            };
+            let terminal = Arc::new(ObservedTerminal::default());
+            let tab = crate::app::Tab {
+                tab_id: key.tab_id.clone(),
+                root,
+                role: crate::app::TabRole::Shell,
+                project_source: None,
+                created_at: String::new(),
+                session: terminal.clone(),
+                session_instance: None,
+                screen: Some(crate::screen::ScreenHandle::new("term-1", 80, 24)),
+                live: true,
+                call_sequences: Default::default(),
+                last_delivered_at: None,
+            };
+            app.session_registry.test_insert_tab(key, tab);
+            let params = json!({"term_id":"term-1","data":"eA==","project_id":project_id,"cols":100,"rows":40});
+            let scope = crate::app::runtime::terminals::terminal_scope_root(&mut app, &params);
+            assert!(
+                scope.is_ok(),
+                "project must be a viable terminal scope: {scope:?}"
+            );
+            let state = app.shared();
+            let clock = crate::timing::FrameClock::new();
+            let timer = clock.frame("control");
+            let live_sender = SessionSender::detached("control");
+            term_input(&state, &live_sender, &params, &timer).unwrap();
+            term_resize(&state, &live_sender, &params, &timer).unwrap();
+            assert_eq!(terminal.writes.load(Ordering::SeqCst), 1);
+            assert_eq!(terminal.resizes.load(Ordering::SeqCst), 1);
+            let spawn_count = Arc::new(AtomicUsize::new(0));
             let sessions = ClientSessions::new("epoch");
             let session = sessions
                 .open(VerifiedCaller::verified_relay("device", Opening::new()))
@@ -1054,27 +1139,45 @@ mod request_effect_lock_tests {
                 let worker = scope.spawn(move || {
                     let clock = crate::timing::FrameClock::new();
                     let timer = clock.frame(method);
-                    let tid = std::fs::read_link("/proc/thread-self").unwrap();
-                    started
-                        .send(tid.file_name().unwrap().to_string_lossy().into_owned())
-                        .unwrap();
-                    let params = json!({"term_id":"missing","data":"","project_id":"missing"});
-                    match method {
+                    crate::timing::install_test_lock_witness(started);
+                    crate::timing::observe_test_terminal_spawns(spawn_count.clone());
+                    let result = match method {
                         "term.create" => term_create(state, Some(sender), &params, &timer),
                         "term.input" => term_input(state, sender, &params, &timer),
                         "term.resize" => term_resize(state, sender, &params, &timer),
                         _ => unreachable!(),
-                    }
+                    };
+                    (result, spawn_count.load(Ordering::SeqCst))
                 });
-                crate::timing::wait_for_blocked_test_thread(&waiting.recv().unwrap());
+                waiting
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("app mutex contention witnessed");
                 request.cancellation().cancel();
                 drop(held);
-                let error = worker.join().unwrap().unwrap_err();
+                let (result, spawned) = worker.join().unwrap();
                 assert!(
-                    format!("{error:?}").contains("request authorization has ended"),
-                    "{method}: {error:?}"
+                    result
+                        .unwrap_err()
+                        .contains("request authorization has ended"),
+                    "{method}"
                 );
+                assert_eq!(spawned, 0, "{method} must not spawn");
             });
+            assert_eq!(
+                terminal.writes.load(Ordering::SeqCst),
+                1,
+                "{method} must not write"
+            );
+            assert_eq!(
+                terminal.resizes.load(Ordering::SeqCst),
+                1,
+                "{method} must not resize"
+            );
+            assert_eq!(
+                state.lock().unwrap().shell_tab_count(),
+                1,
+                "{method} must not register another shell"
+            );
         }
     }
 }

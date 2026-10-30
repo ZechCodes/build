@@ -27,7 +27,6 @@ const lifetime = (context) => [context?.storeGeneration, context?.scopeGeneratio
 const validLifetime = (context) => lifetime(context).every(nonempty);
 const reportFailure = (error) => console.info("Task unread display persistence unavailable", error);
 const familyAvailable = (task) => Boolean(task?.[TASK_FAMILY_CACHE]?.total || task?.[TASK_FAMILY_CACHE]?.paint?.total);
-const totalFamily = (task) => task?.[TASK_FAMILY_CACHE]?.total || task?.[TASK_FAMILY_CACHE]?.paint?.total;
 const familyUnknown = (task) => Boolean(task?.[TASK_FAMILY_CACHE]?.unknown?.total);
 const timelineCurrent = (task, detail) => Array.isArray(detail?.timeline) && !changedSince(task, detail);
 
@@ -47,21 +46,10 @@ function sourceOrigin(task, detail) {
 const previousTimeline = (task, detail) => Array.isArray(detail?.timeline) && detail.timeline.length > 0
   && same(lineage(task), lineage(detail.task));
 
-// This is the existing selected family's source identity, not a watch clock
-// or a claim that the cached timeline is complete.
-function familyReadOf(task, detail, context, scope) {
-  const selected = sourceOrigin(task, detail) === "listed" ? task : detail?.task;
-  const proof = totalFamily(selected);
-  if (!proof || !sameObservationLifetime(proof, context) || !scopedObservation(proof, selected, scope)) return null;
-  if (!same(proof.values, [["unread_count", own(selected, "unread_count"), selected.unread_count]])) return null;
-  const read = proof.observed_read_order;
-  return positive(read) ? read : null;
-}
-
 function observedLineage(task, context, scope) {
   const proof = task?.[TASK_WATCH_CACHE];
   if (!hasTaskWatchSnapshot(task) || !validLifetime(context)) return null;
-  if (!Number.isSafeInteger(proof.observed_read_order) || proof.observed_read_order <= 0) return null;
+  if (!positive(proof.observed_read_order)) return null;
   if (!scopedObservation(proof, task, scope)) return null;
   if (!sameObservationLifetime(proof, context)) return null;
   if (context.pending !== 0 && proof.source !== "ack") return null;
@@ -93,27 +81,25 @@ function validSlot(slot, scope, id, context) {
 
 function stateFromSlot(slot) {
   return { total: slot.total, lineage: slot.lineage, observedRead: slot.observedRead,
-    origin: slot.origin, familyRead: slot.familyRead, hadListed: slot.hadListed, hadFamily: slot.hadFamily, token: slot.token };
+    origin: slot.origin, hadListed: slot.hadListed, hadFamily: slot.hadFamily, token: slot.token };
 }
 
 function selectedState(task, detail, selected, previous, context, scope) {
   const observed = observedLineage(task, context, scope);
   return { total: selected, lineage: observed?.lineage || lineage(task), observedRead: observed?.observedRead,
     origin: sourceOrigin(task, detail), hadListed: count(task.unread_count), hadFamily: familyAvailable(task),
-    familyRead: familyReadOf(task, detail, context, scope), token: previous?.token || randomToken() };
+    token: previous?.token || randomToken() };
 }
 
 const scopedTask = (scope, task) => nonempty(task?.id)
   && (!own(task, "project_id") || task.project_id === scope.projectId);
 const listedTask = (record, id) => record?.value?.tasks?.find((task) => task.id === id);
 const sameSelection = (left, right) => same([left?.total, left?.lineage, left?.origin], [right?.total, right?.lineage, right?.origin]);
-const strongerSlot = (slot, selected) => same(slot?.lineage, selected.lineage)
-  && slot?.familyRead > 0 && selected.familyRead > 0 && slot.familyRead > selected.familyRead;
 const noteSlot = (record, consumer) => record?.value?.[DISPLAY]?.[consumer];
 const canRecord = (task, detail, total, previous) => task.watched === true
   && !unknownTotal(task, detail, previous) && Boolean(sourceOrigin(task, detail)) && count(total);
 const shouldWrite = (slot, selected, context) => validLifetime(context)
-  && !sameSelection(slot, selected) && !strongerSlot(slot, selected);
+  && !sameSelection(slot, selected);
 function pruneTo(entries, tasks) {
   for (const id of entries.keys()) if (!tasks.has(id)) entries.delete(id);
 }
@@ -223,6 +209,6 @@ function persistedSlot(prepared, scope, writes) {
   return { deviceId: scope.deviceId, projectId: scope.projectId, taskId: prepared.task.id,
     storeGeneration: prepared.context.storeGeneration, scopeGeneration: prepared.context.scopeGeneration,
     total: state.total, lineage: state.lineage, observedRead: state.observedRead, origin: state.origin,
-    familyRead: state.familyRead, hadListed: state.hadListed, hadFamily: state.hadFamily, token: state.token,
+    hadListed: state.hadListed, hadFamily: state.hadFamily, token: state.token,
     source: { kind: prepared.listedAddress.kind, sub: prepared.listedAddress.sub || "", listedWrite: writes[0], detailWrite: writes[1] } };
 }

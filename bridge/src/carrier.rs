@@ -18,7 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -28,17 +28,12 @@ use crate::timing::WaitTimer;
 use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionInit};
 use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 
-mod dispatch;
 #[cfg(test)]
 mod epoch_tests;
-mod io;
 #[cfg(test)]
 mod observation_tests;
 #[cfg(test)]
 mod snapshot_tests;
-mod sql;
-#[cfg(test)]
-mod sql_measurements;
 #[cfg(test)]
 mod sql_tests;
 #[cfg(any(test, feature = "testing"))]
@@ -47,8 +42,10 @@ pub mod testing;
 #[path = "carrier/timing_tests.rs"]
 mod timing_tests;
 
-use dispatch::Dispatcher;
-pub(crate) use dispatch::PreparedObservation;
+use crate::execution::dispatch::Dispatcher;
+#[cfg(test)]
+use crate::execution::sql;
+pub(crate) use crate::execution::PreparedObservation;
 
 /// One thing bound for a carrier's wire, before any wire wrapper exists: an
 /// encrypted frame for a client session, or the `session_accept` answering an
@@ -109,184 +106,20 @@ pub(crate) fn session_accept_message(session_id: &str, envelope: &Envelope) -> V
     })
 }
 
-/// One opening of a session id, as a token. A session id is opened, ended
-/// and opened again; what a handler registers for an opening — a peer
-/// connection, say — is that opening's and not the id's, so a close or a
-/// candidate from an opening that has ended must not act on the id's next
-/// one. Two tokens are the same opening when they are the same allocation.
-#[derive(Clone)]
-pub struct Opening(Arc<OpeningState>);
-
-/// Session lifetime and its optional discovery bearer hint share one allocation.
-/// Closing a WebRTC peer or reattaching a carrier cannot rotate the hint. This
-/// does not authenticate a browser identity or partition the cross-session cache.
-struct OpeningState {
-    is_open: AtomicBool,
-    client_hint: OnceLock<uuid::Uuid>,
-    /// Process-wide opening order, so a newer session presenting a hint is known.
-    ordinal: u64,
-    diagnostic_key: std::collections::hash_map::RandomState,
-}
-
-impl OpeningState {
-    fn new() -> Arc<Self> {
-        static OPENED: AtomicU64 = AtomicU64::new(0);
-        Arc::new(Self {
-            is_open: AtomicBool::new(true),
-            client_hint: OnceLock::new(),
-            ordinal: OPENED.fetch_add(1, Ordering::Relaxed),
-            diagnostic_key: std::collections::hash_map::RandomState::new(),
-        })
-    }
-}
-
-impl Opening {
-    pub fn is_open(&self) -> bool {
-        self.0.is_open.load(Ordering::SeqCst)
-    }
-
-    /// A process-local correlation ID; never a client identity or bearer hint.
-    pub(crate) fn diagnostic_id(&self) -> u64 {
-        self.0.ordinal
-    }
-
-    /// Keyed endpoint fingerprints remain comparable across this opening's peers.
-    pub(crate) fn diagnostic_key(&self) -> std::collections::hash_map::RandomState {
-        self.0.diagnostic_key.clone()
-    }
-
-    /// The first valid hint wins, even when later offers omit or change it.
-    pub(crate) fn bind_client_hint(&self, offered: Option<uuid::Uuid>) -> Option<uuid::Uuid> {
-        if let Some(hint) = offered {
-            let _ = self.0.client_hint.set(hint);
-        }
-        self.0.client_hint.get().copied()
-    }
-
-    pub(crate) fn client_hint(&self) -> Option<uuid::Uuid> {
-        self.0.client_hint.get().copied()
-    }
-
-    /// Whether this opening began after `other`.
-    pub(crate) fn opened_after(&self, other: &Opening) -> bool {
-        self.0.ordinal > other.0.ordinal
-    }
-
-    /// Whether `other` is this same opening.
-    pub fn is(&self, other: &Opening) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-/// A handle the app uses to push encrypted frames to a specific client session —
-/// the channel for server-initiated output (live terminal bytes, updates), not
-/// just request replies. Cheap to clone; store one per attached client.
-#[derive(Clone)]
-pub struct SessionSender {
-    session_id: String,
-    bridge_epoch: Arc<str>,
-    session_key: String,
-    out: mpsc::UnboundedSender<OutboundEnvelope>,
-    /// Whether the opening this sender was built for is still open — see
-    /// [`OpenSession::still_open`].
-    still_open: Arc<OpeningState>,
-    carrier_id: Option<CarrierId>,
-    request_order: u64,
-    carrier_open: Arc<AtomicBool>,
-    reply_gate: Arc<Mutex<()>>,
-}
+/// Compatibility exports; application callers and output no longer hold keys.
+pub use crate::execution::session::Opening;
+pub use crate::execution::CallContext as SessionSender;
 
 impl SessionSender {
-    pub fn session_id(&self) -> &str {
-        &self.session_id
+    fn on_carrier(self, carrier: &CarrierHandle, binding: &CarrierBinding) -> Self {
+        let open = binding.open.clone();
+        self.bound(
+            carrier.id.0,
+            Arc::new(move || open.load(Ordering::SeqCst)),
+            binding.reply_gate.clone(),
+        )
     }
 
-    /// The sending daemon's identity, shared across every session and carrier.
-    pub(crate) fn bridge_epoch(&self) -> &str {
-        &self.bridge_epoch
-    }
-
-    /// Assigned by authenticated intake before SQL checkout or scheduling.
-    pub(crate) fn request_order(&self) -> u64 {
-        self.request_order
-    }
-
-    /// Internal identity for opening/carrier-bound declarative subscriptions.
-    pub(crate) fn read_scope(&self) -> (u64, Option<u64>) {
-        (self.still_open.ordinal, self.carrier_id.map(|id| id.0))
-    }
-
-    /// Whether the opening this sender was built for is still open. The
-    /// fence every handler runs behind (`dispatch::run_handler`), and the
-    /// fence the frames answered off the queue run behind too.
-    pub(crate) fn session_is_open(&self) -> bool {
-        self.still_open.is_open.load(Ordering::SeqCst)
-    }
-
-    pub(crate) fn read_is_live(&self) -> bool {
-        self.session_is_open()
-            && (self.carrier_id.is_none() || self.carrier_open.load(Ordering::SeqCst))
-    }
-
-    fn push_read_reply(&self, payload: Value) {
-        self.push_scoped(payload);
-    }
-
-    /// Reply or confirmation tied to this exact opening and carrier. A caller
-    /// that retained an old sender cannot publish into a replacement carrier.
-    pub(crate) fn push_scoped(&self, payload: Value) -> bool {
-        let Some(sealed) = self.seal(payload) else {
-            return false;
-        };
-        let _reply = self.reply_gate.lock().unwrap();
-        self.read_is_live() && self.send_sealed(sealed)
-    }
-
-    /// Diagnostic equivalent of push/push_read_reply with an exact seal boundary.
-    /// With tracing disabled, use the original path without inspecting payloads.
-    #[cfg(test)]
-    fn push_observed(
-        &self,
-        payload: Value,
-        clock: &crate::timing::FrameClock,
-        observed: &Option<Frame>,
-        read_fenced: bool,
-    ) {
-        let Some(frame) = observed else {
-            if read_fenced {
-                self.push_read_reply(payload);
-            } else {
-                self.push(payload);
-            }
-            return;
-        };
-        let Some(sealed) = self.seal(payload) else {
-            return;
-        };
-        clock.mark_request(frame, "reply_sealed", std::time::Instant::now());
-        if read_fenced {
-            let _reply = self.reply_gate.lock().unwrap();
-            if self.read_is_live() {
-                self.send_sealed(sealed);
-            }
-        } else {
-            self.send_sealed(sealed);
-        }
-    }
-
-    fn on_carrier(mut self, carrier: &CarrierHandle, binding: &CarrierBinding) -> Self {
-        self.carrier_id = Some(carrier.id);
-        self.carrier_open = binding.open.clone();
-        self.reply_gate = binding.reply_gate.clone();
-        self
-    }
-
-    /// The opening this sender belongs to, as a token.
-    pub(crate) fn opening(&self) -> Opening {
-        Opening(Arc::clone(&self.still_open))
-    }
-
-    /// Bind an observable fixture to a carrier with a controllable release fence.
     #[cfg(test)]
     pub(crate) fn scoped_for_test(self) -> (Self, impl FnOnce() + Send) {
         let (carrier, _outbound) = CarrierHandle::open_channel();
@@ -295,110 +128,61 @@ impl SessionSender {
         (sender, move || binding.release())
     }
 
-    /// Test-only: what the registry does to every sender of an opening that
-    /// ended.
-    #[cfg(test)]
-    pub(crate) fn opening_ended(&self) {
-        self.still_open.is_open.store(false, Ordering::SeqCst);
-    }
-
     fn keyed(
         session_id: &str,
         session_key: String,
         out: mpsc::UnboundedSender<OutboundEnvelope>,
-        still_open: Arc<OpeningState>,
+        opening: Opening,
     ) -> Self {
-        SessionSender {
-            session_id: session_id.to_string(),
-            bridge_epoch: crate::bridge_epoch::current().into(),
-            session_key,
-            out,
-            still_open,
-            carrier_id: None,
-            request_order: 0,
-            carrier_open: Arc::new(AtomicBool::new(true)),
-            reply_gate: Arc::new(Mutex::new(())),
-        }
+        let session = session_id.to_owned();
+        let output_opening = opening.clone();
+        Self::legacy(
+            session_id,
+            opening,
+            Arc::new(move |payload| {
+                output_opening
+                    .while_open(|| {
+                        transport::encrypt_frame(
+                            &session_key,
+                            &OuterFields {
+                                session_id: session.clone(),
+                                route_to: session_route(&session),
+                            },
+                            &transport::FrameFields {
+                                frame_type: transport::DATA_FRAME_TYPE.into(),
+                                sender: transport::SENDER_DEVICE.into(),
+                                payload,
+                                message_id: None,
+                                created_at: None,
+                            },
+                            None,
+                        )
+                        .ok()
+                        .is_some_and(|envelope| out.send(OutboundEnvelope::new(envelope)).is_ok())
+                    })
+                    .unwrap_or(false)
+            }),
+        )
     }
 
-    /// A sender not bound to a live connection — for tests and request/response
-    /// callers that never push. It holds no key, so a `push` through it encrypts
-    /// against nothing, fails, and reports `false`.
-    pub fn detached(session_id: impl Into<String>) -> Self {
-        let (out, _rx) = mpsc::unbounded_channel();
-        SessionSender::keyed(&session_id.into(), String::new(), out, OpeningState::new())
-    }
-
-    /// Test-only: a sender with a real session key and a captured channel, so
-    /// tests can decrypt every pushed frame (`term.output`, `term.closed`, …)
-    /// with [`decrypt_push`](Self::decrypt_push). The integration tests reach
-    /// it through the `testing` feature.
     #[cfg(any(test, feature = "testing"))]
     pub fn observable(
         session_id: impl Into<String>,
     ) -> (Self, mpsc::UnboundedReceiver<OutboundEnvelope>, String) {
         let (out, rx) = mpsc::unbounded_channel();
-        let session_key = transport::generate_session_key();
+        let key = transport::generate_session_key();
         (
-            SessionSender::keyed(
-                &session_id.into(),
-                session_key.clone(),
-                out,
-                OpeningState::new(),
-            ),
+            Self::keyed(&session_id.into(), key.clone(), out, Opening::new()),
             rx,
-            session_key,
+            key,
         )
     }
 
-    /// Test-only: decode one captured [`Self::observable`] envelope back to the
-    /// pushed inner payload.
     #[cfg(any(test, feature = "testing"))]
     pub fn decrypt_push(session_key: &str, outbound: &OutboundEnvelope) -> Value {
         transport::decrypt_envelope(session_key, outbound.envelope())
             .expect("push decrypts with the session key")
             .payload
-    }
-
-    /// Encrypt `payload` as an inner frame and hand it to the carrier. Returns
-    /// false once the carrier is gone (so the app can drop the stale sender).
-    pub fn push(&self, payload: Value) -> bool {
-        self.seal(payload)
-            .is_some_and(|sealed| self.send_sealed(sealed))
-    }
-
-    /// Encrypt `payload` as an inner frame without sending it, so a caller
-    /// can decide under its own lock whether the frame still goes out.
-    /// `None` when it cannot be encrypted.
-    pub(crate) fn seal(&self, mut payload: Value) -> Option<OutboundEnvelope> {
-        // Application and authenticated signaling output share this boundary.
-        // Never trust producers to remember the epoch, or preserve a stale one.
-        payload
-            .as_object_mut()?
-            .insert("bridge_epoch".into(), json!(self.bridge_epoch()));
-        transport::encrypt_frame(
-            &self.session_key,
-            &OuterFields {
-                session_id: self.session_id.clone(),
-                route_to: session_route(&self.session_id),
-            },
-            &transport::FrameFields {
-                frame_type: transport::DATA_FRAME_TYPE.into(),
-                sender: transport::SENDER_DEVICE.into(),
-                payload,
-                message_id: None,
-                created_at: None,
-            },
-            None,
-        )
-        .ok()
-        .map(OutboundEnvelope::new)
-    }
-
-    /// Hand a [`Self::seal`]ed frame to the carrier: a channel send, cheap
-    /// enough to run under a lock. False once the carrier is gone.
-    pub(crate) fn send_sealed(&self, sealed: OutboundEnvelope) -> bool {
-        self.out.send(sealed).is_ok()
     }
 }
 
@@ -581,7 +365,7 @@ struct OpenSession {
     /// every sender built for it: a frame admitted before the end and run
     /// after it is told apart from the same id's next opening, so its handler
     /// never runs (`dispatch::run_handler`).
-    still_open: Arc<OpeningState>,
+    still_open: Opening,
 }
 
 struct CarrierBinding {
@@ -617,7 +401,7 @@ impl OpenSession {
     /// for it from here on, and the end is stamped with this opening's
     /// generation.
     fn end(&self, session_id: &str) -> SessionEnd {
-        self.still_open.is_open.store(false, Ordering::SeqCst);
+        self.still_open.invalidate();
         for binding in self.carriers.values() {
             binding.release();
         }
@@ -668,9 +452,7 @@ impl SessionRegistry {
         let sessions = self.sessions.lock().unwrap();
         let open = sessions.get(opening.session_id())?;
         let binding = open.carriers.get(&carrier.id)?;
-        if !Arc::ptr_eq(&open.still_open, &opening.still_open)
-            || binding.kind != CarrierKind::Channel
-        {
+        if !open.still_open.is(&opening.opening()) || binding.kind != CarrierKind::Channel {
             return None;
         }
         Some(
@@ -741,7 +523,7 @@ impl SessionRegistry {
                         key: session_key,
                         generation: self.minted.fetch_add(1, Ordering::Relaxed) + 1,
                         carriers: HashMap::from([(carrier.id, CarrierBinding::new(carrier.kind))]),
-                        still_open: OpeningState::new(),
+                        still_open: Opening::new(),
                     },
                 );
                 self.ledger.record(session_id, TransportEvent::Minted);
@@ -791,8 +573,7 @@ impl SessionRegistry {
             open.still_open.clone(),
         )
         .on_carrier(carrier, binding);
-        static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
-        sender.request_order = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+        sender.set_request_order(crate::execution::session::next_request_order());
         Ok((frame, sender))
     }
 
@@ -880,6 +661,7 @@ impl SessionRegistry {
 pub struct FrameIntake {
     registry: Arc<SessionRegistry>,
     dispatcher: Arc<Dispatcher>,
+    execution: Arc<crate::execution::ExecutionService>,
     /// Each live wire's admitter: the queue its frames wait in, in arrival
     /// order, for the dispatcher — so the wire's reader never does the
     /// waiting itself (see [`FrameIntake::admit`]).
@@ -939,9 +721,13 @@ impl FrameIntake {
         workers: usize,
         admission_depth: usize,
     ) -> Arc<Self> {
+        let execution = crate::execution::ExecutionService::from_dispatcher(Arc::new(
+            Dispatcher::with_capacity(handler, queue_depth, workers),
+        ));
         Arc::new(FrameIntake {
             registry: Arc::new(SessionRegistry::with_ledger(Arc::new(StderrLedger))),
-            dispatcher: Arc::new(Dispatcher::with_capacity(handler, queue_depth, workers)),
+            dispatcher: execution.dispatcher.clone(),
+            execution,
             admitters: Mutex::new(HashMap::new()),
             admission_depth,
             transport,
@@ -955,14 +741,21 @@ impl FrameIntake {
         transport: KeyPairB64,
         ledger: Arc<dyn TransportLedger>,
     ) -> Arc<Self> {
+        let execution = crate::execution::ExecutionService::new(handler);
         Arc::new(FrameIntake {
             registry: Arc::new(SessionRegistry::with_ledger(ledger)),
-            dispatcher: Arc::new(Dispatcher::new(handler)),
+            dispatcher: execution.dispatcher.clone(),
+            execution,
             admitters: Mutex::new(HashMap::new()),
             admission_depth: ADMISSION_DEPTH,
             transport,
             refused: Mutex::new(HashSet::new()),
         })
+    }
+
+    /// HTTP and WebRTC share these exact scheduler/executor instances.
+    pub fn execution(&self) -> Arc<crate::execution::ExecutionService> {
+        self.execution.clone()
     }
 
     /// The ledger this intake's sessions are written to — the peer transport
@@ -1325,7 +1118,7 @@ async fn admit_in_order(mut admitted: mpsc::Receiver<Admitted>, dispatcher: Arc<
 /// Handles a decrypted request frame. Receives a [`SessionSender`] (so it can
 /// register the session for server-initiated pushes) and returns the response
 /// payload to send back.
-pub use dispatch::FrameHandler;
+pub use crate::execution::FrameHandler;
 
 #[cfg(test)]
 mod sender_tests {

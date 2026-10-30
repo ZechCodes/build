@@ -615,7 +615,7 @@ fn fs_upload_and_entry_creation_accept_a_symlinked_scope_root() {
 }
 
 fn upload_call(state: &mut AppState, sender: &SessionSender, method: &str, params: Value) -> Value {
-    crate::api::v1::changes::with_session(sender, || state.handle(req(method, params)))
+    state.handle_with_context(req(method, params), Some(sender))
 }
 
 #[test]

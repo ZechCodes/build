@@ -110,6 +110,120 @@ async fn cancelling_running_rpc_does_not_release_its_external_stage_lease() {
     deferred_request_keeps_admission(false, true).await;
 }
 
+struct DeferredReplyBudget {
+    delivered: Arc<std::sync::atomic::AtomicUsize>,
+    dropped: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl crate::execution::session::ReplySink for DeferredReplyBudget {
+    fn try_send(
+        &self,
+        _: crate::execution::session::EncodedEvent,
+    ) -> Result<(), crate::execution::session::DeliveryError> {
+        self.delivered.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+impl Drop for DeferredReplyBudget {
+    fn drop(&mut self) {
+        if let Some(dropped) = self.dropped.take() {
+            let _ = dropped.send(());
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropped_shared_call_retains_reply_budget_until_real_deferred_git_finishes() {
+    use crate::execution::session::{Opening, VerifiedCaller};
+    use crate::execution::{ExecutionService, Invocation};
+
+    let (dir, repo) = init_repo();
+    let updates = update_fixture(dir.path(), false);
+    scheduled(&updates).await;
+    let mut app = qa_state(&repo, dir.path()).with_update_service(updates.clone());
+    let project_id = app.project_at(0).id.clone();
+    let staged_path = Path::new("cancelled-response.txt");
+    std::fs::write(repo.join(staged_path), "accepted work still settles\n").unwrap();
+    let (gate, held) = OffLockGate::new();
+    app.off_lock_gate = Some(gate);
+    let (state, handler, _samples) = passive_handler(app);
+    let service = ExecutionService::new(handler);
+    let sessions = service.sessions();
+    let session = sessions
+        .open(VerifiedCaller::verified_relay("device", Opening::new()))
+        .unwrap();
+    let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (dropped, mut budget_released) = tokio::sync::oneshot::channel();
+    let request = sessions
+        .request(
+            &session,
+            Arc::new(DeferredReplyBudget {
+                delivered: delivered.clone(),
+                dropped: Some(dropped),
+            }),
+            None,
+        )
+        .unwrap();
+    let invocation = Invocation::decode(
+        "git.stage",
+        &json!({"project_id":project_id,"paths":[staged_path]}),
+    )
+    .unwrap();
+    let call = service.submit(request, invocation).await.unwrap();
+    // This is the existing DeferredWork::Git gate, after routed dispatch has
+    // released AppState and before the real Git operation changes the index.
+    held.wait_for_arrival();
+    let app_unlocked = state.try_lock().is_ok();
+    let index_unmodified = git2::Repository::open(&repo)
+        .unwrap()
+        .index()
+        .unwrap()
+        .get_path(staged_path, 0)
+        .is_none();
+    drop(call);
+    let budget_retained = matches!(
+        budget_released.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    );
+    let while_deferred = updates.tick(false).await;
+    // Always release the actual deferred worker before asserting observations.
+    held.release();
+    tokio::time::timeout(WATCHDOG, &mut budget_released)
+        .await
+        .expect("completed deferred work must release the HTTP response budget")
+        .unwrap();
+    eventually_installs(&updates).await;
+    assert!(app_unlocked, "deferred Git retained the application guard");
+    assert!(
+        index_unmodified,
+        "Git ran before its controlled off-lock gate"
+    );
+    assert!(
+        budget_retained,
+        "dropping Call released its budget during deferred work"
+    );
+    assert_eq!(
+        while_deferred.unwrap().state,
+        UpdateState::ScheduledWhenIdle,
+        "update handoff must retain the real deferred RPC's admission lease"
+    );
+    assert!(
+        git2::Repository::open(&repo)
+            .unwrap()
+            .index()
+            .unwrap()
+            .get_path(staged_path, 0)
+            .is_some(),
+        "accepted legacy mutation must settle after its reply is cancelled"
+    );
+    assert_eq!(
+        delivered.load(Ordering::SeqCst),
+        0,
+        "cancelled reply escaped"
+    );
+}
+
 struct PausedSession {
     entered: mpsc::Sender<String>,
     release: Mutex<mpsc::Receiver<()>>,

@@ -114,7 +114,7 @@ fn ready_publication_does_not_jump_other_eligible_openings() {
     let waiting = queue.waiting.lock().unwrap();
     assert_eq!(
         waiting.io.iter().copied().collect::<Vec<_>>(),
-        vec![b.still_open.ordinal, a.still_open.ordinal]
+        vec![b.opening().diagnostic_id(), a.opening().diagnostic_id()]
     );
 }
 
@@ -127,7 +127,7 @@ fn pruning_ready_work_drops_owned_inputs_and_admission_leases_immediately() {
     let drops = Arc::new(AtomicUsize::new(0));
     preparing.complete(witnessed(&drops));
     assert_eq!(drops.load(Ordering::SeqCst), 0);
-    sender.still_open.is_open.store(false, Ordering::SeqCst);
+    sender.opening_ended();
     queue.prune();
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     assert_eq!(queue.depths(), (0, 0));
@@ -175,7 +175,7 @@ fn old_preparation_cannot_publish_into_a_reopened_session() {
     let old = SessionSender::detached("same-session");
     assert!(enqueue(&queue, &old, 1, "tasks.review.get", json!({})));
     let (_work, preparing) = queue.take_metadata(&handler()).unwrap();
-    old.still_open.is_open.store(false, Ordering::SeqCst);
+    old.opening_ended();
     queue.prune();
     let new = SessionSender::detached("same-session");
     assert!(enqueue(&queue, &new, 2, "tasks.review.get", json!({})));
@@ -188,7 +188,7 @@ fn old_preparation_cannot_publish_into_a_reopened_session() {
         .lock()
         .unwrap()
         .openings
-        .contains_key(&new.still_open.ordinal));
+        .contains_key(&new.opening().diagnostic_id()));
 }
 
 #[tokio::test]

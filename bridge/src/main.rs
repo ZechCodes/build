@@ -645,6 +645,14 @@ async fn run_daemon(
     // on. The peer's channels deliver through this same intake, so a session
     // reached over either wire is the one session.
     let intake = FrameIntake::with_ledger(handler, transport_keypair, ledger);
+    let execution = intake.execution();
+    let _execution_reaper = liveness.handle().spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            execution.reap_expired();
+        }
+    });
     // The peer transport a browser upgrades to. It is built last because it is
     // built from the intake, which runs the app's own handler.
     app.lock().unwrap().set_peer_factory_on(

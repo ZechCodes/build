@@ -276,7 +276,7 @@ impl ObservationQueue {
         if waiting.closed || !incoming.sender.read_is_live() {
             return true;
         }
-        let opening = incoming.sender.still_open.ordinal;
+        let opening = incoming.sender.opening().diagnostic_id();
         let entries = waiting.openings.entry(opening).or_default();
         if entries.iter().map(Entry::weight).sum::<usize>() >= SQL_BACKLOG {
             return false;

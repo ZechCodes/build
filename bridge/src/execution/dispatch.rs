@@ -1,8 +1,8 @@
-//! How a decrypted frame reaches its handler: the worker pool, the ordered
+//! How an application request reaches its handler: the worker pool, the ordered
 //! terminal lanes, and the fold that answers identical queued reads once.
 //!
 //! Scheduling only. What a session is, who may push to it and when it ends are
-//! the carrier boundary's questions, one module up.
+//! the session boundary's questions.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -17,20 +17,24 @@ use crate::transport::{Frame, CLOSE_FRAME_TYPE, SENDER_DEVICE};
 /// A frame's dispatcher and the clock shared by its queue and app-lock phases.
 #[derive(Clone)]
 pub struct FrameHandler {
-    pub(super) clock: Arc<FrameClock>,
-    pub(super) dispatch: Arc<dyn Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync>,
+    pub(crate) clock: Arc<FrameClock>,
+    pub(crate) dispatch: Arc<dyn Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync>,
     session_end: Arc<dyn Fn(&str) + Send + Sync>,
     snapshot: Option<Arc<dyn Fn(Frame) -> Value + Send + Sync>>,
-    pub(super) sql: Option<SqlHandler>,
-    pub(super) observations: Option<ObservationHandler>,
-    pub(super) read_executors: Arc<OnceLock<super::sql::ReadExecutors>>,
+    greeting: Option<Arc<GreetingRead>>,
+    output_cleanup: Arc<dyn Fn() + Send + Sync>,
+    pub(crate) sql: Option<SqlHandler>,
+    pub(crate) observations: Option<ObservationHandler>,
+    pub(crate) read_executors: Arc<OnceLock<super::sql::ReadExecutors>>,
     #[cfg(test)]
-    pub(super) io_thread_starts: Arc<std::sync::atomic::AtomicUsize>,
+    pub(crate) io_thread_starts: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
-    pub(super) sql_thread_starts: Arc<std::sync::atomic::AtomicUsize>,
+    pub(crate) sql_thread_starts: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
-    pub(super) sql_observer: Option<super::sql_measurements::SqlObserver>,
+    pub(crate) sql_observer: Option<super::sql_measurements::SqlObserver>,
 }
+
+type GreetingRead = dyn Fn(&str) -> Value + Send + Sync;
 
 pub(crate) type PreparedObservation = Box<dyn FnOnce() -> Value + Send>;
 
@@ -38,8 +42,8 @@ type ObservationPrepare =
     dyn Fn(Frame, Option<crate::store::ReadConnection>) -> PreparedObservation + Send + Sync;
 
 #[derive(Clone)]
-pub(super) struct ObservationHandler {
-    pub(super) pool: Option<crate::store::ReadPool>,
+pub(crate) struct ObservationHandler {
+    pub(crate) pool: Option<crate::store::ReadPool>,
     prepare: Arc<ObservationPrepare>,
 }
 
@@ -48,8 +52,8 @@ type SqlCall = dyn Fn(SessionSender, Frame, FrameTimer, Option<crate::store::Rea
     + Sync;
 
 #[derive(Clone)]
-pub(super) struct SqlHandler {
-    pub(super) pool: Option<crate::store::ReadPool>,
+pub(crate) struct SqlHandler {
+    pub(crate) pool: Option<crate::store::ReadPool>,
     dispatch: Arc<SqlCall>,
 }
 
@@ -70,6 +74,8 @@ impl FrameHandler {
             #[cfg(test)]
             sql_thread_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             snapshot: None,
+            greeting: None,
+            output_cleanup: Arc::new(|| {}),
             #[cfg(test)]
             sql_observer: None,
         }
@@ -100,6 +106,30 @@ impl FrameHandler {
         self
     }
 
+    pub(crate) fn with_output_cleanup(
+        mut self,
+        cleanup: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        self.output_cleanup = Arc::new(cleanup);
+        self
+    }
+    pub(crate) fn cleanup_outputs(&self) {
+        (self.output_cleanup)();
+    }
+
+    pub(crate) fn with_greeting_reads(
+        mut self,
+        greeting: impl Fn(&str) -> Value + Send + Sync + 'static,
+    ) -> Self {
+        self.greeting = Some(Arc::new(greeting));
+        self
+    }
+    pub(crate) fn greeting(&self, epoch: &str) -> Value {
+        self.greeting
+            .as_ref()
+            .map_or(Value::Null, |greeting| greeting(epoch))
+    }
+
     /// Immutable reads execute synchronously at intake, before any capacity gate.
     pub(crate) fn with_snapshot_reads(
         mut self,
@@ -109,7 +139,7 @@ impl FrameHandler {
         self
     }
 
-    pub(super) fn snapshot_since(
+    pub(crate) fn snapshot_since(
         &self,
         frame: &Frame,
         arrived: WaitTimer,
@@ -159,7 +189,7 @@ impl FrameHandler {
         self
     }
 
-    pub(super) fn prepare_observation(
+    pub(crate) fn prepare_observation(
         &self,
         sender: SessionSender,
         frame: Frame,
@@ -176,7 +206,7 @@ impl FrameHandler {
         }
     }
 
-    pub(super) fn run_sql(
+    pub(crate) fn run_sql(
         &self,
         queued: QueuedFrame,
         sender: SessionSender,
@@ -206,12 +236,19 @@ impl FrameHandler {
 
     /// Immediate handlers also wait for blocking-pool scheduling. Carry their
     /// intake stamp into the closure without counting a dispatcher slot.
-    pub(super) fn call_since(
+    pub(crate) fn call_since(
         &self,
         sender: SessionSender,
         frame: Frame,
         arrived: WaitTimer,
     ) -> Value {
+        let method = frame.payload["method"]
+            .as_str()
+            .unwrap_or(&frame.frame_type);
+        if super::requires_read_interest(method) && !sender.read_is_live() {
+            return crate::api::ApiError::unavailable("read interest ended before execution")
+                .into_reply(frame.payload.get("id").cloned().unwrap_or(Value::Null));
+        }
         if let Err(error) = crate::api::v1::validate_write_metadata(&frame.payload) {
             return error.into_reply(frame.payload.get("id").cloned().unwrap_or(Value::Null));
         }
@@ -229,14 +266,17 @@ impl FrameHandler {
         )
     }
 
-    pub(super) fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
+    pub(crate) fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
+        let method = frame.payload["method"]
+            .as_str()
+            .unwrap_or(&frame.frame_type);
+        // Only internal teardown dispatches CLOSE after its opening was retired.
+        if frame.frame_type != CLOSE_FRAME_TYPE && !sender.method_is_live(method) {
+            return crate::api::ApiError::unavailable("request ended before execution")
+                .into_reply(frame.payload.get("id").cloned().unwrap_or(Value::Null));
+        }
         #[cfg(test)]
         let worker_started = std::time::Instant::now();
-        let method = frame
-            .payload
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or(&frame.frame_type);
         #[cfg(test)]
         let observed = self.clock.request_frame(&frame);
         let timer = queued.start(method);
@@ -455,7 +495,7 @@ enum LaneMessage {
 /// it gets its own compute. The client asked at a moment the running answer
 /// predates, and serving a snapshot older than the question is how a board goes
 /// stale and stays stale.
-pub(super) struct Dispatcher {
+pub(crate) struct Dispatcher {
     handler: FrameHandler,
     sql: OnceLock<super::sql::ReadDispatcher>,
     observations: OnceLock<super::sql::ReadDispatcher>,
@@ -481,11 +521,11 @@ pub(super) struct Dispatcher {
 }
 
 impl Dispatcher {
-    pub(super) fn new(handler: FrameHandler) -> Self {
+    pub(crate) fn new(handler: FrameHandler) -> Self {
         Self::with_capacity(handler, DISPATCH_QUEUE_DEPTH, DISPATCH_WORKERS)
     }
 
-    pub(super) fn with_capacity(handler: FrameHandler, queue_depth: usize, workers: usize) -> Self {
+    pub(crate) fn with_capacity(handler: FrameHandler, queue_depth: usize, workers: usize) -> Self {
         let depth = queue_depth.max(1);
         let (foreground, foreground_rx) = mpsc::channel::<QueuedWork>(depth);
         let (background, background_rx) = mpsc::channel::<QueuedWork>(depth);
@@ -518,11 +558,11 @@ impl Dispatcher {
 
     /// The handler these queues feed, for the frames the intake answers
     /// without queueing at all (`FrameIntake::accept`).
-    pub(super) fn handler(&self) -> FrameHandler {
+    pub(crate) fn handler(&self) -> FrameHandler {
         self.handler.clone()
     }
 
-    pub(super) async fn dispatch_sql(
+    pub(crate) async fn dispatch_sql(
         &self,
         sender: SessionSender,
         frame: Frame,
@@ -534,7 +574,7 @@ impl Dispatcher {
             .await;
     }
 
-    pub(super) async fn dispatch_observation(
+    pub(crate) async fn dispatch_observation(
         &self,
         sender: SessionSender,
         frame: Frame,
@@ -555,13 +595,13 @@ impl Dispatcher {
     }
 
     #[cfg(test)]
-    pub(super) fn observation_depths(&self) -> (usize, usize) {
+    pub(crate) fn observation_depths(&self) -> (usize, usize) {
         self.observations
             .get()
             .map_or((0, 0), super::sql::ReadDispatcher::depths)
     }
 
-    pub(super) fn prune_sql(&self) {
+    pub(crate) fn prune_sql(&self) {
         if let Some(observations) = self.observations.get() {
             observations.prune();
         }
@@ -571,7 +611,7 @@ impl Dispatcher {
     }
 
     #[cfg(test)]
-    pub(super) fn sql_depths(&self) -> (usize, usize) {
+    pub(crate) fn sql_depths(&self) -> (usize, usize) {
         self.sql
             .get()
             .map_or((0, 0), super::sql::ReadDispatcher::depths)
@@ -588,11 +628,11 @@ impl Dispatcher {
     /// Hand one decrypted request frame to a worker. Waits only when every
     /// worker is busy and the queue is full.
     #[cfg(test)]
-    pub(super) async fn dispatch(&self, sender: SessionSender, frame: Frame) {
+    pub(crate) async fn dispatch(&self, sender: SessionSender, frame: Frame) {
         self.dispatch_since(sender, frame, WaitTimer::start()).await;
     }
 
-    pub(super) async fn dispatch_since(
+    pub(crate) async fn dispatch_since(
         &self,
         sender: SessionSender,
         frame: Frame,
@@ -601,7 +641,10 @@ impl Dispatcher {
         // Refused here as well as at the handler (`run_handler`): a frame for
         // an ended opening must not so much as open a lane, since the lane
         // would outlive the session whose close already took its lanes away.
-        if !sender.session_is_open() {
+        let method = frame.payload["method"]
+            .as_str()
+            .unwrap_or(&frame.frame_type);
+        if !sender.method_is_live(method) {
             return;
         }
         if crate::api::effects::is_observation_read(&frame.payload) {
@@ -794,7 +837,7 @@ impl Dispatcher {
 
     /// Test-only: how many folds are waiting for a worker.
     #[cfg(test)]
-    pub(super) fn folded_reads_waiting(&self) -> usize {
+    pub(crate) fn folded_reads_waiting(&self) -> usize {
         self.folded_reads.lock().unwrap().len()
     }
 
@@ -806,6 +849,17 @@ impl Dispatcher {
             .entry(key)
             .or_insert_with(|| spawn_lane(self.handler.clone()))
             .clone()
+    }
+
+    /// Neutral openings retire without spawning one blocking cleanup per close.
+    /// Domain output cleanup prunes closed proofs in one coalesced daemon pass.
+    pub(crate) fn retire_opening(&self, session_id: &str) {
+        self.prune_sql();
+        self.lanes
+            .lock()
+            .unwrap()
+            .retain(|(session, _), _| session != session_id);
+        self.handler.clock.clients().forget(session_id);
     }
 
     /// A session ended: tell the app so it releases the session's attachments.
@@ -821,7 +875,7 @@ impl Dispatcher {
     /// The frame goes out only if `still_ended` says so once the lanes have
     /// drained: the same id may have been opened again in the meantime, and
     /// what that session holds is not this end's to release.
-    pub(super) fn close_session(
+    pub(crate) fn close_session(
         &self,
         session_id: &str,
         still_ended: impl FnOnce() -> bool + Send + 'static,
@@ -1015,12 +1069,24 @@ fn read_key(sender: &SessionSender, frame: &Frame) -> Option<ReadKey> {
 /// result back under each waiting request id, on the wire that id asked over.
 async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
     let FoldedRead {
-        sender,
+        sender: _,
         frame,
-        callers,
+        mut callers,
         queued,
         priority: _,
     } = folded;
+    callers.retain(|(_, caller)| caller.read_is_live());
+    let Some(sender) = callers
+        .iter()
+        .max_by_key(|(_, caller)| caller.request_order())
+        .map(|(_, caller)| {
+            caller
+                .clone()
+                .for_fold(callers.iter().map(|(_, caller)| caller.clone()).collect())
+        })
+    else {
+        return;
+    };
     #[cfg(test)]
     let observed = handler.clock.request_frame(&frame);
     #[cfg(test)]
@@ -1047,9 +1113,9 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
             .clock
             .mark_observed(&observed, "reply_start", std::time::Instant::now());
         #[cfg(test)]
-        caller.push_observed(for_caller, &handler.clock, &observed, false);
+        caller.push_observed(for_caller, &handler.clock, &observed, true);
         #[cfg(not(test))]
-        caller.push(for_caller);
+        caller.push_read_reply(for_caller);
         #[cfg(test)]
         handler
             .clock
@@ -1067,6 +1133,11 @@ async fn run_job(handler: &FrameHandler, job: Job) {
         queued,
     } = job;
     let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
+    let read_fenced = super::requires_read_interest(
+        frame.payload["method"]
+            .as_str()
+            .unwrap_or(&frame.frame_type),
+    );
     #[cfg(test)]
     let observed = handler.clock.request_frame(&frame);
     #[cfg(test)]
@@ -1081,16 +1152,25 @@ async fn run_job(handler: &FrameHandler, job: Job) {
                 .clock
                 .mark_observed(&observed, "reply_start", std::time::Instant::now());
             #[cfg(test)]
-            sender.push_observed(payload, &handler.clock, &observed, false);
+            sender.push_observed(payload, &handler.clock, &observed, read_fenced);
             #[cfg(not(test))]
-            sender.push(payload);
+            if read_fenced {
+                sender.push_read_reply(payload);
+            } else {
+                sender.push_reply(payload);
+            }
             #[cfg(test)]
             handler
                 .clock
                 .mark_observed(&observed, "reply_enqueued", std::time::Instant::now());
         }
         Some(Err(_)) => {
-            sender.push(json!({ "id": id, "ok": false, "error": "handler failed" }));
+            let error = json!({ "id": id, "ok": false, "error": "handler failed" });
+            if read_fenced {
+                sender.push_read_reply(error);
+            } else {
+                sender.push_reply(error);
+            }
         }
     }
 }
@@ -1114,7 +1194,10 @@ async fn run_handler(
     frame: Frame,
     queued: QueuedFrame,
 ) -> Option<Result<Value, tokio::task::JoinError>> {
-    if !sender.session_is_open() {
+    let method = frame.payload["method"]
+        .as_str()
+        .unwrap_or(&frame.frame_type);
+    if !sender.method_is_live(method) {
         return None;
     }
     let handler = handler.clone();

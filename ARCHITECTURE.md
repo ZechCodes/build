@@ -115,7 +115,7 @@ Modules are declared in `bridge/src/lib.rs`. The main groups (paths relative to 
 | --- | --- |
 | RPC and state | `app.rs` + `app/` (`AppState`, `app/rpc.rs` dispatch, one submodule per area: `board`, `captures`, `config`, `conversations`, `git`, `tasks`, `projects`, `rtc`, `runs`, `runtime`, `tracker`, `updates`, `watchers`, `workspaces`, `worktrees`) |
 | Wire contract | `api/` (`API_VERSION`, capabilities, `ApiError`), `api/v1/` (typed verbs, one file per family) |
-| Transport | `carrier.rs` + `carrier/` (relay socket or DataChannel behind one boundary; worker pool), `transport.rs` (E2EE), `relay.rs` (relay client), `rtc.rs` + `rtc/` (WebRTC peer, ICE policy, chunking), `liveness.rs`, `presence.rs`, `reachability.rs` |
+| Transport | `carrier.rs` + `carrier/` (relay socket or DataChannel adapters), `execution.rs` + `execution/` (shared admission, workers, caller authority and output bindings), `transport.rs` (E2EE), `relay.rs` (relay client), `rtc.rs` + `rtc/` (WebRTC peer, ICE policy, chunking), `liveness.rs`, `presence.rs`, `reachability.rs` |
 | Push | `changes.rs` (`ChangeBus`) |
 | Persistence | `store.rs` + `store/` (SQLite), `identity.rs`, `workspace.rs` (manifests) |
 | Checkouts | `worktree.rs` + `worktree/` (`WorktreeManager`), `isolation/` (git worktree, Rift, plain copy), `lifecycle/`, `watch.rs`, `diff.rs`, `gitgui/`, `git_process.rs` |
@@ -162,7 +162,16 @@ matches none as a push. Contract fixtures for
 every verb live in `fixtures/api/v1/` and are checked by
 `bridge/tests/api_contract.rs` and `spa/test/apiContract.test.js`.
 
-**Admission.** `FrameIntake` in `bridge/src/carrier.rs` sees every frame first:
+**Admission.** `ExecutionService` in `bridge/src/execution/service.rs` owns the
+shared application entry. `Invocation` uses the existing typed v1 normalization;
+legacy parameter objects preserve their existing domain validation and unknown
+fields. `RequestContext` captures an exact opening, live authorization lease,
+independent reply sink and optional exact event binding. HTTP and WebRTC share
+the dispatcher and read workers. No adapter creates another execution pool.
+The [implementation interface](docs/shared-execution-api.md) describes the
+restricted caller constructors, cancellation and adapter handoff.
+
+`FrameIntake` in `bridge/src/carrier.rs` remains the WebRTC adapter:
 
 - It refuses non-signaling frames that arrive over the relay.
 - It answers `ping` itself.
@@ -174,7 +183,7 @@ The twelve SQL-lane methods (`thread.page`, `thread.activity`, `thread.operation
 `thread.revision`, `tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`,
 `tasks.filterChoices`, `tasks.counts`, `tasks.lookup`, `writes.status` and
 `writes.subscribe`) enter a separate lane
-before terminal or write admission. `carrier/sql.rs` owns eight dedicated
+before terminal or write admission. `execution/sql.rs` owns eight dedicated
 threads and a fair queue with at most 16 waiting callers per session opening.
 Callers waiting for a read connection still count against that bound. Excess
 SQL parks ordered intake on its carrier; it never returns capacity `busy`.
@@ -233,13 +242,23 @@ A full opening still parks its subsequent ordered intake. Queued-only folding,
 carrier cancellation and the eight-worker physical-I/O bound remain in force.
 
 Other queued work uses the worker pool in
-`bridge/src/carrier/dispatch.rs`, which runs handlers on blocking threads.
+`bridge/src/execution/dispatch.rs`, which runs handlers on blocking threads.
 Before that pool, a bounded per-wire admitter in `carrier.rs` feeds frames in
 arrival order; its overflow answers retryable `busy`. The pool has eight
 workers and separate foreground/background queues, with at most two workers
 running background frames. Terminal lanes and immediate handlers run outside
 that eight-worker bound. Deferred writers release the app lock during external
 work and retain their dispatch worker until they finish.
+
+Shared sessions admit at most 32 unfinished requests per opening. Cancellation
+suppresses queued work and output; running effects and deferred settlement retain
+their request permits and reply-owned budget guards until completion. Event
+replacement fences old producers independently of ordinary request replies.
+Legacy work already admitted to ordinary dispatch retains the original opening
+lifetime when a carrier closes; reads and output keep their exact carrier fence.
+Internal owner close cleanup remains valid after retirement.
+Session expiry/revocation retires the exact opening; the daemon's coalesced
+cleanup pass releases dead producer resources without per-close task spawning.
 
 **Dispatch.** Each handled frame goes to `dispatch_frame` in
 `bridge/src/app/rpc.rs`, which tries these in order:
@@ -253,6 +272,12 @@ work and retain their dispatch worker until they finish.
 4. `routed()` → `AppState::route` → `crate::api::v1::dispatch`, then the legacy
    arms (`ping`, `term.list`, `term.close`, and the QA stream fixtures). Native read frames
    have already entered their snapshot, SQL or observation lane at intake.
+
+Application dispatch receives an explicit neutral `CallContext`; it does not
+recover caller identity from thread-local state. Base execution greeting reads
+register no producers. Explicit `session.hello` activates update/model/harness
+subscriptions only on its captured live Application binding; repeated hello
+upserts that binding. Stored producer contexts omit request reply resources.
 
 Routed requests retain their update-admission lease through the reply and
 share it with delivery and compaction workers. Their drain does not acquire

@@ -348,15 +348,18 @@ pub struct AppState {
     /// Update checks and installs live outside the app mutex and survive app
     /// requests finishing. Each greeted session gets one status watch task.
     updates: Option<Arc<crate::update::UpdateService>>,
-    update_subscriptions: HashMap<String, tokio::task::JoinHandle<()>>,
+    update_subscriptions:
+        HashMap<String, (crate::execution::CallContext, tokio::task::JoinHandle<()>)>,
     /// What the installed agent CLIs said, and each greeted session's watch
     /// on it for the `models.changed` push.
     cli_readings: Arc<crate::harness::installed::Readings>,
-    models_subscriptions: HashMap<String, tokio::task::JoinHandle<()>>,
+    models_subscriptions:
+        HashMap<String, (crate::execution::CallContext, tokio::task::JoinHandle<()>)>,
     /// The harness inventory service, and each greeted session's watch on
     /// it for the `harnesses.changed` push.
     harness_inventory: Arc<crate::harness::inventory::Inventory>,
-    harnesses_subscriptions: HashMap<String, tokio::task::JoinHandle<()>>,
+    harnesses_subscriptions:
+        HashMap<String, (crate::execution::CallContext, tokio::task::JoinHandle<()>)>,
     /// Build's own state directory, fixed at construction. Router scratch is
     /// cut here, beside the store; attaching a store validates its parent and
     /// never changes this root.

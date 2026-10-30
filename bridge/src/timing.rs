@@ -558,6 +558,8 @@ impl FrameTimer {
         #[cfg(test)]
         self.mark_request("app_wait_start");
         let asked_at = Instant::now();
+        #[cfg(test)]
+        witness_contended_lock(state);
         let guard = state.lock().unwrap();
         let acquired_at = Instant::now();
         let waited = acquired_at.duration_since(asked_at);
@@ -1370,4 +1372,41 @@ mod publication_tests {
         assert_eq!(stats["frames_served"], 0);
         assert!(stats["methods"].as_object().unwrap().is_empty());
     }
+}
+#[cfg(test)]
+thread_local! {
+    static TEST_LOCK_WITNESS: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> = const { std::cell::RefCell::new(None) };
+    static TEST_TERMINAL_SPAWNS: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn observe_test_terminal_spawns(count: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    TEST_TERMINAL_SPAWNS.with(|slot| *slot.borrow_mut() = Some(count));
+}
+
+#[cfg(test)]
+pub(crate) fn note_test_terminal_spawn() {
+    TEST_TERMINAL_SPAWNS.with(|slot| {
+        if let Some(count) = slot.borrow().as_ref() {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_lock_witness(signal: std::sync::mpsc::Sender<()>) {
+    TEST_LOCK_WITNESS.with(|slot| *slot.borrow_mut() = Some(signal));
+}
+
+#[cfg(test)]
+pub(crate) fn witness_contended_lock<T>(lock: &std::sync::Mutex<T>) {
+    TEST_LOCK_WITNESS.with(|slot| {
+        if let Some(signal) = slot.borrow_mut().take() {
+            match lock.try_lock() {
+                Err(std::sync::TryLockError::WouldBlock) => signal.send(()).unwrap(),
+                Err(std::sync::TryLockError::Poisoned(_)) => panic!("witnessed mutex is poisoned"),
+                Ok(_) => panic!("expected the specific mutex to be held"),
+            }
+        }
+    });
 }

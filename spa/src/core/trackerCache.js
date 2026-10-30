@@ -23,7 +23,7 @@ import { mergeCachedAtomically, mergeCachedRecordsTogether, readCached, readCach
 import { taskUnreadKey, latestTaskMark } from "./trackerUnread.js";
 import { readsAddress } from "./taskReadOrder.js";
 import { mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskContentWrite,
-  taskNeedsFullRefresh, TASK_CONTENT_CACHE } from "./taskContentAuthority.js";
+  taskNeedsFullRefresh, TASK_CONTENT_CACHE, withTaskContentComponents } from "./taskContentAuthority.js";
 const normalizedAddress = (deviceId, projectId, taskId) => ({ deviceId, entityId: projectId, kind: "tracker-summary", sub: taskId });
 
 export const TRACKER_TASKS_KIND = "tracker-tasks";
@@ -427,7 +427,7 @@ function contentList(held, record, address, context, written) {
     { context, address, heldWritten: written }));
   const kept = new Set((record.tasks || []).map((task) => task.id));
   const removed = (held?.tasks || []).some((task) => !kept.has(task.id));
-  return { record: preserveListSummaries(held, { ...record, tasks: results.flatMap((result) => result.task ? [result.task] : []) }),
+  return { record: preserveListSummaries(held, { ...record, tasks: results.flatMap((result, index) => result.task ? [withTaskContentComponents(record.tasks[index], result.task)] : []) }),
     retire: removed || results.some((result) => result.retired) };
 }
 
@@ -458,7 +458,7 @@ const detailAccepted = (held, note, taskId, options) => options.accept(held)
 
 function publishedDetail(held, record, result, contentRead) {
   const timeline = result.acceptedBody || !contentRead ? record.timeline : held?.timeline;
-  return preserveTaskFloors(held, { ...record, task: result.task, timeline: timeline || [] });
+  return preserveTaskFloors(held, { ...record, task: withTaskContentComponents(record.task, result.task), timeline: timeline || [] });
 }
 
 function contentDetail(detail, record, summary, context, address, contentRead) {

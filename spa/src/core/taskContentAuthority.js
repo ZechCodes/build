@@ -230,7 +230,7 @@ export function reconcileTaskContent(held, candidate, options = {}) {
   return { task, acceptedHeader: accepted.header, acceptedBody: accepted.body, needsFullRefresh, retired: false };
 }
 
-const retiredRefresh = (metadata, barrier) => Boolean(metadata.retired?.body || barrier.retired?.header);
+const retiredRefresh = (metadata, barrier) => Boolean(metadata.retired?.body || metadata.retired?.header || barrier.retired?.header);
 const coveredHeader = (metadata, identity) => metadata.bodyHeaderIdentity === identity || metadata.coveredHeaderIdentity === identity;
 
 function fullRefreshNeeded(task, barrier) {
@@ -250,5 +250,7 @@ export function taskFullRefreshKey(task, headerBarrier) {
 }
 
 const refreshLifetime = (metadata) => [metadata.storeGeneration || "legacy", metadata.scopeGeneration || "legacy"];
+const refreshHeader = (metadata, barrier) => [barrier.identities?.header || metadata.identities?.header || "unknown-header",
+  barrier.retired?.header || metadata.retired?.header || "known-header"];
 const refreshComponents = (metadata, barrier) => [metadata.retired?.body || "unknown-body", metadata.identities?.body || "unknown-body",
-  barrier.identities?.header || metadata.identities?.header || "unknown-header"];
+  ...refreshHeader(metadata, barrier)];

@@ -32,11 +32,13 @@ export function blindTaskWatchChanged(before, after) {
 // makes explicit unowned watch paint a blind-interference event.
 export function blindTaskWatchInterference(scope, before, after, context) {
   if (blindTaskWatchChanged(before, after)) return true;
-  if (before?.id === after?.id || typeof after?.watched !== "boolean") return false;
-  if (!Number.isSafeInteger(context?.watchPendingCount) || context.watchPendingCount <= 0) return false;
+  if (!explicitColdWatch(before, after) || !positiveWatchPending(context)) return false;
   const protection = selectTaskWatchIntentGuard(scope, after.id, [], context.watchIntentOf?.(after.id), context);
   return Boolean(protection.pending);
 }
+
+const explicitColdWatch = (before, after) => before?.id !== after?.id && typeof after?.watched === "boolean";
+const positiveWatchPending = (context) => Number.isSafeInteger(context?.watchPendingCount) && context.watchPendingCount > 0;
 
 export function retireTaskWatchFacts(task) {
   const next = { ...task };

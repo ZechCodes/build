@@ -863,3 +863,67 @@ it("preserves a genuinely qualified thread-only refresh through service completi
   expect((await writer.local.readCached(thread.address)).accepted).not.toBe(true);
   expect(running.timers.size).toBe(0);
 });
+
+it.each(["copied", "serialized", "foreign-runtime"])("refuses an owned thread publication from a %s read entry", async (kind) => {
+  const writer = await independentRuntime();
+  const reader = kind === "foreign-runtime" ? await independentRuntime() : writer;
+  const target = await seedTask(writer, "thread-brand-task");
+  const mixed = await confirmedThreadOperation(writer, { operationId: "thread-brand-operation", taskTarget: target });
+  const before = await writer.local.readCanonicalCached(mixed.address);
+  const heard = [], stop = writer.local.subscribeCache(mixed.address, (address) => heard.push(address));
+  let original, forwarded;
+  const cache = { get: writer.operations.get, openRefresh: writer.operations.openRefresh,
+    observePublication: async (input) => {
+      if (input.canonical[0].address.kind !== "thread") return writer.operations.observePublication(input);
+      original = input.canonical[0];
+      forwarded = kind === "copied" ? { ...original } : kind === "serialized" ? JSON.parse(JSON.stringify(original)) : original;
+      return writer.operations.observePublication({ ...input, canonical: [forwarded] });
+    } };
+  const authority = { active: () => true, call: vi.fn(async (method) => method === "tasks.get" ? answerFor(target) : mixed.page) };
+  const result = await reader.refresh.refreshWriteOperation({ cache, ...mixed, authority })
+    .then((value) => ({ value }), (error) => ({ error }));
+  stop();
+  expect(authority.call).toHaveBeenCalledTimes(2);
+  expect(authority.call).toHaveBeenCalledWith("thread.page", expect.objectContaining({ thread_id: mixed.params.thread_id,
+    thread_generation_revision: 3 }));
+  expect(original).toBeDefined();
+  expect(forwarded).toBeDefined();
+  if (kind !== "foreign-runtime") expect(forwarded).not.toBe(original);
+  const canonical = await writer.local.readCanonicalCached(mixed.address);
+  // Actual owner dispatch and a valid private attempt preceded this public
+  // refusal assertion. No pre-dispatch shape error can stand in for this RED.
+  expect(canonical.value.items).toEqual(before.value.items);
+  expect(canonical).toEqual(before);
+  expect(heard).toEqual([]);
+  expect(result.value?.complete).not.toBe(true);
+  const operation = await writer.operations.get("thread-brand-operation");
+  expect(operation).toMatchObject({ refreshPending: true, overlayActive: true });
+  const slot = operation.refreshState.targets.find(({ address }) => writer.keys.recordKey(address) === writer.keys.recordKey(mixed.address));
+  expect(slot.receipt).toBeNull();
+  expect((await writer.local.readCached(mixed.address)).accepted).toBe(true);
+});
+
+it("does not convert a nonowned thread publication into an owned mixed receipt", async () => {
+  const writer = await independentRuntime(), target = await seedTask(writer, "nonowned-thread-task");
+  const mixed = await confirmedThreadOperation(writer, { operationId: "nonowned-thread-operation", taskTarget: target });
+  const cache = { get: writer.operations.get, openRefresh: writer.operations.openRefresh,
+    observePublication: async (input) => {
+      if (input.canonical[0].address.kind !== "thread") return writer.operations.observePublication(input);
+      // Deliberately use the preserved general publication API: useful full
+      // thread paint is allowed, but no owned permit or reference is supplied.
+      const { refresh: _attempt, ...nonowned } = input;
+      return writer.operations.observePublication(nonowned);
+    } };
+  const authority = { active: () => true, call: vi.fn(async (method) => method === "tasks.get" ? answerFor(target) : mixed.page) };
+  const result = await writer.refresh.refreshWriteOperation({ cache, ...mixed, authority });
+  expect(authority.call).toHaveBeenCalledTimes(2);
+  const canonical = await writer.local.readCanonicalCached(mixed.address);
+  expect(canonical.value.items).toEqual(mixed.page.items);
+  expect(canonical.publication).toEqual(mixed.frame.published);
+  const operation = await writer.operations.get("nonowned-thread-operation");
+  expect(operation).toMatchObject({ refreshPending: true, overlayActive: true });
+  const slot = operation.refreshState.targets.find(({ address }) => writer.keys.recordKey(address) === writer.keys.recordKey(mixed.address));
+  expect(slot.receipt).toBeNull();
+  expect(result.complete).toBe(false);
+  expect((await writer.local.readCached(mixed.address)).accepted).toBe(true);
+});

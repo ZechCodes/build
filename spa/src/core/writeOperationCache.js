@@ -10,7 +10,8 @@ import {
 
 import { publicationReadAddresses, publicationGuardMatches, publicationIsActive, preparePublication,
   taskPublicationEvidenceAddresses } from "./writeOperationPublication.js";
-import { TRACKER_TASK_KIND } from "./trackerCache.js";
+import { TRACKER_TASK_KIND, taskAddress } from "./trackerCache.js";
+import { threadCacheAddress } from "./conversationCache.js";
 
 const notifications = createAnnouncer("build-write-operations");
 const terminalStates = new Set(["succeeded", "failed"]);
@@ -468,13 +469,18 @@ function mayRetireLayer(row, held) {
 
 function canonicalRefreshTargets(targets) {
   if (!Array.isArray(targets)) throw new TypeError("Missing exact refresh targets");
-  const addresses = targets.map(({ deviceId, entityId, kind, sub }) => ({ deviceId, entityId, kind, sub }));
-  if (addresses.some((address) => address.kind !== TRACKER_TASK_KIND || !address.sub || !address.entityId)) {
-    throw new TypeError("Invalid task refresh target");
-  }
+  const addresses = targets.map(({ deviceId, entityId, kind, sub, threadId }) => ({ deviceId, entityId, kind, sub,
+    ...(threadId ? { threadId } : {}) }));
+  if (!addresses.every(validRefreshAddress)) throw new TypeError("Invalid canonical refresh target");
   const byKey = new Map(addresses.map((address) => [recordKey(address), address]));
   return [...byKey.keys()].sort().map((key) => byKey.get(key));
 }
+
+const supportedRefreshKind = (kind) => [TRACKER_TASK_KIND, "thread"].includes(kind);
+const validRefreshAddress = (address) => supportedRefreshKind(address.kind)
+  && [address.deviceId, address.entityId, address.sub].every((part) => typeof part === "string" && part.length > 0);
+const sameRefreshAddress = (left, right) => Boolean(left && right && recordKey(left) === recordKey(right)
+  && (left.threadId || "") === (right.threadId || ""));
 
 function explicitRefreshProject(row) {
   return row.owner?.projectId || row.request?.params?.project_id || row.confirmation?.result?.task?.project_id;
@@ -489,11 +495,41 @@ function expectedRefreshProject(row) {
 }
 
 function namedRefreshTargetsMatch(row, targets, scope) {
-  const names = new Set((row.confirmation.refresh || []).filter(({ kind }) => kind === "task").map(({ id }) => id));
-  for (const { address } of row.overlay || []) if (address?.kind === TRACKER_TASK_KIND) names.add(address.sub);
-  const project = expectedRefreshProject(row);
-  return Boolean(project && targets.length === names.size && targets.every((address) =>
-    address.deviceId === scope.deviceId && address.entityId === project && names.has(address.sub)));
+  const expected = expectedRefreshTargets(row, scope);
+  return Boolean(expected && targets.length === expected.length
+    && targets.every((address, index) => sameRefreshAddress(address, expected[index])));
+}
+
+function expectedRefreshTargets(row, scope) {
+  const named = (row.confirmation.refresh || []).map((item) => namedRefreshAddress(row, item, scope));
+  if (named.some((address) => !address)) return null;
+  const overlay = effectsAddresses(row).filter((address) => address.deviceId === scope.deviceId && supportedRefreshKind(address.kind));
+  if (!overlay.every((address) => mappedRefreshAddress(row, address, scope))) return null;
+  return canonicalRefreshTargets([...named, ...overlay]);
+}
+
+function namedRefreshAddress(row, item, scope) {
+  if (!item?.id) return null;
+  if (item.kind === "task") {
+    const project = expectedRefreshProject(row);
+    return project ? taskAddress(scope.deviceId, project, item.id) : null;
+  }
+  if (item.kind !== "thread") return null;
+  const params = row.request?.params || {};
+  return [params.thread_id, params.conversation_id, params.agent_id].includes(item.id) ? persistedThreadAddress(row, scope) : null;
+}
+
+function persistedThreadAddress(row, scope) {
+  const params = row.request?.params || {};
+  if (!params.entity_id || !(params.conversation_id || params.agent_id)) return null;
+  return threadCacheAddress({ deviceId: scope.deviceId, entityId: params.entity_id,
+    conversationId: params.conversation_id, agentId: params.agent_id, threadId: params.thread_id });
+}
+
+function mappedRefreshAddress(row, address, scope) {
+  if (!validRefreshAddress(address)) return false;
+  if (address.kind === "thread") return sameRefreshAddress(address, persistedThreadAddress(row, scope));
+  return address.entityId === expectedRefreshProject(row);
 }
 
 function validRefreshState(row, targets) {
@@ -501,7 +537,7 @@ function validRefreshState(row, targets) {
   if (!state || state.version !== 1 || state.revision !== row.revision || !state.generation) return false;
   if (JSON.stringify(state.required) !== JSON.stringify(row.confirmation.published || [])) return false;
   return Array.isArray(state.targets) && state.targets.length === targets.length && state.targets.every((target, index) =>
-    target.key === recordKey(targets[index]) && recordKey(target.address) === target.key);
+    target.key === recordKey(targets[index]) && sameRefreshAddress(target.address, targets[index]));
 }
 
 function refreshOpeningState(row, revision, targets, scope) {
@@ -556,7 +592,7 @@ function refreshIdentityMatches(row, permit) {
 
 function ownedPublicationAddresses(entries, row) {
   const addresses = [...publicationReadAddresses(entries),
-    ...row.refreshState.targets.flatMap(({ address }) => taskPublicationEvidenceAddresses(address)), ...blockedEvidenceAddresses(row)];
+    ...row.refreshState.targets.flatMap(({ address }) => refreshEvidenceAddresses(address)), ...blockedEvidenceAddresses(row)];
   return [...new Map(addresses.map((address) => [recordKey(address), address])).values()];
 }
 
@@ -595,8 +631,10 @@ function parkedRefresh(row, permit, plan, failure) {
 }
 
 function evidenceReferences(address, held) {
-  return taskPublicationEvidenceAddresses(address).map((target) => ({ address: target, written: recordWriteOf(held.get(recordKey(target))) }));
+  return refreshEvidenceAddresses(address).map((target) => ({ address: target, written: recordWriteOf(held.get(recordKey(target))) }));
 }
+
+const refreshEvidenceAddresses = (address) => address.kind === TRACKER_TASK_KIND ? taskPublicationEvidenceAddresses(address) : [address];
 
 function blockedEvidenceAddresses(row) {
   const addresses = (row.refreshState?.targets || []).flatMap((target) => target.blocked?.seen?.records || []).map(({ address }) => address);

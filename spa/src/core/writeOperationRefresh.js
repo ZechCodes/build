@@ -113,11 +113,11 @@ async function refreshAddress(address, { cache, frame, record, authority, refres
   const result = await cache.observePublication({
     accept: active,
     ...(refresh ? { refresh } : {}),
-    ...(task ? { report: true } : {}),
+    ...(task || refresh ? { report: true } : {}),
     canonical: [entry],
   });
   assertActive(authority);
-  if (task) return result;
+  if (task || refresh) return result;
   const written = result;
   if (!written?.some((target) => addressKey(target) === addressKey(address))) {
     throw new Error("The canonical publication was superseded during refresh");
@@ -193,8 +193,7 @@ export async function refreshWriteOperation(input) {
   const { cache, frame, record, authority } = input;
   assertActive(authority);
   const addresses = await refreshAddresses(frame, record);
-  const tasks = addresses.filter((address) => address.kind === TRACKER_TASK_KIND);
-  if (tasks.length) return refreshTaskTargets(tasks, input);
+  if (addresses.some((address) => address.kind === TRACKER_TASK_KIND)) return refreshTaskTargets(addresses, input);
   for (const address of addresses) await refreshAddress(address, input);
   if (frame.state === "succeeded" && (await cache.get(record.operationId))?.overlayActive) {
     throw new Error("The canonical publication has not reached the cache yet");

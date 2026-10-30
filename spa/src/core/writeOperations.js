@@ -22,7 +22,7 @@ export function createWriteOperationService(options) {
   let serial = Promise.resolve();
   let stopped = false;
   let detach = () => {};
-  const worker = createWriteOperationWorker({ cache, tabId, run: statusPass, hasWork: () => Boolean(binding) && current(binding) && (snapshot.some(needsWriteStatus) || snapshot.some(refreshRequired) || checks.size > 0 || refreshes.size > 0),
+  const worker = createWriteOperationWorker({ cache, tabId, run: statusPass, hasWork: runnableWork,
     random: options.random || Math.random, setTimeout: options.setTimeout || globalThis.setTimeout, clearTimeout: options.clearTimeout || globalThis.clearTimeout });
   cache.activateProjection?.();
   const unsubscribe = cache.subscribe(() => {void refreshSnapshot().catch(() => {});});
@@ -33,6 +33,8 @@ export function createWriteOperationService(options) {
     snapshot = await cache.list();
     for (const listener of [...listeners]) listener(snapshot);
     settleKnown();
+    pruneRefreshes();
+    if (!runnableWork()) worker.reset();
     worker.wake();
     return snapshot;
   }
@@ -53,11 +55,31 @@ export function createWriteOperationService(options) {
     }
   }
   function current(held) {
-    if (stopped || held !== binding) return false;
-    if (held?.active && !held.active()) return false;
-    const authority = held?.session.bridgeEpoch?.current();
+    if (stopped || !held || held !== binding) return false;
+    if (held.active && !held.active()) return false;
+    return openingMatches(held);
+  }
+  function openingMatches(held) {
+    const authority = held.session.bridgeEpoch?.current();
     if (!authority) return true;
     return authority.bridge_epoch === held.greeting.bridge_epoch && authority.opening === held.opening;
+  }
+  function runnableWork() {
+    return Boolean(binding) && current(binding)
+      && (snapshot.some(needsWriteStatus) || snapshot.some(refreshRunnable) || checks.size > 0);
+  }
+  function entryCurrent(entry) {
+    return refreshes.get(entry.row.operationId) === entry && current(entry.held);
+  }
+  function detachRefresh(entry) {
+    entry.stopWatch?.(); entry.stopWatch = null; entry.watchGeneration = null; entry.recheck = false;
+  }
+  function pruneRefreshes() {
+    for (const [id, entry] of refreshes) {
+      const row = snapshot.find((value) => value.operationId === id);
+      if (refreshRequired(row) && row.revision === entry.frame.revision) continue;
+      detachRefresh(entry); refreshes.delete(id);
+    }
   }
   function supports(method) {
     if (!binding || !current(binding)) return false;
@@ -224,6 +246,7 @@ export function createWriteOperationService(options) {
       refreshPending: Boolean(frame.refresh?.length), accept: () => current(held) });
     if (!current(held) || stored?.revision !== frame.revision || !stored.refreshPending) return;
     if (options.onRefresh) {
+      if (refreshes.has(row.operationId)) detachRefresh(refreshes.get(row.operationId));
       const entry = { frame, row: stored, held, running: false };
       refreshes.set(row.operationId, entry);
       startRefresh(entry);
@@ -236,14 +259,17 @@ export function createWriteOperationService(options) {
   }
   function startRefresh(entry) {
     if (entry.running || !current(entry.held)) return;
+    if (!refreshRunnable(entry.row)) { void watchBlockedRefresh(entry).catch(() => {}); return; }
     entry.running = true;
     const { frame, row, held } = entry;
     Promise.resolve().then(() => options.onRefresh(frame.refresh, frame, row, {
       active: () => current(held), call: (method, params, extra) => raw(held, method, params, extra),
       session: held.session, greeting: held.greeting,
-    })).then(() => finishRefresh(entry)).catch(() => {}).finally(() => {entry.running = false; worker.wake();});
+    })).then((result) => finishRefresh(entry, result)).catch(() => {}).finally(() => {entry.running = false; worker.wake();});
   }
-  async function finishRefresh(entry) {
+  async function finishRefresh(entry, result) {
+    if (!entryCurrent(entry)) return;
+    if (taskRefreshEntry(entry)) return finishTaskRefresh(entry, result);
     const { row, frame, held } = entry;
     const saved = await cache.update(row.operationId, value => {
       if (value?.revision !== frame.revision) return null;
@@ -253,9 +279,63 @@ export function createWriteOperationService(options) {
     if (refreshes.get(row.operationId) === entry) refreshes.delete(row.operationId);
     await refreshSnapshot();
   }
+  async function finishTaskRefresh(entry, result) {
+    if (!entryCurrent(entry)) return;
+    const saved = await cache.get(entry.row.operationId);
+    if (!entryCurrent(entry) || saved?.revision !== entry.frame.revision || !taskResultMatches(result, saved)) return;
+    entry.row = saved;
+    // The negative parked path never clears a task obligation from a resolved
+    // callback. Real ReceiptRef completion remains an integration dependency.
+    await watchBlockedRefresh(entry);
+    await refreshSnapshot();
+  }
+  function taskResultMatches(result, row) {
+    if (!result?.refresh) return true;
+    return result.refresh.revision === row.revision && result.refresh.generation === row.refreshState?.generation;
+  }
+  async function watchBlockedRefresh(entry) {
+    const state = entry.row.refreshState;
+    if (!entryCurrent(entry) || !state || refreshRunnable(entry.row)) return;
+    if (entry.watchGeneration === state.generation || !cache.watchRefresh) return;
+    detachRefresh(entry);
+    entry.watchGeneration = state.generation;
+    const stop = await cache.watchRefresh({ operationId: entry.row.operationId, generation: state.generation },
+      () => { void reevaluateRefresh(entry).catch(() => {}); });
+    if (!entryCurrent(entry) || entry.watchGeneration !== state.generation) stop();
+    else entry.stopWatch = stop;
+  }
+  async function reevaluateRefresh(entry) {
+    if (!entryCurrent(entry)) return;
+    if (entry.checking) { entry.recheck = true; return; }
+    entry.checking = true;
+    try {
+      await cache.reevaluateRefresh({ operationId: entry.row.operationId, accept: () => entryCurrent(entry) });
+      if (!entryCurrent(entry)) return;
+      const saved = await cache.get(entry.row.operationId);
+      if (!entryCurrent(entry) || saved?.revision !== entry.frame.revision) return;
+      entry.row = saved;
+      await refreshSnapshot();
+    } finally { entry.checking = false; scheduleRefreshRecheck(entry); }
+  }
+  function scheduleRefreshRecheck(entry) {
+    if (!entry.recheck || !entryCurrent(entry)) return;
+    entry.recheck = false;
+    queueMicrotask(() => { void reevaluateRefresh(entry).catch(() => {}); });
+  }
   function refreshRequired(row) {
     if (!row || row.refreshPending === false) return false;
     return Boolean(row.confirmation?.refresh?.length);
+  }
+  function taskRefreshEntry(entry) {
+    return entry.frame.refresh?.some(({ kind }) => kind === "task")
+      || entry.row.overlay?.some(({ address }) => address?.kind === "tracker-task");
+  }
+  function refreshRunnable(row) {
+    if (!refreshRequired(row)) return false;
+    if (!taskRefreshEntry({ frame: row.confirmation, row })) return true;
+    const state = row.refreshState;
+    if (!state || state.version !== 1 || state.revision !== row.revision || !Array.isArray(state.targets)) return true;
+    return state.targets.some(({ phase }) => phase === "unread");
   }
   async function updateEvidence(row, held, fields) {
     const expectedRevision = row.revision;
@@ -368,10 +448,22 @@ export function createWriteOperationService(options) {
     if (!options.onRefresh) return;
     for (const row of rows) {
       if (row.journalIncarnation !== held.greeting.journal_incarnation) continue;
-      if (!refreshRequired(row) || refreshes.has(row.operationId)) continue;
-      const stored = await cache.update(row.operationId, value => refreshRequired(value) ? { ...value, refreshPending: true } : null, { accept: () => current(held) });
-      if (current(held) && refreshRequired(stored)) refreshes.set(row.operationId, { frame: stored.confirmation, row: stored, held, running: false });
+      if (!refreshRequired(row)) continue;
+      const stored = await restoredRefreshRow(row, held);
+      if (!current(held) || !refreshRequired(stored)) continue;
+      retainRefreshEntry(stored, held);
     }
+  }
+  async function restoredRefreshRow(row, held) {
+    if (row.refreshPending === true) return row;
+    return cache.update(row.operationId, value => refreshRequired(value) ? { ...value, refreshPending: true } : null,
+      { accept: () => current(held) });
+  }
+  function retainRefreshEntry(row, held) {
+    const previous = refreshes.get(row.operationId);
+    if (previous?.frame.revision === row.revision && previous.held === held) { previous.row = row; return; }
+    if (previous) detachRefresh(previous);
+    refreshes.set(row.operationId, { frame: row.confirmation, row, held, running: false });
   }
   async function statusPass(leaseActive) {
     await ready;
@@ -396,8 +488,9 @@ export function createWriteOperationService(options) {
   }
   function rebindRefreshes(held) {
     for (const [id, entry] of refreshes) {
+      detachRefresh(entry);
       if (entry.row.journalIncarnation !== held.greeting.journal_incarnation) refreshes.delete(id);
-      else refreshes.set(id, { ...entry, held, running: false });
+      else refreshes.set(id, { ...entry, held, running: false, checking: false });
     }
   }
   async function bind({ session, greeting, opening, active }) {
@@ -416,7 +509,7 @@ export function createWriteOperationService(options) {
       if (id) {
         checks.add(id);
         const row = await cache.get(id);
-        if (row?.confirmation?.refresh?.length) await cache.update(id, value => ({ ...value, refreshPending: true }));
+        if (row?.confirmation?.refresh?.length) await checkRefreshAgain(row);
       }
       return worker.reconcile();
     },
@@ -426,11 +519,23 @@ export function createWriteOperationService(options) {
     async dismiss(id) {await cache.update(id, row => ({ ...row, dismissed: true })); await refreshSnapshot();},
     async close() {
       stopped = true; binding = null; detach(); unsubscribe(); listeners.clear();
+      for (const entry of refreshes.values()) detachRefresh(entry);
+      refreshes.clear();
       cache.deactivateProjection?.(); await worker.close();
       for (const waiting of pending.values()) waiting.reject(writeRefusal("Local waiting ended; the write is retained", "local_wait_ended"));
       pending.clear();
     },
   };
+
+  async function checkRefreshAgain(row) {
+    if (!taskRefreshEntry({ frame: row.confirmation, row })) {
+      await cache.update(row.operationId, value => ({ ...value, refreshPending: true }));
+      return;
+    }
+    if (!cache.reevaluateRefresh) return;
+    const held = binding;
+    await cache.reevaluateRefresh({ operationId: row.operationId, accept: () => current(held) });
+  }
 }
 
 const services = new Map();

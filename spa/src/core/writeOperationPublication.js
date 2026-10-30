@@ -12,6 +12,10 @@ const isTask = ({ address }) => address.kind === TRACKER_TASK_KIND;
 const taskScope = ({ deviceId, entityId }) => ({ deviceId, projectId: entityId });
 const contentFragment = (address) => taskContentFragment(taskScope(address), { watchTaskIds: [address.sub] });
 
+export function taskPublicationEvidenceAddresses(address) {
+  return [address, readsAddress(address), summaryAddress(taskScope(address), address.sub), ...contentFragment(address).addresses];
+}
+
 export function publicationReadAddresses(entries) {
   const addresses = entries.flatMap((entry) => isTask(entry)
     ? [entry.address, readsAddress(entry.address), TASK_READ_COUNT_ADDRESS,

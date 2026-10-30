@@ -3,11 +3,13 @@ import { captureTaskDetailRead, taskAddress, TRACKER_TASK_KIND } from "./tracker
 import { captureTaskContentRead } from "./taskContentAuthority.js";
 import { threadCacheAddress } from "./conversationCache.js";
 import { threadWindow } from "./threadSync.js";
+import { recordKey } from "./idbRecords.js";
 
 const paramsOf = (record) => record.request?.params || {};
 const taskHistoryReads = new WeakMap();
 const addressKey = (address) => JSON.stringify([address.deviceId, address.entityId, address.kind, address.sub || ""]);
 const refreshError = () => new Error("The required canonical refresh cannot be mapped to a known record");
+const invalidTaskRefresh = (message) => Object.assign(new Error(message), { error_code: "invalid-task-response" });
 const assertActive = (authority) => {
   if (!authority?.active()) throw new Error("The canonical refresh opening ended");
 };
@@ -28,8 +30,8 @@ function assertThreadGeneration(params, page) {
 const READERS = {
   "tracker-task": async (address, _record, authority) => {
     const result = await authority.call("tasks.get", { task_id: address.sub });
-    if (!result?.task || !Array.isArray(result.timeline)) throw new Error("Task refresh is incomplete");
-    if (result.task.id !== address.sub || result.task.project_id !== address.entityId) throw new Error("Task refresh identity changed");
+    if (!result?.task || !Array.isArray(result.timeline)) throw invalidTaskRefresh("Task refresh is incomplete");
+    if (result.task.id !== address.sub || result.task.project_id !== address.entityId) throw invalidTaskRefresh("Task refresh identity changed");
     return { task: result.task, timeline: result.timeline };
   },
   thread: async (_address, record, authority, previous) => {
@@ -96,7 +98,7 @@ async function publicationGuard(address, previous) {
   return guard;
 }
 
-async function refreshAddress(address, { cache, frame, record, authority }) {
+async function refreshAddress(address, { cache, frame, record, authority, refresh }) {
   const active = authority.active;
   const previous = await readCanonicalCached(address);
   const guard = await publicationGuard(address, previous);
@@ -110,11 +112,12 @@ async function refreshAddress(address, { cache, frame, record, authority }) {
     ...(contentRead ? { contentRead } : {}) }, active);
   const result = await cache.observePublication({
     accept: active,
+    ...(refresh ? { refresh } : {}),
     ...(task ? { report: true } : {}),
     canonical: [entry],
   });
   assertActive(authority);
-  if (task) return assertTaskReceipt(result, address);
+  if (task) return result;
   const written = result;
   if (!written?.some((target) => addressKey(target) === addressKey(address))) {
     throw new Error("The canonical publication was superseded during refresh");
@@ -142,10 +145,45 @@ export function taskHistoryReadOf(entry) {
   return taskHistoryReads.get(entry) || null;
 }
 
-function assertTaskReceipt(result, address) {
-  const outcome = result?.outcomes?.find((item) => addressKey(item.address) === addressKey(address));
-  if (outcome?.reason === "superseded") throw new Error("The canonical publication was superseded during refresh");
-  if (!outcome?.receiptPublished) throw new Error("The canonical task payload lacks complete receipt authority");
+async function taskRefreshOpening(targets, { cache, frame, record, authority }) {
+  const opening = cache.openRefresh ? await cache.openRefresh({ operationId: record.operationId,
+    revision: frame.revision, targets, accept: authority.active }) : { state: "unbound" };
+  assertActive(authority);
+  const saved = await cache.get(record.operationId);
+  const refresh = { operationId: record.operationId, revision: frame.revision,
+    generation: saved?.refreshState?.generation, state: opening.state };
+  if (saved && saved.revision !== frame.revision) refresh.state = "superseded";
+  const unread = new Set((saved?.refreshState?.targets || []).filter(({ phase }) => phase === "unread").map(({ key }) => key));
+  return { attempt: opening.attempt, refresh, targets: readableTaskTargets(targets, refresh.state, unread, !saved) };
+}
+
+function readableTaskTargets(targets, state, unread, detached) {
+  if (state === "unbound") return detached ? targets : [];
+  return state === "ready" ? targets.filter((address) => unread.has(recordKey(address))) : [];
+}
+
+async function refreshTaskTarget(address, input) {
+  try { return await refreshAddress(address, input); }
+  catch (error) {
+    if (!input.refresh || error.error_code !== "invalid-task-response") throw error;
+    return input.cache.observePublication({ refresh: input.refresh, report: true, accept: input.authority.active,
+      failure: { targetKey: recordKey(address), reason: "invalid-task-response" } });
+  }
+}
+
+async function refreshTaskTargets(targets, input) {
+  const opening = await taskRefreshOpening(targets, input);
+  let refresh = opening.refresh;
+  const outcomes = [];
+  for (const address of opening.targets) {
+    const result = await refreshTaskTarget(address, { ...input, refresh: opening.attempt });
+    outcomes.push(...(result?.outcomes || []));
+    if (result?.refresh) refresh = result.refresh;
+    if (["superseded", "inactive"].includes(refresh.state)) break;
+  }
+  // Qualified ReceiptRef creation and all-target finalization await their real
+  // producer/integration. Useful partial reads never complete an obligation.
+  return { complete: false, outcomes, refresh };
 }
 
 /** Resolve closed domain invalidations independently of accepted overlays.
@@ -155,6 +193,8 @@ export async function refreshWriteOperation(input) {
   const { cache, frame, record, authority } = input;
   assertActive(authority);
   const addresses = await refreshAddresses(frame, record);
+  const tasks = addresses.filter((address) => address.kind === TRACKER_TASK_KIND);
+  if (tasks.length) return refreshTaskTargets(tasks, input);
   for (const address of addresses) await refreshAddress(address, input);
   if (frame.state === "succeeded" && (await cache.get(record.operationId))?.overlayActive) {
     throw new Error("The canonical publication has not reached the cache yet");

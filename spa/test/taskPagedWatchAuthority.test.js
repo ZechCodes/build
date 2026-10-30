@@ -520,3 +520,77 @@ it("does not treat an unchanged genuinely observed catalogue copy into absent de
   expect(held[outside.watch.TASK_WATCH_CACHE]?.uncertain).not.toBe(false);
   expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
 });
+
+async function actualColdWatchRead({ pending = false, held = false, metadataOnly = false } = {}) {
+  const first = await runtime();
+  const summaries = await import("../src/core/taskSummaryCache.js");
+  const detail = first.tracker.taskAddress(scope.deviceId, scope.projectId, "task-20");
+  const normalized = summaries.summaryAddress(scope, "task-20");
+  const original = row(20, { watched: true, watch_started_after: "te-held" });
+  const catalogueRead = await first.content.captureTaskContentRead(catalogue(first), { revalidate: "full" });
+  await first.tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    first.tracker.tasksRecord([original], []), { contentRead: catalogueRead });
+  expect(await first.cache.readCached(detail)).toBeUndefined();
+  expect(await first.cache.readCached(normalized)).toBeUndefined();
+  if (held) {
+    const heldRead = await first.content.captureTaskContentRead(detail, { revalidate: "full" });
+    await first.tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-20",
+      first.tracker.taskRecord(original, []), { contentRead: heldRead });
+  }
+  const owner = pending ? await first.watch.beginTaskWatchMutation(scope, "task-20", { watched: false, metadataOnly }) : null;
+  if (pending) expect(owner).not.toBeNull();
+  const catalogueBefore = await first.cache.readCached(catalogue(first));
+  const before = await first.watch.readTaskWatchState(scope);
+  expect(before).toMatchObject({ pendingCount: pending ? 1 : 0, uncertain: true, eligible: false });
+  const outside = await runtime();
+  const contentRead = await outside.content.captureTaskContentRead(detail, { revalidate: "full" });
+  expect(contentRead.ticket.watchPending).toBe(pending);
+  const raw = row(20, { title: "Admitted raw title", body: "Admitted raw body", watched: true,
+    watch_started_after: "te-refused", read_through: "tc-90", dismissed_through: "te-90",
+    review_summary: { task_id: "task-20", version: 2, status: "open", mode: "pull_request" } });
+  await outside.tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-20",
+    outside.tracker.taskRecord(raw, []), { contentRead });
+  const detailValue = (await outside.cache.readCached(detail)).value;
+  const summaryValue = (await outside.cache.readCached(normalized)).value;
+  expect(detailValue.task.body).toBe(raw.body);
+  for (const task of [detailValue.task, summaryValue.task]) {
+    expect(task).toMatchObject({ title: raw.title, read_through: raw.read_through,
+      dismissed_through: raw.dismissed_through, review_summary: raw.review_summary });
+  }
+  expect(await outside.cache.readCached(catalogue(outside))).toEqual(catalogueBefore);
+  expect(await outside.watch.readTaskWatchState(scope)).toEqual(before);
+  return { outside, owner, catalogueBefore, detail: detailValue.task, summary: summaryValue };
+}
+
+it("does not paint a cold detail or normalized row from a raw watch reply while a metadata-only owner is pending", async () => {
+  const result = await actualColdWatchRead({ pending: true, metadataOnly: true });
+  // The pending request desires false but never paints the cache. The old
+  // catalogue true is not a held detail/summary or an observed raw response.
+  expect(result.catalogueBefore.value.tasks[0].watched).toBe(true);
+  expect(result.catalogueBefore.value.tasks[0].__task_watch_intent).toBeUndefined();
+  for (const task of [result.detail, result.summary.task]) {
+    expect(task).not.toHaveProperty("watched");
+    expect(task).not.toHaveProperty("watch_started_after");
+    expect(task[result.outside.watch.TASK_WATCH_CACHE]).toBeUndefined();
+  }
+  expect(result.summary).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
+});
+
+it("retains uncertain raw watch paint on a cold genuine read without a pending owner", async () => {
+  const result = await actualColdWatchRead();
+  for (const task of [result.detail, result.summary.task]) {
+    expect(task).toMatchObject({ watched: true, watch_started_after: "te-refused" });
+    expect(task[result.outside.watch.TASK_WATCH_CACHE]).toMatchObject({ source: "read", uncertain: true });
+  }
+  expect(result.summary).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
+});
+
+it("retains actual held detail paint while rejecting a pending raw watch lineage", async () => {
+  const result = await actualColdWatchRead({ pending: true, held: true });
+  expect(result.catalogueBefore.value.tasks[0]).toMatchObject({ watched: false, __task_watch_intent: result.owner.id });
+  for (const task of [result.detail, result.summary.task]) {
+    expect(task).toMatchObject({ watched: true, watch_started_after: "te-held" });
+    expect(task[result.outside.watch.TASK_WATCH_CACHE]?.uncertain).not.toBe(false);
+  }
+  expect(result.summary).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
+});

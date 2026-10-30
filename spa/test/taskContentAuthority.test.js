@@ -295,3 +295,32 @@ it("keeps accepted same-byte component clocks when an older cached copy is repub
   expect(result).toMatchObject({ acceptedHeader: false, acceptedBody: false });
   expect(result.task).toMatchObject({ title: "Current", body: "Body" });
 });
+
+it("does not promote a retired unknown body by copying an older proven identical body", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), first = (await publish(await observed(task()))).task;
+  await content.mergeTaskContentRecordsTogether(scope, [address], ([held]) => ({
+    values: [{ task: content.retireTaskContent(held.value.task, "body") }], retire: true,
+  }));
+  const unknown = await read(), key = content.taskFullRefreshKey(unknown);
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-1", { task: first, timeline: [] });
+  const copied = await read();
+  expect(copied.__task_content_cache.body).toBeUndefined();
+  expect(content.taskFullRefreshKey(copied)).toBe(key);
+});
+
+it("selects genuine same-byte copy proof per component across cache replicas", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), listAddress = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  const initial = (await publish(await observed(task()))).task;
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [initial] });
+  const newerBody = (await publish(await observed(task()))).task;
+  const headerRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [
+    content.observeTaskContent(task(), { contentRead: headerRead, coverage: "summary" }),
+  ] });
+  const before = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [newerBody] });
+  const copied = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
+  expect(copied.__task_content_cache.header).toEqual(before.__task_content_cache.header);
+  expect(copied.__task_content_cache.body).toEqual(newerBody.__task_content_cache.body);
+  expect(copied.__task_content_cache.bodyHeaderIdentity).toBe(newerBody.__task_content_cache.bodyHeaderIdentity);
+});

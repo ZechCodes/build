@@ -93,6 +93,62 @@ identical metadata paints and a failed attempt do not create a retry loop.
 Unmarked legacy records and summary-only rows do not start unopened-body reads.
 There is no project sweep, new background service, or cursor drain.
 
+## Watch extension under implementation
+
+The separately authorized watch repair adds a watch-lineage observation and
+retirement fence independent of ordinary header/body proof. Its source is the
+actual pre-RPC ticket, not a list write number or receipt time. Watched state
+and the exact presence/value of `watch_started_after` form one lineage;
+read/dismiss markers, total unread, attention counters, activity, and PR facts
+retain their own sources and floor checks. Neither a current watch observation
+nor equal marker values certify the rest of a row or its projection basis.
+Legacy and canonical marker comparator policies remain distinct.
+
+The shared pending protocol is still being implemented and reviewed. Its
+required transaction contains a fixed-size exact-owner record, checked pending
+count, watch epoch, and affected cache writes. Settlement removes only that
+owner, once, in the same transaction as its count/fence changes and admissible
+acknowledgment or rollback. Overlapping owners, replaced sessions, and stale
+acknowledgments cannot settle another mutation. The local runtime pending guard
+remains local protection; it does not prove cross-tab safety.
+
+Coordination uses a separate empty-entity namespace so ordinary project eviction
+does not erase a still-live mutation. Missing or reset coordination is a sticky
+unknown baseline. Beginning one new owner and settling it back to zero cannot
+prove that no older owner was lost. An acknowledgment cannot bypass this
+uncertainty. No timeout, cache reopen, or expired worker lease establishes
+liveness or clears orphan state. Fresh/reset-store availability and orphan
+recovery remain explicit activation blockers; no recovery implementation or
+new journal, lease service, sweep, or RPC is authorized by this repair.
+
+The Inbox writer registers shared ownership before its optimistic cache change.
+The task page registers metadata-only ownership before dispatching watch or
+unwatch, preserving its DOM-only optimism and one RPC/publication. Registration
+failure must prevent an untracked dispatch. Other page action methods retain
+their existing dispatch contract.
+
+Already-mounted page and detail-feed owners may subscribe to the exact control
+address. A notification is only a hint to reread control state. Unknown or
+failed eligibility checks start no network work; eligible changes may schedule
+only currently admitted IDs through existing bounded/coalesced owners. Duplicate
+hints coalesce, and unmount or context replacement retires queued callbacks.
+The notification itself supplies no authority.
+
+Task-specific canonical publication requires full ordinary acceptance and
+eligible selected watch-lineage authority before emitting a complete canonical
+receipt. A proven newer retained lineage may satisfy that condition; pending
+or orphan-uncertain lineage may not. Legitimately omitted optional counters do
+not alone prevent completion. Family-only publication cannot retire durable
+layers as a complete task read. This conservative boundary can leave canonical
+refresh incomplete on fresh/reset coordination until recovery is resolved.
+
+The narrow shared-cache primitive recognizes `DELETE_CACHED_RECORD` only in the
+existing multi-record transaction reducer. It does not serialize the sentinel
+or change null/no-op semantics. Ordered duplicate-key puts and deletes, atomic
+rollback, and post-commit announcements need independent exact-head review
+alongside the pending-owner protocol. Passing primitive controls alone does not
+close the cross-tab activation blocker.
+
 ## Review limits
 
 Client dispatch provenance protects accepted newer observations from

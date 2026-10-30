@@ -151,7 +151,7 @@ export const foldTasksPage = (address, stretch, columnsOf) =>
       const content = contentPageRows(held, stretch, reads, address, context, recordWriteOf(heldRecord));
       return { values: [tasksRecord(content.rows, columnsOf(held), foldedOrder(heldRecord, stretch)), withStretch(reads, stretch)],
         retire: content.retire };
-    });
+    }, { watchTaskIds: (stretch.tasks || []).map((task) => task.id) });
 
 const foldedOrder = (heldRecord, { read = 0, pullRead = read }) => Math.max(listAskedAt(heldRecord), pullRead);
 
@@ -213,7 +213,7 @@ async function landPage(deviceId, projectId, asked, answer, contentRead, active)
     return { values: [{ ...answer, tasks: results.flatMap((result, index) => result.task
       ? [withTaskContentComponents(pageTaskFacts(address, old.get(answer.tasks[index].id), answer.tasks[index], contentRead, context), result.task)] : []), read_order: read,
       content_read: contentRead }] };
-  });
+  }, { watchTaskIds: (answer.tasks || []).map((task) => task.id) });
   return { sub: address.sub, page: (await readCached(address))?.value };
 }
 

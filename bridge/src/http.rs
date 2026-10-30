@@ -14,4 +14,5 @@ pub mod settings;
 pub mod sse;
 pub mod sse_stream;
 pub mod stream_slot;
+pub mod supervisor;
 pub mod tls;

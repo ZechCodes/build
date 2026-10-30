@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use rustls::ServerConfig;
+use sha2::{Digest, Sha256};
 
 const MAX_PEM_BYTES: u64 = 65_536;
 
@@ -30,6 +31,25 @@ pub fn load(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerConfig>, Stri
     .map_err(|_| "HTTP TLS certificate and key are incompatible")?;
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(Arc::new(config))
+}
+
+pub fn certificate_fingerprint(cert_path: &Path) -> Result<String, String> {
+    let cert_bytes = read_pem(cert_path, false)?;
+    let certificate = CertificateDer::pem_slice_iter(&cert_bytes)
+        .next()
+        .ok_or("HTTP TLS certificate chain is empty")?
+        .map_err(|_| "invalid HTTP TLS certificate chain")?;
+    Ok(hex(&Sha256::digest(certificate.as_ref())))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(DIGITS[(byte >> 4) as usize] as char);
+        encoded.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 fn read_pem(path: &Path, private: bool) -> Result<Vec<u8>, String> {

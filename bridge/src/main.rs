@@ -229,7 +229,7 @@ async fn serve() {
         Ok(app) => app,
         Err(error) => exit_startup(error),
     };
-    run_daemon(runtime, loaded.identity, loaded.transport, app).await;
+    run_daemon(runtime, loaded, app).await;
 }
 
 fn configure_updates(app: AppState, runtime: &RuntimePaths) -> Result<AppState, String> {
@@ -436,6 +436,7 @@ impl PairingOutcome {
 struct LoadedIdentity {
     identity: DeviceIdentity,
     transport: transport::KeyPairB64,
+    stored: Option<identity::StoredIdentity>,
     outcome: PairingOutcome,
 }
 
@@ -479,6 +480,7 @@ async fn load_stored_identity(config: &BridgeConfig) -> Result<LoadedIdentity, S
     Ok(LoadedIdentity {
         identity: identity::to_device_identity(&approved),
         transport: approved.transport.clone(),
+        stored: Some(approved),
         outcome,
     })
 }
@@ -507,6 +509,7 @@ fn provisioned_identity_from(
             public_key_b64: tp_pub,
             private_key_b64: tp_priv,
         },
+        stored: None,
         outcome: PairingOutcome::Provisioned,
     })
 }
@@ -557,12 +560,13 @@ fn task_store_startup_error(tasks_dir: &std::path::Path, error: &str) -> String 
     )
 }
 
-async fn run_daemon(
-    runtime: RuntimePaths,
-    identity: DeviceIdentity,
-    transport_keypair: transport::KeyPairB64,
-    app: AppState,
-) {
+async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState) {
+    let LoadedIdentity {
+        identity,
+        transport: transport_keypair,
+        stored,
+        ..
+    } = loaded;
     let repo_display = runtime
         .config
         .repo
@@ -646,11 +650,56 @@ async fn run_daemon(
     // reached over either wire is the one session.
     let intake = FrameIntake::with_ledger(handler, transport_keypair, ledger);
     let execution = intake.execution();
+    let http_settings =
+        build_bridge::http::settings::HttpSettings::resolve(|name| std::env::var(name).ok())
+            .unwrap_or_else(|error| exit_startup(format!("invalid HTTP configuration: {error}")));
+    let http_state_path = runtime.tasks_dir.join("http-endpoint.json");
+    let prepared_http = match http_settings {
+        None => {
+            if let Some(stored) = stored.as_ref() {
+                if let Err(error) = build_bridge::http::supervisor::reconcile_disabled(
+                    stored,
+                    http_state_path.clone(),
+                )
+                .await
+                {
+                    eprintln!("HTTP endpoint deactivation remains pending: {error}");
+                }
+            }
+            None
+        }
+        Some(settings) => {
+            let stored = stored.as_ref().unwrap_or_else(|| {
+                exit_startup(
+                    "HTTP requires the file-backed paired identity; provisioned relay-only keys are insufficient"
+                        .into(),
+                )
+            });
+            Some(
+                build_bridge::http::supervisor::PreparedHttp::prepare(
+                    settings,
+                    stored,
+                    &runtime.config.api_url,
+                    &runtime.config.web_url,
+                    http_state_path,
+                    execution.clone(),
+                )
+                .await
+                .unwrap_or_else(|error| exit_startup(format!("cannot start HTTP: {error}"))),
+            )
+        }
+    };
+    let mut http_service = prepared_http.map(|prepared| {
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let task = liveness.spawn(async move { prepared.serve(stopped).await });
+        (stop, task)
+    });
+    let reaper_execution = execution.clone();
     let _execution_reaper = liveness.handle().spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
         loop {
             tick.tick().await;
-            execution.reap_expired();
+            reaper_execution.reap_expired();
         }
     });
     // The peer transport a browser upgrades to. It is built last because it is
@@ -729,6 +778,18 @@ async fn run_daemon(
         biased;
         () = going_down.recv() => {}
         _ = &mut relay_socket => {}
+    }
+    if let Some((stop, mut task)) = http_service.take() {
+        let _ = stop.send(true);
+        match tokio::time::timeout(Duration::from_secs(7), &mut task).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => eprintln!("HTTP shutdown: {error}"),
+            Ok(Err(error)) => eprintln!("HTTP supervisor ended: {error}"),
+            Err(_) => {
+                task.abort();
+                eprintln!("HTTP shutdown exceeded its bound");
+            }
+        }
     }
     // The one exit the daemon has, whichever way the loop ended: record who was
     // working before the harnesses go with the process. Rolling the binary
@@ -1650,6 +1711,7 @@ mod tests {
                 identity_private_key_b64: stored.identity_private_key_b64.clone(),
             },
             transport: transport::generate_transport_keypair(),
+            stored: None,
             outcome: PairingOutcome::Provisioned,
         };
 

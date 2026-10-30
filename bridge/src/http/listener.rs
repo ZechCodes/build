@@ -113,6 +113,19 @@ impl OutputTicket {
             self.authority.0.waker.wake();
         }
     }
+
+    /// Clear this exact response after every clone of its encoded body has
+    /// left Hyper. A successor binding is never affected.
+    pub fn release(self) {
+        let mut current = self.authority.0.current.lock().unwrap();
+        if current
+            .as_ref()
+            .is_some_and(|current| current.id == self.id)
+        {
+            *current = None;
+            self.authority.0.waker.wake();
+        }
+    }
 }
 
 pub async fn serve(

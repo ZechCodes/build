@@ -926,3 +926,91 @@ it("does not convert a nonowned thread publication into an owned mixed receipt",
   expect(result.complete).toBe(false);
   expect((await writer.local.readCached(mixed.address)).accepted).toBe(true);
 });
+
+async function projectlessConfirmedOperation(runtime, target) {
+  const { normalizeAckEffects } = await import("../src/core/writeOperationEffects.js");
+  const operationId = "projectless-operation";
+  const intent = { operationId, revision: 0, deviceId: scope.deviceId, journalIncarnation: greeting.journal_incarnation,
+    request: { method: "tasks.comment", params: { task_id: target.row.id, body: "Accepted draft" } } };
+  const ack = { result: { overlay: [{ kind: "task_comment", task_id: target.row.id,
+    comment_id: `${target.row.id}-comment`, body: "Accepted draft" }] } };
+  const normalized = await normalizeAckEffects(ack, intent);
+  expect(normalized.overlay).toHaveLength(1);
+  expect(normalized.overlay[0].address).toEqual(target.address);
+  await runtime.operations.put(intent);
+  await runtime.operations.accept(operationId, { ...normalized, revision: 1, ack, owners: [] });
+  const frame = { type: "writes.confirmed", operation_id: operationId, bridge_epoch: greeting.bridge_epoch,
+    revision: 2, state: "succeeded", published: [], refresh: [{ kind: "task", id: target.row.id }] };
+  const record = await runtime.operations.confirm(operationId, { revision: frame.revision, confirmation: frame, refreshPending: true });
+  expect(record.owner).toBeUndefined();
+  expect(record.request.params.project_id).toBeUndefined();
+  expect(record.owners).toEqual([]);
+  expect(record.confirmation.published).toEqual([]);
+  return { frame, record };
+}
+
+async function cachedTaskMatches(runtime, id) {
+  return (await runtime.local.cachedAddresses({ deviceId: scope.deviceId }))
+    .filter((address) => address.kind === runtime.tracker.TRACKER_TASK_KIND && address.sub === id);
+}
+
+it("refreshes a projectless operation through its unique genuine cached task address", async () => {
+  const writer = await independentRuntime(), target = await seedTask(writer, "projectless-task");
+  const confirmed = await projectlessConfirmedOperation(writer, target);
+  expect(await cachedTaskMatches(writer, target.row.id)).toEqual([target.address]);
+  expect(await writer.watch.readTaskWatchState(scope)).toMatchObject({ uncertain: true, eligible: false });
+  const answer = answerFor(target);
+  const authority = { active: () => true, call: vi.fn(async () => answer) };
+  const result = await writer.refresh.refreshWriteOperation({ cache: writer.operations, ...confirmed, authority });
+  // Actual cached address resolution must reach the supported literal reader;
+  // this is the first expected RED on the 9ada validator, before payload checks.
+  expect(authority.call).toHaveBeenCalledExactlyOnceWith("tasks.get", { task_id: target.row.id });
+  const canonical = await writer.local.readCanonicalCached(target.address);
+  expect(canonical.value.task.body).toBe(answer.task.body);
+  expect(canonical.value.timeline).toEqual(answer.timeline);
+  expect(canonical.publication || []).toEqual([]);
+  expect(result.complete).toBe(false);
+  const row = await writer.operations.get(confirmed.record.operationId);
+  expect(row).toMatchObject({ refreshPending: true, overlayActive: true });
+  expect(row.refreshState.targets).toContainEqual(expect.objectContaining({ address: target.address, phase: "blocked", receipt: null }));
+  const paint = await writer.local.readCached(target.address);
+  expect(paint.accepted).toBe(true);
+  expect(paint.value.timeline.find(({ id }) => id === `${target.row.id}-comment`).body).toBe("Accepted draft");
+});
+
+it("refuses an ambiguous cached task scope for a projectless operation", async () => {
+  const writer = await independentRuntime(), target = await seedTask(writer, "ambiguous-projectless-task");
+  const confirmed = await projectlessConfirmedOperation(writer, target);
+  const projectId = "other-payload-project", row = { ...target.row, project_id: projectId };
+  const other = writer.tracker.taskAddress(scope.deviceId, projectId, row.id);
+  const contentRead = await writer.content.captureTaskContentRead(other, { revalidate: "full" });
+  await writer.tracker.writeTaskRecord(scope.deviceId, projectId, row.id, writer.tracker.taskRecord(row, []), { contentRead });
+  expect((await writer.local.readCanonicalCached(other)).value.task.project_id).toBe(projectId);
+  expect(await cachedTaskMatches(writer, row.id)).toHaveLength(2);
+  const addresses = [target.address, other];
+  const before = await Promise.all(addresses.map((address) => writer.local.readCanonicalCached(address)));
+  const beforeOperation = await writer.operations.get(confirmed.record.operationId);
+  const authority = { active: () => true, call: vi.fn(async () => answerFor(target)) };
+  const result = await writer.refresh.refreshWriteOperation({ cache: writer.operations, ...confirmed, authority })
+    .then((value) => ({ value }), (error) => ({ error }));
+  expect(result.error?.message).toContain("cannot be mapped to a known record");
+  expect(authority.call).not.toHaveBeenCalled();
+  expect(await Promise.all(addresses.map((address) => writer.local.readCanonicalCached(address)))).toEqual(before);
+  expect(await writer.operations.get(confirmed.record.operationId)).toEqual(beforeOperation);
+});
+
+it("refuses a caller supplied project that differs from the unique cached task scope", async () => {
+  const writer = await independentRuntime(), target = await seedTask(writer, "mismatched-projectless-task");
+  const confirmed = await projectlessConfirmedOperation(writer, target);
+  expect(await cachedTaskMatches(writer, target.row.id)).toEqual([target.address]);
+  const before = await writer.local.readCanonicalCached(target.address);
+  const wrong = writer.tracker.taskAddress(scope.deviceId, "uncached-wrong-project", target.row.id);
+  expect(await writer.local.readCanonicalCached(wrong)).toBeUndefined();
+  const opening = await writer.operations.openRefresh({ operationId: confirmed.record.operationId,
+    revision: confirmed.frame.revision, targets: [wrong], accept: () => true });
+  expect(opening.state).toBe("unbound");
+  expect(opening.attempt).toBeUndefined();
+  expect(await writer.local.readCanonicalCached(target.address)).toEqual(before);
+  expect(await writer.local.readCanonicalCached(wrong)).toBeUndefined();
+  expect(await writer.operations.get(confirmed.record.operationId)).toEqual(confirmed.record);
+});

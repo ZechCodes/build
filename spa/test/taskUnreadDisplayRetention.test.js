@@ -149,7 +149,7 @@ describe("D5 actual consumer selection, original case 7 nonzero total", () => {
   });
 });
 
-async function mountInboxProducerComponent() {
+async function mountInboxProducerComponent(expected = 3) {
   for (const [kind, held] of [["projects", [project]], ["workspaces", []],
     ["feed", { projects: [project], workspaces: [], runs: [], items: [] }]]) {
     await cache.writeCached({ deviceId: scope.deviceId, entityId: "", kind }, held);
@@ -160,7 +160,7 @@ async function mountInboxProducerComponent() {
     ? follower.renderEntry(entry, () => inboxRowHtml(entry)) : inboxRowHtml(entry);
   follower = followWatchedTasks({ onChange: () => { inboxHost.innerHTML = follower.entries().map(render).join(""); } });
   follower.follow([project]);
-  await vi.waitFor(() => expect(follower.entries()[0]?.unreadCount).toBe(3), WAIT);
+  await vi.waitFor(() => expect(follower.entries()[0]?.unreadCount).toBe(expected), WAIT);
   await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).not.toBeNull(), WAIT);
 }
 
@@ -477,5 +477,129 @@ describe("D5 actual consumer choice and mounted retirement", () => {
     await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")).toBeNull(), WAIT);
     expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
     expect(paneHost.querySelector(".error, .warn:not([hidden])")).toBeNull();
+  });
+});
+
+describe("D5 both actual display owners and the mounted Inbox shell", () => {
+  it("keeps independent actual Pane3 and Inbox2 slots through UNKNOWN then retires both on admission while preserving real intent and highwater note fields", async () => {
+    await seedSelectedInputs();
+    const watch = await import("../src/core/taskWatchAuthority.js");
+    const owner = await watch.beginTaskWatchMutation(scope, taskId, { watched: true, metadataOnly: true });
+    expect(owner).not.toBeNull();
+    expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
+    await mountPane();
+    await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.["tasks-pane"]?.total).toBe(3), WAIT);
+    pane.dispose(); pane = null; paneHost.replaceChildren();
+    const address = tracker.taskAddress(scope.deviceId, scope.projectId, taskId);
+    const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+    const timeline = ["tc-16", "tc-17"].map((id) => comment({ id, task_id: taskId,
+      author: { kind: "agent", agent_id: "agent" } }));
+    expect(await tracker.writeTaskRecord(scope.deviceId, scope.projectId, taskId,
+      tracker.taskRecord(full({ updated_at: "2026-10-29T12:00:30Z" }), timeline), { contentRead })).toBe(true);
+    await mountInboxProducerComponent(2);
+    await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.inbox?.total).toBe(2), WAIT);
+    await invalidateWithActualIncompleteAction();
+    await vi.waitFor(() => expect(inboxHost.querySelector(".stitle")?.textContent).toContain("After incomplete action"), WAIT);
+    expect(follower.entries()[0].unreadCount).toBe(2);
+    await remountIncompletePane("After incomplete action");
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    const before = await displayedNote();
+    expect(before.task_unread_display["tasks-pane"].total).toBe(3);
+    expect(before.task_unread_display.inbox.total).toBe(2);
+    expect(before.latest_watch_intent).toMatchObject({ ownerId: owner.id, disposition: "rejected" });
+    const { task_unread_display: _beforeDisplay, ...otherBefore } = before;
+    await admitSummaryOnlyUnwatch();
+    const after = await displayedNote();
+    const { task_unread_display: _afterDisplay, ...otherAfter } = after;
+    expect(otherAfter).toEqual(otherBefore);
+    expect(after.task_unread_display?.["tasks-pane"]).toBeUndefined();
+    expect(after.task_unread_display?.inbox).toBeUndefined();
+    await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")).toBeNull(), WAIT);
+    await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull(), WAIT);
+  });
+
+  it("retains actual full Inbox shell display3 on UNKNOWN then removes its indicator after genuine summary-only unwatch", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-31T12:00:00Z"));
+    await seedSelectedInputs();
+    document.body.innerHTML = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
+    const { App } = await import("../src/app.js");
+    Object.assign(App, { route: { name: "inbox" }, devices: [{ id: scope.deviceId, name: "D5 device", status: "online" }],
+      selectedDeviceId: scope.deviceId, deviceFilter: null });
+    for (const [kind, held] of [["projects", [project]], ["workspaces", []],
+      ["feed", { projects: [project], workspaces: [], runs: [], items: [] }]]) {
+      await cache.writeCached({ deviceId: scope.deviceId, entityId: "", kind }, held);
+    }
+    shell = await import("../src/core/inboxView.js"); taskFeed = await import("../src/core/taskFeed.js");
+    shell.setInboxView("inbox"); shell.mountInboxList(); await taskFeed.startFeed();
+    await vi.waitFor(() => expect(document.querySelector("[data-recent-toggle] .inbox-recent-count")?.textContent).toBe("1"), WAIT);
+    document.querySelector("[data-recent-toggle]").click();
+    const indicator = () => document.querySelector(`[data-key="tracker_task:${taskId}"] .inbox-status-unread`);
+    await vi.waitFor(() => expect(indicator()).not.toBeNull(), WAIT);
+    await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.inbox?.total).toBe(3), WAIT);
+    await invalidateWithActualIncompleteAction();
+    await vi.waitFor(() => expect(document.querySelector(`[data-key="tracker_task:${taskId}"] .stitle`)?.textContent).toContain("After incomplete action"), WAIT);
+    expect(indicator()).not.toBeNull();
+    expect((await displayedNote()).task_unread_display.inbox.total).toBe(3);
+    await admitSummaryOnlyUnwatch();
+    await vi.waitFor(() => expect(indicator()).toBeNull(), WAIT);
+    expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
+  });
+});
+
+describe("D5 actual producer transaction and non-admission controls", () => {
+  it("rolls back an attempted unwatch and both actual display slots when the summary transaction aborts after a companion was queued", async () => {
+    await seedSelectedInputs(); await mountPane(); await mountInboxProducerComponent();
+    await vi.waitFor(async () => {
+      const note = await displayedNote();
+      expect(note?.task_unread_display?.["tasks-pane"]?.total).toBe(3);
+      expect(note?.task_unread_display?.inbox?.total).toBe(3);
+    }, WAIT);
+    const contentRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+    const ticket = await summaries.beginSummaryQuery(scope, filters, contentRead.readOrder, { contentRead });
+    const { taskWatchIntentAddress } = await import("../src/core/taskReadOrder.js");
+    const { recordKey } = await import("../src/core/idbRecords.js");
+    const rowAddress = summaries.summaryAddress(scope, taskId);
+    const addresses = [ticket.address, rowAddress, taskWatchIntentAddress(scope, taskId)];
+    const before = await cache.readCachedMany(addresses);
+    const queryKey = recordKey(ticket.address), rowKey = recordKey(rowAddress);
+    let queuedCompanion = false, refused = 0;
+    const put = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (record, key) {
+      if (key === queryKey) queuedCompanion = true;
+      if (key === rowKey && record?.value?.task?.watched === false) {
+        expect(queuedCompanion).toBe(true);
+        refused += 1; throw new DOMException("Atomic watch publication refused", "QuotaExceededError");
+      }
+      return put.call(this, record, key);
+    });
+    const task = full({ title: "Must abort with its display retirement", watched: false,
+      updated_at: "2026-10-29T12:04:00Z" });
+    expect(await summaries.landSummaryPage(ticket, { summary: true, tasks: [summaryOf(task)],
+      identities: {}, basis: "d5-companion-abort" }, { read: contentRead.readOrder })).toBe(false);
+    expect(queuedCompanion).toBe(true); expect(refused).toBe(1);
+    expect(await cache.readCachedMany(addresses)).toEqual(before);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    expect(inboxHost.querySelector(".inbox-status-unread")).not.toBeNull();
+    expect(follower.entries()[0].unreadCount).toBe(3);
+  });
+
+  it("keeps both actual display slots when an old summary unwatch is refused by a newer query reservation", async () => {
+    await seedSelectedInputs(); await mountPane(); await mountInboxProducerComponent();
+    await vi.waitFor(async () => {
+      const note = await displayedNote();
+      expect(note?.task_unread_display?.["tasks-pane"]?.total).toBe(3);
+      expect(note?.task_unread_display?.inbox?.total).toBe(3);
+    }, WAIT);
+    const older = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+    const ticket = await summaries.beginSummaryQuery(scope, filters, older.readOrder, { contentRead: older });
+    const newer = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+    await summaries.beginSummaryQuery(scope, filters, newer.readOrder, { contentRead: newer });
+    const before = await displayedNote();
+    const task = full({ title: "Refused stale unwatch", watched: false, updated_at: "2026-10-29T12:04:00Z" });
+    expect(await summaries.landSummaryPage(ticket, { summary: true, tasks: [summaryOf(task)],
+      identities: {}, basis: "must-not-retire" }, { read: older.readOrder })).toBe(false);
+    expect(await displayedNote()).toEqual(before);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    expect(follower.entries()[0].unreadCount).toBe(3);
   });
 });

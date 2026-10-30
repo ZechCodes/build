@@ -1107,6 +1107,180 @@ mod tests {
         )
     }
 
+    fn blocking_handler(
+        clock: Arc<FrameClock>,
+    ) -> (
+        FrameHandler,
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+        Arc<AtomicUsize>,
+    ) {
+        let (entered_tx, entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let call_count = calls.clone();
+        let handler = FrameHandler::new(clock, move |_, frame, _| {
+            if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                entered_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+            }
+            json!({"id": frame.payload["id"], "ok": true, "result": {}})
+        })
+        .with_greeting_reads(
+            |epoch| json!({"api_version": crate::api::API_VERSION, "bridge_epoch": epoch}),
+        );
+        (handler, entered_rx, release_tx, calls)
+    }
+
+    fn retirement_lifetime(expires: bool) -> std::time::Duration {
+        if expires {
+            std::time::Duration::from_millis(40)
+        } else {
+            std::time::Duration::from_secs(60)
+        }
+    }
+
+    async fn retire_test_grant(expires: bool, live: &AtomicBool) {
+        if expires {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        } else {
+            live.store(false, Ordering::SeqCst);
+        }
+    }
+
+    async fn wait_for_queued_request(clock: &FrameClock) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while clock.stats()["queue_depth"] != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("request A is queued before grant B renews the opening");
+    }
+
+    async fn wait_for_pending_output(output: &super::super::listener::OutputAuthority) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !output.has_pending_write() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("encoded A output is pending before grant B retires");
+    }
+
+    async fn wait_for_channel(receiver: std::sync::mpsc::Receiver<()>, message: &'static str) {
+        tokio::task::spawn_blocking(move || {
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect(message)
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn observe_early_close(
+        receiver: std::sync::mpsc::Receiver<()>,
+    ) -> (bool, Option<std::sync::mpsc::Receiver<()>>) {
+        tokio::task::spawn_blocking(move || {
+            match receiver.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(()) => (true, None),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (false, Some(receiver)),
+                Err(error) => panic!("close completion channel failed: {error}"),
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn wait_for_close(receiver: Option<std::sync::mpsc::Receiver<()>>) {
+        if let Some(receiver) = receiver {
+            wait_for_channel(
+                receiver,
+                "close completes after the bounded poll releases its gate",
+            )
+            .await;
+        }
+    }
+
+    fn expected_poll_result(kind: GatedPollKind, written: usize) -> usize {
+        if matches!(kind, GatedPollKind::Write) {
+            written
+        } else {
+            0
+        }
+    }
+
+    fn settings_request(session_id: &str, token: &str, body: &'static str) -> Request<Body> {
+        let mut request = Request::patch("/v1/settings")
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(CONTENT_TYPE, "application/json")
+            .header("X-Build-Session", session_id)
+            .body(Body::from(body))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+        request
+    }
+
+    fn health_request(
+        session_id: &str,
+        token: &str,
+        output: super::super::listener::OutputAuthority,
+    ) -> Request<Body> {
+        let mut request = Request::get("/v1/health")
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header("X-Build-Session", session_id)
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(output);
+        request
+    }
+
+    async fn run_gated_poll(
+        kind: GatedPollKind,
+        mut io: super::super::listener::BoundedIo<GatedPollWriter>,
+        bytes: Vec<u8>,
+    ) -> (
+        std::io::Result<usize>,
+        super::super::listener::BoundedIo<GatedPollWriter>,
+    ) {
+        let result = match kind {
+            GatedPollKind::Write => io.write(&bytes).await,
+            GatedPollKind::Flush => io.flush().await.map(|()| 0),
+            GatedPollKind::Shutdown => io.shutdown().await.map(|()| 0),
+        };
+        (result, io)
+    }
+
+    async fn write_and_flush_duplex(
+        mut io: super::super::listener::BoundedIo<tokio::io::DuplexStream>,
+        bytes: Vec<u8>,
+    ) -> std::io::Result<()> {
+        io.write_all(&bytes).await?;
+        io.flush().await
+    }
+
+    async fn drain_duplex(mut peer: tokio::io::DuplexStream) -> Vec<u8> {
+        let mut drained = Vec::new();
+        peer.read_to_end(&mut drained).await.unwrap();
+        drained
+    }
+
+    #[track_caller]
+    fn assert_test_eq<T>(actual: T, expected: T, message: &str)
+    where
+        T: std::fmt::Debug + PartialEq,
+    {
+        assert_eq!(actual, expected, "{message}");
+    }
+
+    #[track_caller]
+    fn assert_test(condition: bool, message: &str) {
+        assert!(condition, "{message}");
+    }
+
     async fn resource_json(
         app: &Router,
         method: &str,
@@ -1599,34 +1773,15 @@ mod tests {
     }
 
     async fn pending_request_is_not_renewed_by_an_overlapping_grant(expire: bool) {
-        let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-        let release_rx = Arc::new(Mutex::new(release_rx));
-        let calls = Arc::new(AtomicUsize::new(0));
-        let call_count = calls.clone();
-        let handler = FrameHandler::new(FrameClock::new(), move |_, frame, _| {
-            if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                entered_tx.send(()).unwrap();
-                release_rx.lock().unwrap().recv().unwrap();
-            }
-            json!({"id": frame.payload["id"], "ok": true, "result": {}})
-        })
-        .with_greeting_reads(
-            |epoch| json!({"api_version": crate::api::API_VERSION, "bridge_epoch": epoch}),
-        );
+        let (handler, mut entered_rx, release_tx, _calls) = blocking_handler(FrameClock::new());
         let a_live = Arc::new(AtomicBool::new(true));
         let b_live = Arc::new(AtomicBool::new(true));
-        let lifetime = if expire {
-            std::time::Duration::from_millis(40)
-        } else {
-            std::time::Duration::from_secs(60)
-        };
         let app = router_with(
             ExecutionService::new(handler),
             Arc::new(PairVerifier {
                 a_live: a_live.clone(),
                 b_live: b_live.clone(),
-                a_lifetime: lifetime,
+                a_lifetime: retirement_lifetime(expire),
                 b_lifetime: std::time::Duration::from_secs(60),
                 b_deadline: None,
                 b_fixed_lifetime: None,
@@ -1678,11 +1833,7 @@ mod tests {
         live_b.extensions_mut().insert(output_b.clone());
         let live_b = app.clone().oneshot(live_b).await.unwrap();
         assert_eq!(live_b.status(), StatusCode::OK);
-        if expire {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        } else {
-            a_live.store(false, Ordering::SeqCst);
-        }
+        retire_test_grant(expire, &a_live).await;
         release_tx.send(()).unwrap();
         assert_eq!(
             request_a.await.unwrap().unwrap().status(),
@@ -1709,34 +1860,15 @@ mod tests {
 
     async fn live_requests_survive_later_grant_retirement(expire_b: bool) {
         let clock = FrameClock::new();
-        let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-        let release_rx = Arc::new(Mutex::new(release_rx));
-        let calls = Arc::new(AtomicUsize::new(0));
-        let call_count = calls.clone();
-        let handler = FrameHandler::new(clock.clone(), move |_, frame, _| {
-            if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                entered_tx.send(()).unwrap();
-                release_rx.lock().unwrap().recv().unwrap();
-            }
-            json!({"id": frame.payload["id"], "ok": true, "result": {}})
-        })
-        .with_greeting_reads(
-            |epoch| json!({"api_version": crate::api::API_VERSION, "bridge_epoch": epoch}),
-        );
+        let (handler, mut entered_rx, release_tx, calls) = blocking_handler(clock.clone());
         let b_live = Arc::new(AtomicBool::new(true));
-        let b_lifetime = if expire_b {
-            std::time::Duration::from_millis(40)
-        } else {
-            std::time::Duration::from_secs(60)
-        };
         let runtime = runtime_with(
             ExecutionService::with_capacity(handler, 8, 1),
             Arc::new(PairVerifier {
                 a_live: Arc::new(AtomicBool::new(true)),
                 b_live: b_live.clone(),
                 a_lifetime: std::time::Duration::from_secs(60),
-                b_lifetime,
+                b_lifetime: retirement_lifetime(expire_b),
                 b_deadline: Some(Arc::new(Mutex::new(None))),
                 b_fixed_lifetime: None,
                 family_live: Arc::new(AtomicBool::new(true)),
@@ -1752,77 +1884,65 @@ mod tests {
             .await
             .unwrap();
         let session_id = opening_id(opened).await;
-        let request_a = || {
-            let mut request = Request::patch("/v1/settings")
-                .header(AUTHORIZATION, "Bearer grant-a")
-                .header(CONTENT_TYPE, "application/json")
-                .header("X-Build-Session", &session_id)
-                .body(Body::from("{}"))
-                .unwrap();
-            request
-                .extensions_mut()
-                .insert(super::super::listener::OutputAuthority::default());
-            request
-        };
-        let in_handler = tokio::spawn(app.clone().oneshot(request_a()));
+        let in_handler = tokio::spawn(app.clone().oneshot(settings_request(
+            &session_id,
+            "grant-a",
+            "{}",
+        )));
         entered_rx.recv().await.unwrap();
-        let queued = tokio::spawn(app.clone().oneshot(request_a()));
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while clock.stats()["queue_depth"] != 1 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("request A is queued before grant B renews the opening");
+        let queued = tokio::spawn(app.clone().oneshot(settings_request(
+            &session_id,
+            "grant-a",
+            "{}",
+        )));
+        wait_for_queued_request(&clock).await;
 
-        let mut renewal = Request::patch("/v1/settings")
-            .header(AUTHORIZATION, "Bearer grant-b")
-            .header(CONTENT_TYPE, "application/json")
-            .header("X-Build-Session", &session_id)
-            .body(Body::from("{not-json"))
-            .unwrap();
-        renewal
-            .extensions_mut()
-            .insert(super::super::listener::OutputAuthority::default());
-        assert_eq!(
-            app.clone().oneshot(renewal).await.unwrap().status(),
-            StatusCode::BAD_REQUEST
+        assert_test_eq(
+            app.clone()
+                .oneshot(settings_request(&session_id, "grant-b", "{not-json"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "malformed B is refused after admission",
         );
         let output_b = super::super::listener::OutputAuthority::default();
-        let mut request_b = Request::get("/v1/health")
-            .header(AUTHORIZATION, "Bearer grant-b")
-            .header("X-Build-Session", &session_id)
-            .body(Body::empty())
+        let response_b = app
+            .clone()
+            .oneshot(health_request(&session_id, "grant-b", output_b.clone()))
+            .await
             .unwrap();
-        request_b.extensions_mut().insert(output_b.clone());
-        let response_b = app.clone().oneshot(request_b).await.unwrap();
-        assert_eq!(response_b.status(), StatusCode::OK);
-        if expire_b {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        } else {
-            b_live.store(false, Ordering::SeqCst);
-        }
-        assert_eq!(
+        assert_test_eq(
+            response_b.status(),
+            StatusCode::OK,
+            "B is admitted before retirement",
+        );
+        retire_test_grant(expire_b, &b_live).await;
+        assert_test_eq(
             runtime.state.reap_ended(),
             0,
-            "retired B cannot reap an opening with admitted live A"
+            "retired B cannot reap an opening with admitted live A",
         );
         let (b_status, _) =
             resource_json_with_token(&app, "GET", "/v1/health", &session_id, None, "grant-b").await;
-        assert_eq!(b_status, StatusCode::UNAUTHORIZED, "retired B fails closed");
+        assert_test_eq(b_status, StatusCode::UNAUTHORIZED, "retired B fails closed");
 
         release_tx.send(()).unwrap();
-        assert_eq!(
+        assert_test_eq(
             in_handler.await.unwrap().unwrap().status(),
             StatusCode::OK,
-            "later retired B cannot suppress in-handler live A"
+            "later retired B cannot suppress in-handler live A",
         );
-        assert_eq!(
+        assert_test_eq(
             queued.await.unwrap().unwrap().status(),
             StatusCode::OK,
-            "later retired B cannot suppress pre-handler queued live A"
+            "later retired B cannot suppress pre-handler queued live A",
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_test_eq(
+            calls.load(Ordering::SeqCst),
+            2,
+            "both A requests reach the handler",
+        );
     }
 
     #[tokio::test]
@@ -1950,7 +2070,11 @@ mod tests {
             .unwrap();
         request.extensions_mut().insert(output.clone());
         let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_test_eq(
+            response.status(),
+            StatusCode::OK,
+            "the output request succeeds",
+        );
         let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
             .await
             .unwrap();
@@ -1962,22 +2086,13 @@ mod tests {
             entered: Some(poll_entered_tx),
             release: Arc::new(Mutex::new(poll_release_rx)),
         };
-        let mut io = super::super::listener::BoundedIo::new(writer, output);
-        let polling = tokio::spawn(async move {
-            let result = match kind {
-                GatedPollKind::Write => io.write(&bytes).await,
-                GatedPollKind::Flush => io.flush().await.map(|()| 0),
-                GatedPollKind::Shutdown => io.shutdown().await.map(|()| 0),
-            };
-            (result, io)
-        });
-        tokio::task::spawn_blocking(move || {
-            poll_entered_rx
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .expect("the bounded socket operation reaches its inner poll")
-        })
-        .await
-        .unwrap();
+        let io = super::super::listener::BoundedIo::new(writer, output);
+        let polling = tokio::spawn(run_gated_poll(kind, io, bytes.to_vec()));
+        wait_for_channel(
+            poll_entered_rx,
+            "the bounded socket operation reaches its inner poll",
+        )
+        .await;
         let (close_started_tx, close_started_rx) = std::sync::mpsc::sync_channel(1);
         let (close_done_tx, close_done_rx) = std::sync::mpsc::sync_channel(1);
         let sessions = runtime.state.execution.sessions();
@@ -1986,51 +2101,29 @@ mod tests {
             sessions.close(&session);
             close_done_tx.send(()).unwrap();
         });
-        tokio::task::spawn_blocking(move || {
-            close_started_rx
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .expect("close starts while one bounded socket poll is active")
-        })
-        .await
-        .unwrap();
-        let (closed_early, close_done_rx) =
-            tokio::task::spawn_blocking(move || {
-                match close_done_rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                    Ok(()) => (true, None),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (false, Some(close_done_rx)),
-                    Err(error) => panic!("close completion channel failed: {error}"),
-                }
-            })
-            .await
-            .unwrap();
+        wait_for_channel(
+            close_started_rx,
+            "close starts while one bounded socket poll is active",
+        )
+        .await;
+        let (closed_early, close_done_rx) = observe_early_close(close_done_rx).await;
         poll_release_tx.send(()).unwrap();
         let (result, mut io) = polling.await.unwrap();
-        if let Some(close_done_rx) = close_done_rx {
-            tokio::task::spawn_blocking(move || {
-                close_done_rx
-                    .recv_timeout(std::time::Duration::from_secs(2))
-                    .expect("close completes after the bounded poll releases its gate")
-            })
-            .await
-            .unwrap();
-        }
+        wait_for_close(close_done_rx).await;
         closing.await.unwrap();
-        assert!(
+        assert_test(
             !closed_early,
-            "close must wait for the one synchronous poll"
+            "close must wait for the one synchronous poll",
         );
-        assert_eq!(
+        assert_test_eq(
             result.unwrap(),
-            if matches!(kind, GatedPollKind::Write) {
-                expected
-            } else {
-                0
-            }
+            expected_poll_result(kind, expected),
+            "the active socket poll completes",
         );
-        assert_eq!(
+        assert_test_eq(
             io.write(&[0]).await.unwrap_err().kind(),
             std::io::ErrorKind::PermissionDenied,
-            "the next poll observes opening retirement"
+            "the next poll observes opening retirement",
         );
     }
 
@@ -2077,26 +2170,19 @@ mod tests {
         let session_id = opening_id(opened).await;
 
         let output_a = super::super::listener::OutputAuthority::default();
-        let mut request_a = Request::get("/v1/health")
-            .header(AUTHORIZATION, "Bearer grant-a")
-            .header("X-Build-Session", &session_id)
-            .body(Body::empty())
+        let response_a = app
+            .clone()
+            .oneshot(health_request(&session_id, "grant-a", output_a.clone()))
+            .await
             .unwrap();
-        request_a.extensions_mut().insert(output_a.clone());
-        let response_a = app.clone().oneshot(request_a).await.unwrap();
         assert_eq!(response_a.status(), StatusCode::OK);
 
-        let mut renewal = Request::patch("/v1/settings")
-            .header(AUTHORIZATION, "Bearer grant-b")
-            .header(CONTENT_TYPE, "application/json")
-            .header("X-Build-Session", &session_id)
-            .body(Body::from("{not-json"))
-            .unwrap();
-        renewal
-            .extensions_mut()
-            .insert(super::super::listener::OutputAuthority::default());
         assert_eq!(
-            app.clone().oneshot(renewal).await.unwrap().status(),
+            app.clone()
+                .oneshot(settings_request(&session_id, "grant-b", "{not-json"))
+                .await
+                .unwrap()
+                .status(),
             StatusCode::BAD_REQUEST
         );
 
@@ -2365,18 +2451,13 @@ mod tests {
 
     async fn pending_live_output_survives_later_grant_retirement(expire_b: bool) {
         let b_live = Arc::new(AtomicBool::new(true));
-        let b_lifetime = if expire_b {
-            std::time::Duration::from_millis(40)
-        } else {
-            std::time::Duration::from_secs(60)
-        };
         let runtime = runtime_with(
             execution(),
             Arc::new(PairVerifier {
                 a_live: Arc::new(AtomicBool::new(true)),
                 b_live: b_live.clone(),
                 a_lifetime: std::time::Duration::from_secs(60),
-                b_lifetime,
+                b_lifetime: retirement_lifetime(expire_b),
                 b_deadline: Some(Arc::new(Mutex::new(None))),
                 b_fixed_lifetime: None,
                 family_live: Arc::new(AtomicBool::new(true)),
@@ -2393,70 +2474,50 @@ mod tests {
             .unwrap();
         let session_id = opening_id(opened).await;
         let output_a = super::super::listener::OutputAuthority::default();
-        let mut request_a = Request::get("/v1/health")
-            .header(AUTHORIZATION, "Bearer grant-a")
-            .header("X-Build-Session", &session_id)
-            .body(Body::empty())
+        let response_a = app
+            .clone()
+            .oneshot(health_request(&session_id, "grant-a", output_a.clone()))
+            .await
             .unwrap();
-        request_a.extensions_mut().insert(output_a.clone());
-        let response_a = app.clone().oneshot(request_a).await.unwrap();
-        assert_eq!(response_a.status(), StatusCode::OK);
+        assert_test_eq(response_a.status(), StatusCode::OK, "A output is admitted");
         let bytes_a = axum::body::to_bytes(response_a.into_body(), 64 * 1024)
             .await
             .unwrap();
 
-        let mut renewal = Request::patch("/v1/settings")
-            .header(AUTHORIZATION, "Bearer grant-b")
-            .header(CONTENT_TYPE, "application/json")
-            .header("X-Build-Session", &session_id)
-            .body(Body::from("{not-json"))
-            .unwrap();
-        renewal
-            .extensions_mut()
-            .insert(super::super::listener::OutputAuthority::default());
-        assert_eq!(
-            app.clone().oneshot(renewal).await.unwrap().status(),
-            StatusCode::BAD_REQUEST
+        assert_test_eq(
+            app.clone()
+                .oneshot(settings_request(&session_id, "grant-b", "{not-json"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "malformed B is refused after admission",
         );
 
-        let (socket, mut peer) = tokio::io::duplex(1);
-        let mut io = super::super::listener::BoundedIo::new(socket, output_a.clone());
-        let writing = tokio::spawn(async move {
-            io.write_all(&bytes_a).await?;
-            io.flush().await
-        });
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while !output_a.has_pending_write() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("encoded A output is pending before grant B retires");
-        if expire_b {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        } else {
-            b_live.store(false, Ordering::SeqCst);
-        }
-        assert_eq!(
+        let (socket, peer) = tokio::io::duplex(1);
+        let io = super::super::listener::BoundedIo::new(socket, output_a.clone());
+        let writing = tokio::spawn(write_and_flush_duplex(io, bytes_a.to_vec()));
+        wait_for_pending_output(&output_a).await;
+        retire_test_grant(expire_b, &b_live).await;
+        assert_test_eq(
             runtime.state.reap_ended(),
             0,
-            "retired B cannot reap an opening with pending live A output"
+            "retired B cannot reap an opening with pending live A output",
         );
         let (b_status, _) =
             resource_json_with_token(&app, "GET", "/v1/health", &session_id, None, "grant-b").await;
-        assert_eq!(b_status, StatusCode::UNAUTHORIZED, "retired B fails closed");
+        assert_test_eq(b_status, StatusCode::UNAUTHORIZED, "retired B fails closed");
 
-        let draining = tokio::spawn(async move {
-            let mut drained = Vec::new();
-            peer.read_to_end(&mut drained).await.unwrap();
-            drained
-        });
+        let draining = tokio::spawn(drain_duplex(peer));
         tokio::time::timeout(std::time::Duration::from_secs(2), writing)
             .await
             .expect("live A output settles")
             .unwrap()
             .expect("later retired B cannot suppress pending live A output");
-        assert!(!draining.await.unwrap().is_empty());
+        assert_test(
+            !draining.await.unwrap().is_empty(),
+            "live A bytes reach the peer",
+        );
     }
 
     #[tokio::test]

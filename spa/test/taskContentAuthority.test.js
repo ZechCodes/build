@@ -868,3 +868,28 @@ it("does not let a byte-identical blind list copy lower independent watch or fam
   expect(row.__task_family_cache.paint.total.observed_read_order).toBe(current.readOrder);
   expect(row.__task_family_cache.paint.attention.observed_read_order).toBe(current.readOrder);
 });
+
+it("uses annotated rows as positive observations without borrowing their tickets to certify omitted list membership", async () => {
+  const tracker = await import("../src/core/trackerCache.js");
+  const target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  await seededListReplica(target);
+  const contentRead = await content.captureTaskContentRead(target, { revalidate: "full" });
+  const held = await tracker.readTasksRecord(scope.deviceId, scope.projectId);
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { ...held, columns: [{ id: "local-columns" }],
+    tasks: [...held.tasks, task({ id: "task-2", number: 2, title: "Blind creation" })] });
+  const before = await tracker.readTasksRecord(scope.deviceId, scope.projectId);
+  const incoming = content.observeTaskContent(task({ title: "Old subset title", read_through: "tc-99",
+    review_summary: { task_id: "task-1", version: 2, status: "open" } }), { contentRead, coverage: "full" });
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([incoming], [{ id: "wire-columns" }], contentRead.readOrder));
+  const after = await tracker.readTasksRecord(scope.deviceId, scope.projectId);
+  expect(after.tasks.map((row) => row.id)).toEqual(before.tasks.map((row) => row.id));
+  expect(after.columns).toEqual(before.columns);
+  expect(after.tasks[0]).toMatchObject({ title: "Current", read_through: "tc-99", review_summary: { version: 2 } });
+  expect(after.tasks[1]).toEqual(before.tasks[1]);
+  const cold = tracker.tasksQueryAddress(scope.deviceId, scope.projectId, { state: "open" });
+  const coldRead = await content.captureTaskContentRead(cold, { revalidate: "full" });
+  await tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId, { state: "open" }, tracker.tasksRecord([
+    content.observeTaskContent(task({ id: "task-3", number: 3 }), { contentRead: coldRead, coverage: "full" }),
+  ], [], coldRead.readOrder));
+  expect((await tracker.readTasksQueryRecord(scope.deviceId, scope.projectId, { state: "open" })).tasks.map((row) => row.id)).toEqual(["task-3"]);
+});

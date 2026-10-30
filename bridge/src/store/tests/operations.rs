@@ -596,3 +596,47 @@ fn a_closed_store_keeps_saved_runs_in_the_database_file_alone() {
     assert!(!original.join("build.db-wal").exists());
     assert!(!original.join("build.db-shm").exists());
 }
+
+#[test]
+fn backup_rechecks_readiness_at_snapshot_after_preflight() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let root = tempfile::tempdir().unwrap();
+    let tasks = root.path().join("tasks");
+    drop(Store::new(&tasks).unwrap());
+    let destination = root.path().join("backup.db");
+    let (reached_tx, reached_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let backup_tasks = tasks.clone();
+    let backup_destination = destination.clone();
+    let worker = std::thread::spawn(move || {
+        super::super::operations::backup_existing_observed(
+            &backup_tasks,
+            &backup_destination,
+            || {
+                reached_tx.send(()).unwrap();
+                resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            },
+        )
+    });
+    reached_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let writer = rusqlite::Connection::open(tasks.join("build.db")).unwrap();
+    writer
+        .execute(
+            "UPDATE meta SET value='stale-projection' WHERE key='task_summary_v1_ready'",
+            [],
+        )
+        .unwrap();
+    resume_tx.send(()).unwrap();
+    let result = worker.join().unwrap();
+    if result.is_err() {
+        assert!(!destination.exists(), "refusal must leave no destination");
+        return;
+    }
+    let copy = rusqlite::Connection::open(&destination).unwrap();
+    assert!(
+        super::super::task_summaries::ready_for_backup(&copy).unwrap(),
+        "backup accepted a preflight snapshot but copied an unready projection"
+    );
+}

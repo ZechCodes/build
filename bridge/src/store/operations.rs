@@ -49,21 +49,9 @@ impl CommittedThreadItems {
 impl Store {
     /// Copy an existing store without running startup migrations.
     pub fn backup_existing(dir: &Path, destination: &Path) -> Result<(), StoreError> {
-        let source = dir.join(super::DB_FILE);
-        let conn = Connection::open_with_flags(&source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let version: Option<String> = conn
-            .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |row| row.get(0))
-            .optional()?;
-        if version.as_deref().and_then(|value| value.parse::<i64>().ok())
-            != Some(super::SCHEMA_VERSION)
-            || !super::task_summaries::ready_for_backup(&conn)?
-        {
-            return Err(StoreError::TaskSummaryInvalid(
-                "backup source needs startup maintenance; start the bridge first".into(),
-            ));
-        }
-        backup_connection(&conn, destination)
+        backup_existing_observed(dir, destination, || {})
     }
+
 
     /// Copy the database to `destination` as a consistent snapshot.
     ///
@@ -696,4 +684,26 @@ fn backup_connection(conn: &Connection, destination: &Path) -> Result<(), StoreE
     let quoted = destination.to_string_lossy().replace('\'', "''");
     conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))?;
     Ok(())
+}
+
+pub(super) fn backup_existing_observed(
+    dir: &Path,
+    destination: &Path,
+    after_preflight: impl FnOnce(),
+) -> Result<(), StoreError> {
+    let source = dir.join(super::DB_FILE);
+    let conn = Connection::open_with_flags(&source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let version: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |row| row.get(0))
+        .optional()?;
+    if version.as_deref().and_then(|value| value.parse::<i64>().ok())
+        != Some(super::SCHEMA_VERSION)
+        || !super::task_summaries::ready_for_backup(&conn)?
+    {
+        return Err(StoreError::TaskSummaryInvalid(
+            "backup source needs startup maintenance; start the bridge first".into(),
+        ));
+    }
+    after_preflight();
+    backup_connection(&conn, destination)
 }

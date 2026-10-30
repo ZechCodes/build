@@ -208,3 +208,32 @@ fn backup_refuses_symlinked_database_leaf() {
     assert!(stderr.contains("build.db"), "refusal must identify the database leaf: {stderr}");
     assert!(!destination.exists(), "refusal must not create a destination");
 }
+
+#[cfg(unix)]
+#[test]
+fn backup_creates_private_destination_under_permissive_umask() {
+    use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+
+    let root = tempfile::tempdir().unwrap();
+    let tasks = root.path().join("tasks");
+    drop(Store::new(&tasks).unwrap());
+    let destination = root.path().join("backup.db");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_build-bridge"));
+    command
+        .env_clear()
+        .env("HOME", root.path())
+        .env("BRIDGE_TASKS_DIR", &tasks)
+        .arg("backup")
+        .arg(&destination);
+    // umask is changed only in the forked child before it executes the CLI.
+    unsafe {
+        command.pre_exec(|| {
+            libc::umask(0o022);
+            Ok(())
+        });
+    }
+    let output = command.output().unwrap();
+    assert!(output.status.success(), "backup failed: {}", String::from_utf8_lossy(&output.stderr));
+    let mode = fs::metadata(&destination).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "backup destination must be private");
+}

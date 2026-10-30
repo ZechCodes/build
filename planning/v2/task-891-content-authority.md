@@ -71,6 +71,19 @@ its exact written-record, detail-basis, opening, and publication-version guards.
 Header-only or uncertain-body acceptance cannot retire durable layers as a
 successful full publication.
 
+An admitted addressed full read updates its compact normalized observation and
+detail in one transaction. The compact row is selected first from the raw
+reply; accepted body provenance covers that actual selected header. Compact
+rows never gain body or history proof. Session, owner and mutation-note guards
+cover both outputs, and a quota refusal rolls both back.
+
+Ordinary-content ticket or baseline rejection does not reject independently
+admissible markers, watch facts or PR versions. Their existing reducers still
+apply. A full read supplies no projection basis: changed compact facts clear
+the retained basis and invalidate query freshness; identical compact facts may
+retain their prior basis. Existing uncertainty stays uncertain, and missing
+counter families remain unknown rather than becoming zero.
+
 ## Recovery bounds
 
 Recovery belongs to existing mounted/admitted owners. The task page coalesces

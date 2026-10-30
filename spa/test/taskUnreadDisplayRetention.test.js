@@ -706,3 +706,122 @@ describe("D5 Inbox production render owner lifecycle counterparts", () => {
     expect(inboxHost.querySelector(".error, .warn:not([hidden])")).toBeNull();
   });
 });
+
+async function bothActualSlots() {
+  await seedSelectedInputs(); await mountPane(); await mountInboxProducerComponent();
+  await vi.waitFor(async () => {
+    const note = await displayedNote();
+    expect(note?.task_unread_display?.["tasks-pane"]?.total).toBe(3);
+    expect(note?.task_unread_display?.inbox?.total).toBe(3);
+  }, WAIT);
+}
+
+async function noteRecord() {
+  const { taskWatchIntentAddress } = await import("../src/core/taskReadOrder.js");
+  return cache.readCached(taskWatchIntentAddress(scope, taskId));
+}
+
+async function observedSummaryMutation(contentRead, extra = {}) {
+  const task = summaryOf(full({ title: "Observed same watch incarnation", updated_at: "2026-10-29T12:04:00Z", ...extra }));
+  expect(await summaries.writeSummaryTask(scope, task, contentRead.readOrder, { contentRead })).toBe(true);
+  return (await value(summaries.summaryAddress(scope, taskId))).task;
+}
+
+describe("D5 real producer ordering, copies, partial updates and recovery", () => {
+  it("advances the same-task publication note on a genuinely newer same-lineage admission without retiring either actual display slot", async () => {
+    await bothActualSlots();
+    const before = await noteRecord();
+    const read = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+    const observed = await observedSummaryMutation(read);
+    expect(observed).toMatchObject({ watched: true, watch_started_after: "te-15",
+      __task_watch_cache: { source: "read", observed_read_order: read.readOrder, taskId, scope } });
+    const after = await noteRecord();
+    expect(after.value.task_unread_display["tasks-pane"]).toEqual(before.value.task_unread_display["tasks-pane"]);
+    expect(after.value.task_unread_display.inbox).toEqual(before.value.task_unread_display.inbox);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    expect(follower.entries()[0].unreadCount).toBe(3);
+    // Equality tokens only prove a committed note update; they do not order
+    // sources or certify a count. The genuine selected observation is above.
+    expect(cache.recordWriteOf(after)).not.toBe(cache.recordWriteOf(before));
+  });
+
+  it("keeps the first actual normalized source on identical and conflicting equal-read replays without mutating either display slot", async () => {
+    await bothActualSlots();
+    const read = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+    await observedSummaryMutation(read);
+    const before = await noteRecord();
+    const identical = await observedSummaryMutation(read);
+    expect(identical.watched).toBe(true);
+    expect(await noteRecord()).toEqual(before);
+    const conflict = await observedSummaryMutation(read, { watched: false });
+    expect(conflict).toMatchObject({ watched: true, watch_started_after: "te-15",
+      __task_watch_cache: { observed_read_order: read.readOrder } });
+    expect(await noteRecord()).toEqual(before);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    expect(follower.entries()[0].unreadCount).toBe(3);
+    // The actual source selector retains the first source here, so these
+    // replays are not evidence that a second equal conflict was admitted.
+  });
+
+  it("does not turn a copied observed row or a compact read-only patch into a display retirement event", async () => {
+    await bothActualSlots();
+    const order = await import("../src/core/taskReadOrder.js");
+    const projected = (await value(summaries.summaryAddress(scope, taskId))).task;
+    const before = await noteRecord();
+    expect(await summaries.writeSummaryTask(scope, { ...projected, title: "Copied ordinary row" }, await order.nextTaskRead())).toBe(true);
+    expect(await noteRecord()).toEqual(before);
+    expect(await summaries.writeSummaryTask(scope, { id: taskId, read_through: "tc-20" }, await order.nextTaskRead())).toBe(true);
+    const normalized = await value(summaries.summaryAddress(scope, taskId));
+    expect(normalized.needs_unread_refresh).toBe(true);
+    expect(normalized.task.read_through).toBe("tc-20");
+    expect(normalized.task).not.toHaveProperty("unread_count");
+    expect(normalized.task.__task_family_cache?.unknown?.total).toBeDefined();
+    expect(await noteRecord()).toEqual(before);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    expect(follower.entries()[0].unreadCount).toBe(3);
+  });
+
+  it("replaces both actually retained displays with genuine later covering zero and value", async () => {
+    await bothActualSlots();
+    await invalidateWithActualIncompleteAction();
+    await vi.waitFor(() => expect(paneHost.querySelector(".task-title")?.textContent).toBe("After incomplete action"), WAIT);
+    await vi.waitFor(() => expect(inboxHost.querySelector(".stitle")?.textContent).toContain("After incomplete action"), WAIT);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    expect(follower.entries()[0].unreadCount).toBe(3);
+    for (const total of [0, 5]) {
+      await publishCoveringTotal(total);
+      await vi.waitFor(() => expect(follower.entries()[0]?.unreadCount).toBe(total), WAIT);
+      await vi.waitFor(async () => {
+        const note = await displayedNote();
+        expect(note?.task_unread_display?.["tasks-pane"]?.total).toBe(total);
+        expect(note?.task_unread_display?.inbox?.total).toBe(total);
+      }, WAIT);
+      if (total === 0) {
+        expect(paneHost.querySelector(".task-unread")).toBeNull();
+        expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull();
+      } else {
+        expect(paneHost.querySelector(".task-unread")?.textContent).toBe("5");
+        expect(inboxHost.querySelector(".inbox-status-unread")).not.toBeNull();
+      }
+    }
+  });
+
+  it("does not let an old-lifetime summary reply retire newly rendered slots after real project eviction and re-admission", async () => {
+    await bothActualSlots();
+    const older = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+    const ticket = await summaries.beginSummaryQuery(scope, filters, older.readOrder, { contentRead: older });
+    pane.dispose(); pane = null; follower.dispose(); follower = null;
+    paneHost.replaceChildren(); inboxHost.replaceChildren();
+    await cache.evictEntity(scope.deviceId, scope.projectId);
+    await bothActualSlots();
+    const current = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+    expect(current.ticket.scopeGeneration).not.toBe(older.ticket.scopeGeneration);
+    const before = await noteRecord();
+    const task = full({ title: "Old lifetime cannot unwatch this display", watched: false });
+    expect(await summaries.landSummaryPage(ticket, { summary: true, tasks: [summaryOf(task)],
+      identities: {}, basis: "old-lifetime" }, { read: older.readOrder })).toBe(false);
+    expect(await noteRecord()).toEqual(before);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    expect(follower.entries()[0].unreadCount).toBe(3);
+  });
+});

@@ -95,3 +95,48 @@ it("registers a native page watch before RPC so an independent cache reader obse
   await vi.waitFor(() => expect(runtime.fence.taskMutationsPending(deviceId)).toBe(0));
   expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.watch")).toHaveLength(1);
 });
+
+it("keeps fresh metadata-only begin and cleanup notifications uncertain without refilling page reads", async () => {
+  const mounted = await mountPage();
+  const read = vi.spyOn(runtime.watch, "readTaskWatchState");
+  const before = mounted.call.mock.calls.filter(([method]) => method === "tasks.get").length;
+  mounted.button().click();
+  await vi.waitFor(() => expect(mounted.call).toHaveBeenCalledWith("tasks.watch", { task_id: taskId }));
+  response.resolve({});
+  await vi.waitFor(() => expect(runtime.fence.taskMutationsPending(deviceId)).toBe(0));
+  await vi.waitFor(() => expect(read.mock.calls.length).toBeGreaterThanOrEqual(2));
+  await read.mock.results.at(-1).value;
+  expect(await runtime.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.get")).toHaveLength(before);
+});
+
+it("cleans up a native watch owner after session replacement without publishing its obsolete acknowledgment", async () => {
+  const mounted = await mountPage();
+  const cache = await import("../src/core/localCache.js");
+  const before = await cache.readCanonicalCached(mounted.address);
+  mounted.button().click();
+  await vi.waitFor(() => expect(mounted.call).toHaveBeenCalledWith("tasks.watch", { task_id: taskId }));
+  lifetime.session = "replacement-session";
+  response.resolve({ task: { ...mounted.row, watched: true, title: "Obsolete acknowledgment" } });
+  await vi.waitFor(() => expect(runtime.fence.taskMutationsPending(deviceId)).toBe(0));
+  expect(await cache.readCanonicalCached(mounted.address)).toEqual(before);
+  expect(await runtime.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.watch")).toHaveLength(1);
+});
+
+it("does not let a stale native page acknowledgment clear another connection's newer same-task owner", async () => {
+  const mounted = await mountPage();
+  mounted.button().click();
+  await vi.waitFor(() => expect(mounted.call).toHaveBeenCalledWith("tasks.watch", { task_id: taskId }));
+  vi.resetModules();
+  const outside = await import("../src/core/taskWatchAuthority.js");
+  const newer = await outside.beginTaskWatchMutation(scope, taskId, { watched: false, metadataOnly: true });
+  expect(newer).not.toBeNull();
+  expect(await outside.readTaskWatchState(scope)).toMatchObject({ pendingCount: 2 });
+  response.resolve({ task: { ...mounted.row, watched: true } });
+  await vi.waitFor(() => expect(runtime.fence.taskMutationsPending(deviceId)).toBe(0));
+  expect(await outside.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true, eligible: false });
+  expect((await runtime.tracker.readTaskRecord(deviceId, projectId, taskId)).task.watched).toBe(false);
+  await outside.settleTaskWatchMutation(newer, { rollback: true });
+  expect(await outside.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0 });
+});

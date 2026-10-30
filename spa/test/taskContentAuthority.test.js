@@ -564,3 +564,39 @@ it("does not certify omitted watched counter families from a full read as comple
   expect(normalized.task.read_through).toBe("tc-02");
   expect(normalized.needs_unread_refresh).toBe(true);
 });
+
+it("publishes eligible compact read and review facts when a newer summary bars a cold full detail body", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), summaries = await import("../src/core/taskSummaryCache.js");
+  const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+  const newer = task({ title: "Newer compact header", watched: false, read_through: "tc-10",
+    review_summary: { task_id: "task-1", version: 1, status: "open", mode: "pull_request" } });
+  const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
+  await summaries.landSummaryPage(ticket, { summary: true, basis: "newer", tasks: [newer] }, { read: ticket.generation });
+  const review_summary = { ...newer.review_summary, version: 2 };
+  expect(await tracker.writeTaskRecord(scope.deviceId, scope.projectId, newer.id,
+    { task: task({ title: "Old full header", watched: false, read_through: "tc-20", review_summary }), timeline: ["Old history"] }, { contentRead })).toBe(true);
+  expect(await cache.readCached(address)).toBeUndefined();
+  const normalized = (await cache.readCached(summaries.summaryAddress(scope, newer.id))).value;
+  expect(normalized.task).toMatchObject({ title: "Newer compact header", read_through: "tc-20", review_summary });
+  expect(normalized.task.__task_content_cache.header.read_order).toBe(ticket.contentRead.readOrder);
+  expect(normalized.task.__task_content_cache.body).toBeUndefined();
+  expect(normalized.basis_uncertain).toBe(true);
+});
+
+it("certifies only raw full TaskView compact fields and derives its complete waiting count without retaining summary-only header bytes", async () => {
+  const { tracker, summaries, initial, summaryAddress } = await seededFullObservation();
+  const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
+  await summaries.landSummaryPage(ticket, { summary: true, basis: "compact", tasks: [{ ...initial,
+    summary_truncated: true, dependencies: { blocked: true, waiting_on_count: 9, blocks_count: 8 } }] }, { read: ticket.generation });
+  const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+  const raw = { ...initial, dependencies: { blocked: true, waiting_on: [{ task_id: "dep-1" }], blocks_count: 3,
+    blocks: [{ task_id: "child-1" }], blocks_next_cursor: "more-blocks" } };
+  await tracker.writeTaskRecord(scope.deviceId, scope.projectId, initial.id, { task: raw, timeline: ["Canonical history"] }, { contentRead });
+  const normalized = (await cache.readCached(summaryAddress)).value;
+  expect(normalized.task.dependencies).toEqual({ blocked: true, waiting_on_count: 1, blocks_count: 3 });
+  expect(normalized.task).not.toHaveProperty("summary_truncated");
+  expect(normalized.task.__task_content_cache.header.read_order).toBe(contentRead.readOrder);
+  expect(normalized.task).not.toHaveProperty("body");
+  const detail = await tracker.readTaskRecord(scope.deviceId, scope.projectId, initial.id);
+  expect(content.taskFullRefreshKey(detail.task, normalized.task)).toBeNull();
+});

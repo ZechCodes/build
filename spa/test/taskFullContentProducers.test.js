@@ -44,3 +44,35 @@ it("refuses a full detail response from a replaced session while its listed vers
   expect(feed.read().has("one")).toBe(false);
   expect(callRpc).toHaveBeenCalledTimes(1);
 });
+
+it("revalidates explicit body uncertainty once without sweeping unchanged legacy details or exceeding four reads", async () => {
+  const tracker = await import("../src/core/trackerCache.js");
+  const local = await import("../src/core/localCache.js");
+  const { mergeTaskContentRecordsTogether, retireTaskContent } = await import("../src/core/taskContentAuthority.js");
+  const { createTrackerTaskDetailsFeed } = await import("../src/core/trackerTaskDetailsFeed.js");
+  const tasks = Array.from({ length: 5 }, (_, i) => task(`task-${i}`, { number: i + 1 }));
+  const address = (id) => tracker.taskAddress(deviceId, projectId, id);
+  for (const row of tasks) await local.writeCached(address(row.id), tracker.taskRecord(row, []));
+  const requests = [];
+  const callRpc = vi.fn(() => new Promise((_resolve, reject) => { requests.push({ reject }); }));
+  const onChange = vi.fn();
+  feed = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onChange });
+  await feed.updateTasks(tasks);
+  expect(callRpc).not.toHaveBeenCalled();
+  for (const row of tasks) await mergeTaskContentRecordsTogether({ deviceId, projectId }, [address(row.id)], ([held]) => ({
+    values: [{ ...held.value, task: retireTaskContent(held.value.task, "body") }], retire: true,
+  }));
+  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(4));
+  requests[0].reject(new Error("Offline"));
+  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(5));
+  for (let i = 0; i < 3; i += 1) {
+    const seen = onChange.mock.calls.length;
+    await local.mergeCachedAtomically(address(tasks[0].id), (held) => ({ ...held,
+      task: { ...held.task, read_through: `tc-${i}` },
+    }));
+    await vi.waitFor(() => expect(onChange.mock.calls.length).toBeGreaterThan(seen));
+    expect(callRpc).toHaveBeenCalledTimes(5);
+  }
+  feed.dispose();
+  for (const request of requests.slice(1)) request.reject(new Error("Disposed"));
+});

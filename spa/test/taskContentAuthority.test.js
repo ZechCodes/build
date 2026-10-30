@@ -675,3 +675,21 @@ it("rolls back both list absences and their retirement when either joint replica
   expect(await tracker.writeTaskListRecords(scope.deviceId, scope.projectId, entries)).toBe(false);
   spy.mockRestore(); expect(await cache.readCachedMany(all)).toEqual(before);
 });
+
+it("retains newer issued list read dismiss and watch families while accepting an older reply's stronger review version", async () => {
+  const tracker = await import("../src/core/trackerCache.js"), target = tracker.tasksAddress(scope.deviceId, scope.projectId);
+  await seededListReplica(target);
+  const old = await content.captureTaskContentRead(target, { revalidate: "full" });
+  const current = await content.captureTaskContentRead(target, { revalidate: "full" });
+  const heldTask = task({ watched: true, watch_started_after: "te-50", read_through: "tc-20", dismissed_through: "te-30",
+    unread_count: 5, unread_mentions: 2, unread_agent_comments: 3, last_activity_ms: 200,
+    review_summary: { task_id: "task-1", version: 1, status: "open" } });
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([heldTask], [], current.readOrder), { contentRead: current });
+  const stale = task({ title: "Old title", body: "Old body", watched: false, read_through: "tc-10", dismissed_through: "te-10",
+    review_summary: { task_id: "task-1", version: 2, status: "open" } });
+  await tracker.writeTasksRecord(scope.deviceId, scope.projectId, tracker.tasksRecord([stale], [], old.readOrder), { contentRead: old });
+  expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0]).toMatchObject({
+    title: heldTask.title, body: heldTask.body, watched: true, watch_started_after: "te-50", read_through: "tc-20", dismissed_through: "te-30",
+    unread_count: 5, unread_mentions: 2, unread_agent_comments: 3, last_activity_ms: 200, review_summary: { version: 2 },
+  });
+});

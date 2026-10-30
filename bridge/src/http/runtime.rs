@@ -103,10 +103,16 @@ struct HttpState {
     buffers: Arc<super::limits::BufferBudget>,
     #[cfg(test)]
     output_observer: Arc<Mutex<Option<OutputObserver>>>,
+    #[cfg(test)]
+    reap_observer: Arc<Mutex<Option<TestObserver>>>,
+    #[cfg(test)]
+    open_observer: Arc<Mutex<Option<TestObserver>>>,
 }
 
 #[cfg(test)]
 type OutputObserver = Arc<dyn Fn(super::listener::OutputAuthority) + Send + Sync>;
+#[cfg(test)]
+type TestObserver = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone)]
 pub struct HttpRuntime {
@@ -147,6 +153,10 @@ impl HttpState {
                 .map(|(id, _)| id.clone())
                 .collect::<Vec<_>>()
         };
+        #[cfg(test)]
+        if let Some(observer) = self.reap_observer.lock().unwrap().clone() {
+            observer();
+        }
         let removed = {
             let mut openings = self.openings.lock().unwrap();
             ended
@@ -215,6 +225,10 @@ fn runtime_with(execution: Arc<ExecutionService>, verifier: Arc<dyn GrantVerifie
             buffers: Arc::new(super::limits::BufferBudget::default()),
             #[cfg(test)]
             output_observer: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            reap_observer: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            open_observer: Arc::new(Mutex::new(None)),
         },
     }
 }
@@ -616,6 +630,10 @@ async fn open_session(
         Ok(session) => session,
         Err(_) => return refusal(StatusCode::UNAUTHORIZED, "invalid_credential"),
     };
+    #[cfg(test)]
+    if let Some(observer) = state.open_observer.lock().unwrap().clone() {
+        observer();
+    }
     let greeting = match state.execution.greeting(&session) {
         Ok(greeting) => greeting,
         Err(_) => {
@@ -1754,7 +1772,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn encoded_pending_output_keeps_exact_grant_through_deferred_flush_release() {
+    async fn matrix_7_encoded_pending_output_keeps_exact_grant_through_deferred_flush_release() {
         let a_live = Arc::new(AtomicBool::new(true));
         let b_live = Arc::new(AtomicBool::new(true));
         let runtime = runtime_with(
@@ -2105,7 +2123,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_tls_socket_cuts_off_buffered_resource_after_revocation() {
+    async fn matrix_3_production_tls_socket_fences_revocation_and_expiry() {
         let dir = tempfile::tempdir().unwrap();
         let rcgen::CertifiedKey { cert, key_pair } =
             rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
@@ -2137,6 +2155,7 @@ mod tests {
         );
         let a_live = Arc::new(AtomicBool::new(true));
         let b_live = Arc::new(AtomicBool::new(true));
+        let b_deadline = Arc::new(Mutex::new(None));
         let runtime = runtime_with(
             execution,
             Arc::new(PairVerifier {
@@ -2144,7 +2163,7 @@ mod tests {
                 b_live: b_live.clone(),
                 a_lifetime: std::time::Duration::from_secs(60),
                 b_lifetime: std::time::Duration::from_secs(60),
-                b_deadline: None,
+                b_deadline: Some(b_deadline.clone()),
                 family_live: Arc::new(AtomicBool::new(true)),
             }),
         );
@@ -2383,6 +2402,72 @@ mod tests {
             "later retired B cannot suppress the earlier live A production response"
         );
 
+        b_live.store(true, Ordering::SeqCst);
+        let expiry = Instant::now() + std::time::Duration::from_millis(150);
+        *b_deadline.lock().unwrap() = Some(expiry);
+        let expiry_opening: serde_json::Value = client
+            .post(format!("{base}/v1/sessions"))
+            .header("origin", "https://app.example")
+            .bearer_auth("grant-a")
+            .json(&json!({"api_range":">=3 <4"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let expiry_session = expiry_opening["session_id"].as_str().unwrap();
+        while authority_rx.try_recv().is_ok() {}
+
+        let request_a = format!(
+            "PATCH /v1/settings HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: https://app.example\r\nAuthorization: Bearer grant-a\r\nX-Build-Session: {expiry_session}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        );
+        let mut socket_a = request_socket(&connector, port, request_a).await;
+        let authority_a = authority_rx.recv().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !authority_a.has_pending_write() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("live A output reaches the expiry pending-write barrier");
+
+        let request_b = format!(
+            "PATCH /v1/settings HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: https://app.example\r\nAuthorization: Bearer grant-b\r\nX-Build-Session: {expiry_session}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        );
+        let mut socket_b = request_socket(&connector, port, request_b).await;
+        let authority_b = authority_rx.recv().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !authority_b.has_pending_write() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("expiring B output reaches its independent pending-write barrier");
+        tokio::time::sleep_until(expiry).await;
+        runtime.state.reap_ended();
+
+        let (read_b, received_b, expected_b) = read_response(&mut socket_b).await;
+        assert!(
+            read_b.is_err() || received_b < expected_b,
+            "expired B must truncate without reader readiness"
+        );
+        let (read_a, received_a, expected_a) = read_response(&mut socket_a).await;
+        read_a.unwrap();
+        assert_eq!(
+            received_a, expected_a,
+            "B expiry cannot suppress the earlier live A production response"
+        );
+        let response_a = client
+            .get(format!("{base}/v1/health"))
+            .header("origin", "https://app.example")
+            .header("X-Build-Session", expiry_session)
+            .bearer_auth("grant-a")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response_a.status(), StatusCode::OK);
+
         stop.send(true).unwrap();
         server.await.unwrap().unwrap();
     }
@@ -2578,6 +2663,408 @@ mod tests {
         stop.send(true).unwrap();
         server.await.unwrap().unwrap();
         assert_eq!(runtime.opening_count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn matrix_1_http_reaper_cannot_close_a_newly_published_request_lease() {
+        let a_live = Arc::new(AtomicBool::new(true));
+        let runtime = runtime_with(
+            execution(),
+            Arc::new(PairVerifier {
+                a_live: a_live.clone(),
+                b_live: Arc::new(AtomicBool::new(true)),
+                a_lifetime: std::time::Duration::from_secs(60),
+                b_lifetime: std::time::Duration::from_secs(60),
+                b_deadline: None,
+                family_live: Arc::new(AtomicBool::new(true)),
+            }),
+        );
+        let app = runtime.router();
+        let opened = app
+            .clone()
+            .oneshot(open_request_with_token(
+                Body::from(r#"{"api_range":">=3 <4"}"#),
+                "grant-a",
+            ))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+        let cleanup_calls = Arc::new(AtomicUsize::new(0));
+        let cleanup_count = cleanup_calls.clone();
+        runtime
+            .state
+            .execution
+            .sessions()
+            .set_cleanup_hook(Arc::new(move |_| {
+                cleanup_count.fetch_add(1, Ordering::SeqCst);
+            }));
+
+        let admission_once = Arc::new(AtomicBool::new(false));
+        let (admission_entered_tx, admission_entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (admission_release_tx, admission_release_rx) = std::sync::mpsc::sync_channel(1);
+        let admission_release_rx = Arc::new(Mutex::new(admission_release_rx));
+        runtime
+            .state
+            .execution
+            .sessions()
+            .set_admission_hook(Some(Arc::new({
+                let admission_once = admission_once.clone();
+                move || {
+                    if !admission_once.swap(true, Ordering::SeqCst) {
+                        admission_entered_tx.send(()).unwrap();
+                        admission_release_rx
+                            .lock()
+                            .unwrap()
+                            .recv_timeout(std::time::Duration::from_secs(2))
+                            .expect("matrix controller releases admission");
+                    }
+                }
+            })));
+        let reaper_once = Arc::new(AtomicBool::new(false));
+        let (reaper_entered_tx, reaper_entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (reaper_release_tx, reaper_release_rx) = std::sync::mpsc::sync_channel(1);
+        let reaper_release_rx = Arc::new(Mutex::new(reaper_release_rx));
+        *runtime.state.reap_observer.lock().unwrap() = Some(Arc::new({
+            let reaper_once = reaper_once.clone();
+            move || {
+                if !reaper_once.swap(true, Ordering::SeqCst) {
+                    reaper_entered_tx.send(()).unwrap();
+                    reaper_release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(std::time::Duration::from_secs(2))
+                        .expect("matrix controller releases the HTTP reaper");
+                }
+            }
+        }));
+
+        let output_b = super::super::listener::OutputAuthority::default();
+        let mut request_b = Request::get("/v1/health")
+            .header(AUTHORIZATION, "Bearer grant-b")
+            .header("X-Build-Session", &session_id)
+            .body(Body::empty())
+            .unwrap();
+        request_b.extensions_mut().insert(output_b.clone());
+        let response_b = tokio::spawn(app.clone().oneshot(request_b));
+        tokio::task::spawn_blocking(move || {
+            admission_entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("B reaches the guarded pre-capture barrier")
+        })
+        .await
+        .unwrap();
+        a_live.store(false, Ordering::SeqCst);
+        let reaper_state = runtime.state.clone();
+        let reaped = tokio::task::spawn_blocking(move || reaper_state.reap_ended());
+        tokio::task::spawn_blocking(move || {
+            reaper_entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("reaper reaches its non-destructive observation barrier")
+        })
+        .await
+        .unwrap();
+        admission_release_tx.send(()).unwrap();
+        let response_b = response_b.await.unwrap().unwrap();
+        assert_eq!(response_b.status(), StatusCode::OK);
+        let bytes_b = axum::body::to_bytes(response_b.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        reaper_release_tx.send(()).unwrap();
+        assert_eq!(reaped.await.unwrap(), 0);
+        assert_eq!(runtime.opening_count(), 1);
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+        let mut socket_b = super::super::listener::BoundedIo::new(tokio::io::sink(), output_b);
+        socket_b.write_all(&bytes_b).await.unwrap();
+        socket_b.flush().await.unwrap();
+        runtime.state.execution.sessions().set_admission_hook(None);
+        *runtime.state.reap_observer.lock().unwrap() = None;
+    }
+
+    #[tokio::test]
+    async fn matrix_2_retirement_wins_and_fully_expired_openings_cannot_revive() {
+        for use_http_cleanup in [false, true] {
+            let a_live = Arc::new(AtomicBool::new(true));
+            let runtime = runtime_with(
+                execution(),
+                Arc::new(PairVerifier {
+                    a_live: a_live.clone(),
+                    b_live: Arc::new(AtomicBool::new(true)),
+                    a_lifetime: std::time::Duration::from_secs(60),
+                    b_lifetime: std::time::Duration::from_secs(60),
+                    b_deadline: None,
+                    family_live: Arc::new(AtomicBool::new(true)),
+                }),
+            );
+            let app = runtime.router();
+            let opened = app
+                .clone()
+                .oneshot(open_request_with_token(
+                    Body::from(r#"{"api_range":">=3 <4"}"#),
+                    "grant-a",
+                ))
+                .await
+                .unwrap();
+            let session_id = opening_id(opened).await;
+            a_live.store(false, Ordering::SeqCst);
+            if use_http_cleanup {
+                runtime.state.reap_ended();
+            } else {
+                runtime.state.execution.sessions().reap_expired();
+                runtime.state.reap_ended();
+            }
+            let (status, _) =
+                resource_json_with_token(&app, "GET", "/v1/health", &session_id, None, "grant-b")
+                    .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert_eq!(runtime.opening_count(), 0);
+        }
+
+        let a_live = Arc::new(AtomicBool::new(true));
+        let runtime = runtime_with(
+            execution(),
+            Arc::new(PairVerifier {
+                a_live: a_live.clone(),
+                b_live: Arc::new(AtomicBool::new(true)),
+                a_lifetime: std::time::Duration::from_secs(60),
+                b_lifetime: std::time::Duration::from_secs(60),
+                b_deadline: None,
+                family_live: Arc::new(AtomicBool::new(true)),
+            }),
+        );
+        let app = runtime.router();
+        let opened = app
+            .clone()
+            .oneshot(open_request_with_token(
+                Body::from(r#"{"api_range":">=3 <4"}"#),
+                "grant-a",
+            ))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+        a_live.store(false, Ordering::SeqCst);
+        let (status, _) =
+            resource_json_with_token(&app, "GET", "/v1/health", &session_id, None, "grant-b").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn matrix_4_opening_response_keeps_its_own_proof_after_b_admission() {
+        let a_live = Arc::new(AtomicBool::new(true));
+        let runtime = runtime_with(
+            execution(),
+            Arc::new(PairVerifier {
+                a_live: a_live.clone(),
+                b_live: Arc::new(AtomicBool::new(true)),
+                a_lifetime: std::time::Duration::from_secs(60),
+                b_lifetime: std::time::Duration::from_secs(60),
+                b_deadline: None,
+                family_live: Arc::new(AtomicBool::new(true)),
+            }),
+        );
+        let app = runtime.router();
+        let output_a = super::super::listener::OutputAuthority::default();
+        let mut open_a =
+            open_request_with_token(Body::from(r#"{"api_range":">=3 <4"}"#), "grant-a");
+        open_a.extensions_mut().insert(output_a.clone());
+        let response_a = app.clone().oneshot(open_a).await.unwrap();
+        assert_eq!(response_a.status(), StatusCode::CREATED);
+        let session_id = runtime
+            .state
+            .openings
+            .lock()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        let output_b = super::super::listener::OutputAuthority::default();
+        let mut request_b = Request::get("/v1/health")
+            .header(AUTHORIZATION, "Bearer grant-b")
+            .header("X-Build-Session", &session_id)
+            .body(Body::empty())
+            .unwrap();
+        request_b.extensions_mut().insert(output_b.clone());
+        let response_b = app.clone().oneshot(request_b).await.unwrap();
+        assert_eq!(response_b.status(), StatusCode::OK);
+        a_live.store(false, Ordering::SeqCst);
+        let bytes_a = axum::body::to_bytes(response_a.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let bytes_b = axum::body::to_bytes(response_b.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let mut socket_a = super::super::listener::BoundedIo::new(tokio::io::sink(), output_a);
+        assert_eq!(
+            socket_a.write_all(&bytes_a).await.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let mut socket_b = super::super::listener::BoundedIo::new(tokio::io::sink(), output_b);
+        socket_b.write_all(&bytes_b).await.unwrap();
+        socket_b.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn matrix_5_capture_failures_roll_back_without_renewing_or_killing_a() {
+        let runtime = runtime_with(
+            execution(),
+            Arc::new(PairVerifier {
+                a_live: Arc::new(AtomicBool::new(true)),
+                b_live: Arc::new(AtomicBool::new(true)),
+                a_lifetime: std::time::Duration::from_secs(60),
+                b_lifetime: std::time::Duration::from_secs(60),
+                b_deadline: None,
+                family_live: Arc::new(AtomicBool::new(true)),
+            }),
+        );
+        let app = runtime.router();
+        let opened = app
+            .clone()
+            .oneshot(open_request_with_token(
+                Body::from(r#"{"api_range":">=3 <4"}"#),
+                "grant-a",
+            ))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+        let opening_budget = runtime.state.openings.lock().unwrap()[&session_id]
+            .budget
+            .clone();
+        let held = runtime
+            .state
+            .buffers
+            .reserve(
+                1,
+                super::super::limits::TOTAL_BUFFER_BYTES - 1,
+                &opening_budget,
+            )
+            .unwrap();
+        let (status, _) =
+            resource_json_with_token(&app, "GET", "/v1/health", &session_id, None, "grant-b").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        drop(held);
+
+        for _ in 0..40 {
+            let mut request = Request::patch("/v1/settings")
+                .header(AUTHORIZATION, "Bearer grant-b")
+                .header(CONTENT_TYPE, "application/json")
+                .header("X-Build-Session", &session_id)
+                .header("X-Build-Request-Id", "one")
+                .body(Body::from("{not-json"))
+                .unwrap();
+            request
+                .headers_mut()
+                .append("X-Build-Request-Id", HeaderValue::from_static("two"));
+            request
+                .extensions_mut()
+                .insert(super::super::listener::OutputAuthority::default());
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+        for _ in 0..40 {
+            let mut request = Request::patch("/v1/settings")
+                .header(AUTHORIZATION, "Bearer grant-b")
+                .header(CONTENT_TYPE, "application/json")
+                .header("X-Build-Session", &session_id)
+                .body(Body::from("{not-json"))
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(super::super::listener::OutputAuthority::default());
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+        let (status, _) =
+            resource_json_with_token(&app, "GET", "/v1/health", &session_id, None, "grant-a").await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn matrix_6_body_intake_stops_when_the_opening_closes() {
+        let runtime = runtime_with(
+            execution(),
+            Arc::new(WitnessVerifier {
+                calls: Arc::new(AtomicUsize::new(0)),
+                authority: Some(authority()),
+            }),
+        );
+        let app = runtime.router();
+        let opened = app
+            .clone()
+            .oneshot(open_request(Body::from(r#"{"api_range":">=3 <4"}"#)))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+        let session = runtime.state.openings.lock().unwrap()[&session_id]
+            .session
+            .clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let entered_tx = Arc::new(Mutex::new(Some(entered_tx)));
+        let stream = futures_util::stream::poll_fn(move |_| {
+            if let Some(entered_tx) = entered_tx.lock().unwrap().take() {
+                let _ = entered_tx.send(());
+            }
+            std::task::Poll::<Option<Result<bytes::Bytes, std::io::Error>>>::Pending
+        });
+        let mut request = Request::patch("/v1/settings")
+            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header(CONTENT_TYPE, "application/json")
+            .header("X-Build-Session", &session_id)
+            .body(Body::from_stream(stream))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+        let pending = tokio::spawn(app.clone().oneshot(request));
+        entered_rx.await.unwrap();
+        runtime.state.execution.sessions().close(&session);
+        let response = tokio::time::timeout(std::time::Duration::from_millis(250), pending)
+            .await
+            .expect("opening close must wake body intake")
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn matrix_8_shutdown_cannot_lose_a_verified_opening_before_publication() {
+        let runtime = runtime_with(
+            execution(),
+            Arc::new(WitnessVerifier {
+                calls: Arc::new(AtomicUsize::new(0)),
+                authority: Some(authority()),
+            }),
+        );
+        let app = runtime.router();
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        *runtime.state.open_observer.lock().unwrap() = Some(Arc::new(move || {
+            entered_tx.send(()).unwrap();
+            release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("matrix controller releases opening publication");
+        }));
+        let opening =
+            tokio::spawn(app.oneshot(open_request(Body::from(r#"{"api_range":">=3 <4"}"#))));
+        tokio::task::spawn_blocking(move || {
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("verified opening reaches pre-publication barrier")
+        })
+        .await
+        .unwrap();
+        runtime.shutdown();
+        release_tx.send(()).unwrap();
+        let response = opening.await.unwrap().unwrap();
+        assert_ne!(response.status(), StatusCode::CREATED);
+        assert_eq!(runtime.opening_count(), 0);
+        assert_eq!(runtime.state.execution.sessions().reap_expired().len(), 0);
     }
 
     async fn opening_id(response: Response) -> String {

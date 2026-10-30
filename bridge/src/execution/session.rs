@@ -358,12 +358,16 @@ impl SessionLease {
 }
 
 type CleanupHook = Arc<dyn Fn(&SessionLease) + Send + Sync>;
+#[cfg(test)]
+type AdmissionHook = Arc<dyn Fn() + Send + Sync>;
 
 /// One registry is shared by every transport adapter in the daemon.
 pub struct ClientSessions {
     epoch: Arc<str>,
     sessions: Mutex<HashMap<String, SessionLease>>,
     cleanup_hook: Mutex<Option<CleanupHook>>,
+    #[cfg(test)]
+    admission_hook: Mutex<Option<AdmissionHook>>,
 }
 
 impl ClientSessions {
@@ -372,6 +376,8 @@ impl ClientSessions {
             epoch: epoch.into(),
             sessions: Mutex::new(HashMap::new()),
             cleanup_hook: Mutex::new(None),
+            #[cfg(test)]
+            admission_hook: Mutex::new(None),
         }
     }
     pub fn open(&self, caller: VerifiedCaller) -> Result<SessionLease, SessionError> {
@@ -471,6 +477,10 @@ impl ClientSessions {
             lifecycle.live = renewed.live.clone();
             lifecycle.retired = renewed.retired;
         } else {
+            #[cfg(test)]
+            if let Some(hook) = self.admission_hook.lock().unwrap().clone() {
+                hook();
+            }
             session.capture_authorization(&request_authorization)?;
         }
         drop(_state);
@@ -643,6 +653,10 @@ impl ClientSessions {
     /// released, including expiry first observed by an admission call.
     pub fn set_cleanup_hook(&self, hook: Arc<dyn Fn(&SessionLease) + Send + Sync>) {
         *self.cleanup_hook.lock().unwrap() = Some(hook);
+    }
+    #[cfg(test)]
+    pub(crate) fn set_admission_hook(&self, hook: Option<AdmissionHook>) {
+        *self.admission_hook.lock().unwrap() = hook;
     }
     /// Daemon ticks must call this even when no requests arrive. Returned leases
     /// are already closed; retaining them deliberately retains their metadata.

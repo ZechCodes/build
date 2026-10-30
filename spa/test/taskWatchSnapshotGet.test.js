@@ -75,26 +75,27 @@ async function greet(capabilities) {
 }
 
 async function beginRead(capabilities, reply = proofReply()) {
-  const { session, context } = await greet(capabilities), pending = pendingReply();
-  const requests = [];
-  let servedProof = false;
+  const { session, context } = await greet(capabilities);
+  const requests = [], pending = [], served = [];
   session.call.mockImplementation((method, params) => {
     if (method !== "tasks.get") throw new Error(`Unexpected contract peer request: ${method}`);
     requests.push({ method, params: structuredClone(params) });
-    return pending.promise;
+    const response = pendingReply();
+    pending.push(response);
+    return response.promise;
   });
   const feed = runtime.feed.createTrackerTaskDetailsFeed({ ...scope, callRpc: context.rpc });
   feeds.push(feed);
   await feed.updateTasks([nativeTask({ title: "Listed task" })]);
   await vi.waitFor(() => expect(requests).toHaveLength(1));
   return { session, context, requests, feed,
-    answer() {
+    answer(index = 0, answer = reply) {
       // Strict endpoint contract: absent/false option returns legacy bytes.
-      const optedIn = requests[0].params.watch_snapshot === true;
-      servedProof = optedIn && Boolean(reply.watch_snapshot);
-      pending.resolve(optedIn ? reply : { task: nativeTask(), timeline: [] });
+      const optedIn = requests[index].params.watch_snapshot === true;
+      served[index] = optedIn && Boolean(answer.watch_snapshot);
+      pending[index].resolve(optedIn ? answer : { task: nativeTask(), timeline: [] });
     },
-    servedProof: () => servedProof,
+    servedProof: (index = 0) => served[index],
   };
 }
 
@@ -162,4 +163,128 @@ it("UNITCONTRACT cannot activate an unexpected reply incarnation even with maxim
   expect(saved).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
   expect(read.session.bridgeEpoch.current()).toMatchObject({ ...pair, opening: 1 });
   expect(saved.task).not.toHaveProperty("__task_watch_snapshot");
+});
+
+
+async function refreshReply(read, reply) {
+  const index = read.requests.length;
+  const refreshed = read.feed.refresh(taskId);
+  await vi.waitFor(() => expect(read.requests).toHaveLength(index + 1));
+  read.answer(index, reply);
+  await refreshed;
+  return awaitSaved(read);
+}
+
+it("UNITCONTRACT keeps a captured same-task pending snapshot historical after settlement and requires fresh same-sequence recovery", async () => {
+  const owner = await runtime.watch.beginTaskWatchMutation(scope, taskId, { watched: false, metadataOnly: true });
+  expect(owner).not.toBeNull();
+  const read = await beginRead([getCapability]);
+  expect((await runtime.watch.readTaskWatchState(scope)).pendingCount).toBe(1);
+  expect(await runtime.watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
+  const settled = await runtime.watch.readTaskWatchState(scope);
+  expect(settled).toMatchObject({ pendingCount: 0, uncertain: true });
+  read.answer();
+  const blocked = await awaitSaved(read);
+  expect(read.servedProof()).toBe(true);
+  expect(blocked).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
+  expect(blocked.task.__task_watch_snapshot.scopes.watch).toMatchObject({
+    sequence: "18446744073709551615", admission: "historical",
+  });
+  // Merely rereading or reaching pending0 must not promote that old source.
+  expect((await runtime.cache.readCanonicalCached(runtime.summaries.summaryAddress(scope, taskId))).value.watch_uncertain).toBe(true);
+  const recovered = await refreshReply(read, proofReply());
+  expect(read.servedProof(1)).toBe(true);
+  expect(recovered).toMatchObject({ watch_uncertain: false, needs_unread_refresh: false });
+  expect(recovered.task.__task_watch_snapshot.scopes.watch).toMatchObject({
+    sequence: "18446744073709551615", admission: "selected",
+  });
+  expect(await runtime.watch.readTaskWatchState(scope)).toEqual(settled);
+});
+
+it("UNITCONTRACT admits a first positive proof under unrelated sticky uncertainty without settling that task's history", async () => {
+  const other = await runtime.watch.beginTaskWatchMutation(scope, "unrelated-task", { watched: false, metadataOnly: true });
+  expect(other).not.toBeNull();
+  expect(await runtime.watch.settleTaskWatchMutation(other, { rollback: true })).toBe(true);
+  const state = await runtime.watch.readTaskWatchState(scope);
+  expect(state).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  const order = await import("../src/core/taskReadOrder.js");
+  const noteAddress = order.taskWatchIntentAddress(scope, "unrelated-task");
+  const before = await runtime.cache.readCanonicalCached(noteAddress);
+  expect(before.value.latest_watch_intent).toMatchObject({ taskId: "unrelated-task", disposition: "rejected" });
+  const read = await beginRead([getCapability]);
+  read.answer();
+  const saved = await awaitSaved(read);
+  expect(read.servedProof()).toBe(true);
+  expect(saved).toMatchObject({ watch_uncertain: false, needs_unread_refresh: false });
+  expect(await runtime.cache.readCanonicalCached(noteAddress)).toEqual(before);
+  expect(await runtime.watch.readTaskWatchState(scope)).toEqual(state);
+});
+
+it("UNITCONTRACT keeps a valid reply historical when the same task becomes pending after capture", async () => {
+  const read = await beginRead([getCapability]);
+  const owner = await runtime.watch.beginTaskWatchMutation(scope, taskId, { watched: false, metadataOnly: true });
+  expect(owner).not.toBeNull();
+  const pending = await runtime.watch.readTaskWatchState(scope);
+  expect(pending.pendingCount).toBe(1);
+  try {
+    read.answer();
+    const saved = await awaitSaved(read);
+    expect(read.servedProof()).toBe(true);
+    expect(saved).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
+    expect(saved.task.__task_watch_snapshot.scopes.watch.admission).toBe("historical");
+    expect(await runtime.watch.readTaskWatchState(scope)).toEqual(pending);
+  } finally {
+    await runtime.watch.settleTaskWatchMutation(owner, { rollback: true });
+  }
+});
+
+it("UNITCONTRACT refuses captured canonical authority across an unowned same-lineage ABA without losing useful body", async () => {
+  const seed = nativeTask();
+  await runtime.tracker.writeTasksRecord(scope.deviceId, scope.projectId, runtime.tracker.tasksRecord([seed]));
+  const read = await beginRead([getCapability]);
+  const order = await import("../src/core/taskReadOrder.js");
+  const control = order.taskWatchControlAddress(scope);
+  const before = (await runtime.cache.readCanonicalCached(control)).value;
+  await runtime.tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    runtime.tracker.tasksRecord([{ ...seed, watched: false }]));
+  await runtime.tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    runtime.tracker.tasksRecord([seed]));
+  const after = (await runtime.cache.readCanonicalCached(control)).value;
+  expect(after.blindRetirementEpoch).not.toBe(before.blindRetirementEpoch);
+  expect((await runtime.tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0]).toMatchObject({
+    watched: true, watch_started_after: "te-05",
+  });
+  read.answer();
+  const saved = await awaitSaved(read);
+  expect(read.servedProof()).toBe(true);
+  expect(saved).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
+  expect(saved.task.__task_watch_snapshot.scopes.watch.admission).toBe("historical");
+  expect((await runtime.cache.readCanonicalCached(control)).value).toEqual(after);
+});
+
+it("UNITCONTRACT adds equal-sequence complementary scopes only with agreeing watch prerequisites and rejects conflicting overlap atomically", async () => {
+  const complete = proofReply({ sequence: "7" });
+  const watchOnly = structuredClone(complete);
+  watchOnly.task.watch_facts = { watch: complete.task.watch_facts.watch };
+  const read = await beginRead([getCapability], watchOnly);
+  read.answer();
+  const initial = await awaitSaved(read);
+  expect(read.servedProof()).toBe(true);
+  expect(initial.watch_uncertain).toBe(false);
+  expect(initial.task.__task_watch_snapshot.scopes).not.toHaveProperty("total");
+  const enriched = await refreshReply(read, complete);
+  expect(enriched).toMatchObject({ watch_uncertain: false, needs_unread_refresh: false });
+  const known = enriched.task.__task_watch_snapshot;
+  expect(known.scopes.total.value.unread_count).toBe(0);
+  const conflict = structuredClone(complete);
+  conflict.task.title = "Ordinary bytes remain independently admissible";
+  conflict.task.updated_at = "2026-10-30T20:01:00Z";
+  conflict.task.watch_facts.total.unread_count = 8;
+  conflict.task.watch_facts.attention.unread_mentions = 6;
+  const conflicted = await refreshReply(read, conflict);
+  expect(conflicted.task.title).toBe("Ordinary bytes remain independently admissible");
+  expect(conflicted.task.unread_count).toBe(0);
+  expect(conflicted.task.unread_mentions).toBe(0);
+  expect(conflicted.task.__task_watch_snapshot).toEqual(known);
+  expect(conflicted.needs_unread_refresh).toBe(true);
 });

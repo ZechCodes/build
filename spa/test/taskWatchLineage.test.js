@@ -14,7 +14,8 @@ const lists = () => [tracker.tasksAddress(scope.deviceId, scope.projectId),
   tracker.tasksPageAddress(scope.deviceId, scope.projectId, { limit: 100 })];
 async function land(incoming, basis = "current") {
   const read = await order.nextTaskRead(), ticket = await summaries.beginSummaryQuery(scope, {}, read);
-  await summaries.landSummaryPage(ticket, { summary: true, tasks: [incoming], basis }, { read });
+  const summary = { ...incoming }; delete summary.body;
+  await summaries.landSummaryPage(ticket, { summary: true, tasks: [summary], basis }, { read });
   return { read, ticket };
 }
 async function seed(held = task()) {
@@ -188,3 +189,29 @@ it("advances a prior-issued same-header summary read mark without replacing newe
     watch_started_after: "te-05", session_started_ms: 30, last_activity_ms: 40 } });
   for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) expect(stored.task).not.toHaveProperty(field);
 });
+
+it.each([["te-05", false], ["te-30", true]])(
+  "keeps older-body stale-action counter removals and winning content at watch %s", async (floor, keepTotal) => {
+    const held = task({ title: "Current title", body: "Current body", updated_at: "2026-10-29T13:00:00Z",
+      watch_started_after: floor, read_through: "tc-10", unread_count: 5, unread_mentions: 4,
+      unread_agent_comments: 3, session_started_ms: 30, last_activity_ms: 40,
+      review_summary: { task_id: id, version: 5, mode: "pull_request", status: "open" } });
+    await seed(held); const issued = await order.nextTaskRead(); await land(held, "current-observation");
+    await publish({ ...held, title: "Old title", body: "Old body", updated_at: "2026-10-29T12:00:00Z",
+      read_through: "tc-20", dismissed_through: "te-20", unread_count: 1, unread_mentions: 1,
+      unread_agent_comments: 1, session_started_ms: 1, last_activity_ms: 2,
+      review_summary: { task_id: id, version: 4, mode: "pull_request", status: "closed" } }, issued);
+    for (const replica of await replicas()) {
+      expect(replica).toMatchObject({ title: "Current title", updated_at: held.updated_at, read_through: "tc-20",
+        dismissed_through: "te-20", watch_started_after: floor, session_started_ms: 30, last_activity_ms: 40,
+        review_summary: { version: 5, status: "open" } });
+      expect(replica).not.toHaveProperty("unread_mentions"); expect(replica).not.toHaveProperty("unread_agent_comments");
+      if (keepTotal) expect(replica.unread_count).toBe(5);
+      else expect(replica).not.toHaveProperty("unread_count");
+    }
+    const detail = await tracker.readTaskRecord(scope.deviceId, scope.projectId, id);
+    expect(detail.task.body).toBe("Current body"); expect(detail.timeline).toEqual([{ id: "history" }]);
+    expect(await value(summaries.summaryAddress(scope, id))).toMatchObject({ needs_unread_refresh: true });
+    expect((await value(summaries.summaryAddress(scope, id))).task).not.toHaveProperty("body");
+  },
+);

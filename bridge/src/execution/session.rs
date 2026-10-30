@@ -176,6 +176,11 @@ impl AuthorizationLease {
     }
 }
 
+/// Exact authority captured from one freshly verified HTTP request. The
+/// adapter cannot construct or widen it; session/opening liveness remains an
+/// independent fence when this proof is used for dispatch and output.
+pub struct RequestAuthorization(AuthorizationLease);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SessionError {
     #[error("session is closed")]
@@ -363,6 +368,14 @@ impl ClientSessions {
     }
     /// Renewal requires a newly verified proof of the exact HTTP family binding.
     pub fn resume(&self, caller: VerifiedCaller, id: &str) -> Result<SessionLease, SessionError> {
+        self.resume_with_request_authority(caller, id)
+            .map(|(session, _)| session)
+    }
+    pub(crate) fn resume_with_request_authority(
+        &self,
+        caller: VerifiedCaller,
+        id: &str,
+    ) -> Result<(SessionLease, RequestAuthorization), SessionError> {
         self.reap_expired();
         let session = self
             .sessions
@@ -389,13 +402,21 @@ impl ClientSessions {
         {
             return Err(SessionError::Unauthorized);
         }
+        let request_authorization = AuthorizationLease {
+            opening: session.opening().clone(),
+            state: Arc::new(Mutex::new(AuthorizationState {
+                deadline: caller.deadline,
+                live: caller.live.clone(),
+                retired: false,
+            })),
+        };
         let mut authorization = session.0.authorization.state.lock().unwrap();
         authorization.deadline = caller.deadline;
         authorization.live = caller.live;
         drop(authorization);
         drop(_state);
         drop(_output);
-        Ok(session)
+        Ok((session, RequestAuthorization(request_authorization)))
     }
     pub fn bind_events(
         &self,
@@ -453,7 +474,28 @@ impl ClientSessions {
         sink: Arc<dyn ReplySink>,
         events: Option<&EventBinding>,
     ) -> Result<RequestContext, SessionError> {
-        self.request_for_stream(session, StreamClass::Application, sink, events)
+        self.request_for_stream_with_authority(
+            session,
+            StreamClass::Application,
+            sink,
+            events,
+            session.authorization(),
+        )
+    }
+    pub(crate) fn request_authorized(
+        &self,
+        session: &SessionLease,
+        sink: Arc<dyn ReplySink>,
+        events: Option<&EventBinding>,
+        authorization: RequestAuthorization,
+    ) -> Result<RequestContext, SessionError> {
+        self.request_for_stream_with_authority(
+            session,
+            StreamClass::Application,
+            sink,
+            events,
+            authorization.0,
+        )
     }
     /// Terminal callers must explicitly request the separately bound stream.
     pub fn request_for_stream(
@@ -463,10 +505,32 @@ impl ClientSessions {
         sink: Arc<dyn ReplySink>,
         events: Option<&EventBinding>,
     ) -> Result<RequestContext, SessionError> {
+        self.request_for_stream_with_authority(
+            session,
+            class,
+            sink,
+            events,
+            session.authorization(),
+        )
+    }
+    fn request_for_stream_with_authority(
+        &self,
+        session: &SessionLease,
+        class: StreamClass,
+        sink: Arc<dyn ReplySink>,
+        events: Option<&EventBinding>,
+        authorization: AuthorizationLease,
+    ) -> Result<RequestContext, SessionError> {
         self.reap_expired();
         let _output = session.opening().0.output_gate.lock().unwrap();
         let mut state = session.0.state.lock().unwrap();
         Self::authorize(session)?;
+        if !authorization.opening.is(session.opening()) {
+            return Err(SessionError::WrongOpening);
+        }
+        if !authorization.is_valid() {
+            return Err(SessionError::Unauthorized);
+        }
         if let Some(events) = events {
             if !events.session.opening().is(session.opening()) {
                 return Err(SessionError::WrongOpening);
@@ -487,7 +551,7 @@ impl ClientSessions {
                 cancelled: AtomicBool::new(false),
                 notify: Notify::new(),
             }),
-            authorization: session.authorization(),
+            authorization,
         };
         Ok(RequestContext {
             read_interest: Arc::new(ReadInterest::default()),
@@ -787,7 +851,7 @@ impl RequestContext {
         &self.session
     }
     pub fn authorization(&self) -> AuthorizationLease {
-        self.session.authorization()
+        self.reply.cancellation.authorization.clone()
     }
     pub fn reply(&self) -> ReplyLease {
         self.reply.clone()

@@ -23,7 +23,10 @@ use tokio::time::Instant;
 
 use super::auth::{AuthError, HttpAuthVerifier, VerifiedHttpGrant};
 use crate::execution::{
-    session::{DeliveryError, EncodedEvent, HttpIdentity, ReplySink, SessionLease, VerifiedCaller},
+    session::{
+        DeliveryError, EncodedEvent, HttpIdentity, ReplySink, RequestAuthorization, SessionLease,
+        VerifiedCaller,
+    },
     ExecutionService, Invocation, RequestMetadata,
 };
 
@@ -245,7 +248,8 @@ async fn resource_response(state: &HttpState, request: Request<Body>) -> HttpRes
         .cloned()
         .ok_or_else(|| refusal(StatusCode::SERVICE_UNAVAILABLE, "unavailable"))?;
     observe_output(state, &output);
-    let (opening_budget, session) = resource_opening(state, session_id, &authority)?;
+    let (opening_budget, session, request_authorization) =
+        resource_opening(state, session_id, &authority)?;
     let reservation = Arc::new(
         state
             .buffers
@@ -273,7 +277,14 @@ async fn resource_response(state: &HttpState, request: Request<Body>) -> HttpRes
     let invocation = Invocation::decode(resolved.method, &resolved.params)
         .and_then(|invocation| invocation.with_metadata(metadata))
         .map_err(api_refusal)?;
-    let (event, call) = execute_resource(state, &session, invocation, reservation.clone()).await?;
+    let (event, call) = execute_resource(
+        state,
+        &session,
+        request_authorization,
+        invocation,
+        reservation.clone(),
+    )
+    .await?;
     if event.bytes().len() > resolved.operation.response_max_bytes {
         return Err(refusal(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -336,7 +347,11 @@ fn resource_opening(
     state: &HttpState,
     session_id: &str,
     authority: &VerifiedAuthority,
-) -> HttpResult<(Arc<super::limits::OpeningBudget>, SessionLease)> {
+) -> HttpResult<(
+    Arc<super::limits::OpeningBudget>,
+    SessionLease,
+    RequestAuthorization,
+)> {
     let opening_budget = {
         let mut openings = state.openings.lock().unwrap();
         let opening = openings
@@ -353,17 +368,18 @@ fn resource_opening(
         authority.deadline,
         authority.live.clone(),
     );
-    let session = state
+    let (session, request_authorization) = state
         .execution
         .sessions()
-        .resume(caller, session_id)
+        .resume_with_request_authority(caller, session_id)
         .map_err(|_| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
-    Ok((opening_budget, session))
+    Ok((opening_budget, session, request_authorization))
 }
 
 async fn execute_resource(
     state: &HttpState,
     session: &SessionLease,
+    request_authorization: RequestAuthorization,
     invocation: Invocation,
     reservation: Arc<super::limits::BufferReservation>,
 ) -> HttpResult<(EncodedEvent, crate::execution::Call)> {
@@ -375,7 +391,7 @@ async fn execute_resource(
     let context = state
         .execution
         .sessions()
-        .request(session, sink, None)
+        .request_authorized(session, sink, None, request_authorization)
         .map_err(|_| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
     let mut call = state
         .execution
@@ -403,8 +419,9 @@ fn resource_output(
 ) -> Response {
     let output_session = session;
     let deadline = authority.deadline;
+    let request_live = authority.live.clone();
     let ticket = output.bind(
-        Arc::new(move || output_session.is_live()),
+        Arc::new(move || output_session.is_live() && request_live()),
         Arc::new(move || deadline),
     );
     let bytes = bytes::Bytes::from_owner(ResourceBytes {
@@ -838,6 +855,26 @@ mod tests {
         }
     }
 
+    struct PairVerifier {
+        a_live: Arc<AtomicBool>,
+        b_live: Arc<AtomicBool>,
+        a_lifetime: std::time::Duration,
+    }
+
+    #[async_trait]
+    impl GrantVerifier for PairVerifier {
+        async fn verify(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
+            match bearer {
+                "grant-a" => Ok(authority_with(self.a_live.clone(), self.a_lifetime)),
+                "grant-b" => Ok(authority_with(
+                    self.b_live.clone(),
+                    std::time::Duration::from_secs(60),
+                )),
+                _ => Err(AuthError::InvalidCredential),
+            }
+        }
+    }
+
     fn authority() -> VerifiedAuthority {
         authority_with(
             Arc::new(AtomicBool::new(true)),
@@ -881,10 +918,21 @@ mod tests {
         session_id: &str,
         body: Option<serde_json::Value>,
     ) -> (StatusCode, serde_json::Value) {
+        resource_json_with_token(app, method, uri, session_id, body, "account-bound-token").await
+    }
+
+    async fn resource_json_with_token(
+        app: &Router,
+        method: &str,
+        uri: impl AsRef<str>,
+        session_id: &str,
+        body: Option<serde_json::Value>,
+        token: &str,
+    ) -> (StatusCode, serde_json::Value) {
         let mut builder = Request::builder()
             .method(method)
             .uri(uri.as_ref())
-            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header(AUTHORIZATION, format!("Bearer {token}"))
             .header("X-Build-Session", session_id);
         let body = match body {
             Some(body) => {
@@ -1354,6 +1402,311 @@ mod tests {
         .expect("settled executor releases the reservation");
     }
 
+    async fn pending_request_is_not_renewed_by_an_overlapping_grant(expire: bool) {
+        let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let call_count = calls.clone();
+        let handler = FrameHandler::new(FrameClock::new(), move |_, frame, _| {
+            if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                entered_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+            }
+            json!({"id": frame.payload["id"], "ok": true, "result": {}})
+        })
+        .with_greeting_reads(
+            |epoch| json!({"api_version": crate::api::API_VERSION, "bridge_epoch": epoch}),
+        );
+        let a_live = Arc::new(AtomicBool::new(true));
+        let b_live = Arc::new(AtomicBool::new(true));
+        let lifetime = if expire {
+            std::time::Duration::from_millis(40)
+        } else {
+            std::time::Duration::from_secs(60)
+        };
+        let app = router_with(
+            ExecutionService::new(handler),
+            Arc::new(PairVerifier {
+                a_live: a_live.clone(),
+                b_live: b_live.clone(),
+                a_lifetime: lifetime,
+            }),
+        );
+        let opened = app
+            .clone()
+            .oneshot(open_request_with_token(
+                Body::from(r#"{"api_range":">=3 <4"}"#),
+                "grant-a",
+            ))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+
+        let mut request_a = Request::patch("/v1/settings")
+            .header(AUTHORIZATION, "Bearer grant-a")
+            .header(CONTENT_TYPE, "application/json")
+            .header("X-Build-Session", &session_id)
+            .body(Body::from("{}"))
+            .unwrap();
+        request_a
+            .extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+        let request_a = tokio::spawn(app.clone().oneshot(request_a));
+        entered_rx.recv().await.unwrap();
+
+        // This request renews the opening to B, then fails after renewal.
+        let mut request_b = Request::patch("/v1/settings")
+            .header(AUTHORIZATION, "Bearer grant-b")
+            .header(CONTENT_TYPE, "application/json")
+            .header("X-Build-Session", &session_id)
+            .body(Body::from("{not-json"))
+            .unwrap();
+        request_b
+            .extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+        assert_eq!(
+            app.clone().oneshot(request_b).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+        if expire {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        } else {
+            a_live.store(false, Ordering::SeqCst);
+        }
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            request_a.await.unwrap().unwrap().status(),
+            StatusCode::UNAUTHORIZED,
+            "grant B must not replace queued request A's authority"
+        );
+
+        let (status, reply) =
+            resource_json_with_token(&app, "GET", "/v1/health", &session_id, None, "grant-b").await;
+        assert_eq!(status, StatusCode::OK, "grant B remains live: {reply:?}");
+    }
+
+    #[tokio::test]
+    async fn queued_request_keeps_its_exact_grant_after_overlapping_renewal() {
+        pending_request_is_not_renewed_by_an_overlapping_grant(false).await;
+    }
+
+    #[tokio::test]
+    async fn queued_request_keeps_its_exact_expiry_after_overlapping_renewal() {
+        pending_request_is_not_renewed_by_an_overlapping_grant(true).await;
+    }
+
+    #[tokio::test]
+    async fn queued_before_handler_request_keeps_its_exact_grant() {
+        let clock = FrameClock::new();
+        let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let call_count = calls.clone();
+        let handler = FrameHandler::new(clock.clone(), move |_, frame, _| {
+            let call = call_count.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                entered_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+            }
+            json!({"id": frame.payload["id"], "ok": true, "result": {}})
+        })
+        .with_greeting_reads(
+            |epoch| json!({"api_version": crate::api::API_VERSION, "bridge_epoch": epoch}),
+        );
+        let execution = ExecutionService::with_capacity(handler, 8, 1);
+        let a_live = Arc::new(AtomicBool::new(true));
+        let app = router_with(
+            execution,
+            Arc::new(PairVerifier {
+                a_live: a_live.clone(),
+                b_live: Arc::new(AtomicBool::new(true)),
+                a_lifetime: std::time::Duration::from_secs(60),
+            }),
+        );
+        let opened = app
+            .clone()
+            .oneshot(open_request_with_token(
+                Body::from(r#"{"api_range":">=3 <4"}"#),
+                "grant-a",
+            ))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+        let request = |token: &'static str| {
+            let mut request = Request::patch("/v1/settings")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .header(CONTENT_TYPE, "application/json")
+                .header("X-Build-Session", &session_id)
+                .body(Body::from("{}"))
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(super::super::listener::OutputAuthority::default());
+            request
+        };
+        let blocker = tokio::spawn(app.clone().oneshot(request("grant-a")));
+        entered_rx.recv().await.unwrap();
+        let queued = tokio::spawn(app.clone().oneshot(request("grant-a")));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while clock.stats()["queue_depth"] != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("request A is queued before grant B renews the opening");
+
+        let mut renewal = request("grant-b");
+        *renewal.body_mut() = Body::from("{not-json");
+        assert_eq!(
+            app.oneshot(renewal).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+        a_live.store(false, Ordering::SeqCst);
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            queued.await.unwrap().unwrap().status(),
+            StatusCode::UNAUTHORIZED,
+            "queued A cannot execute under grant B"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "queued A never reaches the handler"
+        );
+        assert_eq!(
+            blocker.await.unwrap().unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn encoded_pending_output_keeps_exact_grant_through_deferred_flush_release() {
+        let a_live = Arc::new(AtomicBool::new(true));
+        let b_live = Arc::new(AtomicBool::new(true));
+        let app = router_with(
+            execution(),
+            Arc::new(PairVerifier {
+                a_live: a_live.clone(),
+                b_live: b_live.clone(),
+                a_lifetime: std::time::Duration::from_secs(60),
+            }),
+        );
+        let opened = app
+            .clone()
+            .oneshot(open_request_with_token(
+                Body::from(r#"{"api_range":">=3 <4"}"#),
+                "grant-a",
+            ))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+
+        let output_a = super::super::listener::OutputAuthority::default();
+        let mut request_a = Request::get("/v1/health")
+            .header(AUTHORIZATION, "Bearer grant-a")
+            .header("X-Build-Session", &session_id)
+            .body(Body::empty())
+            .unwrap();
+        request_a.extensions_mut().insert(output_a.clone());
+        let response_a = app.clone().oneshot(request_a).await.unwrap();
+        assert_eq!(response_a.status(), StatusCode::OK);
+
+        let mut renewal = Request::patch("/v1/settings")
+            .header(AUTHORIZATION, "Bearer grant-b")
+            .header(CONTENT_TYPE, "application/json")
+            .header("X-Build-Session", &session_id)
+            .body(Body::from("{not-json"))
+            .unwrap();
+        renewal
+            .extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+        assert_eq!(
+            app.clone().oneshot(renewal).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+
+        let bytes = axum::body::to_bytes(response_a.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let (socket, mut peer) = tokio::io::duplex(1);
+        let mut io = super::super::listener::BoundedIo::new(socket, output_a.clone());
+        let writing = tokio::spawn(async move {
+            io.write_all(&bytes).await?;
+            io.flush().await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !output_a.has_pending_write() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("encoded A output is parked at the socket boundary");
+        a_live.store(false, Ordering::SeqCst);
+        let draining = tokio::spawn(async move {
+            let mut drained = Vec::new();
+            peer.read_to_end(&mut drained).await.unwrap();
+            drained
+        });
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), writing)
+            .await
+            .expect("revoked A output settles rather than remaining socket-blocked")
+            .unwrap();
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "grant B must not flush encoded output admitted under revoked grant A"
+        );
+        let _ = draining.await.unwrap();
+
+        let output_b = super::super::listener::OutputAuthority::default();
+        let mut request_b = Request::get("/v1/health")
+            .header(AUTHORIZATION, "Bearer grant-b")
+            .header("X-Build-Session", &session_id)
+            .body(Body::empty())
+            .unwrap();
+        request_b.extensions_mut().insert(output_b.clone());
+        let response_b = app.clone().oneshot(request_b).await.unwrap();
+        let bytes_b = axum::body::to_bytes(response_b.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let mut live_socket = super::super::listener::BoundedIo::new(tokio::io::sink(), output_b);
+        live_socket.write_all(&bytes_b).await.unwrap();
+        live_socket.flush().await.unwrap();
+
+        let closed_output = super::super::listener::OutputAuthority::default();
+        let mut before_close = Request::get("/v1/health")
+            .header(AUTHORIZATION, "Bearer grant-b")
+            .header("X-Build-Session", &session_id)
+            .body(Body::empty())
+            .unwrap();
+        before_close.extensions_mut().insert(closed_output.clone());
+        let response = app.clone().oneshot(before_close).await.unwrap();
+        let closed_bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let mut close = close_request_with_token(&session_id, "grant-b");
+        close
+            .extensions_mut()
+            .insert(super::super::listener::OutputAuthority::default());
+        assert_eq!(
+            app.oneshot(close).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        let mut closed_socket =
+            super::super::listener::BoundedIo::new(tokio::io::sink(), closed_output);
+        assert_eq!(
+            closed_socket
+                .write_all(&closed_bytes)
+                .await
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "session close remains an independent fence"
+        );
+    }
+
     #[tokio::test]
     async fn authenticated_trickle_body_cannot_outlive_grant() {
         let app = router_with(
@@ -1437,15 +1790,14 @@ mod tests {
                 |epoch| json!({"api_version": crate::api::API_VERSION, "bridge_epoch": epoch}),
             ),
         );
-        let live = Arc::new(AtomicBool::new(true));
+        let a_live = Arc::new(AtomicBool::new(true));
+        let b_live = Arc::new(AtomicBool::new(true));
         let runtime = runtime_with(
             execution,
-            Arc::new(WitnessVerifier {
-                calls: Arc::new(AtomicUsize::new(0)),
-                authority: Some(authority_with(
-                    live.clone(),
-                    std::time::Duration::from_secs(60),
-                )),
+            Arc::new(PairVerifier {
+                a_live: a_live.clone(),
+                b_live: b_live.clone(),
+                a_lifetime: std::time::Duration::from_secs(60),
             }),
         );
         let (authority_tx, mut authority_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1467,7 +1819,7 @@ mod tests {
         let opening: serde_json::Value = client
             .post(format!("{base}/v1/sessions"))
             .header("origin", "https://app.example")
-            .bearer_auth("account-bound-token")
+            .bearer_auth("grant-a")
             .json(&json!({"api_range":">=3 <4"}))
             .send()
             .await
@@ -1499,7 +1851,7 @@ mod tests {
                 .await
                 .unwrap();
             let request = format!(
-                "PATCH /v1/settings HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: https://app.example\r\nAuthorization: Bearer account-bound-token\r\nX-Build-Session: {session_id}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+                "PATCH /v1/settings HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: https://app.example\r\nAuthorization: Bearer grant-a\r\nX-Build-Session: {session_id}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
             );
             socket.write_all(request.as_bytes()).await.unwrap();
             let authority = authority_rx.recv().await.unwrap();
@@ -1517,7 +1869,18 @@ mod tests {
             .await
             .expect("the unread production TLS response must park a socket write");
             if revoke {
-                live.store(false, Ordering::SeqCst);
+                let renewal = client
+                    .patch(format!("{base}/v1/settings"))
+                    .header("origin", "https://app.example")
+                    .header("X-Build-Session", &session_id)
+                    .header(CONTENT_TYPE.as_str(), "application/json")
+                    .bearer_auth("grant-b")
+                    .body("{not-json")
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(renewal.status(), StatusCode::BAD_REQUEST);
+                a_live.store(false, Ordering::SeqCst);
             }
             let mut response = Vec::new();
             let read = tokio::time::timeout(
@@ -1554,6 +1917,20 @@ mod tests {
                 );
             }
         }
+
+        let live_b = client
+            .get(format!("{base}/v1/health"))
+            .header("origin", "https://app.example")
+            .header("X-Build-Session", &session_id)
+            .bearer_auth("grant-b")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(live_b.status(), StatusCode::OK);
+        assert!(
+            !live_b.bytes().await.unwrap().is_empty(),
+            "grant B remains live and completes through the production TLS socket"
+        );
 
         stop.send(true).unwrap();
         server.await.unwrap().unwrap();
@@ -1760,16 +2137,24 @@ mod tests {
     }
 
     fn close_request(session_id: &str) -> Request<Body> {
+        close_request_with_token(session_id, "account-bound-token")
+    }
+
+    fn close_request_with_token(session_id: &str, token: &str) -> Request<Body> {
         Request::delete(format!("/v1/sessions/{session_id}"))
-            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header(AUTHORIZATION, format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap()
     }
 
     fn open_request(body: Body) -> Request<Body> {
+        open_request_with_token(body, "account-bound-token")
+    }
+
+    fn open_request_with_token(body: Body, token: &str) -> Request<Body> {
         let mut request = Request::post("/v1/sessions")
             .header(CONTENT_TYPE, "application/json")
-            .header(AUTHORIZATION, "Bearer account-bound-token")
+            .header(AUTHORIZATION, format!("Bearer {token}"))
             .body(body)
             .unwrap();
         request

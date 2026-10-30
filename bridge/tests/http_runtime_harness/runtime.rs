@@ -799,9 +799,14 @@ async fn tls_stalled_reader_retains_sse_reservation_until_deadline_teardown() {
     assert_eq!(budget.available(), limits::TOTAL_BUFFER_BYTES);
 }
 
-#[tokio::test]
-async fn tls_late_prior_response_ticket_cannot_retire_successor_on_same_connection() {
-    use std::sync::{Arc, Mutex};
+async fn assert_late_prior_response_ticket_cannot_retire_successor(deferred_release: bool) {
+    use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex};
+    struct Released(Arc<AtomicBool>);
+    impl Drop for Released {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
     let dir = tempfile::tempdir().unwrap();
     let rcgen::CertifiedKey { cert, key_pair } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
@@ -903,7 +908,16 @@ async fn tls_late_prior_response_ticket_cannot_retire_successor_on_same_connecti
     let next_authority = next_rx.await.unwrap();
     assert!(first_authority.same_connection(&next_authority));
     assert_eq!(response.chunk().await.unwrap().unwrap(), "first event\n");
-    old_ticket.invalidate();
+    let released = Arc::new(AtomicBool::new(false));
+    if deferred_release {
+        old_ticket.release_with(Released(released.clone()));
+        assert!(
+            !released.load(Ordering::SeqCst),
+            "prior response owner remains retained before a socket flush"
+        );
+    } else {
+        old_ticket.invalidate();
+    }
     event_tx
         .send(bytes::Bytes::from_static(b"successor event\n"))
         .await
@@ -916,10 +930,29 @@ async fn tls_late_prior_response_ticket_cannot_retire_successor_on_same_connecti
             .unwrap(),
         "successor event\n"
     );
+    if deferred_release {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !released.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the next successful flush releases the prior response owner");
+    }
     drop(response);
     drop(event_tx);
     stop.send(true).unwrap();
     server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn tls_late_prior_response_ticket_cannot_retire_successor_on_same_connection() {
+    assert_late_prior_response_ticket_cannot_retire_successor(false).await;
+}
+
+#[tokio::test]
+async fn tls_deferred_release_with_cannot_retire_successor_on_same_connection() {
+    assert_late_prior_response_ticket_cannot_retire_successor(true).await;
 }
 
 #[tokio::test(start_paused = true)]

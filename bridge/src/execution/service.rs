@@ -49,6 +49,18 @@ impl ExecutionService {
     pub fn new(handler: FrameHandler) -> Arc<Self> {
         Self::from_dispatcher(Arc::new(Dispatcher::new(handler)))
     }
+    #[cfg(test)]
+    pub(crate) fn with_capacity(
+        handler: FrameHandler,
+        queue_depth: usize,
+        workers: usize,
+    ) -> Arc<Self> {
+        Self::from_dispatcher(Arc::new(Dispatcher::with_capacity(
+            handler,
+            queue_depth,
+            workers,
+        )))
+    }
     pub(crate) fn from_dispatcher(dispatcher: Arc<Dispatcher>) -> Arc<Self> {
         let sessions = Arc::new(ClientSessions::new(crate::bridge_epoch::current()));
         let cleanup = Arc::downgrade(&dispatcher);

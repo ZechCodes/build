@@ -190,6 +190,7 @@ export function mountTaskPage(host, options) {
   };
   const referenceLookups = mountTaskReferenceLookups(host, { deviceId: state.deviceId, projectId: state.projectId });
   let attemptedFullRefresh = null;
+  let admittingRepairRead = null;
   let contentHeader = null;
   let checklistFocus = null;
   const checklist = createTaskChecklist({
@@ -553,7 +554,7 @@ export function mountTaskPage(host, options) {
 
   function requestFullContent(task, authority) {
     const key = taskFullRefreshKey(task, contentHeader);
-    if (!key || key === attemptedFullRefresh) return;
+    if (!key || key === attemptedFullRefresh || repairIsAdmitting(key)) return;
     void requestOwnedTaskRead(authority, key);
   }
 
@@ -706,6 +707,22 @@ export function mountTaskPage(host, options) {
     return authority;
   }
 
+  function repairIsAdmitting(key) {
+    return admittingRepairRead?.key === key && admittingRepairRead.owner.accept();
+  }
+
+  function reserveRepairRead(owner, key) {
+    if (!key) return null;
+    const reservation = { owner, key };
+    admittingRepairRead = reservation;
+    return reservation;
+  }
+
+  function releaseRepairRead(reservation) {
+    // An older completion cannot clear a replacement owner's reservation.
+    if (admittingRepairRead === reservation) admittingRepairRead = null;
+  }
+
   function acceptsTaskReadDispatch(authority, demand) {
     if (state.disposed || !authority.accept()) return false;
     // Only actual dispatch consumes the coherent snapshot's repair key.
@@ -719,6 +736,7 @@ export function mountTaskPage(host, options) {
     if (!demand) return;
     const authority = admitTaskReadOwner();
     if (!authority) return;
+    const reservation = reserveRepairRead(authority, demand.repairKey);
     try {
       const [checklistBasis, detailBasis, contentRead] = await Promise.all([
         checklist.readBasis(), captureTaskDetailRead(state.deviceId, state.projectId, state.taskId),
@@ -741,6 +759,8 @@ export function mountTaskPage(host, options) {
       state.loaded = true;
       paint();
       notifyError("Could not read this task", messageOf(error));
+    } finally {
+      releaseRepairRead(reservation);
     }
   }
 

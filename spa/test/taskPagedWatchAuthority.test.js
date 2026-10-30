@@ -459,3 +459,64 @@ it("applies a metadata-only owner's full watch answer after unrelated owned chan
   expect(await outside.watch.settleTaskWatchMutation(remaining, { rollback: true })).toBe(true);
   expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
 });
+
+async function catalogueOnlyFalse(api) {
+  const address = catalogue(api);
+  const contentRead = await api.content.captureTaskContentRead(address, { revalidate: "full" });
+  await api.tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    api.tracker.tasksRecord([row(20, { watched: false })], []), { contentRead });
+  const summaries = await import("../src/core/taskSummaryCache.js");
+  const detail = api.tracker.taskAddress(scope.deviceId, scope.projectId, "task-20");
+  expect(await api.cache.readCached(detail)).toBeUndefined();
+  expect(await api.cache.readCached(summaries.summaryAddress(scope, "task-20"))).toBeUndefined();
+  return { detail, task: (await savedRows(api))[0] };
+}
+
+it("protects a conflicting unowned detail creation from an earlier metadata-only watch acknowledgment", async () => {
+  const first = await runtime();
+  const { detail } = await catalogueOnlyFalse(first);
+  const owner = await first.watch.beginTaskWatchMutation(scope, "task-20", { watched: true, metadataOnly: true });
+  const contentRead = await first.content.captureTaskContentRead(scope);
+  const controlAddress = first.watch.taskWatchControlAddress(scope);
+  const before = (await first.cache.readCached(controlAddress)).value;
+  const outside = await runtime();
+  await outside.tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-20",
+    outside.tracker.taskRecord(row(20, { title: "Unowned new detail", watched: true, watch_started_after: "te-blind" }), []));
+  const created = (await outside.cache.readCached(detail)).value.task;
+  expect(created).toMatchObject({ watched: true, watch_started_after: "te-blind" });
+  expect(created[outside.watch.TASK_WATCH_CACHE]).toBeUndefined();
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true });
+  const afterCreation = (await outside.cache.readCached(controlAddress)).value;
+
+  await outside.watch.settleTaskWatchMutation(owner, { contentRead,
+    answer: { task: row(20, { watched: true, watch_started_after: "te-ack" }) } });
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  const held = (await outside.cache.readCached(detail)).value.task;
+  expect(held).toMatchObject({ watched: true, watch_started_after: "te-blind" });
+  expect(held[outside.watch.TASK_WATCH_CACHE]?.source).not.toBe("ack");
+  expect(afterCreation.blindRetirementEpoch).not.toBe(before.blindRetirementEpoch);
+});
+
+it("does not treat an unchanged genuinely observed catalogue copy into absent detail as blind interference", async () => {
+  const first = await runtime();
+  const { detail, task: observed } = await catalogueOnlyFalse(first);
+  expect(observed[first.watch.TASK_WATCH_CACHE]).toMatchObject({ taskId: "task-20", source: "read", uncertain: true });
+  expect(observed.__task_content_cache.header.read_order).toBeGreaterThan(0);
+  const prepared = structuredClone(observed);
+  const owner = await first.watch.beginTaskWatchMutation(scope, "task-20", { watched: true, metadataOnly: true });
+  const contentRead = await first.content.captureTaskContentRead(scope);
+  const controlAddress = first.watch.taskWatchControlAddress(scope);
+  const before = (await first.cache.readCached(controlAddress)).value;
+  const outside = await runtime();
+  await outside.tracker.writeTaskRecord(scope.deviceId, scope.projectId, "task-20", outside.tracker.taskRecord(prepared, []));
+  expect((await outside.cache.readCached(detail)).value.task.watched).toBe(false);
+  expect((await outside.cache.readCached(controlAddress)).value.blindRetirementEpoch).toBe(before.blindRetirementEpoch);
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true });
+
+  await outside.watch.settleTaskWatchMutation(owner, { contentRead,
+    answer: { task: row(20, { watched: true, watch_started_after: "te-ack" }) } });
+  const held = (await outside.cache.readCached(detail)).value.task;
+  expect(held).toMatchObject({ watched: true, watch_started_after: "te-ack" });
+  expect(held[outside.watch.TASK_WATCH_CACHE]?.uncertain).not.toBe(false);
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+});

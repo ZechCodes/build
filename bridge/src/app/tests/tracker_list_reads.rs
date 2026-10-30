@@ -603,7 +603,7 @@ async fn opted_in_get_without_sequence_preserves_detail_and_marks_watch_unavaila
     let store = state.tracker_store().unwrap().clone();
     // This fixture removes the durable counter; it does not fabricate any
     // watch authority or a known zero.
-    store.connection().execute("DELETE FROM meta WHERE key='watch_snapshot_seq'", []).unwrap();
+    store.writer_for_test().execute("DELETE FROM meta WHERE key='watch_snapshot_seq'", []).unwrap();
     let connection = store.read_pool().acquire().await;
     let legacy = state.read_service().call(
         req("tasks.get", json!({"task_id":task["id"]})),

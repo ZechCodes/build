@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 struct WarmFixture {
-    // The sole owner cleans up this fresh Projects path, including on unwind.
+    // The sole owner cleans up this fresh TMPDIR-scoped path, including on unwind.
     _root: tempfile::TempDir,
     app: AppState,
     project: String,
@@ -18,7 +18,7 @@ impl WarmFixture {
     fn new(owners: usize) -> Self {
         let root = tempfile::Builder::new()
             .prefix(".task901-warm-work-")
-            .tempdir_in("/home/zech/Projects")
+            .tempdir()
             .unwrap();
         let project_path = root.path().join("project");
         std::fs::create_dir(&project_path).unwrap();

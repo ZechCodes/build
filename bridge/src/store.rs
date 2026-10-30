@@ -77,6 +77,7 @@ pub use mutations::{
     MutationRecovery, MutationResource,
 };
 pub use writer::StoreWriter;
+mod backup_trust;
 mod operations;
 mod read_agents;
 mod read_pool;

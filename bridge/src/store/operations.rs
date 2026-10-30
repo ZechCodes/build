@@ -691,6 +691,7 @@ pub(super) fn backup_existing_observed(
     destination: &Path,
     after_preflight: impl FnOnce(),
 ) -> Result<(), StoreError> {
+    let _trusted_ancestors = super::backup_trust::validate_task_state_root(dir)?;
     let source = dir.join(super::DB_FILE);
     let conn = Connection::open_with_flags(&source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let version: Option<String> = conn

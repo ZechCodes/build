@@ -68,12 +68,14 @@ beforeEach(async () => {
 afterEach(() => { pages.forEach((page) => page.dispose()); resetDeviceContexts(); vi.restoreAllMocks(); });
 
 it("projects a full watch acknowledgment into normalized summaries while retaining body and timeline only in detail", async () => {
+  let serverCanonicalTask = full();
   const pending = deferred(); session.call.mockImplementation((method) => method === "tasks.get"
-    ? Promise.resolve({ task: full(), timeline }) : pending.promise);
+    ? Promise.resolve({ task: structuredClone(serverCanonicalTask), timeline }) : pending.promise);
   const mounted = await mount(); mounted.button().click();
   await vi.waitFor(() => expect(count("tasks.watch")).toBe(1));
-  pending.resolve({ task: full({ watched: true, watch_started_after: "", unread_count: 0,
-    read_through: "tc-04\0", updated_at: "2026-10-29T12:01:00Z", attachments: [{ path: "large-file" }] }) });
+  serverCanonicalTask = full({ watched: true, watch_started_after: "", unread_count: 0,
+    read_through: "tc-04\0", updated_at: "2026-10-29T12:01:00Z", attachments: [{ path: "large-file" }] });
+  pending.resolve({ task: structuredClone(serverCanonicalTask) });
   await settle();
   const summary = await cachedSummary();
   expect(summary.task).toMatchObject({ watched: true, watch_started_after: "", read_through: "tc-04\0", unread_count: 0, attachment_count: 1 });
@@ -231,8 +233,11 @@ it("does not let an older no-task read acknowledgment raise the floor after a ne
 
 it.each(["dependency", "assignment"])("rejects an older %s owner's full reply after a newer page unwatch", async (owner) => {
   const older = deferred(), unwatch = deferred(), watched = full({ watched: true, watch_started_after: "", unread_count: 0 });
+  let serverCanonicalTask = watched;
   await writeTaskRecord(scope.deviceId, scope.projectId, taskId, { task: watched, timeline });
-  session.call.mockImplementation((method) => method === "tasks.get" ? Promise.resolve({ task: watched, timeline })
+  // Each read captures server state when dispatched. In-flight reads retain
+  // their pre-ack snapshot; recovery after the ack sees the committed unwatch.
+  session.call.mockImplementation((method) => method === "tasks.get" ? Promise.resolve({ task: structuredClone(serverCanonicalTask), timeline })
     : method === "tasks.unwatch" ? unwatch.promise : older.promise);
   const actions = createTaskWaitingOnActions({ ...scope, taskId, call: context.rpc });
   const request = owner === "dependency" ? actions.add(["blocker"]) : actions.assign({ assignee: { kind: "user" } });
@@ -240,7 +245,8 @@ it.each(["dependency", "assignment"])("rejects an older %s owner's full reply af
   await vi.waitFor(() => expect(count(method)).toBe(1));
   const mounted = await mount(); expect(mounted.button().getAttribute("aria-pressed")).toBe("true");
   mounted.button().click(); await vi.waitFor(() => expect(count("tasks.unwatch")).toBe(1));
-  unwatch.resolve({ task: full({ watched: false, read_through: "tc-20" }) });
+  serverCanonicalTask = full({ watched: false, read_through: "tc-20" });
+  unwatch.resolve({ task: structuredClone(serverCanonicalTask) });
   await vi.waitFor(async () => expect((await cachedSummary()).task.read_through).toBe("tc-20"));
   older.resolve({ task: watched }); await request; await settle();
   expect((await cachedSummary()).task).toMatchObject({ watched: false, read_through: "tc-20" });

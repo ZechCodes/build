@@ -7,6 +7,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
   contextFor: () => live.current ? live.context : null,
   deviceContextIdentity: () => live.identity,
   whenGreeted: async (context, dispatch) => {
+    if (live.realGreeting) return live.realGreeting.whenGreeted(context, dispatch);
     const session = live.session, greeting = context.greeted;
     await live.greetingWait;
     const stands = () => live.current && !live.away && live.session === session && context.greeted === greeting;
@@ -42,7 +43,7 @@ beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
   Object.assign(live, { current: true, identity: "context-1", away: false, session: {}, greetingWait: undefined,
-    kinds: ["tasks"], watches: new Set(), moved: new Set(), greeted: new Set() });
+    kinds: ["tasks"], watches: new Set(), moved: new Set(), greeted: new Set(), realGreeting: null });
   live.context = { deviceId: scope.deviceId, greeted: {}, active: () => live.current,
     adapter: { capabilities: { tasks: { counts: true } } }, rpc: vi.fn().mockResolvedValue(counts()) };
   ({ followProjectTaskCounts: start } = await import("../src/core/taskCountReaderRuntime.js"));
@@ -78,6 +79,21 @@ it("waits for the current greeting and rebinds only the mounted project's task p
   expect([...live.watches][0].kinds).toEqual(["tasks"]);
   expect(live.context.rpc).toHaveBeenCalledTimes(1);
   runtime.dispose();
+});
+
+it("admits one counts request when an actual opening greeting settles without replacing its authority", async () => {
+  const contexts = await vi.importActual("../src/core/deviceContexts.js");
+  live.realGreeting = contexts;
+  Object.assign(live.context, { session: live.session, call: live.context.rpc, offline: false });
+  const authority = contexts.greetingInFlight(live.context);
+  const opening = live.context.greeted;
+  mount(); await Promise.resolve(); await Promise.resolve();
+  expect(live.context.rpc).not.toHaveBeenCalled();
+  contexts.adoptBridgeSelection(live.context, { version: "3.27.0", unsupported: null },
+    { capabilities: { tasks: { counts: true } } }, authority);
+  expect(live.context.greeted).toBe(opening);
+  greeted(); await cachedTotal(5);
+  expect(live.context.rpc).toHaveBeenCalledTimes(1);
 });
 
 it("suppresses pending mutations and refreshes once after the final acknowledgment", async () => {

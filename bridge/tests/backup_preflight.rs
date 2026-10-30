@@ -94,3 +94,49 @@ fn backup_of_ready_database_completes_and_keeps_source_unchanged() {
     assert!(destination.is_file());
     assert_eq!(fs::read(&database).unwrap(), before, "backup changed the source database");
 }
+
+#[test]
+fn backup_waits_for_live_writer_and_copies_its_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let tasks = root.path().join("tasks");
+    drop(Store::new(&tasks).unwrap());
+    let database = tasks.join("build.db");
+    let destination = root.path().join("backup.db");
+    let writer = Connection::open(&database).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    writer
+        .execute("INSERT INTO meta(key,value) VALUES('backup_live_writer','committed')", [])
+        .unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_build-bridge"))
+        .env_clear()
+        .env("HOME", root.path())
+        .env("BRIDGE_TASKS_DIR", &tasks)
+        .arg("backup")
+        .arg(&destination)
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(750));
+    writer.execute_batch("COMMIT").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("backup did not finish promptly after the writer committed");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(status.success(), "backup failed after the writer committed");
+    let backup = Connection::open(&destination).unwrap();
+    let committed: String = backup
+        .query_row("SELECT value FROM meta WHERE key='backup_live_writer'", [], |row| row.get(0))
+        .expect("backup must include the commit preceding its locked preflight");
+    assert_eq!(committed, "committed");
+    writer
+        .execute("INSERT INTO meta(key,value) VALUES('writer_after_backup','ok')", [])
+        .expect("backup must release its source reservation");
+}

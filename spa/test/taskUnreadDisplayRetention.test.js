@@ -57,6 +57,16 @@ afterEach(() => {
 
 async function seedSelectedInputs() {
   const task = full();
+  // An action updates an already admitted detail; its scope-wide ticket is
+  // not an addressed full-detail read that can populate an absent body.
+  // Preserve the original null-detail harness failure separately. This older
+  // real detail keeps the detail-replica safety oracle without owning the
+  // consumers' initial count: the newer list must still supply their 3.
+  const detailAddress = tracker.taskAddress(scope.deviceId, scope.projectId, taskId);
+  const detailRead = await content.captureTaskContentRead(detailAddress, { revalidate: "full" });
+  expect(await tracker.writeTaskRecord(scope.deviceId, scope.projectId, taskId,
+    tracker.taskRecord(full({ title: "Older cached detail", updated_at: "2026-10-29T11:59:00Z" }), []),
+    { contentRead: detailRead })).toBe(true);
   const summaryRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
   const ticket = await summaries.beginSummaryQuery(scope, filters, summaryRead.readOrder, { contentRead: summaryRead });
   expect(await summaries.landSummaryPage(ticket, { summary: true, tasks: [summaryOf(task)],
@@ -65,8 +75,15 @@ async function seedSelectedInputs() {
   const listRead = await content.captureTaskContentRead(address, { revalidate: "full" });
   expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
     tracker.tasksRecord([task], columns(), listRead.readOrder), { contentRead: listRead })).toBe(true);
-  expect((await listedTask()).unread_count).toBe(3);
-  expect(await tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId)).toBeNull();
+  const listed = await listedTask();
+  const detailed = await tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId);
+  const { changedSince } = await import("../src/core/trackerModel.js");
+  const { taskUnreadCount } = await import("../src/core/taskUnread.js");
+  expect(listed.unread_count).toBe(3);
+  expect(detailed.task).toMatchObject({ title: "Older cached detail", updated_at: "2026-10-29T11:59:00Z" });
+  expect(detailed.timeline).toEqual([]);
+  expect(changedSince(listed, detailed)).toBe(true);
+  expect(taskUnreadCount(listed, detailed)).toBe(3);
 }
 
 async function invalidateWithActualIncompleteAction() {

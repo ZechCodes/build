@@ -25,7 +25,7 @@ mod snapshots;
 
 #[cfg(test)]
 pub(in crate::app) use ownership::work_counts as ownership_work_counts;
-pub(in crate::app) use ownership::{ProjectionOwnership, ProjectionStructure};
+pub(in crate::app) use ownership::{ProjectionOwnership, ProjectionStructure, RootsOwnership};
 #[cfg(test)]
 pub(in crate::app) use reclaim::probe_reclaim_stop_for_test;
 #[cfg(test)]

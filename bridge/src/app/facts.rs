@@ -239,7 +239,8 @@ impl AppState {
     pub(in crate::app) fn worktree_roots(&self) -> WorktreeRoots {
         #[cfg(test)]
         let _invocation = crate::workspace::warm_work_counts::roots_invocation();
-        self.checkout_subjects()
+        let ownership = super::workspaces::RootsOwnership::capture(self);
+        self.checkout_subjects_using(Some(&ownership))
             .into_iter()
             .map(|(id, subject)| (id, subject.root))
             .collect()
@@ -249,7 +250,14 @@ impl AppState {
     /// a flush works from, and the one [`worktree_roots`](Self::worktree_roots)
     /// is the paths of.
     pub(in crate::app) fn checkout_subjects(&self) -> BTreeMap<String, CheckoutSubject> {
-        let mut subjects = self.git_subjects();
+        self.checkout_subjects_using(None)
+    }
+
+    fn checkout_subjects_using(
+        &self,
+        ownership: Option<&super::workspaces::RootsOwnership>,
+    ) -> BTreeMap<String, CheckoutSubject> {
+        let mut subjects = self.git_subjects(ownership);
         subjects.extend(self.project_source_subjects());
         subjects
     }
@@ -286,11 +294,22 @@ impl AppState {
 
     /// The producer's cached path observations, with the same workspace
     /// ownership rule as run_git_root and no filesystem probe after warm-up.
-    fn snapshot_run_git_root(&self, run_id: &str, checkout: &std::path::Path) -> PathBuf {
+    fn snapshot_run_git_root(
+        &self,
+        run_id: &str,
+        checkout: &std::path::Path,
+        ownership: Option<&super::workspaces::RootsOwnership>,
+    ) -> PathBuf {
         if self.snapshot_path_exists(&checkout.join(".git")) {
             return checkout.to_path_buf();
         }
-        self.workspace_snapshot_for_conversation(run_id, None)
+        let workspace = match ownership {
+            Some(ownership) => ownership
+                .workspace_for_owner(run_id)
+                .and_then(|id| self.workspaces.get(id)),
+            None => self.workspace_snapshot_for_conversation(run_id, None),
+        };
+        workspace
             .and_then(|workspace| {
                 workspace
                     .directories
@@ -302,13 +321,16 @@ impl AppState {
     }
 
     /// The board's own entities with a Git checkout.
-    fn git_subjects(&self) -> BTreeMap<String, CheckoutSubject> {
+    fn git_subjects(
+        &self,
+        ownership: Option<&super::workspaces::RootsOwnership>,
+    ) -> BTreeMap<String, CheckoutSubject> {
         let mut subjects = BTreeMap::new();
         for (id, active) in &self.runs {
             if active.run.state == crate::run::RunState::Archived {
                 continue;
             }
-            let root = self.snapshot_run_git_root(id, &active.worktree.path);
+            let root = self.snapshot_run_git_root(id, &active.worktree.path, ownership);
             let base_branch = self.run_base_branch(id, &active.worktree.base_branch);
             subjects.insert(
                 id.clone(),

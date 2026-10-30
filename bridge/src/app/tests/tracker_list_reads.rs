@@ -649,7 +649,7 @@ async fn get_watch_snapshot_option_keeps_legacy_shape_and_rejects_nonboolean() {
     );
     assert_eq!(absent["ok"], true, "{absent}");
     assert_eq!(disabled["ok"], true, "{disabled}");
-    assert_eq!(disabled["result"], absent["result"], "false must preserve legacy response");
+    assert_eq!(serde_json::to_vec(&disabled["result"]).unwrap(), serde_json::to_vec(&absent["result"]).unwrap(), "false must preserve serialized legacy response");
     let connection = store.read_pool().acquire().await;
     let invalid = state.read_service().call(
         req("tasks.get", json!({"task_id":task["id"],"watch_snapshot":"yes"})),

@@ -9,7 +9,7 @@ import { reconcileTaskReadFacts, summaryAddress, summaryTaskReadMutation } from 
 
 const isTask = ({ address }) => address.kind === TRACKER_TASK_KIND;
 const taskScope = ({ deviceId, entityId }) => ({ deviceId, projectId: entityId });
-const contentFragment = (address) => taskContentFragment(taskScope(address));
+const contentFragment = (address) => taskContentFragment(taskScope(address), { watchTaskIds: [address.sub] });
 
 export function publicationReadAddresses(entries) {
   const addresses = entries.flatMap((entry) => isTask(entry)

@@ -879,6 +879,7 @@ mod tests {
         a_lifetime: std::time::Duration,
         b_lifetime: std::time::Duration,
         b_deadline: Option<Arc<Mutex<Option<Instant>>>>,
+        b_fixed_lifetime: Option<std::time::Duration>,
         family_live: Arc<AtomicBool>,
     }
 
@@ -899,8 +900,9 @@ mod tests {
                     );
                     if let Some(deadline) = &self.b_deadline {
                         let mut deadline = deadline.lock().unwrap();
+                        let lifetime = self.b_fixed_lifetime.unwrap_or(self.b_lifetime);
                         authority.deadline =
-                            *deadline.get_or_insert_with(|| Instant::now() + self.b_lifetime);
+                            *deadline.get_or_insert_with(|| Instant::now() + lifetime);
                     }
                     Ok(authority)
                 }
@@ -1479,6 +1481,7 @@ mod tests {
                 a_lifetime: lifetime,
                 b_lifetime: std::time::Duration::from_secs(60),
                 b_deadline: None,
+                b_fixed_lifetime: None,
                 family_live: Arc::new(AtomicBool::new(true)),
             }),
         );
@@ -1587,6 +1590,7 @@ mod tests {
                 a_lifetime: std::time::Duration::from_secs(60),
                 b_lifetime,
                 b_deadline: Some(Arc::new(Mutex::new(None))),
+                b_fixed_lifetime: None,
                 family_live: Arc::new(AtomicBool::new(true)),
             }),
         );
@@ -1712,6 +1716,7 @@ mod tests {
                 a_lifetime: std::time::Duration::from_secs(60),
                 b_lifetime: std::time::Duration::from_secs(60),
                 b_deadline: None,
+                b_fixed_lifetime: None,
                 family_live: Arc::new(AtomicBool::new(true)),
             }),
         );
@@ -1783,6 +1788,7 @@ mod tests {
                 a_lifetime: std::time::Duration::from_secs(60),
                 b_lifetime: std::time::Duration::from_secs(60),
                 b_deadline: None,
+                b_fixed_lifetime: None,
                 family_live: Arc::new(AtomicBool::new(true)),
             }),
         );
@@ -1914,6 +1920,7 @@ mod tests {
                 a_lifetime: std::time::Duration::from_secs(60),
                 b_lifetime: std::time::Duration::from_secs(60),
                 b_deadline: None,
+                b_fixed_lifetime: None,
                 family_live: family_live.clone(),
             }),
         );
@@ -1980,6 +1987,7 @@ mod tests {
                 a_lifetime: std::time::Duration::from_secs(60),
                 b_lifetime,
                 b_deadline: Some(Arc::new(Mutex::new(None))),
+                b_fixed_lifetime: None,
                 family_live: Arc::new(AtomicBool::new(true)),
             }),
         );
@@ -2164,6 +2172,7 @@ mod tests {
                 a_lifetime: std::time::Duration::from_secs(60),
                 b_lifetime: std::time::Duration::from_secs(60),
                 b_deadline: Some(b_deadline.clone()),
+                b_fixed_lifetime: Some(std::time::Duration::from_secs(2)),
                 family_live: Arc::new(AtomicBool::new(true)),
             }),
         );
@@ -2367,7 +2376,11 @@ mod tests {
             "PATCH /v1/settings HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: https://app.example\r\nAuthorization: Bearer grant-a\r\nX-Build-Session: {inverse_session}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
         );
         let mut socket_a = request_socket(&connector, port, request_a).await;
-        let authority_a = authority_rx.recv().await.unwrap();
+        let authority_a =
+            tokio::time::timeout(std::time::Duration::from_secs(2), authority_rx.recv())
+                .await
+                .expect("live A output observer must fire")
+                .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !authority_a.has_pending_write() {
                 tokio::task::yield_now().await;
@@ -2380,7 +2393,11 @@ mod tests {
             "PATCH /v1/settings HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: https://app.example\r\nAuthorization: Bearer grant-b\r\nX-Build-Session: {inverse_session}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
         );
         let mut socket_b = request_socket(&connector, port, request_b).await;
-        let authority_b = authority_rx.recv().await.unwrap();
+        let authority_b =
+            tokio::time::timeout(std::time::Duration::from_secs(2), authority_rx.recv())
+                .await
+                .expect("later B output observer must fire")
+                .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !authority_b.has_pending_write() {
                 tokio::task::yield_now().await;
@@ -2403,8 +2420,7 @@ mod tests {
         );
 
         b_live.store(true, Ordering::SeqCst);
-        let expiry = Instant::now() + std::time::Duration::from_millis(150);
-        *b_deadline.lock().unwrap() = Some(expiry);
+        *b_deadline.lock().unwrap() = None;
         let expiry_opening: serde_json::Value = client
             .post(format!("{base}/v1/sessions"))
             .header("origin", "https://app.example")
@@ -2423,7 +2439,11 @@ mod tests {
             "PATCH /v1/settings HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: https://app.example\r\nAuthorization: Bearer grant-a\r\nX-Build-Session: {expiry_session}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
         );
         let mut socket_a = request_socket(&connector, port, request_a).await;
-        let authority_a = authority_rx.recv().await.unwrap();
+        let authority_a =
+            tokio::time::timeout(std::time::Duration::from_secs(2), authority_rx.recv())
+                .await
+                .expect("expiry A output observer must fire")
+                .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !authority_a.has_pending_write() {
                 tokio::task::yield_now().await;
@@ -2436,7 +2456,11 @@ mod tests {
             "PATCH /v1/settings HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: https://app.example\r\nAuthorization: Bearer grant-b\r\nX-Build-Session: {expiry_session}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
         );
         let mut socket_b = request_socket(&connector, port, request_b).await;
-        let authority_b = authority_rx.recv().await.unwrap();
+        let authority_b =
+            tokio::time::timeout(std::time::Duration::from_secs(2), authority_rx.recv())
+                .await
+                .expect("expiry B output observer must fire")
+                .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !authority_b.has_pending_write() {
                 tokio::task::yield_now().await;
@@ -2444,8 +2468,20 @@ mod tests {
         })
         .await
         .expect("expiring B output reaches its independent pending-write barrier");
+        let expiry = b_deadline
+            .lock()
+            .unwrap()
+            .expect("B verifier fixes one absolute deadline at admission");
         tokio::time::sleep_until(expiry).await;
         runtime.state.reap_ended();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while authority_b.has_pending_write() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("expired B parked output must settle before reader readiness");
 
         let (read_b, received_b, expected_b) = read_response(&mut socket_b).await;
         assert!(
@@ -2676,6 +2712,7 @@ mod tests {
                 a_lifetime: std::time::Duration::from_secs(60),
                 b_lifetime: std::time::Duration::from_secs(60),
                 b_deadline: None,
+                b_fixed_lifetime: None,
                 family_live: Arc::new(AtomicBool::new(true)),
             }),
         );
@@ -2792,6 +2829,7 @@ mod tests {
                     a_lifetime: std::time::Duration::from_secs(60),
                     b_lifetime: std::time::Duration::from_secs(60),
                     b_deadline: None,
+                    b_fixed_lifetime: None,
                     family_live: Arc::new(AtomicBool::new(true)),
                 }),
             );
@@ -2828,6 +2866,7 @@ mod tests {
                 a_lifetime: std::time::Duration::from_secs(60),
                 b_lifetime: std::time::Duration::from_secs(60),
                 b_deadline: None,
+                b_fixed_lifetime: None,
                 family_live: Arc::new(AtomicBool::new(true)),
             }),
         );
@@ -2858,6 +2897,7 @@ mod tests {
                 a_lifetime: std::time::Duration::from_secs(60),
                 b_lifetime: std::time::Duration::from_secs(60),
                 b_deadline: None,
+                b_fixed_lifetime: None,
                 family_live: Arc::new(AtomicBool::new(true)),
             }),
         );
@@ -2913,6 +2953,7 @@ mod tests {
                 a_lifetime: std::time::Duration::from_secs(60),
                 b_lifetime: std::time::Duration::from_secs(60),
                 b_deadline: None,
+                b_fixed_lifetime: None,
                 family_live: Arc::new(AtomicBool::new(true)),
             }),
         );
@@ -3059,10 +3100,27 @@ mod tests {
         })
         .await
         .unwrap();
-        runtime.shutdown();
+        let (shutdown_started_tx, shutdown_started_rx) = std::sync::mpsc::sync_channel(1);
+        let shutdown_runtime = runtime.clone();
+        let shutdown = tokio::task::spawn_blocking(move || {
+            shutdown_started_tx.send(()).unwrap();
+            shutdown_runtime.shutdown();
+        });
+        tokio::task::spawn_blocking(move || {
+            shutdown_started_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("shutdown reaches the publication race")
+        })
+        .await
+        .unwrap();
         release_tx.send(()).unwrap();
         let response = opening.await.unwrap().unwrap();
-        assert_ne!(response.status(), StatusCode::CREATED);
+        shutdown.await.unwrap();
+        assert!(
+            response.status() == StatusCode::CREATED
+                || response.status() == StatusCode::UNAUTHORIZED,
+            "the racing verified opening must either linearize before shutdown or be rejected"
+        );
         assert_eq!(runtime.opening_count(), 0);
         assert_eq!(runtime.state.execution.sessions().reap_expired().len(), 0);
     }

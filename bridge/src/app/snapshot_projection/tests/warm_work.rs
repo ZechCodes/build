@@ -437,7 +437,7 @@ fn warm_pass_preserves_absent_equal_changed_and_ready_stat_notifications() {
         let mut f = WarmFixture::new(12);
         f.app.warm_snapshot_board_observations();
         if ready {
-            f.app.warm_snapshot_observations_for_test();
+            f.app.initialize_snapshot_projection();
         }
         let roots = f.app.watchers.roots_for_warm_work_test();
         let (_, warm) = work::measure(|| f.app.warm_snapshot_board_observations());

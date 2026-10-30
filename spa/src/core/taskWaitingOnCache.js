@@ -74,7 +74,7 @@ function validateTaskActionOrder(issuedRead) {
 const olderAction = (note, issuedRead) => issuedRead === undefined
   ? Boolean(note?.action_read) : (note?.action_read || 0) > issuedRead;
 const actionResponseNote = (held, taskId, read, actionRead, detail) => ({
-  ...(detail ? withWritten(held, [taskId], read) : held), ...(actionRead === undefined ? {} : { action_read: actionRead }),
+  ...held, ...(detail ? withWritten(held, [taskId], read) : {}), ...(actionRead === undefined ? {} : { action_read: actionRead }),
 });
 
 function actionHeaderGuards(records, task, count, context) {
@@ -112,6 +112,9 @@ const matchingWatchScope = (owner, deviceId, projectId, taskId) => !owner || own
   && owner.scope.projectId === projectId && owner.taskId === taskId;
 
 function actionResponseValues(all, config) {
+  // A recovered transaction attempt owns its outcome; an aborted attempt
+  // cannot turn a later cleanup-only commit into a publication receipt.
+  config.published = false;
   const { addresses, summary, settlement, contentRead, accept } = config;
   const records = all.slice(0, addresses.length), shared = all.slice(addresses.length, addresses.length + summary.addresses.length);
   const context = summary.context(shared), note = records.at(-1);

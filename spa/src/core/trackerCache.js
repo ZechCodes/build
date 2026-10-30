@@ -27,7 +27,7 @@ import { mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskConte
   isObservedTaskContent, taskContentObservationOf, withTaskWatchIntentNote } from "./taskContentAuthority.js";
 import { summaryTaskReadMutation, withTaskReadFacts, sameTaskReadFacts } from "./taskSummaryCache.js";
 import { reconcileTaskReadFacts } from "./taskWatchFacts.js";
-import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent } from "./taskWatchIntents.js";
+import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent, selectTaskWatchIntentGuard } from "./taskWatchIntents.js";
 import { blindTaskWatchChanged, retireTaskWatchFacts } from "./taskWatchAuthority.js";
 const normalizedAddress = (deviceId, projectId, taskId) => ({ deviceId, entityId: projectId, kind: "tracker-summary", sub: taskId });
 
@@ -432,7 +432,7 @@ function contentList(held, record, address, context, written, contentRead) {
   if (!admitsMembership && !held && !positiveOnly) return null;
   const old = new Map((held?.tasks || []).map((task) => [task.id, task]));
   const incoming = (record.tasks || []).filter((task) => admitsMembership || positiveOnly || old.has(task.id));
-  const blindWatch = (task) => !contentRead && !isObservedTaskContent(task) && blindTaskWatchChanged(old.get(task.id), task);
+  const blindWatch = (task) => isBlindTaskWatchWrite(old.get(task.id), task, address, context, contentRead);
   const results = incoming.map((task) => reconcileTaskContentWrite(old.get(task.id),
     contentRead ? observeTaskContent(task, { contentRead, coverage: "full" }) : task, { context, address, heldWritten: written }));
   const rows = results.flatMap((result, index) => {
@@ -460,16 +460,46 @@ function listMembershipAuthority(record, contentRead, address, context, written)
 
 function taskFactsForWrite(held, raw, address, context, contentRead, watchGuard) {
   const scope = { deviceId: address.deviceId, projectId: address.entityId };
-  raw = reconcileTaskWatchIntent(scope, raw, context.watchIntentOf?.(raw.id), context).task;
+  const blind = isBlindTaskWatchWrite(held, raw, address, context, contentRead);
+  const intent = reconcileTaskWatchIntent(scope, raw, context.watchIntentOf?.(raw.id), context);
+  raw = intent.task;
+  if (blind) return retireTaskWatchFacts(protectBlindTaskIntent(scope, held, raw, context));
+  if (untrackedTaskFacts(held, raw, intent, contentRead)) return protectBlindTaskIntent(scope, held, raw, context);
   const annotation = taskContentObservationOf(raw);
-  const observed = Boolean(contentRead) || isObservedTaskContent(raw);
-  if (!observed && !sameTaskReadFacts(held, raw) && !hasTaskWatchMetadata(raw)) {
-    return blindTaskWatchChanged(held, raw) ? retireTaskWatchFacts(raw) : raw;
-  }
-  const full = Boolean(contentRead) || annotation?.coverage === "full";
-  const source = full ? { watched: false, read_through: null, watch_started_after: null, dismissed_through: null, ...raw } : raw;
-  return reconcileTaskReadFacts({ deviceId: address.deviceId, projectId: address.entityId }, held, source,
+  return reconcileTaskReadFacts(scope, held, taskFactsSource(raw, contentRead, annotation),
     { context, contentRead: contentRead ?? annotation?.contentRead, watchGuard, markerPolicy: "legacy" }).task;
+}
+
+const untrackedTaskFacts = (held, raw, intent, contentRead) => !contentRead && !isObservedTaskContent(raw)
+  && !intent.retired && !sameTaskReadFacts(held, raw) && !hasTaskWatchMetadata(raw);
+const taskFactsSource = (raw, contentRead, annotation) => contentRead || annotation?.coverage === "full"
+  ? { watched: false, read_through: null, watch_started_after: null, dismissed_through: null, ...raw } : raw;
+
+function protectBlindTaskIntent(scope, held, raw, context) {
+  const protection = selectTaskWatchIntentGuard(scope, raw.id, [held, raw], context.watchIntentOf?.(raw.id), context);
+  if (!protection.guard) return raw;
+  const next = { ...raw };
+  for (const field of ["__task_watch_intent", TASK_WATCH_INTENT_CACHE]) {
+    if (Object.hasOwn(protection.guard, field)) next[field] = protection.guard[field];
+  }
+  return next;
+}
+
+function isBlindTaskWatchWrite(held, raw, address, context, contentRead) {
+  if (contentRead || isObservedTaskContent(raw)) return false;
+  const scope = { deviceId: address.deviceId, projectId: address.entityId };
+  const intent = reconcileTaskWatchIntent(scope, raw, context.watchIntentOf?.(raw.id), context);
+  return !intent.retired && blindTaskWatchChanged(held, raw) && !unchangedTaskWatchCopy(raw);
+}
+
+// Snapshot integrity classifies a cached copy; it grants no source authority.
+// The family reducer still checks its actual clock, lifetime and shared fence.
+function unchangedTaskWatchCopy(task) {
+  const lineage = task?.__task_watch_cache?.lineage;
+  return Array.isArray(lineage) && lineage.length === 2 && ["watched", "watch_started_after"].every((field, index) => {
+    const entry = lineage[index];
+    return entry?.[0] === field && entry[1] === Object.hasOwn(task, field) && Object.is(entry[2], task[field]);
+  });
 }
 
 const hasTaskWatchMetadata = (task) => ["__task_watch_cache", "__task_family_cache", "__task_watch_intent", TASK_WATCH_INTENT_CACHE]
@@ -549,7 +579,7 @@ function contentDetail(detail, record, headerBarrier, context, address, contentR
   const held = detail?.value;
   const result = detailContentSelection(detail, record, headerBarrier, context, address, contentRead);
   if (!usableDetailSelection(result, held, contentRead)) return null;
-  const retireWatch = blindDetailWatchChanged(held, record, contentRead);
+  const retireWatch = blindDetailWatchChanged(held, record, contentRead, address, context);
   const facts = taskFactsForWrite(held?.task, record.task, address, context, contentRead, projection || headerBarrier);
   return { values: [publishedDetail(held, record, result, contentRead, facts), null, null], retire: result.retired, retireWatch };
 }
@@ -562,8 +592,8 @@ function detailContentSelection(detail, record, headerBarrier, context, address,
 
 const usableDetailSelection = (result, held, contentRead) => Boolean(result.task)
   && !(contentRead && !held && typeof result.task.body !== "string");
-const blindDetailWatchChanged = (held, record, contentRead) => !contentRead && !isObservedTaskContent(record.task)
-  && blindTaskWatchChanged(held?.task, record.task);
+const blindDetailWatchChanged = (held, record, contentRead, address, context) =>
+  isBlindTaskWatchWrite(held?.task, record.task, address, context, contentRead);
 
 const addressedFullRead = (read, address) => read?.revalidate === "full"
   && ["deviceId", "entityId", "kind", "sub"].every((key) => (read.address?.[key] ?? "") === (address[key] ?? ""));

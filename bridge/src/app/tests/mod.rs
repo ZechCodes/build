@@ -278,6 +278,7 @@ mod tracker_identity_removal;
 mod tracker_inbox_wire;
 mod tracker_list_pages;
 mod tracker_list_reads;
+mod tracker_get_snapshot_options;
 mod tracker_observation_purity;
 mod tracker_query_reads;
 mod tracker_summary_identity_availability;

@@ -112,7 +112,7 @@ async function snapshot(runtime, targets, operationId = "payload-operation") {
     operation: await runtime.operations.get(operationId) };
 }
 
-async function startService(runtime, answer, calls = []) {
+async function startService(runtime, answer, calls = [], { waitForRefresh = true } = {}) {
   const pending = new Set(), timers = new Map();
   let timerId = 0;
   const session = { onWriteFrame: () => () => {}, callRaw: vi.fn(async (method, params, options) => {
@@ -138,10 +138,10 @@ async function startService(runtime, answer, calls = []) {
     // A real store turn also passes the service's promise-finally callbacks.
     await runtime.local.transactWriteOperations("readonly", () => null);
   };
-  const running = { service, session, calls, timers, drain };
+  const running = { service, session, calls, timers, drain, pending };
   services.push(running);
   await service.bind({ session, greeting });
-  await drain();
+  if (waitForRefresh) await drain();
   return running;
 }
 
@@ -550,4 +550,225 @@ it.each(["copied", "serialized", "foreign-runtime"])("refuses canonical history 
   // copy controls keep the genuine ordinary ticket and prove that distinction.
   if (kind !== "foreign-runtime") expect(canonical.value.task.body).toBe(answer.task.body);
   await operationUnfinished(writer);
+});
+
+function ownedReading(runtime, { frame, record }, call, active = () => true) {
+  const authority = { active, call: vi.fn(call) };
+  const done = runtime.refresh.refreshWriteOperation({ cache: runtime.operations, frame, record, authority })
+    .then((value) => ({ value }), (error) => ({ error }));
+  return { authority, done };
+}
+
+async function blockedOwnedOperation(runtime, targets, { frame, record }) {
+  const saved = await runtime.operations.get(record.operationId);
+  expect(saved).toMatchObject({ revision: frame.revision, refreshPending: true, overlayActive: true,
+    refreshState: { version: 1, revision: frame.revision, generation: expect.any(String), required: frame.published } });
+  expect(saved.refreshState.targets).toHaveLength(targets.length);
+  for (const target of targets) {
+    const slot = saved.refreshState.targets.find(({ address }) => runtime.keys.recordKey(address) === runtime.keys.recordKey(target.address));
+    expect(slot).toMatchObject({ key: expect.any(String), address: target.address, phase: "blocked", receipt: null,
+      blocked: { reason: expect.any(String), seen: { records: expect.any(Array) } } });
+    expect(slot.blocked.seen.records.length).toBeGreaterThan(0);
+    for (const reference of slot.blocked.seen.records) {
+      expect(reference.written).toBe(runtime.local.recordWriteOf(await runtime.local.readCanonicalCached(reference.address)));
+    }
+  }
+  return saved;
+}
+
+it("persists an exact owned partial outcome together with admitted task payload", async () => {
+  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedTask(writer);
+  const confirmed = await confirmedOperation(writer, [target]), answer = answerFor(target);
+  const reading = ownedReading(writer, confirmed, async () => answer);
+  await reading.done;
+  expect(reading.authority.call).toHaveBeenCalledExactlyOnceWith("tasks.get", { task_id: target.row.id });
+  const canonical = await observer.local.readCanonicalCached(target.address);
+  expect(canonical.value.task.body).toBe(answer.task.body);
+  expect(canonical.value.timeline).toEqual(answer.timeline);
+  expect(canonical.publication || []).toEqual([]);
+  await operationUnfinished(observer);
+  // First prove useful real cache paint; the missing durable outcome is then a
+  // lifecycle assertion, never an invocation of an unimplemented method.
+  await blockedOwnedOperation(observer, [target], confirmed);
+});
+
+it("rolls an owned partial outcome and payload back when the summary put aborts", async () => {
+  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedTask(writer);
+  const confirmed = await confirmedOperation(writer, [target]), answer = answerFor(target);
+  const detailKey = writer.keys.recordKey(target.address), summaryKey = writer.keys.recordKey(writer.summaries.summaryAddress(scope, target.row.id));
+  const originalPut = IDBObjectStore.prototype.put;
+  let dispatched, detailQueued = false, summaryRefused = false;
+  vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (record, key) {
+    if (key === summaryKey && detailQueued) {
+      summaryRefused = true;
+      throw new DOMException("Owned partial outcome quota", "QuotaExceededError");
+    }
+    const request = originalPut.call(this, record, key);
+    if (key === detailKey && record.value?.task?.body === answer.task.body) detailQueued = true;
+    return request;
+  });
+  const reading = ownedReading(writer, confirmed, async () => { dispatched = await snapshot(observer, [target]); return answer; });
+  const result = await reading.done;
+  expect(detailQueued).toBe(true);
+  expect(summaryRefused).toBe(true);
+  expect(result.error?.name).toBe("QuotaExceededError");
+  expect(await snapshot(observer, [target])).toEqual(dispatched);
+  // The baseline is captured after the owner's open/dispatch, not before its
+  // legitimate attempt registration. Both its state and payload must roll back.
+  expect(dispatched.operation).toMatchObject({ refreshPending: true, overlayActive: true,
+    refreshState: { revision: confirmed.frame.revision, generation: expect.any(String),
+      targets: [expect.objectContaining({ address: target.address, phase: "unread", attemptId: expect.any(String) })] } });
+});
+
+it.each(["current", "retired"])("recomputes an owned partial outcome after transient abort with a %s session", async (kind) => {
+  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedTask(writer);
+  const confirmed = await confirmedOperation(writer, [target]), answer = answerFor(target);
+  const originalPut = IDBObjectStore.prototype.put, detailKey = writer.keys.recordKey(target.address);
+  let active = true, attempted = 0, dispatched, stop = () => {};
+  const heard = [];
+  vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (record, key) {
+    if (key === detailKey && record.value?.task?.body === answer.task.body) {
+      attempted += 1;
+      if (attempted === 1) {
+        if (kind === "retired") active = false;
+        throw new DOMException("Connection closed during owned publication", "InvalidStateError");
+      }
+    }
+    return originalPut.call(this, record, key);
+  });
+  const reading = ownedReading(writer, confirmed, async () => {
+    dispatched = await snapshot(observer, [target]);
+    stop = writer.local.subscribeCache({ deviceId: scope.deviceId, entityId: scope.projectId }, (address) => heard.push(address));
+    return answer;
+  }, () => active);
+  const result = await reading.done;
+  stop();
+  expect(reading.authority.call).toHaveBeenCalledExactlyOnceWith("tasks.get", { task_id: target.row.id });
+  if (kind === "retired") {
+    expect(attempted).toBe(1);
+    expect(await snapshot(observer, [target])).toEqual(dispatched);
+    expect(heard).toEqual([]);
+    expect(result.value?.complete).not.toBe(true);
+  } else {
+    expect(attempted).toBe(2);
+    const canonical = await observer.local.readCanonicalCached(target.address);
+    expect(canonical.value.task.body).toBe(answer.task.body);
+    expect(canonical.value.timeline).toEqual(answer.timeline);
+    expect(canonical.publication || []).toEqual([]);
+    expect(heard).toContainEqual(target.address);
+    await blockedOwnedOperation(observer, [target], confirmed);
+  }
+});
+
+it("rejects an older same-generation refresh attempt before the newer response writes", async () => {
+  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedTask(writer);
+  const confirmed = await confirmedOperation(writer, [target]), firstReply = deferred(), nextReply = deferred();
+  const active = () => true;
+  const first = ownedReading(writer, confirmed, () => firstReply.promise, active);
+  await vi.waitFor(() => expect(first.authority.call).toHaveBeenCalledTimes(1));
+  const next = ownedReading(writer, confirmed, () => nextReply.promise, active);
+  await vi.waitFor(() => expect(next.authority.call).toHaveBeenCalledTimes(1));
+  const atNewDispatch = await snapshot(observer, [target]);
+  const oldAnswer = answerFor(target, { title: "Old attempt", body: "Old attempt body" }), nextAnswer = answerFor(target);
+  try {
+    firstReply.resolve(oldAnswer);
+    await first.done;
+    // Neither written/detail fence has changed from a newer response yet.
+    expect((await observer.local.readCanonicalCached(target.address)).value.task.body).toBe(target.row.body);
+    expect(await snapshot(observer, [target])).toEqual(atNewDispatch);
+  } finally {
+    firstReply.resolve(oldAnswer); nextReply.resolve(nextAnswer);
+    await Promise.all([first.done, next.done]);
+  }
+  expect((await observer.local.readCanonicalCached(target.address)).value.task.body).toBe(nextAnswer.task.body);
+  await blockedOwnedOperation(observer, [target], confirmed);
+});
+
+it("fences a real replaced service opening from parking its current refresh", async () => {
+  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedTask(writer);
+  const confirmed = await confirmedOperation(writer, [target]), oldReply = deferred(), nextReply = deferred();
+  let reads = 0;
+  const calls = [], running = await startService(writer, () => ++reads === 1 ? oldReply.promise : nextReply.promise, calls, { waitForRefresh: false });
+  await vi.waitFor(() => expect(calls.filter(({ method }) => method === "tasks.get")).toHaveLength(1));
+  const oldRead = [...running.pending][0];
+  expect(oldRead).toBeDefined();
+  const replacement = { ...running.session };
+  await running.service.bind({ session: replacement, greeting });
+  await vi.waitFor(() => expect(calls.filter(({ method }) => method === "tasks.get")).toHaveLength(2));
+  const atNewDispatch = await snapshot(observer, [target]);
+  const oldAnswer = answerFor(target, { body: "Retired opening body" }), nextAnswer = answerFor(target);
+  try {
+    oldReply.resolve(oldAnswer);
+    await Promise.allSettled([oldRead]);
+    expect((await observer.local.readCanonicalCached(target.address)).value.task.body).toBe(target.row.body);
+    expect(await snapshot(observer, [target])).toEqual(atNewDispatch);
+  } finally {
+    oldReply.resolve(oldAnswer); nextReply.resolve(nextAnswer);
+    await running.drain();
+  }
+  expect((await observer.local.readCanonicalCached(target.address)).value.task.body).toBe(nextAnswer.task.body);
+  await blockedOwnedOperation(observer, [target], confirmed);
+});
+
+it("dispatches an independent user write without reviving parked task refresh work", async () => {
+  const writer = await independentRuntime(), target = await seedTask(writer);
+  await confirmedOperation(writer, [target]);
+  const calls = [], running = await startService(writer, () => answerFor(target), calls);
+  expect(calls.filter(({ method }) => method === "tasks.get")).toHaveLength(1);
+  const result = await running.service.submit({ operationId: "independent-parked-write", method: "tasks.update",
+    params: { task_id: "other-task", title: "Still dispatches" } });
+  await running.drain();
+  // The worker must continue genuine user work; globally disabling or clearing
+  // runnable work to remove a refresh retry cannot satisfy this control.
+  expect(result).toEqual({ saved: true });
+  expect(calls.filter(({ method, params }) => method === "tasks.update" && params.task_id === "other-task")).toHaveLength(1);
+  expect(await writer.operations.get("independent-parked-write")).toMatchObject({ acknowledged: true, state: "accepted" });
+  await operationUnfinished(writer);
+  expect(calls.filter(({ method }) => method === "tasks.get")).toHaveLength(1);
+});
+
+it("parks every owned target once and preserves its obligation across an actual reopen", async () => {
+  const writer = await independentRuntime(), first = await seedTask(writer, "owned-first"), second = await seedTask(writer, "owned-second");
+  const targets = [first, second], confirmed = await confirmedOperation(writer, targets);
+  const reading = ownedReading(writer, confirmed, async (_method, { task_id }) => answerFor(targets.find(({ row }) => row.id === task_id)));
+  await reading.done;
+  expect(reading.authority.call.mock.calls.map(([, { task_id }]) => task_id).sort()).toEqual(targets.map(({ row }) => row.id).sort());
+  for (const target of targets) {
+    const canonical = await writer.local.readCanonicalCached(target.address);
+    expect(canonical.value.task.body).toBe(answerFor(target).task.body);
+    expect(canonical.publication || []).toEqual([]);
+  }
+  const before = await blockedOwnedOperation(writer, targets, confirmed);
+  const reopened = await independentRuntime();
+  expect(await reopened.operations.get(confirmed.record.operationId)).toEqual(before);
+  const replay = ownedReading(reopened, { frame: before.confirmation, record: before }, async () => { throw new Error("Blocked reopen must not dispatch"); });
+  await replay.done;
+  expect(replay.authority.call).not.toHaveBeenCalled();
+  expect(await reopened.operations.get(confirmed.record.operationId)).toEqual(before);
+  await operationUnfinished(reopened);
+});
+
+it("rejects old owned multi-target responses after a newer confirmation is admitted", async () => {
+  const writer = await independentRuntime(), observer = await independentRuntime();
+  const first = await seedTask(writer, "old-owned-target"), second = await seedTask(writer, "new-owned-target");
+  const old = await confirmedOperation(writer, [first, second]), oldReply = deferred(), nextReply = deferred();
+  const stale = ownedReading(writer, old, () => oldReply.promise);
+  await vi.waitFor(() => expect(stale.authority.call).toHaveBeenCalledTimes(1));
+  const frame = { ...old.frame, revision: 3, published: publication(3) };
+  const record = await writer.operations.confirm(old.record.operationId, { revision: frame.revision, confirmation: frame, refreshPending: true });
+  const current = ownedReading(writer, { frame, record }, (_method, { task_id }) => nextReply.promise.then(() =>
+    answerFor([first, second].find(({ row }) => row.id === task_id))));
+  await vi.waitFor(() => expect(current.authority.call).toHaveBeenCalledTimes(1));
+  const before = await snapshot(observer, [first, second]);
+  try {
+    oldReply.resolve(answerFor(first, { body: "Superseded obligation body" }));
+    await stale.done;
+    expect((await observer.local.readCanonicalCached(first.address)).value.task.body).toBe(first.row.body);
+    expect(await snapshot(observer, [first, second])).toEqual(before);
+  } finally {
+    oldReply.resolve(answerFor(first)); nextReply.resolve({});
+    await Promise.all([stale.done, current.done]);
+  }
+  expect((await observer.local.readCanonicalCached(second.address)).value.task.body).toBe(answerFor(second).task.body);
+  await blockedOwnedOperation(observer, [first, second], { frame, record });
 });

@@ -57,3 +57,34 @@ it("does not certify a full canonical publication or retire its layer when the i
   expect((await tracker.readTaskRecord(scope.deviceId, projectId, taskId)).task.body).toBe(task.body);
   expect(authority.call).toHaveBeenCalledTimes(1);
 });
+
+it("retains canonical refresh write guards across an optimistic body change followed by an identical rollback", async () => {
+  const tracker = await import("../src/core/trackerCache.js");
+  const local = await import("../src/core/localCache.js");
+  const { mergeTaskContentRecordsTogether, retireTaskContent } = await import("../src/core/taskContentAuthority.js");
+  const { createWriteOperationCache } = await import("../src/core/writeOperationCache.js");
+  const { refreshWriteOperation } = await import("../src/core/writeOperationRefresh.js");
+  const cache = createWriteOperationCache(scope), address = tracker.taskAddress(scope.deviceId, projectId, taskId);
+  await local.writeCached(address, tracker.taskRecord(task, []));
+  const before = await local.readCanonicalCached(address);
+  let resolve;
+  const authority = { active: () => true, call: vi.fn(() => new Promise((yes) => { resolve = yes; })) };
+  const pending = refreshWriteOperation({ cache, authority,
+    frame: { state: "failed", published: [], refresh: [{ kind: "task", id: taskId }] },
+    record: { deviceId: scope.deviceId, operationId: "aba-refresh", owner: { projectId }, overlay: [], request: { params: { task_id: taskId } } },
+  });
+  const refused = expect(pending).rejects.toThrow("superseded");
+  await vi.waitFor(() => expect(authority.call).toHaveBeenCalledTimes(1));
+  for (const body of ["Optimistic body", task.body]) await mergeTaskContentRecordsTogether(
+    { deviceId: scope.deviceId, projectId }, [address], ([record]) => ({
+      values: [{ ...record.value, task: retireTaskContent({ ...record.value.task, body }, "body") }], retire: true,
+    }),
+  );
+  expect((await local.readCanonicalCached(address)).write).not.toBe(before.write);
+  resolve({ task: { ...task, title: "Older refreshed title" }, timeline: [] });
+  await refused;
+  const held = (await tracker.readTaskRecord(scope.deviceId, projectId, taskId)).task;
+  expect(held.title).toBe(task.title);
+  expect(held.body).toBe(task.body);
+  expect(authority.call).toHaveBeenCalledTimes(1);
+});

@@ -34,6 +34,7 @@ import { resetPendingPairing } from "./core/pendingPairing.js";
 import { trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
 import { resetWriteOperationRuntime } from "./core/writeOperationRuntime.js";
 import { wipePendingOperations } from "./core/writeOperationCache.js";
+import { resetHttpConnections } from "./core/httpConnections.js";
 
 // Which machines the rail lists (core/deviceFilter.js). Minted here, beside the
 // pick, because this is where both are read off the browser at boot.
@@ -61,6 +62,7 @@ export const DEVICE_FILTER_KEY = "build.deviceFilter";
  */
 export function resetApplication() {
   App.accountEpoch += 1;
+  resetHttpConnections();
   void resetWriteOperationRuntime().then(() => wipePendingOperations()).catch(() => {});
   resetUiWriters();
   resetNavigationVisits();

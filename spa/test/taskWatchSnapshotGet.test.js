@@ -60,22 +60,23 @@ function pendingReply() {
   return { promise: new Promise((yes) => { resolve = yes; }), resolve: (value) => resolve(value) };
 }
 
-async function greet(capabilities) {
+async function greet(capabilities, { includeEpoch = true, identity = pair } = {}) {
   const session = fakeSession(scope.deviceId);
   session.bridgeEpoch = runtime.epoch.createBridgeEpoch();
   const context = runtime.contexts.adoptDeviceSession(session);
   const authority = runtime.contexts.greetingInFlight(context);
-  const greeting = { api_version: "3.27.0", capabilities: ["bridge.epoch", ...capabilities], ...pair };
+  const greeting = { api_version: "3.27.0", capabilities: [...(includeEpoch ? ["bridge.epoch"] : []), ...capabilities], ...identity };
   expect(session.bridgeEpoch.acceptGreeting(greeting, { isCurrent: authority.current })).toBe(true);
   const selection = runtime.api.selectAdapter(greeting);
   const adapter = selection.create(session.call);
   expect(runtime.contexts.adoptBridgeSelection(context, selection, adapter, authority)).toBe(context);
-  expect(session.bridgeEpoch.current()).toMatchObject({ ...pair, opening: 1 });
+  if (includeEpoch) expect(session.bridgeEpoch.current()).toMatchObject({ ...identity, opening: 1 });
+  else expect(session.bridgeEpoch.current()).toBeNull();
   return { session, context };
 }
 
-async function beginRead(capabilities, reply = proofReply()) {
-  const { session, context } = await greet(capabilities);
+async function beginRead(capabilities, reply = proofReply(), greetingOptions) {
+  const { session, context } = await greet(capabilities, greetingOptions);
   const requests = [], pending = [], served = [];
   session.call.mockImplementation((method, params) => {
     if (method !== "tasks.get") throw new Error(`Unexpected contract peer request: ${method}`);
@@ -287,4 +288,209 @@ it("UNITCONTRACT adds equal-sequence complementary scopes only with agreeing wat
   expect(conflicted.task.unread_mentions).toBe(0);
   expect(conflicted.task.__task_watch_snapshot).toEqual(known);
   expect(conflicted.needs_unread_refresh).toBe(true);
+});
+
+
+// Decoder refusals are peer-input UNITCONTRACT controls, not claims that the
+// actual backend serializes malformed/oversize typed proof objects.
+const invalidProofCases = [
+  { label: "unknown envelope version", mutate: (reply) => { reply.watch_snapshot.version = 2; } },
+  { label: "numeric sequence above JSON precision", mutate: (reply) => { reply.watch_snapshot.sequence = 9007199254740992; } },
+  { label: "overflow u64 sequence", mutate: (reply) => { reply.watch_snapshot.sequence = "18446744073709551616"; } },
+  { label: "noncanonical leading-zero sequence", mutate: (reply) => { reply.watch_snapshot.sequence = "007"; } },
+  { label: "lone-surrogate marker", mutate: (reply) => { reply.task.watch_facts.total.read_through = "tc-\ud800"; } },
+  { label: "marker above UTF8 byte bound", mutate: (reply) => { reply.task.watch_facts.total.read_through = "é".repeat(65); } },
+  { label: "unsafe count", mutate: (reply) => { reply.task.watch_facts.total.unread_count = 9007199254740992; } },
+  { label: "missing declared nullable field", mutate: (reply) => { delete reply.task.watch_facts.activity.last_activity_ms; } },
+  { label: "unknown field inside known scope", mutate: (reply) => { reply.task.watch_facts.total.extra = true; } },
+  { label: "dependent scope without watch", mutate: (reply) => { delete reply.task.watch_facts.watch; } },
+  { label: "certified unavailable overlap", mutate: (reply) => { reply.task.watch_unavailable = { total: "coherence_unavailable" }; } },
+  { label: "unknown unavailable reason", mutate: (reply) => { delete reply.task.watch_facts.total; reply.task.watch_unavailable = { total: "unknown_reason" }; } },
+  { label: "escaped unknown scope exceeds row-proof bytes", mutate: (reply) => { reply.task.watch_facts.future = { raw: "\u0000".repeat(700) }; } },
+  { label: "extra envelope bytes exceed envelope cap", mutate: (reply) => { reply.watch_snapshot.extra = "x".repeat(2050); } },
+];
+for (const { label, mutate } of invalidProofCases) {
+  it(`UNITCONTRACT refuses ${label} without discarding independently useful full content`, async () => {
+    const reply = proofReply();
+    mutate(reply);
+    const read = await beginRead([getCapability], reply);
+    read.answer();
+    const saved = await awaitSaved(read);
+    expect(read.servedProof()).toBe(true);
+    expect(saved).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
+    expect(saved.task).not.toHaveProperty("__task_watch_snapshot");
+    expect(read.session.bridgeEpoch.current()).toMatchObject({ ...pair, opening: 1 });
+  });
+}
+
+it("UNITCONTRACT preserves explicit empty floor and raw NUL marker in declared canonical scopes", async () => {
+  const reply = proofReply({ sequence: "0" });
+  reply.task.watch_started_after = "";
+  reply.task.read_through = "tc-\u0000";
+  reply.task.watch_facts.watch.watch_started_after = "";
+  reply.task.watch_facts.total.read_through = "tc-\u0000";
+  reply.task.watch_facts.total.effective_watch_floor = "";
+  reply.task.watch_facts.attention.read_through = "tc-\u0000";
+  const read = await beginRead([getCapability], reply);
+  read.answer();
+  const saved = await awaitSaved(read);
+  expect(read.servedProof()).toBe(true);
+  expect(saved).toMatchObject({ watch_uncertain: false, needs_unread_refresh: false });
+  expect(saved.task).toMatchObject({ read_through: "tc-\u0000", watch_started_after: "", unread_count: 0 });
+  expect(saved.task.__task_watch_snapshot?.scopes?.total?.value).toMatchObject({
+    read_through: "tc-\u0000", effective_watch_floor: "",
+  });
+  expect(saved.task.__task_watch_snapshot?.scopes?.watch?.sequence).toBe("0");
+});
+
+it("UNITCONTRACT keeps the canonical first-hyphen UTF8 suffix domain distinct from the already extracted floor", async () => {
+  const reply = proofReply({ sequence: "9007199254740993" });
+  const rawRead = "tc-a-\u{10000}", rawWatch = "te-a-\uE000";
+  reply.task.read_through = rawRead;
+  reply.task.watch_started_after = rawWatch;
+  reply.task.watch_facts.watch.watch_started_after = rawWatch;
+  reply.task.watch_facts.total.read_through = rawRead;
+  reply.task.watch_facts.total.effective_watch_floor = "a-\uE000";
+  reply.task.watch_facts.attention.read_through = rawRead;
+  const read = await beginRead([getCapability], reply);
+  read.answer();
+  const saved = await awaitSaved(read);
+  expect(saved).toMatchObject({ watch_uncertain: false, needs_unread_refresh: false });
+  expect(saved.task.read_through).toBe(rawRead);
+  expect(saved.task.__task_watch_snapshot?.scopes?.total?.value?.effective_watch_floor).toBe("a-\uE000");
+  expect(saved.task.__task_watch_snapshot?.scopes?.watch?.sequence).toBe("9007199254740993");
+});
+
+it("UNITCONTRACT admits declared unwatched proof when native TaskView omits false and nullable markers", async () => {
+  const reply = proofReply();
+  delete reply.task.watched;
+  delete reply.task.watch_started_after;
+  delete reply.task.read_through;
+  reply.task.watch_facts = { watch: { watched: false, watch_started_after: null } };
+  const read = await beginRead([getCapability], reply);
+  read.answer();
+  const saved = await awaitSaved(read);
+  expect(read.servedProof()).toBe(true);
+  expect(saved.watch_uncertain).toBe(false);
+  expect(saved.task.watched).toBe(false);
+  expect(saved.task).not.toHaveProperty("unread_count");
+  expect(saved.task.__task_watch_snapshot?.scopes?.watch?.value).toEqual({ watched: false, watch_started_after: null });
+  expect(saved.task.__task_watch_snapshot?.scopes).not.toHaveProperty("total");
+});
+
+it("UNITCONTRACT requires bridge epoch capability as well as the GET atom before adding the opt-in", async () => {
+  const read = await beginRead([getCapability], proofReply(), { includeEpoch: false });
+  expect(read.requests[0].params).toEqual({ task_id: taskId });
+  read.answer();
+  const saved = await awaitSaved(read);
+  expect(read.servedProof()).toBe(false);
+  expect(saved.watch_uncertain).toBe(true);
+});
+
+it("UNITCONTRACT keeps legacy GET usable when accepted greeting identity exceeds proof bounds", async () => {
+  const read = await beginRead([getCapability], proofReply(), { identity: { ...pair, journal_incarnation: "é".repeat(65) } });
+  expect(read.requests[0].params).toEqual({ task_id: taskId });
+  read.answer();
+  const saved = await awaitSaved(read);
+  expect(saved.watch_uncertain).toBe(true);
+  expect(read.session.bridgeEpoch.current().journal_incarnation).toBe("é".repeat(65));
+});
+
+// Direct existing actual GET-owner API gives a real awaited publication seam
+// for whole-owner refusal. It neither creates a descriptor nor mocks a reducer.
+async function directGet({ accept = () => true } = {}) {
+  const { session, context } = await greet([getCapability]);
+  const response = pendingReply(), requests = [];
+  session.call.mockImplementation((method, params) => {
+    expect(method).toBe("tasks.get");
+    requests.push(structuredClone(params));
+    return response.promise;
+  });
+  const current = () => accept() && runtime.contexts.contextFor(scope.deviceId) === context && context.session === session && context.active();
+  const get = await import("../src/core/taskWatchSnapshotRead.js");
+  const address = runtime.tracker.taskAddress(scope.deviceId, scope.projectId, taskId);
+  const captured = await get.captureTaskGetRead({ address, call: context.rpc, accept: current });
+  const reading = get.dispatchTaskGetRead(captured.request);
+  await vi.waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0]).toEqual({ task_id: taskId, watch_snapshot: true });
+  return { captured, session, context, address, current,
+    async publish(reply) {
+      response.resolve(reply);
+      const received = await reading;
+      return runtime.tracker.writeTaskRecord(scope.deviceId, scope.projectId, taskId,
+        runtime.tracker.taskRecord(received.answer.task, received.answer.timeline), {
+          contentRead: captured.contentRead, watchSnapshotRead: received.watchSnapshotRead, accept: current,
+        });
+    },
+  };
+}
+
+for (const refusal of ["explicit owner refusal", "session replacement", "context retirement"]) {
+  it(`UNITCONTRACT makes no historical or selected cache write after ${refusal}`, async () => {
+    let active = true;
+    const read = await directGet({ accept: () => active });
+    const target = runtime.summaries.summaryAddress(scope, taskId);
+    const beforeDetail = await runtime.cache.readCanonicalCached(read.address);
+    const beforeSummary = await runtime.cache.readCanonicalCached(target);
+    if (refusal === "explicit owner refusal") active = false;
+    if (refusal === "session replacement") runtime.contexts.adoptDeviceSession(fakeSession(scope.deviceId));
+    if (refusal === "context retirement") runtime.contexts.retireDeviceContext(scope.deviceId);
+    expect(await read.publish(proofReply())).toBe(false);
+    expect(await runtime.cache.readCanonicalCached(read.address)).toEqual(beforeDetail);
+    expect(await runtime.cache.readCanonicalCached(target)).toEqual(beforeSummary);
+  });
+}
+
+it("UNITCONTRACT chooses higher canonical sequence from an earlier dispatch and refuses a later-dispatched lower sequence", async () => {
+  const first = await directGet();
+  // This second capture uses the SAME current authenticated session/context.
+  // Creating another fake greeting would wrongly invalidate the first owner.
+  const get = await import("../src/core/taskWatchSnapshotRead.js");
+  const pending = pendingReply();
+  first.session.call.mockImplementationOnce(() => pending.promise);
+  const second = await get.captureTaskGetRead({ address: first.address, call: first.context.rpc, accept: first.current });
+  expect(second.contentRead.readOrder).toBeGreaterThan(first.captured.contentRead.readOrder);
+  const secondReading = get.dispatchTaskGetRead(second.request);
+  pending.resolve(proofReply({ sequence: "8" }));
+  const received = await secondReading;
+  await runtime.tracker.writeTaskRecord(scope.deviceId, scope.projectId, taskId,
+    runtime.tracker.taskRecord(received.answer.task, received.answer.timeline), {
+      contentRead: second.contentRead, watchSnapshotRead: received.watchSnapshotRead, accept: first.current,
+    });
+  const target = runtime.summaries.summaryAddress(scope, taskId);
+  expect((await runtime.cache.readCanonicalCached(target)).value.watch_uncertain).toBe(false);
+  await first.publish(proofReply({ sequence: "9" }));
+  const higher = (await runtime.cache.readCanonicalCached(target)).value;
+  expect(higher.task.__task_watch_snapshot?.scopes?.watch?.sequence).toBe("9");
+  expect(higher.watch_uncertain).toBe(false);
+  const read = await beginRead([getCapability], proofReply({ sequence: "7" }));
+  read.answer();
+  const lower = await awaitSaved(read);
+  expect(lower.task.__task_watch_snapshot?.scopes?.watch?.sequence).toBe("9");
+  expect(lower.watch_uncertain).toBe(false);
+});
+
+it("UNITCONTRACT copies cannot rebind an as-of source after blind retirement but a fresh same-sequence GET can", async () => {
+  const read = await beginRead([getCapability], proofReply({ sequence: "9" }));
+  read.answer();
+  const first = await awaitSaved(read);
+  expect(first.watch_uncertain).toBe(false);
+  const oldProof = structuredClone(first.task.__task_watch_snapshot);
+  const saved = await runtime.tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId);
+  const copy = structuredClone(saved);
+  await runtime.tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    runtime.tracker.tasksRecord([{ ...nativeTask(), watched: false }]));
+  await runtime.tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+    runtime.tracker.tasksRecord([nativeTask()]));
+  const content = await import("../src/core/taskContentAuthority.js");
+  const captured = await content.captureTaskContentRead(runtime.tracker.taskAddress(scope.deviceId, scope.projectId, taskId), { revalidate: "full" });
+  // A genuine ordinary capture still supplies NO actual GET response brand.
+  await runtime.tracker.writeTaskRecord(scope.deviceId, scope.projectId, taskId, copy, { contentRead: captured });
+  const replay = (await runtime.cache.readCanonicalCached(runtime.summaries.summaryAddress(scope, taskId))).value;
+  expect(replay.watch_uncertain).toBe(true);
+  expect(replay.task.__task_watch_snapshot?.scopes?.watch?.client).toEqual(oldProof?.scopes?.watch?.client);
+  const recovered = await refreshReply(read, proofReply({ sequence: "9" }));
+  expect(recovered.watch_uncertain).toBe(false);
+  expect(recovered.task.__task_watch_snapshot?.scopes?.watch?.sequence).toBe("9");
+  expect(recovered.task.__task_watch_snapshot?.scopes?.watch?.client).not.toEqual(oldProof?.scopes?.watch?.client);
 });

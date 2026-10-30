@@ -133,3 +133,36 @@ fn get_option_does_not_change_other_task_id_verbs_or_advertise_capability() {
         );
     }
 }
+
+#[test]
+fn successful_close_reopen_preserves_legacy_task_answer_shape() {
+    let (_root, _repo, mut state, task) = fixture();
+    let closed = state.handle(req("tasks.close", json!({"task_id":task["id"]})));
+    assert_eq!(closed["ok"], true, "{closed}");
+    let reopened = state.handle(req("tasks.reopen", json!({"task_id":task["id"]})));
+    assert_eq!(reopened["ok"], true, "{reopened}");
+
+    // Preserve real typed-handler results for a separately reviewed pre/post
+    // comparison; no fields are normalized or reconstructed in this test.
+    println!(
+        "TASK891_CLOSE_RAW={}",
+        serde_json::to_string(&closed["result"]).unwrap()
+    );
+    println!(
+        "TASK891_REOPEN_RAW={}",
+        serde_json::to_string(&reopened["result"]).unwrap()
+    );
+    for (reply, expected_state) in [(&closed, "closed"), (&reopened, "open")] {
+        assert!(reply["result"].get("watch_snapshot").is_none());
+        assert!(reply["result"]["task"].get("watch_facts").is_none());
+        assert!(reply["result"]["task"].get("watch_unavailable").is_none());
+        assert_eq!(reply["result"]["task"]["id"], task["id"]);
+        assert_eq!(reply["result"]["task"]["title"], task["title"]);
+        assert_eq!(reply["result"]["task"]["state"], expected_state);
+        let typed: crate::api::v1::tasks::TaskAnswer =
+            serde_json::from_value(reply["result"].clone()).unwrap();
+        let typed_json = serde_json::to_value(&typed).unwrap();
+        assert!(typed_json["task"].get("watch_facts").is_none());
+        assert!(typed_json["task"].get("watch_unavailable").is_none());
+    }
+}

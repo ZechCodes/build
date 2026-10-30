@@ -12,6 +12,7 @@ import { summaryPatch, fullTaskSummary } from "./taskSummaryProjection.js";
 import { reconcileTaskReadFacts, hasTaskWatchSnapshot, TASK_WATCH_CACHE, TASK_FAMILY_CACHE } from "./taskWatchFacts.js";
 import { blindTaskWatchInterference, retireTaskWatchFacts } from "./taskWatchAuthority.js";
 import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent } from "./taskWatchIntents.js";
+import { snapshotPageEvidence, snapshotContinuationEligible } from "./taskSummarySnapshot.js";
 export { reconcileTaskReadFacts } from "./taskWatchFacts.js";
 
 export const TASK_SUMMARY_KIND = "tracker-summary";
@@ -91,6 +92,7 @@ function membership(held, ticket, page, ids, identities, read, context) {
     published_generation: ticket.generation,
     observed_read_order: read,
     watch_observation: queryWatchObservation(ticket.contentRead, context),
+    snapshot_membership: snapshotPageEvidence(held, ticket, page, read, context),
   };
 }
 
@@ -530,11 +532,14 @@ export async function readSummaryQuery(scope, filters) {
   ]);
   const context = fragment.context(records.splice(-fragment.addresses.length));
   const missingIds = held.ids.filter((_id, index) => !records[index]?.value?.task);
+  const queryChanged = queryOvertaken(held, invalidation?.value, observation?.value);
   return { ...held,
     complete: held.complete && missingIds.length === 0,
     missing_ids: missingIds,
+    snapshot_continuation_eligible: snapshotContinuationEligible(held, { scope, filters, context,
+      overtaken: queryChanged }),
     stale: missingIds.length > 0 || queryWatchOvertaken(held, context)
-      || queryOvertaken(held, invalidation?.value, observation?.value) || rowsOvertaken(held, records),
+      || queryChanged || rowsOvertaken(held, records),
     tasks: records.slice(0, held.ids.length).flatMap((record, index) => record?.value?.task
       ? [{ ...record.value.task, ...held.row_fields?.[held.ids[index]] }] : []),
     identities: Object.fromEntries(ids.flatMap((id, index) => {

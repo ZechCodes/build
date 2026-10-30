@@ -91,3 +91,25 @@ export function summaryFiltersSupported(filters = {}, taskCaps) {
   return taskCaps?.listSummaries === true && Object.entries(exactSelectors)
     .every(([name, [capability]]) => !Object.hasOwn(filters, name) || taskCaps[capability] === true);
 }
+
+const snapshotSelectors = new Set([
+  ...dimensions.flatMap(([scalar, plural]) => [scalar, plural]),
+  "linked_workspace_id", "tracker_agent_id", "exclude_review_mode", "order",
+  "unfinished", "blocked", "held", "undelivered",
+]);
+const snapshotOrder = (order) => order === undefined || order === "number" || order === "priority";
+const actualAssignee = (actor) => typeof actor === "object" && actor !== null;
+
+/** Classify the complete query for raw snapshot continuation only. Existing
+ * validation and live capability checks remain separate dispatch obligations.
+ * In particular any/none include pending presence, rather than exact actors. */
+export function summarySnapshotFiltersIndependent(filters = {}) {
+  if (!filters || typeof filters !== "object" || Array.isArray(filters)) return false;
+  if (Object.keys(filters).some((key) => !snapshotSelectors.has(key))) return false;
+  try {
+    const canonical = canonicalSummaryFilters(filters);
+    return snapshotOrder(canonical.order) && (canonical.assignees || []).every(actualAssignee);
+  } catch {
+    return false;
+  }
+}

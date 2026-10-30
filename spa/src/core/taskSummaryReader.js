@@ -76,7 +76,8 @@ export function createTaskSummaryReader({ scope, filters, callRpc, capabilities,
 }
 
 const canContinue = (held, ticket) => held && ticket && held.generation === ticket.generation
-  && !held.refreshing && !held.stale && !held.complete && typeof held.next_cursor === "string";
+  && !held.refreshing && (!held.stale || held.snapshot_continuation_eligible === true)
+  && !held.complete && typeof held.next_cursor === "string";
 
 const stopsContinuation = (error) => ["task_query_basis_changed", "task_query_marker_unsupported",
   "task_query_timestamp_unsupported"].includes(error?.details?.reason);

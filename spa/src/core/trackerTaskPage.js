@@ -549,26 +549,27 @@ export function mountTaskPage(host, options) {
     // that reaches the end (#65).
     watch.settle(watchStateOf(record.task));
     markRead();
-    if (live) requestFullContent(record.task);
   }
 
-  function requestFullContent(task) {
+  function requestFullContent(task, authority) {
     const key = taskFullRefreshKey(task, contentHeader);
     if (!key || key === attemptedFullRefresh) return;
     attemptedFullRefresh = key;
-    void refresh();
+    void requestOwnedTaskRead(authority);
   }
 
   const summaryTarget = summaryAddress({ deviceId: state.deviceId, projectId: state.projectId }, state.taskId);
   let summaryReadSerial = 0;
   async function readContentHeader() {
     const serial = ++summaryReadSerial, authority = captureTaskAction(state);
-    const [detail, record] = await readCachedMany([
-      taskAddress(state.deviceId, state.projectId, state.taskId), summaryTarget,
-    ]);
-    if (state.disposed || serial !== summaryReadSerial || !authority.accept()) return;
-    contentHeader = record?.value?.task;
-    requestFullContent(detail?.value?.task);
+    try {
+      const [detail, record] = await readCachedMany([
+        taskAddress(state.deviceId, state.projectId, state.taskId), summaryTarget,
+      ]);
+      if (state.disposed || serial !== summaryReadSerial || !authority.accept()) return;
+      contentHeader = record?.value?.task;
+      requestFullContent(detail?.value?.task, authority);
+    } catch { /* A failed cache snapshot admits no repair or automatic retry. */ }
   }
   const contentHeaderWatcher = subscribeCache(summaryTarget, () => void readContentHeader());
   void readContentHeader();
@@ -586,7 +587,7 @@ export function mountTaskPage(host, options) {
       const hint = JSON.stringify([watch.controlGeneration, watch.watchEpoch]);
       if (hint === lastWatchControlHint) return;
       lastWatchControlHint = hint;
-      void refreshFromWatchControl(owner);
+      void requestOwnedTaskRead(owner);
     } catch { /* A failed/unknown eligibility check admits no read or retry. */ }
   }
   function bindWatchControl() {
@@ -630,6 +631,7 @@ export function mountTaskPage(host, options) {
     const cached = await readTaskRecord(state.deviceId, state.projectId, state.taskId);
     if (state.disposed || !cached) return;
     take(cached, { keepDrafts: Boolean(state.task), live: true });
+    void readContentHeader();
     reads.succeeded();
     paint();
   });
@@ -668,13 +670,18 @@ export function mountTaskPage(host, options) {
    *  read begun before it. A write awaiting this while a read is out settles
    *  with the read after it, so the page paints what was written. */
   let taskReads = null;
-  let queuedControlRead = null, normalReadDemand = false;
+  let queuedOwnedRead = null, normalReadDemand = false;
+  let lastTaskReadOwner = null;
+  function refreshForMount() {
+    if (state.disposed || lastTaskReadOwner?.accept()) return;
+    return refresh();
+  }
   function refresh() {
     normalReadDemand = true;
     return requestTaskRead();
   }
-  function refreshFromWatchControl(owner) {
-    if (!normalReadDemand) queuedControlRead = owner;
+  function requestOwnedTaskRead(owner) {
+    if (!normalReadDemand) queuedOwnedRead = owner;
     return requestTaskRead();
   }
   function requestTaskRead() {
@@ -682,18 +689,28 @@ export function mountTaskPage(host, options) {
     return taskReads();
   }
   function consumeTaskReadDemand() {
-    // A trailing control hint keeps the session which admitted it. Ordinary
+    // A trailing control or repair hint keeps its captured owner. Ordinary
     // invalidation demand remains valid through the existing read owner.
-    const control = queuedControlRead, normal = normalReadDemand;
-    queuedControlRead = null; normalReadDemand = false;
-    return !state.disposed && (normal || !control || control.accept());
+    const owner = queuedOwnedRead, normal = normalReadDemand;
+    queuedOwnedRead = null; normalReadDemand = false;
+    return !state.disposed && (normal || !owner || owner.accept());
+  }
+
+  function admitTaskReadOwner() {
+    const authority = captureTaskAction(state);
+    if (state.disposed || !authority.accept()) return null;
+    // Mount joins only a real admitted attempt, including one which failed.
+    // This local scheduling marker confers no cached content/watch authority.
+    lastTaskReadOwner = authority;
+    const uncertainty = taskFullRefreshKey(state.task, contentHeader);
+    if (uncertainty) attemptedFullRefresh = uncertainty;
+    return authority;
   }
 
   async function readTask() {
     if (!consumeTaskReadDemand()) return;
-    const uncertainty = taskFullRefreshKey(state.task, contentHeader);
-    if (uncertainty) attemptedFullRefresh = uncertainty;
-    const authority = captureTaskAction(state);
+    const authority = admitTaskReadOwner();
+    if (!authority) return;
     try {
       const [checklistBasis, detailBasis, contentRead] = await Promise.all([
         checklist.readBasis(), captureTaskDetailRead(state.deviceId, state.projectId, state.taskId),
@@ -1096,7 +1113,7 @@ export function mountTaskPage(host, options) {
     restoreDraft: restoreCommentDraft, retry: retryComment, onChange: paint,
   });
   paint();
-  void paintFromCache().then(() => refresh());
+  void paintFromCache().then(refreshForMount);
   // No cadence: nothing in this client polls. An item that names this task
   // is what re-reads it, and the pass behind that (core/cacheSync.js) is the
   // whole of the safety net.

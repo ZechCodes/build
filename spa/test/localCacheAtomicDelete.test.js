@@ -9,10 +9,20 @@ beforeEach(async () => {
 
 it("commits a joint delete and put while retaining null no-op records and announcing only after commit", async () => {
   for (const [index, address] of addresses.entries()) await cache.writeCached(address, { count: index });
-  const before = await cache.readCached(addresses[2]), announced = [];
-  const stops = addresses.map((address, index) => cache.subscribeCache(address, () => announced.push(index)));
+  const before = await cache.readCached(addresses[2]), announced = [], completedAtAnnouncement = [];
+  let completed = false;
+  const { IDBDatabase } = await import("fake-indexeddb"), transaction = IDBDatabase.prototype.transaction;
+  const spy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function(...args) {
+    const tx = transaction.apply(this, args);
+    if (args[1] === "readwrite") tx.addEventListener("complete", () => { completed = true; });
+    return tx;
+  });
+  const stops = addresses.map((address, index) => cache.subscribeCache(address, () => {
+    announced.push(index); completedAtAnnouncement.push(completed);
+  }));
   expect(await cache.mergeCachedRecordsTogether(addresses, () => [cache.DELETE_CACHED_RECORD, { count: 20 }, null])).toBe(true);
-  stops.forEach((stop) => stop());
+  stops.forEach((stop) => stop()); spy.mockRestore();
+  expect(completedAtAnnouncement).toEqual([true, true]);
   expect(await cache.readCached(addresses[0])).toBeUndefined();
   expect((await cache.readCached(addresses[1])).value).toEqual({ count: 20 });
   expect(await cache.readCached(addresses[2])).toEqual(before);
@@ -34,7 +44,7 @@ it("rolls a deletion and companion writes back without announcing success when a
     if (record?.value?.count === 20) throw new DOMException("Quota", "QuotaExceededError");
     return put.call(this, record, key);
   });
-  expect(await cache.mergeCachedRecordsTogether(addresses, () => [cache.DELETE_CACHED_RECORD, { count: 20 }, null])).toBe(false);
+  expect(await cache.mergeCachedRecordsTogether(addresses, () => [{ count: 10 }, cache.DELETE_CACHED_RECORD, { count: 20 }])).toBe(false);
   spy.mockRestore(); stops.forEach((stop) => stop());
   expect(await cache.readCachedMany(addresses)).toEqual(before); expect(announced).not.toHaveBeenCalled();
 });

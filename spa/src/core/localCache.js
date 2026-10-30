@@ -544,6 +544,10 @@ export function mergeCachedTogether(addresses, merge) {
 
 /** The same, handed each whole record — `{ at, value }`, or undefined — for a
  *  merge that must keep what the cache's stamp on a record says. */
+// Only the multi-record reducer recognizes this value. It is never stored;
+// null/undefined retain their existing no-op meaning.
+export const DELETE_CACHED_RECORD = Symbol("delete cached record");
+
 export function mergeCachedRecordsTogether(addresses, merge) {
   const keys = addresses.map(recordKey);
   return inRecoveryWriteOrder(keys, () => mergeTogetherInStore(addresses, keys, merge, (record) => record));
@@ -559,6 +563,10 @@ function mergeTogetherInStore(addresses, keys, merge, handed) {
       try {
         const next = merge(held.map(handed));
         for (const [index, key] of keys.entries()) {
+          if (next?.[index] === DELETE_CACHED_RECORD) {
+            if (held[index] !== undefined) { store.delete(key); changed.push(key); }
+            continue;
+          }
           if (next?.[index] == null) continue;
           const record = withBridgeGeneration(addresses[index], { ...writeStamp(), value: next[index] });
           if (!putOrAbort(store, record, key)) return;

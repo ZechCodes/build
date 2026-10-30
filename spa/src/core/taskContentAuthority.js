@@ -104,6 +104,22 @@ function blockedComponent(own, barrier, incoming, read, heldTimestamp) {
     || Date.parse(heldTimestamp) > Date.parse(incoming.updated_at);
 }
 
+function guardedHeader(guard, incoming, read, context) {
+  const proof = proofOf(guard, "header", context);
+  return proof?.read_order > read || Date.parse(componentTimestamp(guard, "header", proof)) > Date.parse(incoming.updated_at);
+}
+
+function otherHeaderBlocks(options, incoming, read) {
+  return (options.headerGuards || []).some((guard) => guard.id === incoming.id && guardedHeader(guard, incoming, read, options.context));
+}
+
+/** One real paint baseline; independent constraints remain guard-only. */
+export function taskContentHeaderBaseline(tasks, context) {
+  const unknown = tasks.find((task) => !proofOf(task, "header", context));
+  if (unknown) return unknown;
+  return tasks.reduce((held, task) => !held || proofOf(task, "header", context).read_order > proofOf(held, "header", context).read_order ? task : held, undefined);
+}
+
 function componentWinner(held, incoming, component, observation, options) {
   if (!covered(observation, component) || !validObservation(observation, options.context, options.address, options.heldWritten)) return false;
   if (component === "body" && typeof incoming.body !== "string") return false;
@@ -111,6 +127,7 @@ function componentWinner(held, incoming, component, observation, options) {
   const ownHeader = component === "body" ? proofOf(held, "header", options.context) : undefined;
   const read = observation.contentRead.readOrder;
   const heldTimestamp = componentTimestamp(held, component, own);
+  if (otherHeaderBlocks(options, incoming, read)) return false;
   if (Date.parse(componentTimestamp(options.headerBarrier, "header", barrier)) > Date.parse(incoming.updated_at)) return false;
   if (blockedComponent(own, barrier, incoming, read, heldTimestamp)
     || blockedComponent(undefined, ownHeader, incoming, read, undefined)) return false;

@@ -291,12 +291,12 @@ function summaryValue(held, task, read, counters = { source: task, fullTask: fal
 const summaryContentBaseline = (held, barrier) => held?.task
   || (barrier && withTaskContentComponents(summaryPatch(undefined, barrier, true), barrier, "summary"));
 
-function summaryContent(held, row, source, { context, address, written, contentRead, headerBarrier, observed = true } = {}) {
+function summaryContent(held, row, source, { context, address, written, contentRead, headerBarrier, headerGuards, observed = true } = {}) {
   const baseline = summaryContentBaseline(held, headerBarrier);
   const projected = summaryPatch(baseline, source, true);
   if (source?.__task_content_cache) projected.__task_content_cache = source.__task_content_cache;
   const candidate = observed ? observeTaskContent(projected, { contentRead, coverage: "summary" }) : projected;
-  const selected = reconcileTaskContentWrite(baseline, candidate, { context, address, heldWritten: written, headerBarrier });
+  const selected = reconcileTaskContentWrite(baseline, candidate, { context, address, heldWritten: written, headerBarrier, headerGuards });
   const task = selected.task || baseline;
   return { row: { ...row, task: task ? withTaskContentComponents(row.task, task, "summary") : null, contentAccepted: selected.acceptedHeader },
     retire: selected.retired };
@@ -344,7 +344,7 @@ export function writeSummaryTask(scope, task, read, options = {}) {
  * fields they omit. Both paths use the same PR, marker and counter authority. */
 const fullActionSource = (task) => ({ read_through: null, watch_started_after: null, dismissed_through: null, ...task });
 
-function reduceSummaryMutation(records, options, headerBarrier) {
+function reduceSummaryMutation(records, options, { headerBarrier, headerGuards }) {
   const [held, invalidation, ...shared] = records, { task, read, fullTask, fragment, address } = options;
   if (!options.accept()) return null;
   const source = fullTask ? fullActionSource(task) : task;
@@ -353,7 +353,7 @@ function reduceSummaryMutation(records, options, headerBarrier) {
   if (task.__task_content_cache) patched.__task_content_cache = task.__task_content_cache;
   const row = summaryValue(before, patched, read, { ...options, source, action: true });
   const selected = summaryContent(before, row, patched, { context: fragment.context(shared), address,
-    written: recordWriteOf(held), contentRead: options.contentRead, headerBarrier, observed: options.rawObservation || Boolean(options.contentRead) });
+    written: recordWriteOf(held), contentRead: options.contentRead, headerBarrier, headerGuards, observed: options.rawObservation || Boolean(options.contentRead) });
   return [selected.row, { read_order: Math.max(read, invalidation?.value?.read_order || 0) },
     ...fragment.finish(shared, { retire: selected.retire })];
 }
@@ -364,7 +364,7 @@ export function summaryTaskMutation(scope, task, read, { accept = () => true, fu
   const options = { task, read, accept, fullTask, confirmedAction, issuedRead, contentRead, rawObservation, fragment, address };
   return { addresses: [address, invalidationAddress(scope), ...fragment.addresses],
     context: (records) => fragment.context(records.slice(2)),
-    reduce: (records, { headerBarrier } = {}) => reduceSummaryMutation(records, options, headerBarrier) };
+    reduce: (records, guards = {}) => reduceSummaryMutation(records, options, guards) };
 }
 
 function validateSummaryMutation(scope, task, read, fullTask, confirmedAction) {

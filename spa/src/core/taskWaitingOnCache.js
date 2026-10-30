@@ -10,7 +10,7 @@ import { filterTasks, sortTasks } from "./trackerFilters.js";
 import { assigneeKey } from "./trackerModel.js";
 import { preserveTaskActionMarks, summaryTaskMutation, withTaskWatchLineage } from "./taskSummaryCache.js";
 
-import { observeTaskContent, reconcileTaskContent, withTaskContentComponents } from "./taskContentAuthority.js";
+import { observeTaskContent, reconcileTaskContent, withTaskContentComponents, taskContentHeaderBaseline } from "./taskContentAuthority.js";
 
 const listKinds = new Set([TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TRACKER_TASKS_PAGE_KIND]);
 const newer = (held, incoming) => Date.parse(held?.updated_at) > Date.parse(incoming?.updated_at);
@@ -76,8 +76,15 @@ const actionResponseNote = (held, taskId, read, actionRead, detail) => ({
   ...(detail ? withWritten(held, [taskId], read) : held), ...(actionRead === undefined ? {} : { action_read: actionRead }),
 });
 
-function normalizedAction(summary, shared, detail) {
-  const normalized = summary.reduce(shared, { headerBarrier: detail?.value?.task });
+function actionHeaderGuards(records, task, count, context) {
+  const candidates = [records[0]?.value?.task, ...records.slice(1, count + 1).flatMap((record) =>
+    (record?.value?.tasks || []).filter((row) => row.id === task.id))].filter(Boolean);
+  const sameProject = candidates.filter((row) => !row.project_id || row.project_id === task.project_id);
+  return { headerBarrier: taskContentHeaderBaseline(sameProject, context), headerGuards: sameProject };
+}
+
+function normalizedAction(summary, shared, guards) {
+  const normalized = summary.reduce(shared, guards);
   return normalized?.[0]?.task?.id ? normalized : null;
 }
 
@@ -98,14 +105,15 @@ export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { 
     const heldNote = records.at(-1)?.value;
     if (olderAction(heldNote, issuedRead)) return null;
     const shared = allRecords.slice(addresses.length);
-    const normalized = normalizedAction(summary, shared, records[0]);
+    const context = summary.context(shared);
+    const guards = actionHeaderGuards(records, task, listed.length, context);
+    const normalized = normalizedAction(summary, shared, guards);
     if (!normalized) return null;
     const projection = normalized[0].task;
-    const context = summary.context(shared);
     const detail = detailWithResponse(records[0]?.value, answer, read, projection, { context, contentRead,
-      address: addresses[0], heldWritten: recordWriteOf(records[0]), headerBarrier: projection });
+      address: addresses[0], heldWritten: recordWriteOf(records[0]), headerBarrier: projection, headerGuards: guards.headerGuards });
     const lists = listed.map((address, index) => listWithResponse(address, records[index + 1]?.value, task, read, projection,
-      { context, contentRead, address, heldWritten: recordWriteOf(records[index + 1]), headerBarrier: projection }));
+      { context, contentRead, address, heldWritten: recordWriteOf(records[index + 1]), headerBarrier: projection, headerGuards: guards.headerGuards }));
     const notes = lists.map((list, index) => list ? withWritten(records[listed.length + index + 1]?.value, [task.id], read) : null);
     return [detail, ...lists, ...notes, detail ? nextReverseGeneration(records.at(-2)?.value) : null,
       actionResponseNote(heldNote, task.id, read, issuedRead, detail), ...normalized];

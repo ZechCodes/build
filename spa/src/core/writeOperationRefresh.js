@@ -5,6 +5,7 @@ import { threadCacheAddress } from "./conversationCache.js";
 import { threadWindow } from "./threadSync.js";
 
 const paramsOf = (record) => record.request?.params || {};
+const taskHistoryReads = new WeakMap();
 const addressKey = (address) => JSON.stringify([address.deviceId, address.entityId, address.kind, address.sub || ""]);
 const refreshError = () => new Error("The required canonical refresh cannot be mapped to a known record");
 const assertActive = (authority) => {
@@ -28,6 +29,7 @@ const READERS = {
   "tracker-task": async (address, _record, authority) => {
     const result = await authority.call("tasks.get", { task_id: address.sub });
     if (!result?.task || !Array.isArray(result.timeline)) throw new Error("Task refresh is incomplete");
+    if (result.task.id !== address.sub || result.task.project_id !== address.entityId) throw new Error("Task refresh identity changed");
     return { task: result.task, timeline: result.timeline };
   },
   thread: async (_address, record, authority, previous) => {
@@ -95,6 +97,7 @@ async function publicationGuard(address, previous) {
 }
 
 async function refreshAddress(address, { cache, frame, record, authority }) {
+  const active = authority.active;
   const previous = await readCanonicalCached(address);
   const guard = await publicationGuard(address, previous);
   const contentRead = address.kind === TRACKER_TASK_KIND
@@ -103,10 +106,12 @@ async function refreshAddress(address, { cache, frame, record, authority }) {
   const value = await READERS[address.kind](address, record, authority, previous);
   assertActive(authority);
   const task = address.kind === TRACKER_TASK_KIND;
+  const entry = publicationEntry({ address, value, publication: frame.published || [], guard,
+    ...(contentRead ? { contentRead } : {}) }, active);
   const result = await cache.observePublication({
-    accept: authority.active,
+    accept: active,
     ...(task ? { report: true } : {}),
-    canonical: [{ address, value, publication: frame.published || [], guard, ...(contentRead ? { contentRead } : {}) }],
+    canonical: [entry],
   });
   assertActive(authority);
   if (task) return assertTaskReceipt(result, address);
@@ -114,6 +119,27 @@ async function refreshAddress(address, { cache, frame, record, authority }) {
   if (!written?.some((target) => addressKey(target) === addressKey(address))) {
     throw new Error("The canonical publication was superseded during refresh");
   }
+}
+
+function freezeTree(value) {
+  if (!value || typeof value !== "object") return value;
+  for (const child of Object.values(value)) freezeTree(child);
+  return Object.freeze(value);
+}
+
+function publicationEntry(input, active) {
+  if (input.address.kind !== TRACKER_TASK_KIND) return input;
+  const entry = Object.freeze({ ...input, address: Object.freeze({ ...input.address }),
+    value: freezeTree(structuredClone(input.value)), guard: Object.freeze({ ...input.guard }),
+    contentRead: freezeTree(input.contentRead) });
+  taskHistoryReads.set(entry, Object.freeze({ value: entry.value, active }));
+  return entry;
+}
+
+// Only the literal tasks.get owner above registers entries. Copies, persisted
+// DTOs and entries produced by another module lifetime have no history proof.
+export function taskHistoryReadOf(entry) {
+  return taskHistoryReads.get(entry) || null;
 }
 
 function assertTaskReceipt(result, address) {

@@ -8,7 +8,7 @@ import {
   leaseKey, operationKey, operationNamespace, validPublicationFence,
 } from "./writeOperationProjection.js";
 
-import { publicationReadAddresses, publicationGuardMatches, preparePublication } from "./writeOperationPublication.js";
+import { publicationReadAddresses, publicationGuardMatches, publicationIsActive, preparePublication } from "./writeOperationPublication.js";
 import { TRACKER_TASK_KIND } from "./trackerCache.js";
 
 const notifications = createAnnouncer("build-write-operations");
@@ -75,22 +75,32 @@ function writeCanonical(records, entries, accept, done) {
           outcomes.push({ address: entry.address, payloadWritten: false, receiptPublished: false, reason: "superseded" });
           continue;
         }
-        const result = preparePublication(entry, held);
-        if (!putPublication(records, result.writes, held, written)) return;
+        const active = () => publicationIsActive(entry, accept);
+        const result = preparePublication(entry, held, active);
+        if (!putPublication(records, result.writes, held, written, active)) return;
         outcomes.push({ address: entry.address,
           payloadWritten: result.writes.some(({ address }) => recordKey(address) === recordKey(entry.address)),
-          receiptPublished: Boolean(result.receiptPublished), reason: result.reason });
+          receiptPublished: Boolean(result.receiptPublished), historyWritten: Boolean(result.historyWritten), reason: result.reason });
       }
+      if (!guardPublicationWrite(records, accept)) return;
       done(written, outcomes);
     } catch (error) { abortForError(records, error); }
   });
 }
 
-function putPublication(records, entries, held, written) {
+function guardPublicationWrite(store, accept) {
+  if (accept()) return true;
+  abortForError(store, new Error("The canonical publication opening ended"));
+  return false;
+}
+
+function putPublication(records, entries, held, written, accept) {
   for (const { address, value, publication = [], notify = true } of entries) {
+    if (!guardPublicationWrite(records, accept)) return false;
     const record = { ...writeStamp(), value, publication };
     const key = recordKey(address);
     if (!putOrAbort(records, record, key)) return false;
+    if (!guardPublicationWrite(records, accept)) return false;
     held.set(key, record);
     if (notify) written.push(address);
   }
@@ -165,11 +175,13 @@ export function createWriteOperationCache(scope) {
           addresses = effectsAddresses(previous, next);
           writeCanonical(stores.records, canonical, accept, () => {
             readRecords(stores.records, addresses.map(recordKey), (records) => {
-              if (!accept()) return;
+              if (!guardPublicationWrite(stores.records, accept)) return;
               if (migrateProvisional) migrateProvisionalThreadItems(stores.records, next, records);
               if (layerPublished(next, records)) next.overlayActive = false;
               indexOverlay(next);
+              if (!guardPublicationWrite(stores.operations, accept)) return;
               changed = putOrAbort(stores.operations, next, operationKey(scope, operationId));
+              if (changed && !guardPublicationWrite(stores.operations, accept)) return;
               result = next;
             });
           });
@@ -215,7 +227,7 @@ export function createWriteOperationCache(scope) {
       writeCanonical(stores.records, canonical, accept, (addresses, results) => {
         written = addresses;
         outcomes = results;
-        if (!accept()) return;
+        if (!guardPublicationWrite(stores.records, accept)) return;
         // Task payload availability cannot retire this or another operation's
         // layer from an inherited publication vector.
         if (canonical.some(({ address }) => address.kind === TRACKER_TASK_KIND)) return;
@@ -233,12 +245,15 @@ export function createWriteOperationCache(scope) {
     const rows = held.filter((row) => belongs(row) && row.overlayActive);
     const keys = [...new Set(effectsAddresses(...rows).map(recordKey))];
     readRecords(stores.records, keys, (records) => {
-      if (!accept()) return;
+      if (!guardPublicationWrite(stores.records, accept)) return;
       for (const row of rows) {
         if (!layerPublished(row, records)) continue;
         const next = { ...row, overlayActive: false };
         indexOverlay(next);
-        if (putOrAbort(stores.operations, next, operationKey(scope, row.operationId))) changed.push(row);
+        if (!guardPublicationWrite(stores.operations, accept)) return;
+        if (!putOrAbort(stores.operations, next, operationKey(scope, row.operationId))) return;
+        if (!guardPublicationWrite(stores.operations, accept)) return;
+        changed.push(row);
       }
     });
   }

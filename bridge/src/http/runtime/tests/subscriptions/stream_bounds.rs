@@ -11,6 +11,8 @@ use std::time::Duration;
 
 /// Room past each bound for a loaded gate machine; never the expected time.
 const SETTLE: Duration = Duration::from_secs(30);
+/// Streams the stream pool admits at once.
+const STREAMS: usize = 16;
 /// Small enough that a draining socket never lets the queue back up.
 const PAD: usize = 64 * 1024;
 
@@ -302,6 +304,50 @@ async fn another_client_gets_every_push_in_order_while_one_is_stalled() {
         received.push(event["seq"].clone());
     }
     assert_eq!(received, sent, "every push, in order, none lost");
+    bounds.mounted.shutdown().await;
+}
+
+#[tokio::test]
+async fn stream_admission_stops_at_its_own_pool_and_recovers_after_a_cut() {
+    let bounds = bounds().await;
+    let mut healthy = Vec::new();
+    for family in 0..STREAMS - 1 {
+        let client = bounds.client(&format!("family-{family}")).await;
+        let events = bounds.stream(&client).await;
+        healthy.push((client, events));
+    }
+    let stalled = bounds.client("family-stalled").await;
+    let _stalled_events = bounds.stream(&stalled).await;
+    bounds.stall(&stalled).await;
+    let waiting = bounds.client("family-waiting").await;
+
+    let refused = bounds.events(&waiting).await;
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    let refused: serde_json::Value = refused.json().await.unwrap();
+    assert_eq!(refused["error_code"], "overloaded");
+    assert_eq!(refused["retryable"], true);
+    assert_eq!(
+        bounds.buffers.available(),
+        bounds.idle,
+        "streams never draw on the RPC budget"
+    );
+    bounds.pushes.set(0, 1);
+    for (reader, events) in &mut healthy {
+        let (status, reply) = bounds.push(reader).await;
+        assert_eq!(status, StatusCode::OK, "{}", reply["error_code"]);
+        let (_, pushed) = events
+            .next()
+            .await
+            .expect("a healthy stream still delivers");
+        assert_eq!(pushed["seq"], reply["result"]["seq"]);
+    }
+
+    bounds
+        .settled("the cut stream returns its share of the pool", |bounds| {
+            bounds.buffers.available() >= MAX_QUEUED_BYTES
+        })
+        .await;
+    let _admitted = bounds.stream(&waiting).await;
     bounds.mounted.shutdown().await;
 }
 

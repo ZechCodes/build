@@ -754,3 +754,5 @@ async fn production_tls_listener_deletes_a_subscription_and_ends_its_stream() {
     assert!(events.next().await.is_none());
     mounted.shutdown().await;
 }
+
+mod contract;

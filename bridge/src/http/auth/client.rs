@@ -95,14 +95,14 @@ impl VerifierInner {
         let remaining = Duration::from_secs(expiry)
             .checked_sub(wall)
             .ok_or(AuthError::InvalidCredential)?;
-        let deadline = started + remaining.min(FRESHNESS);
+        let deadline = started + remaining.min(self.freshness.window);
         if Instant::now() >= deadline {
             return Err(AuthError::Expired);
         }
         Ok(Arc::new(Evidence {
             binding,
             deadline,
-            refresh_at: (started + REFRESH_AFTER).min(deadline),
+            refresh_at: (started + self.freshness.refresh_after).min(deadline),
             token_state: state,
         }))
     }

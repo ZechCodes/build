@@ -278,6 +278,9 @@ impl AppState {
         }
         self.close_turn_of_dead_agent(owner, agent_id);
         self.record_agent_working_since(owner, agent_id, None);
+        // A compaction asked for this session goes with it: one still
+        // waiting for its turn would otherwise hold the agent's queued turns.
+        self.compactions.withdraw(owner, agent_id);
         if !self.entity_agents_working(owner)
             && self
                 .board

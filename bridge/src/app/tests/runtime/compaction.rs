@@ -2,7 +2,9 @@
 //! agent's threshold, and delivering that turn once the compaction is over.
 
 use super::*;
+use crate::harness::compaction::AppliedCompactionPolicy;
 use crate::harness::{SessionStatusSnapshot, TurnContext};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
 fn conversation_reset_stops_a_running_delivery_before_advancing_its_generation() {
@@ -143,6 +145,64 @@ fn conversation_reset_retires_live_session_and_rejects_captured_compaction() {
 
 pub(super) const RUN: &str = "run-compact";
 
+/// A session carrying its compaction through an extension, as a Pi PTY does
+/// through its telemetry: the extension's observation owns the policy, and a
+/// failed extension withdraws between-turn compaction.
+struct ExtensionSession {
+    inner: Arc<dyn AgentSession>,
+    healthy: AppliedCompactionPolicy,
+    withdrawn: AppliedCompactionPolicy,
+    failed: Arc<AtomicBool>,
+}
+
+impl ExtensionSession {
+    fn carrying(
+        inner: Arc<dyn AgentSession>,
+        policy: &AppliedCompactionPolicy,
+        failed: Arc<AtomicBool>,
+    ) -> Arc<dyn AgentSession> {
+        let mut withdrawn = policy.clone();
+        withdrawn.capabilities.between_turn_compact = false;
+        Arc::new(ExtensionSession {
+            inner,
+            healthy: policy.clone(),
+            withdrawn,
+            failed,
+        })
+    }
+}
+
+impl AgentSession for ExtensionSession {
+    fn observed_compaction_policy(&self) -> Option<&AppliedCompactionPolicy> {
+        Some(if self.failed.load(Ordering::SeqCst) {
+            &self.withdrawn
+        } else {
+            &self.healthy
+        })
+    }
+    fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
+        self.inner.send_turn(turn)
+    }
+    fn status(&self) -> AgentStatus {
+        self.inner.status()
+    }
+    fn status_changed(&self) -> Option<tokio::sync::watch::Receiver<SessionStatusSnapshot>> {
+        self.inner.status_changed()
+    }
+    fn quiet_for(&self) -> Duration {
+        self.inner.quiet_for()
+    }
+    fn exited_within(&self, timeout: Duration) -> bool {
+        self.inner.exited_within(timeout)
+    }
+    fn end(&self) {
+        self.inner.end()
+    }
+    fn backdate_last_output(&self, ago: Duration) {
+        self.inner.backdate_last_output(ago)
+    }
+}
+
 /// A run whose agent talks to the Codex app server — a harness that compacts
 /// on `/compact` — through a live session waiting at its prompt.
 pub(super) struct CompactingAgent {
@@ -159,6 +219,29 @@ impl CompactingAgent {
         Self::with_threshold(None)
     }
 
+    /// A session with no turn-boundary updates — TUI Claude, Codex PTY, Pi
+    /// without telemetry — so no status pump can run on it. Built off Tokio,
+    /// like [`Self::without_background_services`].
+    pub(super) fn without_turn_boundaries() -> CompactingAgent {
+        std::thread::spawn(|| Self::with_options(None, false, None))
+            .join()
+            .unwrap()
+    }
+
+    /// A session whose compaction carrier is an extension, as Pi's is, with
+    /// the switch that fails it: once failed, it withdraws between-turn
+    /// compaction and reports nothing more. Built off Tokio, like
+    /// [`Self::without_background_services`].
+    pub(super) fn with_an_extension() -> (CompactingAgent, Arc<AtomicBool>) {
+        std::thread::spawn(|| {
+            let failed = Arc::new(AtomicBool::new(false));
+            let agent = Self::with_options(None, true, Some(Arc::clone(&failed)));
+            (agent, failed)
+        })
+        .join()
+        .unwrap()
+    }
+
     /// These fixtures explicitly drive delivery and the session pumps. Build
     /// shared state off Tokio so the unrelated assignment service cannot drain
     /// a deliberately queued follow-up before the test releases the work turn.
@@ -167,6 +250,14 @@ impl CompactingAgent {
     }
 
     fn with_threshold(threshold: Option<u64>) -> CompactingAgent {
+        Self::with_options(threshold, true, None)
+    }
+
+    fn with_options(
+        threshold: Option<u64>,
+        reports_turn_ends: bool,
+        extension_failed: Option<Arc<AtomicBool>>,
+    ) -> CompactingAgent {
         let (dir, repo) = init_repo();
         let mut app = qa_state(&repo, dir.path());
         let root = insert_run(&mut app, &repo, dir.path(), RUN, RunState::Building);
@@ -188,15 +279,13 @@ impl CompactingAgent {
         let (status, watched) =
             tokio::sync::watch::channel(SessionStatusSnapshot::new(AgentStatus::Waiting));
         let log = SessionLog::default();
-        insert_agent_tab(
-            &mut app,
-            &root,
-            RUN,
-            &agent_id,
-            DictatedSession::reporting(AgentStatus::Waiting)
-                .recording_into(&log)
-                .watching_status(watched),
-        );
+        let session = DictatedSession::reporting(AgentStatus::Waiting).recording_into(&log);
+        let session = if reports_turn_ends {
+            session.watching_status(watched)
+        } else {
+            session
+        };
+        insert_agent_tab(&mut app, &root, RUN, &agent_id, session);
         let mut policy = crate::harness::harness_for(AgentProvider::CodexAppServer)
             .prepare_compaction_policy(
                 app.resolve_compaction_policy(RUN, &agent_id).unwrap(),
@@ -221,8 +310,11 @@ impl CompactingAgent {
         policy.native_settings = None;
         let key = TabKey::agent(&AppState::canonical_root(&root), &agent_id);
         let tab = app.session_registry.test_tab_mut(&key).unwrap();
-        tab.session =
-            crate::harness::compaction::PolicySession::attach(Arc::clone(&tab.session), policy);
+        let mut session = Arc::clone(&tab.session);
+        if let Some(failed) = extension_failed {
+            session = ExtensionSession::carrying(session, &policy, failed);
+        }
+        tab.session = crate::harness::compaction::PolicySession::attach(session, policy);
         CompactingAgent {
             _dir: dir,
             state: app.shared(),

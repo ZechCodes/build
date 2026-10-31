@@ -391,6 +391,13 @@ pub trait AgentSession: Send + Sync {
         None
     }
 
+    /// Whether this session reports where its turns end: only then does a
+    /// status pump run on it. Derived from [`Self::status_changed`], never
+    /// overridden, so the two cannot disagree.
+    fn reports_turn_ends(&self) -> bool {
+        self.status_changed().is_some()
+    }
+
     fn turn_receipt_support(&self) -> TurnReceiptSupport {
         TurnReceiptSupport::Sent
     }

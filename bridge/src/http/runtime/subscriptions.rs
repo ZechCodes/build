@@ -43,6 +43,14 @@ pub(super) struct HttpStream {
     sender: SseSender,
 }
 
+#[cfg(test)]
+impl HttpStream {
+    /// Events and bytes still charged to this stream's queue.
+    pub(super) fn queued(&self) -> (usize, usize) {
+        self.sender.buffered()
+    }
+}
+
 impl RetireBinding for HttpStream {
     fn retire(&self) {
         self.binding.close();

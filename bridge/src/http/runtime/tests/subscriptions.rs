@@ -414,3 +414,105 @@ async fn opening_advertises_stream_bound_resources_once_streams_are_mounted() {
         .collect::<Vec<_>>();
     assert_eq!(opening["transport"]["operation_ids"], json!(expected));
 }
+
+#[tokio::test]
+async fn client_disconnect_releases_the_subscription_and_its_stream_reservation() {
+    let runtime = runtime_with(pushing_execution(), verifier(authority()));
+    let app = runtime.router();
+    let session_id = opened(&app).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let subscription = subscription(&app, &session_id).await;
+    let idle = runtime.state.buffers.available();
+    let mut frames = stream(&app, &session_id, &subscription).await;
+    assert_eq!(next_event(&mut frames).await.0, "hello");
+    assert!(runtime.state.buffers.available() < idle);
+
+    // Dropping the body is the client going away mid-stream.
+    drop(frames);
+
+    assert_eq!(runtime.state.buffers.available(), idle);
+    let (status, released) = greeting_request(&app, &session_id, Some(&subscription)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{released}");
+    assert_eq!(released["error_code"], "stream_replaced");
+    let (status, replacement) = subscribe(&app, &session_id, Some(&subscription)).await;
+    assert_eq!(status, StatusCode::CREATED, "the released handle is still the last issued");
+    let successor = replacement["subscription_id"].as_str().unwrap();
+    let mut frames = stream(&app, &session_id, successor).await;
+    assert_eq!(next_event(&mut frames).await.0, "hello");
+    let (status, _) = greeting_request(&app, &session_id, Some(successor)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(next_event(&mut frames).await.0, "event");
+}
+
+#[tokio::test]
+async fn delete_racing_an_unread_stream_ends_it_without_harming_the_successor() {
+    let runtime = runtime_with(pushing_execution(), verifier(authority()));
+    let app = runtime.router();
+    let session_id = opened(&app).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let idle = runtime.state.buffers.available();
+    let first = subscription(&app, &session_id).await;
+    // hello and a push are queued but never polled before the DELETE lands.
+    let mut old = stream(&app, &session_id, &first).await;
+    let (status, _) = greeting_request(&app, &session_id, Some(&first)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let deleted = app
+        .clone()
+        .oneshot(lifecycle(
+            "DELETE",
+            &format!("/v1/subscriptions/{first}"),
+            &session_id,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    let again = app
+        .clone()
+        .oneshot(lifecycle(
+            "DELETE",
+            &format!("/v1/subscriptions/{first}"),
+            &session_id,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        again.status(),
+        StatusCode::NO_CONTENT,
+        "DELETE is idempotent on the retired tombstone"
+    );
+
+    let (status, replacement) = subscribe(&app, &session_id, Some(&first)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let second = replacement["subscription_id"].as_str().unwrap();
+    let mut new = stream(&app, &session_id, second).await;
+    assert_eq!(next_event(&mut new).await.0, "hello");
+
+    // The old body drains whatever it still holds, then ends; its late
+    // release names the deleted handle and cannot touch the successor.
+    let mut drained = 0;
+    loop {
+        let next = tokio::time::timeout(std::time::Duration::from_secs(2), old.next())
+            .await
+            .expect("the deleted stream settles");
+        match next {
+            Some(Ok(_)) => drained += 1,
+            None | Some(Err(_)) => break,
+        }
+        assert!(drained <= 2, "only the frames queued before DELETE");
+    }
+    drop(old);
+
+    let (status, _) = greeting_request(&app, &session_id, Some(second)).await;
+    assert_eq!(status, StatusCode::OK, "the successor survives the old release");
+    let (name, pushed) = next_event(&mut new).await;
+    assert_eq!((name.as_str(), &pushed["type"]), ("event", &json!("probe.pushed")));
+    drop(new);
+    assert_eq!(runtime.state.buffers.available(), idle);
+}

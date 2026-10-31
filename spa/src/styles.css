@@ -1798,9 +1798,11 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .termpane.term-offline canvas,
 .termpane.term-offline .xterm,
 .termpane.term-offline > :not(.term-conn) { opacity:.45; }
-/* The saved transport, named quietly in the corner; never a status. Its ink
-   comes from the terminal's own colours, which stay dark in the light theme. */
-.term-transport { position:absolute; top:8px; right:12px; z-index:4; pointer-events:none;
+/* The saved transport, named quietly in the corner; never a status. The bottom
+   corner keeps it clear of the top-centre .term-conn chip, which wraps on narrow
+   panes. Its ink comes from the terminal's own colours, which stay dark in the
+   light theme. */
+.term-transport { position:absolute; bottom:8px; right:12px; z-index:4; pointer-events:none;
   font-size:12px; color:color-mix(in srgb, var(--term-fg) 60%, var(--term-bg)); }
 .agentwrap { position:relative; height:100%; }
 .agent-idle { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:2;

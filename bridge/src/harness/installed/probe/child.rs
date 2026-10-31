@@ -124,11 +124,13 @@ impl ProbeChild {
     }
 
     /// Stop before collecting the diagnostic: EOF on stdout may arrive
-    /// before the stderr reader has consumed the child's final error.
+    /// before the stderr reader has consumed the child's final error. With
+    /// its process group killed the pipe only drains, so the reader is given
+    /// what is left of the deadline: a loaded machine may schedule it late.
     pub(super) fn failure(&mut self, error: std::io::Error) -> std::io::Error {
         self.stop();
         let left = self.hard_expiry.saturating_duration_since(Instant::now());
-        let stderr = self.stderr.last(left.min(MAX_STDERR_WAIT));
+        let stderr = self.stderr.last(left);
         if stderr.is_empty() {
             return error;
         }

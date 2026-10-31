@@ -91,7 +91,7 @@ pub fn isolated_node(home: &Path) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::fs::symlink;
     use std::path::Path;
 
     #[test]
@@ -99,7 +99,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let native = executable(temp.path(), "native/node22");
         let shim = executable(temp.path(), "mise/shims/node");
-        std::fs::write(&shim, "#!/bin/sh\n[ \"$1\" = -p ] && [ \"$2\" = process.execPath ] || exit 9\nprintf '%s\\n' \"$TEST_PARENT_NODE\"\n").unwrap();
+        write_script(&shim, "#!/bin/sh\n[ \"$1\" = -p ] && [ \"$2\" = process.execPath ] || exit 9\nprintf '%s\\n' \"$TEST_PARENT_NODE\"\n");
         let path = shim.parent().unwrap().as_os_str();
         let calls = std::cell::Cell::new(0);
         let resolved = resolve_node_with_probe(path, None, || {
@@ -185,9 +185,26 @@ mod tests {
     fn executable(root: &Path, name: &str) -> PathBuf {
         let path = root.join(name);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "#!/bin/sh\nprintf 'native-node\\n'\n").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        write_script(&path, "#!/bin/sh\nprintf 'native-node\\n'\n");
         path
+    }
+
+    /// Writes from a child process. A fork on another test thread copies
+    /// every descriptor this process holds, and a script still open for
+    /// writing in that child fails exec with ETXTBSY; the writer has exited,
+    /// and with it the only descriptor, before the script is ever run.
+    fn write_script(path: &Path, body: &str) {
+        let status = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s' \"$2\" > \"$1\" && chmod 700 \"$1\"",
+                "sh",
+            ])
+            .arg(path)
+            .arg(body)
+            .status()
+            .unwrap();
+        assert!(status.success(), "writing {} failed", path.display());
     }
 
     #[test]
@@ -197,11 +214,10 @@ mod tests {
         let asdf = executable(temp.path(), ".asdf/shims/node");
         let marker = temp.path().join("shim-ran");
         for shim in [&mise, &asdf] {
-            std::fs::write(
+            write_script(
                 shim,
-                format!("#!/bin/sh\ntouch '{}'\nexit 78\n", marker.display()),
-            )
-            .unwrap();
+                &format!("#!/bin/sh\ntouch '{}'\nexit 78\n", marker.display()),
+            );
         }
         let alias = temp.path().join("alias");
         std::fs::create_dir(&alias).unwrap();
@@ -291,11 +307,10 @@ mod tests {
         let node = executable(temp.path(), "native/node22");
         let shim = executable(temp.path(), "mise/shims/node");
         let marker = temp.path().join("shim-ran");
-        std::fs::write(
+        write_script(
             &shim,
-            format!("#!/bin/sh\ntouch '{}'\nexit 78\n", marker.display()),
-        )
-        .unwrap();
+            &format!("#!/bin/sh\ntouch '{}'\nexit 78\n", marker.display()),
+        );
         let path = std::env::join_paths([
             shim.parent().unwrap(),
             Path::new("/usr/bin"),
@@ -307,7 +322,7 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(output.stdout, b"native-node\n");
         let mcp = executable(temp.path(), "mcp");
-        std::fs::write(&mcp, "#!/usr/bin/env node\n").unwrap();
+        write_script(&mcp, "#!/usr/bin/env node\n");
         let mut child = Command::new(mcp);
         child.env_clear();
         for (key, value) in driver.get_envs() {

@@ -62,9 +62,16 @@ impl RetireBinding for HttpStream {
 struct SseSink(SseSender);
 
 impl EventSink for SseSink {
+    /// A failed delivery retires the binding, so it also ends the stream now
+    /// and returns its reservation, rather than at the next heartbeat. A full
+    /// queue has already closed itself and keeps its `reset_required` frame.
     fn try_send(&self, event: EncodedEvent) -> Result<(), DeliveryError> {
-        let event = SseEvent::json("event", event.payload()).map_err(delivery_error)?;
-        self.0.try_send(event).map_err(delivery_error)
+        let delivered =
+            SseEvent::json("event", event.payload()).and_then(|event| self.0.try_send(event));
+        if delivered.is_err_and(|error| error != sse::DeliveryError::Full) {
+            self.0.close();
+        }
+        delivered.map_err(delivery_error)
     }
 }
 

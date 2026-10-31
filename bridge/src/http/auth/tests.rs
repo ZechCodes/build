@@ -660,3 +660,40 @@ async fn a_response_arriving_after_token_expiry_cannot_create_authority() {
         Some(AuthError::Expired)
     );
 }
+
+#[tokio::test]
+async fn revalidation_asks_hosted_again_and_moves_the_deadline() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(valid_response()))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let verifier = test_verifier(&server);
+    let first = verifier.verify("device-token").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let renewed = verifier.revalidate("device-token").await.unwrap();
+
+    assert!(renewed.deadline() > first.deadline());
+    assert_eq!(renewed.binding(), first.binding());
+}
+
+#[tokio::test]
+async fn revalidation_refused_by_hosted_revokes_grants_from_that_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(valid_response()))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    serve(&server, json!({"active": false})).await;
+    let verifier = test_verifier(&server);
+    let first = verifier.verify("device-token").await.unwrap();
+
+    assert_eq!(
+        verifier.revalidate("device-token").await.err(),
+        Some(AuthError::InvalidCredential)
+    );
+    assert_eq!(first.check(), Err(AuthError::InvalidCredential));
+}

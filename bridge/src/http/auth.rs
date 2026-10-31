@@ -167,6 +167,12 @@ impl HttpAuthVerifier {
         VerifiedHttpGrant::mint(self.evidence(token, false).await?)
     }
 
+    /// Verifies afresh with hosted, never from cached evidence: how a live
+    /// opening renews. A hosted refusal revokes every grant from this token.
+    pub async fn revalidate(&self, token: &str) -> Result<VerifiedHttpGrant, AuthError> {
+        VerifiedHttpGrant::mint(self.evidence(token, true).await?)
+    }
+
     /// Proactively call at `refresh_at()`, including with a rotated family token.
     /// Failure leaves only the original, unchanged hard deadline in force.
     pub async fn refresh(

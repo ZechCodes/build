@@ -17,7 +17,7 @@ use axum::{
         HeaderMap, HeaderValue, Request, StatusCode,
     },
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use serde::Deserialize;
@@ -33,6 +33,7 @@ use crate::execution::{
     ExecutionService, Invocation, RequestMetadata,
 };
 
+mod renewal;
 mod subscriptions;
 
 const LIFECYCLE_BYTES: usize = 64 * 1024;
@@ -86,6 +87,10 @@ impl VerifiedAuthority {
 #[async_trait]
 trait GrantVerifier: Send + Sync {
     async fn verify(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError>;
+    /// Verifies with hosted afresh, never from cached evidence.
+    async fn revalidate(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
+        self.verify(bearer).await
+    }
     fn close(&self) {}
 }
 
@@ -93,6 +98,12 @@ trait GrantVerifier: Send + Sync {
 impl GrantVerifier for HttpAuthVerifier {
     async fn verify(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
         self.verify(bearer).await.map(VerifiedAuthority::from_grant)
+    }
+
+    async fn revalidate(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
+        HttpAuthVerifier::revalidate(self, bearer)
+            .await
+            .map(VerifiedAuthority::from_grant)
     }
 
     fn close(&self) {
@@ -214,7 +225,10 @@ impl HttpRuntime {
     pub fn router(&self) -> Router {
         Router::new()
             .route("/v1/sessions", post(open_session))
-            .route("/v1/sessions/{session_id}", delete(close_session))
+            .route(
+                "/v1/sessions/{session_id}",
+                patch(renewal::renew).delete(close_session),
+            )
             .route("/v1/subscriptions", post(subscriptions::create))
             .route(
                 "/v1/subscriptions/{subscription_id}",
@@ -709,24 +723,7 @@ async fn open_session(
     };
     let generation = uuid::Uuid::new_v4().to_string();
     let session_id = session.id().to_owned();
-    let expires_at = grant_expiry(authority.deadline);
-    let operation_ids = super::routes::manifest()
-        .operations
-        .iter()
-        .map(|operation| operation.operation_id.as_str())
-        .collect::<Vec<_>>();
-    let response = json!({
-        "session_id": session_id.clone(),
-        "opening_generation": generation.clone(),
-        "greeting": greeting,
-        "grant_expires_at": expires_at,
-        "transport": {
-            "resource_manifest_version": super::routes::manifest().version,
-            "operation_ids": operation_ids,
-            "terminal": "webrtc",
-            "durable_events": false,
-        },
-    });
+    let response = opening_body(&session_id, &generation, greeting, authority.deadline);
     let publish_error = {
         let mut openings = state.openings.lock().unwrap();
         if !state.accepting.load(Ordering::SeqCst) {
@@ -776,6 +773,32 @@ async fn open_session(
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     response
+}
+
+/// The Opening both `POST /v1/sessions` and its renewal reply with.
+fn opening_body(
+    session_id: &str,
+    generation: &str,
+    greeting: serde_json::Value,
+    deadline: Instant,
+) -> serde_json::Value {
+    let operation_ids = super::routes::manifest()
+        .operations
+        .iter()
+        .map(|operation| operation.operation_id.as_str())
+        .collect::<Vec<_>>();
+    json!({
+        "session_id": session_id,
+        "opening_generation": generation,
+        "greeting": greeting,
+        "grant_expires_at": grant_expiry(deadline),
+        "transport": {
+            "resource_manifest_version": super::routes::manifest().version,
+            "operation_ids": operation_ids,
+            "terminal": "webrtc",
+            "durable_events": false,
+        },
+    })
 }
 
 fn api_range(raw: &str) -> Option<semver::VersionReq> {

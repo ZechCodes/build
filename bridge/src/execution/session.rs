@@ -179,6 +179,19 @@ impl AuthorizationLease {
     pub fn deadline(&self) -> Option<Instant> {
         self.state.lock().unwrap().deadline
     }
+    /// Installs a renewal that reaches at least as far, so renewals landing
+    /// out of order never shorten the lifecycle. Retirement is never undone.
+    fn extend(&self, renewal: &AuthorizationLease) {
+        let renewed = renewal.state.lock().unwrap();
+        let mut current = self.state.lock().unwrap();
+        let reaches_further = renewed
+            .deadline
+            .is_none_or(|renewed| current.deadline.is_some_and(|current| renewed >= current));
+        if reaches_further {
+            current.deadline = renewed.deadline;
+            current.live = renewed.live.clone();
+        }
+    }
 }
 
 /// Exact authority captured from one freshly verified HTTP request. The
@@ -469,7 +482,14 @@ impl ClientSessions {
         if !session.opening().is_open() {
             return Err(SessionError::Closed);
         }
-        if !session.is_live() {
+        // Renewal extends only a lifecycle still in force; a request proof
+        // that outlives it keeps the session, not the lifecycle, alive.
+        let alive = if renew_lifecycle {
+            session.0.authorization.is_valid()
+        } else {
+            session.is_live()
+        };
+        if !alive {
             return Err(SessionError::Unauthorized);
         }
         if !matches!(caller.identity, Identity::Http(_)) || caller.identity != session.0.identity {
@@ -491,11 +511,7 @@ impl ClientSessions {
             })),
         };
         if renew_lifecycle {
-            let renewed = request_authorization.state.lock().unwrap();
-            let mut lifecycle = session.0.authorization.state.lock().unwrap();
-            lifecycle.deadline = renewed.deadline;
-            lifecycle.live = renewed.live.clone();
-            lifecycle.retired = renewed.retired;
+            session.0.authorization.extend(&request_authorization);
         } else {
             #[cfg(test)]
             if let Some(hook) = self.admission_hook.lock().unwrap().clone() {
@@ -1218,6 +1234,53 @@ mod tests {
             sessions.resume(caller(), session.id()),
             Err(SessionError::Closed)
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_renewal_after_the_lifecycle_expires_cannot_revive_it() {
+        let grant = || {
+            VerifiedCaller::verified_http(
+                identity(),
+                Instant::now() + Duration::from_secs(30),
+                Arc::new(|| true),
+            )
+        };
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions.open(grant()).unwrap();
+        tokio::time::advance(Duration::from_secs(25)).await;
+        let (_, in_flight) = sessions
+            .resume_with_request_authority(grant(), session.id())
+            .unwrap();
+        tokio::time::advance(Duration::from_secs(6)).await;
+        assert!(!session.authorization().is_valid());
+
+        assert!(matches!(
+            sessions.resume(grant(), session.id()),
+            Err(SessionError::Unauthorized)
+        ));
+        assert!(
+            !session.authorization().is_valid(),
+            "an expired lifecycle stays retired while a request outlives it"
+        );
+        drop(in_flight);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn renewals_completing_out_of_order_keep_the_later_deadline() {
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions.open(caller()).unwrap();
+        let later = Instant::now() + Duration::from_secs(40);
+        let earlier = Instant::now() + Duration::from_secs(25);
+        for deadline in [later, earlier] {
+            sessions
+                .resume(
+                    VerifiedCaller::verified_http(identity(), deadline, Arc::new(|| true)),
+                    session.id(),
+                )
+                .unwrap();
+        }
+
+        assert_eq!(session.authorization().deadline(), Some(later));
     }
 
     #[tokio::test(start_paused = true)]

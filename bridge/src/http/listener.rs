@@ -98,7 +98,7 @@ impl OutputAuthority {
     }
 
     /// How often a stream on this connection sends a heartbeat.
-    pub fn heartbeat_interval(&self) -> std::time::Duration {
+    pub(crate) fn heartbeat_interval(&self) -> std::time::Duration {
         #[cfg(test)]
         if !self.rechecks_by_clock() {
             return std::time::Duration::from_secs(365 * 24 * 60 * 60);

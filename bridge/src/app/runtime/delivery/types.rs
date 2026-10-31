@@ -379,11 +379,14 @@ impl AppState {
         let pending_rows = &self.pending_rows;
         let reserved = &self.reclaim_reserved;
         let resetting = &self.resetting_conversations;
-        let compacting_first = self.agents_holding_turns_for_compaction();
+        let compacting_first = self.compactions.waiting_for_turn();
         // A turn for an agent inside a workspace the reclaim service or
         // `workspace.reclaim` has reserved waits for the reservation to end.
         // A non-interrupting turn for an agent whose compaction waits for its
-        // current turn waits too, so the compaction goes ahead of it.
+        // current turn waits too, so the compaction goes ahead of it. Keyed on
+        // the request, not on `working_since`: a report closes the thread's
+        // turn while the provider's runs on. The status pump releases it on
+        // the turn's last snapshot, and a session end withdraws it.
         let mut ready = self.delivery_queue.take_ready(|turn| {
             pending_rows.iter().any(|row| row.entity_id == turn.owner)
                 || reserved_holds(reserved, &turn.root)

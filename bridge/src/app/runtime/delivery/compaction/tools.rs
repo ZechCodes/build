@@ -8,7 +8,7 @@
 //! [`compact_before_turn`](super::compact_before_turn) the automatic one
 //! takes; with nothing queued the drain sends it itself. Until the turn it
 //! waits for ends, a non-interrupting turn queued for the agent stays queued
-//! (see [`AppState::agents_holding_turns_for_compaction`]), so no drain in
+//! (see [`AppState::take_pending_turns`]), so no drain in
 //! between can send that turn first.
 
 use super::CompactionSend;
@@ -129,23 +129,6 @@ impl AppState {
                 })
             })
             .map(|tab| tab.session)
-    }
-
-    /// The agents whose queued turns wait in the queue: mid-turn, with a
-    /// compaction asked for that waits for that turn to end. Sending one of
-    /// their turns now would put it ahead of the compaction; once the turn
-    /// ends, the status pump's drain sends the compaction and then the turn.
-    pub(in crate::app) fn agents_holding_turns_for_compaction(&self) -> Vec<(String, String)> {
-        self.compactions
-            .waiting_for_turn()
-            .into_iter()
-            .filter(|(owner, agent_id)| {
-                self.entity_agents(owner)
-                    .ok()
-                    .and_then(|agents| agents.by_id(agent_id))
-                    .is_some_and(|agent| agent.working_since.is_some())
-            })
-            .collect()
     }
 
     /// Every requested compaction a drain can send itself, taken out of the

@@ -113,7 +113,7 @@ impl AppState {
     /// reaches a working agent goes as it is, and so does an interrupting
     /// one. A compaction an agent asked for mid-turn is not lost to that: until
     /// the turn ends, a non-interrupting turn queued for the agent is held in
-    /// the queue ([`AppState::agents_holding_turns_for_compaction`]), and the
+    /// the queue ([`AppState::take_pending_turns`]), and the
     /// status pump's drain at the turn's end brings it here with the request
     /// ready. Never for a harness that cannot compact, and never ahead of a
     /// turn that is itself a compaction. A compaction an agent asked for goes first once it

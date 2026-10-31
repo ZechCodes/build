@@ -263,12 +263,19 @@ cleanup pass releases dead producer resources without per-close task spawning.
 The HTTP adapter reserves buffers from two pools in `bridge/src/http/limits.rs`.
 RPCs reserve their request and response maxima from the 32 MiB
 `TOTAL_BUFFER_BYTES` budget. Each SSE stream reserves its 1 MiB queue
-(`MAX_QUEUED_BYTES`) from the separate 16 MiB `STREAM_BUFFER_BYTES` pool, so at
-most sixteen streams are open at once. The stream reservation is held until the
-stream's body drops. Streams never draw on the RPC budget, so streams held by
-stalled clients cannot cause an RPC to be refused with 429. When the stream pool
-is full, the next stream GET is refused with 429 `overloaded` and `retryable`
-set. The per-family and per-account stream limits apply on top of the pool.
+(`MAX_QUEUED_BYTES`) from the separate 32 MiB `STREAM_BUFFER_BYTES` pool, so at
+most thirty-two streams are open at once. Queued adapter bytes are therefore
+bounded by 32 MiB of RPC plus 32 MiB of stream buffers, before parse and encode
+copies. One credential family holds at most eight live streams
+(`MAX_FAMILY_STREAMS`), so at least four families always fit in the pool. The
+stream reservation, and the family's count, are held until the stream's body
+drops: a replaced stream whose socket write is stalled keeps counting against
+its own family until it is cut. Streams never draw on the RPC budget, so streams
+held by stalled clients cannot cause an RPC to be refused with 429. When the
+pool is full, or the family is at its cap, the next stream GET is refused with
+429 `overloaded` and `retryable` set, and reserves and binds nothing. Openings
+are capped separately, at 16 per family and 1,024 in all, with one stream slot
+each. There is no per-account stream limit.
 A stream also ends, and returns its reservation, on any of these:
 
 - a full queue;

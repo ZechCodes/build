@@ -905,6 +905,8 @@ fn refusal(status: StatusCode, code: &'static str) -> Response {
 
 #[cfg(test)]
 mod tests {
+    mod subscriptions;
+
     use super::*;
     use crate::{execution::FrameHandler, timing::FrameClock};
     use axum::{body::Body, http::header::CONTENT_TYPE};

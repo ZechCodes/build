@@ -623,6 +623,7 @@ async fn sse_body_holds_delivery_through_bytes_drop_and_closes_at_hard_deadline(
         std::sync::Arc::new(move || state.load(std::sync::atomic::Ordering::SeqCst)),
         std::sync::Arc::new(move || deadline),
         std::sync::Arc::new(move || stopped.store(true, std::sync::atomic::Ordering::SeqCst)),
+        sse::HEARTBEAT_INTERVAL,
     );
     sender
         .try_send(SseEvent::json("changes", &json!({})).unwrap())
@@ -737,6 +738,7 @@ async fn tls_stalled_reader_retains_sse_reservation_until_deadline_teardown() {
                         Arc::new(move || {
                             closed.store(true, Ordering::SeqCst);
                         }),
+                        sse::HEARTBEAT_INTERVAL,
                     )
                 }
             },

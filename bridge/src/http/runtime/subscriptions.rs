@@ -238,6 +238,18 @@ fn hello(subscription_id: &str, generation: &str) -> SseEvent {
     .expect("the hello frame is small and named")
 }
 
+/// Why a GET could not install its binding.
+enum BindRefusal {
+    Slot(StreamError),
+    Session(SessionError),
+}
+
+impl From<StreamError> for BindRefusal {
+    fn from(error: StreamError) -> Self {
+        Self::Slot(error)
+    }
+}
+
 /// Installs the binding while this handle is current and unconsumed.
 fn bind_stream(
     state: &HttpState,
@@ -246,7 +258,6 @@ fn bind_stream(
     sender: SseSender,
 ) -> HttpResult<HttpStream> {
     let sessions = state.execution.sessions();
-    let mut session_error = None;
     let bound = opening.streams.bind(subscription_id, |predecessor| {
         sessions
             .replace_events(
@@ -259,18 +270,13 @@ fn bind_stream(
                 binding,
                 sender: sender.clone(),
             })
-            .map_err(|error| {
-                session_error = Some(error);
-                StreamError::Replaced
-            })
+            .map_err(BindRefusal::Session)
     });
-    match (bound, session_error) {
-        (Ok(stream), _) => Ok(stream),
-        (Err(_), Some(SessionError::StaleBinding)) | (Err(_), None) => {
-            Err(stream_refusal(StreamError::Replaced))
-        }
-        (Err(_), Some(_)) => Err(refusal(StatusCode::UNAUTHORIZED, "invalid_credential").into()),
-    }
+    bound.map_err(|refused| match refused {
+        BindRefusal::Slot(error) => stream_refusal(error),
+        BindRefusal::Session(SessionError::StaleBinding) => stream_refusal(StreamError::Replaced),
+        BindRefusal::Session(_) => refusal(StatusCode::UNAUTHORIZED, "invalid_credential").into(),
+    })
 }
 
 fn event_response(

@@ -437,7 +437,11 @@ async fn client_disconnect_releases_the_subscription_and_its_stream_reservation(
     assert_eq!(status, StatusCode::CONFLICT, "{released}");
     assert_eq!(released["error_code"], "stream_replaced");
     let (status, replacement) = subscribe(&app, &session_id, Some(&subscription)).await;
-    assert_eq!(status, StatusCode::CREATED, "the released handle is still the last issued");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the released handle is still the last issued"
+    );
     let successor = replacement["subscription_id"].as_str().unwrap();
     let mut frames = stream(&app, &session_id, successor).await;
     assert_eq!(next_event(&mut frames).await.0, "hello");
@@ -510,9 +514,16 @@ async fn delete_racing_an_unread_stream_ends_it_without_harming_the_successor() 
     drop(old);
 
     let (status, _) = greeting_request(&app, &session_id, Some(second)).await;
-    assert_eq!(status, StatusCode::OK, "the successor survives the old release");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the successor survives the old release"
+    );
     let (name, pushed) = next_event(&mut new).await;
-    assert_eq!((name.as_str(), &pushed["type"]), ("event", &json!("probe.pushed")));
+    assert_eq!(
+        (name.as_str(), &pushed["type"]),
+        ("event", &json!("probe.pushed"))
+    );
     drop(new);
     assert_eq!(runtime.state.buffers.available(), idle);
 }

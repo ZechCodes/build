@@ -54,15 +54,15 @@ impl<T: RetireBinding> StreamSlot<T> {
 
     /// The closure installs a new shared EventBinding while this handle remains
     /// current. It must not await or acquire an application/domain lock.
-    pub fn bind(
+    pub fn bind<E: From<StreamError>>(
         &self,
         handle: &str,
-        make: impl FnOnce(Option<&T>) -> Result<T, StreamError>,
-    ) -> Result<T, StreamError> {
+        make: impl FnOnce(Option<&T>) -> Result<T, E>,
+    ) -> Result<T, E> {
         let mut state = self.0.lock().unwrap();
         let issued = current(&mut state, handle)?;
         if issued.consumed {
-            return Err(StreamError::Consumed);
+            return Err(StreamError::Consumed.into());
         }
         let binding = make(issued.predecessor.as_ref())?;
         issued.consumed = true;

@@ -503,3 +503,58 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for BoundedIo<T> {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    /// A socket whose peer never reads: writes stay pending and nothing wakes them.
+    struct NeverDrains;
+
+    impl AsyncWrite for NeverDrains {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    /// A check going false wakes nothing: no `invalidate()`, no socket progress,
+    /// no grant deadline. Only the recheck clock notices, so a retired stream's
+    /// stalled write is denied within `AUTHORITY_RECHECK` rather than at the
+    /// ten-second stalled-write timeout. Time is paused, so the runtime jumps
+    /// straight to whichever timer fires first.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_write_is_denied_within_a_recheck_once_its_check_goes_false() {
+        let live = Arc::new(AtomicBool::new(true));
+        let authority = OutputAuthority::default();
+        let check = live.clone();
+        authority.set(Some(Arc::new(move || check.load(Ordering::SeqCst))));
+        let mut socket = BoundedIo::new(NeverDrains, authority.clone());
+        let write = tokio::spawn(async move { socket.write_all(b"event").await });
+        while !authority.has_pending_write() {
+            tokio::task::yield_now().await;
+        }
+
+        let retired = tokio::time::Instant::now();
+        live.store(false, Ordering::SeqCst);
+        let denied = write.await.unwrap().unwrap_err();
+
+        assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
+        assert!(
+            retired.elapsed() <= AUTHORITY_RECHECK,
+            "denied {:?} after the check went false",
+            retired.elapsed()
+        );
+        assert!(!authority.has_pending_write());
+    }
+}

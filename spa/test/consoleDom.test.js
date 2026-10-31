@@ -50,6 +50,13 @@ vi.mock("../src/terminal/pane.js", () => ({
   },
 }));
 
+// The devices whose saved transport is HTTPS; empty unless a case says so.
+const httpDevices = new Set();
+vi.mock("../src/core/httpConnections.js", async (importOriginal) => ({
+  ...(await importOriginal()),
+  usesHttp: (deviceId) => httpDevices.has(deviceId),
+}));
+
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notifySuccess: () => {} }));
 
@@ -115,6 +122,7 @@ beforeEach(async () => {
   takeConsoleTerminal();
   calls = [];
   panes.length = 0;
+  httpDevices.clear();
   await emptyConsoleWorld();
   await wipeUiRecords();
   branchRow = consoleBranchRow();
@@ -229,6 +237,15 @@ describe("opening it", () => {
     await seedConsoleWorld({ terminals: ["term-1"] });
     await flush();
     expect(tabs()).toEqual(["Terminal 1"]);
+  });
+});
+
+describe("the transport label", () => {
+  it("names WebRTC on the open terminal of the console's own HTTPS device", async () => {
+    httpDevices.add("dev-1");
+    await mountOver(["term-1"]);
+    await open();
+    expect(region().querySelector(".console-pane .term-transport")?.textContent).toBe("Terminal over WebRTC");
   });
 });
 

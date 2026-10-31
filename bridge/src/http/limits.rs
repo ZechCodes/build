@@ -18,6 +18,7 @@ pub const MAX_LIFECYCLE_BYTES: usize = 64 * 1024;
 pub const MAX_DISCOVERY_BYTES: usize = 16 * 1024;
 pub const MAX_SOCKETS: usize = 128;
 pub const MAX_FAMILY_OPENINGS: usize = 16;
+pub const MAX_FAMILY_STREAMS: usize = 8;
 pub const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 pub const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 pub const SOCKET_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);

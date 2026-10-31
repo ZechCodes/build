@@ -3,7 +3,7 @@
 //! client a push or the bridge its admission bound.
 use super::*;
 use crate::http::{
-    limits::{BufferBudget, STREAM_BUFFER_BYTES},
+    limits::{BufferBudget, MAX_FAMILY_STREAMS, STREAM_BUFFER_BYTES},
     sse::{MAX_EVENT_BYTES, MAX_QUEUED_BYTES, STALLED_WRITE_TIMEOUT},
 };
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ use std::time::Duration;
 /// Room past each bound for a loaded gate machine; never the expected time.
 const SETTLE: Duration = Duration::from_secs(30);
 /// Streams the stream pool admits at once.
-const STREAMS: usize = 16;
+const POOL_STREAMS: usize = STREAM_BUFFER_BYTES / MAX_QUEUED_BYTES;
 /// Small enough that a draining socket never lets the queue back up.
 const PAD: usize = 64 * 1024;
 
@@ -137,6 +137,68 @@ impl Bounds {
             subscription: created["subscription_id"].as_str().unwrap().to_owned(),
             events_path: created["events_path"].as_str().unwrap().to_owned(),
         }
+    }
+
+    /// `count` openings of one family, each holding a healthy stream.
+    async fn opened(&self, family: &str, count: usize) -> Vec<(Client, SocketEvents)> {
+        let mut open = Vec::with_capacity(count);
+        for _ in 0..count {
+            let client = self.client(family).await;
+            let events = self.stream(&client).await;
+            open.push((client, events));
+        }
+        open
+    }
+
+    /// The client's opening under a new subscription, retiring the old one.
+    async fn replace(&self, client: &Client) -> Client {
+        let replaced: serde_json::Value = self
+            .request_as(&client.bearer, reqwest::Method::POST, "/v1/subscriptions")
+            .header("X-Build-Session", &client.session_id)
+            .header("X-Build-Subscription", &client.subscription)
+            .json(&json!({"kind": "application"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        Client {
+            bearer: client.bearer.clone(),
+            session_id: client.session_id.clone(),
+            subscription: replaced["subscription_id"].as_str().unwrap().to_owned(),
+            events_path: replaced["events_path"].as_str().unwrap().to_owned(),
+        }
+    }
+
+    async fn delete(&self, client: &Client) {
+        let response = self
+            .request_as(
+                &client.bearer,
+                reqwest::Method::DELETE,
+                &format!("/v1/subscriptions/{}", client.subscription),
+            )
+            .header("X-Build-Session", &client.session_id)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    /// The client's GET is refused as retryable `overloaded`, binding nothing
+    /// and costing the RPC budget nothing.
+    async fn refused(&self, client: &Client) {
+        let response = self.events(client).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let reply: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(reply["error_code"], "overloaded");
+        assert_eq!(reply["retryable"], true);
+        assert!(self.queued(client).is_none(), "a refused GET binds nothing");
+        assert_eq!(
+            self.buffers.available(),
+            self.idle,
+            "streams never draw on the RPC budget"
+        );
     }
 
     async fn events(&self, client: &Client) -> reqwest::Response {
@@ -312,29 +374,24 @@ async fn another_client_gets_every_push_in_order_while_one_is_stalled() {
 #[tokio::test]
 async fn stream_admission_stops_at_its_own_pool_and_recovers_after_a_cut() {
     let bounds = bounds().await;
-    let mut healthy = Vec::new();
-    for family in 0..STREAMS - 1 {
-        let client = bounds.client(&format!("family-{family}")).await;
-        let events = bounds.stream(&client).await;
-        healthy.push((client, events));
-    }
-    let stalled = bounds.client("family-stalled").await;
-    let _stalled_events = bounds.stream(&stalled).await;
-    bounds.stall(&stalled).await;
-    let waiting = bounds.client("family-waiting").await;
-
-    let refused = bounds.events(&waiting).await;
-    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
-    let refused: serde_json::Value = refused.json().await.unwrap();
-    assert_eq!(refused["error_code"], "overloaded");
-    assert_eq!(refused["retryable"], true);
-    assert_eq!(
-        bounds.buffers.available(),
-        bounds.idle,
-        "streams never draw on the RPC budget"
+    assert!(
+        POOL_STREAMS >= 4 * MAX_FAMILY_STREAMS,
+        "at least four families fill their stream caps at once"
     );
+    // Open, read streams fill the pool, so the refusal waits on no timer.
+    let mut open = Vec::new();
+    for family in 0..POOL_STREAMS / MAX_FAMILY_STREAMS {
+        open.extend(
+            bounds
+                .opened(&format!("family-{family}"), MAX_FAMILY_STREAMS)
+                .await,
+        );
+    }
+    assert_eq!(bounds.buffers.streams_available(), 0, "the pool is full");
+    let waiting = bounds.client("family-waiting").await;
+    bounds.refused(&waiting).await;
     bounds.pushes.set(0, 1);
-    for (reader, events) in &mut healthy {
+    for (reader, events) in &mut open {
         let (status, reply) = bounds.push(reader).await;
         assert_eq!(status, StatusCode::OK, "{}", reply["error_code"]);
         let (_, pushed) = events
@@ -344,12 +401,74 @@ async fn stream_admission_stops_at_its_own_pool_and_recovers_after_a_cut() {
         assert_eq!(pushed["seq"], reply["result"]["seq"]);
     }
 
+    let (stalled, stalled_events) = open.pop().unwrap();
+    bounds.stall(&stalled).await;
     bounds
         .settled("the cut stream returns its share of the pool", |bounds| {
-            bounds.buffers.streams_available() >= MAX_QUEUED_BYTES
+            bounds.buffers.streams_available() == MAX_QUEUED_BYTES
         })
         .await;
+    drained(stalled_events.response).await;
     let _admitted = bounds.stream(&waiting).await;
+    bounds.mounted.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_family_at_its_stream_cap_is_refused_while_another_family_still_opens() {
+    let bounds = bounds().await;
+    let _family = bounds.opened("family-a", MAX_FAMILY_STREAMS).await;
+    let next = bounds.client("family-a").await;
+
+    bounds.refused(&next).await;
+    let other = bounds.client("family-b").await;
+    let _other = bounds.stream(&other).await;
+    bounds.refused(&next).await;
+    bounds.mounted.shutdown().await;
+}
+
+#[tokio::test]
+async fn releasing_one_of_a_familys_streams_lets_its_next_one_open() {
+    let bounds = bounds().await;
+    let mut family = bounds.opened("family-a", MAX_FAMILY_STREAMS).await;
+    let next = bounds.client("family-a").await;
+    bounds.refused(&next).await;
+
+    let (released, events) = family.pop().unwrap();
+    bounds.delete(&released).await;
+    drop(events);
+    bounds
+        .settled("the deleted stream returns its reservation", |bounds| {
+            bounds.buffers.streams_available()
+                == STREAM_BUFFER_BYTES - (MAX_FAMILY_STREAMS - 1) * MAX_QUEUED_BYTES
+        })
+        .await;
+    let _admitted = bounds.stream(&next).await;
+    bounds.mounted.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_stalled_replaced_stream_counts_against_its_own_family_only() {
+    let bounds = bounds().await;
+    let stalled = bounds.client("family-a").await;
+    let stalled_events = bounds.stream(&stalled).await;
+    let _family = bounds.opened("family-a", MAX_FAMILY_STREAMS - 1).await;
+    let other = bounds.client("family-b").await;
+    bounds.stall(&stalled).await;
+
+    // Only the replacement and its GET follow the stall, well inside the
+    // stalled-write timer: the replaced stream still holds its queue.
+    let successor = bounds.replace(&stalled).await;
+    bounds.refused(&successor).await;
+    let _other = bounds.stream(&other).await;
+
+    bounds
+        .settled("the cut stream leaves its family", |bounds| {
+            bounds.buffers.streams_available()
+                == STREAM_BUFFER_BYTES - MAX_FAMILY_STREAMS * MAX_QUEUED_BYTES
+        })
+        .await;
+    drained(stalled_events.response).await;
+    let _admitted = bounds.stream(&successor).await;
     bounds.mounted.shutdown().await;
 }
 
@@ -374,22 +493,7 @@ async fn an_oversized_push_retires_only_its_own_stream() {
     assert_eq!(status, StatusCode::CONFLICT, "{}", reply["error_code"]);
     assert_eq!(reply["error_code"], "stream_replaced");
 
-    let replaced: serde_json::Value = bounds
-        .request_as(&client.bearer, reqwest::Method::POST, "/v1/subscriptions")
-        .header("X-Build-Session", &client.session_id)
-        .header("X-Build-Subscription", &client.subscription)
-        .json(&json!({"kind": "application"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let successor = Client {
-        subscription: replaced["subscription_id"].as_str().unwrap().to_owned(),
-        events_path: replaced["events_path"].as_str().unwrap().to_owned(),
-        ..client
-    };
+    let successor = bounds.replace(&client).await;
     let mut events = bounds.stream(&successor).await;
     bounds.pushes.set(0, 1);
     let (status, reply) = bounds.push(&successor).await;

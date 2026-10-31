@@ -1448,6 +1448,26 @@ mod tests {
         assert_eq!(sink.0.load(Ordering::SeqCst), 1);
         assert!(session.is_live());
     }
+    struct RefusingSink;
+    impl EventSink for RefusingSink {
+        fn try_send(&self, _: EncodedEvent) -> Result<(), DeliveryError> {
+            Err(DeliveryError::InvalidPayload)
+        }
+    }
+    #[test]
+    fn a_sink_that_refuses_a_payload_retires_its_binding() {
+        let sessions = ClientSessions::new("epoch");
+        let session = sessions.open(caller()).unwrap();
+        let binding = sessions
+            .bind_events(&session, StreamClass::Application, Arc::new(RefusingSink))
+            .unwrap();
+        assert_eq!(
+            binding.events().push(json!({"type":"event"})),
+            Err(DeliveryError::InvalidPayload)
+        );
+        assert!(!binding.events().is_live(), "its stream has already ended");
+        assert!(session.is_live());
+    }
     #[test]
     fn one_opening_cannot_allocate_two_independent_admission_budgets() {
         let sessions = ClientSessions::new("epoch");

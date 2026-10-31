@@ -22,3 +22,8 @@ skriftapp/buildapp/landing/unsubscribe-form.html
 # reviewed as bridge/vendor/webrtc-driver-drain.patch and
 # bridge/vendor/rtc-dtls-client-hello.patch.
 bridge/vendor/
+
+# Synthetic bridge-http device proofs: JWTs signed by the public seed-7 test
+# key with placeholder ids, never a deployed identity. .gitleaksignore covers
+# the same lines.
+fixtures/bridge-http/device-proofs.json

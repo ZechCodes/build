@@ -4172,6 +4172,7 @@ function mountRailOnContext(host, context, swap) {
       ? { id: controller?.identity.entityId || entity.entityId, ...(controller ? { agent_id: controller.identity.agentId } : {}) }
       : { project_id: entity.projectId, ...(entity.worktreeId ? { worktree_id: entity.worktreeId } : {}) };
     tui = mountAgentTab(body, target, {
+      deviceId: context.deviceId,
       idleLabel: "No agent session is running here",
       onStart: startAgent,
     });

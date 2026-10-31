@@ -25,7 +25,7 @@ import {
   takeConsoleTerminal,
   toggledConsoleSize,
 } from "./consoleModel.js";
-import { RECONNECTING_MESSAGE, attachConnectionOverlay, whenTerminalReconnects } from "./surfaceTabs.js";
+import { RECONNECTING_MESSAGE, attachConnectionOverlay, attachTransportLabel, whenTerminalReconnects } from "./surfaceTabs.js";
 import { el } from "../dom.js";
 import { esc } from "./text.js";
 import { hide, motionHooks, motionSettled, reveal } from "./motion.js";
@@ -88,7 +88,7 @@ export function terminalTabsController() {
 }
 
 /** Mount a user-terminal pane bound to `termId` on the shared socket. */
-export function mountUserTerminalPane(host, termId, { scope = {}, onExit, stands = () => true, deviceId = null, signal, recover = false }) {
+export function mountUserTerminalPane(host, termId, { scope = {}, onExit, stands = () => true, deviceId = null, transportDeviceId = deviceId, signal, recover = false }) {
   const manager = terminalManager();
   const current = () => stands() && (!deviceId || terminalDeviceId() === deviceId);
   let detach = () => {};
@@ -101,7 +101,10 @@ export function mountUserTerminalPane(host, termId, { scope = {}, onExit, stands
     input: (data) => current() ? manager.input(termId, data) : Promise.resolve(),
     resize: (cols, rows) => current() ? manager.resize(termId, cols, rows) : Promise.resolve(),
     onExit: (...args) => { if (current()) onExit?.(...args); },
-  }).then((pane) => ({ ...pane, dispose() { detach(); pane.dispose(); } }), (error) => {
+  }).then((pane) => {
+    const transport = attachTransportLabel(host, transportDeviceId);
+    return { ...pane, dispose() { transport.dispose(); detach(); pane.dispose(); } };
+  }, (error) => {
     detach();
     throw error;
   });
@@ -601,7 +604,7 @@ export function mountConsole(host, context) {
     const current = () => !disposed && paneAbort === abort;
     region.innerHTML = `<div class="termpane console-pane"></div>`;
     const paneHost = region.querySelector(".console-pane");
-    mountUserTerminalPane(paneHost, termId, { scope, signal: abort.signal, stands: current, onExit: () => void afterTerminalGone(termId) }).then(
+    mountUserTerminalPane(paneHost, termId, { scope, transportDeviceId: context.deviceId, signal: abort.signal, stands: current, onExit: () => void afterTerminalGone(termId) }).then(
       (mounted) => {
         if (!current()) {
           mounted.dispose();

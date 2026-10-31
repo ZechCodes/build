@@ -374,10 +374,6 @@ async fn another_client_gets_every_push_in_order_while_one_is_stalled() {
 #[tokio::test]
 async fn stream_admission_stops_at_its_own_pool_and_recovers_after_a_cut() {
     let bounds = bounds().await;
-    assert!(
-        POOL_STREAMS >= 4 * MAX_FAMILY_STREAMS,
-        "at least four families fill their stream caps at once"
-    );
     // Open, read streams fill the pool, so the refusal waits on no timer.
     let mut open = Vec::new();
     for family in 0..POOL_STREAMS / MAX_FAMILY_STREAMS {

@@ -197,8 +197,10 @@ fn stream_handle_cas_keeps_tombstone_and_fences_late_calls_and_cleanup() {
     let slot = StreamSlot::default();
     let first = slot.replace(None).unwrap();
     let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    slot.bind(&first, |_| Ok::<_, StreamError>(TestBinding(closed.clone())))
-        .unwrap();
+    slot.bind(&first, |_| {
+        Ok::<_, StreamError>(TestBinding(closed.clone()))
+    })
+    .unwrap();
     assert!(slot.binding(Some(&first)).is_ok());
     assert_eq!(slot.binding(None).err(), Some(StreamError::Required));
     assert_eq!(
@@ -218,8 +220,10 @@ fn stream_handle_cas_keeps_tombstone_and_fences_late_calls_and_cleanup() {
     );
     assert_eq!(slot.delete(&first).err(), Some(StreamError::Replaced));
     let second_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    slot.bind(&second, |_| Ok::<_, StreamError>(TestBinding(second_closed.clone())))
-        .unwrap();
+    slot.bind(&second, |_| {
+        Ok::<_, StreamError>(TestBinding(second_closed.clone()))
+    })
+    .unwrap();
     slot.release(&first);
     assert!(!second_closed.load(std::sync::atomic::Ordering::SeqCst));
     slot.delete(&second).unwrap();
@@ -606,7 +610,7 @@ async fn sse_body_holds_delivery_through_bytes_drop_and_closes_at_hard_deadline(
     use futures_util::StreamExt;
     let (sender, receiver) = sse::channel();
     let budget = limits::BufferBudget::default();
-    let reservation = std::sync::Arc::new(budget.reserve_stream().unwrap());
+    let reservation = std::sync::Arc::new(budget.reserve_stream("family-1").unwrap());
     let live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let state = live.clone();
@@ -727,7 +731,7 @@ async fn tls_stalled_reader_retains_sse_reservation_until_deadline_teardown() {
                     sse_stream::application_body(
                         sender,
                         receiver.lock().unwrap().take().unwrap(),
-                        Arc::new(budget.reserve_stream().unwrap()),
+                        Arc::new(budget.reserve_stream("family-1").unwrap()),
                         Arc::new(|| true),
                         Arc::new(move || deadline),
                         Arc::new(move || {
@@ -1020,9 +1024,9 @@ fn concurrent_first_stream_posts_admit_only_one_and_unused_deleted_handle_cannot
     assert_eq!(successful.len(), 1);
     slot.delete(&successful[0]).unwrap();
     assert_eq!(
-        slot.bind(&successful[0], |_| Ok::<_, stream_slot::StreamError>(TestBinding(Arc::new(
-            std::sync::atomic::AtomicBool::new(false)
-        ))))
+        slot.bind(&successful[0], |_| Ok::<_, stream_slot::StreamError>(
+            TestBinding(Arc::new(std::sync::atomic::AtomicBool::new(false)))
+        ))
         .err(),
         Some(stream_slot::StreamError::Consumed)
     );

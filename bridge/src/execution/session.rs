@@ -823,7 +823,10 @@ impl SessionEvents {
             .try_send(EncodedEvent::new(payload, fence)?);
         if matches!(
             result,
-            Err(DeliveryError::Full | DeliveryError::TooLarge | DeliveryError::Closed)
+            Err(DeliveryError::Full
+                | DeliveryError::TooLarge
+                | DeliveryError::Closed
+                | DeliveryError::InvalidPayload)
         ) {
             binding.binding.live.store(false, Ordering::SeqCst);
             state.bindings[binding.class.index()] = None;

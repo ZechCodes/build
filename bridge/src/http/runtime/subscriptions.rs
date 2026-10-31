@@ -92,6 +92,7 @@ struct StreamOpening {
     streams: Arc<Streams>,
     generation: String,
     output: OutputAuthority,
+    family_id: String,
 }
 
 async fn stream_opening(state: &HttpState, request: &Parts) -> HttpResult<StreamOpening> {
@@ -119,6 +120,7 @@ async fn stream_opening(state: &HttpState, request: &Parts) -> HttpResult<Stream
         streams: opening.streams,
         generation: opening.generation,
         output,
+        family_id: authority.identity.family_id.clone(),
     })
 }
 
@@ -222,7 +224,7 @@ async fn streamed(
     }
     let reservation = state
         .buffers
-        .reserve_stream()
+        .reserve_stream(&opening.family_id)
         .map_err(|_| refusal(StatusCode::TOO_MANY_REQUESTS, "overloaded"))?;
     let (sender, receiver) = sse::channel();
     // Queued before the binding exists, so no application push precedes it.

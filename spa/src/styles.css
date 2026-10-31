@@ -1798,6 +1798,9 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .termpane.term-offline canvas,
 .termpane.term-offline .xterm,
 .termpane.term-offline > :not(.term-conn) { opacity:.45; }
+/* The saved transport, named quietly in the corner; never a status. */
+.term-transport { position:absolute; top:8px; right:12px; z-index:4; pointer-events:none;
+  font-size:12px; color:var(--dim); }
 .agentwrap { position:relative; height:100%; }
 .agent-idle { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:2;
   background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:4px 12px;

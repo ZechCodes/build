@@ -18,6 +18,10 @@ RUN cd transport/js && npm ci --ignore-scripts --no-audit --no-fund
 COPY spa/package.json spa/package-lock.json spa/.npmrc ./spa/
 RUN cd spa && npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
 COPY spa/ ./spa/
+# spa/src/main.js imports the bridge's HTTP resource manifest from the repo's
+# fixtures/; spa/test/imageContext.test.js holds every import outside spa/ to a
+# COPY here.
+COPY fixtures/api/http/ ./fixtures/api/http/
 # Preserve relay/version inputs and Vite's output beside the source tree.
 ARG VITE_RELAY_URL=wss://relay.getbuild.ing
 ARG VITE_BUILD_VERSION=dev

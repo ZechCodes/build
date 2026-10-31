@@ -97,6 +97,9 @@ jobs:
         with:
           context: bridge
           file: bridge/Containerfile
+          # The crate includes fixtures/api/http at build time.
+          build-contexts: |
+            fixtures=fixtures
           target: relay
           push: true
           tags: ghcr.io/zechcodes/build-relay-dev:${{ needs.resolve.outputs.sha }}

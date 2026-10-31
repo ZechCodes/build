@@ -28,6 +28,8 @@ services:
     build:
       context: ../bridge
       dockerfile: Containerfile
+      additional_contexts:
+        fixtures: ../fixtures
       target: bridge
     environment:
       BRIDGE_API_URL: http://app:8080

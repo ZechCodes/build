@@ -400,3 +400,61 @@ async fn an_oversized_push_retires_only_its_own_stream() {
     );
     bounds.mounted.shutdown().await;
 }
+
+/// Pushes per latency sample set; together they stay well inside the stalled
+/// client's `STALLED_WRITE_TIMEOUT`, so it is still stalled at the end.
+const LATENCY_SAMPLES: usize = 200;
+
+/// Push-to-event latency on `client`'s open stream, sorted.
+async fn push_latencies(
+    bounds: &Bounds,
+    client: &Client,
+    events: &mut SocketEvents,
+) -> Vec<Duration> {
+    let mut latencies = Vec::with_capacity(LATENCY_SAMPLES);
+    for _ in 0..LATENCY_SAMPLES {
+        let started = std::time::Instant::now();
+        let (status, reply) = bounds.push(client).await;
+        assert_eq!(status, StatusCode::OK, "{}", reply["error_code"]);
+        let (_, event) = events.next().await.expect("every push arrives");
+        latencies.push(started.elapsed());
+        assert_eq!(event["seq"], reply["result"]["seq"]);
+    }
+    latencies.sort();
+    latencies
+}
+
+fn percentile(sorted: &[Duration], percent: usize) -> Duration {
+    sorted[(sorted.len() * percent / 100).min(sorted.len() - 1)]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "timing: release-profile isolated latency gate; see timing.yml"]
+async fn stalled_stream_leaves_push_latency_p50_p95() {
+    let bounds = bounds().await;
+    let reader = bounds.client("family-reader").await;
+    let mut events = bounds.stream(&reader).await;
+    bounds.pushes.set(0, 1);
+    let alone = push_latencies(&bounds, &reader, &mut events).await;
+
+    let stalled = bounds.client("family-stalled").await;
+    let _stalled_events = bounds.stream(&stalled).await;
+    bounds.stall(&stalled).await;
+    bounds.pushes.set(0, 1);
+    let beside = push_latencies(&bounds, &reader, &mut events).await;
+    assert!(
+        bounds.queued(&stalled).is_some(),
+        "the stalled stream was still open for every sample"
+    );
+
+    let (alone_p50, alone_p95) = (percentile(&alone, 50), percentile(&alone, 95));
+    let (beside_p50, beside_p95) = (percentile(&beside, 50), percentile(&beside, 95));
+    println!("push->event without a stalled stream: p50 {alone_p50:?} p95 {alone_p95:?}");
+    println!("push->event beside a stalled stream:  p50 {beside_p50:?} p95 {beside_p95:?}");
+    let ceiling = alone_p95 * 2 + Duration::from_millis(20);
+    assert!(
+        beside_p95 <= ceiling,
+        "a stalled stream slowed another's p95 to {beside_p95:?}, ceiling {ceiling:?}"
+    );
+    bounds.mounted.shutdown().await;
+}

@@ -124,16 +124,55 @@ async fn subscription_life() -> serde_json::Value {
 
 fn placeholders(text: String, ids: &[(&str, &str)]) -> serde_json::Value {
     let text = ids.iter().fold(text, |text, (name, id)| {
+        assert!(
+            uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.hyphenated().to_string() == *id),
+            "masked {name} is not a UUID: {id}"
+        );
         text.replace(id, &format!("{{{{{name}}}}}"))
     });
     serde_json::from_str(&text).unwrap()
+}
+
+/// Whether this run rewrites the fixture. CI never does: a rewrite there
+/// would compare the fixture with itself and always pass.
+fn fixture_update_requested(
+    update: Option<std::ffi::OsString>,
+    ci: Option<std::ffi::OsString>,
+) -> bool {
+    assert!(
+        update.is_none() || ci.is_none(),
+        "BUILD_UPDATE_FIXTURES is refused under CI; regenerate {FIXTURE} locally"
+    );
+    update.is_some()
+}
+
+#[test]
+fn a_local_run_may_update_the_fixture_only_when_asked() {
+    assert!(fixture_update_requested(Some("1".into()), None));
+    assert!(!fixture_update_requested(None, None));
+    assert!(!fixture_update_requested(None, Some("true".into())));
+}
+
+#[test]
+#[should_panic(expected = "BUILD_UPDATE_FIXTURES is refused under CI")]
+fn ci_refuses_to_update_the_fixture() {
+    fixture_update_requested(Some("1".into()), Some("true".into()));
+}
+
+#[test]
+#[should_panic(expected = "masked session_id is not a UUID")]
+fn only_uuid_shaped_ids_are_masked() {
+    placeholders(r#"{"id":"1"}"#.into(), &[("session_id", "1")]);
 }
 
 #[tokio::test(start_paused = true)]
 async fn subscription_contract_fixture_is_the_bridges_own_output() {
     let contract = subscription_life().await;
     let generated = format!("{}\n", serde_json::to_string_pretty(&contract).unwrap());
-    if std::env::var_os("BUILD_UPDATE_FIXTURES").is_some() {
+    if fixture_update_requested(
+        std::env::var_os("BUILD_UPDATE_FIXTURES"),
+        std::env::var_os("CI"),
+    ) {
         std::fs::write(fixture_path(), &generated).unwrap();
     }
     let committed = std::fs::read_to_string(fixture_path()).unwrap_or_default();

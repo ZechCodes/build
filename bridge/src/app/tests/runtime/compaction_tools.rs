@@ -321,6 +321,26 @@ async fn a_session_without_turn_ends_does_not_hold_the_turn_behind_compact_self(
     assert_eq!(agent.still_queued(), 0);
 }
 
+/// A compaction extension that fails mid-turn (Pi's telemetry ignores every
+/// event after that) leaves the session Working with no turn end coming and
+/// no `/compact` it could take. The held turn goes on the next drain.
+#[tokio::test]
+async fn a_turn_held_behind_compact_self_goes_when_the_extension_fails_mid_turn() {
+    let (agent, extension_failed) = CompactingAgent::with_an_extension();
+    agent.pump();
+    agent.becomes(AgentStatus::Working).await;
+    agent.compact_self("keep the rail notes").unwrap();
+    queue_a_turn(&agent, false);
+    drain(&agent.state);
+    assert_eq!(agent.still_queued(), 1, "the turn waits for the compaction");
+
+    extension_failed.store(true, std::sync::atomic::Ordering::SeqCst);
+    drain(&agent.state);
+
+    assert_eq!(agent.heard(1).await, vec!["warm".to_string()]);
+    assert_eq!(agent.still_queued(), 0);
+}
+
 /// With no compaction waiting, a turn queued mid-turn goes on the next drain,
 /// as it always has: only a pending compaction holds it.
 #[tokio::test]

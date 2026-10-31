@@ -159,6 +159,15 @@ impl CompactingAgent {
         Self::with_threshold(None)
     }
 
+    /// A session with no turn-boundary updates — TUI Claude, Codex PTY, Pi
+    /// without telemetry — so no status pump can run on it. Built off Tokio,
+    /// like [`Self::without_background_services`].
+    pub(super) fn without_turn_boundaries() -> CompactingAgent {
+        std::thread::spawn(|| Self::with_options(None, false))
+            .join()
+            .unwrap()
+    }
+
     /// These fixtures explicitly drive delivery and the session pumps. Build
     /// shared state off Tokio so the unrelated assignment service cannot drain
     /// a deliberately queued follow-up before the test releases the work turn.
@@ -167,6 +176,10 @@ impl CompactingAgent {
     }
 
     fn with_threshold(threshold: Option<u64>) -> CompactingAgent {
+        Self::with_options(threshold, true)
+    }
+
+    fn with_options(threshold: Option<u64>, reports_turn_ends: bool) -> CompactingAgent {
         let (dir, repo) = init_repo();
         let mut app = qa_state(&repo, dir.path());
         let root = insert_run(&mut app, &repo, dir.path(), RUN, RunState::Building);
@@ -188,15 +201,13 @@ impl CompactingAgent {
         let (status, watched) =
             tokio::sync::watch::channel(SessionStatusSnapshot::new(AgentStatus::Waiting));
         let log = SessionLog::default();
-        insert_agent_tab(
-            &mut app,
-            &root,
-            RUN,
-            &agent_id,
-            DictatedSession::reporting(AgentStatus::Waiting)
-                .recording_into(&log)
-                .watching_status(watched),
-        );
+        let session = DictatedSession::reporting(AgentStatus::Waiting).recording_into(&log);
+        let session = if reports_turn_ends {
+            session.watching_status(watched)
+        } else {
+            session
+        };
+        insert_agent_tab(&mut app, &root, RUN, &agent_id, session);
         let mut policy = crate::harness::harness_for(AgentProvider::CodexAppServer)
             .prepare_compaction_policy(
                 app.resolve_compaction_policy(RUN, &agent_id).unwrap(),

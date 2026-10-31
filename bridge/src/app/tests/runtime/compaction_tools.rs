@@ -301,6 +301,26 @@ async fn the_held_turn_goes_once_the_compaction_is_done() {
     assert_eq!(agent.still_queued(), 0);
 }
 
+/// A session that reports no turn ends has no status pump to release a held
+/// turn, so nothing is held for it: the turn queued behind `compact_self` goes
+/// on the next drain, as it did before the hold.
+#[tokio::test]
+async fn a_session_without_turn_ends_does_not_hold_the_turn_behind_compact_self() {
+    let agent = CompactingAgent::without_turn_boundaries();
+    agent.state.lock().unwrap().record_agent_working_since(
+        RUN,
+        &agent.agent_id,
+        Some("2026-10-31T21:30:00Z".to_string()),
+    );
+    agent.compact_self("keep the rail notes").unwrap();
+    queue_a_turn(&agent, false);
+
+    drain(&agent.state);
+
+    assert_eq!(agent.heard(1).await, vec!["warm".to_string()]);
+    assert_eq!(agent.still_queued(), 0);
+}
+
 /// With no compaction waiting, a turn queued mid-turn goes on the next drain,
 /// as it always has: only a pending compaction holds it.
 #[tokio::test]

@@ -35,6 +35,21 @@ const REFRESH_AFTER: Duration = Duration::from_secs(20);
 const RESPONSE_LIMIT: usize = 16 * 1024;
 const TOKEN_LIMIT: usize = 2048;
 
+/// How long hosted evidence stays fresh. Production always uses
+/// `FRESHNESS`/`REFRESH_AFTER`; only `#[cfg(test)]` code can shorten them.
+#[derive(Clone, Copy)]
+struct Freshness {
+    window: Duration,
+    refresh_after: Duration,
+}
+
+impl Freshness {
+    const PRODUCTION: Self = Self {
+        window: FRESHNESS,
+        refresh_after: REFRESH_AFTER,
+    };
+}
+
 type TokenDigest = [u8; 32];
 type Verification = Result<Arc<Evidence>, AuthError>;
 type Pending = watch::Receiver<Option<Verification>>;
@@ -115,6 +130,7 @@ struct VerifierInner {
     network: Arc<Semaphore>,
     waiters: Arc<Semaphore>,
     jobs: Arc<Semaphore>,
+    freshness: Freshness,
 }
 
 struct CacheEntry {
@@ -153,6 +169,7 @@ impl HttpAuthVerifier {
                 network: Arc::new(Semaphore::new(NETWORK_LIMIT)),
                 waiters: Arc::new(Semaphore::new(WAITER_LIMIT)),
                 jobs: Arc::new(Semaphore::new(WAITER_LIMIT)),
+                freshness: Freshness::PRODUCTION,
             }),
         }
     }

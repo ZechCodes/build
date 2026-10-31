@@ -48,6 +48,28 @@ fn test_verifier_with_signer(server: &MockServer) -> (HttpAuthVerifier, Arc<Test
     (HttpAuthVerifier::configured(signer.clone(), client), signer)
 }
 
+impl HttpAuthVerifier {
+    /// The production verifier against a test hosted endpoint, with evidence
+    /// fresh for `window` instead of `FRESHNESS`. Test builds only.
+    pub(crate) fn hosted_for_tests(introspection_url: String, window: Duration) -> Self {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .build()
+            .unwrap();
+        let signer = Arc::new(TestSigner {
+            url: introspection_url,
+            assertion_at: Mutex::new(None),
+        });
+        let mut verifier = Self::configured(signer, client);
+        Arc::get_mut(&mut verifier.inner).unwrap().freshness = Freshness {
+            window,
+            refresh_after: window * 2 / 3,
+        };
+        verifier
+    }
+}
+
 fn valid_response() -> Value {
     json!({
         "active": true, "issuer": "https://getbuild.ing", "account_id": "account-a", "device_id": "device-a",

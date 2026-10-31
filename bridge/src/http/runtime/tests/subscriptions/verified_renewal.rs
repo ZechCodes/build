@@ -175,7 +175,7 @@ async fn a_hosted_renewal_carries_the_tls_stream_past_its_first_grant() {
 
     let (status, renewed) = opening.renew_as(OPENING_BEARER).await;
 
-    assert_eq!(status, StatusCode::OK, "{renewed}");
+    assert_eq!(status, StatusCode::OK, "{}", renewed["error_code"]);
     assert_eq!(
         opening.introspections().await,
         2,
@@ -197,7 +197,12 @@ async fn hosted_inactive_at_renewal_ends_the_tls_stream_at_once() {
 
     let (status, refused) = opening.renew_as(OPENING_BEARER).await;
 
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused}");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "{}",
+        refused["error_code"]
+    );
     assert_eq!(refused["error_code"], "invalid_credential");
     let ended_at = opening.ended_at().await;
     assert!(
@@ -215,7 +220,12 @@ async fn hosted_unavailable_at_renewal_leaves_only_the_first_deadline() {
 
     let (status, refused) = opening.renew_as(OPENING_BEARER).await;
 
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{refused}");
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        refused["error_code"]
+    );
     assert_eq!(refused["retryable"], true);
     assert_eq!(opening.introspections().await, 2);
     opening
@@ -237,7 +247,7 @@ async fn another_bindings_bearer_cannot_renew_the_tls_opening() {
 
     let (status, refused) = opening.renew_as(OTHER_BEARER).await;
 
-    assert_eq!(status, StatusCode::NOT_FOUND, "{refused}");
+    assert_eq!(status, StatusCode::NOT_FOUND, "{}", refused["error_code"]);
     assert_eq!(refused["error_code"], "not_found");
     opening
         .assert_delivers("the 404 leaves the original stream untouched")

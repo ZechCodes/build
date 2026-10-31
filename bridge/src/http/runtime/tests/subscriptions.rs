@@ -527,3 +527,230 @@ async fn delete_racing_an_unread_stream_ends_it_without_harming_the_successor() 
     drop(new);
     assert_eq!(runtime.state.buffers.available(), idle);
 }
+
+struct MountedTls {
+    _dir: tempfile::TempDir,
+    base: String,
+    client: reqwest::Client,
+    stop: tokio::sync::watch::Sender<bool>,
+    server: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+async fn mounted_tls(runtime: HttpRuntime) -> MountedTls {
+    let dir = tempfile::tempdir().unwrap();
+    let rcgen::CertifiedKey { cert, key_pair } =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+    let cert_path = dir.path().join("cert.pem");
+    let key_path = dir.path().join("key.pem");
+    std::fs::write(&cert_path, cert.pem()).unwrap();
+    std::fs::write(&key_path, key_pair.serialize_pem()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let tls = super::super::super::tls::load(&cert_path, &key_path).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let policy = super::super::super::policy::HttpPolicy::new(
+        &format!("https://localhost:{port}"),
+        &["https://app.example".to_owned()],
+    )
+    .unwrap();
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let server =
+        tokio::spawn(async move { serve_mounted(listener, tls, policy, runtime, stopped).await });
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .http1_only()
+        .add_root_certificate(reqwest::Certificate::from_pem(cert.pem().as_bytes()).unwrap())
+        .build()
+        .unwrap();
+    MountedTls {
+        _dir: dir,
+        base: format!("https://localhost:{port}"),
+        client,
+        stop,
+        server,
+    }
+}
+
+impl MountedTls {
+    fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        self.client
+            .request(method, format!("{}{path}", self.base))
+            .header("origin", "https://app.example")
+            .bearer_auth("account-bound-token")
+    }
+
+    async fn shutdown(self) {
+        self.stop.send(true).unwrap();
+        self.server.await.unwrap().unwrap();
+    }
+}
+
+/// Reads whole SSE events from a live production socket body.
+struct SocketEvents {
+    response: reqwest::Response,
+    buffered: String,
+}
+
+impl SocketEvents {
+    async fn next(&mut self) -> Option<(String, serde_json::Value)> {
+        loop {
+            if let Some(end) = self.buffered.find("\n\n") {
+                let event: String = self.buffered.drain(..end + 2).collect();
+                if event.starts_with(':') {
+                    continue;
+                }
+                let (name, data) = event
+                    .trim_end()
+                    .strip_prefix("event: ")
+                    .and_then(|rest| rest.split_once("\ndata: "))
+                    .unwrap_or_else(|| panic!("one complete SSE event: {event:?}"));
+                return Some((name.to_owned(), serde_json::from_str(data).unwrap()));
+            }
+            // Shorter than the 15 s heartbeat, so a stream kept open only by
+            // heartbeats fails instead of passing at the grant deadline.
+            let chunk =
+                tokio::time::timeout(std::time::Duration::from_secs(5), self.response.chunk())
+                    .await
+                    .expect("the socket stream settles before the next heartbeat");
+            match chunk {
+                Ok(Some(bytes)) => self.buffered.push_str(std::str::from_utf8(&bytes).unwrap()),
+                Ok(None) | Err(_) => return None,
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn production_tls_listener_carries_the_subscription_stream_until_revocation() {
+    let live = Arc::new(AtomicBool::new(true));
+    let runtime = runtime_with(
+        pushing_execution(),
+        verifier(authority_with(
+            live.clone(),
+            std::time::Duration::from_secs(60),
+        )),
+    );
+    let mounted = mounted_tls(runtime).await;
+    let opening: serde_json::Value = mounted
+        .request(reqwest::Method::POST, "/v1/sessions")
+        .json(&json!({"api_range": ">=3 <4"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let session_id = opening["session_id"].as_str().unwrap().to_owned();
+
+    let created = mounted
+        .request(reqwest::Method::POST, "/v1/subscriptions")
+        .header("X-Build-Session", &session_id)
+        .json(&json!({"kind": "application"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: serde_json::Value = created.json().await.unwrap();
+    let subscription = created["subscription_id"].as_str().unwrap().to_owned();
+
+    let stream = mounted
+        .request(
+            reqwest::Method::GET,
+            created["events_path"].as_str().unwrap(),
+        )
+        .header("X-Build-Session", &session_id)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stream.status(), StatusCode::OK);
+    assert_eq!(
+        stream.headers()[CONTENT_TYPE],
+        "text/event-stream; charset=utf-8"
+    );
+    let mut events = SocketEvents {
+        response: stream,
+        buffered: String::new(),
+    };
+    let (name, hello) = events.next().await.expect("hello arrives over TLS");
+    assert_eq!(name, "hello");
+    assert_eq!(hello["subscription_id"], subscription);
+
+    let greeted = mounted
+        .request(reqwest::Method::POST, "/v1/session-greetings")
+        .header("X-Build-Session", &session_id)
+        .header("X-Build-Subscription", &subscription)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(greeted.status(), StatusCode::OK);
+    let (name, pushed) = events.next().await.expect("the push arrives over TLS");
+    assert_eq!(name, "event");
+    assert_eq!(pushed["type"], "probe.pushed");
+
+    live.store(false, Ordering::SeqCst);
+    assert!(
+        events.next().await.is_none(),
+        "revocation ends the production socket stream"
+    );
+
+    mounted.shutdown().await;
+}
+
+#[tokio::test]
+async fn production_tls_listener_deletes_a_subscription_and_ends_its_stream() {
+    let runtime = runtime_with(pushing_execution(), verifier(authority()));
+    let mounted = mounted_tls(runtime).await;
+    let opening: serde_json::Value = mounted
+        .request(reqwest::Method::POST, "/v1/sessions")
+        .json(&json!({"api_range": ">=3 <4"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let session_id = opening["session_id"].as_str().unwrap().to_owned();
+    let created: serde_json::Value = mounted
+        .request(reqwest::Method::POST, "/v1/subscriptions")
+        .header("X-Build-Session", &session_id)
+        .json(&json!({"kind": "application"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let subscription = created["subscription_id"].as_str().unwrap();
+    let mut events = SocketEvents {
+        response: mounted
+            .request(
+                reqwest::Method::GET,
+                created["events_path"].as_str().unwrap(),
+            )
+            .header("X-Build-Session", &session_id)
+            .send()
+            .await
+            .unwrap(),
+        buffered: String::new(),
+    };
+    assert_eq!(events.next().await.unwrap().0, "hello");
+
+    let deleted = mounted
+        .request(
+            reqwest::Method::DELETE,
+            &format!("/v1/subscriptions/{subscription}"),
+        )
+        .header("X-Build-Session", &session_id)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    assert!(events.next().await.is_none());
+    mounted.shutdown().await;
+}

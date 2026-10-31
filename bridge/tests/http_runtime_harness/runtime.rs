@@ -197,7 +197,7 @@ fn stream_handle_cas_keeps_tombstone_and_fences_late_calls_and_cleanup() {
     let slot = StreamSlot::default();
     let first = slot.replace(None).unwrap();
     let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    slot.bind(&first, |_| Ok(TestBinding(closed.clone())))
+    slot.bind(&first, |_| Ok::<_, StreamError>(TestBinding(closed.clone())))
         .unwrap();
     assert!(slot.binding(Some(&first)).is_ok());
     assert_eq!(slot.binding(None).err(), Some(StreamError::Required));
@@ -218,7 +218,7 @@ fn stream_handle_cas_keeps_tombstone_and_fences_late_calls_and_cleanup() {
     );
     assert_eq!(slot.delete(&first).err(), Some(StreamError::Replaced));
     let second_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    slot.bind(&second, |_| Ok(TestBinding(second_closed.clone())))
+    slot.bind(&second, |_| Ok::<_, StreamError>(TestBinding(second_closed.clone())))
         .unwrap();
     slot.release(&first);
     assert!(!second_closed.load(std::sync::atomic::Ordering::SeqCst));
@@ -1020,7 +1020,7 @@ fn concurrent_first_stream_posts_admit_only_one_and_unused_deleted_handle_cannot
     assert_eq!(successful.len(), 1);
     slot.delete(&successful[0]).unwrap();
     assert_eq!(
-        slot.bind(&successful[0], |_| Ok(TestBinding(Arc::new(
+        slot.bind(&successful[0], |_| Ok::<_, stream_slot::StreamError>(TestBinding(Arc::new(
             std::sync::atomic::AtomicBool::new(false)
         ))))
         .err(),

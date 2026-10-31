@@ -158,4 +158,14 @@ describe("a terminal pane names its transport from the device's saved choice", (
     await vi.waitFor(() => expect(labelIn(host.querySelector("#agentpane"))?.textContent).toBe(LABEL));
     tab.dispose();
   });
+
+  it("sits inside the pane's screen, so the touch key bar below it never covers it", async () => {
+    saved.choose("dev-http", "http");
+
+    const user = await userPane("dev-http");
+    const agent = await agentPane("dev-http");
+
+    expect(labelIn(user.host).parentElement).toBe(user.host.querySelector(":scope > .term-screen"));
+    expect(labelIn(agent.host).parentElement).toBe(agent.host.querySelector(":scope > .term-screen"));
+  });
 });

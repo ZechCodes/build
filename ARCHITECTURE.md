@@ -260,6 +260,21 @@ Internal owner close cleanup remains valid after retirement.
 Session expiry/revocation retires the exact opening; the daemon's coalesced
 cleanup pass releases dead producer resources without per-close task spawning.
 
+The HTTP adapter reserves buffers from two pools in `bridge/src/http/limits.rs`.
+RPCs reserve their request and response maxima from the 32 MiB
+`TOTAL_BUFFER_BYTES` budget. Each SSE stream reserves its 1 MiB queue
+(`MAX_QUEUED_BYTES`) from the separate 16 MiB `STREAM_BUFFER_BYTES` pool, so at
+most sixteen streams are open at once. The stream reservation is held until the
+stream's body drops. Streams never draw on the RPC budget, so streams held by
+stalled clients cannot cause an RPC to be refused with 429. When the stream pool
+is full, the next stream GET is refused with 429 `overloaded` and `retryable`
+set. The per-family and per-account stream limits apply on top of the pool.
+A stream also ends, and returns its reservation, on any of these:
+
+- a full queue;
+- a socket write that stalls for 10 s;
+- any failed push to its binding.
+
 **Dispatch.** Each handled frame goes to `dispatch_frame` in
 `bridge/src/app/rpc.rs`, which tries these in order:
 

@@ -217,6 +217,62 @@ async fn a_drain_mid_turn_holds_the_turn_queued_behind_compact_self() {
     assert!(agent.log.turns().is_empty(), "{:?}", agent.log.turns());
 }
 
+/// The agent's report closes its thread's turn while the provider's turn is
+/// still running — `compact_self`, then the closing `post_thread_message`, is
+/// the usual order — and the drain after that tool call still holds the turn.
+#[tokio::test]
+async fn a_report_mid_turn_still_holds_the_turn_queued_behind_compact_self() {
+    let agent = CompactingAgent::without_background_services();
+    agent.pump();
+    agent.becomes(AgentStatus::Working).await;
+    agent.compact_self("keep the rail notes").unwrap();
+    agent
+        .state
+        .lock()
+        .unwrap()
+        .agent_action(
+            RUN,
+            &agent.agent_id,
+            BridgeAction::PostThreadMessage {
+                still_working: false,
+                body: "done".to_string(),
+                options: Vec::new(),
+                attachments: Vec::new(),
+            },
+        )
+        .unwrap();
+    queue_a_turn(&agent, false);
+
+    drain(&agent.state);
+
+    assert_eq!(agent.still_queued(), 1, "the turn waits for the compaction");
+    assert!(agent.log.turns().is_empty(), "{:?}", agent.log.turns());
+}
+
+/// A session that ends with no last snapshot takes the compaction waiting
+/// for its turn with it, so nothing holds a turn for an agent that is gone.
+#[tokio::test]
+async fn a_session_ending_mid_turn_withdraws_the_compaction_waiting_for_it() {
+    let agent = CompactingAgent::without_background_services();
+    agent.pump();
+    agent.becomes(AgentStatus::Working).await;
+    agent.compact_self("keep the rail notes").unwrap();
+    let key = TabKey::agent(&AppState::canonical_root(&agent.root), &agent.agent_id);
+    let mut app = agent.state.lock().unwrap();
+    let instance = app
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session_instance
+        .clone()
+        .unwrap();
+
+    app.record_agent_session_end(RUN, &agent.agent_id, &instance);
+
+    assert!(app.compactions.waiting_for_turn().is_empty());
+    assert!(app.compactions.withdraw(RUN, &agent.agent_id).is_none());
+}
+
 /// The held turn goes once the compaction it waited for has: the turn ends,
 /// the compaction goes ahead of it, and when that is done the turn follows.
 #[tokio::test]

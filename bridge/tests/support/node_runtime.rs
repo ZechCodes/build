@@ -252,6 +252,40 @@ mod tests {
     }
 
     #[test]
+    fn fixture_scripts_exec_while_other_threads_fork() {
+        // A fork on another test thread copies every descriptor this process
+        // holds; a script still open for writing in that child fails exec
+        // with ETXTBSY. Fork constantly and exec each script straight away.
+        let temp = tempfile::tempdir().unwrap();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let forkers: Vec<_> = (0..4)
+            .map(|_| {
+                let done = done.clone();
+                std::thread::spawn(move || {
+                    while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = Command::new("/bin/true").status();
+                    }
+                })
+            })
+            .collect();
+        let busy = (0..200)
+            .filter(|round| {
+                let script = executable(temp.path(), &format!("scripts/{round}"));
+                let output = Command::new(&script).output();
+                output.is_err_and(|error| error.raw_os_error() == Some(libc::ETXTBSY))
+            })
+            .count();
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        for forker in forkers {
+            forker.join().unwrap();
+        }
+        assert_eq!(
+            busy, 0,
+            "{busy} of 200 fixture scripts were still open for writing"
+        );
+    }
+
+    #[test]
     fn driver_and_mcp_env_node_use_the_same_renamed_override() {
         let temp = tempfile::tempdir().unwrap();
         let node = executable(temp.path(), "native/node22");

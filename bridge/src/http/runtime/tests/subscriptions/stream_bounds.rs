@@ -4,7 +4,7 @@
 use super::*;
 use crate::http::{
     limits::BufferBudget,
-    sse::{MAX_QUEUED_BYTES, STALLED_WRITE_TIMEOUT},
+    sse::{MAX_EVENT_BYTES, MAX_QUEUED_BYTES, STALLED_WRITE_TIMEOUT},
 };
 use std::collections::HashMap;
 use std::time::Duration;
@@ -302,5 +302,53 @@ async fn another_client_gets_every_push_in_order_while_one_is_stalled() {
         received.push(event["seq"].clone());
     }
     assert_eq!(received, sent, "every push, in order, none lost");
+    bounds.mounted.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_oversized_push_retires_only_its_own_stream() {
+    let bounds = bounds().await;
+    let client = bounds.client("family-a").await;
+    let mut events = bounds.stream(&client).await;
+
+    bounds.pushes.set(MAX_EVENT_BYTES, 1);
+    let (status, reply) = bounds.push(&client).await;
+    assert_eq!(status, StatusCode::OK, "{}", reply["error_code"]);
+
+    assert!(
+        events.next().await.is_none(),
+        "the oversized event ends the stream"
+    );
+    bounds
+        .settled("the ended stream returns its reservation", Bounds::released)
+        .await;
+    let (status, reply) = bounds.push(&client).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{}", reply["error_code"]);
+    assert_eq!(reply["error_code"], "stream_replaced");
+
+    let replaced: serde_json::Value = bounds
+        .request_as(&client.bearer, reqwest::Method::POST, "/v1/subscriptions")
+        .header("X-Build-Session", &client.session_id)
+        .header("X-Build-Subscription", &client.subscription)
+        .json(&json!({"kind": "application"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let successor = Client {
+        subscription: replaced["subscription_id"].as_str().unwrap().to_owned(),
+        events_path: replaced["events_path"].as_str().unwrap().to_owned(),
+        ..client
+    };
+    let mut events = bounds.stream(&successor).await;
+    bounds.pushes.set(0, 1);
+    let (status, reply) = bounds.push(&successor).await;
+    assert_eq!(status, StatusCode::OK, "{}", reply["error_code"]);
+    assert_eq!(
+        events.next().await.expect("the opening streams on").1["seq"],
+        reply["result"]["seq"]
+    );
     bounds.mounted.shutdown().await;
 }

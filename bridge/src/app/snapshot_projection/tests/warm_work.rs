@@ -345,12 +345,9 @@ fn warm_roots_capture_work_is_bounded_per_invocation_at_ten_and_twenty_owners() 
     assert_eq!(invocations(&reports[1]) - invocations(&reports[0]), 20);
 }
 
-#[test]
-fn warm_roots_resolution_matches_legacy_direct_terminal_project_missing_and_alias_cases() {
-    let mut f = WarmFixture::new(12);
+fn assert_canonicalization_witnesses(root: &std::path::Path) {
     // Positive witness for BOTH actual canonicalization entry sites: same_path
     // attempts two, AppState::canonical_root attempts one. Not a proxy counter.
-    let root = f._root.path();
     let ((equal, canonical), witnesses) = work::measure(|| {
         (
             crate::app::workspaces::same_path(root, root),
@@ -367,6 +364,12 @@ fn warm_roots_resolution_matches_legacy_direct_terminal_project_missing_and_alia
         &absent,
         &root.join("never-created/..")
     ));
+}
+
+#[test]
+fn warm_roots_resolution_matches_legacy_direct_terminal_project_missing_and_alias_cases() {
+    let mut f = WarmFixture::new(12);
+    assert_canonicalization_witnesses(f._root.path());
     let direct = f._root.path().join("direct-container");
     std::fs::create_dir(&direct).unwrap();
     install_workspace(&mut f.app, &f.project, "run-01", "000 direct", &direct);

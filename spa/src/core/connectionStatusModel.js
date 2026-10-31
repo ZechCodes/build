@@ -82,6 +82,7 @@ export const OFFLINE = "offline";
  *  answered for yet says the plain word — the reader is told what is known,
  *  and never guessed at. */
 const connectedLabelFor = (path) => {
+  if (path === "https") return "Connected HTTPS · Terminal uses WebRTC";
   if (path === "turn") return "Connected TURN";
   return path === "direct" ? "Connected WebRTC" : "Connected";
 };

@@ -59,6 +59,7 @@ use std::time::Duration;
 use build_bridge::app::AppState;
 use build_bridge::carrier::FrameIntake;
 use build_bridge::config::{self, BridgeConfig};
+use build_bridge::execution::ExecutionService;
 use build_bridge::harness::HarnessContext;
 use build_bridge::liveness::DedicatedRuntime;
 use build_bridge::notify::Notifier;
@@ -229,7 +230,7 @@ async fn serve() {
         Ok(app) => app,
         Err(error) => exit_startup(error),
     };
-    run_daemon(runtime, loaded.identity, loaded.transport, app).await;
+    run_daemon(runtime, loaded, app).await;
 }
 
 fn configure_updates(app: AppState, runtime: &RuntimePaths) -> Result<AppState, String> {
@@ -436,6 +437,7 @@ impl PairingOutcome {
 struct LoadedIdentity {
     identity: DeviceIdentity,
     transport: transport::KeyPairB64,
+    stored: Option<identity::StoredIdentity>,
     outcome: PairingOutcome,
 }
 
@@ -479,6 +481,7 @@ async fn load_stored_identity(config: &BridgeConfig) -> Result<LoadedIdentity, S
     Ok(LoadedIdentity {
         identity: identity::to_device_identity(&approved),
         transport: approved.transport.clone(),
+        stored: Some(approved),
         outcome,
     })
 }
@@ -507,6 +510,7 @@ fn provisioned_identity_from(
             public_key_b64: tp_pub,
             private_key_b64: tp_priv,
         },
+        stored: None,
         outcome: PairingOutcome::Provisioned,
     })
 }
@@ -557,12 +561,117 @@ fn task_store_startup_error(tasks_dir: &std::path::Path, error: &str) -> String 
     )
 }
 
-async fn run_daemon(
-    runtime: RuntimePaths,
-    identity: DeviceIdentity,
-    transport_keypair: transport::KeyPairB64,
-    app: AppState,
+type HttpService = (
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<Result<(), String>>,
+);
+
+async fn observe_http_service(
+    service: &mut Option<HttpService>,
+) -> Option<Result<Result<(), String>, tokio::task::JoinError>> {
+    match service.as_mut() {
+        Some((_, task)) => Some(task.await),
+        None => std::future::pending().await,
+    }
+}
+
+async fn start_http_service(
+    runtime: &RuntimePaths,
+    stored: Option<&identity::StoredIdentity>,
+    execution: Arc<ExecutionService>,
+    liveness: &DedicatedRuntime,
+) -> Option<HttpService> {
+    let settings =
+        build_bridge::http::settings::HttpSettings::resolve(|name| std::env::var(name).ok())
+            .unwrap_or_else(|error| exit_startup(format!("invalid HTTP configuration: {error}")));
+    let state_path = runtime.tasks_dir.join("http-endpoint.json");
+    let prepared = match settings {
+        None => {
+            if let Some(stored) = stored {
+                if let Err(error) =
+                    build_bridge::http::supervisor::reconcile_disabled(stored, state_path.clone())
+                        .await
+                {
+                    eprintln!("HTTP endpoint deactivation remains pending: {error}");
+                }
+            }
+            None
+        }
+        Some(settings) => {
+            let stored = stored.unwrap_or_else(|| {
+                exit_startup(
+                    "HTTP requires the file-backed paired identity; provisioned relay-only keys are insufficient"
+                        .into(),
+                )
+            });
+            Some(
+                build_bridge::http::supervisor::PreparedHttp::prepare(
+                    settings,
+                    stored,
+                    &runtime.config.api_url,
+                    &runtime.config.web_url,
+                    state_path,
+                    execution,
+                )
+                .await
+                .unwrap_or_else(|error| exit_startup(format!("cannot start HTTP: {error}"))),
+            )
+        }
+    };
+    prepared.map(|prepared| {
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let task = liveness.spawn(async move { prepared.serve(stopped).await });
+        (stop, task)
+    })
+}
+
+async fn await_daemon_stop(
+    signals: &mut ShutdownSignals,
+    relay_socket: &mut tokio::task::JoinHandle<()>,
+    http_service: &mut Option<HttpService>,
 ) {
+    tokio::select! {
+        // Biased so a SIGTERM that lands while the relay task is also ready
+        // is still the branch taken: systemd is about to send SIGKILL, and
+        // one more reconnect is worth nothing next to the roster.
+        biased;
+        () = signals.recv() => {}
+        _ = relay_socket => {}
+        http = observe_http_service(http_service) => {
+            http_service.take();
+            match http {
+                Some(Ok(Ok(()))) => eprintln!("HTTP supervisor stopped unexpectedly"),
+                Some(Ok(Err(error))) => eprintln!("HTTP supervisor failed: {error}"),
+                Some(Err(error)) => eprintln!("HTTP supervisor ended: {error}"),
+                None => unreachable!(),
+            }
+        }
+    }
+}
+
+async fn stop_http_service(service: Option<HttpService>) {
+    let Some((stop, mut task)) = service else {
+        return;
+    };
+    let _ = stop.send(true);
+    match tokio::time::timeout(Duration::from_secs(7), &mut task).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(error))) => eprintln!("HTTP shutdown: {error}"),
+        Ok(Err(error)) => eprintln!("HTTP supervisor ended: {error}"),
+        Err(_) => {
+            task.abort();
+            eprintln!("HTTP shutdown exceeded its bound");
+        }
+    }
+}
+
+async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState) {
+    let LoadedIdentity {
+        identity,
+        transport: transport_keypair,
+        stored,
+        ..
+    } = loaded;
     let repo_display = runtime
         .config
         .repo
@@ -646,11 +755,14 @@ async fn run_daemon(
     // reached over either wire is the one session.
     let intake = FrameIntake::with_ledger(handler, transport_keypair, ledger);
     let execution = intake.execution();
+    let mut http_service =
+        start_http_service(&runtime, stored.as_ref(), execution.clone(), &liveness).await;
+    let reaper_execution = execution.clone();
     let _execution_reaper = liveness.handle().spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
         loop {
             tick.tick().await;
-            execution.reap_expired();
+            reaper_execution.reap_expired();
         }
     });
     // The peer transport a browser upgrades to. It is built last because it is
@@ -722,14 +834,8 @@ async fn run_daemon(
     spawn_resume_after_restart(app.clone(), runtime.tasks_dir.clone(), reachable.clone());
 
     let mut going_down = shutdown_signals();
-    tokio::select! {
-        // Biased so a SIGTERM that lands while the relay task is also ready
-        // is still the branch taken: systemd is about to send SIGKILL, and
-        // one more reconnect is worth nothing next to the roster.
-        biased;
-        () = going_down.recv() => {}
-        _ = &mut relay_socket => {}
-    }
+    await_daemon_stop(&mut going_down, &mut relay_socket, &mut http_service).await;
+    stop_http_service(http_service.take()).await;
     // The one exit the daemon has, whichever way the loop ended: record who was
     // working before the harnesses go with the process. Rolling the binary
     // kills every session on the device at once, and nothing but this says so.
@@ -1369,9 +1475,9 @@ fn mcp_stdio(dev_config: Option<&BridgeConfig>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        kept_identity_note, pair_args, pair_device, pair_said, run_main_runtime,
-        service_environment, valid_release_repo, LoadedIdentity, NotPaired, PairingOutcome,
-        PAIR_STATUS_APPROVED_ELSEWHERE,
+        kept_identity_note, observe_http_service, pair_args, pair_device, pair_said,
+        run_main_runtime, service_environment, valid_release_repo, LoadedIdentity, NotPaired,
+        PairingOutcome, PAIR_STATUS_APPROVED_ELSEWHERE,
     };
     use build_bridge::{config, identity, pairing, relay::DeviceIdentity, transport};
     use wiremock::matchers::{method, path, path_regex};
@@ -1467,6 +1573,22 @@ mod tests {
         drop(release);
         thread.join().unwrap();
         assert!(completed, "runtime teardown waited for stuck blocking work");
+    }
+
+    #[tokio::test]
+    async fn daemon_observes_http_supervisor_failure_without_a_shutdown_signal() {
+        let (stop, _) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async { Err::<(), _>("listener failed".to_string()) });
+        let mut service = Some((stop, task));
+        let observed = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            observe_http_service(&mut service),
+        )
+        .await
+        .expect("HTTP supervisor completion is observed promptly")
+        .expect("configured HTTP service exists")
+        .expect("HTTP task does not panic");
+        assert_eq!(observed, Err("listener failed".to_string()));
     }
 
     /// `service::manager_for` is the crate's one platform branch: it turns
@@ -1650,6 +1772,7 @@ mod tests {
                 identity_private_key_b64: stored.identity_private_key_b64.clone(),
             },
             transport: transport::generate_transport_keypair(),
+            stored: None,
             outcome: PairingOutcome::Provisioned,
         };
 

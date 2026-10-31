@@ -1,0 +1,8 @@
+{
+  "description": "Public fixed test seed byte7 repeated32; no deployed credential. RFC7515 flattened JWS.",
+  "identity_public_key_b64": "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=",
+  "now": 1800000000,
+  "payload": "eyJhdWQiOiJodHRwczovL2dldGJ1aWxkLmluZy9hcGkvZGV2aWNlcy9hYWFhYWFhYS1hYWFhLTRhYWEtOGFhYS1hYWFhYWFhYWFhYWEvaHR0cC1lbmRwb2ludC9jaGFsbGVuZ2UiLCJleHAiOjE4MDAwMDAwMzAsImlhdCI6MTgwMDAwMDAwMCwiaXNzIjoiYWFhYWFhYWEtYWFhYS00YWFhLThhYWEtYWFhYWFhYWFhYWFhIiwianRpIjoiMGJjNzQxNWQtNzgwMy00Nzg1LWJlZWYtMTA2NWViN2U2YjA1Iiwic3ViIjoiYWFhYWFhYWEtYWFhYS00YWFhLThhYWEtYWFhYWFhYWFhYWFhIn0",
+  "protected": "eyJ0eXAiOiJidWlsZC1odHRwLXJlZ2lzdHJhdGlvbi1jaGFsbGVuZ2Urand0IiwiYWxnIjoiRWREU0EifQ",
+  "signature": "j8aangMGpFzV4KxUpMkFpNj9xHCY5k93ZxBiGP1YFPlwJOyML59sXdhKo6IYjQ_GkYXAnCJnEfCId5jEwxCBAA"
+}

@@ -36,6 +36,8 @@ class Device(Base):
 
     __tablename__ = "devices"
 
+    authorization_epoch: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+
     name: Mapped[str] = mapped_column(String(255), nullable=False)
 
     # Null until approved; FK so deleting a user removes their devices.
@@ -205,3 +207,8 @@ class TransportSession(Base):
     # needed; both words count here.
     fell_back_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTimeUTC(timezone=True), nullable=True)
+
+# Register HTTP authority tables with the same Alembic metadata loader.
+from buildapp.bridge_http_models import (  # noqa: E402,F401
+    BridgeHttpClient, BridgeHttpChallenge, BridgeHttpEndpoint, BridgeHttpFamily, BridgeHttpReplay, BridgeHttpToken,
+)

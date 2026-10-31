@@ -10,6 +10,7 @@ import { settingsSheetHtml } from "./settingsSheet.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
 import { notePairingApproved } from "../core/pendingPairing.js";
+import { openAddByUrl } from "./addByUrl.js";
 
 /** A link opened the sheet: anyone can send one, so it says so and what
  *  approving does before the device it names can be approved (#319). */
@@ -36,6 +37,7 @@ export function openAddDevice(onDone, { code = "", fromLink = false } = {}) {
     <input id="paircode" ${fieldTraits("code")} placeholder="e.g. WXYZ-4F2K" style="text-transform:uppercase" />
     <div class="row"><button class="btn" id="pcancel" style="margin-left:auto">Cancel</button>
       <button class="btn primary" id="plookup">Look up</button></div>
+    ${fromLink ? "" : '<button class="btn" id="pair-url">Add a paired device by URL…</button>'}
     <div id="pairbox"></div>
     <div class="adderr" id="perr"></div>`,
   });
@@ -54,6 +56,7 @@ export function openAddDevice(onDone, { code = "", fromLink = false } = {}) {
   scrim.classList.add("show");
   input.focus();
   sheet.querySelector("#pcancel").onclick = dispose;
+  sheet.querySelector("#pair-url")?.addEventListener("click", () => { dispose(); openAddByUrl(onDone); });
   const lookup = async () => {
     if (!current()) return;
     const code = input.value.trim().toUpperCase();

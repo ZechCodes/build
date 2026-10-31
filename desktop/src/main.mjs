@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { app, BaseWindow, BrowserWindow, dialog, Menu, safeStorage, session, shell } from "electron";
+import { app, BaseWindow, BrowserWindow, dialog, Menu, safeStorage, session, shell, ipcMain } from "electron";
 
 import {
   APP_URL,
@@ -23,6 +23,8 @@ import {
 } from "./oauth.mjs";
 
 import { createTokenStore } from "./token-store.mjs";
+import { installBridgeHttpIpc } from "./bridge-http-ipc.mjs";
+import resourceManifest from "./bridge-http-resources.json" with {type:"json"};
 
 const development = !app.isPackaged;
 const icon = app.isPackaged
@@ -41,6 +43,9 @@ let starting = true;
 let signingOut = false;
 let credentialGeneration = 0;
 let tokenSession = null;
+let bridgeHttp = null;
+let bridgeCredentialGeneration = 0;
+const bridgeRevocations = new Set();
 const tokenRequests = new Set();
 const SIGN_OUT_WAIT_MS = 5_000;
 let signOutComplete = false;
@@ -133,8 +138,17 @@ function persistRefreshToken(token) {
   }
 }
 
+function retireBridgeCredentials() {
+  bridgeCredentialGeneration++;
+  const revocation=bridgeHttp?.revoke(accessToken) || Promise.resolve();
+  bridgeRevocations.add(revocation);
+  void revocation.finally(()=>bridgeRevocations.delete(revocation));
+  return revocation;
+}
+
 function useTokens(payload) {
   persistRefreshToken(payload.refresh_token);
+  if (accessToken && accessToken !== payload.access_token) void retireBridgeCredentials();
   accessToken = payload.access_token;
   refreshToken = payload.refresh_token;
   if (refreshTimer) clearTimeout(refreshTimer);
@@ -143,6 +157,7 @@ function useTokens(payload) {
 }
 
 function clearCredentials() {
+  const bridgeCleanup=retireBridgeCredentials();
   credentialGeneration++;
   accessToken = null;
   refreshToken = null;
@@ -150,6 +165,7 @@ function clearCredentials() {
   refreshInFlight = null;
   if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = null;
+  return bridgeCleanup;
 }
 
 function openAuthenticatedWindow() {
@@ -405,7 +421,7 @@ async function signOut() {
   if (signingOut) return;
   signingOut = true;
   unauthorizedRecovery = null;
-  clearCredentials();
+  const bridgeCleanup=clearCredentials();
   for (const controller of tokenRequests) controller.abort();
   // Retire the renderer before clearing persistent storage so it cannot
   // rewrite account content while cleanup awaits Electron.
@@ -416,6 +432,8 @@ async function signOut() {
   } catch {
     failures.push("the saved sign-in");
   }
+  await bridgeCleanup;
+  await Promise.allSettled([...bridgeRevocations]);
   const cleanupOperations = [
     ["browser storage", () => session.defaultSession.clearStorageData()],
     ["the HTTP cache", () => session.defaultSession.clearCache()],
@@ -525,11 +543,12 @@ function installApplicationMenu() {
 
 function createWindow() {
   const window = new BrowserWindow({
-    ...createWindowOptions({ development }),
+    ...createWindowOptions({ development, preload:fileURLToPath(new URL("./preload.cjs",import.meta.url)) }),
     icon,
     title: "Build",
   });
 
+  bridgeHttp.attach(window.webContents);
   observeMainFrameNavigation(window);
   installNavigationPolicy(window.webContents, {
     openExternal: openOutsideElectron,
@@ -541,6 +560,7 @@ function createWindow() {
     if (window === mainWindow && !signingOut && !unauthorizedRecovery) window.show();
   });
   window.on("closed", () => {
+    bridgeHttp.retire(window.webContents);
     if (mainWindow === window) mainWindow = null;
     if (unauthorizedRecovery?.window === window) unauthorizedRecovery = null;
   });
@@ -573,6 +593,11 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(() => {
+    bridgeHttp=installBridgeHttpIpc({
+      ipcMain,manifest:resourceManifest,
+      getWindow:()=>mainWindow,
+      getAuth:()=>accessToken && !signingOut && !unauthorizedRecovery ? {accessToken,generation:bridgeCredentialGeneration} : null,
+    });
     tokenSession = session.fromPartition("build-oauth", { cache: false });
     tokenStore = createTokenStore({ userData: app.getPath("userData"), safeStorage });
     installPermissionPolicy();
@@ -594,6 +619,7 @@ if (!hasSingleInstanceLock) {
 
   app.on("before-quit", (event) => {
     if (signingOut && !signOutComplete) event.preventDefault();
+    else bridgeHttp?.clear();
   });
 
   app.on("window-all-closed", () => {

@@ -67,6 +67,7 @@ pub mod git_process;
 pub mod gitgui;
 pub mod github;
 pub mod harness;
+pub mod http;
 pub mod identity;
 pub mod isolation;
 pub mod lifecycle;

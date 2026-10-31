@@ -39,6 +39,12 @@ const BLOCKED_WHY = {
   failed: "it failed",
   lost: "it dropped, and could not be made again",
   unreached: "the machine is not answering",
+  "http-auth": "HTTPS account authorization was refused or expired; verify the address again",
+  "http-unsupported": "the HTTPS bridge does not support this app's required operations",
+  "http-network": "HTTPS could not be reached; check certificate trust, network access and browser permissions",
+  "http-failed": "the HTTPS connection failed",
+  "http-lost": "live HTTPS updates ended; current state must be refreshed",
+  "transport-change": "its selected transport is changing",
 };
 
 /**

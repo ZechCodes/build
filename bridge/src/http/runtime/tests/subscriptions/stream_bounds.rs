@@ -3,7 +3,7 @@
 //! client a push or the bridge its admission bound.
 use super::*;
 use crate::http::{
-    limits::BufferBudget,
+    limits::{BufferBudget, STREAM_BUFFER_BYTES},
     sse::{MAX_EVENT_BYTES, MAX_QUEUED_BYTES, STALLED_WRITE_TIMEOUT},
 };
 use std::collections::HashMap;
@@ -211,8 +211,10 @@ impl Bounds {
         }
     }
 
+    /// Every stream's queue is back in the pool, and RPCs never paid for one.
     fn released(&self) -> bool {
-        self.buffers.available() == self.idle
+        self.buffers.streams_available() == STREAM_BUFFER_BYTES
+            && self.buffers.available() == self.idle
     }
 }
 
@@ -232,7 +234,7 @@ async fn a_client_that_stops_reading_is_retired_when_its_queue_fills() {
     let client = bounds.client("family-a").await;
     let stalled = bounds.stream(&client).await;
     assert!(
-        bounds.buffers.available() <= bounds.idle - MAX_QUEUED_BYTES,
+        bounds.buffers.streams_available() <= STREAM_BUFFER_BYTES - MAX_QUEUED_BYTES,
         "the stream holds its queue's reservation"
     );
     bounds.stall(&client).await;
@@ -344,7 +346,7 @@ async fn stream_admission_stops_at_its_own_pool_and_recovers_after_a_cut() {
 
     bounds
         .settled("the cut stream returns its share of the pool", |bounds| {
-            bounds.buffers.available() >= MAX_QUEUED_BYTES
+            bounds.buffers.streams_available() >= MAX_QUEUED_BYTES
         })
         .await;
     let _admitted = bounds.stream(&waiting).await;

@@ -635,7 +635,7 @@ async fn sse_body_holds_delivery_through_bytes_drop_and_closes_at_hard_deadline(
     assert!(body.next().await.unwrap().is_err());
     drop(body);
     assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
-    assert_eq!(budget.available(), limits::TOTAL_BUFFER_BYTES);
+    assert_eq!(budget.streams_available(), limits::STREAM_BUFFER_BYTES);
 }
 
 #[tokio::test(start_paused = true)]
@@ -791,8 +791,8 @@ async fn tls_stalled_reader_retains_sse_reservation_until_deadline_teardown() {
     assert!(sender.buffered().1 <= sse::MAX_QUEUED_BYTES);
     assert!(sender.buffered().0 >= 1);
     assert_eq!(
-        budget.available(),
-        limits::TOTAL_BUFFER_BYTES - sse::MAX_QUEUED_BYTES
+        budget.streams_available(),
+        limits::STREAM_BUFFER_BYTES - sse::MAX_QUEUED_BYTES
     );
     tokio::time::timeout(std::time::Duration::from_secs(4), async {
         while !closed.load(Ordering::SeqCst) {
@@ -805,7 +805,7 @@ async fn tls_stalled_reader_retains_sse_reservation_until_deadline_teardown() {
     drop(client);
     stop.send(true).unwrap();
     server.await.unwrap().unwrap();
-    assert_eq!(budget.available(), limits::TOTAL_BUFFER_BYTES);
+    assert_eq!(budget.streams_available(), limits::STREAM_BUFFER_BYTES);
 }
 
 async fn assert_late_prior_response_ticket_cannot_retire_successor(deferred_release: bool) {

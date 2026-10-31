@@ -7,6 +7,10 @@ use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub const TOTAL_BUFFER_BYTES: usize = 32 * 1024 * 1024;
+/// Event streams draw only on this pool, never on `TOTAL_BUFFER_BYTES`: one
+/// `MAX_QUEUED_BYTES` queue each, so sixteen streams at once, and a full pool
+/// refuses the next stream without costing an RPC its buffers.
+pub const STREAM_BUFFER_BYTES: usize = 16 * 1024 * 1024;
 const BULK_BUFFER_BYTES: usize = 22 * 1024 * 1024;
 pub const DEFAULT_BODY_BYTES: usize = 1024 * 1024;
 pub const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -24,6 +28,7 @@ pub struct QuotaExceeded;
 pub struct BufferBudget {
     bytes: Arc<Semaphore>,
     bulk_bytes: Arc<Semaphore>,
+    stream_bytes: Arc<Semaphore>,
     large_calls: Arc<Semaphore>,
 }
 
@@ -40,6 +45,7 @@ impl Default for BufferBudget {
         Self {
             bytes: Arc::new(Semaphore::new(TOTAL_BUFFER_BYTES)),
             bulk_bytes: Arc::new(Semaphore::new(BULK_BUFFER_BYTES)),
+            stream_bytes: Arc::new(Semaphore::new(STREAM_BUFFER_BYTES)),
             large_calls: Arc::new(Semaphore::new(2)),
         }
     }
@@ -76,12 +82,16 @@ impl BufferBudget {
 
     pub fn reserve_stream(&self) -> Result<BufferReservation, QuotaExceeded> {
         Ok(BufferReservation {
-            _permits: vec![acquire(&self.bytes, super::sse::MAX_QUEUED_BYTES)?],
+            _permits: vec![acquire(&self.stream_bytes, super::sse::MAX_QUEUED_BYTES)?],
         })
     }
 
     pub fn available(&self) -> usize {
         self.bytes.available_permits()
+    }
+
+    pub fn streams_available(&self) -> usize {
+        self.stream_bytes.available_permits()
     }
 }
 

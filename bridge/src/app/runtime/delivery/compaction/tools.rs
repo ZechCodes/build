@@ -24,6 +24,14 @@ use std::sync::Arc;
 /// What `compact_self` calls the session it compacts: the caller's own.
 const OWN_SESSION: &str = "your session";
 
+/// Whether `session` can take a compaction command between turns: false once
+/// its policy withdraws it, as a failed compaction extension's does.
+pub(in crate::app) fn has_qualified_compaction_command(session: &dyn AgentSession) -> bool {
+    !session
+        .compaction_policy()
+        .is_some_and(|policy| !policy.capabilities.between_turn_compact)
+}
+
 impl AppState {
     /// The compaction tools, answered for the agent that called them. `None`
     /// is "not one of mine".
@@ -105,10 +113,7 @@ impl AppState {
         let session = self
             .live_agent_session(owner, agent_id)
             .ok_or_else(|| format!("Build cannot compact {called}: it has no running session."))?;
-        if session
-            .compaction_policy()
-            .is_some_and(|policy| !policy.capabilities.between_turn_compact)
-        {
+        if !has_qualified_compaction_command(session.as_ref()) {
             return Err(format!(
                 "Build cannot compact {called}: its running session has no qualified compaction command."
             ));

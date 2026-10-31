@@ -1,3 +1,4 @@
+use super::compaction::has_qualified_compaction_command;
 use crate::app::workspaces::reserved_holds;
 use crate::app::{AppState, SettlingHandle, Spawned, TabKey};
 use crate::models::ModelChoice;
@@ -371,16 +372,21 @@ fn waits_for_compaction(compacting_first: &[(String, String)], turn: &PendingAge
 }
 
 impl AppState {
-    /// Every agent whose compaction waits for its current turn to end, and
-    /// whose session reports that end, so its status pump can release a
-    /// turn held behind the compaction.
+    /// Every agent whose compaction waits for its current turn to end, whose
+    /// session reports that end, so its status pump can release a turn held
+    /// behind the compaction, and can still take the compaction then. A
+    /// failed compaction extension withdraws the command and ends the hold:
+    /// Pi's telemetry reports nothing after it fails.
     fn compactions_held_for_turn_end(&self) -> Vec<(String, String)> {
         self.compactions
             .waiting_for_turn()
             .into_iter()
             .filter(|(owner, agent_id)| {
                 self.live_agent_session(owner, agent_id)
-                    .is_some_and(|session| session.reports_turn_ends())
+                    .is_some_and(|session| {
+                        session.reports_turn_ends()
+                            && has_qualified_compaction_command(session.as_ref())
+                    })
             })
             .collect()
     }

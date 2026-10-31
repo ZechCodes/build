@@ -20,6 +20,7 @@ mod tools;
 pub(in crate::app) use crate::harness::COMPACT_COMMAND;
 pub(in crate::app) use ledger::CompactionLedger;
 use ledger::SentCompaction;
+pub(in crate::app) use tools::has_qualified_compaction_command;
 
 /// Whether `prompt` is itself a compaction, focus instructions and all.
 fn is_compaction(prompt: &str) -> bool {
@@ -119,11 +120,14 @@ impl AppState {
     /// reports no turn ends (TUI Claude, Codex PTY, Pi without telemetry) has
     /// no pump to release a held turn, so nothing is held for it and that
     /// ordering is not guaranteed: a turn delivered before the request is
-    /// ready goes as it is. Never for a harness that cannot compact, and never
-    /// ahead of a turn that is itself a compaction. A compaction an agent asked
-    /// for goes first once it is ready; otherwise one is due once the last
-    /// reported context has reached the live session's captured positive
-    /// threshold.
+    /// ready goes as it is. Nor is anything held once the session can no
+    /// longer take the command: a compaction extension that fails mid-turn
+    /// (Pi's telemetry) withdraws it and reports no turn end after that, so
+    /// the held turn goes on the next drain. Never for a harness that cannot
+    /// compact, and never ahead of a turn that is itself a compaction. A
+    /// compaction an agent asked for goes first once it is ready; otherwise
+    /// one is due once the last reported context has reached the live
+    /// session's captured positive threshold.
     fn compaction_before(
         &self,
         turn: &PendingAgentTurn,

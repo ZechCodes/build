@@ -28,11 +28,14 @@ set -eu
 REPO="${1:-.}"
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 
-APP_PATHS='^(spa|skriftapp|landing)/|^transport/js/(src/|test/|testing/|package(-lock)?\.json$|\.npmrc$|LICENSE\.md$)|^deploy/k8s/app\.yaml$|^scripts/install(-desktop)?\.sh$|^\.(dockerignore|containerignore)$|^transport/LICENSE\.md$'
+APP_PATHS='^(spa|skriftapp|landing)/|^transport/js/(src/|test/|testing/|package(-lock)?\.json$|\.npmrc$|LICENSE\.md$)|^deploy/k8s/app\.yaml$|^scripts/install(-desktop)?\.sh$|^\.(dockerignore|containerignore)$|^transport/LICENSE\.md$|^fixtures/api/http/'
 # relay-sources as one anchored pattern, each path's metacharacters escaped. A
 # list with no paths yields an empty pattern, which matches every change.
 RELAY_PATHS="$(grep -Ev '^(#|$)' "$SCRIPT_DIR/relay-sources" \
     | sed 's/[].[\\*^$+?(){}|]/\\&/g; s/.*/^&$/' | paste -sd '|' -)"
+# Both images read fixtures/api/http at build time (the bridge crate
+# include_str!s it), but relay-sources lists only what the Rust code reaches.
+RELAY_PATHS="$RELAY_PATHS|^fixtures/api/http/"
 # relay-sources is checked by a bridge test, so an edit to the list alone runs it.
 BRIDGE_PATHS='^bridge/|^\.github/relay-sources$'
 E2E_HARNESS_PATHS='^web/|^deploy/compose\.real\.yml$'

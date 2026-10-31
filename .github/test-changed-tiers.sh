@@ -167,6 +167,14 @@ change_case "the image recipe moves the relay" \
 change_case "a path that only contains a relay source's name is not one" \
     bridge/src/bin/relay.rs.orig "$MOVED_BRIDGE" lookalike
 
+# bridge/Containerfile and skriftapp/Containerfile both copy fixtures/api/http,
+# which the bridge crate include_str!s, so the manifest ships in both images.
+for path in fixtures/api/http/openapi.json fixtures/api/http/resource-manifest.json; do
+    change_case "the HTTP API fixtures are built into both images: $path" \
+        "$path" "app=true relay=true bridge=true e2e=true desktop=false scripts=false shell=false transport=false" \
+        "api-http-$(basename "$path")"
+done
+
 change_case "an edit to relay-sources alone runs the guard that checks it" \
     .github/relay-sources "$MOVED_BRIDGE" relay-sources-list
 

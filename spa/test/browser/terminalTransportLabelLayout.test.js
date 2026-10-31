@@ -55,16 +55,21 @@ async function mountPane(page, basePath, { width, theme, keys, status }) {
     tabs.attachTransportLabel(pane, "dev-http");
     const box = (node) => (node && !node.hidden ? node.getBoundingClientRect().toJSON() : null);
     const label = pane.querySelector(".term-transport");
+    // Measure the label's painted text, not its box: the box may be zero-height
+    // with the text overflowing it.
+    const ink = document.createRange();
+    ink.selectNodeContents(label);
     // The label never takes pointer events, so hit-test it as if it did: what
     // answers at its centre is whatever is painted over it.
     label.style.pointerEvents = "auto";
-    const { x, y, width, height } = label.getBoundingClientRect();
+    const { x, y, width, height } = ink.getBoundingClientRect();
     const hit = document.elementFromPoint(x + width / 2, y + height / 2);
     label.style.pointerEvents = "";
     return {
       pane: box(pane), screen: box(pane.querySelector(".term-screen")), keys: box(pane.querySelector(".termkeys")),
-      chip: box(pane.querySelector(".term-conn")), label: box(label),
-      hit: hit === label ? "label" : hit?.className || String(hit),
+      chip: box(pane.querySelector(".term-conn")), label: ink.getBoundingClientRect().toJSON(),
+      labelBox: box(label),
+      hit: label.contains(hit) ? "label" : hit?.className || String(hit),
     };
   }, { keys, status });
 }
@@ -111,7 +116,7 @@ it("puts the label in the same place whether or not the chip shows", async () =>
       const quiet = await mountPane(page, basePath, { width, theme: "light", keys: true, status: "connected" });
       const offline = await mountPane(page, basePath, { width, theme: "light", keys: true, status: "disconnected" });
       expect(quiet.chip, `${width}px`).toBeNull();
-      expect(quiet.screen.bottom - quiet.label.bottom, `${width}px`).toBeCloseTo(8, 0);
+      expect(quiet.screen.bottom - quiet.labelBox.bottom, `${width}px`).toBeCloseTo(8, 0);
       expect(offline.label, `${width}px`).toEqual(quiet.label);
     }
   });

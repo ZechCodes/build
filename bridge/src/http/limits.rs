@@ -21,8 +21,9 @@ pub const MAX_LIFECYCLE_BYTES: usize = 64 * 1024;
 pub const MAX_DISCOVERY_BYTES: usize = 16 * 1024;
 pub const MAX_SOCKETS: usize = 128;
 pub const MAX_FAMILY_OPENINGS: usize = 16;
-/// Live streams one family may hold, so at least four families always fit in
-/// the stream pool. A replaced stream counts until its socket lets it go.
+/// Live streams one family may hold. The pool holds 32 streams, so no family
+/// can fill more than a quarter of it. A replaced stream counts until its
+/// socket lets it go.
 pub const MAX_FAMILY_STREAMS: usize = 8;
 const _: () = assert!(STREAM_BUFFER_BYTES / super::sse::MAX_QUEUED_BYTES >= 4 * MAX_FAMILY_STREAMS);
 pub const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -45,8 +46,10 @@ pub struct OpeningBudget(Arc<Semaphore>);
 /// The reply target owns this guard, so closing HTTP interest cannot release
 /// bulk concurrency while the shared execution worker still owns body copies.
 pub struct BufferReservation {
-    _permits: Vec<OwnedSemaphorePermit>,
+    // Fields drop in order: the family count is released before the pool
+    // permit, on purpose, so a returned permit never meets a stale count.
     _family: Option<FamilyStream>,
+    _permits: Vec<OwnedSemaphorePermit>,
 }
 
 /// One of a family's live streams, counted until its reservation drops.

@@ -267,7 +267,7 @@ RPCs reserve their request and response maxima from the 32 MiB
 most thirty-two streams are open at once. Queued adapter bytes are therefore
 bounded by 32 MiB of RPC plus 32 MiB of stream buffers, before parse and encode
 copies. One credential family holds at most eight live streams
-(`MAX_FAMILY_STREAMS`), so at least four families always fit in the pool. The
+(`MAX_FAMILY_STREAMS`), so no family can fill more than a quarter of the pool. The
 stream reservation, and the family's count, are held until the stream's body
 drops: a replaced stream whose socket write is stalled keeps counting against
 its own family until it is cut. Streams never draw on the RPC budget, so streams

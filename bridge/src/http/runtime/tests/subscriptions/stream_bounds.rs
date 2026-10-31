@@ -1,10 +1,14 @@
 //! Stream bounds end to end on the production TLS listener: a client that
 //! stops reading is cut off and its memory returned, without costing another
 //! client a push or the bridge its admission bound.
+//!
+//! Stalled socket writes here are cut only when a test says so (`Bounds::cut`),
+//! never by the stalled-write clock, so a loaded machine cannot cut a stream
+//! before the test has checked what it still holds.
 use super::*;
 use crate::http::{
     limits::{BufferBudget, MAX_FAMILY_STREAMS, STREAM_BUFFER_BYTES},
-    sse::{MAX_EVENT_BYTES, MAX_QUEUED_BYTES, STALLED_WRITE_TIMEOUT},
+    sse::{MAX_EVENT_BYTES, MAX_QUEUED_BYTES},
 };
 use std::collections::HashMap;
 use std::time::Duration;
@@ -72,6 +76,7 @@ struct Bounds {
     openings: Arc<Mutex<HashMap<String, super::super::super::MountedOpening>>>,
     pushes: Arc<Pushes>,
     idle: usize,
+    stall_cut: Arc<tokio::sync::Notify>,
 }
 
 /// One client's opening and the subscription it streams.
@@ -87,12 +92,15 @@ async fn bounds() -> Bounds {
     let runtime = runtime_with(padded_execution(pushes.clone()), Arc::new(BearerFamilies));
     let buffers = runtime.state.buffers.clone();
     let openings = runtime.state.openings.clone();
+    let stall_cut = Arc::new(tokio::sync::Notify::new());
+    *runtime.state.stall_cut.lock().unwrap() = Some(stall_cut.clone());
     Bounds {
         idle: buffers.available(),
         mounted: mounted_tls(runtime).await,
         buffers,
         openings,
         pushes,
+        stall_cut,
     }
 }
 
@@ -263,12 +271,24 @@ impl Bounds {
         panic!("the unread socket never backed up its queue");
     }
 
-    /// Polls runtime state until `condition`, within the stalled-write
-    /// timeout plus a loaded machine's margin.
+    /// Polls runtime state until `condition`, within a loaded machine's
+    /// margin.
     async fn settled(&self, what: &str, condition: impl Fn(&Self) -> bool) {
-        let give_up = tokio::time::Instant::now() + STALLED_WRITE_TIMEOUT + SETTLE;
+        self.polled(what, condition, || {}).await;
+    }
+
+    /// Cuts the socket writes stalled now, as the stalled-write timer would,
+    /// until `condition`.
+    async fn cut(&self, what: &str, condition: impl Fn(&Self) -> bool) {
+        self.polled(what, condition, || self.stall_cut.notify_waiters())
+            .await;
+    }
+
+    async fn polled(&self, what: &str, condition: impl Fn(&Self) -> bool, each: impl Fn()) {
+        let give_up = tokio::time::Instant::now() + SETTLE;
         while !condition(self) {
             assert!(tokio::time::Instant::now() < give_up, "{what}");
+            each();
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
@@ -313,8 +333,12 @@ async fn a_client_that_stops_reading_is_retired_when_its_queue_fills() {
     let (status, reply) = refused.expect("a full queue retires the binding");
     assert_eq!(status, StatusCode::CONFLICT, "{}", reply["error_code"]);
     assert_eq!(reply["error_code"], "stream_replaced");
+    assert!(
+        !bounds.released(),
+        "the retired stream's socket holds its reservation until it lets go"
+    );
     bounds
-        .settled(
+        .cut(
             "the retired stream returns its reservation",
             Bounds::released,
         )
@@ -329,9 +353,13 @@ async fn a_stalled_socket_write_is_cut_and_its_reservation_returned() {
     let client = bounds.client("family-a").await;
     let stalled = bounds.stream(&client).await;
     bounds.stall(&client).await;
+    assert!(
+        bounds.queued(&client).is_some(),
+        "a stalled stream holds its queue until its write is cut"
+    );
 
     bounds
-        .settled("the stalled write is cut", Bounds::released)
+        .cut("the stalled write is cut", Bounds::released)
         .await;
 
     let (status, reply) = bounds.push(&client).await;
@@ -399,8 +427,9 @@ async fn stream_admission_stops_at_its_own_pool_and_recovers_after_a_cut() {
 
     let (stalled, stalled_events) = open.pop().unwrap();
     bounds.stall(&stalled).await;
+    bounds.refused(&waiting).await;
     bounds
-        .settled("the cut stream returns its share of the pool", |bounds| {
+        .cut("the cut stream returns its share of the pool", |bounds| {
             bounds.buffers.streams_available() == MAX_QUEUED_BYTES
         })
         .await;
@@ -451,14 +480,14 @@ async fn a_stalled_replaced_stream_counts_against_its_own_family_only() {
     let other = bounds.client("family-b").await;
     bounds.stall(&stalled).await;
 
-    // Only the replacement and its GET follow the stall, well inside the
-    // stalled-write timer: the replaced stream still holds its queue.
+    // The replaced stream's write is stalled and not yet cut, so it still
+    // holds its queue and its family's slot.
     let successor = bounds.replace(&stalled).await;
     bounds.refused(&successor).await;
     let _other = bounds.stream(&other).await;
 
     bounds
-        .settled("the cut stream leaves its family", |bounds| {
+        .cut("the cut stream leaves its family", |bounds| {
             bounds.buffers.streams_available()
                 == STREAM_BUFFER_BYTES - MAX_FAMILY_STREAMS * MAX_QUEUED_BYTES
         })
@@ -501,8 +530,8 @@ async fn an_oversized_push_retires_only_its_own_stream() {
     bounds.mounted.shutdown().await;
 }
 
-/// Pushes per latency sample set; together they stay well inside the stalled
-/// client's `STALLED_WRITE_TIMEOUT`, so it is still stalled at the end.
+/// Pushes per latency sample set. The stalled client is never cut here, so it
+/// is still stalled at the end.
 const LATENCY_SAMPLES: usize = 200;
 
 /// Push-to-event latency on `client`'s open stream, sorted.

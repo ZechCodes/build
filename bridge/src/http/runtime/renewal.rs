@@ -1,7 +1,8 @@
 //! `PATCH /v1/sessions/{id}`: a bearer hosted verifies afresh, of the opening's
 //! exact binding, renews the opening's lifecycle authority. Its live stream and
 //! event pushes follow that authority, so renewal is the only way past the
-//! first grant; a refused or late renewal leaves the existing deadline alone.
+//! first grant; a refused or late renewal leaves the existing deadline alone,
+//! and an expired lifecycle stays ended.
 use std::sync::{atomic::Ordering, Arc};
 
 use axum::{
@@ -89,7 +90,12 @@ async fn renewed(
         .execution
         .greeting(&session)
         .map_err(|_| unauthorized())?;
-    let body = opening_body(session_id, &generation, greeting, authority.deadline);
+    // A renewal that lost a race to a later one reports the deadline in force.
+    let in_force = session
+        .authorization()
+        .deadline()
+        .unwrap_or(authority.deadline);
+    let body = opening_body(session_id, &generation, greeting, in_force);
     let encoded = serde_json::to_vec(&body).expect("the opening is plain JSON");
     let (check, deadline) = lifecycle_fences(&session);
     let ticket = output.bind(check, deadline, session.opening().clone());

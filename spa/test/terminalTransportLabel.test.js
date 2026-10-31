@@ -62,7 +62,7 @@ vi.mock("../src/terminal/pane.js", () => ({
   },
 }));
 
-import { mountAgentPane } from "../src/core/surfaceTabs.js";
+import { mountAgentPane, mountAgentTab } from "../src/core/surfaceTabs.js";
 import { mountUserTerminalPane } from "../src/core/console.js";
 
 const LABEL = "Terminal over WebRTC";
@@ -148,5 +148,14 @@ describe("a terminal pane names its transport from the device's saved choice", (
     expect(labelIn(user.host)).toBeNull();
     expect(labelIn(agent.host)).toBeNull();
     expect(saved.listeners.size).toBe(0);
+  });
+
+  it("reaches the agent tab's pane from the device the tab was mounted for", async () => {
+    saved.choose("dev-http", "http");
+    const host = paneHost();
+
+    const tab = mountAgentTab(host, { project_id: "p1" }, { deviceId: "dev-http" });
+    await vi.waitFor(() => expect(labelIn(host.querySelector("#agentpane"))?.textContent).toBe(LABEL));
+    tab.dispose();
   });
 });

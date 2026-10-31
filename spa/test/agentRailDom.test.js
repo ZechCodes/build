@@ -2991,6 +2991,13 @@ describe("the conversation panel", () => {
     expect(panel().querySelector("#railinput")).toBe(null);
   });
 
+  it("mounts the agent's screen for the rail's own device, so its pane can name the transport", async () => {
+    await mount();
+    tuiToggle().click();
+    await flush();
+    expect(mountAgentTab.mock.calls[0][2].deviceId).toBe("dev-1");
+  });
+
   // The pane's offer is Resume, and resuming names no harness: the agent is
   // locked to the one it was created on, and its conversation is waiting there.
   it("resumes the agent the pane belongs to, on the harness it already has", async () => {

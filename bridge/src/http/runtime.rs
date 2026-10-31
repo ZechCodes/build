@@ -87,10 +87,9 @@ impl VerifiedAuthority {
 #[async_trait]
 trait GrantVerifier: Send + Sync {
     async fn verify(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError>;
-    /// Verifies with hosted afresh, never from cached evidence.
-    async fn revalidate(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
-        self.verify(bearer).await
-    }
+    /// Verifies with hosted afresh, never from cached evidence. Required, so
+    /// no verifier can renew an opening from a cache by default.
+    async fn revalidate(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError>;
     fn close(&self) {}
 }
 
@@ -1061,6 +1060,11 @@ mod tests {
 
     #[async_trait]
     impl GrantVerifier for WitnessVerifier {
+        /// Scripted, with no cache: every lookup is already fresh.
+        async fn revalidate(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
+            self.verify(bearer).await
+        }
+
         async fn verify(&self, _bearer: &str) -> Result<VerifiedAuthority, AuthError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.authority.clone().ok_or(AuthError::InvalidCredential)
@@ -1079,6 +1083,11 @@ mod tests {
 
     #[async_trait]
     impl GrantVerifier for PairVerifier {
+        /// Scripted, with no cache: every lookup is already fresh.
+        async fn revalidate(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
+            self.verify(bearer).await
+        }
+
         async fn verify(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
             match bearer {
                 "grant-a" => Ok(pair_authority(
@@ -1448,6 +1457,11 @@ mod tests {
         }
         #[async_trait]
         impl GrantVerifier for ReplacingVerifier {
+            /// Scripted, with no cache: every lookup is already fresh.
+            async fn revalidate(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
+                self.verify(bearer).await
+            }
+
             async fn verify(&self, _bearer: &str) -> Result<VerifiedAuthority, AuthError> {
                 let call = self.calls.fetch_add(1, Ordering::SeqCst);
                 let live = if call < MAX_FAMILY_OPENINGS {
@@ -3062,6 +3076,11 @@ mod tests {
         }
         #[async_trait]
         impl GrantVerifier for UniqueFamilyVerifier {
+            /// Scripted, with no cache: every lookup is already fresh.
+            async fn revalidate(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
+                self.verify(bearer).await
+            }
+
             async fn verify(&self, _bearer: &str) -> Result<VerifiedAuthority, AuthError> {
                 let call = self.calls.fetch_add(1, Ordering::SeqCst);
                 let live = if call <= MAX_OPENINGS {
@@ -3115,6 +3134,11 @@ mod tests {
 
         #[async_trait]
         impl GrantVerifier for IssuingVerifier {
+            /// Scripted, with no cache: every lookup is already fresh.
+            async fn revalidate(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
+                self.verify(bearer).await
+            }
+
             async fn verify(&self, _bearer: &str) -> Result<VerifiedAuthority, AuthError> {
                 Ok(authority_with(
                     Arc::new(AtomicBool::new(true)),

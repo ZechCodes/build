@@ -286,11 +286,16 @@ fn event_response(
     receiver: SseReceiver,
     reservation: crate::http::limits::BufferReservation,
 ) -> Response {
-    let authorized = opening.check();
+    // The stream outlives this GET's grant only while the opening is renewed.
+    let (authorized, deadline) = super::renewal::lifecycle_fences(&opening.session);
     let binding = stream.binding.clone();
     let check: Arc<dyn Fn() -> bool + Send + Sync> =
         Arc::new(move || authorized() && binding.is_live());
-    let ticket = Mutex::new(Some(opening.bind_output(check.clone())));
+    let ticket = Mutex::new(Some(opening.output.bind(
+        check.clone(),
+        deadline.clone(),
+        opening.session.opening().clone(),
+    )));
     let streams = opening.streams.clone();
     let close = Arc::new(move || {
         streams.release(&subscription_id);
@@ -298,13 +303,12 @@ fn event_response(
             ticket.release();
         }
     });
-    let deadline = opening.deadline;
     let body = sse_stream::application_body(
         stream.sender,
         receiver,
         Arc::new(reservation),
         check,
-        Arc::new(move || deadline),
+        deadline,
         close,
     );
     let mut response = Response::new(body);

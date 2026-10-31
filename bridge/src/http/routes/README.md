@@ -79,7 +79,13 @@ before dispatch, and passes the captured binding to shared execution. The
 Opening's initial pure greeting is separate from exposed session.hello, which
 registers update/model/harness producers and therefore requires a stream.
 
-#911 owns atomic expected-old stream replacement, the last-issued-handle
+`runtime/subscriptions.rs` mounts the stream (#902): `POST /v1/subscriptions`
+`{kind:"application"}` issues a handle, replacing only the last-issued one
+named in X-Build-Subscription; one-use `GET .../events` binds the Opening's
+Application stream to SSE, opening with `hello` (`durable:false`, no event IDs,
+Last-Event-ID refused as cursor_unsupported); `DELETE`, replacement, Opening
+close and failed grant checks end it. #911 owns atomic expected-old stream
+replacement, the last-issued-handle
 tombstone, one-use GET and exact-generation DELETE/late-close fences. HTTP has
 no terminal stream; term.list is exposed solely as roster metadata required by
 background cache sync. agent.attach and all terminal I/O remain WebRTC.

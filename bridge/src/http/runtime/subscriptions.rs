@@ -313,6 +313,7 @@ fn event_response(
         deadline.clone(),
         opening.session.opening().clone(),
     )));
+    let heartbeat_every = opening.output.heartbeat_interval();
     let streams = opening.streams.clone();
     let close = Arc::new(move || {
         streams.release(&subscription_id);
@@ -327,6 +328,7 @@ fn event_response(
         check,
         deadline,
         close,
+        heartbeat_every,
     );
     let mut response = Response::new(body);
     let headers = response.headers_mut();

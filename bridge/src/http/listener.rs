@@ -51,7 +51,11 @@ struct AuthorityState {
     releases: Mutex<Vec<(uuid::Uuid, Box<dyn Send>)>>,
     waker: AtomicWaker,
     pending_write: AtomicBool,
+    #[cfg(test)]
+    stall_cut: Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
+
+type StalledWriteDeadline = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 /// HTTP/1 has one response writer. Checks apply at each socket write, including
 /// buffered output, and a separate timer wakes pending writes at grant expiry.
@@ -73,6 +77,41 @@ impl OutputAuthority {
     #[cfg(any(test, feature = "testing"))]
     pub fn same_connection(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// Tests only: this connection's stalled writes are cut when `cut` is
+    /// notified, and never by a clock, so a loaded machine cannot let one go
+    /// before the test has looked at it. Neither the stalled-write timer, the
+    /// authority recheck nor the SSE heartbeat runs: each would let a stalled
+    /// or retired stream go. A retired binding's stalled write ends at the cut.
+    #[cfg(test)]
+    pub fn cut_stalled_writes_on(&self, cut: Arc<tokio::sync::Notify>) {
+        *self.0.stall_cut.lock().unwrap() = Some(cut);
+    }
+
+    fn stalled_write_deadline(&self) -> StalledWriteDeadline {
+        #[cfg(test)]
+        if let Some(cut) = self.0.stall_cut.lock().unwrap().clone() {
+            return Box::pin(cut.notified_owned());
+        }
+        Box::pin(tokio::time::sleep(STALLED_WRITE_TIMEOUT))
+    }
+
+    /// How often a stream on this connection sends a heartbeat.
+    pub fn heartbeat_interval(&self) -> std::time::Duration {
+        #[cfg(test)]
+        if !self.rechecks_by_clock() {
+            return std::time::Duration::from_secs(365 * 24 * 60 * 60);
+        }
+        super::sse::HEARTBEAT_INTERVAL
+    }
+
+    fn rechecks_by_clock(&self) -> bool {
+        #[cfg(test)]
+        if self.0.stall_cut.lock().unwrap().is_some() {
+            return false;
+        }
+        true
     }
     pub fn set(&self, check: Option<AuthorityCheck>) {
         *self.0.current.lock().unwrap() = check.map(|check| Authority {
@@ -308,7 +347,7 @@ async fn connection(
 pub struct BoundedIo<T> {
     inner: T,
     authority: OutputAuthority,
-    write_deadline: Option<Pin<Box<Sleep>>>,
+    write_deadline: Option<StalledWriteDeadline>,
     authority_deadline: Option<Pin<Box<Sleep>>>,
     authority_recheck: Option<Pin<Box<Sleep>>>,
 }
@@ -338,6 +377,9 @@ impl<T> BoundedIo<T> {
             let _ = timer.as_mut().poll(cx);
         } else {
             self.authority_deadline = None;
+        }
+        if !self.authority.rechecks_by_clock() {
+            return;
         }
         let recheck_at = tokio::time::Instant::now() + AUTHORITY_RECHECK;
         let recheck = self
@@ -373,9 +415,10 @@ impl<T> BoundedIo<T> {
             self.authority_recheck = None;
             return result;
         }
+        let authority = self.authority.clone();
         let timer = self
             .write_deadline
-            .get_or_insert_with(|| Box::pin(tokio::time::sleep(STALLED_WRITE_TIMEOUT)));
+            .get_or_insert_with(|| authority.stalled_write_deadline());
         if timer.as_mut().poll(cx).is_ready() {
             self.authority
                 .0

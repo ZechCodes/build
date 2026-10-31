@@ -86,6 +86,15 @@ impl CompactionLedger {
             .map(|request| request.instructions.as_str())
     }
 
+    /// Every agent with a request still waiting for its current turn to end.
+    pub(in crate::app) fn waiting_for_turn(&self) -> Vec<(String, String)> {
+        self.requested
+            .iter()
+            .filter(|(_, request)| request.after_current_turn)
+            .map(|(agent, _)| agent.clone())
+            .collect()
+    }
+
     /// Every agent with a request ready to go.
     pub(in crate::app) fn ready_agents(&self) -> Vec<(String, String)> {
         self.requested

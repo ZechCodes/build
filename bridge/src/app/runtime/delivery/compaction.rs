@@ -109,11 +109,14 @@ impl AppState {
     /// Warm sessions use their observed policy. A cold Claude managed fallback
     /// also acts on saved context using its captured admission policy: native
     /// recovery is disabled, so its first wake must wait for compaction too.
-    /// Other cold sessions remain provider-owned. Never mid-turn: an agent still
-    /// working defers the turn before it gets here, and an interrupting turn goes
-    /// as it is. Never
-    /// for a harness that cannot compact, and never ahead of a turn that is
-    /// itself a compaction. A compaction an agent asked for goes first once it
+    /// Other cold sessions remain provider-owned. Never mid-turn: a turn that
+    /// reaches a working agent goes as it is, and so does an interrupting
+    /// one. A compaction an agent asked for mid-turn is not lost to that: until
+    /// the turn ends, a non-interrupting turn queued for the agent is held in
+    /// the queue ([`AppState::agents_holding_turns_for_compaction`]), and the
+    /// status pump's drain at the turn's end brings it here with the request
+    /// ready. Never for a harness that cannot compact, and never ahead of a
+    /// turn that is itself a compaction. A compaction an agent asked for goes first once it
     /// is ready; otherwise one is due once the last reported context has
     /// reached the live session's captured positive threshold.
     fn compaction_before(

@@ -361,6 +361,15 @@ pub(in crate::app) const NO_TERMINAL_LEFT: &str = "no_terminal";
 /// close to reach: they are told here or they are told never.
 pub(in crate::app) const SPAWN_NEVER_OPENED: &str = "spawn_failed";
 
+/// Whether `turn` is held behind a compaction its agent asked for: it does not
+/// interrupt, and its agent is one of `compacting_first`.
+fn waits_for_compaction(compacting_first: &[(String, String)], turn: &PendingAgentTurn) -> bool {
+    !turn.interrupt
+        && compacting_first
+            .iter()
+            .any(|(owner, agent_id)| *owner == turn.owner && *agent_id == turn.agent_id)
+}
+
 impl AppState {
     pub(in crate::app) fn take_pending_turns(&mut self) -> PendingTurns {
         // Retry stopped agents once when a reported reset is due. Remembered
@@ -370,12 +379,16 @@ impl AppState {
         let pending_rows = &self.pending_rows;
         let reserved = &self.reclaim_reserved;
         let resetting = &self.resetting_conversations;
+        let compacting_first = self.agents_holding_turns_for_compaction();
         // A turn for an agent inside a workspace the reclaim service or
         // `workspace.reclaim` has reserved waits for the reservation to end.
+        // A non-interrupting turn for an agent whose compaction waits for its
+        // current turn waits too, so the compaction goes ahead of it.
         let mut ready = self.delivery_queue.take_ready(|turn| {
             pending_rows.iter().any(|row| row.entity_id == turn.owner)
                 || reserved_holds(reserved, &turn.root)
                 || resetting.contains(&turn.conversation_id)
+                || waits_for_compaction(&compacting_first, turn)
         });
         for turn in &mut ready {
             self.forget_agent_start_error(&turn.owner, &turn.agent_id);

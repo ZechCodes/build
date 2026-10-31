@@ -124,11 +124,13 @@ impl ProbeChild {
     }
 
     /// Stop before collecting the diagnostic: EOF on stdout may arrive
-    /// before the stderr reader has consumed the child's final error.
+    /// before the stderr reader has consumed the child's final error. With
+    /// its process group killed the pipe only drains, so the reader is given
+    /// what is left of the deadline: a loaded machine may schedule it late.
     pub(super) fn failure(&mut self, error: std::io::Error) -> std::io::Error {
         self.stop();
         let left = self.hard_expiry.saturating_duration_since(Instant::now());
-        let stderr = self.stderr.last(left.min(MAX_STDERR_WAIT));
+        let stderr = self.stderr.last(left);
         if stderr.is_empty() {
             return error;
         }
@@ -341,6 +343,38 @@ fn read_lines(stdout: Option<ChildStdout>) -> Receiver<Result<String, Unread>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_probe_waits_for_a_slow_stderr_reader_within_its_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("failing");
+        crate::isolation::test_fixture::write_executable(&cli, "#!/bin/sh\nexit 1\n");
+        let mut child = ProbeChild::start_within(
+            cli.to_str().unwrap(),
+            &["--version"],
+            false,
+            Duration::from_secs(10),
+        )
+        .unwrap();
+
+        // A loaded machine schedules the stderr reader late: the child has
+        // exited, but its final line is still in the pipe.
+        let delayed = Stderr::default();
+        let (started, waiting) = std::sync::mpsc::channel();
+        *delayed.0.before_wait.lock().unwrap() = Some(started);
+        child.stderr = delayed.clone();
+        let collector = std::thread::spawn(move || {
+            waiting.recv().unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            let mut line = VecDeque::from(b"final-error".to_vec());
+            delayed.remember(&mut line);
+            delayed.finish();
+        });
+
+        let error = child.failure(std::io::Error::other("exited unsuccessfully"));
+        collector.join().unwrap();
+        assert!(error.to_string().contains("final-error"), "{error}");
+    }
 
     #[test]
     fn a_timeout_leaves_time_for_a_delayed_stderr_collector() {

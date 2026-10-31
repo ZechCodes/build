@@ -159,13 +159,28 @@ describe("a terminal pane names its transport from the device's saved choice", (
     tab.dispose();
   });
 
-  it("sits inside the pane's screen, so the touch key bar below it never covers it", async () => {
+  it("stays out of the pane's screen, which the terminal makes its input box", async () => {
     saved.choose("dev-http", "http");
 
     const user = await userPane("dev-http");
     const agent = await agentPane("dev-http");
 
-    expect(labelIn(user.host).parentElement).toBe(user.host.querySelector(":scope > .term-screen"));
-    expect(labelIn(agent.host).parentElement).toBe(agent.host.querySelector(":scope > .term-screen"));
+    for (const { host } of [user, agent]) {
+      expect(labelIn(host).parentElement).toBe(host);
+      expect(host.querySelector(".term-screen .term-transport")).toBeNull();
+    }
+  });
+
+  it("sits just before the touch key bar, so it shows above it", async () => {
+    saved.choose("dev-http", "http");
+    const { host } = await agentPane("dev-http");
+    const keys = document.createElement("div");
+    keys.className = "termkeys";
+    host.appendChild(keys);
+
+    saved.choose("dev-http", "webrtc");
+    saved.choose("dev-http", "http");
+
+    expect(labelIn(host).nextElementSibling).toBe(keys);
   });
 });

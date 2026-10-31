@@ -34,22 +34,23 @@ afterAll(async () => session?.close());
 const WIDTHS = [320, 390, 1280];
 const THEMES = ["light", "dark"];
 
-/** A pane as pane.js leaves it (screen, then the key bar on touch), with the
- *  connection overlay and the label attached after, as their callers do. */
+/** A real terminal pane (ghostty on .term-screen, the key bar below it on
+ *  touch), with the connection overlay and the label attached after, as their
+ *  callers do. */
 async function mountPane(page, basePath, { width, theme, keys, status }) {
   await page.setViewportSize({ width, height: 420 });
-  await mountLayout(page, '<div class="termpane" id="pane"><div class="term-screen"></div></div>', {
+  await mountLayout(page, '<div class="termpane" id="pane"></div>', {
     basePath, styles: "body { margin:0; } #pane { width:100vw; height:320px; }",
   });
   await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
-  await loadBrowserModules(page, {
-    tabs: "src/core/surfaceTabs.js", keyBar: "src/terminal/keyBar.js", touchKeys: "src/terminal/touchKeys.js",
-  }, basePath);
-  return page.evaluate(({ keys, status }) => {
-    const { tabs, keyBar, touchKeys } = window.__layoutModules;
+  await loadBrowserModules(page, { tabs: "src/core/surfaceTabs.js", pane: "src/terminal/pane.js" }, basePath);
+  return page.evaluate(async ({ keys, status }) => {
+    const { tabs, pane: terminalPane } = window.__layoutModules;
     const pane = document.getElementById("pane");
     window.__status = status;
-    if (keys) keyBar.mountKeyBar(pane, { send: () => {}, sticky: touchKeys.createStickyModifiers() });
+    await terminalPane.mountTerminalPane(pane, {
+      attach: async () => {}, input: async () => {}, resize: async () => {}, isTouchDevice: () => keys,
+    });
     tabs.attachConnectionOverlay(pane);
     tabs.attachTransportLabel(pane, "dev-http");
     const box = (node) => (node && !node.hidden ? node.getBoundingClientRect().toJSON() : null);
@@ -68,6 +69,16 @@ async function mountPane(page, basePath, { width, theme, keys, status }) {
   }, { keys, status });
 }
 
+/** Every accessible node named "Terminal input", with the value a screen
+ *  reader would announce for it. */
+async function terminalInputs(page) {
+  const cdp = await page.context().newCDPSession(page);
+  const { nodes } = await cdp.send("Accessibility.getFullAXTree");
+  await cdp.detach();
+  return nodes.filter((node) => node.name?.value === "Terminal input")
+    .map((node) => ({ role: node.role?.value, value: node.value?.value ?? "" }));
+}
+
 const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 const inside = (inner, outer) => inner.left >= outer.left && inner.right <= outer.right
   && inner.top >= outer.top && inner.bottom <= outer.bottom;
@@ -83,7 +94,8 @@ it("shows the transport label uncovered, clear of the key bar and the reconnecti
           expect(shape.chip, where).not.toBeNull();
           expect(shape.hit, detail).toBe("label");
           expect(overlaps(shape.chip, shape.label), detail).toBe(false);
-          expect(inside(shape.label, shape.screen), detail).toBe(true);
+          expect(inside(shape.label, shape.pane), detail).toBe(true);
+          expect(shape.label.bottom, detail).toBeLessThanOrEqual(shape.screen.bottom);
           if (keys) expect(overlaps(shape.keys, shape.label), detail).toBe(false);
           expect(shape.screen.right - shape.label.right, where).toBeCloseTo(12, 0);
           await captureLayout(page, `terminal-transport-${width}-${theme}-${keys ? "keys" : "nokeys"}.png`);
@@ -101,6 +113,18 @@ it("puts the label in the same place whether or not the chip shows", async () =>
       expect(quiet.chip, `${width}px`).toBeNull();
       expect(quiet.screen.bottom - quiet.label.bottom, `${width}px`).toBeCloseTo(8, 0);
       expect(offline.label, `${width}px`).toEqual(quiet.label);
+    }
+  });
+}, 120_000);
+
+it("keeps the label out of the terminal input a screen reader announces", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    for (const keys of [true, false]) {
+      const shape = await mountPane(page, basePath, { width: 390, theme: "light", keys, status: "connected" });
+      expect(shape.label, `keys ${keys}`).not.toBeNull();
+      const inputs = await terminalInputs(page);
+      expect(inputs.some((input) => input.role === "textbox"), `keys ${keys}: ${JSON.stringify(inputs)}`).toBe(true);
+      for (const input of inputs) expect(input.value, `keys ${keys}: ${JSON.stringify(input)}`).toBe("");
     }
   });
 }, 120_000);

@@ -85,6 +85,10 @@ export function attachConnectionOverlay(host) {
  *  WebRTC link, whatever the rest of the app is using. */
 export const TRANSPORT_LABEL = "Terminal over WebRTC";
 
+// The pane's own screen box, which the touch key bar sits below rather than
+// over; a host with no screen yet takes the label itself.
+const screenOf = (host) => host.querySelector(":scope > .term-screen") || host;
+
 /**
  * Name the transport in a `.termpane` host's corner while `deviceId`'s SAVED
  * choice is HTTPS. Only the preference drives it, never the link's state: the
@@ -98,7 +102,7 @@ export function attachTransportLabel(host, deviceId) {
   label.textContent = TRANSPORT_LABEL;
   // Present or absent, never hidden: a CSS display rule would beat `hidden`.
   const render = () => {
-    if (deviceId && usesHttp(deviceId)) host.appendChild(label);
+    if (deviceId && usesHttp(deviceId)) screenOf(host).appendChild(label);
     else label.remove();
   };
   render();

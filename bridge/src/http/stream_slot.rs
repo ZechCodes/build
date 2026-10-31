@@ -82,18 +82,28 @@ impl<T: RetireBinding> StreamSlot<T> {
 
     pub fn delete(&self, handle: &str) -> Result<(), StreamError> {
         let mut state = self.0.lock().unwrap();
-        let issued = current(&mut state, handle)?;
-        // A deleted unused handle must never be usable by a delayed GET.
-        issued.consumed = true;
-        if let Some(binding) = issued.binding.take() {
-            binding.retire();
-            issued.predecessor = Some(binding);
-        }
+        retire_issued(current(&mut state, handle)?);
         Ok(())
+    }
+
+    /// Opening teardown: retire whatever is current, keeping its tombstone.
+    pub fn close(&self) {
+        if let Some(issued) = self.0.lock().unwrap().as_mut() {
+            retire_issued(issued);
+        }
     }
 
     pub fn release(&self, handle: &str) {
         let _ = self.delete(handle);
+    }
+}
+
+fn retire_issued<T: RetireBinding>(issued: &mut Issued<T>) {
+    // A deleted unused handle must never be usable by a delayed GET.
+    issued.consumed = true;
+    if let Some(binding) = issued.binding.take() {
+        binding.retire();
+        issued.predecessor = Some(binding);
     }
 }
 

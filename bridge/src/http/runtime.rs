@@ -17,7 +17,7 @@ use axum::{
         HeaderMap, HeaderValue, Request, StatusCode,
     },
     response::{IntoResponse, Response},
-    routing::{delete, post},
+    routing::{delete, get, post},
     Router,
 };
 use serde::Deserialize;
@@ -27,11 +27,13 @@ use tokio::time::Instant;
 use super::auth::{AuthError, HttpAuthVerifier, VerifiedHttpGrant};
 use crate::execution::{
     session::{
-        DeliveryError, EncodedEvent, HttpIdentity, ReplySink, RequestAuthorization, SessionLease,
-        VerifiedCaller,
+        DeliveryError, EncodedEvent, EventBinding, HttpIdentity, ReplySink, RequestAuthorization,
+        SessionLease, VerifiedCaller,
     },
     ExecutionService, Invocation, RequestMetadata,
 };
+
+mod subscriptions;
 
 const LIFECYCLE_BYTES: usize = 64 * 1024;
 const MAX_FAMILY_OPENINGS: usize = 16;
@@ -125,9 +127,10 @@ pub struct HttpRuntime {
 
 struct MountedOpening {
     session: SessionLease,
-    _generation: String,
+    generation: String,
     identity: HttpIdentity,
     budget: Arc<super::limits::OpeningBudget>,
+    streams: Arc<subscriptions::Streams>,
 }
 
 struct ResourceReplySink {
@@ -171,7 +174,9 @@ impl HttpState {
                         && !current.session.opening().is_open()
                 });
                 if exact_closed {
-                    openings.remove(&id);
+                    if let Some(opening) = openings.remove(&id) {
+                        opening.streams.close();
+                    }
                     removed += 1;
                 }
             }
@@ -189,6 +194,7 @@ impl HttpState {
         };
         let count = removed.len();
         for opening in removed {
+            opening.streams.close();
             self.execution.sessions().close(&opening.session);
         }
         count
@@ -209,6 +215,15 @@ impl HttpRuntime {
         Router::new()
             .route("/v1/sessions", post(open_session))
             .route("/v1/sessions/{session_id}", delete(close_session))
+            .route("/v1/subscriptions", post(subscriptions::create))
+            .route(
+                "/v1/subscriptions/{subscription_id}",
+                delete(subscriptions::delete),
+            )
+            .route(
+                "/v1/subscriptions/{subscription_id}/events",
+                get(subscriptions::events),
+            )
             .fallback(resource_request)
             .with_state(self.state.clone())
     }
@@ -273,8 +288,15 @@ async fn resource_response(state: &HttpState, request: Request<Body>) -> HttpRes
         .cloned()
         .ok_or_else(|| refusal(StatusCode::SERVICE_UNAVAILABLE, "unavailable"))?;
     observe_output(state, &output);
-    let (opening_budget, session, request_authorization) =
-        resource_opening(state, session_id, &authority)?;
+    let ResourceOpening {
+        budget: opening_budget,
+        session,
+        authorization: request_authorization,
+        streams,
+        ..
+    } = resource_opening(state, session_id, &authority)?;
+    let events =
+        subscriptions::resource_events(&streams, request.headers(), operation.requires_events)?;
     let reservation = Arc::new(
         state
             .buffers
@@ -311,6 +333,7 @@ async fn resource_response(state: &HttpState, request: Request<Body>) -> HttpRes
         &session,
         request_authorization,
         invocation,
+        events.as_ref(),
         reservation.clone(),
     )
     .await?;
@@ -335,14 +358,6 @@ fn authorize_resource(
             .map_err(auth_refusal)?,
         None => return Err(refusal(StatusCode::INTERNAL_SERVER_ERROR, "internal").into()),
     }
-    if operation.requires_events {
-        return Err(refusal(StatusCode::CONFLICT, "stream_required").into());
-    }
-    match exact_header(headers, "X-Build-Subscription") {
-        Ok(None) => {}
-        Ok(Some(_)) => return Err(refusal(StatusCode::CONFLICT, "stream_replaced").into()),
-        Err(()) => return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request").into()),
-    };
     Ok(())
 }
 
@@ -362,16 +377,20 @@ fn observe_output(state: &HttpState, output: &super::listener::OutputAuthority) 
     }
 }
 
+struct ResourceOpening {
+    budget: Arc<super::limits::OpeningBudget>,
+    session: SessionLease,
+    authorization: RequestAuthorization,
+    streams: Arc<subscriptions::Streams>,
+    generation: String,
+}
+
 fn resource_opening(
     state: &HttpState,
     session_id: &str,
     authority: &VerifiedAuthority,
-) -> HttpResult<(
-    Arc<super::limits::OpeningBudget>,
-    SessionLease,
-    RequestAuthorization,
-)> {
-    let (opening_budget, session) = {
+) -> HttpResult<ResourceOpening> {
+    let (budget, session, streams, generation) = {
         let openings = state.openings.lock().unwrap();
         let opening = openings
             .get(session_id)
@@ -379,7 +398,12 @@ fn resource_opening(
         if opening.identity != authority.identity {
             return Err(refusal(StatusCode::UNAUTHORIZED, "invalid_credential").into());
         }
-        (opening.budget.clone(), opening.session.clone())
+        (
+            opening.budget.clone(),
+            opening.session.clone(),
+            opening.streams.clone(),
+            opening.generation.clone(),
+        )
     };
     let caller = VerifiedCaller::verified_http(
         authority.identity.clone(),
@@ -392,7 +416,13 @@ fn resource_opening(
         .resume_with_request_authority(caller, session_id)
         .map_err(|_| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
     debug_assert!(resumed.opening().is(session.opening()));
-    Ok((opening_budget, resumed, request_authorization))
+    Ok(ResourceOpening {
+        budget,
+        session: resumed,
+        authorization: request_authorization,
+        streams,
+        generation,
+    })
 }
 
 async fn execute_resource(
@@ -400,6 +430,7 @@ async fn execute_resource(
     session: &SessionLease,
     request_authorization: RequestAuthorization,
     invocation: Invocation,
+    events: Option<&EventBinding>,
     reservation: Arc<super::limits::BufferReservation>,
 ) -> HttpResult<(EncodedEvent, crate::execution::Call)> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -410,7 +441,7 @@ async fn execute_resource(
     let context = state
         .execution
         .sessions()
-        .request_authorized(session, sink, None, request_authorization)
+        .request_authorized(session, sink, events, request_authorization)
         .map_err(|_| refusal(StatusCode::UNAUTHORIZED, "invalid_credential"))?;
     let mut call = state
         .execution
@@ -564,7 +595,9 @@ async fn close_session(
         .get(&session_id)
         .is_some_and(|current| current.session.opening().is(session.opening()));
     if exact {
-        openings.remove(&session_id);
+        if let Some(opening) = openings.remove(&session_id) {
+            opening.streams.close();
+        }
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -680,7 +713,6 @@ async fn open_session(
     let operation_ids = super::routes::manifest()
         .operations
         .iter()
-        .filter(|operation| !operation.requires_events)
         .map(|operation| operation.operation_id.as_str())
         .collect::<Vec<_>>();
     let response = json!({
@@ -712,9 +744,10 @@ async fn open_session(
                 session_id,
                 MountedOpening {
                     session: session.clone(),
-                    _generation: generation,
+                    generation,
                     identity: authority.identity.clone(),
                     budget: Arc::new(super::limits::OpeningBudget::default()),
+                    streams: Arc::default(),
                 },
             );
             None
@@ -1425,32 +1458,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(replacement.status(), StatusCode::CREATED);
-    }
-
-    #[tokio::test]
-    async fn opening_advertises_exactly_the_mounted_non_event_resources() {
-        let app = router_with(
-            execution(),
-            Arc::new(WitnessVerifier {
-                calls: Arc::new(AtomicUsize::new(0)),
-                authority: Some(authority()),
-            }),
-        );
-        let response = app
-            .oneshot(open_request(Body::from(r#"{"api_range":">=3 <4"}"#)))
-            .await
-            .unwrap();
-        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
-            .await
-            .unwrap();
-        let opening: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let expected = super::super::routes::manifest()
-            .operations
-            .iter()
-            .filter(|operation| !operation.requires_events)
-            .map(|operation| operation.operation_id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(opening["transport"]["operation_ids"], json!(expected));
     }
 
     #[tokio::test]

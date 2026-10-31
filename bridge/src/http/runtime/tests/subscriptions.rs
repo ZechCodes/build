@@ -2,7 +2,8 @@
 use super::*;
 use futures_util::StreamExt;
 
-type Frames = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, axum::Error>> + Send>>;
+type Frames =
+    std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, axum::Error>> + Send>>;
 
 fn pushing_execution() -> Arc<ExecutionService> {
     ExecutionService::new(
@@ -178,7 +179,12 @@ async fn subscription_creation_refuses_other_kinds_and_foreign_openings() {
     for body in [r#"{"kind":"live"}"#, r#"{"kind":"application","scope":{}}"#] {
         let response = app
             .clone()
-            .oneshot(lifecycle("POST", "/v1/subscriptions", &session_id, Some(body)))
+            .oneshot(lifecycle(
+                "POST",
+                "/v1/subscriptions",
+                &session_id,
+                Some(body),
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
@@ -279,7 +285,11 @@ async fn stream_bound_resources_require_the_current_subscription() {
 
     let first = subscription(&app, &session_id).await;
     let (status, unbound) = greeting_request(&app, &session_id, Some(&first)).await;
-    assert_eq!(status, StatusCode::CONFLICT, "an unbound handle has no stream");
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "an unbound handle has no stream"
+    );
     assert_eq!(unbound["error_code"], "stream_replaced");
 
     let (status, replacement) = subscribe(&app, &session_id, Some(&first)).await;
@@ -357,7 +367,11 @@ async fn closing_the_opening_ends_its_stream() {
     let mut frames = stream(&app, &session_id, &subscription).await;
     assert_eq!(next_event(&mut frames).await.0, "hello");
 
-    let response = app.clone().oneshot(close_request(&session_id)).await.unwrap();
+    let response = app
+        .clone()
+        .oneshot(close_request(&session_id))
+        .await
+        .unwrap();
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_ended(&mut frames).await;

@@ -160,7 +160,7 @@ impl CompactingAgent {
 /// that was queued behind it. A Codex session compacts with no focus.
 #[tokio::test]
 async fn compact_self_waits_for_the_turn_and_goes_ahead_of_the_queued_one() {
-    let agent = CompactingAgent::new();
+    let agent = CompactingAgent::without_background_services();
     agent.pump();
     agent.becomes(AgentStatus::Working).await;
 
@@ -192,6 +192,88 @@ async fn compact_self_waits_for_the_turn_and_goes_ahead_of_the_queued_one() {
         agent.heard(2).await,
         vec!["/compact".to_string(), "warm".to_string()]
     );
+}
+
+/// Queue a turn for the agent, interrupting or not.
+fn queue_a_turn(agent: &CompactingAgent, interrupt: bool) {
+    let turn = agent.turn(interrupt);
+    agent.state.lock().unwrap().delivery_queue.enqueue(turn);
+}
+
+/// Any drain may run while the turn that called `compact_self` is still going
+/// — the one after every tool call, the task delivery service's — and none of
+/// them sends the turn queued behind it: that turn waits for the compaction.
+#[tokio::test]
+async fn a_drain_mid_turn_holds_the_turn_queued_behind_compact_self() {
+    let agent = CompactingAgent::without_background_services();
+    agent.pump();
+    agent.becomes(AgentStatus::Working).await;
+    agent.compact_self("keep the rail notes").unwrap();
+    queue_a_turn(&agent, false);
+
+    drain(&agent.state);
+
+    assert_eq!(agent.still_queued(), 1, "the turn waits for the compaction");
+    assert!(agent.log.turns().is_empty(), "{:?}", agent.log.turns());
+}
+
+/// The held turn goes once the compaction it waited for has: the turn ends,
+/// the compaction goes ahead of it, and when that is done the turn follows.
+#[tokio::test]
+async fn the_held_turn_goes_once_the_compaction_is_done() {
+    let agent = CompactingAgent::without_background_services();
+    agent.pump();
+    agent.becomes(AgentStatus::Working).await;
+    agent.compact_self("keep the rail notes").unwrap();
+    queue_a_turn(&agent, false);
+    drain(&agent.state);
+
+    agent.becomes(AgentStatus::Waiting).await;
+    assert_eq!(agent.heard(1).await, vec!["/compact".to_string()]);
+    wait_for(Duration::from_secs(2), || {
+        (agent.still_queued() == 1).then_some(())
+    })
+    .await
+    .expect("the turn waits for the compaction");
+
+    agent.becomes(AgentStatus::Working).await;
+    agent.becomes(AgentStatus::Waiting).await;
+    assert_eq!(
+        agent.heard(2).await,
+        vec!["/compact".to_string(), "warm".to_string()]
+    );
+    assert_eq!(agent.still_queued(), 0);
+}
+
+/// With no compaction waiting, a turn queued mid-turn goes on the next drain,
+/// as it always has: only a pending compaction holds it.
+#[tokio::test]
+async fn with_no_compaction_waiting_a_drain_mid_turn_sends_the_queued_turn() {
+    let agent = CompactingAgent::without_background_services();
+    agent.pump();
+    agent.becomes(AgentStatus::Working).await;
+    queue_a_turn(&agent, false);
+
+    drain(&agent.state);
+
+    assert_eq!(agent.heard(1).await, vec!["warm".to_string()]);
+    assert_eq!(agent.still_queued(), 0);
+}
+
+/// An interrupting turn is not held behind a waiting compaction: it goes on
+/// the next drain, as it always has.
+#[tokio::test]
+async fn an_interrupting_turn_is_not_held_behind_compact_self() {
+    let agent = CompactingAgent::without_background_services();
+    agent.pump();
+    agent.becomes(AgentStatus::Working).await;
+    agent.compact_self("keep the rail notes").unwrap();
+    queue_a_turn(&agent, true);
+
+    drain(&agent.state);
+
+    assert_eq!(agent.heard(1).await, vec!["warm".to_string()]);
+    assert_eq!(agent.still_queued(), 0);
 }
 
 /// With nothing queued behind it, the pump sends it itself when the turn ends,

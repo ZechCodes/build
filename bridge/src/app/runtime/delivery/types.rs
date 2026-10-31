@@ -371,6 +371,20 @@ fn waits_for_compaction(compacting_first: &[(String, String)], turn: &PendingAge
 }
 
 impl AppState {
+    /// Every agent whose compaction waits for its current turn to end, and
+    /// whose session reports that end, so its status pump can release a
+    /// turn held behind the compaction.
+    fn compactions_held_for_turn_end(&self) -> Vec<(String, String)> {
+        self.compactions
+            .waiting_for_turn()
+            .into_iter()
+            .filter(|(owner, agent_id)| {
+                self.live_agent_session(owner, agent_id)
+                    .is_some_and(|session| session.reports_turn_ends())
+            })
+            .collect()
+    }
+
     pub(in crate::app) fn take_pending_turns(&mut self) -> PendingTurns {
         // Retry stopped agents once when a reported reset is due. Remembered
         // limits never gate delivery: account, credit, and model changes can
@@ -379,14 +393,15 @@ impl AppState {
         let pending_rows = &self.pending_rows;
         let reserved = &self.reclaim_reserved;
         let resetting = &self.resetting_conversations;
-        let compacting_first = self.compactions.waiting_for_turn();
+        let compacting_first = self.compactions_held_for_turn_end();
         // A turn for an agent inside a workspace the reclaim service or
         // `workspace.reclaim` has reserved waits for the reservation to end.
         // A non-interrupting turn for an agent whose compaction waits for its
         // current turn waits too, so the compaction goes ahead of it. Keyed on
         // the request, not on `working_since`: a report closes the thread's
         // turn while the provider's runs on. The status pump releases it on
-        // the turn's last snapshot, and a session end withdraws it.
+        // the turn's last snapshot, and a session end withdraws it. A session
+        // with no status pump is never held: nothing would release it.
         let mut ready = self.delivery_queue.take_ready(|turn| {
             pending_rows.iter().any(|row| row.entity_id == turn.owner)
                 || reserved_holds(reserved, &turn.root)

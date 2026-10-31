@@ -351,7 +351,7 @@ pub(in crate::app) fn deliver(
             eprintln!("thread.post {owner}: interrupt refused: {refused}");
         }
     }
-    let reports_turn_boundaries = session.status_changed().is_some();
+    let reports_turn_boundaries = session.reports_turn_ends();
     let prompt = delivered_prompt(
         prompt.unwrap_or_default(),
         legacy_payload.as_ref().map(|frozen| &frozen.payload),

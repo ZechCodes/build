@@ -6,10 +6,12 @@
 //! turns, and the status pump's once a working agent's turn ends. A request
 //! goes ahead of any turn queued for the agent, through the same
 //! [`compact_before_turn`](super::compact_before_turn) the automatic one
-//! takes; with nothing queued the drain sends it itself. Until the turn it
-//! waits for ends, a non-interrupting turn queued for the agent stays queued
-//! (see [`AppState::take_pending_turns`]), so no drain in
-//! between can send that turn first.
+//! takes; with nothing queued the drain sends it itself. On a session that
+//! reports its turn ends, a non-interrupting turn queued for the agent stays
+//! queued until the turn the request waits for ends (see
+//! [`AppState::take_pending_turns`]), so no drain in between can send that
+//! turn first. A session that reports none has no pump to end the wait, and
+//! its turns are never held.
 
 use super::CompactionSend;
 use crate::app::{AgentSender, AppState};

@@ -139,8 +139,10 @@ for (const { label, width, height, hasTouch } of [
       await ungrouped.waitFor();
       const ungroupedBox = await ungrouped.boundingBox();
       const ungroupedCaret = await ungrouped.locator(".inbox-recent-caret").boundingBox();
-      expect(ungroupedBox.x).toBe(label === "phone" ? 33 : 20);
-      expect(ungroupedCaret.x).toBe(ungroupedBox.x + 6);
+      // Chromium can place the box a thousandth of a pixel off its column
+      // (32.999 for 33) while the view settles; the column is what matters.
+      expect(ungroupedBox.x).toBeCloseTo(label === "phone" ? 33 : 20, 1);
+      expect(ungroupedCaret.x).toBeCloseTo(ungroupedBox.x + 6, 1);
 
       await page.evaluate(() => window.__layoutModules.view.setInboxView("projects"));
       const toggles = page.locator(".inbox-project .inbox-recent-toggle");
@@ -158,7 +160,7 @@ for (const { label, width, height, hasTouch } of [
             expect(caret.x).toBeGreaterThan(fold.x);
             if (expanded) {
               for (const quietTitle of await block.locator(".inbox-recent .stitle").all()) {
-                expect(caret.x).toBe((await quietTitle.boundingBox()).x);
+                expect(caret.x).toBeCloseTo((await quietTitle.boundingBox()).x, 1);
               }
             }
           }

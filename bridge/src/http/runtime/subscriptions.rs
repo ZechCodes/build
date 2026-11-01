@@ -43,6 +43,14 @@ pub(super) struct HttpStream {
     sender: SseSender,
 }
 
+#[cfg(test)]
+impl HttpStream {
+    /// Events and bytes still charged to this stream's queue.
+    pub(super) fn queued(&self) -> (usize, usize) {
+        self.sender.buffered()
+    }
+}
+
 impl RetireBinding for HttpStream {
     fn retire(&self) {
         self.binding.close();
@@ -54,9 +62,16 @@ impl RetireBinding for HttpStream {
 struct SseSink(SseSender);
 
 impl EventSink for SseSink {
+    /// A failed delivery retires the binding, so it also ends the stream now
+    /// and returns its reservation, rather than at the next heartbeat. A full
+    /// queue has already closed itself and keeps its `reset_required` frame.
     fn try_send(&self, event: EncodedEvent) -> Result<(), DeliveryError> {
-        let event = SseEvent::json("event", event.payload()).map_err(delivery_error)?;
-        self.0.try_send(event).map_err(delivery_error)
+        let delivered =
+            SseEvent::json("event", event.payload()).and_then(|event| self.0.try_send(event));
+        if delivered.is_err_and(|error| error != sse::DeliveryError::Full) {
+            self.0.close();
+        }
+        delivered.map_err(delivery_error)
     }
 }
 
@@ -77,6 +92,7 @@ struct StreamOpening {
     streams: Arc<Streams>,
     generation: String,
     output: OutputAuthority,
+    family_id: String,
 }
 
 async fn stream_opening(state: &HttpState, request: &Parts) -> HttpResult<StreamOpening> {
@@ -104,6 +120,7 @@ async fn stream_opening(state: &HttpState, request: &Parts) -> HttpResult<Stream
         streams: opening.streams,
         generation: opening.generation,
         output,
+        family_id: authority.identity.family_id.clone(),
     })
 }
 
@@ -207,7 +224,7 @@ async fn streamed(
     }
     let reservation = state
         .buffers
-        .reserve_stream()
+        .reserve_stream(&opening.family_id)
         .map_err(|_| refusal(StatusCode::TOO_MANY_REQUESTS, "overloaded"))?;
     let (sender, receiver) = sse::channel();
     // Queued before the binding exists, so no application push precedes it.
@@ -296,6 +313,7 @@ fn event_response(
         deadline.clone(),
         opening.session.opening().clone(),
     )));
+    let heartbeat_every = opening.output.heartbeat_interval();
     let streams = opening.streams.clone();
     let close = Arc::new(move || {
         streams.release(&subscription_id);
@@ -310,6 +328,7 @@ fn event_response(
         check,
         deadline,
         close,
+        heartbeat_every,
     );
     let mut response = Response::new(body);
     let headers = response.headers_mut();

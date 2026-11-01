@@ -123,7 +123,14 @@ struct HttpState {
     reap_observer: Arc<Mutex<Option<TestObserver>>>,
     #[cfg(test)]
     open_observer: Arc<Mutex<Option<TestObserver>>>,
+    /// Tests only: when set, every connection's stalled writes wait for this
+    /// to be notified instead of the stalled-write clock.
+    #[cfg(test)]
+    stall_cut: StallCut,
 }
+
+#[cfg(test)]
+type StallCut = Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>;
 
 #[cfg(test)]
 type OutputObserver = Arc<dyn Fn(super::listener::OutputAuthority) + Send + Sync>;
@@ -222,7 +229,7 @@ pub fn mount(execution: Arc<ExecutionService>, verifier: HttpAuthVerifier) -> Ht
 
 impl HttpRuntime {
     pub fn router(&self) -> Router {
-        Router::new()
+        let router = Router::new()
             .route("/v1/sessions", post(open_session))
             .route(
                 "/v1/sessions/{session_id}",
@@ -238,7 +245,13 @@ impl HttpRuntime {
                 get(subscriptions::events),
             )
             .fallback(resource_request)
-            .with_state(self.state.clone())
+            .with_state(self.state.clone());
+        #[cfg(test)]
+        let router = router.layer(axum::middleware::from_fn_with_state(
+            self.state.stall_cut.clone(),
+            cut_stalls_by_hand,
+        ));
+        router
     }
 
     pub fn shutdown(&self) -> usize {
@@ -267,6 +280,8 @@ fn runtime_with(execution: Arc<ExecutionService>, verifier: Arc<dyn GrantVerifie
             reap_observer: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             open_observer: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            stall_cut: Arc::new(Mutex::new(None)),
         },
     }
 }
@@ -379,6 +394,25 @@ fn resource_session_id(headers: &HeaderMap) -> HttpResult<&str> {
         Ok(Some(session_id)) if !session_id.is_empty() && session_id.len() <= 128 => Ok(session_id),
         _ => Err(refusal(StatusCode::UNAUTHORIZED, "invalid_credential").into()),
     }
+}
+
+/// Hands the test's stall cut to the connection behind every request.
+#[cfg(test)]
+async fn cut_stalls_by_hand(
+    State(cut): State<StallCut>,
+    request: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    let cut = cut.lock().unwrap().clone();
+    if let (Some(cut), Some(output)) = (
+        cut,
+        request
+            .extensions()
+            .get::<super::listener::OutputAuthority>(),
+    ) {
+        output.cut_stalled_writes_on(cut);
+    }
+    next.run(request).await
 }
 
 fn observe_output(state: &HttpState, output: &super::listener::OutputAuthority) {

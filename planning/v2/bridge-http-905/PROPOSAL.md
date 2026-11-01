@@ -402,6 +402,17 @@ every reconnect revalidates recovery state. No promise that every intermediate
 live event or terminal byte survives. Terminal output is excluded from this
 initial stream; it retains its existing separate ACK/reset protocol.
 
+Each stream reserves its 1MiB queue from a separate 32MiB stream pool, never
+from the 32MiB RPC buffer budget. That allows thirty-two streams at once, and
+bounds queued adapter bytes at 32MiB RPC plus 32MiB stream. One credential
+family holds at most eight live streams, so no family can fill more than a
+quarter of the pool;
+a replaced stream still stalled on its socket counts against its own family
+until it is cut. With the pool full or the family at its cap, the next stream
+GET is refused with 429 `overloaded`, retryable, with no side effects, and RPC
+admission is unaffected. Any failed push ends its stream and returns the
+reservation at once.
+
 Durable subscription kind is withheld until #887/#892 publishes its capability
 and producer coverage. Then wrap the exact journal read/snapshot/head contracts;
 no second cursor, log, compactor or snapshot lease. One SSE durable subscription

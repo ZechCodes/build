@@ -9,7 +9,7 @@ use tokio::time::{Instant, Interval, MissedTickBehavior};
 
 use super::{
     limits::BufferReservation,
-    sse::{DeliveryLease, SseEvent, SseReceiver, SseSender, HEARTBEAT_INTERVAL},
+    sse::{DeliveryLease, SseEvent, SseReceiver, SseSender},
 };
 
 type Check = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -23,9 +23,9 @@ pub fn application_body(
     check: Check,
     deadline: Deadline,
     close: Close,
+    heartbeat_every: std::time::Duration,
 ) -> Body {
-    let mut heartbeat =
-        tokio::time::interval_at(Instant::now() + HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL);
+    let mut heartbeat = tokio::time::interval_at(Instant::now() + heartbeat_every, heartbeat_every);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let state = StreamState {
         sender,

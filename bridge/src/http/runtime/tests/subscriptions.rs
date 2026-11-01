@@ -424,15 +424,15 @@ async fn client_disconnect_releases_the_subscription_and_its_stream_reservation(
         .unwrap()
         .to_owned();
     let subscription = subscription(&app, &session_id).await;
-    let idle = runtime.state.buffers.available();
+    let idle = runtime.state.buffers.streams_available();
     let mut frames = stream(&app, &session_id, &subscription).await;
     assert_eq!(next_event(&mut frames).await.0, "hello");
-    assert!(runtime.state.buffers.available() < idle);
+    assert!(runtime.state.buffers.streams_available() < idle);
 
     // Dropping the body is the client going away mid-stream.
     drop(frames);
 
-    assert_eq!(runtime.state.buffers.available(), idle);
+    assert_eq!(runtime.state.buffers.streams_available(), idle);
     let (status, released) = greeting_request(&app, &session_id, Some(&subscription)).await;
     assert_eq!(status, StatusCode::CONFLICT, "{released}");
     assert_eq!(released["error_code"], "stream_replaced");
@@ -458,7 +458,7 @@ async fn delete_racing_an_unread_stream_ends_it_without_harming_the_successor() 
         .as_str()
         .unwrap()
         .to_owned();
-    let idle = runtime.state.buffers.available();
+    let idle = runtime.state.buffers.streams_available();
     let first = subscription(&app, &session_id).await;
     // hello and a push are queued but never polled before the DELETE lands.
     let mut old = stream(&app, &session_id, &first).await;
@@ -525,7 +525,7 @@ async fn delete_racing_an_unread_stream_ends_it_without_harming_the_successor() 
         ("event", &json!("probe.pushed"))
     );
     drop(new);
-    assert_eq!(runtime.state.buffers.available(), idle);
+    assert_eq!(runtime.state.buffers.streams_available(), idle);
 }
 
 struct MountedTls {
@@ -757,4 +757,5 @@ async fn production_tls_listener_deletes_a_subscription_and_ends_its_stream() {
 
 mod contract;
 mod renewal;
+mod stream_bounds;
 mod verified_renewal;

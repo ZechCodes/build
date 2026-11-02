@@ -1826,18 +1826,28 @@ descriptors, so replacing a pathname cannot redirect deletion into another
 tree. Explicit reclaim carries the same boundary through its deferred removal.
 An invalid boundary leaves the workspace unmeasured and preserves its files.
 
-Each project agent gets one notice per sweep naming its quiet workspaces
-whose notices are due. Unlocked workspaces repeat once per idle period
-(daily by default); activity after a notice resets that cadence. Locked
-workspaces repeat only after seven days since their last notice, even if
-activity happened in between, and are omitted from intermediate notices about
-other workspaces. The existing per-workspace `noticed_at_ms` persists that
-clock across restarts. Every notice tells the agent to message the user only
-if necessary and otherwise merge, reclaim or leave the workspace without
-posting to the user. A locked workspace was locked on purpose: the agent
-evaluates whether a reminder is needed, without reclaiming it or asking to
-unlock it by default. The linked tasks record `workspace_idle` and
-`workspace_pruned` as actor `build`, without waking their trackers.
+Each project agent gets one digest a day listing every quiet workspace in its
+project, including ones listed on earlier days (#958,
+`bridge/src/app/workspaces/reclaim/digest.rs`). Going quiet sends nothing by
+itself, and a day with nothing quiet sends nothing. Nor does a quiet
+workspace's task finishing: it shows as reclaimable in the next digest, not
+in a notice of its own. The digest goes out at the
+first sweep at or after the day's time: 09:00 device-local, or the device's
+`workspace_idle_digest_at` setting (`HH:MM`). The service wakes for that time
+as well as its sweep interval, and a bridge that was down then sends at its
+first sweep after, once; a day missed entirely is not made up the next morning
+before that day's time. The day each project was sent is kept in the store
+(`meta` row `idle_digest_sent`), so a restart never sends twice; a digest that
+failed to land is tried at the next sweep. It is queued as
+`MessageKind::IdleWorkspaces`, its wording in `bridge/templates/messages/`.
+Every digest tells the agent to message the user only if necessary and
+otherwise handle or leave the workspace without posting to the user.
+Locked workspaces are listed every day in their own group, each with whatever
+else holds it: the agent evaluates whether a reminder is needed, without
+reclaiming them or asking to unlock them. The linked tasks record
+`workspace_idle` once per quiet period, when the first digest listing the
+workspace lands (`noticed_at_ms` at or after its last activity), and
+`workspace_pruned`, as actor `build`, without waking their trackers.
 
 Dropping build output (tier 1) is off unless the device's `workspace_prune`
 setting turns it on, or `BRIDGE_WORKSPACE_PRUNE` is set, which overrides it.
@@ -2638,7 +2648,10 @@ bare, because they are thread content any harness may later read; the
 harness-exact name travels on the attachment of the turn that delivers them.
 The nudge that sends an agent to its unread thread
 (`new_thread_messages_prompt(provider)`, `TurnText::reading_unread`) is
-rendered for the harness that will hear it.
+rendered for the harness that will hear it. A turn's kind is a provider
+command in the thread it reads, else the kind its own text was rendered as
+(the idle-workspaces digest, #958), else the thread's delivery
+(`turn_kind` in `bridge/src/app/runtime/delivery/preflight.rs`).
 
 The words live in `bridge/templates/messages/`, beside the role prompts, as
 `MESSAGE_*` constants in `bridge/src/templates.rs` filled by

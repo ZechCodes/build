@@ -1,20 +1,24 @@
-//! What the project agent is told about its quiet workspaces.
+//! What the project agent is told, once a day, about its quiet workspaces
+//! (#958).
 
 use super::Quiet;
-use crate::reclaim::{LifecycleRecord, LinkedTask, ReclaimPolicy, Subject};
+use crate::reclaim::{LifecycleRecord, LinkedTask, ReclaimPolicy, Subject, HOLD_LOCKED};
 use crate::templates::{
-    fill, MESSAGE_WORKSPACES_QUIET, MESSAGE_WORKSPACES_QUIET_MANY, MESSAGE_WORKSPACES_QUIET_ONE,
+    fill, MESSAGE_WORKSPACES_QUIET, MESSAGE_WORKSPACES_QUIET_DECIDE,
+    MESSAGE_WORKSPACES_QUIET_LOCKED, MESSAGE_WORKSPACES_QUIET_MANY, MESSAGE_WORKSPACES_QUIET_ONE,
     MESSAGE_WORKSPACE_QUIET, MESSAGE_WORKSPACE_QUIET_HELD, MESSAGE_WORKSPACE_QUIET_LOCKED,
-    MESSAGE_WORKSPACE_QUIET_NO_TASK, MESSAGE_WORKSPACE_QUIET_PRUNED,
-    MESSAGE_WORKSPACE_QUIET_RECLAIMABLE, MESSAGE_WORKSPACE_QUIET_TASK,
+    MESSAGE_WORKSPACE_QUIET_LOCKED_HELD, MESSAGE_WORKSPACE_QUIET_NO_TASK,
+    MESSAGE_WORKSPACE_QUIET_PRUNED, MESSAGE_WORKSPACE_QUIET_RECLAIMABLE,
+    MESSAGE_WORKSPACE_QUIET_TASK,
 };
 
-/// The phase a quiet-workspace notice's turn is queued under.
+/// The phase a quiet-workspace digest's turn is queued under.
 pub(super) const PHASE: &str = "workspace_idle";
 
-/// What the project agent reads about its quiet workspaces: one line per
-/// workspace with everything a decision needs, then how to handle it and when
-/// the user needs to hear about it.
+/// The project agent's daily digest: one line per quiet workspace with
+/// everything a decision needs, the ones the user locked in their own group
+/// with what else holds them, then when the user needs to hear about it and,
+/// if any is not locked, how to decide about those.
 pub(super) fn quiet_workspaces(workspaces: &[Quiet], policy: &ReclaimPolicy) -> String {
     let hours = (policy.idle_after.as_secs() / 3600).to_string();
     let count = workspaces.len().to_string();
@@ -24,18 +28,44 @@ pub(super) fn quiet_workspaces(workspaces: &[Quiet], policy: &ReclaimPolicy) -> 
         MESSAGE_WORKSPACES_QUIET_MANY
     };
     let quiet = fill(these, &[("count", count.as_str())]);
-    let lines: Vec<String> = workspaces
+    let (locked, unlocked): (Vec<&Quiet>, Vec<&Quiet>) = workspaces
         .iter()
-        .map(|quiet| quiet_workspace_line(&quiet.subject, &quiet.record))
-        .collect();
-    fill(
+        .partition(|quiet| is_locked(&quiet.record));
+    let mut groups = Vec::new();
+    if !unlocked.is_empty() {
+        groups.push(lines(&unlocked));
+    }
+    if !locked.is_empty() {
+        groups.push(format!(
+            "{MESSAGE_WORKSPACES_QUIET_LOCKED}\n{}",
+            lines(&locked)
+        ));
+    }
+    let digest = fill(
         MESSAGE_WORKSPACES_QUIET,
         &[
             ("quiet", quiet.as_str()),
             ("hours", hours.as_str()),
-            ("workspaces", lines.join("\n").as_str()),
+            ("workspaces", groups.join("\n\n").as_str()),
         ],
-    )
+    );
+    if unlocked.is_empty() {
+        digest
+    } else {
+        format!("{digest}\n\n{MESSAGE_WORKSPACES_QUIET_DECIDE}")
+    }
+}
+
+fn lines(workspaces: &[&Quiet]) -> String {
+    workspaces
+        .iter()
+        .map(|quiet| quiet_workspace_line(&quiet.subject, &quiet.record))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_locked(record: &LifecycleRecord) -> bool {
+    record.holds.iter().any(|hold| hold == HOLD_LOCKED)
 }
 
 fn quiet_workspace_line(subject: &Subject, record: &LifecycleRecord) -> String {
@@ -76,7 +106,6 @@ fn quiet_workspace_line(subject: &Subject, record: &LifecycleRecord) -> String {
             ("pruned", pruned(record).as_str()),
             ("last_activity", last_activity.as_str()),
             ("verdict", verdict(record).as_str()),
-            ("locked", locked_note(record)),
         ],
     )
 }
@@ -112,28 +141,20 @@ fn pruned(record: &LifecycleRecord) -> String {
 }
 
 fn verdict(record: &LifecycleRecord) -> String {
-    if record.reclaimable {
-        return MESSAGE_WORKSPACE_QUIET_RECLAIMABLE.to_string();
-    }
-    let holds = record
+    let others: Vec<&str> = record
         .holds
         .iter()
+        .filter(|hold| *hold != HOLD_LOCKED)
         .map(|hold| crate::reclaim::hold_sentence(hold))
-        .collect::<Vec<_>>()
-        .join("; ");
-    fill(MESSAGE_WORKSPACE_QUIET_HELD, &[("holds", holds.as_str())])
-}
-
-fn locked_note(record: &LifecycleRecord) -> &'static str {
-    if record
-        .holds
-        .iter()
-        .any(|hold| hold == crate::reclaim::HOLD_LOCKED)
-    {
-        MESSAGE_WORKSPACE_QUIET_LOCKED
-    } else {
-        ""
-    }
+        .collect();
+    let holds = others.join("; ");
+    let template = match (is_locked(record), others.is_empty()) {
+        (true, true) => MESSAGE_WORKSPACE_QUIET_LOCKED,
+        (true, false) => MESSAGE_WORKSPACE_QUIET_LOCKED_HELD,
+        (false, _) if record.reclaimable => MESSAGE_WORKSPACE_QUIET_RECLAIMABLE,
+        (false, _) => MESSAGE_WORKSPACE_QUIET_HELD,
+    };
+    fill(template, &[("holds", holds.as_str())])
 }
 
 fn rfc3339_of_ms(ms: i64) -> Option<String> {
@@ -185,10 +206,11 @@ mod tests {
         }
     }
 
-    /// Every word of the notice: a reclaimable workspace with its task and
-    /// branch, and a locked one with none and nothing measured.
+    /// Every word of the digest: a reclaimable workspace with its task and
+    /// branch, then, in their own group, a locked one with unpushed work and
+    /// nothing measured, and one only the lock holds.
     #[test]
-    fn the_quiet_workspaces_notice_is_said_exactly() {
+    fn the_quiet_workspaces_digest_is_said_exactly() {
         let finished = quiet(
             "alpha",
             vec![LinkedTask {
@@ -214,10 +236,24 @@ mod tests {
             None,
             LifecycleRecord {
                 idle: true,
-                holds: vec![crate::reclaim::HOLD_LOCKED.into()],
+                holds: vec![
+                    crate::reclaim::HOLD_LOCKED.into(),
+                    crate::workspace::FINISH_BLOCKER_UNPUSHED.into(),
+                ],
                 dirty_files: 3,
                 unpushed_commits: 1,
                 pruned_bytes: 2_000,
+                ..LifecycleRecord::default()
+            },
+        );
+        let only_locked = quiet(
+            "gamma",
+            Vec::new(),
+            Some("task/3"),
+            LifecycleRecord {
+                idle: true,
+                holds: vec![crate::reclaim::HOLD_LOCKED.into()],
+                size_bytes: Some(1_000),
                 ..LifecycleRecord::default()
             },
         );
@@ -226,25 +262,61 @@ mod tests {
             ..ReclaimPolicy::default()
         };
         assert_eq!(
-            quiet_workspaces(&[finished, locked], &policy),
-            "2 workspaces have had no activity for 24 hours. This message is from Build, not \
-             from the user.\n\n\
+            quiet_workspaces(&[locked, finished, only_locked], &policy),
+            "3 workspaces have had no activity for 24 hours or more. This is Build's daily \
+             list of every quiet workspace, including ones it listed on earlier days. This \
+             message is from Build, not from the user.\n\n\
              - alpha (ws-alpha): #1 Quiet work (Done). Branch task/1; 0 uncommitted files, 0 \
              unpushed commits, 2 behind. 1.5 MB on disk. Last activity 2025-09-20T04:00:00Z. \
-             reclaimable: reclaim_workspace removes it.\n\
+             reclaimable: reclaim_workspace removes it.\n\n\
+             Locked by the user, so kept on purpose. Do not reclaim these or ask the user to \
+             unlock them; evaluate whether the user should be reminded about one:\n\
              - beta (ws-beta): no linked task. Branch none; 3 uncommitted files, 1 unpushed \
              commits, 0 behind. unmeasured on disk, 2.0 KB of build output dropped. Last \
-             activity unknown. held: the workspace is locked. The user locked this workspace on \
-             purpose; evaluate whether the user should be reminded about it. Do not reclaim it \
-             or ask the user to unlock it by default.\n\n\
+             activity unknown. kept because the user locked it; also held: it has commits no \
+             remote has.\n\
+             - gamma (ws-gamma): no linked task. Branch task/3; 0 uncommitted files, 0 \
+             unpushed commits, 0 behind. 1.0 KB on disk. Last activity unknown. kept because \
+             the user locked it.\n\n\
              Only message the user if necessary, such as a decision only they can make. \
-             Otherwise merge, reclaim, or leave the workspace without posting to the user. If a \
+             Otherwise handle or leave the workspace without posting to the user. If a \
              user decision is necessary, ask one question on the linked task and leave the \
              workspace alone.\n\n\
-             For each unlocked workspace, decide: merge it (branch reviewed and green: merge to \
-             main, then reclaim_workspace), delete it (abandoned or superseded: \
-             delete_workspace), or leave it. Never delete a workspace with uncommitted or \
-             unpushed work without asking the user first."
+             For each workspace that is not locked, decide: merge it (branch reviewed and \
+             green: merge to main, then reclaim_workspace), delete it (abandoned or \
+             superseded: delete_workspace), or leave it. Never delete a workspace with \
+             uncommitted or unpushed work without asking the user first."
+        );
+    }
+
+    /// With nothing locked there is no locked group, and with only locked
+    /// workspaces there is nothing above it and no word on deciding about
+    /// the unlocked ones.
+    #[test]
+    fn the_locked_group_is_there_only_when_something_is_locked() {
+        let open = quiet("open", Vec::new(), None, LifecycleRecord::default());
+        let policy = ReclaimPolicy::default();
+        assert!(!quiet_workspaces(&[open], &policy).contains("Locked by the user"));
+        let locked = quiet(
+            "shut",
+            Vec::new(),
+            None,
+            LifecycleRecord {
+                holds: vec![crate::reclaim::HOLD_LOCKED.into()],
+                ..LifecycleRecord::default()
+            },
+        );
+        let digest = quiet_workspaces(&[locked], &policy);
+        assert!(
+            digest.starts_with("1 workspace has had no activity"),
+            "{digest}"
+        );
+        assert!(digest.contains(
+            "earlier days. This message is from Build, not from the user.\n\nLocked by the user"
+        ));
+        assert!(
+            digest.ends_with("ask one question on the linked task and leave the workspace alone."),
+            "nothing to decide about when everything is locked: {digest}"
         );
     }
 
@@ -255,12 +327,12 @@ mod tests {
         let task = LinkedTask {
             task_id: "task-1".into(),
             number: 1,
-            title: "{locked}".into(),
+            title: "{holds}".into(),
             status: "done".into(),
             state: "open".into(),
         };
         let named = quiet("{verdict}", vec![task], None, LifecycleRecord::default());
         assert!(quiet_workspaces(&[named], &ReclaimPolicy::default())
-            .contains("- {verdict} (ws-{verdict}): #1 {locked} (Done). Branch none;"));
+            .contains("- {verdict} (ws-{verdict}): #1 {holds} (Done). Branch none;"));
     }
 }

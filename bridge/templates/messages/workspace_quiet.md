@@ -1,1 +1,1 @@
-- {name} ({workspace_id}): {tasks}. Branch {branches}; {dirty_files} uncommitted files, {unpushed_commits} unpushed commits, {behind_commits} behind. {size} on disk{pruned}. Last activity {last_activity}. {verdict}.{locked}
+- {name} ({workspace_id}): {tasks}. Branch {branches}; {dirty_files} uncommitted files, {unpushed_commits} unpushed commits, {behind_commits} behind. {size} on disk{pruned}. Last activity {last_activity}. {verdict}.

@@ -70,17 +70,22 @@ fn delivered_prompt(
     }
 }
 
-/// What a turn sends `provider`: decided by the unread thread it reads, else
-/// where its text was rendered, else read from the text as typed.
+/// What a turn sends `provider`: a provider command in the unread thread it
+/// reads, else the kind its own text was rendered as (an idle-workspaces
+/// digest reads its thread too, #958), else the thread's delivery, else read
+/// from the text as typed.
 fn turn_kind(
     prompt: &str,
     say: Option<&TurnText>,
     payload: Option<&crate::operation::OperationPayload>,
     provider: crate::models::AgentProvider,
 ) -> MessageKind {
-    payload
-        .map(|payload| payload.message_kind(provider))
-        .or(say.and_then(|say| say.kind))
+    let payload_kind = payload.map(|payload| payload.message_kind(provider));
+    if payload_kind == Some(MessageKind::ProviderCommand) {
+        return MessageKind::ProviderCommand;
+    }
+    say.and_then(|say| say.kind)
+        .or(payload_kind)
         .unwrap_or_else(|| {
             crate::agent_message::turn_message(
                 crate::harness::harness_for(provider),
@@ -779,5 +784,60 @@ mod router_identity_tests {
             &tab_role,
             Some(&instance),
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::AgentProvider;
+    use crate::operation::OperationPayload;
+
+    fn thread_saying(body: &str) -> OperationPayload {
+        OperationPayload {
+            start_sequence: 1,
+            end_sequence: 1,
+            messages: vec![serde_json::from_value(serde_json::json!({
+                "id": "message-1",
+                "sequence": 1,
+                "updated_sequence": 1,
+                "role": "user",
+                "body": body,
+                "created_at": "2026-11-02T09:00:00Z",
+            }))
+            .unwrap()],
+            prior_context: String::new(),
+            ask_to_name: false,
+            tells_sender_context: false,
+        }
+    }
+
+    fn said_as(kind: MessageKind) -> TurnText {
+        TurnText {
+            kind: Some(kind),
+            ..TurnText::reading_unread(AgentProvider::Claude)
+        }
+    }
+
+    /// A turn Build wrote for one purpose keeps that purpose when it reads
+    /// its unread thread (#958); only a bare provider command overrides it.
+    #[test]
+    fn a_turns_own_kind_wins_over_the_thread_it_reads() {
+        let digest = said_as(MessageKind::IdleWorkspaces);
+        let thread = thread_saying("Two workspaces are quiet.");
+        assert_eq!(
+            turn_kind("", Some(&digest), Some(&thread), AgentProvider::Claude),
+            MessageKind::IdleWorkspaces
+        );
+        let unread = TurnText::reading_unread(AgentProvider::Claude);
+        assert_eq!(
+            turn_kind("", Some(&unread), Some(&thread), AgentProvider::Claude),
+            MessageKind::Delivery
+        );
+        let command = thread_saying("/compact");
+        assert_eq!(
+            turn_kind("", Some(&digest), Some(&command), AgentProvider::Claude),
+            MessageKind::ProviderCommand
+        );
     }
 }

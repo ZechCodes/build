@@ -229,10 +229,6 @@ fn a_measurement_out_of_budget_is_held_and_not_idle() {
         record.holds.contains(&HOLD_UNMEASURED.to_string()),
         "{record:?}"
     );
-    assert_eq!(
-        record.notice_due(tomorrow(), &ReclaimPolicy::default()),
-        NoticeDue::No
-    );
     assert!(subject(&root, &checkout).build_output(&tight(3)).is_err());
 }
 
@@ -414,12 +410,15 @@ fn settings_move_the_policy_except_where_the_environment_pinned_it() {
     let chosen = ReclaimSettings {
         idle_after_secs: Some(7200),
         prune: Some(true),
+        idle_digest_at: DigestTime::new(17, 30),
     };
     let unpinned = ReclaimPolicy::from_vars(|_| None);
     assert_eq!(unpinned.pinned(), Vec::<&str>::new());
     let moved = unpinned.with_settings(&chosen);
     assert_eq!(moved.idle_after, std::time::Duration::from_secs(7200));
     assert!(moved.prune);
+    assert_eq!(moved.digest.at, DigestTime::new(17, 30).unwrap());
+    assert_eq!(unpinned.digest.at, DEFAULT_DIGEST_AT);
     assert_eq!(
         unpinned.with_settings(&ReclaimSettings::default()),
         unpinned,
@@ -438,6 +437,11 @@ fn settings_move_the_policy_except_where_the_environment_pinned_it() {
     let kept = pinned.with_settings(&chosen);
     assert_eq!(kept.idle_after, std::time::Duration::from_secs(3600));
     assert!(!kept.prune);
+    assert_eq!(
+        kept.digest.at,
+        DigestTime::new(17, 30).unwrap(),
+        "no variable pins the digest's time"
+    );
 
     let unreadable = ReclaimPolicy::from_vars(|name| {
         (name == "BRIDGE_WORKSPACE_IDLE_SECS").then(|| "soon".to_string())
@@ -466,111 +470,31 @@ fn only_the_work_itself_counts_as_a_change() {
     assert!(newest_change_ms(&root, &budget()).unwrap().unwrap() > before);
 }
 
+/// A quiet workspace is news on its tasks' timelines until a digest lists
+/// it, and again once work after that listing has gone quiet (#958).
 #[test]
-fn a_notice_opens_repeats_after_a_quiet_period_and_starts_over_on_activity() {
-    let policy = ReclaimPolicy::default();
+fn a_listing_is_news_again_only_after_new_activity() {
     let mut record = LifecycleRecord {
         idle: true,
         last_activity_ms: Some(0),
         ..LifecycleRecord::default()
     };
-    assert_eq!(record.notice_due(30 * HOUR_MS, &policy), NoticeDue::First);
-
+    assert!(!record.listed_since_quiet());
     record.noticed_at_ms = Some(30 * HOUR_MS);
-    assert_eq!(record.notice_due(40 * HOUR_MS, &policy), NoticeDue::No);
-    assert_eq!(record.notice_due(54 * HOUR_MS, &policy), NoticeDue::Again);
-
+    assert!(record.listed_since_quiet());
     record.last_activity_ms = Some(35 * HOUR_MS);
-    assert_eq!(
-        record.notice_due(60 * HOUR_MS, &policy),
-        NoticeDue::First,
-        "work after the notice makes going quiet news again"
-    );
-
-    record.idle = false;
-    assert_eq!(record.notice_due(90 * HOUR_MS, &policy), NoticeDue::No);
-}
-
-#[test]
-fn locked_notices_repeat_weekly_whatever_the_idle_threshold() {
-    let noticed = 30 * HOUR_MS;
-    let week = 7 * 24 * HOUR_MS;
-    let mut record = LifecycleRecord {
-        idle: true,
-        last_activity_ms: Some(0),
-        holds: vec![HOLD_LOCKED.into()],
-        ..LifecycleRecord::default()
-    };
-    assert_eq!(
-        record.notice_due(noticed, &ReclaimPolicy::default()),
-        NoticeDue::First
-    );
-    record.noticed_at_ms = Some(noticed);
-    for idle_after in [
-        Duration::ZERO,
-        DEFAULT_IDLE_AFTER,
-        Duration::from_secs(30 * 24 * 3600),
-    ] {
-        let policy = ReclaimPolicy {
-            idle_after,
-            ..ReclaimPolicy::default()
-        };
-        for at in [
-            noticed - 1,
-            noticed,
-            noticed + 24 * HOUR_MS,
-            noticed + week - 1,
-        ] {
-            assert_eq!(
-                record.notice_due(at, &policy),
-                NoticeDue::No,
-                "{at}, {idle_after:?}"
-            );
-        }
-        assert_eq!(record.notice_due(noticed + week, &policy), NoticeDue::Again);
-    }
-}
-
-#[test]
-fn activity_cannot_bypass_the_locked_weekly_minimum_but_unlocking_restores_reset() {
-    let policy = ReclaimPolicy::default();
-    let noticed = 30 * HOUR_MS;
-    let mut record = LifecycleRecord {
-        idle: true,
-        noticed_at_ms: Some(noticed),
-        last_activity_ms: Some(noticed + HOUR_MS),
-        holds: vec![HOLD_LOCKED.into()],
-        ..LifecycleRecord::default()
-    };
-    assert_eq!(
-        record.notice_due(noticed + 25 * HOUR_MS, &policy),
-        NoticeDue::No
-    );
-    assert_eq!(
-        record.notice_due(noticed + 7 * 24 * HOUR_MS, &policy),
-        NoticeDue::Again
+    assert!(
+        !record.listed_since_quiet(),
+        "work after the listing makes going quiet news again"
     );
     record.last_activity_ms = None;
-    assert_eq!(
-        record.notice_due(noticed + 25 * HOUR_MS, &policy),
-        NoticeDue::No
-    );
-    record.idle = false;
-    assert_eq!(
-        record.notice_due(noticed + 7 * 24 * HOUR_MS, &policy),
-        NoticeDue::No
-    );
-    record.idle = true;
-    record.last_activity_ms = Some(noticed + HOUR_MS);
-    record.holds.clear();
-    assert_eq!(
-        record.notice_due(noticed + 25 * HOUR_MS, &policy),
-        NoticeDue::First
-    );
+    assert!(!record.listed_since_quiet());
 }
 
+/// A record written before the daily digest, with its locked notice clock,
+/// still reads, and counts as listed.
 #[test]
-fn an_existing_lifecycle_record_keeps_its_locked_notice_clock() {
+fn an_existing_lifecycle_record_reads_as_listed() {
     let record: LifecycleRecord = serde_json::from_value(serde_json::json!({
         "measured_at_ms": 1, "last_activity_ms": 0, "idle": true, "reclaimable": false,
         "holds": ["locked"], "tasks": [], "dirty_files": 0, "unpushed_commits": 0,
@@ -578,18 +502,11 @@ fn an_existing_lifecycle_record_keeps_its_locked_notice_clock() {
         "pruned_at_ms": null, "noticed_at_ms": 1
     }))
     .unwrap();
-    assert_eq!(
-        record.notice_due(24 * HOUR_MS + 1, &ReclaimPolicy::default()),
-        NoticeDue::No
-    );
-    assert_eq!(
-        record.notice_due(7 * 24 * HOUR_MS + 1, &ReclaimPolicy::default()),
-        NoticeDue::Again
-    );
+    assert!(record.listed_since_quiet());
 }
 
 #[test]
-fn failed_measurements_preserve_the_locked_notice_clock_through_recovery() {
+fn failed_measurements_preserve_the_listing_through_recovery() {
     for invalid_boundary in [true, false] {
         let (tmp, root, checkout) = pushed_workspace();
         let mut held = subject(&root, &checkout);
@@ -618,15 +535,11 @@ fn failed_measurements_preserve_the_locked_notice_clock_through_recovery() {
         let recovered = held.measure(noticed + 24 * HOUR_MS, &policy, &budget());
         assert!(recovered.idle, "{recovered:?}");
         assert_eq!(
-            recovered.notice_due(noticed + 24 * HOUR_MS, &policy),
-            NoticeDue::No,
+            recovered.noticed_at_ms,
+            Some(noticed),
             "invalid boundary: {invalid_boundary}, {recovered:?}"
         );
-        assert_eq!(recovered.noticed_at_ms, Some(noticed));
-        assert_eq!(
-            recovered.notice_due(noticed + 7 * 24 * HOUR_MS, &policy),
-            NoticeDue::Again
-        );
+        assert!(recovered.listed_since_quiet(), "{recovered:?}");
     }
 }
 
@@ -727,10 +640,7 @@ fn the_previous_notice_and_pruning_carry_over_only_while_quiet() {
     let record = carried.measure(a_day_after_that, &ReclaimPolicy::default(), &budget());
     assert_eq!(record.pruned_bytes, 0, "{record:?}");
     assert_eq!(record.pruned_at_ms, None);
-    assert_eq!(
-        record.notice_due(a_day_after_that, &ReclaimPolicy::default()),
-        NoticeDue::First
-    );
+    assert!(!record.listed_since_quiet(), "{record:?}");
 }
 
 #[test]

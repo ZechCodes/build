@@ -12589,6 +12589,7 @@
                         "compact_above_tokens": 200000,
                         "workspace_idle_secs": 86400,
                         "workspace_prune": false,
+                        "workspace_idle_digest_at": "09:00",
                         "workspace_pinned": [
                           "workspace_prune"
                         ],
@@ -12794,7 +12795,8 @@
                 "watch_agent_filed_tasks": false,
                 "compact_above_tokens": 150000,
                 "workspace_idle_secs": 172800,
-                "workspace_prune": true
+                "workspace_prune": true,
+                "workspace_idle_digest_at": "17:30"
               }
             }
           }
@@ -12863,6 +12865,7 @@
                         "compact_above_tokens": 150000,
                         "workspace_idle_secs": 172800,
                         "workspace_prune": true,
+                        "workspace_idle_digest_at": "17:30",
                         "workspace_pinned": [],
                         "compaction_thresholds": {
                           "claude": 150000,

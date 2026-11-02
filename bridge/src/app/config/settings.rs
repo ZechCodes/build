@@ -37,6 +37,7 @@ impl AppState {
             // control does not move them.
             "workspace_idle_secs": self.reclaim_policy_now().idle_after.as_secs(),
             "workspace_prune": self.reclaim_policy_now().prune,
+            "workspace_idle_digest_at": self.reclaim_policy_now().digest.at.to_string(),
             "workspace_pinned": self.reclaim_policy.pinned(),
         })
     }

@@ -7,9 +7,10 @@
 //! does: the workspace rows carry the verdict as `lifecycle`, and the list is
 //! noted changed.
 //!
-//! The bridge never removes a workspace by itself. A quiet workspace is
-//! reported to the project agent as one notice per project, plus an entry on
-//! each linked task's timeline. The agent merges it, deletes it or surfaces
+//! The bridge never removes a workspace by itself. Quiet workspaces are
+//! listed to the project agent in one digest per project a day
+//! (`reclaim/digest.rs`, #958), and each is recorded once per quiet period on
+//! its linked tasks' timelines. The agent merges it, deletes it or surfaces
 //! it. `workspace.reclaim` is the explicit removal the agent or the user calls
 //! (`reclaim/explicit.rs`).
 //!

@@ -155,16 +155,16 @@ impl MutationService {
                 hook();
             }
             let subscription = Subscription {
-                sender: sender.clone(),
+                sender: sender.event_context(),
                 ids: params.operation_ids.into_iter().collect(),
                 cursor,
                 identity: Arc::new(()),
                 order,
             };
-            if !sender.read_is_live() {
+            let mut subscriptions = self.inner.subscriptions.lock().unwrap();
+            if !sender.read_is_live() || !sender.events_are_live() {
                 return Err(ApiError::unavailable("subscription carrier ended"));
             }
-            let mut subscriptions = self.inner.subscriptions.lock().unwrap();
             let key = sender.read_scope();
             if subscriptions
                 .get(&key)

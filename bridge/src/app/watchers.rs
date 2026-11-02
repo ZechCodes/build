@@ -80,8 +80,15 @@ impl WorktreeWatchers {
 
     /// The board moved: remember what it lists now and reconcile soon.
     pub(in crate::app) fn board_moved(&self, roots: WorktreeRoots) {
+        #[cfg(test)]
+        crate::workspace::warm_work_counts::notification();
         self.set_roots(roots);
         self.wake.notify_one();
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn roots_for_warm_work_test(&self) -> WorktreeRoots {
+        self.roots.lock().unwrap().clone()
     }
 
     /// Something else changed the coverage (a session closed): reconcile soon.

@@ -12,6 +12,9 @@
 //! `{comments}`, `{base_branch}`, `{stage_id}`, `{stage_title}`, `{stage_path}`,
 //! `{stage_summary}`, `{next_stage_path}`, `{stage_start_sha}`, `{capture_text}`,
 //! `{project_name}`, `{project_base}`, `{project_sources}`, `{user_answer}`.
+//!
+//! What Build says to agents is under `bridge/templates/messages/`, filled by
+//! [`fill`]; each `MESSAGE_*` constant's doc names its own placeholders.
 
 /// Where a single-document plan lives. A plan whose docs dir holds
 /// `STAGES_MANIFEST_PATH` when its agent reports Complete is multi-stage
@@ -40,6 +43,208 @@ const fn without_final_newline(text: &'static str) -> &'static str {
         },
         _ => text,
     }
+}
+
+/// How an attachment is marked on a Claude Code harness: `{text}` inside the
+/// tag Claude Code gives the context it adds to a user turn.
+pub(crate) const MESSAGE_SYSTEM_REMINDER: &str = template!("messages/wrap_system_reminder.md");
+
+/// How an attachment is marked on a harness with no convention of its own.
+pub(crate) const MESSAGE_BUILD_INSTRUCTIONS: &str =
+    template!("messages/wrap_build_instructions.md");
+
+/// Where to answer the user's words in the thread: `{tool}`.
+pub(crate) const MESSAGE_REPLY_THREAD: &str = template!("messages/reply_thread.md");
+
+/// Where to answer a comment on a task: `{task_id}`, `{tool}`.
+pub(crate) const MESSAGE_REPLY_TASK: &str = template!("messages/reply_task.md");
+
+/// Where to answer another agent: `{agent_id}`, `{tool}`.
+pub(crate) const MESSAGE_REPLY_AGENT: &str = template!("messages/reply_agent.md");
+
+/// How to load the Build tools a message names on a harness that defers them
+/// behind ToolSearch: `{tools}`, comma-separated.
+pub(crate) const MESSAGE_TOOL_HINT_TOOL_SEARCH: &str =
+    template!("messages/tool_hint_tool_search.md");
+
+/// What a delivery asks for, as one native operation: `{operation_id}`,
+/// `{start}`, `{end}`.
+pub(crate) const MESSAGE_DELIVERY_SCOPE_OPERATION: &str =
+    template!("messages/delivery_scope_operation.md");
+
+/// What a delivery asks for, as the thread's unread messages: `{start}`, `{end}`.
+pub(crate) const MESSAGE_DELIVERY_SCOPE_UNREAD: &str =
+    template!("messages/delivery_scope_unread.md");
+
+/// The conversation a cold session missed: `{context}`.
+pub(crate) const MESSAGE_DELIVERY_PRIOR_CONTEXT: &str =
+    template!("messages/delivery_prior_context.md");
+
+/// The workspace the user wrote from: `{name}`, `{workspace_id}`.
+pub(crate) const MESSAGE_DELIVERY_WORKSPACE: &str = template!("messages/delivery_workspace.md");
+
+/// What to do with a task handed over: `{task_id}` and the tools `{get_task}`,
+/// `{comment_task}`, `{mention_user}`, `{move_task}`.
+pub(crate) const MESSAGE_DELIVERY_HANDED_TASK: &str = template!("messages/delivery_handed_task.md");
+
+/// The task the user was looking at: `{number}`, `{title}`, `{task_id}`, and
+/// the tool `{get_task}`.
+pub(crate) const MESSAGE_DELIVERY_VIEWED_TASK: &str = template!("messages/delivery_viewed_task.md");
+
+/// Why the delivered messages travel inside the turn.
+pub(crate) const MESSAGE_DELIVERY_NATIVE_PAYLOAD: &str =
+    template!("messages/delivery_native_payload.md");
+
+/// What a delivery says first when its first message has no words.
+pub(crate) const MESSAGE_DELIVERY_EMPTY_BODY: &str = template!("messages/delivery_empty_body.md");
+
+/// The request an unnamed agent hears on its first turn: the tool `{set_name}`.
+pub(crate) const MESSAGE_AGENT_NAME: &str = template!("messages/agent_name.md");
+
+/// The turn that tells an agent its thread has new messages:
+/// `{post_thread_message}` is that tool as the agent's harness names it.
+pub(crate) const MESSAGE_NEW_THREAD_MESSAGES: &str = template!("messages/new_thread_messages.md");
+
+/// The project agent told an unassigned task has no unresolved prerequisites.
+pub(crate) const MESSAGE_TASK_RELEASED_TO_COORDINATOR: &str =
+    template!("messages/task_released_to_coordinator.md");
+
+/// A task's prerequisites resolved, said as information.
+pub(crate) const MESSAGE_TASK_UNBLOCKED: &str = template!("messages/task_unblocked.md");
+
+/// A saved assignment that could not be delivered: `{error}`.
+pub(crate) const MESSAGE_TASK_DISPATCH_FAILED: &str = template!("messages/task_dispatch_failed.md");
+
+/// A task blocked again by the prerequisites in `{unresolved}`.
+pub(crate) const MESSAGE_TASK_BLOCKED_AGAIN: &str = template!("messages/task_blocked_again.md");
+
+/// One removed prerequisite, named.
+pub(crate) const MESSAGE_PREREQUISITE_REMOVED: &str = template!("messages/prerequisite_removed.md");
+
+/// The prerequisite edges a release removed, already named.
+pub(crate) const MESSAGE_PREREQUISITES_REMOVED: &str =
+    template!("messages/prerequisites_removed.md");
+
+/// One prerequisite closed without Done, as a list line.
+pub(crate) const MESSAGE_PREREQUISITE_CLOSED: &str = template!("messages/prerequisite_closed.md");
+
+/// The prerequisites closed without Done, and what to do about them.
+pub(crate) const MESSAGE_PREREQUISITES_CLOSED: &str = template!("messages/prerequisites_closed.md");
+
+/// The first line of an assignment.
+pub(crate) const MESSAGE_TASK_ASSIGNED: &str = template!("messages/task_assigned.md");
+
+/// A new comment on a task the agent watches.
+pub(crate) const MESSAGE_TASK_COMMENT: &str = template!("messages/task_comment.md");
+
+/// A new comment on a task the agent holds, with where to answer.
+pub(crate) const MESSAGE_TASK_COMMENT_ON_YOURS: &str =
+    template!("messages/task_comment_on_yours.md");
+
+/// Any other change to a watched task: `{change}` is what happened.
+pub(crate) const MESSAGE_TASK_CHANGED: &str = template!("messages/task_changed.md");
+
+/// What an agent hears when Build restarted and brought its session back.
+pub(crate) const MESSAGE_RESTART: &str = template!("messages/restart.md");
+
+/// The restart notice's sentence on the task rename (#190), with its leading space.
+pub(crate) const MESSAGE_RESTART_TASKS_RENAMED: &str =
+    template!("messages/restart_tasks_renamed.md");
+
+/// The restart notice's `{last_turn}` when the agent was mid-turn.
+pub(crate) const MESSAGE_RESTART_MID_TURN: &str = template!("messages/restart_mid_turn.md");
+
+/// The restart notice's `{last_turn}` when the agent was at its prompt.
+pub(crate) const MESSAGE_RESTART_LIVE: &str = template!("messages/restart_live.md");
+
+/// What an agent whose turn died at a usage limit hears when it lifts.
+pub(crate) const MESSAGE_USAGE_LIMIT_RETRY: &str = template!("messages/usage_limit_retry.md");
+
+/// The turn Build retries once after a transient provider error.
+pub(crate) const MESSAGE_PROVIDER_RETRY: &str = template!("messages/provider_retry.md");
+
+/// The coordinator told an agent failed.
+pub(crate) const MESSAGE_AGENT_FAILED: &str = template!("messages/agent_failed.md");
+
+/// The coordinator told an agent failed on a task.
+pub(crate) const MESSAGE_AGENT_FAILED_ON_TASK: &str = template!("messages/agent_failed_on_task.md");
+
+/// An agent that reported Complete while still holding open tasks.
+pub(crate) const MESSAGE_REMINDER: &str = template!("messages/reminder.md");
+
+/// The reminder's `{still_held}` for one task.
+pub(crate) const MESSAGE_REMINDER_HELD_ONE: &str = template!("messages/reminder_held_one.md");
+
+/// The reminder's `{still_held}` for more than one.
+pub(crate) const MESSAGE_REMINDER_HELD_MANY: &str = template!("messages/reminder_held_many.md");
+
+/// One held task in the reminder's list.
+pub(crate) const MESSAGE_REMINDER_TASK: &str = template!("messages/reminder_task.md");
+
+/// The project agent told about its quiet workspaces.
+pub(crate) const MESSAGE_WORKSPACES_QUIET: &str = template!("messages/workspaces_quiet.md");
+
+/// The quiet-workspaces notice's `{quiet}` for one.
+pub(crate) const MESSAGE_WORKSPACES_QUIET_ONE: &str = template!("messages/workspaces_quiet_one.md");
+
+/// The quiet-workspaces notice's `{quiet}` for more than one.
+pub(crate) const MESSAGE_WORKSPACES_QUIET_MANY: &str =
+    template!("messages/workspaces_quiet_many.md");
+
+/// One quiet workspace, with everything a decision needs.
+pub(crate) const MESSAGE_WORKSPACE_QUIET: &str = template!("messages/workspace_quiet.md");
+
+/// A task linked to a quiet workspace.
+pub(crate) const MESSAGE_WORKSPACE_QUIET_TASK: &str = template!("messages/workspace_quiet_task.md");
+
+/// A quiet workspace's `{tasks}` when none is linked.
+pub(crate) const MESSAGE_WORKSPACE_QUIET_NO_TASK: &str =
+    template!("messages/workspace_quiet_no_task.md");
+
+/// How much build output a quiet workspace dropped.
+pub(crate) const MESSAGE_WORKSPACE_QUIET_PRUNED: &str =
+    template!("messages/workspace_quiet_pruned.md");
+
+/// A quiet workspace nothing holds.
+pub(crate) const MESSAGE_WORKSPACE_QUIET_RECLAIMABLE: &str =
+    template!("messages/workspace_quiet_reclaimable.md");
+
+/// What holds a quiet workspace.
+pub(crate) const MESSAGE_WORKSPACE_QUIET_HELD: &str = template!("messages/workspace_quiet_held.md");
+
+/// A locked quiet workspace's closing sentence, with its leading space.
+pub(crate) const MESSAGE_WORKSPACE_QUIET_LOCKED: &str =
+    template!("messages/workspace_quiet_locked.md");
+
+/// `template` with each `{name}` in `values` replaced by its value, in one
+/// pass: a value is copied as it is and never searched for placeholders, so a
+/// task title that reads `{get_task}` is said as the user wrote it. A brace
+/// that opens no named placeholder stays as written.
+pub(crate) fn fill(template: &str, values: &[(&str, &str)]) -> String {
+    let mut filled = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        filled.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let value = after.find('}').and_then(|close| {
+            values
+                .iter()
+                .find(|(name, _)| *name == &after[..close])
+                .map(|(_, value)| (close, *value))
+        });
+        match value {
+            Some((close, value)) => {
+                filled.push_str(value);
+                rest = &after[close + 1..];
+            }
+            None => {
+                filled.push('{');
+                rest = after;
+            }
+        }
+    }
+    filled.push_str(rest);
+    filled
 }
 
 const PLAN: &str = template!("plan.md");
@@ -257,6 +462,17 @@ pub fn render(template: &str, vars: &Vars) -> String {
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn fill_says_a_value_as_written_and_leaves_unknown_braces() {
+        assert_eq!(
+            fill(
+                "read {title} with {tool} {kept} {open",
+                &[("title", "{tool} {title}"), ("tool", "get_task")]
+            ),
+            "read {tool} {title} with get_task {kept} {open"
+        );
+    }
 
     /// Collapse every run of whitespace to a single space and trim the ends,
     /// so a template's wording can be asserted across its line wrapping.

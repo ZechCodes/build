@@ -300,6 +300,8 @@ impl DeliveryQueue {
         let exact_warm =
             payload.delivery_prompt(&receipt.operation_id, false, delivery.model_choice.provider);
         if let Some(say) = turn.say.as_mut() {
+            say.attachments = payload.turn_attachments();
+            say.kind = Some(payload.message_kind(delivery.model_choice.provider));
             if payload.requires_unadorned_delivery(delivery.model_choice.provider) {
                 say.cold = exact_cold;
                 say.warm = exact_warm;

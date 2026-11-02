@@ -15,6 +15,7 @@ const account = vi.hoisted(() => ({ fetchDevices: vi.fn() }));
 
 vi.mock("../src/api.js", () => ({ fetchDevices: (...args) => account.fetchDevices(...args) }));
 vi.mock("../src/connection.js", () => ({
+  chooseDeviceTransport: async () => null,
   deviceRecoverySnapshot: () => [],
   onDeviceRecoveryChanged: () => () => {},
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),

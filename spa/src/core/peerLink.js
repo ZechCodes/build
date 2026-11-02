@@ -4,9 +4,12 @@ import { candidateTypeOf, createRelayHold, directPairStatus, hasLocalHostCandida
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { createDirectPairMonitor } from "./directPairMonitor.js";
 import { browserCandidateDiagnostic, browserRtcErrorName, candidateDiagnostic, directPairNoTryReason, remoteCandidateOutcome, safeCandidateReason } from "./rtcDiagnostics.js";
+import { acceptPeerAnswer, createPeerOffer, DTLS_JSON_PROTOCOL } from "./peerBinding.js";
+import { createPeerIceQueue, isIceEndMarker } from "./peerIceQueue.js";
+import { CHANNELS, createRoleBindings, terminalCredentials } from "./peerChannelBindings.js";
 
-const CHANNELS = [["app", 0], ["term", 1]];
 const OPEN_TIMEOUT_MS = 15000;
+const HELD_ICE_PUSH = Symbol("held ICE completion lease");
 
 const blockedBy = (reason, message) => Object.assign(new Error(message), { blockedReason: reason });
 const safeState = (state) => (["new", "connecting", "connected", "disconnected", "failed", "closed"].includes(state) ? state : "unknown");
@@ -49,10 +52,11 @@ const restartFailure = (error) =>
  * answer that crossed the channels proves they reach the process holding it.
  */
 export async function openPeerLink({ signal, fetchIceServers, onPush, onConnected = () => {}, onFailed = () => {},
-  confirmCarried, clientId,
+  confirmCarried, clientId, binding,
   RTCPeerConnectionImpl = globalThis.RTCPeerConnection, openTimeoutMs = OPEN_TIMEOUT_MS, diagnosticId = "peer" }) {
   const diagnostic = (event, detail = {}) => recordConnectionDiagnostic(diagnosticId, event, detail);
   const iceServers = await withinDeadline(openTimeoutMs, () => fetchIceServers());
+  const selection = createPeerSelection(binding);
   const peer = new RTCPeerConnectionImpl({ iceServers });
   const channels = CHANNELS.map(([label, id]) => peer.createDataChannel(label, { negotiated: true, id, ordered: true }));
   // One clock for both channels: they are one path, and a frame on either is
@@ -60,6 +64,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   // which must not judge a quiet channel beside a busy one as a dead peer.
   const frames = peerFrames();
   const carriers = channels.map((channel) => openCarrier({ channel, frames }));
+  const { appBinder, termBinder } = createRoleBindings(binding, carriers, channels);
   const recovery = createRecoveryStatus();
   // How this connection ended up carrying — straight to the machine, or
   // through a TURN relay. Sampled when it lands and again after every ICE
@@ -105,6 +110,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   };
   let torn = false;
   let tornBecause = "closed by the client";
+  let fatalError = null;
   let cancelWait = () => {};
   let stopWatching = () => {};
   /** Whether a negotiation is running. One at a time: two `createOffer` calls
@@ -123,11 +129,14 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   let initialSignalingComplete = Promise.resolve();
   let currentSignalingComplete = initialSignalingComplete;
   const newLocalCandidates = () => ({
-    generation: negotiationGeneration, gathered: candidateCounts(), delivered: candidateCounts(), failed: candidateCounts(), pending: new Set(),
+    generation: negotiationGeneration, active: true, controller: new AbortController(), deadlineTimer: null, ufrags: new Set(), gathered: candidateCounts(), delivered: candidateCounts(), failed: candidateCounts(), pending: new Set(),
     completed: false, embeddedHost: false,
   });
   let localCandidates = newLocalCandidates();
-  const rememberLocalOffer = (sdp) => { localCandidates.embeddedHost ||= offerHasHostCandidate(sdp); };
+  const rememberLocalOffer = (sdp) => {
+    localCandidates.embeddedHost ||= offerHasHostCandidate(sdp);
+    localCandidates.ufrags = iceUfrags(sdp);
+  };
   const reportLocalCandidates = async (phase, round = localCandidates) => {
     const stats = nativeGatheringHasNoHosts(round) ? await peerStats() : null;
     const absence = browserOffersNoHosts(round, stats) ? { reason: "browser-no-host-candidates" } : {};
@@ -175,7 +184,9 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     target.addEventListener(type, listener);
     observed.push(() => target.removeEventListener(type, listener));
   };
+  const attemptFailure = (error) => fatalError || error;
   const ensureActive = () => {
+    if (fatalError) throw fatalError;
     if (torn) throw blockedBy("failed", "the peer connection closed");
   };
   // Relay candidates are held behind the direct ones at BOTH doors (task #31).
@@ -185,41 +196,70 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   // bridge's race and leave the browser's — and the browser is the offerer, so
   // the browser is the controlling agent, and nomination is the browser's.
   const holdInbound = createRelayHold({
-    deliver: async (candidate) => {
-      if (torn) return;
-      const detail = { ...browserCandidateDiagnostic(candidate), generation: negotiationGeneration };
+    deliver: async (held) => {
+      const lease = held?.[HELD_ICE_PUSH];
+      const round = lease?.round || localCandidates;
+      const candidate = lease ? lease.value.candidate : held;
+      const detail = { ...browserCandidateDiagnostic(candidate), generation: round.generation };
       try {
-        await peer.addIceCandidate(candidate);
+        if (torn || !round.active) return;
+        await iceWork(() => peer.addIceCandidate(candidate), round.controller.signal);
         diagnostic("remote-candidate", { ...detail, outcome: "accepted" });
       } catch (error) {
+        if (!round.active) return;
         diagnostic("remote-candidate", { ...detail, outcome: remoteCandidateOutcome(error), error: browserRtcErrorName(error) });
         diagnostic("candidate-failed", { direction: "remote" });
-      }
+      } finally { lease?.release(); }
     },
   });
-  const outboundCandidatesDelivered = (round = localCandidates) => Promise.all([...round.pending]);
+  const outboundCandidatesDelivered = async (round = localCandidates) => {
+    while (round.active && round.pending.size) await Promise.all([...round.pending]);
+  };
   const holdOutbound = createRelayHold({
-    deliver: (gathered) => {
-      if (torn) return;
-      // Held as the RTCIceCandidate — that is the shape whose `type` the hold
-      // reads — and serialised only on the way out, because `toJSON` does not
-      // carry it.
-      const candidate = gathered.toJSON ? gathered.toJSON() : gathered;
-      const round = localCandidates;
+    deliver: (held) => {
+      const { lease, round, value: gathered } = unpackIceLease(held, localCandidates);
+      if (torn || !round.active) { lease?.release(); return; }
+      if (lease && gathered === null && !selection.isClear()) { lease.release(); return; }
+      const candidate = gathered?.toJSON ? gathered.toJSON() : gathered;
       const type = countedCandidateType(gathered);
-      const delivery = signal("rtc.ice", { candidate }).then(() => {
-        round.delivered[type] += 1;
+      const delivery = iceWork(() => signal("rtc.ice", { candidate, ...roundControls(round) }, { signal: round.controller.signal }), round.controller.signal).then(() => {
+        if (round.active) round.delivered[type] += 1;
       }).catch((error) => {
+        if (!round.active) return;
         round.failed[type] += 1;
         const reason = safeCandidateReason(error?.details?.reason);
         diagnostic("candidate-failed", { direction: "local", ...(reason ? { reason } : {}) });
       }).finally(() => {
+        lease?.release();
         round.pending.delete(delivery);
-        if (peer.iceGatheringState === "complete") reportLocalCandidates("candidate-delivered", round);
+        if (round.active && peer.iceGatheringState === "complete") reportLocalCandidates("candidate-delivered", round);
       });
       round.pending.add(delivery);
     },
   });
+  const roundControls = (round) => round.controls || selection.controls();
+  const heldLease = (value, release) => ({ type: candidateTypeOf(candidateForHold(value)), [HELD_ICE_PUSH]: { value, release, round: localCandidates } });
+  const failIce = (error) => {
+    fatalError = error;
+    tearDown("the ICE candidate queue overflowed");
+  };
+  const selectedIceValue = (value, original) => selection.isClear() ? value : original;
+  const outboundIce = boundedIce(binding, (value, release, original) => holdOutbound.offer(heldLease(selectedIceValue(value, original), release)),
+    (original) => selection.isClear() || original !== null);
+  const inboundIce = boundedIce(binding, (value, release, original) => holdInbound.offer(heldLease(selectedIceValue(value, original), release)), (push) => selection.acceptsIce(push));
+  const releaseIce = () => {
+    localCandidates.controls = selection.controls();
+    outboundIce?.open();
+    inboundIce?.open();
+  };
+  const receiveIce = (push) => {
+    if (binding && !localCandidates.active) return;
+    if (!binding) return holdInbound.offer(push.candidate);
+    if (!selection.mayAcceptIce(push)) return;
+    try {
+      if (!selection.ready() || selection.acceptsIce(push)) inboundIce.offer(push);
+    } catch (error) { failIce(error); }
+  };
   const receiveCandidateDiagnostic = (push) => {
     const detail = candidateDiagnostic(push);
     if (!detail) return;
@@ -243,25 +283,39 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     if (detail.phase === "mdns-resolved" && detail.candidates.mdns_resolved > 0) mdnsResolvedInGeneration = true;
   };
   const pushHandlers = new Map([
-    ["rtc.ice", (push) => holdInbound.offer(push.candidate)],
+    ["rtc.ice", receiveIce],
     ["rtc.diagnostics", receiveCandidateDiagnostic],
   ]);
   const unsubscribe = onPush((push) => {
     if (torn) return;
     pushHandlers.get(push.type)?.(push);
   });
-  const outgoingCandidate = (event) => {
-    if (torn) return;
-    if (!event.candidate) {
-      localCandidates.completed = true;
-      void reportLocalCandidates("gathering-complete");
+  const queueOutgoingCandidate = (candidate) => {
+    try {
+      if (outboundIce) outboundIce.offer(candidate);
+      else if (candidate) holdOutbound.offer(candidate);
+    } catch (error) { failIce(error); }
+  };
+  const outgoingForRound = (round) => (event) => {
+    if (torn || round !== localCandidates || !round.active) return;
+    if (binding && !candidateMatchesRound(event.candidate, round.ufrags)) return;
+    if (isIceEndMarker(event.candidate)) {
+      round.completed = true;
+      void reportLocalCandidates("gathering-complete", round);
+      queueOutgoingCandidate(event.candidate);
       return;
     }
-    localCandidates.gathered[countedCandidateType(event.candidate)] += 1;
-    diagnostic("local-candidate", { ...browserCandidateDiagnostic(event.candidate), generation: negotiationGeneration });
-    holdOutbound.offer(event.candidate);
+    round.gathered[countedCandidateType(event.candidate)] += 1;
+    diagnostic("local-candidate", { ...browserCandidateDiagnostic(event.candidate), generation: round.generation });
+    queueOutgoingCandidate(event.candidate);
   };
+  let outgoingCandidate = outgoingForRound(localCandidates);
   peer.addEventListener("icecandidate", outgoingCandidate);
+  const watchNewCandidateRound = () => {
+    peer.removeEventListener("icecandidate", outgoingCandidate);
+    outgoingCandidate = outgoingForRound(localCandidates);
+    peer.addEventListener("icecandidate", outgoingCandidate);
+  };
   /** What ICE says about this path, for everything riding it to read. The
    *  browser runs consent checks of its own (RFC 7675) and takes the state off
    *  `connected` when they stop being answered, so this is a better answer to
@@ -296,6 +350,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     if (torn) return;
     torn = true;
     tornBecause = reason;
+    stopCandidateRound(localCandidates);
     cancelSignaling();
     cancelWait();
     stopWatching();
@@ -305,6 +360,10 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     restoredListeners.clear();
     holdInbound.close();
     holdOutbound.close();
+    inboundIce?.close();
+    outboundIce?.close();
+    appBinder.close();
+    termBinder.close();
     unsubscribe();
     for (const stopObserving of observed.splice(0)) stopObserving();
     peer.removeEventListener("icecandidate", outgoingCandidate);
@@ -312,7 +371,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     for (const carrier of carriers) carrier.close();
     peer.close();
     diagnostic("closed", { reason: tornBecause });
-    signal("rtc.close", {}).catch(() => {});
+    signal("rtc.close", selection.controls()).catch(() => {});
   };
 
   /** After TURN has been steady for 20 s, keep watching for direct evidence.
@@ -415,6 +474,23 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   // Keep signaling while native gathering finishes, independently of app
   // readiness. A late mDNS host candidate otherwise queues behind a closed
   // rendezvous and the bridge can only report that it received no hosts.
+  const expirePendingIce = (round) => {
+    if (!binding || round !== localCandidates || torn) return;
+    const pending = inboundIce.hasPending() || outboundIce.hasPending() || round.pending.size > 0;
+    stopCandidateRound(round);
+    inboundIce.reset();
+    outboundIce.reset();
+    holdInbound.reset();
+    holdOutbound.reset();
+    round.pending.clear();
+    if (pending) {
+      fatalError = blockedBy("timeout", "pending ICE setup expired");
+      tearDown("pending ICE setup expired");
+    }
+  };
+  const armCandidateDeadline = (round, deadline) => {
+    if (binding) round.deadlineTimer = setTimeout(() => expirePendingIce(round), Math.max(1, deadline - Date.now()));
+  };
   const finishSignaling = async (deadline) => {
     let cancelGathering = () => {};
     let cancelDeadline = () => {};
@@ -429,6 +505,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       }, (cancel) => (cancelDeadline = cancel));
       reportLocalCandidates("signaling-complete", round);
     } catch (error) {
+      if (error?.blockedReason === "timeout") expirePendingIce(round);
       reportLocalCandidates(error?.blockedReason === "timeout" ? "timeout" : "cancelled", round);
     } finally {
       cancelGathering();
@@ -439,11 +516,19 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   try {
     diagnostic("negotiating", { phase: "initial" });
     const initialDeadline = Date.now() + openTimeoutMs;
+    armCandidateDeadline(localCandidates, initialDeadline);
     await withinDeadline(openTimeoutMs, async (remaining) => {
-      await offer(peer, signal, iceServers, {}, ensureActive, clientId, rememberLocalOffer, answerDiagnostic());
+      await offer(peer, signal, iceServers, {}, ensureActive, clientId, rememberLocalOffer, answerDiagnostic(), selection, { signal: localCandidates.controller.signal });
+      ensureActive();
+      releaseIce();
+      appBinder.select(selection.current());
+      termBinder.select(selection.current());
       initialSignalingComplete = finishSignaling(initialDeadline);
       currentSignalingComplete = initialSignalingComplete;
-      await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelWait = cancel), ensureActive, true);
+      await Promise.all([
+        usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelWait = cancel), ensureActive, true),
+        appBinder.bound(),
+      ]);
     }, (cancel) => (cancelWait = cancel));
     readIceState();
     // The race this hold was protecting is decided: a relay candidate arriving
@@ -456,7 +541,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     await sampleTransportPath();
   } catch (error) {
     tearDown(`the connection never opened: ${error?.blockedReason || "failed"}`);
-    throw error;
+    throw attemptFailure(error);
   }
 
   /**
@@ -471,8 +556,14 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   const renegotiate = async (phase) => {
     cancelSignaling();
     negotiationGeneration += 1;
+    selection.begin();
+    stopCandidateRound(localCandidates);
+    outboundIce?.reset();
+    inboundIce?.reset();
     localCandidates = newLocalCandidates();
+    watchNewCandidateRound();
     renegotiationDeadline = Date.now() + openTimeoutMs;
+    armCandidateDeadline(localCandidates, renegotiationDeadline);
     let cancelActivity = () => {};
     let negotiationActive = true;
     const ensureNegotiationActive = () => {
@@ -494,7 +585,9 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
         const freshServers = await fetchIceServers();
         ensureNegotiationActive();
         peer.setConfiguration?.({ iceServers: freshServers });
-        await offer(peer, signal, freshServers, { iceRestart: true }, ensureNegotiationActive, clientId, rememberLocalOffer, answerDiagnostic());
+        await offer(peer, signal, freshServers, { iceRestart: true }, ensureNegotiationActive, clientId, rememberLocalOffer, answerDiagnostic(), selection, { signal: localCandidates.controller.signal });
+        ensureNegotiationActive();
+        releaseIce();
         if (phase === "direct-pair") {
           await gatheringComplete(peer, (cancel) => (cancelActivity = cancel), ensureNegotiationActive);
           ensureNegotiationActive();
@@ -507,6 +600,9 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
         }
         await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelActivity = cancel), ensureNegotiationActive);
       }, (cancel) => (cancelWait = () => { cancelActivity(); cancel(); }));
+    } catch (error) {
+      expirePendingIce(localCandidates);
+      throw error;
     } finally {
       negotiationActive = false;
       cancelActivity();
@@ -554,10 +650,18 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     }
   });
   directPairMonitor.start();
-  const [app, term] = carriers;
+  const [rawApp, rawTerm] = carriers;
+  const applicationCarriers = async () => selection.isClear() ? { app: await appBinder.bound() } : { app: rawApp };
   return {
-    app,
-    term,
+    ...await applicationCarriers(),
+    get term() { return selection.isClear() ? termBinder.carrier() : rawTerm; },
+    onTerminalClose: (listener) => rawTerm.onClose(listener),
+    bindTerminal: async (minted) => {
+      ensureActive();
+      if (!selection.isClear()) return rawTerm;
+      const credentials = terminalCredentials(minted, binding);
+      return termBinder.begin(credentials, { type: "channel_bind_begin_v1", session_id: credentials.sessionId, peer_token: selection.controls().peer_token });
+    },
     whenInitialSignalingComplete: () => initialSignalingComplete,
     recovery,
     restoring: () => restoring,
@@ -582,17 +686,20 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
 
 const reportLocalOffer = (peer, local, remember) => remember?.(peer.localDescription?.sdp || local.sdp);
 
-async function offer(peer, signal, iceServers, options, ensureActive, clientId, rememberLocalOffer, diagnostic) {
+async function offer(peer, signal, iceServers, options, ensureActive, clientId, rememberLocalOffer, diagnostic, selection, signalOptions) {
   const local = await peer.createOffer(options);
   ensureActive();
   rememberLocalOffer?.(local.sdp);
+  const advertised = selection.advertise(local.sdp);
   await peer.setLocalDescription(local);
   ensureActive();
   reportLocalOffer(peer, local, rememberLocalOffer);
   const hint = clientId?.();
-  const answer = await signal("rtc.offer", { sdp: local.sdp, ice_servers: iceServers, ...(hint ? { client_id: hint } : {}) });
+  const answer = await signal("rtc.offer", { sdp: local.sdp, ice_servers: iceServers, ...advertised, ...(hint ? { client_id: hint } : {}) }, signalOptions);
   ensureActive();
   diagnostic("received");
+  await selection.accept(local.sdp, advertised, answer, ensureActive);
+  ensureActive();
   try {
     await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
     diagnostic("applied");
@@ -674,4 +781,81 @@ async function withinDeadline(timeoutMs, work, registerCancel = () => {}) {
   const cancelled = new Promise((_, reject) => registerCancel(() => reject(blockedBy("failed", "the peer connection closed"))));
   try { return await Promise.race([work(remaining), timeout, cancelled]); }
   finally { clearTimeout(timer); }
+}
+
+/** One selection belongs to one native allocation. Restarts retain the first
+ * authenticated transcript and can never switch codecs or certificates. */
+function createPeerSelection(binding) {
+  let selected = null;
+  let generation = allocatePeerNegotiation(binding, 0);
+  let nonce;
+  let ready = false;
+  return {
+    begin() { generation = allocatePeerNegotiation(binding, generation); ready = false; },
+    advertise(sdp) {
+      if (!binding) return {};
+      const advertised = createPeerOffer({ sdp, negotiation: generation, ...(nonce ? { peerNonce: nonce } : {}) });
+      nonce = advertised.peer_nonce;
+      return Object.freeze({ ...advertised, ...(selected?.transcript ? { peer_token: selected.transcript.peer_token } : {}) });
+    },
+    async accept(offerSdp, advertised, answer, ensureActive) {
+      const next = binding ? await acceptPeerAnswer({ offerSdp, offer: advertised, answer, previous: selected }) : null;
+      ensureActive();
+      selected = next;
+      ready = true;
+    },
+    current: () => selected,
+    ready: () => ready,
+    isClear: () => selected?.protocol === DTLS_JSON_PROTOCOL,
+    controls: () => selected?.transcript ? { peer_token: selected.transcript.peer_token, negotiation: generation } : {},
+    mayAcceptIce: (push) => selected?.transcript
+      ? push.peer_token === selected.transcript.peer_token && push.negotiation === generation
+      : push.negotiation === undefined || push.negotiation === generation,
+    acceptsIce: (push) => !selected?.transcript || (push.peer_token === selected.transcript.peer_token && push.negotiation === generation),
+  };
+}
+
+function allocatePeerNegotiation(binding, previous) {
+  return binding?.allocateNegotiation ? binding.allocateNegotiation() : previous + 1;
+}
+
+function boundedIce(binding, deliver, accept) {
+  return binding ? createPeerIceQueue({ deliver, accept }) : null;
+}
+
+function iceUfrags(sdp) {
+  return new Set([...sdp.matchAll(/^a=ice-ufrag:(\S+)/gm)].map((match) => match[1]));
+}
+
+function candidateMatchesRound(candidate, ufrags) {
+  if (!candidate) return true;
+  const fragment = candidate.usernameFragment || candidate.candidate?.match(/(?:^|\s)ufrag\s+(\S+)/)?.[1];
+  return !fragment || ufrags.has(fragment);
+}
+
+function candidateForHold(value) {
+  return value?.type === "rtc.ice" ? value.candidate : value;
+}
+
+function stopCandidateRound(round) {
+  round.active = false;
+  clearTimeout(round.deadlineTimer);
+  round.controller.abort(new Error("the ICE candidate round ended"));
+  round.pending.clear();
+}
+
+function iceWork(operation, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    const abort = () => { signal.removeEventListener("abort", abort); reject(signal.reason); };
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      Promise.resolve(operation()).then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+    } catch (error) { signal.removeEventListener("abort", abort); reject(error); }
+  });
+}
+
+function unpackIceLease(held, currentRound) {
+  const lease = held?.[HELD_ICE_PUSH];
+  return { lease, round: lease?.round || currentRound, value: lease ? lease.value : held };
 }

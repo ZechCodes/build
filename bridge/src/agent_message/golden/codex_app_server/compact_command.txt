@@ -1,0 +1,1 @@
+{"id":4,"method":"thread/compact/start","params":{"threadId":"thread-1"}}

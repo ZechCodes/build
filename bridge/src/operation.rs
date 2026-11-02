@@ -11,16 +11,32 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::agent_message::{BuildTool, MessageKind, ReplyChannel, TurnAttachments};
 use crate::models::{AgentProvider, ModelChoice};
+use crate::templates::{
+    fill, MESSAGE_AGENT_NAME, MESSAGE_DELIVERY_EMPTY_BODY, MESSAGE_DELIVERY_HANDED_TASK,
+    MESSAGE_DELIVERY_NATIVE_PAYLOAD, MESSAGE_DELIVERY_PRIOR_CONTEXT,
+    MESSAGE_DELIVERY_SCOPE_OPERATION, MESSAGE_DELIVERY_SCOPE_UNREAD, MESSAGE_DELIVERY_VIEWED_TASK,
+    MESSAGE_DELIVERY_WORKSPACE,
+};
 use crate::thread::ThreadMessage;
 
 pub const THREAD_POST_METHOD: &str = "thread.post";
 pub const NATIVE_REVIEWER_MESSAGES_HEADING: &str = "Exact accepted messages:";
-pub(crate) const AGENT_NAME_NOTE: &str =
-    "\nYou have no name yet. Before you answer, call set_name with one or two meaningful \
-words for what you are working on — \"Tracker\", \"Rail scroll\", \"Transport\". It is \
-what the user sees instead of \"Agent 1\" everywhere you are named, so pick something \
-they would recognise from across a list. Then answer normally.\n";
+
+/// The request an unnamed agent hears on its first turn, on its own lines.
+pub(crate) fn agent_name_note(provider: AgentProvider) -> String {
+    let set_name = tool_name(provider, BuildTool::SetName);
+    format!(
+        "\n{}\n",
+        fill(MESSAGE_AGENT_NAME, &[("set_name", &set_name)])
+    )
+}
+
+/// `tool` as a delivery's wording names it to `provider`'s model.
+fn tool_name(provider: AgentProvider, tool: BuildTool) -> String {
+    crate::harness::harness_for(provider).build_tool_name(tool)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -87,10 +103,7 @@ impl OperationPayload {
         provider: AgentProvider,
     ) -> String {
         self.render_delivery_prompt(
-            format!(
-                "Process only reviewer operation `{operation_id}` (conversation sequences {} through {}).",
-                self.start_sequence, self.end_sequence
-            ),
+            self.scoped(MESSAGE_DELIVERY_SCOPE_OPERATION, operation_id),
             cold,
             provider,
         )
@@ -98,12 +111,22 @@ impl OperationPayload {
 
     pub fn legacy_delivery_prompt(&self, cold: bool, provider: AgentProvider) -> String {
         self.render_delivery_prompt(
-            format!(
-                "Process only the newly delivered reviewer messages (conversation sequences {} through {}).",
-                self.start_sequence, self.end_sequence
-            ),
+            self.scoped(MESSAGE_DELIVERY_SCOPE_UNREAD, ""),
             cold,
             provider,
+        )
+    }
+
+    /// `template` naming the sequences this payload covers, and the operation
+    /// that carries them where it names one.
+    fn scoped(&self, template: &str, operation_id: &str) -> String {
+        fill(
+            template,
+            &[
+                ("operation_id", operation_id),
+                ("start", &self.start_sequence.to_string()),
+                ("end", &self.end_sequence.to_string()),
+            ],
         )
     }
 
@@ -115,8 +138,11 @@ impl OperationPayload {
             .expect("operation messages always serialize");
         let context = if cold && !self.prior_context.is_empty() {
             format!(
-                "\nConversation context before this operation:\n{}\n",
-                self.prior_context
+                "\n{}\n",
+                fill(
+                    MESSAGE_DELIVERY_PRIOR_CONTEXT,
+                    &[("context", &self.prior_context)]
+                )
             )
         } else {
             String::new()
@@ -124,57 +150,23 @@ impl OperationPayload {
         // Keep the reviewer's words first. Provider slash commands are parsed
         // only when the slash is the first token; putting Build's delivery
         // envelope ahead of it turns commands such as `/goal ...` into prose.
-        let sender = self.sender_note();
         let sender_context = self.sender_context_note();
         let workspace = self.workspace_note();
-        let task = self.task_note();
-        let looking = self.viewing_task_note();
-        let naming = self.name_note();
+        let task = self.task_note(provider);
+        let looking = self.viewing_task_note(provider);
+        let naming = self.name_note(provider);
         let user_prompt = self
             .messages
             .first()
             .map(|message| message.body.trim())
             .filter(|body| !body.is_empty())
-            .unwrap_or("Review the exact accepted messages below.");
-        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{sender_context}{workspace}{task}{looking}{naming}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+            .unwrap_or(MESSAGE_DELIVERY_EMPTY_BODY);
+        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender_context}{workspace}{task}{looking}{naming}\n{MESSAGE_DELIVERY_NATIVE_PAYLOAD}\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
             prompt
         }
-    }
-
-    /// One line naming the agent these words came from, when an agent sent
-    /// them rather than the human, and how to write back to it. Empty for
-    /// everything the human said.
-    ///
-    /// The payload carries `from_agent` on the message itself, but the message
-    /// is JSON inside a prompt written in the user's voice, and the sentence
-    /// around it is what an agent actually reads. So the envelope says it too:
-    /// this is work being handed over, the person to answer is not here, and
-    /// the reply handle is the id spelled out rather than something to go and
-    /// look up.
-    fn sender_note(&self) -> String {
-        let mut senders: Vec<&str> = self
-            .messages
-            .iter()
-            .filter_map(|message| message.from_agent.as_deref())
-            .map(|sender| sender.id.as_str())
-            .collect();
-        senders.dedup();
-        if senders.is_empty() {
-            return String::new();
-        }
-        let named: Vec<String> = senders
-            .iter()
-            .map(|sender| format!("agent `{sender}`"))
-            .collect();
-        let handles: Vec<String> = senders.iter().map(|sender| format!("`{sender}`")).collect();
-        format!(
-            "\nThese messages came from {}, not from the user. Reply with message_agent to {}.\n",
-            named.join(" and "),
-            handles.join(" and ")
-        )
     }
 
     /// One line per sending agent saying how full its context was when it
@@ -221,24 +213,20 @@ impl OperationPayload {
     /// honest about where the work got to. The payload is JSON inside a prompt
     /// written in the user's voice, and the sentence around it is what an agent
     /// actually acts on.
-    fn task_note(&self) -> String {
-        self.messages
-            .iter()
-            .filter(|message| !message.from_build)
-            .filter_map(|message| message.from_task.as_deref())
-            .next()
-            .map_or_else(String::new, |task| {
-                format!(
-                    "\nThe task is `{}` — read it with get_task before you start. \
-                     Comment on the task with comment_task when something changes what the \
-                     reader should know: a decision or finding that changes the plan, a question \
-                     (use mention_user only when it is the user's call), a handoff, or the final \
-                     result with its evidence. The board already shows the task's column and \
-                     assignee; do not comment to say you are still working. Then move it to \
-                     In review with move_task when you report Complete.\n",
-                    task.task_id
-                )
-            })
+    fn task_note(&self, provider: AgentProvider) -> String {
+        self.handed_task().map_or_else(String::new, |task| {
+            let note = fill(
+                MESSAGE_DELIVERY_HANDED_TASK,
+                &[
+                    ("task_id", &task.task_id),
+                    ("get_task", &tool_name(provider, BuildTool::GetTask)),
+                    ("comment_task", &tool_name(provider, BuildTool::CommentTask)),
+                    ("mention_user", &tool_name(provider, BuildTool::MentionUser)),
+                    ("move_task", &tool_name(provider, BuildTool::MoveTask)),
+                ],
+            );
+            format!("\n{note}\n")
+        })
     }
 
     /// One line naming the workspace the user was standing in, when the message
@@ -254,7 +242,11 @@ impl OperationPayload {
             .filter_map(|message| message.viewing_context.as_deref())
             .find_map(crate::thread::ViewingContext::workspace)
             .map_or_else(String::new, |(workspace_id, name)| {
-                format!("\nThe user sent this from workspace \"{name}\" ({workspace_id}).\n")
+                let note = fill(
+                    MESSAGE_DELIVERY_WORKSPACE,
+                    &[("name", name), ("workspace_id", workspace_id)],
+                );
+                format!("\n{note}\n")
             })
     }
 
@@ -263,11 +255,11 @@ impl OperationPayload {
     /// The first turn of an agent that has no name, and only then: an agent
     /// that was asked and did not do it has decided, and asking
     /// again on every message would be nagging in the user's voice.
-    fn name_note(&self) -> String {
+    fn name_note(&self, provider: AgentProvider) -> String {
         if !self.ask_to_name {
             return String::new();
         }
-        AGENT_NAME_NOTE.to_string()
+        agent_name_note(provider)
     }
 
     /// One line naming the task the user was LOOKING at, when the message
@@ -282,17 +274,80 @@ impl OperationPayload {
     /// It carries no body, because the item does not: a task moves on after
     /// the message is sent, so the agent is told to go and read it rather than
     /// handed a copy that reads as current and is not.
-    fn viewing_task_note(&self) -> String {
+    fn viewing_task_note(&self, provider: AgentProvider) -> String {
+        self.viewed_task()
+            .map_or_else(String::new, |(number, title, task_id)| {
+                let note = fill(
+                    MESSAGE_DELIVERY_VIEWED_TASK,
+                    &[
+                        ("number", &number.to_string()),
+                        ("title", title),
+                        ("task_id", task_id),
+                        ("get_task", &tool_name(provider, BuildTool::GetTask)),
+                    ],
+                );
+                format!("\n{note}\n")
+            })
+    }
+
+    /// Where each of these messages is answered, and the other Build tools
+    /// the envelope tells the agent to use: what the delivery attaches.
+    ///
+    /// The user's words are answered in the thread, another agent's to that
+    /// agent, and a task the user handed over or commented on on the task — a
+    /// tracking notice about a comment included. Build's other notices ask
+    /// for no answer.
+    pub fn turn_attachments(&self) -> TurnAttachments {
+        let mut asks = TurnAttachments::default();
+        for message in &self.messages {
+            let reply = reply_channel(message);
+            let reads_comment = message.from_build && reply.is_some();
+            asks.merge(TurnAttachments {
+                replies: reply.into_iter().collect(),
+                tools: if reads_comment {
+                    vec![BuildTool::ReadComment]
+                } else {
+                    Vec::new()
+                },
+            });
+        }
+        let mut tools = Vec::new();
+        if self.handed_task().is_some() {
+            tools.extend([
+                BuildTool::GetTask,
+                BuildTool::CommentTask,
+                BuildTool::MentionUser,
+                BuildTool::MoveTask,
+            ]);
+        }
+        if self.viewed_task().is_some() {
+            tools.push(BuildTool::GetTask);
+        }
+        if self.ask_to_name {
+            tools.push(BuildTool::SetName);
+        }
+        asks.merge(TurnAttachments {
+            replies: Vec::new(),
+            tools,
+        });
+        asks
+    }
+
+    /// The task this turn hands over, when being handed one is what sent it:
+    /// see [`Self::task_note`].
+    fn handed_task(&self) -> Option<&crate::thread::TaskEnvelope> {
+        self.messages
+            .iter()
+            .filter(|message| !message.from_build)
+            .find_map(|message| message.from_task.as_deref())
+    }
+
+    /// The task the user was looking at, as `(number, title, task_id)`.
+    fn viewed_task(&self) -> Option<(u64, &str, &str)> {
         self.messages
             .iter()
             .filter_map(|message| message.viewing_context.as_deref())
             .find_map(crate::thread::ViewingContext::task)
-            .map_or_else(String::new, |(number, title, task_id)| {
-                format!(
-                    "\nThe user is looking at task #{number} \"{title}\" (`{task_id}`); read it \
-                     with get_task before answering about it.\n"
-                )
-            })
     }
 
     /// Commands that must reach the provider's command parser byte-for-byte.
@@ -313,6 +368,43 @@ impl OperationPayload {
     pub(crate) fn requires_unadorned_delivery(&self, provider: AgentProvider) -> bool {
         self.unadorned_command(provider).is_some()
     }
+
+    /// What delivering this payload to `provider` sends: its one provider
+    /// command bare, or a delivery. Read from the messages, not the rendered
+    /// text, whose first word is the first message's.
+    pub fn message_kind(&self, provider: AgentProvider) -> MessageKind {
+        if self.requires_unadorned_delivery(provider) {
+            MessageKind::ProviderCommand
+        } else {
+            MessageKind::Delivery
+        }
+    }
+}
+
+/// Where `message` is answered: see [`OperationPayload::turn_attachments`].
+fn reply_channel(message: &crate::thread::ThreadMessage) -> Option<ReplyChannel> {
+    let on_task = |task: &crate::thread::TaskEnvelope| ReplyChannel::Task {
+        task_id: task.task_id.clone(),
+    };
+    if message.from_build {
+        return message
+            .task_notice
+            .as_deref()
+            .filter(|notice| notice.action == "commented")
+            .and(message.from_task.as_deref())
+            .map(on_task);
+    }
+    if let Some(sender) = message.from_agent.as_deref() {
+        return Some(ReplyChannel::Agent {
+            agent_id: sender.id.clone(),
+        });
+    }
+    Some(
+        message
+            .from_task
+            .as_deref()
+            .map_or(ReplyChannel::Thread, on_task),
+    )
 }
 
 /// Who asked for an operation, when an agent did rather than the human.
@@ -623,9 +715,9 @@ mod tests {
         for absent in [
             "which you are tracking",
             "nobody is waiting",
-            "read it with get_task before you start",
-            "Comment on the task with comment_task",
-            "move it to In review with move_task",
+            "The task is `",
+            "Comment on the task with",
+            "move it to In review with",
         ] {
             assert!(!warm.contains(absent), "{absent:?} is still said: {warm}");
         }
@@ -641,15 +733,17 @@ mod tests {
         };
         let brief = handed.delivery_prompt("post-1", false, AgentProvider::Claude);
         assert!(
-            brief.contains("read it with get_task before you start"),
+            brief.contains("read it with mcp__build__get_task before you start"),
             "{brief}"
         );
         assert!(
-            brief.contains("move it to In review with move_task"),
+            brief.contains("move it to In review with mcp__build__move_task"),
             "{brief}"
         );
+        // Pi names Build's tools plainly, as the role prompts do, so its
+        // envelope says the shared rule word for word.
         for cold in [false, true] {
-            let prompt = handed.delivery_prompt("post-1", cold, AgentProvider::Claude);
+            let prompt = handed.delivery_prompt("post-1", cold, AgentProvider::Pi);
             assert!(says(&prompt, TASK_COMMENT_EVENTS), "{prompt}");
             assert!(
                 !says(&prompt, "Comment your progress"),
@@ -691,7 +785,7 @@ mod tests {
             "{warm}"
         );
         assert!(
-            warm.contains("read it with get_task"),
+            warm.contains("read it with mcp__build__get_task"),
             "the agent is told how to read it: {warm}"
         );
         assert!(
@@ -718,20 +812,245 @@ mod tests {
             ..payload()
         };
 
+        assert_eq!(
+            handed_over.turn_attachments().replies,
+            vec![ReplyChannel::Agent {
+                agent_id: "router-7".to_string()
+            }]
+        );
         let prompt = handed_over.legacy_delivery_prompt(false, AgentProvider::Claude);
         assert!(
-            prompt.contains(
-                "These messages came from agent `router-7`, not from the user. \
-                 Reply with message_agent to `router-7`."
-            ),
-            "{prompt}"
+            !prompt.contains("message_agent"),
+            "the reply attachment says it, once: {prompt}"
         );
-        assert!(
-            !payload()
-                .legacy_delivery_prompt(false, AgentProvider::Claude)
-                .contains("came from agent"),
-            "the user's own words claim no sender"
+        assert_eq!(
+            payload().turn_attachments().replies,
+            vec![ReplyChannel::Thread],
+            "the user's own words are answered in the thread"
         );
+    }
+
+    /// A comment on a task is answered on that task, whether it reached the
+    /// agent as a tracking notice or inside a delivery beside other words;
+    /// Build's other notices ask for no answer.
+    #[test]
+    fn a_task_comment_is_answered_on_the_task() {
+        let comment = |actor: crate::tracker::Actor| ThreadMessage {
+            from_build: true,
+            body: "New comment tc-9 on #42 from the user.".into(),
+            from_task: Some(Box::new(crate::thread::TaskEnvelope {
+                task_id: "task-42".into(),
+                number: 42,
+                title: "Fix the parser".into(),
+                links: crate::tracker::TaskLinks::default(),
+            })),
+            task_notice: Some(Box::new(crate::thread::TaskNotice {
+                actor: crate::thread::NoticeActor {
+                    who: actor,
+                    name: None,
+                    identity: None,
+                },
+                action: "commented".into(),
+                comment_id: Some("tc-9".into()),
+                from: None,
+                to: None,
+                assignee: None,
+                assignee_identity: None,
+            })),
+            ..payload().messages[0].clone()
+        };
+        let on_the_task = ReplyChannel::Task {
+            task_id: "task-42".to_string(),
+        };
+
+        let notice = OperationPayload {
+            messages: vec![comment(crate::tracker::Actor::User)],
+            ..payload()
+        };
+        assert_eq!(
+            notice.turn_attachments(),
+            TurnAttachments {
+                replies: vec![on_the_task.clone()],
+                tools: vec![BuildTool::ReadComment],
+            }
+        );
+
+        let beside_the_thread = OperationPayload {
+            messages: vec![
+                payload().messages[0].clone(),
+                comment(crate::tracker::Actor::User),
+            ],
+            ..payload()
+        };
+        assert_eq!(
+            beside_the_thread.turn_attachments().replies,
+            vec![ReplyChannel::Thread, on_the_task]
+        );
+
+        let moved = OperationPayload {
+            messages: vec![ThreadMessage {
+                task_notice: Some(Box::new(crate::thread::TaskNotice {
+                    action: "moved".into(),
+                    comment_id: None,
+                    to: Some("in_review".into()),
+                    ..*comment(crate::tracker::Actor::User).task_notice.unwrap()
+                })),
+                ..comment(crate::tracker::Actor::User)
+            }],
+            ..payload()
+        };
+        assert_eq!(moved.turn_attachments(), TurnAttachments::default());
+    }
+
+    /// The tools the envelope tells the agent to use are the ones its tool
+    /// hint loads: the hand-off's four, `get_task` for a task on screen, and
+    /// `set_name` on the turn that asks for a name.
+    #[test]
+    fn the_envelope_names_the_tools_it_asks_for() {
+        let envelope = crate::thread::TaskEnvelope {
+            task_id: "task-42".into(),
+            number: 42,
+            title: "Fix the parser".into(),
+            links: crate::tracker::TaskLinks::default(),
+        };
+        let handed = OperationPayload {
+            messages: vec![ThreadMessage {
+                from_task: Some(Box::new(envelope)),
+                ..payload().messages[0].clone()
+            }],
+            ask_to_name: true,
+            ..payload()
+        };
+        assert_eq!(
+            handed.turn_attachments().tools,
+            vec![
+                BuildTool::GetTask,
+                BuildTool::CommentTask,
+                BuildTool::MentionUser,
+                BuildTool::MoveTask,
+                BuildTool::SetName,
+            ]
+        );
+        assert_eq!(payload().turn_attachments().tools, Vec::new());
+    }
+
+    /// A task the user handed over is reported on the task, as its envelope
+    /// says; one another agent handed over is answered to that agent.
+    #[test]
+    fn a_handed_task_is_answered_where_it_came_from() {
+        let envelope = crate::thread::TaskEnvelope {
+            task_id: "task-42".into(),
+            number: 42,
+            title: "Fix the parser".into(),
+            links: crate::tracker::TaskLinks::default(),
+        };
+        let from_user = ThreadMessage {
+            from_task: Some(Box::new(envelope)),
+            ..payload().messages[0].clone()
+        };
+        let from_agent = ThreadMessage {
+            from_agent: Some(Box::new(crate::thread::AgentIdentity::new("router-7"))),
+            ..from_user.clone()
+        };
+        let user_handed = OperationPayload {
+            messages: vec![from_user],
+            ..payload()
+        };
+        let agent_handed = OperationPayload {
+            messages: vec![from_agent],
+            ..payload()
+        };
+        assert_eq!(
+            user_handed.turn_attachments().replies,
+            vec![ReplyChannel::Task {
+                task_id: "task-42".into()
+            }]
+        );
+        assert!(!user_handed
+            .turn_attachments()
+            .tools
+            .contains(&BuildTool::ReadComment));
+        assert_eq!(
+            agent_handed.turn_attachments().replies,
+            vec![ReplyChannel::Agent {
+                agent_id: "router-7".into()
+            }]
+        );
+    }
+
+    /// A task title or workspace name that looks like a template placeholder
+    /// is the user's text and is said as written, never filled in.
+    #[test]
+    fn placeholder_shaped_names_are_said_as_written() {
+        let looking = OperationPayload {
+            messages: vec![ThreadMessage {
+                viewing_context: Some(Box::new(
+                    serde_json::from_value(serde_json::json!({
+                        "version": 1,
+                        "items": [
+                            {"kind": "workspace", "workspace_id": "ws-1", "name": "{workspace_id}"},
+                            {"kind": "task", "task_id": "task-9", "number": 9, "title": "{get_task} {task_id}"}
+                        ]
+                    }))
+                    .unwrap(),
+                )),
+                ..payload().messages[0].clone()
+            }],
+            ..payload()
+        };
+        for provider in [AgentProvider::Claude, AgentProvider::Pi] {
+            let prompt = looking.delivery_prompt("post-1", false, provider);
+            assert!(
+                prompt.contains("The user sent this from workspace \"{workspace_id}\" (ws-1)."),
+                "{prompt}"
+            );
+            assert!(
+                prompt
+                    .contains("The user is looking at task #9 \"{get_task} {task_id}\" (`task-9`)"),
+                "{prompt}"
+            );
+        }
+    }
+
+    /// The envelope names each tool it tells the agent to use the way that
+    /// harness's model sees it: `mcp__build__get_task` through Claude Code's
+    /// and Codex's MCP client, the plain name on Pi.
+    #[test]
+    fn the_envelope_names_its_tools_as_each_harness_sees_them() {
+        let handed = OperationPayload {
+            ask_to_name: true,
+            messages: vec![ThreadMessage {
+                from_task: Some(Box::new(crate::thread::TaskEnvelope {
+                    task_id: "task-42".into(),
+                    number: 42,
+                    title: "Fix the parser".into(),
+                    links: crate::tracker::TaskLinks::default(),
+                })),
+                ..payload().messages[0].clone()
+            }],
+            ..payload()
+        };
+        for provider in AgentProvider::ALL {
+            let named = |tool: &str| match provider {
+                AgentProvider::Pi => tool.to_string(),
+                _ => format!("mcp__build__{tool}"),
+            };
+            let prompt = handed.delivery_prompt("op-1", false, provider);
+            for said in [
+                format!("read it with {} before you start.", named("get_task")),
+                format!("Comment on the task with {} when", named("comment_task")),
+                format!("(use {} only when", named("mention_user")),
+                format!("In review with {} when", named("move_task")),
+                format!("call {} with", named("set_name")),
+            ] {
+                assert!(
+                    prompt.contains(&said),
+                    "{provider:?} lacks {said:?}: {prompt}"
+                );
+            }
+        }
+        let pi = handed.delivery_prompt("op-1", false, AgentProvider::Pi);
+        assert!(!pi.contains("mcp__build__"), "{pi}");
     }
 
     /// The workspace the user was standing in is named in the envelope, not

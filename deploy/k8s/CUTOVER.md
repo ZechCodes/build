@@ -29,7 +29,7 @@ Cluster context: `do-nyc1-production-hosting`.
   push:
 
   ```bash
-  podman build --target relay -t ghcr.io/8ly-dev/build-relay:latest -f bridge/Containerfile bridge/
+  podman build --target relay --build-context fixtures=fixtures -t ghcr.io/8ly-dev/build-relay:latest -f bridge/Containerfile bridge/
   podman build -t ghcr.io/8ly-dev/build-app:latest -f skriftapp/Containerfile .
   podman login ghcr.io
   podman push ghcr.io/8ly-dev/build-relay:latest

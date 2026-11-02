@@ -45,6 +45,15 @@ semver = "1"
 # Codex's config.toml, for its credential store setting (#434).
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+hyper = { version = "=1.10.1", features = ["server", "http1"] }
+hyper-util = { version = "=0.1.20", features = ["server", "http1", "tokio", "service"] }
+tower-http = { version = "=0.6.11", default-features = false, features = ["cors", "limit"] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["aws-lc-rs", "tls12"] }
+bytes = "=1.12.1"
+percent-encoding = "=2.3.2"
+jsonwebtoken = { version = "=10.3.0", default-features = false, features = ["aws_lc_rs"] }
+aws-lc-rs = "=1.17.0"
 # The process crypto provider for every rustls user above (the wss relay
 # socket, reqwest, webrtc's DTLS). Two providers are unified into this build —
 # reqwest brings aws-lc-rs, webrtc's rtc brings ring — so rustls 0.23 cannot
@@ -118,6 +127,7 @@ rcgen = "0.13"
 # trees (patterns, comparisons, impl blocks) rather than as text.
 syn = { version = "2", features = ["full", "visit"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
+tower = { version = "=0.5.3", features = ["util"] }
 
 # webrtc 0.20.4 with its driver's drain fixed (#166): output a wake produces
 # leaves before the driver waits, instead of waiting up to ICE's 200 ms timer

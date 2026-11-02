@@ -2,9 +2,19 @@ const sameTarget = (left, right) => Boolean(
   left && right
   && left.deviceId === right.deviceId
   && left.context === right.context
-  && left.carrier === right.carrier
-  && left.recovery === right.recovery
+  && samePeer(left, right)
 );
+
+const samePeer = (left, right) => left.peerLink || right.peerLink
+  ? left.peerLink === right.peerLink
+  : left.carrier === right.carrier && left.recovery === right.recovery;
+
+function acceptsMintCarrier(target, session) {
+  if (session.peerLink && session.peerLink !== target.peerLink) return false;
+  if (!Object.hasOwn(session, "carrier")) return true;
+  if (target.peerLink) return session.peerLink === target.peerLink;
+  return session.carrier === target.carrier;
+}
 
 const publicState = (phase, identity = null) => ({
   phase,
@@ -14,7 +24,7 @@ const publicState = (phase, identity = null) => ({
 });
 
 /**
- * Own the terminal follow transition as one device/context/session/carrier
+ * Own the terminal follow transition as one device/context/peer/session/carrier
  * identity. The manager supplies policy and effects; this object alone decides
  * which asynchronous result still has authority to change the terminal RPC.
  */
@@ -57,6 +67,7 @@ export function createTerminalFollowController({ mint, adopt, ride, detach, isDe
   function mintMatchesTarget(transition, session) {
     return Boolean(session)
       && session.deviceId === transition.target.deviceId
+      && acceptsMintCarrier(transition.target, session)
       && desired(transition);
   }
 
@@ -65,6 +76,7 @@ export function createTerminalFollowController({ mint, adopt, ride, detach, isDe
     adopted = {
       deviceId: transition.target.deviceId,
       context: transition.target.context,
+      peerLink: transition.target.peerLink,
       sessionId: session.sessionId,
       carrier: transition.target.carrier,
       phase: "confirming",
@@ -100,6 +112,10 @@ export function createTerminalFollowController({ mint, adopt, ride, detach, isDe
       release(transition);
       return;
     }
+    if (transition.target.peerLink && Object.hasOwn(session, "carrier")) {
+      transition.target.carrier = session.carrier;
+      transition.target.recovery = transition.target.peerLink.recovery;
+    }
     if (!transition.target.carrier) {
       transition.phase = "awaiting-carrier";
       release(transition);
@@ -114,6 +130,7 @@ export function createTerminalFollowController({ mint, adopt, ride, detach, isDe
     try {
       await acceptMint(transition, await mint(transition.target.deviceId));
     } catch {
+      if (current(transition) && !adopted) safely(detach);
       abandon(transition);
       release(transition);
     }
@@ -123,17 +140,23 @@ export function createTerminalFollowController({ mint, adopt, ride, detach, isDe
     return !adopted
       || adopted.deviceId !== target.deviceId
       || adopted.context !== target.context
+      || adopted.peerLink !== target.peerLink
       || adopted.phase !== "confirmed"
       || target.freshSession
-      || (target.carrier && adopted.carrier !== target.carrier);
+      || carrierChanged(target);
+  }
+
+  const carrierChanged = (target) => Boolean(target.peerLink || target.carrier) && adopted.carrier !== target.carrier;
+
+  function replacesCarrier(target) {
+    return adopted?.deviceId === target.deviceId
+      && adopted.context === target.context
+      && (adopted.peerLink !== target.peerLink || adopted.carrier !== target.carrier);
   }
 
   function beginTransition(target, operation) {
     const superseded = pending;
-    const replacingCarrier = adopted?.deviceId === target.deviceId
-      && adopted.context === target.context
-      && adopted.carrier !== target.carrier;
-    const mustDetach = superseded?.phase === "confirming" || target.freshSession || replacingCarrier;
+    const mustDetach = superseded?.phase === "confirming" || target.freshSession || replacesCarrier(target);
     const transition = { target: { ...target }, phase: "minting", session: null, released: false };
     pending = transition;
     if (mustDetach) adopted = null;

@@ -638,7 +638,7 @@ describe("SQL admission under held work", () => {
   afterEach(() => sessions.splice(0).forEach((rpc) => rpc.close(new Error("test ended"))));
 
   it("at fixture N=B=16 holds extra SQL unsent while same-carrier control and snapshots answer", async () => {
-    const serverSource = readFileSync(new URL("../../bridge/src/carrier/sql.rs", import.meta.url), "utf8");
+    const serverSource = readFileSync(new URL("../../bridge/src/execution/sql.rs", import.meta.url), "utf8");
     const backlogLimit = Number(serverSource.match(/const SQL_BACKLOG: usize = (\d+);/)[1]);
     expect(backlogLimit).toBe(16);
     const backlog = [];

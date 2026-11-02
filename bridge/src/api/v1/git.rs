@@ -15,7 +15,8 @@ use super::{answer, Answer, Handler, WireParams};
 use crate::api::ApiError;
 use crate::app::AppState;
 use crate::body_page::{BodyRange, BodySpan, FileRange};
-use crate::{v1_method, v1_methods};
+use crate::execution::CallContext;
+use crate::{v1_context_method, v1_method, v1_methods};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -81,25 +82,25 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             FsCreateDirectoryParams,
             FsCreateDirectoryResult
         ),
-        v1_method!(
+        v1_context_method!(
             "fs.uploadBegin",
             fs_upload_begin,
             FsUploadBeginParams,
             FsUploadBeginResult
         ),
-        v1_method!(
+        v1_context_method!(
             "fs.uploadChunk",
             fs_upload_chunk,
             FsUploadChunkParams,
             FsUploadChunkResult
         ),
-        v1_method!(
+        v1_context_method!(
             "fs.uploadFinish",
             fs_upload_finish,
             FsUploadIdParams,
             FsUploadFinishResult
         ),
-        v1_method!(
+        v1_context_method!(
             "fs.uploadAbort",
             fs_upload_abort,
             FsUploadIdParams,
@@ -1123,30 +1124,34 @@ fn fs_create_file(
 
 fn fs_upload_begin(
     app: &mut AppState,
+    context: &CallContext,
     params: FsUploadBeginParams,
 ) -> Result<Answer<FsUploadBeginResult>, ApiError> {
-    answer(Ok(app.fs_upload_begin(params, &super::changes::caller()?)?))
+    answer(Ok(app.fs_upload_begin(params, context)?))
 }
 
 fn fs_upload_chunk(
     app: &mut AppState,
+    context: &CallContext,
     params: FsUploadChunkParams,
 ) -> Result<Answer<FsUploadChunkResult>, ApiError> {
-    answer(Ok(app.fs_upload_chunk(params, &super::changes::caller()?)?))
+    answer(Ok(app.fs_upload_chunk(params, context)?))
 }
 
 fn fs_upload_finish(
     app: &mut AppState,
+    context: &CallContext,
     params: FsUploadIdParams,
 ) -> Result<Answer<FsUploadFinishResult>, ApiError> {
-    answer(Ok(app.fs_upload_finish(params, &super::changes::caller()?)?))
+    answer(Ok(app.fs_upload_finish(params, context)?))
 }
 
 fn fs_upload_abort(
     app: &mut AppState,
+    context: &CallContext,
     params: FsUploadIdParams,
 ) -> Result<Answer<FsUploadAbortResult>, ApiError> {
-    answer(Ok(app.fs_upload_abort(params, &super::changes::caller()?)?))
+    answer(Ok(app.fs_upload_abort(params, context)?))
 }
 
 fn worktree_diff(

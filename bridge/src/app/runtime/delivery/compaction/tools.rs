@@ -6,7 +6,12 @@
 //! turns, and the status pump's once a working agent's turn ends. A request
 //! goes ahead of any turn queued for the agent, through the same
 //! [`compact_before_turn`](super::compact_before_turn) the automatic one
-//! takes; with nothing queued the drain sends it itself.
+//! takes; with nothing queued the drain sends it itself. On a session that
+//! reports its turn ends, a non-interrupting turn queued for the agent stays
+//! queued until the turn the request waits for ends (see
+//! [`AppState::take_pending_turns`]), so no drain in between can send that
+//! turn first. A session that reports none has no pump to end the wait, and
+//! its turns are never held.
 
 use super::CompactionSend;
 use crate::app::{AgentSender, AppState};
@@ -18,6 +23,14 @@ use std::sync::Arc;
 
 /// What `compact_self` calls the session it compacts: the caller's own.
 const OWN_SESSION: &str = "your session";
+
+/// Whether `session` can take a compaction command between turns: false once
+/// its policy withdraws it, as a failed compaction extension's does.
+pub(in crate::app) fn has_qualified_compaction_command(session: &dyn AgentSession) -> bool {
+    !session
+        .compaction_policy()
+        .is_some_and(|policy| !policy.capabilities.between_turn_compact)
+}
 
 impl AppState {
     /// The compaction tools, answered for the agent that called them. `None`
@@ -100,10 +113,7 @@ impl AppState {
         let session = self
             .live_agent_session(owner, agent_id)
             .ok_or_else(|| format!("Build cannot compact {called}: it has no running session."))?;
-        if session
-            .compaction_policy()
-            .is_some_and(|policy| !policy.capabilities.between_turn_compact)
-        {
+        if !has_qualified_compaction_command(session.as_ref()) {
             return Err(format!(
                 "Build cannot compact {called}: its running session has no qualified compaction command."
             ));

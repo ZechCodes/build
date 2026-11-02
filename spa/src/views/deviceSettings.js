@@ -20,6 +20,7 @@ import { deviceSettingsAddress, watchSettingsRecord } from "../core/settingsReco
 import { mountBridgeUpdatePanel } from "../core/bridgeUpdatePanel.js";
 import { scopedCompactionEditorHtml, mountScopedCompactionEditor } from "../core/scopedCompactionEditor.js";
 import { fieldTraits } from "../core/fieldTraits.js";
+import { mountHttpTransportControls } from "../core/httpTransportControls.js";
 
 export async function renderDeviceSettings({ root = $("#root"), deviceId = App.route.id, embedded = false, registerDispose = (dispose) => { App.viewDispose = dispose; }, onDeviceDeactivated } = {}) {
   let device = App.devices.find((item) => item.id === deviceId);
@@ -41,6 +42,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
         <p id="device-label-status" role="status" aria-live="polite"></p>
       </form>
     </div>
+    <div class="panel" id="device-http-transport"></div>
     <div id="device-projects-panel"></div>
     <div class="panel">
       <h3>Projects folder</h3>
@@ -71,6 +73,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   const deactivate = root.querySelector("#device-deactivate");
   const deactivateStatus = root.querySelector("#device-deactivate-status");
   let active = true;
+  const disposeTransport = mountHttpTransportControls(root.querySelector("#device-http-transport"), deviceId);
   let connectionAttempt = 0;
   let session = null;
   let disposePanels = null;
@@ -98,6 +101,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     const current = devices.find((item) => item.id === deviceId);
     if (!current) {
       active = false;
+      disposeTransport();
       connectionAttempt += 1;
       session?.close();
       session = null;
@@ -121,6 +125,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   };
   registerDispose(() => {
     active = false;
+    disposeTransport();
     stopWatchingDevices();
     closeBrowser();
     disposePanels?.();

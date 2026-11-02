@@ -14,6 +14,7 @@ export const SELECT_SOURCES = {
   "core/defaultHarness.js": "device settings",
   "core/diffSort.js": "task controls",
   "core/harnessDefaults.js": "local settings / workspace settings",
+  "core/httpTransportControls.js": "device settings",
   "core/isolation.js": "device settings / project settings",
   "core/projectAgentSetting.js": "device settings",
   "core/projectConsole.js": "project Terminal",
@@ -34,7 +35,7 @@ export const SELECT_SOURCES = {
 export const SELECT_SURFACES = [
   { name: "project Terminal", selectors: ['[aria-label="Terminal source"]'] },
   { name: "local settings", selectors: ["#creationdev", "#defprovider", "[data-harness-model]", "[data-harness-effort]"] },
-  { name: "device settings", selectors: ["[data-agent-mode]", "#defaultharness", "#projectagentharness", "#projectagentmodel", "#projectagenteffort", "[data-capability]", '[data-isolation="select"]'] },
+  { name: "device settings", selectors: ["#device-transport", "[data-agent-mode]", "#defaultharness", "#projectagentharness", "#projectagentmodel", "#projectagenteffort", "[data-capability]", '[data-isolation="select"]'] },
   { name: "task controls", selectors: ["#task-status", "#task-priority", "[data-waiting-choice]", "#assign-assignee", "#assign-isolation", "#assign-choice-provider", "#assign-choice-model", "#assign-choice-effort", "#capture-project", "#create-work-isolation", ".diffsort-select", "select.mini"] },
   { name: "compose", selectors: ["#compose-project", "#compose-choice-provider", "#compose-choice-model", "#compose-choice-effort"] },
   { name: "workspace settings", selectors: ["#wsdiradd", "#wsdefprovider", "[data-harness-model]", "[data-harness-effort]"] },
@@ -67,6 +68,7 @@ const modules = {
   reviewMerge: "src/core/taskReviewMerge.js",
   reviewLifecycle: "src/core/taskReviewLifecycle.js",
   waiting: "src/core/taskWaitingOnRender.js",
+  httpControls: "src/core/httpTransportControls.js",
 };
 
 async function loadSurfaceModules(page, basePath) {
@@ -110,6 +112,9 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
   if (name === "device settings") {
     root.innerHTML = '<div id="device-projects-panel"></div><div id="device-bridge-panels"></div>';
     disposers.push(m.panels.standUpDevicePanels({ projectsHost: root.firstElementChild, bridgeHost: root.lastElementChild, callRpc, device }));
+    const transportHost = document.createElement("section");
+    root.append(transportHost);
+    disposers.push(m.httpControls.mountHttpTransportControls(transportHost, device.id));
   }
   if (name === "task controls") {
     const task = { id: "task-1", state: "open", status: "backlog", priority: "medium", labels: [] };

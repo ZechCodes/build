@@ -615,21 +615,34 @@ impl AppState {
     /// [`AppState::deferred_work`] hands it back out HERE, to a caller that
     /// can release the app mutex before running it. The `Ok` returned
     /// alongside a deferral is the placeholder that field documents.
+    #[cfg(test)]
     pub(in crate::app) fn dispatch_deferring(
         &mut self,
         method: &str,
         params: &Value,
     ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
-        self.with_rpc_post_attention(method, |app| app.dispatch_deferring_inner(method, params))
+        self.dispatch_deferring_with_context(method, params, None)
+    }
+
+    pub(in crate::app) fn dispatch_deferring_with_context(
+        &mut self,
+        method: &str,
+        params: &Value,
+        context: Option<&crate::execution::CallContext>,
+    ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
+        self.with_rpc_post_attention(method, |app| {
+            app.dispatch_deferring_inner(method, params, context)
+        })
     }
 
     fn dispatch_deferring_inner(
         &mut self,
         method: &str,
         params: &Value,
+        context: Option<&crate::execution::CallContext>,
     ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
         let queued_before = self.delivery_queue.checkpoint();
-        let outcome = self.route(method, params);
+        let outcome = self.route(method, params, context);
         if outcome.is_err() {
             self.drop_turns_queued_since(queued_before);
         }

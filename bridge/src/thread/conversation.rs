@@ -329,6 +329,32 @@ impl Thread {
         id
     }
 
+    /// Snapshot the durable working disposition before a local refusal appends
+    /// messages. The Build reply carries it through history reconstruction.
+    pub(crate) fn conversation_is_working(&self) -> bool {
+        self.conversation_working
+    }
+
+    pub(crate) fn post_local_refusal(
+        &mut self,
+        operation_id: &str,
+        sequence: u64,
+        body: &str,
+        still_working: bool,
+        now: &str,
+    ) {
+        self.set_operation_delivery_status(
+            operation_id,
+            sequence,
+            sequence,
+            MessageDeliveryStatus::Failed,
+        );
+        self.post_agent_with_links_working(body, None, Vec::new(), now, still_working);
+        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
+            message.from_build = true;
+        }
+    }
+
     /// Say who wrote the message just posted — the last item on the thread by
     /// construction, the way the attachments and the viewing context are set.
     /// For the post paths that carry an anchor, a viewing context or files and

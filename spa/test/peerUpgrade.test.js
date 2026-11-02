@@ -51,7 +51,7 @@ vi.mock("@build/secure-transport", () => ({
     sessionKeyB64: sessionKeyB64 || `key-${sessionId}`,
     sessionInit: { session_id: sessionId, device_id: deviceId },
   }),
-  openSessionAccept: async () => {},
+  openSessionAccept: async ({ envelope }) => ({ sessionId: envelope.session_id }),
   encryptFrame: async ({ outerFields, frameFields }) => ({ outerFields, frameFields }),
   decryptEnvelope: async ({ envelope }) => ({ payload: envelope.frameFields.payload }),
 }));
@@ -128,7 +128,7 @@ class FakeWebSocket {
       this.close();
       return;
     }
-    this.serverSend({ type: "session_accept", session_id: message.session_id, envelope: {} });
+    this.serverSend({ type: "session_accept", session_id: message.session_id, envelope: { session_id: message.session_id } });
   }
   answerCall(message) {
     const asked = message.envelope.frameFields.payload;

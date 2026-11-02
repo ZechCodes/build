@@ -7,7 +7,7 @@ use super::read::thread_detail;
 use super::{AppState, ConversationAddress};
 use crate::app::{
     named_agent_id, plan_state_str, require_str, run_state_str, ImplementationTarget,
-    PendingAgentTurn, PlanDraftingStarted, TurnText, NEW_THREAD_MESSAGES_PROMPT,
+    PendingAgentTurn, PlanDraftingStarted, TurnText,
 };
 use crate::operation::OperationPayload;
 use crate::operation::{
@@ -298,6 +298,7 @@ impl AppState {
             choice_revision,
             posted_sequence,
             delivery.clone(),
+            None,
         )?;
         let (view, persisted) =
             self.answer_plan_mutation(entity_id.clone(), active, thread_detail(params));
@@ -393,6 +394,27 @@ impl AppState {
                 !attachments.is_empty(),
             )?,
         };
+        if choice.is_none()
+            && origin.from_agent.is_none()
+            && origin.requested_by.is_none()
+            && origin.from_task.is_none()
+            && messages.len() == 1
+        {
+            let provider = active.agents.turn_choice(&address.agent_id)?.provider;
+            if let Some(command) =
+                crate::harness::unsupported_slash_command(provider, &messages[0].body)
+            {
+                let error = format!("`{command}` isn't supported on Codex agents yet, so it wasn't sent. Use a Claude agent, or write out what you want.");
+                return self.refuse_local_command(
+                    params,
+                    address,
+                    origin,
+                    messages,
+                    attachments,
+                    error,
+                );
+            }
+        }
         let sender = origin.sender();
         let handed_over = origin.task();
         let messages: Vec<ReviewerMessage> = messages
@@ -430,6 +452,7 @@ impl AppState {
             attachments,
             choice.as_ref(),
             Some(delivery),
+            None,
         )?;
         // Only the human's own words are the human being here. One agent
         // handing work to another must not move the inbox anchor under the
@@ -476,6 +499,45 @@ impl AppState {
         Ok(with_post_receipt(view, posted_sequence, receipt.as_ref()))
     }
 
+    fn refuse_local_command(
+        &mut self,
+        params: &Value,
+        address: ConversationAddress,
+        origin: PostOrigin,
+        messages: Vec<ReviewerMessage>,
+        attachments: Vec<crate::thread::MessageAttachment>,
+        error: String,
+    ) -> Result<Value, String> {
+        // Legacy callers receive an explicit refusal without accepting input.
+        origin
+            .operation_id
+            .as_deref()
+            .ok_or_else(|| error.clone())?;
+        let choice_revision = self
+            .entity_agents(&address.entity_id)?
+            .resolve(Some(&address.agent_id))?
+            .choice_revision;
+        let (sequence, receipt) = self.append_addressed_post(
+            params,
+            &address,
+            choice_revision,
+            origin,
+            messages,
+            attachments,
+            None,
+            None,
+            Some(&error),
+        )?;
+        let active = self.runs.get(&address.entity_id).ok_or("unknown run_id")?;
+        let view = self.run_view(
+            &address.entity_id,
+            active,
+            thread_detail(params),
+            crate::app::DigestScope::Detail,
+        );
+        Ok(with_post_receipt(view, sequence, receipt.as_ref()))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(in crate::app) fn append_addressed_post(
         &mut self,
@@ -487,6 +549,7 @@ impl AppState {
         attachments: Vec<crate::thread::MessageAttachment>,
         choice: Option<&crate::thread::OptionChoice>,
         mut delivery: Option<DeliveryIntent>,
+        local_refusal: Option<&str>,
     ) -> Result<(Option<u64>, Option<OperationReceipt>), String> {
         if self.plans.contains_key(&address.conversation_entity_id) {
             let mut active = self.take_plan(&address.conversation_entity_id)?;
@@ -495,6 +558,7 @@ impl AppState {
                 .resolve(Some(&address.conversation_id))?
                 .thread
                 .clone();
+            let working = previous_thread.conversation_is_working();
             let (sequence, payload) = append_operation_reviewer_messages(
                 &mut active
                     .agents
@@ -505,6 +569,19 @@ impl AppState {
                 choice,
                 origin.operation_id.as_deref(),
             );
+            if let Some(error) = local_refusal {
+                active
+                    .agents
+                    .resolve_mut(Some(&address.conversation_id))?
+                    .thread
+                    .post_local_refusal(
+                        origin.operation_id.as_deref().expect("refusal operation"),
+                        sequence.expect("refusal message"),
+                        error,
+                        working,
+                        &crate::store::now_rfc3339(),
+                    );
+            }
             if let Some(delivery) = delivery.as_mut() {
                 delivery.payload = payload;
             }
@@ -515,6 +592,7 @@ impl AppState {
                 choice_revision,
                 sequence,
                 delivery,
+                local_refusal,
             )?;
             if let Err(error) =
                 self.finish_plan_mutation(address.conversation_entity_id.clone(), active)
@@ -535,6 +613,7 @@ impl AppState {
             .resolve(Some(&address.conversation_id))?
             .thread
             .clone();
+        let working = previous_thread.conversation_is_working();
         let (sequence, payload) = append_operation_reviewer_messages(
             &mut active
                 .agents
@@ -545,6 +624,20 @@ impl AppState {
             choice,
             origin.operation_id.as_deref(),
         );
+        if let Some(error) = local_refusal {
+            active
+                .agents
+                .resolve_mut(Some(&address.conversation_id))?
+                .thread
+                .post_local_refusal(
+                    origin.operation_id.as_deref().expect("refusal operation"),
+                    sequence.expect("refusal message"),
+                    error,
+                    working,
+                    &crate::store::now_rfc3339(),
+                );
+        }
+
         if let Some(delivery) = delivery.as_mut() {
             delivery.payload = payload;
         }
@@ -555,6 +648,7 @@ impl AppState {
             choice_revision,
             sequence,
             delivery,
+            local_refusal,
         )?;
         if let Err(error) = self.finish_run_mutation(address.conversation_entity_id.clone(), active)
         {
@@ -569,6 +663,7 @@ impl AppState {
         Ok((sequence, receipt))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::app) fn stage_post_acceptance(
         &mut self,
         params: &Value,
@@ -577,6 +672,7 @@ impl AppState {
         choice_revision: u64,
         posted_sequence: Option<u64>,
         delivery: Option<DeliveryIntent>,
+        execution_error: Option<&str>,
     ) -> Result<Option<OperationReceipt>, String> {
         let Some(operation_id) = origin.operation_id else {
             return Ok(None);
@@ -595,8 +691,12 @@ impl AppState {
                 .and_then(|delivery| delivery.payload.as_ref())
                 .map(|payload| payload.start_sequence)
                 .unwrap_or(posted_sequence),
-            status: OperationStatus::Queued,
-            execution_error: None,
+            status: if execution_error.is_some() {
+                OperationStatus::Delivered
+            } else {
+                OperationStatus::Queued
+            },
+            execution_error: execution_error.map(str::to_string),
             request_hash: thread_post_request_hash(
                 params,
                 &address.entity_id,
@@ -645,18 +745,11 @@ impl AppState {
                         .is_project_coordinator(&delivery.owner_id, &delivery.agent_id),
                     ..self.payload_for_reader(&delivery.owner_id, payload.clone())
                 };
-                TurnText {
-                    cold: payload.delivery_prompt(
-                        &receipt.operation_id,
-                        true,
-                        delivery.model_choice.provider,
-                    ),
-                    warm: payload.delivery_prompt(
-                        &receipt.operation_id,
-                        false,
-                        delivery.model_choice.provider,
-                    ),
-                }
+                TurnText::for_operation(
+                    &payload,
+                    &receipt.operation_id,
+                    delivery.model_choice.provider,
+                )
             })
         });
         self.delivery_queue.enqueue(PendingAgentTurn {
@@ -668,12 +761,8 @@ impl AppState {
             model_choice: delivery.model_choice.clone(),
             choice_revision: delivery.choice_revision,
             interrupt: delivery.interrupt,
-            say: operation_prompt.or_else(|| {
-                Some(TurnText {
-                    cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                    warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-                })
-            }),
+            say: operation_prompt
+                .or_else(|| Some(TurnText::reading_unread(delivery.model_choice.provider))),
             phase: "revive",
             wants_catch_up: receipt.is_none(),
             survives_refusal: receipt.is_some(),

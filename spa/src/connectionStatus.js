@@ -62,7 +62,7 @@ function devicesNow() {
     // How that machine is carrying, as its own peer link measured it
     // (core/transportPath.js). Null until the first sample lands, which the
     // row says as the plain word.
-    path: live.get(device.id)?.peerLink?.transportPath?.() || null,
+    path: live.get(device.id)?.session?.transport === "http" ? "https" : live.get(device.id)?.peerLink?.transportPath?.() || null,
   }));
 }
 

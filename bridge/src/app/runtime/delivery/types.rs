@@ -1,3 +1,4 @@
+use super::compaction::has_qualified_compaction_command;
 use crate::app::workspaces::reserved_holds;
 use crate::app::{AppState, SettlingHandle, Spawned, TabKey};
 use crate::models::ModelChoice;
@@ -74,18 +75,11 @@ impl PendingAgentTurn {
             model_choice: delivery.model_choice.clone(),
             choice_revision: delivery.choice_revision,
             interrupt: delivery.interrupt,
-            say: Some(TurnText {
-                cold: payload.delivery_prompt(
-                    &receipt.operation_id,
-                    true,
-                    delivery.model_choice.provider,
-                ),
-                warm: payload.delivery_prompt(
-                    &receipt.operation_id,
-                    false,
-                    delivery.model_choice.provider,
-                ),
-            }),
+            say: Some(TurnText::for_operation(
+                payload,
+                &receipt.operation_id,
+                delivery.model_choice.provider,
+            )),
             phase: "revive",
             wants_catch_up: false,
             survives_refusal: true,
@@ -169,6 +163,8 @@ impl PendingAgentTurn {
             choice_revision: agent.choice_revision,
             interrupt: false,
             say: Some(TurnText {
+                attachments: Default::default(),
+                kind: None,
                 cold: turn.cold,
                 warm: turn.warm,
             }),
@@ -199,6 +195,8 @@ impl PendingAgentTurn {
             interrupt: false,
             agent_id,
             say: Some(TurnText {
+                attachments: Default::default(),
+                kind: None,
                 cold: turn.cold,
                 warm: turn.warm,
             }),
@@ -220,6 +218,44 @@ impl PendingAgentTurn {
 pub(in crate::app) struct TurnText {
     pub(in crate::app) cold: String,
     pub(in crate::app) warm: String,
+    /// Where the agent answers and which Build tools the words name, decided
+    /// from the operation the turn delivers. A turn that reads the unread
+    /// thread learns its own when it is sent.
+    pub(in crate::app) attachments: crate::agent_message::TurnAttachments,
+    /// What kind of message the text is, decided where it was rendered from
+    /// an operation. `None` reads it from the text: a provider command the
+    /// harness parses travels bare, anything else as a delivery.
+    pub(in crate::app) kind: Option<crate::agent_message::MessageKind>,
+}
+
+impl TurnText {
+    /// The turn that sends an agent on `provider` to its unread thread: the
+    /// nudge, wrapped for a cold agent in the conversation protocol. What the
+    /// thread attaches is learned when the turn is sent.
+    pub(in crate::app) fn reading_unread(provider: crate::models::AgentProvider) -> TurnText {
+        let nudge = crate::orchestrator::new_thread_messages_prompt(provider);
+        TurnText {
+            attachments: Default::default(),
+            kind: None,
+            cold: crate::orchestrator::conversation_prompt(&nudge),
+            warm: nudge,
+        }
+    }
+
+    /// Both halves of the turn that delivers `payload` as `operation_id` to
+    /// `provider`, with what the payload attaches.
+    pub(in crate::app) fn for_operation(
+        payload: &crate::operation::OperationPayload,
+        operation_id: &str,
+        provider: crate::models::AgentProvider,
+    ) -> TurnText {
+        TurnText {
+            attachments: payload.turn_attachments(),
+            kind: Some(payload.message_kind(provider)),
+            cold: payload.delivery_prompt(operation_id, true, provider),
+            warm: payload.delivery_prompt(operation_id, false, provider),
+        }
+    }
 }
 
 /// The live implementation a Task's conversation actually speaks to: the
@@ -361,7 +397,35 @@ pub(in crate::app) const NO_TERMINAL_LEFT: &str = "no_terminal";
 /// close to reach: they are told here or they are told never.
 pub(in crate::app) const SPAWN_NEVER_OPENED: &str = "spawn_failed";
 
+/// Whether `turn` is held behind a compaction its agent asked for: it does not
+/// interrupt, and its agent is one of `compacting_first`.
+fn waits_for_compaction(compacting_first: &[(String, String)], turn: &PendingAgentTurn) -> bool {
+    !turn.interrupt
+        && compacting_first
+            .iter()
+            .any(|(owner, agent_id)| *owner == turn.owner && *agent_id == turn.agent_id)
+}
+
 impl AppState {
+    /// Every agent whose compaction waits for its current turn to end, whose
+    /// session reports that end, so its status pump can release a turn held
+    /// behind the compaction, and can still take the compaction then. A
+    /// failed compaction extension withdraws the command and ends the hold:
+    /// Pi's telemetry reports nothing after it fails.
+    fn compactions_held_for_turn_end(&self) -> Vec<(String, String)> {
+        self.compactions
+            .waiting_for_turn()
+            .into_iter()
+            .filter(|(owner, agent_id)| {
+                self.live_agent_session(owner, agent_id)
+                    .is_some_and(|session| {
+                        session.reports_turn_ends()
+                            && has_qualified_compaction_command(session.as_ref())
+                    })
+            })
+            .collect()
+    }
+
     pub(in crate::app) fn take_pending_turns(&mut self) -> PendingTurns {
         // Retry stopped agents once when a reported reset is due. Remembered
         // limits never gate delivery: account, credit, and model changes can
@@ -370,12 +434,20 @@ impl AppState {
         let pending_rows = &self.pending_rows;
         let reserved = &self.reclaim_reserved;
         let resetting = &self.resetting_conversations;
+        let compacting_first = self.compactions_held_for_turn_end();
         // A turn for an agent inside a workspace the reclaim service or
         // `workspace.reclaim` has reserved waits for the reservation to end.
+        // A non-interrupting turn for an agent whose compaction waits for its
+        // current turn waits too, so the compaction goes ahead of it. Keyed on
+        // the request, not on `working_since`: a report closes the thread's
+        // turn while the provider's runs on. The status pump releases it on
+        // the turn's last snapshot, and a session end withdraws it. A session
+        // with no status pump is never held: nothing would release it.
         let mut ready = self.delivery_queue.take_ready(|turn| {
             pending_rows.iter().any(|row| row.entity_id == turn.owner)
                 || reserved_holds(reserved, &turn.root)
                 || resetting.contains(&turn.conversation_id)
+                || waits_for_compaction(&compacting_first, turn)
         });
         for turn in &mut ready {
             self.forget_agent_start_error(&turn.owner, &turn.agent_id);
@@ -405,5 +477,27 @@ impl AppState {
             state,
             clock: Arc::clone(&self.frame_clock),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TurnText;
+    use crate::models::AgentProvider;
+
+    /// Both halves of the read-your-thread turn name the reporting tool as
+    /// the agent's harness does, and the cold half opens on the warm one.
+    #[test]
+    fn reading_unread_speaks_to_the_agents_harness() {
+        let turn = TurnText::reading_unread(AgentProvider::Pi);
+        assert!(turn.warm.contains("`post_thread_message`"), "{}", turn.warm);
+        assert!(!turn.warm.contains("mcp__build__"), "{}", turn.warm);
+        assert!(turn.cold.starts_with(&turn.warm), "{}", turn.cold);
+        assert!(turn.cold.contains("Build conversation protocol"));
+        assert_eq!(turn.kind, None);
+        assert_eq!(turn.attachments, Default::default());
+
+        let claude = TurnText::reading_unread(AgentProvider::Claude);
+        assert!(claude.warm.contains("`mcp__build__post_thread_message`"));
     }
 }

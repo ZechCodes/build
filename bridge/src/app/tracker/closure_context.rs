@@ -15,18 +15,16 @@ impl AppState {
             .iter()
             .filter(|dependency| dependency.resolved_by.as_deref() == Some("close"))
             .map(|dependency| {
-                format!(
-                    "- #{} — {} (task_id: {})",
-                    dependency.number, dependency.title, dependency.task_id
+                (
+                    dependency.number,
+                    dependency.title.as_str(),
+                    dependency.task_id.as_str(),
                 )
             })
             .collect();
         if closed.is_empty() {
             return Ok(String::new());
         }
-        Ok(format!(
-            "Prerequisites closed without Done:\n{}\n\nRead each listed task with get_task and assess whether its closure clearly permits this task to proceed. When it does, proceed. If unclear, use comment_task with mention_user: true on dependent #{} (task_id: {}), naming the uncertain prerequisites and the decision needed.",
-            closed.join("\n"), task.number, task.id
-        ))
+        Ok(super::notice_words::prerequisites_closed(&closed, task))
     }
 }

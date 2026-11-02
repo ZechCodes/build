@@ -23,6 +23,8 @@ import { createDeviceConnectionAttempts } from "./core/deviceConnectionAttempts.
 import { createDeviceRecoverySupervisor } from "./core/deviceRecovery.js";
 import { openSession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
+import { openRtcTerminalLink } from "./core/rtcTerminalLink.js";
+import { clearTerminalPeerLinks, configureTerminalPeerLinks, terminalPeerLink } from "./core/terminalPeerLinks.js";
 import { connectionDiagnosticReport, recordConnectionDiagnostic } from "./core/connectionDiagnostics.js";
 import { dialFailureDetail } from "./core/dialFailureDetail.js";
 import { cacheHealth } from "./core/localCache.js";
@@ -69,6 +71,8 @@ import { refreshBridgeUpdateStatus } from "./core/bridgeUpdates.js";
 import { deliverFeed, joinFeed } from "./core/taskFeed.js";
 import { syncRestoredDevice } from "./core/cacheSync.js";
 import { forgetRtcClientHints, rememberRtcClientSupport, rtcClientId } from "./core/rtcClientHint.js";
+import { openHttpDeviceConnection } from "./core/httpDeviceConnection.js";
+import { forgetHttpConnection, httpRecoveryCandidates, restoreHttpConnections, selectHttpConnection, selectWebRtcConnection, usesHttp } from "./core/httpConnections.js";
 
 // ---- one rendezvous per device (spec rules 4, 5 and 7) -----------------------
 
@@ -91,6 +95,16 @@ const rendezvousLifecycle = createRendezvousLifecycle((deviceId) =>
     getPinnedDeviceKey: pinnedDeviceTransportKey,
   }),
 );
+
+configureTerminalPeerLinks({
+  open: ({ deviceId, signal }) => openRtcTerminalLink({
+    deviceId, signal, transport, fetchIceServers,
+    acquireRendezvous: () => rendezvousLifecycle.forDevice(deviceId).acquire(),
+    clientId: () => rtcClientId(deviceId, pairedTransportKey(deviceId)),
+  }),
+  isCurrent: (context) => knownDeviceContext(context.deviceId) === context && canAnswer(context),
+  onChanged: (context) => followTerminalsIfTheirs(context),
+});
 
 // One explicit attempt owner per device. This stage owns only the attempt and
 // its provisional resources; deviceContexts remains the availability model.
@@ -181,7 +195,7 @@ export function stopWatchingForWake() {
   stopWakeWatch = null;
 }
 
-export const syncDeviceRecoveryPresence = (devices) => deviceRecovery.syncPresence(devices);
+export const syncDeviceRecoveryPresence = (devices) => deviceRecovery.syncPresence(httpRecoveryCandidates(devices));
 export const deviceRecoverySnapshot = (deviceId) => deviceRecovery.snapshot(deviceId);
 export const onDeviceRecoveryChanged = (listener) => deviceRecovery.subscribe(listener);
 
@@ -196,6 +210,7 @@ function closeRendezvous(deviceId) {
 export function forgetRendezvousSockets() {
   deviceRecovery.reset();
   connectionAttempts.clear();
+  clearTerminalPeerLinks();
   resetDeviceContexts();
   rendezvousLifecycle.clear();
   forgetRtcClientHints();
@@ -269,8 +284,9 @@ async function mintAppSession(deviceId, rendezvous, authority) {
 function openDirectLink(deviceId, session, sessionLease, authority) {
   let restartLease = null;
   return openPeerLink({
+    binding: session.peerBinding,
     clientId: () => rtcClientId(deviceId, pairedTransportKey(deviceId)),
-    signal: (method, params) => failingAs("refused", session.call(method, params)),
+    signal: (method, params, options) => failingAs("refused", session.call(method, params, options)),
     fetchIceServers: () => failingAs("ice-servers", fetchIceServers()),
     onPush: session.onPush,
     confirmCarried: () => session.confirmCarried(),
@@ -427,7 +443,7 @@ function attemptRecoveryDevice(deviceId, epoch) {
 function retryableConnectionFailure(deviceId, error) {
   const lifecycle = existingDeviceLifecycle(deviceId)?.snapshot();
   if (lifecycle?.securityStop || contextFor(deviceId)?.unsupported) return false;
-  return !error?.securityCritical && error?.blockedReason !== "no-webrtc";
+  return !error?.securityCritical && !["no-webrtc", "http-auth", "http-unsupported"].includes(error?.blockedReason);
 }
 
 async function connectOnce(deviceId, attempt) {
@@ -435,7 +451,56 @@ async function connectOnce(deviceId, attempt) {
   // would neither fix that nor tell anyone about it.
   const securityStop = existingDeviceLifecycle(deviceId)?.snapshot().securityStop;
   if (securityStop) throw new Error(securityStop);
+  if (usesHttp(deviceId)) return connectOverHttp(deviceId, attempt);
   return connectOverChannels(deviceId, attempt);
+}
+
+async function connectOverHttp(deviceId, attempt) {
+  try {
+    return await openHttpDeviceConnection(deviceId, attempt, {
+      greet: greetLiveBridge,
+      onLost: (lifetime, error) => loseHttpConnection(deviceId, lifetime, error),
+      onAdopt: (context) => { joinFeed(context); syncHome(context); followTerminalsIfTheirs(context, { freshSession: true }); },
+      onDetached: () => followTerminalsIfTheirs({ deviceId }),
+    });
+  } catch (error) {
+    error.blockedReason = httpBlockedReason(error);
+    throw error;
+  }
+}
+
+const httpAuthCodes = new Set(["authentication", "unauthorized", "binding_mismatch", "stale_owner", "untrusted_caller", "invalid_handle"]);
+const httpCompatibilityCodes = new Set(["unsupported", "incompatible_transport", "unsupported_operation", "invalid_manifest"]);
+const httpBlockedReason = (error) => {
+  if (httpAuthCodes.has(error?.code)) return "http-auth";
+  if (httpCompatibilityCodes.has(error?.code)) return "http-unsupported";
+  return ["network", "network_error"].includes(error?.code) ? "http-network" : "http-failed";
+};
+
+function loseHttpConnection(deviceId, lifetime, error) {
+  if (!lifetime.current()) return;
+  if (!httpAuthCodes.has(error?.code)) { loseEstablishedConnection(deviceId, lifetime); return; }
+  blockDeviceConnection(deviceId, lifetime, "http-auth");
+  deviceRecovery.stop(deviceId, { cancel: false });
+  syncHome(contextFor(deviceId));
+}
+
+/** An explicit choice retires the old transport before dialing its replacement.
+ * No request accepted by the old opening is replayed on the new one. */
+export async function chooseDeviceTransport(deviceId, { transport: selected, identity } = {}) {
+  await restoreHttpConnections();
+  if (selected === "http") {
+    if (identity?.deviceId !== deviceId) throw new Error("The HTTPS address belongs to a different device.");
+    await selectHttpConnection(identity);
+  }
+  else if (selected === "webrtc") await selectWebRtcConnection(deviceId);
+  else throw new Error("Choose HTTPS or WebRTC.");
+  deviceRecovery.stop(deviceId, { cancel: true });
+  connectionAttempts.forDevice(deviceId).cancel();
+  blockCurrentDevice(deviceId, "transport-change");
+  retryDeviceConnection(deviceId);
+  syncDeviceRecoveryPresence(App.devices);
+  return connectDevice(deviceId, { reason: "transport-selection" });
 }
 
 /** Apply only the failure the controller committed as authoritative. */
@@ -545,12 +610,33 @@ function loseEstablishedConnection(deviceId, lifetime) {
  * again the moment neither this mint nor a negotiation needs it.
  */
 async function mintTerminalSession(deviceId) {
+  const context = contextFor(deviceId);
+  const appSession = context?.session;
+  const peerLink = terminalPeerLink(context);
+  if (appSession?.transport === "http") {
+    if (!peerLink) throw new Error("the terminal RTC owner has closed");
+    return peerLink.mintTerminal();
+  }
+  return mintRtcTerminalOpening(deviceId, { context, appSession, peerLink });
+}
+
+async function mintRtcTerminalOpening(deviceId, { context, appSession, peerLink }) {
+  const assertCurrent = () => {
+    if (contextFor(deviceId) !== context || context?.session !== appSession || terminalPeerLink(context) !== peerLink) {
+      throw new Error("terminal peer was replaced during binding");
+    }
+  };
   const lease = rendezvousLifecycle.forDevice(deviceId).acquire();
   try {
     const minted = await lease.rendezvous.mint({});
+    assertCurrent();
+    const carrier = peerLink?.bindTerminal ? await peerLink.bindTerminal(minted) : peerLink?.term || null;
+    assertCurrent();
     return {
       ...minted,
-      bridgeEpoch: contextFor(deviceId)?.session?.bridgeEpoch,
+      carrier,
+      peerLink,
+      bridgeEpoch: appSession?.bridgeEpoch,
       release: lease.release,
     };
   } catch (error) {
@@ -614,6 +700,7 @@ export function goOffline(deviceId) {
  * the account calls it online.
  */
 export function deviceWentAway(deviceId) {
+  if (usesHttp(deviceId)) return; // relay presence does not describe this endpoint
   const context = contextFor(deviceId);
   if (!context || (context.offline && !context.blocked)) return;
   // A connect in flight owns that machine's rendezvous: standing the machine
@@ -643,6 +730,7 @@ export function deviceWentAway(deviceId) {
  * machine the account no longer has.
  */
 export function retireDevice(deviceId) {
+  void forgetHttpConnection(deviceId).catch(() => {});
   // A dial in flight at this machine is called off first: whatever it lands or
   // fails at is about a machine the account no longer has.
   deviceRecovery.stop(deviceId, { cancel: false });
@@ -726,6 +814,7 @@ export function greetLiveBridge(context, {
   const isCurrent = () => isAuthoritative() && greetingAuthority.current();
   const repository = context.chatRepository;
   const greeting = greetBridge(session.call, {
+    beforeRefresh: session.transport === "http" ? () => session.allowRefresh() : undefined,
     strict: !suppressFailure,
     deviceId: session.deviceId,
     // Session identity alone is insufficient: restoration can issue another
@@ -827,7 +916,9 @@ async function landSession(session, link, releaseInitialLease, attempt, authorit
   // is the terminals' own liveness judgement that nothing is carrying
   // anywhere, which says the path is dead in so many words.
   link.app.onClose(() => loseEstablishedConnection(session.deviceId, lifetime));
-  link.term.onClose((reason) => loseTerminalWire(session.deviceId, lifetime, reason));
+  const terminalClosed = (reason) => loseTerminalWire(session.deviceId, lifetime, reason);
+  if (link.onTerminalClose) link.onTerminalClose(terminalClosed);
+  else link.term?.onClose(terminalClosed);
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
   let initialGreeting = true;
@@ -965,7 +1056,7 @@ export function syncHome(landed = null) {
  * reason off every row and dial nobody.
  */
 export function openDeviceSessions({ retry = false } = {}) {
-  deviceRecovery.syncPresence(App.devices);
+  syncDeviceRecoveryPresence(App.devices);
   const unblocked = retry ? askBlockedMachinesAgain() : [];
   if (retry) for (const deviceId of unblocked) deviceRecovery.beginAttempt(deviceId, { resetFailures: true });
   const wanted = App.devices.filter(wantsSession).map((device) => device.id);
@@ -1055,7 +1146,7 @@ function wantsSession(device) {
   const context = contextFor(device.id);
   if (existingDeviceLifecycle(device.id)?.snapshot().securityStop) return false;
   if (connectionAttempts.isConnecting(device.id) || context?.blocked) return false;
-  return device.status === "online" && !canAnswer(context);
+  return (device.status === "online" || usesHttp(device.id)) && !canAnswer(context);
 }
 
 /** A caller usually wants one of the two promises. Handling the other here

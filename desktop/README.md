@@ -101,3 +101,56 @@ to an ad-hoc signature; use the root script for runnable local builds with
 hardened runtime disabled. A configured `CSC_LINK`,
 `CSC_NAME`, or keychain identity takes precedence for production signing.
 Production macOS releases must also be notarized before distribution.
+
+## Optional direct bridge HTTPS
+
+The hosted client can use `window.buildBridgeHttp` to discover an account-owned,
+paired bridge and open its optional HTTPS interface. Main performs discovery,
+asks the fixed hosted account service to verify endpoint ownership, and keeps
+separate device credentials in memory. Entered addresses never receive desktop
+OAuth credentials. Only the current hosted main frame can invoke the typed
+preload API; it cannot choose HTTP methods, paths or headers. Resource requests
+resolve through the reviewed version-1 manifest packaged with the app. A partial
+or incompatible bridge manifest fails connection compatibility explicitly.
+
+The direct connection uses normal HTTPS certificate verification and rejects
+redirects. It requires a trusted certificate and a reachable configured bridge;
+there is no certificate bypass. The terminal continues to require its separate
+WebRTC connection. Native HTTP operations do not alter hosted OAuth header
+injection, renderer web security, browser permissions or hosted CSP.
+
+Application SSE is transient. The native adapter validates the opening and fresh
+subscription identity before forwarding events, bounds unacknowledged delivery
+at 128 events and 1 MiB, and closes stalled delivery after ten seconds. The
+renderer acknowledges events after applying them; this sequence is local flow
+control, never a durable resume cursor. Reconnection recreates subscriptions and
+refreshes authoritative current state. Lost requests are not automatically
+replayed, and failures after dispatch report an uncertain outcome.
+
+Each native subscription requires `subscribe(handle, scope, {requestId})` with a
+fresh canonical UUID. Every event, including reset and closing controls, carries
+the immutable endpoint `handle` and subscription `requestId` alongside its local
+stream UUID and sequence. Clients filter both correlation fields before
+serializing or accounting for an early event, then require the exact stream UUID
+after the subscribe reply. Correlation conveys no authority. Main rejects reuse
+on the same endpoint handle and retains at most 128 attempt IDs; capacity fails
+explicitly without evicting protected IDs. Recovery may obtain a fresh endpoint
+handle. This API must be paired with the matching hosted client correction.
+
+Every OAuth access-token rotation retires the old native bridge generation and
+requires new account verification. The account service binds bridge credential
+families to that verified access-token issuance, not to a stable installation
+identity. Rotation and Sign Out fence handles and abort requests/streams first,
+then attempt bounded revocation of only the tracked families with the previous
+OAuth credential. Sign Out clears this app's credentials immediately. If the
+server cannot be reached, previously issued access may remain valid until it
+expires: a device token lasts at most five minutes, capped by its original parent
+OAuth expiry; the old OAuth issuance itself may remain authorized until its
+original expiry. Successful remote revocation takes effect at the next bridge
+verification within thirty seconds. Local cleanup proceeds if revocation fails.
+
+Transport/IPC tests use isolated fixtures; HTTPS tests use real loopback TLS
+sockets and a throwaway trusted certificate. Main authentication tests load the reviewed packaged manifest while stubbing
+Electron and hosted authentication. Manifest tests verify all declared operation
+placements and limits, plus source archive inclusion. These checks do not prove
+live bridge handler or hosted authorization behavior.

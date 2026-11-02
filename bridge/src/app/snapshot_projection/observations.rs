@@ -12,6 +12,10 @@ impl AppState {
     }
 
     pub(super) fn warm_snapshot_board_observations(&mut self) {
+        #[cfg(test)]
+        use crate::workspace::warm_work_counts::{self as work, Phase};
+        #[cfg(test)]
+        let _warm_phase = work::phase(Phase::Construction);
         let run_ids = self.runs.keys().cloned().collect::<Vec<_>>();
         let project_ids = self
             .projects
@@ -30,6 +34,8 @@ impl AppState {
                 .filter(|id| self.board.diff().external_scan(id).settled_at.is_none())
                 .filter_map(|id| self.external_scan_refresh(id)),
         );
+        #[cfg(test)]
+        work::set_phase(Phase::Membership);
         let memberships = self
             .workspaces
             .list(None)
@@ -47,13 +53,19 @@ impl AppState {
             })
             .collect::<Vec<_>>();
         self.sync_workspace_summaries(&memberships);
+        #[cfg(test)]
+        work::set_phase(Phase::SummaryConstruction);
         jobs.extend(
             memberships
                 .into_iter()
                 .filter(|(id, repositories)| self.workspace_summary_of(id, repositories).is_none())
                 .map(|(id, repositories)| self.workspace_summary_refresh(&id, repositories)),
         );
+        #[cfg(test)]
+        let _pass = work::phase(Phase::ComputeStore);
         for job in jobs {
+            #[cfg(test)]
+            work::job();
             if let Some(entry) = job.compute(None) {
                 self.store_diff_entry(entry);
             }

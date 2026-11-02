@@ -10,6 +10,7 @@
 import { terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
+import { onHttpPreferencesChanged, usesHttp } from "./httpConnections.js";
 
 /** What every surface says while the machine is out of reach. One sentence, in
  *  the chip over a live pane and in the place of a pane that could not attach. */
@@ -80,6 +81,39 @@ export function attachConnectionOverlay(host) {
   };
 }
 
+/** What a pane on an HTTPS-selected device says: its terminal still rides the
+ *  WebRTC link, whatever the rest of the app is using. */
+export const TRANSPORT_LABEL = "Terminal over WebRTC";
+
+/**
+ * Name the transport in a `.termpane` host's corner while `deviceId`'s SAVED
+ * choice is HTTPS. Only the preference drives it, never the link's state: the
+ * terminal takes WebRTC on that device whether or not the link is up. Returns
+ * { dispose() } — stop listening and remove the label. Call after the pane
+ * mounts, like the connection overlay.
+ */
+export function attachTransportLabel(host, deviceId) {
+  const label = document.createElement("div");
+  label.className = "term-transport";
+  label.textContent = TRANSPORT_LABEL;
+  // Present or absent, never hidden: a CSS display rule would beat `hidden`.
+  const render = () => {
+    // Never inside .term-screen: the terminal makes that its input box, whose
+    // accessible value would read the label as typed text. Just before the
+    // touch key bar instead, or last when there is none.
+    if (deviceId && usesHttp(deviceId)) host.insertBefore(label, host.querySelector(":scope > .termkeys"));
+    else label.remove();
+  };
+  render();
+  const stop = onHttpPreferencesChanged(render);
+  return {
+    dispose() {
+      stop();
+      label.remove();
+    },
+  };
+}
+
 /** Mount a worktree's agent pane.
  *
  *  `target` is how the calling surface addresses that worktree: `{ id }` for a
@@ -90,9 +124,10 @@ export function attachConnectionOverlay(host) {
  *  uses it. `onLive(bool, attachResult)` reports session liveness (the second
  *  argument is the attach payload, so a caller can tell a dead-with-a-screen
  *  agent from one that never ran);
- *  `onExit(reason)` reacts to closures. Input is allowed — a live PTY on the
- *  user's machine. */
-export function mountAgentPane(host, target, { onLive, onExit }) {
+ *  `onExit(reason)` reacts to closures. `deviceId` is the machine the
+ *  worktree is on, for the transport label. Input is allowed — a live PTY on
+ *  the user's machine. */
+export function mountAgentPane(host, target, { onLive, onExit, deviceId = null }) {
   const manager = terminalManager();
   let termId = null; // learned from the attach; null until then, and after a failed one
   return mountTerminalPane(host, {
@@ -120,10 +155,12 @@ export function mountAgentPane(host, target, { onLive, onExit }) {
     // Overlay the connectivity chip once the pane exists (its mount resets the
     // host's innerHTML). Fold its teardown into the pane's own dispose.
     const conn = attachConnectionOverlay(host);
+    const transport = attachTransportLabel(host, deviceId);
     return {
       ...pane,
       dispose() {
         conn.dispose();
+        transport.dispose();
         pane.dispose();
         // Deregister the screen the attach named — the server PTY keeps running.
         if (termId) manager.detach(termId);
@@ -146,7 +183,7 @@ export function mountAgentPane(host, target, { onLive, onExit }) {
  *  `onStart` leaves the tab a viewer.
  *
  *  Returns { dispose() } — tears down the client view only. */
-export function mountAgentTab(host, target, { idleLabel = "No agent is currently running", onStart } = {}) {
+export function mountAgentTab(host, target, { idleLabel = "No agent is currently running", onStart, deviceId = null } = {}) {
   host.innerHTML = `<div class="agentwrap">
     <div class="termpane" id="agentpane"></div>
     <div class="agent-overlay" id="agentOverlay" hidden>
@@ -238,6 +275,7 @@ export function mountAgentTab(host, target, { idleLabel = "No agent is currently
   const mountPane = () => {
     reconnectWatch = null;
     mountAgentPane(host.querySelector("#agentpane"), target, {
+      deviceId,
       // A retained screen with no live session is a harness that ran and
       // stopped; an empty one never ran at all. The message differs; the offer
       // does not.

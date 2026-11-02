@@ -1392,6 +1392,43 @@ fn request_changes_lands_on_the_named_agents_conversation() {
     );
 }
 
+/// The read-your-messages nudge a change request queues names the reporting
+/// tool as the addressed agent's harness does, not as the branch's first
+/// agent's: a Pi agent beside a non-Pi one hears the bare name.
+#[test]
+fn request_changes_names_the_reporting_tool_for_the_addressed_agents_harness() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "review-a-pi-agent");
+    assert_ne!(
+        state.runs[&run_id].model_choice.provider,
+        AgentProvider::Pi,
+        "the branch's first agent names its tools the other way"
+    );
+    let added = state.handle(req(
+        "agent.add",
+        json!({ "entity_id": run_id, "provider": "pi" }),
+    ));
+    assert_eq!(added["ok"], true, "{added:?}");
+    let pi_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+    let requested = state.handle(req(
+        "run.request_changes",
+        json!({
+            "run_id": run_id,
+            "agent_id": pi_agent,
+            "messages": [{ "body": "tidy the names", "anchor": null }]
+        }),
+    ));
+    assert_eq!(requested["ok"], true, "{requested:?}");
+
+    let queued = state.delivery_queue.queued_last().unwrap();
+    assert_eq!(queued.agent_id, pi_agent);
+    let warm = &queued.said().warm;
+    assert!(warm.contains("`post_thread_message`"), "{warm}");
+    assert!(!warm.contains("mcp__build__"), "{warm}");
+}
+
 #[tokio::test]
 async fn conversation_reset_kills_and_reaps_live_process_and_ignores_its_late_end() {
     let (dir, repo) = init_repo();

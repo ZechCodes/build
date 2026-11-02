@@ -481,3 +481,78 @@ async fn subscribe_and_replay_preserve_principal_and_current_scope_authority() {
         "private operations must not follow the authorized sentinel"
     );
 }
+
+#[tokio::test]
+async fn retired_application_binding_cannot_register_after_snapshot_with_live_reply() {
+    use crate::execution::session::{
+        ClientSessions, DeliveryError, EncodedEvent, EventSink, Opening, ReplySink, StreamClass,
+        VerifiedCaller,
+    };
+    struct Sink;
+    impl EventSink for Sink {
+        fn try_send(&self, _: EncodedEvent) -> Result<(), DeliveryError> {
+            Ok(())
+        }
+    }
+    impl ReplySink for Sink {
+        fn try_send(&self, _: EncodedEvent) -> Result<(), DeliveryError> {
+            Ok(())
+        }
+    }
+    let fixture = Fixture::new();
+    fixture.admit(DEVICE_USER, &id(1), "old");
+    fixture.admit(DEVICE_USER, &id(2), "current");
+    let sessions = Arc::new(ClientSessions::new("application-binding-test"));
+    let session = sessions
+        .open(VerifiedCaller::verified_relay("device", Opening::new()))
+        .unwrap();
+    let first = sessions
+        .bind_events(&session, StreamClass::Application, Arc::new(Sink))
+        .unwrap();
+    let request = sessions
+        .request(&session, Arc::new(Sink), Some(&first))
+        .unwrap();
+    let old = SessionSender::from_request(&request);
+    let observed = old.clone();
+    let replacing = sessions.clone();
+    let service = fixture.service.clone();
+    let successor_connection = fixture.store.read_pool().acquire().await;
+    *fixture.service.inner.after_snapshot.lock().unwrap() = Some(Box::new(move || {
+        let second = replacing
+            .replace_events(
+                &session,
+                StreamClass::Application,
+                Some(&first),
+                Arc::new(Sink),
+            )
+            .unwrap();
+        let current_request = replacing
+            .request(&session, Arc::new(Sink), Some(&second))
+            .unwrap();
+        let current = SessionSender::from_request(&current_request);
+        let frame = serde_json::from_value(json!({
+            "session_id": session.id(), "message_id": "successor", "frame_type": "data", "sender": "client", "created_at": "",
+            "payload": {"id": 2, "method": "writes.subscribe", "params": {"operation_ids": [id(2)]}}
+        })).unwrap();
+        let answer = service.call(current, frame, Some(successor_connection));
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert!(
+            observed.read_is_live(),
+            "independent request reply is still live"
+        );
+        assert!(
+            !observed.events_are_live(),
+            "captured application binding has retired"
+        );
+    }));
+    let answer = fixture
+        .call(old, "writes.subscribe", json!({"operation_ids":[id(1)]}))
+        .await;
+    assert_eq!(answer["ok"], false, "{answer}");
+    let subscriptions = fixture.service.inner.subscriptions.lock().unwrap();
+    assert_eq!(subscriptions.len(), 1);
+    let current = subscriptions.values().next().unwrap();
+    assert!(current.sender.events_are_live());
+    assert!(current.ids.contains(&id(2)));
+    assert!(!current.ids.contains(&id(1)));
+}

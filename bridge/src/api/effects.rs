@@ -225,6 +225,12 @@ pub(crate) fn effect(method: &str) -> Option<Effect> {
     .find_map(|(methods, effect)| methods.contains(&method).then_some(effect))
 }
 
+/// Whether a known RPC needs write authority. `None` is deliberately distinct
+/// from a read: adding a route without classifying its effect must fail closed.
+pub(crate) fn requires_write_scope(method: &str) -> Option<bool> {
+    effect(method).map(|effect| effect == Effect::Write)
+}
+
 /// External observations use an independent bounded I/O lane. Archive reads
 /// also observe checkout existence despite their legacy classification.
 pub(crate) fn is_observation_read(payload: &Value) -> bool {
@@ -278,5 +284,8 @@ mod tests {
         assert_eq!(entries.len(), classified.len(), "duplicate effects");
         assert_eq!(registered, classified, "audit new or removed RPC entries");
         assert_eq!(effect("made.up"), None);
+        assert_eq!(requires_write_scope("tasks.lookup"), Some(false));
+        assert_eq!(requires_write_scope("settings.set"), Some(true));
+        assert_eq!(requires_write_scope("made.up"), None);
     }
 }

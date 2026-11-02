@@ -49,6 +49,7 @@ const { followTerminalDevice, provideTerminalSessions, resetTerminalManager, sub
   await import("../src/terminal/manager.js");
 const { App } = await import("../src/app.js");
 const { connectionDiagnosticHistory } = await import("../src/core/connectionDiagnostics.js");
+const { clearTerminalPeerLinks, configureTerminalPeerLinks, terminalPeerLink } = await import("../src/core/terminalPeerLinks.js");
 
 function answeringCarrier(name, {
   answerImmediately = true,
@@ -105,6 +106,26 @@ describe("terminal session handoff after a bridge restart", () => {
     events.length = 0;
     sessions.length = 0;
     App.route = { name: "branch", deviceId: "dev-a", projectId: "project-a" };
+  });
+
+  it("settles terminal connection waiters when HTTP-selected RTC setup fails", async () => {
+    const session = { transport: "http", call: vi.fn(async () => ({ usable: true })), close: vi.fn() };
+    const context = { deviceId: "dev-a", session, call: session.call, peerLink: null };
+    contexts.set("dev-a", context);
+    configureTerminalPeerLinks({ open: async () => { throw new Error("RTC unavailable"); }, isCurrent: (value) => contexts.get(value.deviceId) === value });
+    provideTerminalSessions(async () => terminalPeerLink(context).mintTerminal());
+    const statuses = []; const stop = subscribeTerminalStatus((status) => statuses.push(status));
+    try {
+      const socket = terminalManager();
+      const outcome = socket.whenConnected().then(() => "connected", () => "unavailable");
+      await settle(); await settle();
+      // Race with an already resolved sentinel, so failure produces a useful
+      // assertion instead of hiding an indefinitely pending real waiter.
+      expect(await Promise.race([outcome, Promise.resolve("still-waiting")])).toBe("unavailable");
+      expect(statuses.at(-1)).toBe("disconnected");
+      expect(session.close).not.toHaveBeenCalled();
+      await expect(session.call("projects.list")).resolves.toEqual({ usable: true });
+    } finally { stop(); clearTerminalPeerLinks(); resetTerminalManager(); }
   });
 
   it("automatically remints and reattaches after an authoritative epoch change on the same channel", async () => {

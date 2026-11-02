@@ -198,6 +198,8 @@ def test_relay_image_still_compiles_both_binaries_before_publishing():
     assert build["with"]["context"] == "bridge"
     assert build["with"]["file"] == "bridge/Containerfile"
     assert build["with"]["target"] == "relay"
+    # bridge/src includes fixtures/api/http at build time (bridge/tests/image_context.rs).
+    assert build["with"]["build-contexts"].split() == ["fixtures=fixtures"]
     source = (ROOT / "bridge/Containerfile").read_text()
     assert "RUN cargo build --release --bin relay --bin build-bridge" in source
     assert "COPY --from=build /src/target/release/relay /usr/local/bin/relay" in source

@@ -147,3 +147,31 @@ async fn abandon_run_removes_the_worktree_but_keeps_the_branch() {
         "the branch is kept on abandon"
     );
 }
+
+/// The nudge that sends an agent to its unread thread names the tool it
+/// reports with exactly as the agent's harness lists it, and nowhere by
+/// another name.
+#[test]
+fn the_new_messages_nudge_names_the_reporting_tool_as_each_harness_does() {
+    use crate::models::AgentProvider;
+    use crate::orchestrator::new_thread_messages_prompt;
+    for (provider, tool) in [
+        (AgentProvider::Claude, "mcp__build__post_thread_message"),
+        (AgentProvider::ClaudeAdk, "mcp__build__post_thread_message"),
+        (AgentProvider::Codex, "mcp__build__post_thread_message"),
+        (
+            AgentProvider::CodexAppServer,
+            "mcp__build__post_thread_message",
+        ),
+        (AgentProvider::Pi, "post_thread_message"),
+    ] {
+        let said = new_thread_messages_prompt(provider);
+        assert!(said.contains(&format!("`{tool}`")), "{provider:?}: {said}");
+        assert_eq!(
+            said.matches("post_thread_message").count(),
+            1,
+            "{provider:?}: {said}"
+        );
+        assert!(!said.contains('{'), "{provider:?}: {said}");
+    }
+}

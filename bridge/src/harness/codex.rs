@@ -6,6 +6,7 @@
 //! handling Build's prompt delivery depends on. Nothing is written outside the
 //! process, which is why this harness needs no workspace preparation.
 
+use crate::agent_message::{BuildTool, Framing, MessageKind, ToolLoading};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -155,6 +156,42 @@ impl Harness for CodexHarness {
 
     fn requires_unadorned_command(&self, prompt: &str) -> bool {
         prompt.split_whitespace().next() == Some("/clear")
+    }
+
+    /// Provider commands and compaction travel bare; everything else carries
+    /// its attachments as a marked Build block, Codex having no tag of its
+    /// own. Only `/clear` is a provider command here: `/compact` from the
+    /// thread is delivered like any other message.
+    fn framing(&self, kind: MessageKind) -> Framing {
+        match kind {
+            MessageKind::Delivery
+            | MessageKind::ThreadNudge
+            | MessageKind::ColdStart
+            | MessageKind::TaskNotice
+            | MessageKind::TaskAssignment
+            | MessageKind::DependencyNotice
+            | MessageKind::TaskReminder
+            | MessageKind::IdleWorkspaces
+            | MessageKind::Restarted
+            | MessageKind::UsageLimitResume
+            | MessageKind::AgentFailure
+            | MessageKind::ProviderRecoveryFailure => Framing::WithAttachments,
+            MessageKind::Compaction | MessageKind::ProviderCommand => Framing::Bare,
+        }
+    }
+
+    fn wrap_attachment(&self, text: &str) -> String {
+        crate::agent_message::build_instructions(text)
+    }
+
+    /// Codex names an MCP tool `mcp__<server>__<tool>`.
+    fn build_tool_name(&self, tool: BuildTool) -> String {
+        tool.mcp_name()
+    }
+
+    /// Codex hands the model every MCP tool up front.
+    fn tool_loading(&self) -> ToolLoading {
+        ToolLoading::Loaded
     }
 
     fn starts_compaction(&self, prompt: &str) -> bool {

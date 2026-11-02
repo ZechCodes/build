@@ -54,7 +54,7 @@ async fn terminal_observation_keeps_scope_refusals_and_source_fences() {
     ] {
         let expected = crate::api::reply(
             json!("1"),
-            state.lock().unwrap().route("term.list", &params),
+            state.lock().unwrap().route("term.list", &params, None),
         );
         let refused = prepared_list(&state, params)();
         assert_eq!(refused["ok"], false, "{refused}");

@@ -42,6 +42,7 @@ const call = vi.fn(async (method) => {
 vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
 vi.mock("../src/app.js", () => ({ App, go: vi.fn() }));
 vi.mock("../src/connection.js", () => ({
+  chooseDeviceTransport: async () => null,
   syncDeviceRecoveryPresence: () => {},
   // The wake listeners the gate arms and disarms (#60).
   watchForWake: () => {},

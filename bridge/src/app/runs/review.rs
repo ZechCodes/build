@@ -1,8 +1,8 @@
 use crate::app::{
     append_user_thread_messages, dispatchable_next_run_stage, err, parse_thread_inputs,
     require_str, thread_detail, AppState, PendingAgentTurn, ReadSubject,
-    NEW_THREAD_MESSAGES_PROMPT,
 };
+use crate::orchestrator::new_thread_messages_prompt;
 use crate::run::{PublicationAttempt, RunState, StagePublication};
 use crate::store::now_rfc3339;
 use crate::worktree::{git_stdout, Worktree};
@@ -148,12 +148,13 @@ impl AppState {
         })?;
         let mut active = self.take_run(&run_id)?;
         let outcome = (|| -> Result<(), String> {
+            let provider = active.agents.resolve(Some(&run_agent_id))?.choice.provider;
             let turn = self
                 .orch_for(&project_id)?
                 .run_request_changes(
                     &mut active,
                     &plan_docs,
-                    NEW_THREAD_MESSAGES_PROMPT,
+                    &new_thread_messages_prompt(provider),
                     Some(&run_agent_id),
                 )
                 .map_err(err)?;

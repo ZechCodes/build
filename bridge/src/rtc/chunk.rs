@@ -17,10 +17,10 @@ use serde::{Deserialize, Serialize};
 /// maximum. An envelope at or under it crosses whole.
 pub const CHUNK_BYTES: usize = 16 * 1024;
 
-/// The largest envelope a reassembly may add up to. Its own number, deliberately:
-/// application traffic rides the DataChannel and nothing else, so this cap is set
-/// by what a peer may spend of the device's memory, not by any relay limit. Past
-/// it the parts are an abuse, and the channel closes.
+/// The largest application frame a channel accepts, whole or reassembled.
+/// Application traffic rides the DataChannel and nothing else, so this cap is
+/// set by what a peer may spend of the device's memory. Past it the channel
+/// closes.
 pub const MAX_REASSEMBLED_BYTES: usize = 8 * 1024 * 1024;
 
 /// How a receiver tells a part from a whole envelope: the wrapper names `part`
@@ -127,6 +127,7 @@ impl Reassembler {
                     index: pending.count,
                     expected: pending.next_index,
                 }),
+                None if text.len() > MAX_REASSEMBLED_BYTES => Err(ChunkError::TooLarge),
                 None => Ok(Some(text.to_string())),
             };
         }
@@ -160,7 +161,11 @@ impl Reassembler {
     /// longer be completed.
     fn due(&mut self, part: &Part) -> Result<Pending, ChunkError> {
         match self.pending.take() {
-            Some(pending) if pending.id == part.id && pending.next_index == part.index => {
+            Some(pending)
+                if pending.id == part.id
+                    && pending.count == part.count
+                    && pending.next_index == part.index =>
+            {
                 Ok(pending)
             }
             Some(pending) => Err(ChunkError::OutOfOrder {
@@ -262,6 +267,57 @@ mod tests {
 
         assert_eq!(reassembler.accept(&parts[0]), Ok(None));
         assert!(matches!(reassembler.accept(&parts[1]), Ok(Some(_))));
+    }
+
+    #[test]
+    fn a_whole_frame_at_the_utf8_cap_is_accepted() {
+        let frame = "é".repeat(MAX_REASSEMBLED_BYTES / 2);
+        assert_eq!(Reassembler::default().accept(&frame), Ok(Some(frame)));
+    }
+
+    #[test]
+    fn a_whole_frame_past_the_utf8_cap_ends_the_channel() {
+        let frame = "é".repeat(MAX_REASSEMBLED_BYTES / 2) + "x";
+        assert!(matches!(
+            Reassembler::default().accept(&frame),
+            Err(ChunkError::TooLarge)
+        ));
+    }
+
+    #[test]
+    fn unicode_at_the_chunked_frame_cap_round_trips() {
+        let frame = "𝄞".repeat(MAX_REASSEMBLED_BYTES / 4);
+        assert_eq!(reassemble(&split(&frame)), Ok(Some(frame)));
+    }
+
+    #[test]
+    fn a_changed_chunk_count_ends_the_channel() {
+        for (count, changed) in [(2, 3), (3, 2)] {
+            let mut reassembler = Reassembler::default();
+            let first = format!(r#"{{"part":{{"id":7,"index":0,"count":{count}}},"data":"x"}}"#);
+            assert_eq!(reassembler.accept(&first), Ok(None));
+            let changed_part =
+                format!(r#"{{"part":{{"id":7,"index":1,"count":{changed}}},"data":"x"}}"#);
+            assert!(reassembler.accept(&changed_part).is_err());
+        }
+    }
+
+    #[test]
+    fn malformed_chunk_fields_end_the_channel() {
+        for text in [
+            r#"{"part":{"id":1,"index":-1,"count":2},"data":"x"}"#,
+            r#"{"part":{"id":1,"index":0,"count":-1},"data":"x"}"#,
+            r#"{"part":{"index":0,"count":1},"data":"x"}"#,
+            r#"{"part":{"id":"1","index":0,"count":1},"data":"x"}"#,
+            r#"{"part":{"id":1,"index":0,"count":1}}"#,
+            r#"{"part":{"id":1,"index":0,"count":1},"data":null}"#,
+            r#"{"part":{"id":1,"index":0,"count":1},"data":{}}"#,
+        ] {
+            assert!(matches!(
+                Reassembler::default().accept(text),
+                Err(ChunkError::Malformed(_))
+            ));
+        }
     }
 
     #[test]

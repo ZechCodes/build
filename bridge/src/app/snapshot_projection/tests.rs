@@ -140,3 +140,5 @@ fn terminal_publication_preserves_unrelated_pending_owner_work() {
         .unwrap()
         .contains("pending-owner"));
 }
+
+mod warm_work;

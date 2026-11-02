@@ -40,6 +40,7 @@ class FakeChannel extends FakeEventTarget {
     super();
     this.label = label;
     this.init = init;
+    this.id = init.id;
     this.readyState = "connecting";
     this.sent = [];
     this.bufferedAmount = 0;
@@ -1972,4 +1973,625 @@ describe("a session that landed on a relayed pair", () => {
 
     expect(offers(signalled)).toBe(before);
   });
+});
+
+const clearToken = (byte) => Buffer.alloc(32, byte).toString("base64").replace(/=+$/, "");
+const clearSdp = (byte) => `v=0\r\na=fingerprint:sha-256 ${Array(32).fill(byte).join(":")}\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=sctp-port:5000\r\n`;
+async function clearStand({ respond, waitForAnswer = true, onLocal = () => {}, offerSdp = () => clearSdp("AB"), ...options } = {}) {
+  const binding = { sessionId: "app-session", createChannelBinding: vi.fn(() => ({
+    prove: vi.fn(async (challenge) => {
+      if (challenge.session_id !== "app-session") throw new Error("wrong session");
+      return { type: "channel_bind_v1", session_id: "app-session", envelope: { proof: true } };
+    }),
+    acceptAck: vi.fn(async (ack) => {
+      if (ack.envelope?.valid !== true) throw new Error("bad ack");
+      return { encode: (payload) => ({ protocol: "dtls-json-v1", payload }), decode: (frame) => frame, close() {} };
+    }), close() {},
+  })) };
+  class ClearPeer extends FakePeerConnection {
+    async createOffer() { return { type: "offer", sdp: offerSdp(this.localDescriptions.length) }; }
+    async setLocalDescription(description) { await super.setLocalDescription(description); onLocal(this); }
+  }
+  const { hashSdp } = await import("../src/core/peerBinding.js");
+  const stood = stand({ binding, RTCPeerConnectionImpl: ClearPeer,
+    signalImpl: async (method, params) => {
+      if (method !== "rtc.offer") return {};
+      if (respond) return respond(params);
+      return { sdp: clearSdp("CD"), payload_protocol: "dtls-json-v1", peer_nonce: params.peer_nonce,
+        negotiation: params.negotiation, peer_token: clearToken(2),
+        offer_hash: await hashSdp(params.sdp), answer_hash: await hashSdp(clearSdp("CD")),
+        offer_fingerprint: "ab".repeat(32), answer_fingerprint: "cd".repeat(32) };
+    }, ...options });
+  if (waitForAnswer) await vi.waitFor(() => expect(stood.peer()?.remoteDescriptions).toHaveLength(1));
+  else await vi.waitFor(() => expect(stood.peer()).toBeDefined());
+  return { ...stood, binding };
+}
+async function nativeReady(stood) {
+  const peer = stood.peer();
+  peer.channels.get("app").open(); peer.channels.get("term").open();
+  peer.connectionState = "connected"; peer.emit("connectionstatechange");
+  await Promise.resolve();
+}
+const control = (channel, message) => channel.emit("message", { data: JSON.stringify(message) });
+const appChallenge = { type: "channel_challenge_v1", session_id: "app-session", challenge: clearToken(3) };
+const appAck = { type: "channel_bound_v1", session_id: "app-session", envelope: { valid: true } };
+
+describe("clear peer integration", () => {
+  it("advertises before gathering and waits for a verified role ack", async () => {
+    const stood = await clearStand();
+    const advertised = stood.signalled.find(([method]) => method === "rtc.offer")[1];
+    expect(advertised.payload_protocols).toEqual(["dtls-json-v1", "secretbox-v1"]);
+    expect(advertised.negotiation).toBe(1);
+    let resolved = false; stood.link.then(() => { resolved = true; });
+    await nativeReady(stood); expect(resolved).toBe(false);
+    const app = stood.peer().channels.get("app"); control(app, appChallenge);
+    await vi.waitFor(() => expect(app.sent.length).toBe(1));
+    expect(JSON.parse(app.sent[0]).type).toBe("channel_bind_v1");
+    control(app, appAck);
+    const link = await stood.link;
+    expect(link.app.onFrame).toBeTypeOf("function"); expect(link.term).toBeNull();
+    expect(stood.binding.createChannelBinding).toHaveBeenCalledWith(expect.objectContaining({ channelId: 0, channelLabel: "app" }));
+    link.close();
+    expect(stood.signalled.at(-1)).toEqual(["rtc.close", { peer_token: clearToken(2), negotiation: 1 }]);
+  });
+  it("fails a bad ack without retrying legacy", async () => {
+    const stood = await clearStand(); await nativeReady(stood);
+    const app = stood.peer().channels.get("app"); control(app, appChallenge);
+    await vi.waitFor(() => expect(app.sent.length).toBe(1));
+    control(app, { ...appAck, envelope: { valid: false } });
+    await expect(stood.link).rejects.toThrow(/ack/);
+    expect(stood.peer().closed).toBe(true);
+    expect(stood.signalled.filter(([method]) => method === "rtc.offer")).toHaveLength(1);
+  });
+  it("retains legacy selected by the authenticated answer", async () => {
+    const stood = await clearStand({ respond: async () => ({ sdp: clearSdp("CD") }) });
+    await nativeReady(stood); const link = await stood.link;
+    expect(link.app.onEnvelope).toBeTypeOf("function"); expect(link.app.onFrame).toBeUndefined();
+    expect(stood.binding.createChannelBinding).not.toHaveBeenCalled(); link.close();
+  });
+});
+
+async function clearAnswer(params, changes = {}) {
+  const { hashSdp } = await import("../src/core/peerBinding.js");
+  return { sdp: clearSdp("CD"), payload_protocol: "dtls-json-v1", peer_nonce: params.peer_nonce,
+    negotiation: params.negotiation, peer_token: clearToken(2), offer_hash: await hashSdp(params.sdp),
+    answer_hash: await hashSdp(clearSdp("CD")), offer_fingerprint: "ab".repeat(32), answer_fingerprint: "cd".repeat(32), ...changes };
+}
+async function finishClear(stood) {
+  await nativeReady(stood);
+  const app = stood.peer().channels.get("app"); control(app, appChallenge);
+  await vi.waitFor(() => expect(app.sent.length).toBe(1)); control(app, appAck);
+  return stood.link;
+}
+
+describe("clear startup boundaries", () => {
+  it.each(["dtls-json-v1", "secretbox-v1"])("retains early trickle in both directions for %s", async (protocol) => {
+    let answerOffer;
+    const local = { candidate: "candidate:1 1 udp 1 10.0.0.1 1 typ host" };
+    const remote = { candidate: "candidate:2 1 udp 1 10.0.0.2 2 typ host" };
+    const stood = await clearStand({ waitForAnswer: false,
+      onLocal: (peer) => { peer.gather(local); peer.gather(null); peer.gather(null); },
+      respond: (params) => new Promise((resolve) => { answerOffer = () => clearAnswer(params, { payload_protocol: protocol }).then(resolve); }),
+    });
+    await vi.waitFor(() => expect(answerOffer).toBeTypeOf("function"));
+    const push = { type: "rtc.ice", candidate: remote, peer_token: clearToken(2), negotiation: 1 };
+    stood.candidateSinks[0](push);
+    stood.candidateSinks[0]({ ...push, candidate: null });
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice")).toEqual([]);
+    expect(stood.peer().remoteCandidates).toEqual([]);
+    // An early control is retained until the authenticated answer is installed.
+    if (protocol === "dtls-json-v1") control(stood.peer().channels.get("app"), appChallenge);
+    await answerOffer();
+    await vi.waitFor(() => expect(stood.peer().remoteDescriptions).toHaveLength(1));
+    await nativeReady(stood);
+    if (protocol === "dtls-json-v1") {
+      const app = stood.peer().channels.get("app");
+      await vi.waitFor(() => expect(app.sent.length).toBe(1)); control(app, appAck);
+    }
+    const link = await stood.link;
+    await vi.waitFor(() => expect(stood.peer().remoteCandidates).toEqual([remote, null]));
+    const outbound = stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params);
+    expect(outbound.map((params) => params.candidate)).toEqual(protocol === "dtls-json-v1" ? [local, null] : [local]);
+    if (protocol === "dtls-json-v1") expect(outbound.every((params) => params.peer_token === clearToken(2) && params.negotiation === 1)).toBe(true);
+    else expect(outbound.every((params) => params.peer_token === undefined)).toBe(true);
+    link.close();
+  });
+
+  it("rejects candidate overflow while the answer is pending and ignores its late completion", async () => {
+    let complete;
+    const stood = await clearStand({ waitForAnswer: false, respond: (params) => new Promise((resolve) => { complete = () => clearAnswer(params).then(resolve); }) });
+    await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
+    for (let i = 0; i < 129; i++) stood.peer().gather({ candidate: `candidate:${i} typ host` });
+    await expect(stood.link).rejects.toThrow();
+    expect(stood.peer().closed).toBe(true);
+    await complete();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(stood.peer().remoteDescriptions).toEqual([]);
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice")).toEqual([]);
+  });
+
+  it("rejects unknown selection before touching native remote SDP", async () => {
+    const stood = await clearStand({ waitForAnswer: false, respond: (params) => clearAnswer(params, { payload_protocol: "invalid" }) });
+    await expect(stood.link).rejects.toThrow(/protocol/);
+    expect(stood.peer().remoteDescriptions).toEqual([]);
+  });
+
+  it("drops tokenless, stale-token and stale-generation ICE after clear selection", async () => {
+    const stood = await clearStand(); const link = await finishClear(stood);
+    const push = { type: "rtc.ice", candidate: { candidate: "candidate:1 typ host" }, peer_token: clearToken(2), negotiation: 1 };
+    stood.candidateSinks[0]({ ...push, peer_token: undefined });
+    stood.candidateSinks[0]({ ...push, peer_token: clearToken(9) });
+    stood.candidateSinks[0]({ ...push, negotiation: 2 });
+    expect(stood.peer().remoteCandidates).toEqual([]);
+    stood.candidateSinks[0](push);
+    expect(stood.peer().remoteCandidates).toEqual([push.candidate]);
+    link.close();
+  });
+
+  it("bounds app binding by ten seconds from native channel open", async () => {
+    const stood = await clearStand();
+    vi.useFakeTimers(); onTestFinished(() => vi.useRealTimers());
+    await nativeReady(stood);
+    await vi.advanceTimersByTimeAsync(10001);
+    await expect(stood.link).rejects.toThrow(/binding timed out/);
+    expect(stood.peer().closed).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects a second early control and oversized control", async () => {
+    for (const extra of [appChallenge, { ...appChallenge, padding: "x".repeat(65536) }]) {
+      let complete;
+      const stood = await clearStand({ waitForAnswer: false, respond: (params) => new Promise((resolve) => { complete = () => clearAnswer(params).then(resolve); }) });
+      await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
+      const app = stood.peer().channels.get("app"); control(app, appChallenge); control(app, extra);
+      await complete(); await nativeReady(stood);
+      await expect(stood.link).rejects.toThrow(/binding controls|oversized/);
+      expect(stood.peer().closed).toBe(true);
+    }
+  });
+});
+
+function terminalHandle(sessionId) {
+  return { sessionId, createChannelBinding: () => ({
+    prove: async (message) => {
+      if (message.session_id !== sessionId) throw new Error("wrong terminal session");
+      return { type: "channel_bind_v1", session_id: sessionId, envelope: {} };
+    },
+    acceptAck: async (message) => {
+      if (message.session_id !== sessionId || !message.envelope?.valid) throw new Error("wrong terminal ack");
+      return { bindingId: clearToken(4), encode: (payload) => ({ payload }), decode: (frame) => frame, close() {} };
+    }, close() {},
+  }) };
+}
+async function proveTerminal(channel, sessionId, start) {
+  await vi.waitFor(() => expect(channel.sent.length).toBe(start + 1));
+  expect(JSON.parse(channel.sent[start])).toMatchObject({ type: "channel_bind_begin_v1", session_id: sessionId, peer_token: clearToken(2) });
+  control(channel, { ...appChallenge, session_id: sessionId });
+  await vi.waitFor(() => expect(channel.sent.length).toBe(start + 2));
+  control(channel, { ...appAck, session_id: sessionId });
+}
+
+describe("independent terminal proof", () => {
+  it("keeps app and old terminal usable through failed attempts, retiring old only after replacement ack", async () => {
+    const stood = await clearStand(); const link = await finishClear(stood); const term = stood.peer().channels.get("term");
+    const firstPending = link.bindTerminal(terminalHandle("term-1"));
+    await proveTerminal(term, "term-1", 0); const first = await firstPending;
+    const retired = vi.fn(); first.onClose(retired);
+    const failed = link.bindTerminal(terminalHandle("term-bad"));
+    await vi.waitFor(() => expect(term.sent.length).toBe(3));
+    control(term, { ...appAck, session_id: "term-bad" });
+    await expect(failed).rejects.toThrow(/unexpected/);
+    expect(first.isClosed()).toBe(false); expect(link.app.isClosed()).toBe(false); expect(term.readyState).toBe("open");
+    const next = link.bindTerminal(terminalHandle("term-2"));
+    await vi.waitFor(() => expect(term.sent.length).toBe(4)); expect(retired).not.toHaveBeenCalled();
+    await proveTerminal(term, "term-2", 3); const second = await next;
+    expect(retired).toHaveBeenCalledTimes(1); expect(first.isClosed()).toBe(true); expect(second.isClosed()).toBe(false);
+    first.close(); expect(term.readyState).toBe("open"); expect(stood.peer().closed).toBe(false); link.close();
+  });
+
+  it("cancels a pending terminal bind on replacement and bounds an unanswered begin", async () => {
+    const stood = await clearStand(); const link = await finishClear(stood);
+    vi.useFakeTimers(); onTestFinished(() => vi.useRealTimers());
+    const previous = link.bindTerminal(terminalHandle("term-old"));
+    const pending = link.bindTerminal(terminalHandle("term-new"));
+    await expect(previous).rejects.toThrow(/replaced/);
+    const refusal = expect(pending).rejects.toThrow(/timed out/);
+    await vi.advanceTimersByTimeAsync(10001);
+    await refusal;
+    expect(stood.peer().closed).toBe(false); expect(link.app.isClosed()).toBe(false); link.close();
+  });
+});
+
+describe("real role proof over the browser carrier", () => {
+  it("proves app and separately minted terminal credentials, then carries clear framed payloads", async () => {
+    const transport = await import("@build/secure-transport");
+    const { createChannelBinding } = await import("../src/core/peerBinding.js");
+    const appKey = await transport.generateSessionKey();
+    const termKey = await transport.generateSessionKey();
+    const binding = { sessionId: "app-session", transport,
+      createChannelBinding: (options) => createChannelBinding({ ...options, transport, sessionId: "app-session", sessionKeyB64: appKey, deviceId: "device-1" }) };
+    const stood = await clearStand({ binding }); await nativeReady(stood);
+    const app = stood.peer().channels.get("app"); control(app, appChallenge);
+    await vi.waitFor(() => expect(app.sent.length).toBe(1));
+    const acknowledge = async (channel, index, sessionId, sessionKeyB64, bindingId) => {
+      const proof = JSON.parse(channel.sent[index]);
+      const decoded = await transport.decryptEnvelope({ sessionKeyB64, envelope: proof.envelope });
+      expect(decoded.payload).toMatchObject({ domain: "channel_bind_v1", session_id: sessionId, peer_token: clearToken(2), channel_id: channel.id, channel_label: channel.label });
+      const envelope = await transport.encryptFrame({ sessionKeyB64,
+        outerFields: { session_id: sessionId, route_to: "client" },
+        frameFields: { frame_type: "data", sender: "device", payload: { ...decoded.payload, domain: "channel_bound_v1", binding_id: bindingId } } });
+      control(channel, { type: "channel_bound_v1", session_id: sessionId, envelope });
+    };
+    await acknowledge(app, 0, "app-session", appKey, clearToken(4));
+    const link = await stood.link;
+    await link.app.sendFrame({ method: "ping" });
+    const clear = JSON.parse(app.sent[1]);
+    expect(clear).toEqual({ protocol: "dtls-json-v1", binding_id: clearToken(4), seq: 1, frame_type: "data", payload: { method: "ping" } });
+    const heard = vi.fn(); link.app.onFrame(heard);
+    control(app, { ...clear, payload: { type: "changed" } });
+    expect(heard).toHaveBeenCalledWith({ frame_type: "data", payload: { type: "changed" } });
+    const term = stood.peer().channels.get("term");
+    const terminal = link.bindTerminal({ sessionId: "term-session", sessionKeyB64: termKey, deviceId: "device-1" });
+    await vi.waitFor(() => expect(term.sent.length).toBe(1));
+    control(term, { ...appChallenge, session_id: "term-session" });
+    await vi.waitFor(() => expect(term.sent.length).toBe(2));
+    await acknowledge(term, 1, "term-session", termKey, clearToken(5));
+    const termCarrier = await terminal;
+    await termCarrier.sendFrame({ method: "term.input", params: { data: "pwd\n" } });
+    expect(JSON.parse(term.sent[2])).toMatchObject({ binding_id: clearToken(5), seq: 1, payload: { method: "term.input" } });
+    expect(link.app.isClosed()).toBe(false); link.close();
+  });
+});
+
+describe("pending terminal payload fence", () => {
+  it("delivers the old binding while rejecting a pending binding's premature payload", async () => {
+    const stood = await clearStand(); const link = await finishClear(stood);
+    onTestFinished(() => link.close());
+    const term = stood.peer().channels.get("term");
+    const firstAttempt = link.bindTerminal(terminalHandle("term-1"));
+    await proveTerminal(term, "term-1", 0); const first = await firstAttempt;
+    const oldFrames = vi.fn(); first.onFrame(oldFrames);
+    const pending = link.bindTerminal(terminalHandle("term-2"));
+    let refusal; pending.catch((error) => { refusal = error; });
+    control(term, { binding_id: clearToken(4), frame_type: "data", payload: { old: true } });
+    expect(oldFrames).toHaveBeenCalledTimes(1);
+    control(term, { binding_id: clearToken(9), frame_type: "data", payload: { premature: true } });
+    await vi.waitFor(() => expect(refusal).toBeInstanceOf(Error), { timeout: 150 });
+    expect(oldFrames).toHaveBeenCalledTimes(1);
+    expect(first.isClosed()).toBe(false); expect(link.app.isClosed()).toBe(false);
+  });
+});
+
+describe("clear negotiation attempt fences", () => {
+  it.each(["local", "remote"])("includes held %s relay objects in the queue bound", async (direction) => {
+    const stood = await clearStand(); const peer = stood.peer();
+    const candidate = (index, type) => ({ type, candidate: `candidate:${index} typ ${type}` });
+    const sink = stood.candidateSinks[0];
+    const emit = direction === "local" ? (value) => peer.gather(value) : (value) => sink({ type: "rtc.ice", candidate: value, peer_token: clearToken(2), negotiation: 1 });
+    emit(candidate(0, "host"));
+    for (let i = 0; i < 129; i++) emit(candidate(i, "relay"));
+    await expect(stood.link).rejects.toThrow();
+    expect(peer.closed).toBe(true);
+    expect(peer.remoteCandidates.every((value) => value.type !== "relay")).toBe(true);
+    expect(stood.signalled.filter(([method, params]) => method === "rtc.ice" && params.candidate.type === "relay")).toEqual([]);
+  });
+
+  it("keeps the original setup deadline while early candidates arrive", async () => {
+    vi.useFakeTimers(); onTestFinished(() => vi.useRealTimers());
+    let complete;
+    const stood = await clearStand({ waitForAnswer: false, openTimeoutMs: 1000,
+      respond: (params) => new Promise((resolve) => { complete = () => clearAnswer(params).then(resolve); }) });
+    await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
+    for (let i = 0; i < 3; i++) { stood.peer().gather({ candidate: `candidate:${i} typ host` }); await vi.advanceTimersByTimeAsync(300); }
+    await vi.advanceTimersByTimeAsync(101);
+    await expect(stood.link).rejects.toMatchObject({ blockedReason: "timeout" });
+    expect(stood.peer().closed).toBe(true); expect(vi.getTimerCount()).toBe(0);
+    await complete(); await vi.advanceTimersByTimeAsync(0);
+    expect(stood.peer().remoteDescriptions).toEqual([]);
+  });
+
+  it("retains the committed transcript and original token on ICE restart", async () => {
+    const stood = await clearStand(); const link = await finishClear(stood); const peer = stood.peer();
+    peer.fail();
+    await vi.waitFor(() => expect(peer.remoteDescriptions).toHaveLength(2));
+    const restarted = stood.signalled.filter(([method]) => method === "rtc.offer").map(([, params]) => params);
+    expect(restarted.map((params) => params.negotiation)).toEqual([1, 2]);
+    expect(restarted[1].peer_nonce).toBe(restarted[0].peer_nonce);
+    expect(restarted[0].peer_token).toBeUndefined();
+    expect(restarted[1].peer_token).toBe(clearToken(2));
+    const push = { type: "rtc.ice", candidate: { candidate: "candidate:1 typ host" }, peer_token: clearToken(2), negotiation: 1 };
+    stood.candidateSinks[0](push); expect(peer.remoteCandidates).toEqual([]);
+    stood.candidateSinks[0]({ ...push, negotiation: 2 }); expect(peer.remoteCandidates).toEqual([push.candidate]);
+    expect(stood.binding.createChannelBinding).toHaveBeenCalledTimes(1);
+    link.close();
+  });
+
+  it("fails an attempted codec downgrade after clear commitment", async () => {
+    let count = 0;
+    const stood = await clearStand({ respond: (params) => ++count === 1 ? clearAnswer(params) : Promise.resolve({ sdp: clearSdp("CD") }) });
+    const link = await finishClear(stood); stood.peer().fail();
+    await vi.waitFor(() => expect(stood.peer().closed).toBe(true));
+    expect(stood.peer().remoteDescriptions).toHaveLength(1); link.close();
+  });
+
+  it("compares native channel identity before producing a proof", async () => {
+    const stood = await clearStand(); stood.peer().channels.get("app").id = 1;
+    await nativeReady(stood); control(stood.peer().channels.get("app"), appChallenge);
+    await expect(stood.link).rejects.toThrow(/native channel/);
+    expect(stood.binding.createChannelBinding).not.toHaveBeenCalled();
+  });
+});
+
+describe("retired terminal control isolation", () => {
+  it("ignores a canceled session's delayed challenge during a newer bind", async () => {
+    const stood = await clearStand(); const link = await finishClear(stood); onTestFinished(() => link.close());
+    const term = stood.peer().channels.get("term");
+    const old = link.bindTerminal(terminalHandle("old-term"));
+    const newer = link.bindTerminal(terminalHandle("new-term")); newer.catch(() => {});
+    await expect(old).rejects.toThrow(/replaced/);
+    await vi.waitFor(() => expect(term.sent.length).toBe(1));
+    control(term, { ...appChallenge, session_id: "old-term" });
+    control(term, { ...appChallenge, session_id: "new-term" });
+    await vi.waitFor(() => expect(term.sent.length).toBe(2));
+    control(term, { ...appAck, session_id: "new-term" });
+    expect((await newer).isClosed()).toBe(false);
+  });
+});
+
+describe("physical proof write cancellation", () => {
+  it("does not send a superseded terminal begin parked behind channel backpressure", async () => {
+    const stood = await clearStand(); const link = await finishClear(stood); onTestFinished(() => link.close());
+    const term = stood.peer().channels.get("term"); term.bufferedAmount = 2 * 1024 * 1024;
+    const old = link.bindTerminal(terminalHandle("old-term"));
+    await Promise.resolve();
+    const newer = link.bindTerminal(terminalHandle("new-term")); newer.catch(() => {});
+    await expect(old).rejects.toThrow(/replaced/);
+    term.bufferedAmount = 0; term.emit("bufferedamountlow");
+    await vi.waitFor(() => expect(term.sent.length).toBe(1));
+    expect(JSON.parse(term.sent[0]).session_id).toBe("new-term");
+    control(term, { ...appChallenge, session_id: "new-term" });
+    await vi.waitFor(() => expect(term.sent.length).toBe(2));
+    control(term, { ...appAck, session_id: "new-term" }); await newer;
+  });
+});
+
+describe("terminal replacement publication", () => {
+  it("publishes the current bound term and preserves it across a failed replacement", async () => {
+    const stood = await clearStand(); const link = await finishClear(stood); onTestFinished(() => link.close());
+    const term = stood.peer().channels.get("term");
+    expect(link.term).toBeNull();
+    const firstPending = link.bindTerminal(terminalHandle("term-1")); await proveTerminal(term, "term-1", 0);
+    const first = await firstPending; expect(link.term).toBe(first);
+    const bad = link.bindTerminal(terminalHandle("term-bad"));
+    control(term, { ...appAck, session_id: "term-bad" }); await expect(bad).rejects.toThrow();
+    expect(link.term).toBe(first);
+    const start = term.sent.length;
+    const secondPending = link.bindTerminal(terminalHandle("term-2")); await proveTerminal(term, "term-2", start);
+    const second = await secondPending; expect(link.term).toBe(second);
+    term.close(); expect(link.term).toBeNull();
+  });
+
+  it("pauses old outbound admission until replacement proof fails or commits", async () => {
+    const stood = await clearStand(); const link = await finishClear(stood); onTestFinished(() => link.close());
+    const term = stood.peer().channels.get("term");
+    const firstPending = link.bindTerminal(terminalHandle("term-1")); await proveTerminal(term, "term-1", 0); const first = await firstPending;
+    const bad = link.bindTerminal(terminalHandle("term-bad"));
+    const held = first.sendFrame({ old: "resumes on failure" }); held.catch(() => {});
+    await vi.waitFor(() => expect(term.sent.length).toBe(3));
+    expect(term.sent.map((text) => JSON.parse(text).payload).filter(Boolean)).toEqual([]);
+    control(term, { ...appAck, session_id: "term-bad" }); await expect(bad).rejects.toThrow();
+    await held; expect(JSON.parse(term.sent.at(-1)).payload).toEqual({ old: "resumes on failure" });
+    const next = link.bindTerminal(terminalHandle("term-2"));
+    const canceled = first.sendFrame({ old: "never sent after ack" }); const rejected = expect(canceled).rejects.toThrow();
+    const start = term.sent.length;
+    await proveTerminal(term, "term-2", start); await next; await rejected;
+    expect(term.sent.some((text) => JSON.parse(text).payload?.old === "never sent after ack")).toBe(false);
+  });
+});
+
+describe("native attempt callback fencing", () => {
+  it("ignores an old handler and old ufrag after restarting the same native peer", async () => {
+    const stood = await clearStand({ offerSdp: (round) => clearSdp("AB") + `a=ice-ufrag:round-${round}\r\n` });
+    const link = await finishClear(stood); onTestFinished(() => link.close());
+    const peer = stood.peer(); const oldCallback = peer.listeners.icecandidate[0];
+    peer.fail(); await vi.waitFor(() => expect(peer.remoteDescriptions).toHaveLength(2));
+    const candidate = { candidate: "candidate:1 typ host", usernameFragment: "round-0" };
+    peer.gather(candidate);
+    oldCallback({ candidate: { ...candidate, usernameFragment: "round-1" } });
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice")).toEqual([]);
+    peer.gather({ ...candidate, usernameFragment: "round-1" });
+    await vi.waitFor(() => expect(stood.signalled.filter(([method]) => method === "rtc.ice")).toHaveLength(1));
+    expect(stood.signalled.find(([method]) => method === "rtc.ice")[1]).toMatchObject({ peer_token: clearToken(2), negotiation: 2 });
+  });
+
+  it("handles a raw close replayed before role binder initialization", async () => {
+    class ClosingPeer extends FakePeerConnection {
+      async createOffer() { return { type: "offer", sdp: clearSdp("AB") }; }
+      createDataChannel(label, init) {
+        const channel = super.createDataChannel(label, init);
+        const add = channel.addEventListener.bind(channel);
+        let closed = false;
+        channel.addEventListener = (type, callback) => {
+          add(type, callback);
+          if (label === "app" && type === "close" && !closed) { closed = true; channel.readyState = "closed"; callback(); }
+        };
+        return channel;
+      }
+    }
+    const stood = await clearStand({ waitForAnswer: false, RTCPeerConnectionImpl: ClosingPeer });
+    await expect(stood.link).rejects.toThrow(/peer binding closed/);
+    expect(stood.peer().closed).toBe(true);
+  });
+});
+
+describe("finite signaling tail", () => {
+  it.each([false, true])("expires pending ICE work without penalizing empty native gathering (pending=%s)", async (pending) => {
+    vi.useFakeTimers(); onTestFinished(() => vi.useRealTimers());
+    const stood = await clearStand({ openTimeoutMs: 1000,
+      onLocal: (peer) => { peer.iceGatheringState = "gathering"; if (pending) peer.gather({ candidate: "candidate:1 typ host" }); },
+      signalImpl: (method, params) => {
+        if (method === "rtc.offer") return clearAnswer(params);
+        if (method === "rtc.ice") return new Promise(() => {});
+        return Promise.resolve({});
+      } });
+    const link = await finishClear(stood); onTestFinished(() => link.close());
+    await vi.advanceTimersByTimeAsync(1001);
+    await link.whenInitialSignalingComplete();
+    expect(stood.peer().closed).toBe(pending);
+    const before = stood.signalled.length;
+    stood.peer().gather({ candidate: "candidate:late typ host" });
+    expect(stood.signalled.length).toBe(before);
+  });
+});
+
+describe("actual pending ICE completion bounds", () => {
+  it.each(["local", "remote"])("retains the %s reservation across asynchronous delivery", async (direction) => {
+    const stood = await clearStand({ onLocal: (peer) => { peer.iceGatheringState = "gathering"; },
+      signalImpl: (method, params) => method === "rtc.offer" ? clearAnswer(params) : method === "rtc.ice" ? new Promise(() => {}) : Promise.resolve({}) });
+    const link = await finishClear(stood); onTestFinished(() => link.close());
+    const peer = stood.peer(); peer.addIceCandidate = vi.fn(() => new Promise(() => {}));
+    const emit = (candidate) => direction === "local" ? peer.gather(candidate) : stood.candidateSinks[0]({ type: "rtc.ice", peer_token: clearToken(2), negotiation: 1, candidate });
+    for (let i = 0; i < 128; i++) emit({ candidate: `candidate:${i} typ host` });
+    expect(peer.closed).toBe(false);
+    emit({ candidate: "candidate:overflow typ host" }); expect(peer.closed).toBe(true);
+  });
+  it.each(["local", "remote"])("retains the %s byte budget across asynchronous delivery", async (direction) => {
+    const stood = await clearStand({ onLocal: (peer) => { peer.iceGatheringState = "gathering"; },
+      signalImpl: (method, params) => method === "rtc.offer" ? clearAnswer(params) : method === "rtc.ice" ? new Promise(() => {}) : Promise.resolve({}) });
+    const link = await finishClear(stood); onTestFinished(() => link.close());
+    const peer = stood.peer(); peer.addIceCandidate = vi.fn(() => new Promise(() => {}));
+    const emit = (candidate) => direction === "local" ? peer.gather(candidate) : stood.candidateSinks[0]({ type: "rtc.ice", peer_token: clearToken(2), negotiation: 1, candidate });
+    for (let i = 0; i < 3; i++) emit({ candidate: `candidate:${i} typ host ${"x".repeat(20000)}` });
+    expect(peer.closed).toBe(false);
+    emit({ candidate: `candidate:overflow typ host ${"x".repeat(20000)}` }); expect(peer.closed).toBe(true);
+  });
+
+  it.each([["local", false], ["remote", false], ["local", true], ["remote", true]])("orders the %s marker behind asynchronous handoff (nullFirst=%s)", async (direction, nullFirst) => {
+    vi.useFakeTimers(); onTestFinished(() => vi.useRealTimers());
+    const releases = [];
+    const delivered = [];
+    const stood = await clearStand({ onLocal: (peer) => { peer.iceGatheringState = "gathering"; },
+      signalImpl: (method, params) => {
+        if (method === "rtc.offer") return clearAnswer(params);
+        if (method !== "rtc.ice") return Promise.resolve({});
+        delivered.push(params.candidate); return new Promise((resolve) => releases.push(resolve));
+      } });
+    const peer = stood.peer(); peer.addIceCandidate = vi.fn((candidate) => { delivered.push(candidate); return new Promise((resolve) => releases.push(resolve)); });
+    const emit = (candidate) => direction === "local" ? peer.gather(candidate) : stood.candidateSinks[0]({ type: "rtc.ice", peer_token: clearToken(2), negotiation: 1, candidate });
+    emit({ candidate: "candidate:1 typ host" }); emit({ candidate: "candidate:2 typ relay" }); if (nullFirst) emit(null); emit({ candidate: "" }); if (!nullFirst) emit(null);
+    expect(delivered.map((value) => value?.candidate || null)).toEqual(["candidate:1 typ host"]);
+    await vi.advanceTimersByTimeAsync(1501);
+    expect(delivered.map((value) => value?.candidate || null)).toEqual(["candidate:1 typ host", "candidate:2 typ relay"]);
+    releases.splice(0).forEach((release) => release()); await vi.advanceTimersByTimeAsync(0);
+    expect(delivered.map((value) => value?.candidate || null)).toEqual(["candidate:1 typ host", "candidate:2 typ relay", null]);
+    releases.splice(0).forEach((release) => release());
+    stood.peer().close(); await expect(stood.link).rejects.toThrow();
+  });
+});
+
+describe("ICE audit lifecycle regressions", () => {
+  it("retires a healthy optional restart at its deadline without admitting late ICE", async () => {
+    vi.useFakeTimers(); onTestFinished(() => vi.useRealTimers());
+    let peer;
+    const stood = await clearStand({ openTimeoutMs: 1000, onFailed: async () => { peer.iceGatheringState = "gathering"; } });
+    peer = stood.peer();
+    peer.getStats = async () => asReport([
+      ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+      ...pairEntries("direct", { localType: "host", remoteType: "host" }),
+    ]);
+    const link = await finishClear(stood); onTestFinished(() => link.close());
+    await vi.advanceTimersByTimeAsync(20001);
+    expect(stood.signalled.filter(([method]) => method === "rtc.offer")).toHaveLength(2);
+    const callback = peer.listeners.icecandidate[0];
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(peer.closed).toBe(false);
+    callback({ candidate: { candidate: "candidate:late typ host" } });
+    peer.gather({ candidate: "candidate:later typ host" });
+    stood.candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: "candidate:remote typ host" }, peer_token: clearToken(2), negotiation: 2 });
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice")).toEqual([]);
+    expect(peer.remoteCandidates).toEqual([]);
+  });
+
+  it("expires pending native ICE after signaling already completed", async () => {
+    vi.useFakeTimers(); onTestFinished(() => vi.useRealTimers());
+    const stood = await clearStand({ openTimeoutMs: 1000 }); const link = await finishClear(stood);
+    onTestFinished(() => link.close()); await link.whenInitialSignalingComplete();
+    let finishNative;
+    stood.peer().addIceCandidate = () => new Promise((resolve) => { finishNative = resolve; });
+    stood.candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: "candidate:pending typ host" }, peer_token: clearToken(2), negotiation: 1 });
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(stood.peer().closed).toBe(true); expect(vi.getTimerCount()).toBe(0);
+    finishNative(); await vi.advanceTimersByTimeAsync(0);
+    expect(stood.peer().closed).toBe(true);
+  });
+
+  it("does not release reused successor candidate reservations when an old signal settles", async () => {
+    const completes = [];
+    const stood = await clearStand({ signalImpl: (method, params) => method === "rtc.offer" ? clearAnswer(params)
+      : method === "rtc.ice" ? new Promise((resolve) => completes.push(resolve)) : Promise.resolve({}) });
+    const link = await finishClear(stood); onTestFinished(() => link.close()); const peer = stood.peer();
+    const reused = { candidate: "candidate:reused typ host" }; peer.gather(reused);
+    const oldSignal = completes[0]; peer.fail(); await vi.waitFor(() => expect(peer.remoteDescriptions).toHaveLength(2));
+    peer.gather(reused); oldSignal(); await Promise.resolve(); await Promise.resolve();
+    for (let i = 0; i < 127; i++) peer.gather({ candidate: `candidate:${i} typ host` });
+    expect(peer.closed).toBe(false);
+    peer.gather({ candidate: "candidate:overflow typ host" }); expect(peer.closed).toBe(true);
+  });
+
+  it("preserves the legacy empty marker while suppressing the global null", async () => {
+    const host = { candidate: "candidate:1 typ host" };
+    const stood = await clearStand({ respond: async () => ({ sdp: clearSdp("CD") }), onLocal: (peer) => {
+      peer.gather(host); peer.gather({ candidate: "" }); peer.gather(null);
+    } });
+    await nativeReady(stood); const link = await stood.link; onTestFinished(() => link.close());
+    await link.whenInitialSignalingComplete();
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params)).toEqual([{ candidate: host }, { candidate: { candidate: "" } }]);
+  });
+});
+
+it("ignores stale negotiation pushes before the fresh answer authenticates its token", async () => {
+  let complete;
+  const stood = await clearStand({ waitForAnswer: false, respond: (params) => new Promise((resolve) => { complete = () => clearAnswer(params).then(resolve); }) });
+  await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
+  const sink = stood.candidateSinks[0];
+  for (let i = 0; i < 129; i++) sink({ type: "rtc.ice", candidate: { candidate: `candidate:${i} typ host` }, peer_token: clearToken(9), negotiation: 0 });
+  expect(stood.peer().closed).toBe(false);
+  await complete(); await vi.waitFor(() => expect(stood.peer().remoteDescriptions).toHaveLength(1));
+  const link = await finishClear(stood); expect(stood.peer().remoteCandidates).toEqual([]); link.close();
+});
+
+describe("legacy empty ICE candidate compatibility", () => {
+  it.each([false, true])("preserves native per-generation empty metadata in the legacy-only path (nullFirst=%s)", async (nullFirst) => {
+    const stood = stand(); await vi.waitFor(() => expect(stood.peer()?.remoteDescriptions).toHaveLength(1));
+    const host = { candidate: "candidate:1 typ host", sdpMid: "0", usernameFragment: "round-1" };
+    const empty = { candidate: "", sdpMid: "0", usernameFragment: "round-1" };
+    stood.peer().gather(host); if (nullFirst) stood.peer().gather(null); stood.peer().gather(empty); if (!nullFirst) stood.peer().gather(null);
+    await nativeReady(stood); const link = await stood.link; onTestFinished(() => link.close());
+    await link.whenInitialSignalingComplete();
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params)).toEqual([{ candidate: host }, { candidate: empty }]);
+  });
+
+  it.each([false, true])("preserves empty metadata after authenticated legacy selection (nullFirst=%s)", async (nullFirst) => {
+    const host = { candidate: "candidate:1 typ host", sdpMid: "0", usernameFragment: "round-1" };
+    const empty = { candidate: "", sdpMid: "0", usernameFragment: "round-1" };
+    const stood = await clearStand({ offerSdp: () => clearSdp("AB") + "a=ice-ufrag:round-1\r\n",
+      respond: async () => ({ sdp: clearSdp("CD") }), onLocal: (peer) => { peer.gather(host); if (nullFirst) peer.gather(null); peer.gather(empty); if (!nullFirst) peer.gather(null); } });
+    await nativeReady(stood); const link = await stood.link; onTestFinished(() => link.close());
+    await link.whenInitialSignalingComplete();
+    expect(stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params)).toEqual([{ candidate: host }, { candidate: empty }]);
+  });
+});
+
+it.each([false, true])("retains127 early candidates and both end forms in one reservation (nullFirst=%s)", async (nullFirst) => {
+  let complete;
+  const stood = await clearStand({ waitForAnswer: false, onLocal: (peer) => {
+    for (let i = 0; i < 127; i++) peer.gather({ candidate: `candidate:${i} typ host` });
+    if (nullFirst) peer.gather(null); peer.gather({ candidate: "" }); if (!nullFirst) peer.gather(null);
+  }, respond: (params) => new Promise((resolve) => { complete = () => clearAnswer(params).then(resolve); }) });
+  expect(stood.peer().closed).toBe(false);
+  await vi.waitFor(() => expect(complete).toBeTypeOf("function")); await complete();
+  await vi.waitFor(() => expect(stood.peer().remoteDescriptions).toHaveLength(1));
+  const link = await finishClear(stood); onTestFinished(() => link.close()); await link.whenInitialSignalingComplete();
+  const candidates = stood.signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params.candidate);
+  expect(candidates).toHaveLength(128); expect(candidates.at(-1)).toBeNull();
 });

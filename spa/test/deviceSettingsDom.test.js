@@ -25,6 +25,7 @@ const { App, openSession, openBrowser, openNewRepo, openProjectSettings, refresh
   }));
 vi.mock("../src/app.js", () => ({ App, render: () => {} }));
 vi.mock("../src/connection.js", () => ({
+  chooseDeviceTransport: async () => null,
   syncDeviceRecoveryPresence: () => {},
   // The wake listeners the gate arms and disarms (#60).
   watchForWake: () => {},

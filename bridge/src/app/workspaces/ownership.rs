@@ -5,9 +5,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod inputs;
+mod roots;
 mod structure;
 #[cfg(test)]
 pub(in crate::app) mod work_counts;
+pub(in crate::app) use roots::RootsOwnership;
 pub(in crate::app) use structure::ProjectionStructure;
 
 pub(in crate::app) struct ProjectionOwnership {

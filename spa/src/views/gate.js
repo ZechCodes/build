@@ -44,6 +44,7 @@ import { signOutHtml } from "../core/signOut.js";
 import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
 import { accountReadCadence, isPairingConnecting, notePairingApproved, onPairingChanged } from "../core/pendingPairing.js";
 import { restoreWriteOperations } from "../core/writeOperationRuntime.js";
+import { usesHttp } from "../core/httpConnections.js";
 
 /** Whether the cache's two readers are up. They are started once, before any
  *  session answers, and stood down when a gate screen takes the page (which is
@@ -283,7 +284,7 @@ function holdForDevices() {
   watchForOnline();
 }
 
-const allDevicesOffline = () => App.devices.length > 0 && App.devices.every((device) => device.status === "offline");
+const allDevicesOffline = () => App.devices.length > 0 && App.devices.every((device) => device.status === "offline" && !usesHttp(device.id));
 
 /** Whether the screen this hold stands on is still on the page. A hold is only
  *  as good as what it put there: one whose screen has been taken down leaves a
@@ -780,7 +781,7 @@ function hasOnlineRecoveryCandidate() {
         existingDeviceLifecycle(context.deviceId)?.snapshot().securityStop)
       .map((context) => context.deviceId),
   );
-  return App.devices.some((device) => device.status === "online" && !barred.has(device.id));
+  return App.devices.some((device) => (device.status === "online" || usesHttp(device.id)) && !barred.has(device.id));
 }
 
 export async function boot({ retry = false } = {}) {

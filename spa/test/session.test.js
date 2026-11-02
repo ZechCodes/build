@@ -25,7 +25,7 @@ const fakeTransport = {
     sessionKeyB64: `key-${deviceId}`,
     sessionInit: { session_id: sessionId, device_id: deviceId },
   }),
-  openSessionAccept: async () => {},
+  openSessionAccept: async ({ envelope }) => ({ sessionId: envelope.session_id }),
   encryptFrame: async ({ outerFields, frameFields }) => ({ outerFields, frameFields }),
   decryptEnvelope: async ({ envelope }) => ({ payload: envelope.frameFields.payload }),
 };
@@ -839,5 +839,17 @@ describe("the diagnostic history of a path that died", () => {
     expect(new Set(written.map((entry) => entry.connection))).toEqual(new Set(["dev-a:sess-1"]));
     expect(written[0].method).toBe("thread.post");
     expect(written[1].vouched).toBe("ice-connected");
+  });
+});
+
+describe("peer binding credential capability", () => {
+  it("keeps the session key private and allocates monotonic negotiation generations", async () => {
+    const session = await openSession({ rendezvous: fakeRendezvous(), transport: fakeTransport, deviceId: "dev-a" });
+    expect(Object.isFrozen(session.peerBinding)).toBe(true);
+    expect(session.peerBinding).not.toHaveProperty("sessionKeyB64");
+    expect(session.peerBinding.sessionId).toBe(session.sessionId);
+    expect(session.peerBinding.allocateNegotiation()).toBe(1);
+    expect(session.peerBinding.allocateNegotiation()).toBe(2);
+    session.close();
   });
 });

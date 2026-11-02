@@ -3,7 +3,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { openCarrier, DC_BUFFERED_HIGH } from "../src/core/carrier.js";
-import { CHUNK_BYTES, createReassembler, splitEnvelope } from "../src/core/chunk.js";
+import { CHUNK_BYTES, MAX_REASSEMBLED_BYTES, createReassembler, splitEnvelope } from "../src/core/chunk.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -186,6 +186,41 @@ describe("the DataChannel carrier", () => {
     channel.deliver(parts[2]);
     expect(channel.readyState).toBe("closed");
     expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes on an unchunked frame past the UTF-8 cap without delivering it", () => {
+    const channel = new FakeChannel();
+    const carrier = openCarrier({ channel });
+    const seen = vi.fn();
+    carrier.onEnvelope(seen);
+    channel.deliver(JSON.stringify({ text: "é".repeat(MAX_REASSEMBLED_BYTES / 2) }));
+    expect(channel.readyState).toBe("closed");
+    expect(seen).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { part: { id: 1, index: -1, count: 2 }, data: "x" },
+    { part: { index: 0, count: 1 }, data: "{}" },
+    { part: { id: 1, index: 0, count: 1 }, data: {} },
+  ])("closes on malformed chunks without delivering them: %j", (part) => {
+    const channel = new FakeChannel();
+    const carrier = openCarrier({ channel });
+    const seen = vi.fn();
+    carrier.onEnvelope(seen);
+    channel.deliver(JSON.stringify(part));
+    expect(channel.readyState).toBe("closed");
+    expect(seen).not.toHaveBeenCalled();
+  });
+
+  it("closes when the part count changes mid-frame", () => {
+    const channel = new FakeChannel();
+    const carrier = openCarrier({ channel });
+    const seen = vi.fn();
+    carrier.onEnvelope(seen);
+    channel.deliver(JSON.stringify({ part: { id: 1, index: 0, count: 2 }, data: "{" }));
+    channel.deliver(JSON.stringify({ part: { id: 1, index: 1, count: 3 }, data: "}" }));
+    expect(channel.readyState).toBe("closed");
+    expect(seen).not.toHaveBeenCalled();
   });
 
   it("reports the wire gone once when the channel closes", () => {

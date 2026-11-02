@@ -76,6 +76,8 @@ services:
     build:
       context: ../bridge
       dockerfile: Containerfile
+      additional_contexts:
+        fixtures: ../fixtures
       target: relay
     environment:
       API_INTERNAL_URL: http://app:8080
@@ -91,6 +93,8 @@ services:
     build:
       context: ../bridge
       dockerfile: Containerfile
+      additional_contexts:
+        fixtures: ../fixtures
       target: bridge
     environment:
       BRIDGE_API_URL: http://app:8080

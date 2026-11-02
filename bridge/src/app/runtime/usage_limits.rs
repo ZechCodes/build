@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-use crate::app::{AppState, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT};
+use crate::app::{AppState, PendingAgentTurn, TurnText};
 use crate::harness::usage_limit::UsageLimited;
 use crate::models::AgentProvider;
 
@@ -215,10 +215,9 @@ fn rfc3339(at: OffsetDateTime) -> String {
 /// What an agent whose turn died at the limit is told when it lifts.
 fn resume_notice(harness: AgentProvider, said: &str) -> String {
     let label = crate::harness::harness_for(harness).label();
-    format!(
-        "Retrying {label} after its reported usage limit. Your last turn stopped \
-         (“{said}”), so it did not finish: pick up where you left off, starting \
-         from what is in your working tree."
+    crate::templates::fill(
+        crate::templates::MESSAGE_USAGE_LIMIT_RETRY,
+        &[("harness", label), ("said", said)],
     )
 }
 
@@ -384,10 +383,7 @@ impl AppState {
             // The notice is on the thread; the turn is the nudge to read it.
             // Cold when the session went with the limit, warm when it is still
             // there and remembers the turn that stopped.
-            say: Some(TurnText {
-                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-            }),
+            say: Some(TurnText::reading_unread(addressed.model_choice.provider)),
             phase: "resume",
             wants_catch_up: true,
             survives_refusal: false,
@@ -533,5 +529,19 @@ mod tests {
         let resume = resume_notice(HARNESS, SAID);
         assert!(resume.contains("after its reported usage limit"));
         assert!(resume.contains(SAID));
+    }
+
+    #[test]
+    fn the_resume_notice_is_said_exactly() {
+        assert_eq!(
+            resume_notice(HARNESS, SAID),
+            "Retrying Claude Code after its reported usage limit. Your last turn stopped \
+             (“You've hit your session limit · resets 6:20pm (America/New_York)”), so it did \
+             not finish: pick up where you left off, starting from what is in your working \
+             tree."
+        );
+        assert!(
+            resume_notice(HARNESS, "{harness} says no").contains("stopped (“{harness} says no”)")
+        );
     }
 }

@@ -313,7 +313,10 @@ class DevicesController(Controller):
         device = await db_session.get(Device, device_id)
         if device is None or device.owner_user_id != user_id:
             raise NotFoundException("device not found")
+        from buildapp.bridge_http_auth import revoke_device
+
         device.approved = False
+        await revoke_device(db_session, device_id, utc_now())
         await db_session.commit()
         return Response({"device_id": str(device_id), "approved": False})
 

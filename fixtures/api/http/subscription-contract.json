@@ -1,0 +1,44 @@
+{
+  "create": {
+    "body": {
+      "durable": false,
+      "events_path": "/v1/subscriptions/{{subscription_id}}/events",
+      "opening_generation": "{{opening_generation}}",
+      "subscription_id": "{{subscription_id}}"
+    },
+    "status": 201
+  },
+  "delete": {
+    "body": null,
+    "status": 204
+  },
+  "events": {
+    "frames": [
+      "event: hello\ndata: {\"bridge_epoch\":\"{{bridge_epoch}}\",\"durable\":false,\"opening_generation\":\"{{opening_generation}}\",\"recovery\":\"current_state_refresh\",\"subscription_id\":\"{{subscription_id}}\"}\n\n",
+      "event: event\ndata: {\"bridge_epoch\":\"{{bridge_epoch}}\",\"type\":\"probe.pushed\"}\n\n",
+      ": keepalive\n\n"
+    ],
+    "headers": {
+      "cache-control": "no-store",
+      "content-type": "text/event-stream; charset=utf-8"
+    },
+    "status": 200
+  },
+  "generated_by": "bridge/src/http/runtime/tests/subscriptions/contract.rs",
+  "stream_replaced": {
+    "body": {
+      "error": "stream_replaced",
+      "error_code": "stream_replaced",
+      "retryable": false
+    },
+    "status": 409
+  },
+  "stream_required": {
+    "body": {
+      "error": "stream_required",
+      "error_code": "stream_required",
+      "retryable": false
+    },
+    "status": 409
+  }
+}

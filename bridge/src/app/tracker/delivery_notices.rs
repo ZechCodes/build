@@ -1,5 +1,6 @@
 //! Durable dependency and failure notices. These never grant assignment authority.
 use super::dispatch::envelope_of;
+use super::notice_words;
 use super::StoredAnswer;
 use crate::app::AppState;
 use crate::store::{DeliveryIntent, DeliveryNotice};
@@ -252,7 +253,7 @@ impl AppState {
         let mut names = Vec::new();
         for id in ids.iter().filter_map(Value::as_str) {
             let name = match self.tracker_store()?.load_tracker_task(id).stored()? {
-                Some(task) => format!("#{} — {} ({})", task.number, task.title, id),
+                Some(task) => notice_words::removed_prerequisite(task.number, &task.title, id),
                 None => id.to_string(),
             };
             names.push(name);
@@ -260,10 +261,7 @@ impl AppState {
         if names.is_empty() {
             return Ok(String::new());
         }
-        Ok(format!(
-            "Prerequisite edges were removed: {}. Removing an edge does not mark its task Done.",
-            names.join(", ")
-        ))
+        Ok(notice_words::prerequisites_removed(&names))
     }
 
     fn task_delivery_notice_body(
@@ -272,12 +270,7 @@ impl AppState {
         event: &TaskEvent,
         coordinator_release: bool,
     ) -> Result<String, String> {
-        let mut body = match event.kind {
-            TaskEventKind::Unblocked if coordinator_release => format!("Task #{} — {} ({}) has no unresolved prerequisites. Decide who should take it; read the current task with get_task.", task.number, task.title, task.id),
-            TaskEventKind::Unblocked => format!("Task #{} — {} ({}) is unblocked. This is informational; it does not assign the task or dispatch another assignment. Read the current task with get_task.", task.number, task.title, task.id),
-            TaskEventKind::DispatchFailed => format!("Task #{} — {} ({}) could not be delivered: {}. Read the task with get_task and decide how to recover the saved assignment.", task.number, task.title, task.id, event.payload["error"].as_str().unwrap_or("delivery failed")),
-            _ => format!("Task #{} — {} ({}) is blocked again by prerequisites {}. This is informational; it does not dispatch another assignment. Read the current task with get_task.", task.number, task.title, task.id, event.payload["unresolved_task_ids"]),
-        };
+        let mut body = notice_words::dependency_line(task, event, coordinator_release);
         if event.kind == TaskEventKind::Unblocked {
             let removed = self.removed_prerequisite_context(event)?;
             if !removed.is_empty() {

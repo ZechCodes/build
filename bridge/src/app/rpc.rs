@@ -1,10 +1,12 @@
 use crate::api::{self, ApiError, API_VERSION};
+use crate::app::runtime::agents::endpoints::ScopedEndpointError;
 use crate::app::{
     agent_attach, agent_interrupt, agent_start, rtc_close, rtc_ice, rtc_offer, session_hello,
     stream_start, term_ack, term_attach, term_create, term_input, term_resize, AppState,
     DeferredNext, DeliveryRunner, PeersSlot,
 };
-use crate::carrier::{FrameHandler, SessionSender};
+use crate::execution::CallContext as SessionSender;
+use crate::execution::FrameHandler;
 use crate::orchestrator::OrchestratorError;
 use crate::timing::FrameTimer;
 use crate::transport;
@@ -195,6 +197,13 @@ pub(in crate::app) fn dispatch_frame(
         .cloned()
         .unwrap_or_else(|| json!({}));
 
+    if !sender.method_is_live(&method) {
+        return api::reply(
+            id,
+            Err(ApiError::unavailable("request authorization has ended")),
+        );
+    }
+
     // Signaling first, and off the app mutex entirely: an offer or a candidate
     // touches the peers and nothing else, and an ICE restart that waits behind
     // a busy app is a phone that gives up on the device (task #128). Admission
@@ -211,25 +220,35 @@ pub(in crate::app) fn dispatch_frame(
         Err(error) => return api::reply(id, Err(error)),
     };
 
+    if !sender.method_is_live(&method) {
+        return api::reply(
+            id,
+            Err(ApiError::unavailable("request authorization has ended")),
+        );
+    }
+
     let result = match session_scoped(state, &sender, &method, &params, &timer) {
-        Some(outcome) => noted_as_user_activity(state, &method, outcome, &timer).map_err(|error| {
-            if error == PROJECT_DELETION_IN_PROGRESS {
-                ApiError::unavailable(error)
-            } else if error == crate::reclaim::RESERVED {
-                // A terminal opening in a workspace the reclaim service has
-                // reserved: try again in a moment.
-                ApiError::busy(error)
-            } else {
-                terminal_session_refusal(&method, &params, error)
-            }
-        }),
-        // The caller is named for the frame: the `changes.*` verbs push to
-        // it, and `routed` carries only the state.
-        None => crate::api::v1::changes::with_session(&sender, || {
-            routed(state, &method, &params, &timer, &admission)
-        }),
+        Some(outcome) => noted_as_user_activity(state, &method, outcome, &timer),
+        None => routed(state, &sender, &method, &params, &timer, &admission),
     };
     api::reply(id, result)
+}
+
+fn scoped_session_refusal(method: &str, params: &Value, error: String) -> ApiError {
+    if error == PROJECT_DELETION_IN_PROGRESS {
+        ApiError::unavailable(error)
+    } else if error == crate::reclaim::RESERVED {
+        ApiError::busy(error)
+    } else {
+        terminal_session_refusal(method, params, error)
+    }
+}
+
+fn scoped_endpoint_refusal(method: &str, params: &Value, error: ScopedEndpointError) -> ApiError {
+    match error {
+        ScopedEndpointError::Ended => ApiError::unavailable("request authorization has ended"),
+        ScopedEndpointError::Domain(error) => scoped_session_refusal(method, params, error),
+    }
 }
 
 fn conversation_session_refusal(error: String) -> ApiError {
@@ -260,12 +279,12 @@ pub(in crate::app) fn terminal_session_refusal(
 /// Resume, Stop and a new terminal are answered by [`session_scoped`] and
 /// never reach `dispatch`, whose stamp is the only other one; so a
 /// successful one is noted here. A refusal is not the user being here.
-fn noted_as_user_activity(
+fn noted_as_user_activity<E>(
     state: &Arc<Mutex<AppState>>,
     method: &str,
-    outcome: Result<Value, String>,
+    outcome: Result<Value, E>,
     timer: &FrameTimer,
-) -> Result<Value, String> {
+) -> Result<Value, E> {
     if outcome.is_ok() && USER_ACTIVITY_VERBS.contains(&method) {
         let now = i64::try_from(crate::agent::now_ms()).unwrap_or(i64::MAX);
         if method == "term.create" {
@@ -339,7 +358,7 @@ fn session_scoped(
     method: &str,
     params: &Value,
     timer: &FrameTimer,
-) -> Option<Result<Value, String>> {
+) -> Option<Result<Value, ApiError>> {
     if !matches!(
         method,
         "session.hello"
@@ -357,9 +376,14 @@ fn session_scoped(
         return None;
     }
     if !allowed_during_project_deletion(method) && timer.lock(state).project_deletion_in_progress {
-        return Some(Err(PROJECT_DELETION_IN_PROGRESS.to_string()));
+        return Some(Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS)));
     }
-    Some(match method {
+    if !sender.execution_is_live() {
+        return Some(Err(ApiError::unavailable(
+            "request authorization has ended",
+        )));
+    }
+    let outcome = match method {
         // The greeting: what this bridge can do for the session, and — for the
         // capabilities that need somewhere to send to — the subscription
         // itself. Needs the caller's own `SessionSender`, which is why it is
@@ -373,14 +397,14 @@ fn session_scoped(
         "term.create" => {
             #[cfg(test)]
             pause_terminal_create_after_admission(state, timer);
-            term_create(state, params, timer)
+            term_create(state, Some(sender), params, timer)
         }
         "term.attach" => term_attach(state, sender, params, timer),
         // A write to a child's pty blocks while the child is not draining, so
         // both of these take the handle under the lock and write with it
         // released.
-        "term.input" => term_input(state, params, timer),
-        "term.resize" => term_resize(state, params, timer),
+        "term.input" => term_input(state, sender, params, timer),
+        "term.resize" => term_resize(state, sender, params, timer),
         // Needs the caller's own session: an ack speaks for one client's
         // receive queue, not for the screen.
         "term.ack" => term_ack(state, sender, params, timer),
@@ -388,19 +412,31 @@ fn session_scoped(
         // Bypasses `dispatch` because it hands its queued turn to
         // `DeliveryRunner`, which needs the shared handle `dispatch` does not
         // have.
-        "agent.start" => agent_start(state, params, timer),
+        "agent.start" => {
+            return Some(
+                agent_start(state, sender, params, timer)
+                    .map_err(|error| scoped_endpoint_refusal(method, params, error)),
+            )
+        }
         // Upstream's stop control, on the same footing as `agent.start`: it
         // reaches the harness through the shared handle, which `dispatch`
         // does not hold.
-        "agent.interrupt" => agent_interrupt(state, params, timer),
+        "agent.interrupt" => {
+            return Some(
+                agent_interrupt(state, sender, params, timer)
+                    .map_err(|error| scoped_endpoint_refusal(method, params, error)),
+            )
+        }
         _ => return None,
-    })
+    };
+    Some(outcome.map_err(|error| scoped_session_refusal(method, params, error)))
 }
 
 /// Everything else: `route` (v1 first, legacy second) under a short-held lock,
 /// with the git work it defers run with the mutex released.
 fn routed(
     state: &Arc<Mutex<AppState>>,
+    context: &SessionSender,
     method: &str,
     params: &Value,
     timer: &FrameTimer,
@@ -413,12 +449,15 @@ fn routed(
     timer.mark_request("dispatch_start");
     let (dispatched, deferred) = {
         let mut app = timer.lock(state);
+        if !context.method_is_live(method) {
+            return Err(ApiError::unavailable("request authorization has ended"));
+        }
         // Refuse before dispatch_deferring can take an existing deferred job
         // or checkpoint queued work, just as the session precheck did.
         if !allowed_during_project_deletion(method) && app.project_deletion_in_progress {
             return Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS));
         }
-        app.dispatch_deferring(method, params)
+        app.dispatch_deferring_with_context(method, params, Some(context))
     };
     #[cfg(test)]
     timer.mark_request("dispatch_end");
@@ -615,7 +654,7 @@ impl AppState {
     /// this mutex with no handler behind it, and both must record against one
     /// set of since-boot counters.
     pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
-        let (clock, peers, pool, reads, snapshots, observations, mutations) = {
+        let (clock, peers, pool, reads, snapshots, observations, mutations, greeting) = {
             let mut app = state.lock().unwrap();
             app.initialize_snapshot_projection();
             app.initialize_read_context();
@@ -627,9 +666,11 @@ impl AppState {
                 app.snapshot_service(),
                 app.observation_service(),
                 super::mutations::MutationService::new(&app),
+                app.session_greeting(crate::bridge_epoch::current()),
             )
         };
         let ending = Arc::clone(&state);
+        let cleanup_state = Arc::clone(&state);
         FrameHandler::new(clock, move |sender, frame, timer| {
             dispatch_frame(&state, &peers, sender, frame, timer)
         })
@@ -647,6 +688,17 @@ impl AppState {
             }
         })
         .with_snapshot_reads(move |frame| snapshots.call(frame))
+        .with_greeting_reads(move |epoch| {
+            let mut greeting = greeting.clone();
+            greeting["bridge_epoch"] = json!(epoch);
+            greeting
+        })
+        .with_output_cleanup(move || {
+            let uploads = cleanup_state.lock().unwrap().prune_output_resources();
+            for upload in uploads {
+                upload.dispose();
+            }
+        })
         .on_session_end(move |session_id| {
             let removed = ending
                 .lock()
@@ -656,6 +708,30 @@ impl AppState {
                 upload.dispose();
             }
         })
+    }
+
+    pub(in crate::app) fn prune_output_resources(&mut self) -> Vec<super::fs::uploads::Upload> {
+        if self.changes().prune_closed() > 0 {
+            self.watchers.wake();
+        }
+        for screen in self.session_registry.screen_handles() {
+            screen.prune_closed_clients();
+        }
+        for subscriptions in [
+            &mut self.update_subscriptions,
+            &mut self.models_subscriptions,
+            &mut self.harnesses_subscriptions,
+        ] {
+            subscriptions.retain(|_, (context, task)| {
+                if context.events_are_live() {
+                    true
+                } else {
+                    task.abort();
+                    false
+                }
+            });
+        }
+        self.drop_retired_uploads()
     }
 
     /// Convenience for tests: own the state and build a handler in one step.
@@ -681,6 +757,15 @@ impl AppState {
     /// running handler goes through [`dispatch_frame`].
     #[cfg(test)]
     pub(in crate::app) fn handle(&mut self, frame: Frame) -> Value {
+        self.handle_with_context(frame, None)
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn handle_with_context(
+        &mut self,
+        frame: Frame,
+        context: Option<&SessionSender>,
+    ) -> Value {
         let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
         let method = frame
             .payload
@@ -694,7 +779,10 @@ impl AppState {
             .cloned()
             .unwrap_or_else(|| json!({}));
 
-        api::reply(id, self.dispatch_api(&method, &params))
+        api::reply(
+            id,
+            self.dispatch_api_with_context(&method, &params, context),
+        )
     }
 
     /// Route a verb, record it if it counts as the human touching something,
@@ -721,8 +809,18 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> Result<Value, ApiError> {
+        self.dispatch_api_with_context(method, params, None)
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn dispatch_api_with_context(
+        &mut self,
+        method: &str,
+        params: &Value,
+        context: Option<&SessionSender>,
+    ) -> Result<Value, ApiError> {
         self.with_inline_deferred(|app| {
-            let (outcome, deferred) = app.dispatch_deferring(method, params);
+            let (outcome, deferred) = app.dispatch_deferring_with_context(method, params, context);
             // No `Arc` to release the mutex through — the synchronous entry point.
             // The git work runs right here, exactly as it did before the split;
             // [`dispatch_frame`] is the caller that runs it with the lock free.
@@ -751,13 +849,15 @@ impl AppState {
         &mut self,
         method: &str,
         params: &Value,
+        context: Option<&SessionSender>,
     ) -> Result<Value, ApiError> {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("routing.handler");
         if self.project_deletion_in_progress && !allowed_during_project_deletion(method) {
             return Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS));
         }
-        if let Some(answered) = crate::api::v1::dispatch(self, method, params) {
+        if let Some(answered) = crate::api::v1::dispatch_with_context(self, method, params, context)
+        {
             return answered;
         }
         match self.route_legacy(method, params) {
@@ -814,6 +914,270 @@ impl AppState {
         if USER_ACTIVITY_VERBS.contains(&method) {
             let now = i64::try_from(crate::agent::now_ms()).unwrap_or(i64::MAX);
             self.note_user_activity(now);
+        }
+    }
+}
+
+#[cfg(test)]
+mod explicit_context_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn scoped_authorization_refusal_preserves_its_unavailable_code() {
+        let error = scoped_endpoint_refusal("agent.start", &json!({}), ScopedEndpointError::Ended);
+        assert_eq!(error.code(), "unavailable");
+    }
+
+    #[test]
+    fn scoped_endpoints_keep_live_request_authority_without_an_event_binding() {
+        use crate::execution::session::{
+            ClientSessions, DeliveryError, EncodedEvent, Opening, ReplySink, VerifiedCaller,
+        };
+        struct Reply;
+        impl ReplySink for Reply {
+            fn try_send(&self, _event: EncodedEvent) -> Result<(), DeliveryError> {
+                Ok(())
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppState::new_unrooted(temp.path(), "main", true, "unused.sock").shared();
+        let sessions = ClientSessions::new(crate::bridge_epoch::current());
+        let session = sessions
+            .open(VerifiedCaller::verified_relay("device", Opening::new()))
+            .unwrap();
+        let request = sessions.request(&session, Arc::new(Reply), None).unwrap();
+        let sender = SessionSender::from_request(&request);
+        assert!(!sender.has_events());
+        let peers = state.lock().unwrap().peers_slot();
+        for method in ["agent.start", "agent.interrupt"] {
+            let frame = Frame {
+                session_id: session.id().into(),
+                message_id: "scoped-auth-test".into(),
+                frame_type: transport::DATA_FRAME_TYPE.into(),
+                sender: "client".into(),
+                created_at: String::new(),
+                payload: json!({"id": "scoped-auth-test", "method": method, "params": {}}),
+            };
+            let timer = crate::timing::FrameClock::new().frame(method);
+            let reply = dispatch_frame(&state, &peers, sender.clone(), frame, timer);
+            assert_eq!(reply["error_code"], "internal", "{method}: {reply}");
+            let expected = if method == "agent.start" {
+                "missing id"
+            } else {
+                "missing required param: entity_id"
+            };
+            assert_eq!(reply["error"], expected);
+        }
+        assert!(state.lock().unwrap().delivery_queue.is_idle());
+    }
+
+    #[test]
+    fn caller_expiring_while_waiting_for_app_lock_has_no_subscription_effect() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppState::new_unrooted(temp.path(), "main", true, "unused.sock").shared();
+        let live = Arc::new(AtomicBool::new(true));
+        let check = live.clone();
+        let context = SessionSender::legacy(
+            "waiting-context",
+            crate::execution::session::Opening::new(),
+            Arc::new(|_| true),
+        )
+        .bound(
+            42,
+            Arc::new(move || check.load(Ordering::Acquire)),
+            Arc::new(Mutex::new(())),
+        );
+        let held = state.lock().unwrap();
+        let caller_state = state.clone();
+        let (started, waiting) = std::sync::mpsc::channel();
+        let caller = std::thread::spawn(move || {
+            let timer = crate::timing::FrameClock::new().frame("changes.subscribe");
+            started.send(()).unwrap();
+            routed(
+                &caller_state,
+                &context,
+                "changes.subscribe",
+                &json!({
+                    "subscription_id": "must-not-exist",
+                    "scope": {"kind": "all"},
+                    "kinds": ["state"],
+                    "mode": "realtime"
+                }),
+                &timer,
+                &RequestAdmission::Bypassed,
+            )
+        });
+        waiting.recv().unwrap();
+        live.store(false, Ordering::Release);
+        drop(held);
+        let error = caller.join().unwrap().unwrap_err();
+        assert_eq!(error.code(), "unavailable");
+        assert!(state
+            .lock()
+            .unwrap()
+            .changes()
+            .list("waiting-context")
+            .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod request_effect_lock_tests {
+    use super::*;
+    use crate::execution::session::{
+        ClientSessions, DeliveryError, EncodedEvent, Opening, ReplySink, VerifiedCaller,
+    };
+    use std::time::Duration;
+    struct Sink;
+    impl ReplySink for Sink {
+        fn try_send(&self, _: EncodedEvent) -> Result<(), DeliveryError> {
+            Ok(())
+        }
+    }
+    #[derive(Default)]
+    struct ObservedTerminal {
+        writes: std::sync::atomic::AtomicUsize,
+        resizes: std::sync::atomic::AtomicUsize,
+    }
+    impl crate::harness::AgentSession for ObservedTerminal {
+        fn send_turn(&self, _: &crate::harness::Turn) -> Result<(), crate::harness::HarnessError> {
+            Ok(())
+        }
+        fn status(&self) -> crate::harness::AgentStatus {
+            crate::harness::AgentStatus::Waiting
+        }
+        fn quiet_for(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn exited_within(&self, _: Duration) -> bool {
+            false
+        }
+        fn end(&self) {}
+        fn backdate_last_output(&self, _: Duration) {}
+        fn terminal(&self) -> Option<&dyn crate::harness::TerminalView> {
+            Some(self)
+        }
+    }
+    impl crate::harness::TerminalView for ObservedTerminal {
+        fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Vec<u8>> {
+            tokio::sync::broadcast::channel(1).1
+        }
+        fn write_input(&self, _: &[u8]) -> Result<(), crate::harness::HarnessError> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn resize(&self, _: portable_pty::PtySize) -> Result<(), crate::harness::HarnessError> {
+            self.resizes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn pid(&self) -> Option<u32> {
+            None
+        }
+    }
+    #[test]
+    fn terminal_effects_recheck_cancel_after_app_lock_wait() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for method in ["term.create", "term.input", "term.resize"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = AppState::new(
+                dir.path(),
+                dir.path().join("worktrees"),
+                "main",
+                true,
+                "unused.sock",
+            );
+            let project_id = app.project_at(0).id.clone();
+            let root = AppState::canonical_root(dir.path());
+            let key = crate::app::TabKey {
+                root: root.clone(),
+                tab_id: "term-1".into(),
+            };
+            let terminal = Arc::new(ObservedTerminal::default());
+            let tab = crate::app::Tab {
+                tab_id: key.tab_id.clone(),
+                root,
+                role: crate::app::TabRole::Shell,
+                project_source: None,
+                created_at: String::new(),
+                session: terminal.clone(),
+                session_instance: None,
+                screen: Some(crate::screen::ScreenHandle::new("term-1", 80, 24)),
+                live: true,
+                call_sequences: Default::default(),
+                last_delivered_at: None,
+            };
+            app.session_registry.test_insert_tab(key, tab);
+            let params = json!({"term_id":"term-1","data":"eA==","project_id":project_id,"cols":100,"rows":40});
+            let scope = crate::app::runtime::terminals::terminal_scope_root(&mut app, &params);
+            assert!(
+                scope.is_ok(),
+                "project must be a viable terminal scope: {scope:?}"
+            );
+            let state = app.shared();
+            let clock = crate::timing::FrameClock::new();
+            let timer = clock.frame("control");
+            let live_sender = SessionSender::detached("control");
+            term_input(&state, &live_sender, &params, &timer).unwrap();
+            term_resize(&state, &live_sender, &params, &timer).unwrap();
+            assert_eq!(terminal.writes.load(Ordering::SeqCst), 1);
+            assert_eq!(terminal.resizes.load(Ordering::SeqCst), 1);
+            let spawn_count = Arc::new(AtomicUsize::new(0));
+            let sessions = ClientSessions::new("epoch");
+            let session = sessions
+                .open(VerifiedCaller::verified_relay("device", Opening::new()))
+                .unwrap();
+            let request = sessions.request(&session, Arc::new(Sink), None).unwrap();
+            let sender = SessionSender::from_request(&request);
+            let held = state.lock().unwrap();
+            std::thread::scope(|scope| {
+                let (started, waiting) = std::sync::mpsc::channel();
+                let state = &state;
+                let sender = &sender;
+                let worker = scope.spawn(move || {
+                    let clock = crate::timing::FrameClock::new();
+                    let timer = clock.frame(method);
+                    crate::timing::install_test_lock_witness(started);
+                    crate::timing::observe_test_terminal_spawns(spawn_count.clone());
+                    let result = match method {
+                        "term.create" => term_create(state, Some(sender), &params, &timer),
+                        "term.input" => term_input(state, sender, &params, &timer),
+                        "term.resize" => term_resize(state, sender, &params, &timer),
+                        _ => unreachable!(),
+                    };
+                    (result, spawn_count.load(Ordering::SeqCst))
+                });
+                waiting
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("app mutex contention witnessed");
+                request.cancellation().cancel();
+                drop(held);
+                let (result, spawned) = worker.join().unwrap();
+                assert!(
+                    result
+                        .unwrap_err()
+                        .contains("request authorization has ended"),
+                    "{method}"
+                );
+                assert_eq!(spawned, 0, "{method} must not spawn");
+            });
+            assert_eq!(
+                terminal.writes.load(Ordering::SeqCst),
+                1,
+                "{method} must not write"
+            );
+            assert_eq!(
+                terminal.resizes.load(Ordering::SeqCst),
+                1,
+                "{method} must not resize"
+            );
+            assert_eq!(
+                state.lock().unwrap().shell_tab_count(),
+                1,
+                "{method} must not register another shell"
+            );
         }
     }
 }

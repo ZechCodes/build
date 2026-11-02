@@ -155,6 +155,8 @@ impl AppState {
             // turn it ever hears is the whole job — and no conversation, so no
             // catch-up packet either.
             say: Some(TurnText {
+                attachments: Default::default(),
+                kind: None,
                 cold: prompt.clone(),
                 warm: prompt,
             }),

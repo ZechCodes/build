@@ -3,7 +3,7 @@
 // by the same values.
 
 import { describe, it, expect } from "vitest";
-import { CHUNK_BYTES, MAX_REASSEMBLED_BYTES, createReassembler, splitEnvelope } from "../src/core/chunk.js";
+import { CHUNK_BYTES, MAX_REASSEMBLED_BYTES, ChunkError, createReassembler, splitEnvelope } from "../src/core/chunk.js";
 
 const envelopeOf = (bytes) => "e".repeat(bytes);
 
@@ -57,6 +57,40 @@ describe("createReassembler", () => {
 
   it("hands an unchunked message straight back", () => {
     expect(createReassembler().accept('{"version":1}')).toBe('{"version":1}');
+  });
+
+  it("accepts the whole-frame cap measured in UTF-8 bytes", () => {
+    const frame = "é".repeat(MAX_REASSEMBLED_BYTES / 2);
+    expect(createReassembler().accept(frame)).toBe(frame);
+  });
+
+  it("rejects an unchunked frame one byte past the UTF-8 cap", () => {
+    const frame = "é".repeat(MAX_REASSEMBLED_BYTES / 2) + "x";
+    expect(() => createReassembler().accept(frame)).toThrow(ChunkError);
+  });
+
+  it("round-trips Unicode at the chunked frame cap", () => {
+    const frame = "𝄞".repeat(MAX_REASSEMBLED_BYTES / 4);
+    expect(reassemble(splitEnvelope(frame))).toBe(frame);
+  });
+
+  it.each([[2, 3], [3, 2]])("rejects a chunk count changing from %s to %s", (count, changed) => {
+    const reassembler = createReassembler();
+    expect(reassembler.accept(JSON.stringify({ part: { id: 7, index: 0, count }, data: "a" }))).toBeNull();
+    expect(() => reassembler.accept(JSON.stringify({ part: { id: 7, index: 1, count: changed }, data: "b" })))
+      .toThrow(ChunkError);
+  });
+
+  it.each([
+    { part: { id: 1, index: -1, count: 2 }, data: "x" },
+    { part: { id: 1, index: 0, count: -1 }, data: "x" },
+    { part: { index: 0, count: 1 }, data: "x" },
+    { part: { id: "1", index: 0, count: 1 }, data: "x" },
+    { part: { id: 1, index: 0, count: 1 } },
+    { part: { id: 1, index: 0, count: 1 }, data: null },
+    { part: { id: 1, index: 0, count: 1 }, data: {} },
+  ])("rejects malformed chunk fields: %j", (part) => {
+    expect(() => createReassembler().accept(JSON.stringify(part))).toThrow(ChunkError);
   });
 
   it("throws on a missing part — a reassembly that lost one cannot be resumed", () => {

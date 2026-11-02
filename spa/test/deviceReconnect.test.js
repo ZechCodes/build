@@ -21,6 +21,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
 // A stand-in for the app's spine answers everything the app asks it, not only
 // the two this module reads (test/mockedExports.test.js).
 vi.mock("../src/connection.js", () => ({
+  chooseDeviceTransport: async () => null,
   deviceRecoverySnapshot: () => recovery,
   onDeviceRecoveryChanged: (fn) => {
     recoveryListeners.add(fn);

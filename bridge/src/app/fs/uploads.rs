@@ -39,6 +39,8 @@ pub(in crate::app) struct Upload {
     path: String,
     owner: String,
     opening: Opening,
+    event_scope: (u64, Option<u64>),
+    event_live: Arc<dyn Fn() -> bool + Send + Sync>,
     size: u64,
     last_chunk_at: Instant,
     file: Arc<Mutex<Option<UploadFile>>>,
@@ -47,10 +49,14 @@ pub(in crate::app) struct Upload {
 
 impl Upload {
     fn validate(&self) -> Result<(), ApiError> {
-        if !self.active() || !self.opening.is_open() {
+        if !self.active() || !self.binding_is_live() {
             return Err(ApiError::not_found("unknown upload_id"));
         }
         Ok(())
+    }
+
+    fn binding_is_live(&self) -> bool {
+        self.opening.is_open() && (self.event_live)()
     }
 
     fn validate_scope(&self, app: &AppState, root: &Path) -> Result<(), ApiError> {
@@ -105,7 +111,7 @@ impl Upload {
         self.lifecycle
             .compare_exchange(ACTIVE, PUBLISHING, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| ApiError::not_found("unknown upload_id"))?;
-        if !self.opening.is_open() {
+        if !self.binding_is_live() {
             self.lifecycle.store(CANCELLED, Ordering::Release);
             return Err(ApiError::not_found("unknown upload_id"));
         }
@@ -155,8 +161,15 @@ impl AppState {
             .sum()
     }
 
+    /// Collect dead binding resources under the app lock; staging is disposed
+    /// by the caller after releasing it. A claimed finish retains its worker
+    /// reference and settles publication even when its map entry is removed.
+    pub(in crate::app) fn drop_retired_uploads(&mut self) -> Vec<Upload> {
+        self.take_uploads(|upload| !upload.binding_is_live())
+    }
+
     pub(in crate::app) fn drop_ended_session_uploads(&mut self, session_id: &str) -> Vec<Upload> {
-        self.take_uploads(|upload| upload.owner == session_id && !upload.opening.is_open())
+        self.take_uploads(|upload| upload.owner == session_id && !upload.binding_is_live())
     }
 
     fn take_uploads(&mut self, remove: impl Fn(&Upload) -> bool) -> Vec<Upload> {
@@ -196,7 +209,7 @@ impl AppState {
 
     fn take_idle_uploads(&mut self, now: Instant) -> Vec<Upload> {
         self.take_uploads(|upload| {
-            !upload.opening.is_open()
+            !upload.binding_is_live()
                 || now.saturating_duration_since(upload.last_chunk_at) >= UPLOAD_IDLE_TIMEOUT
         })
     }
@@ -216,7 +229,9 @@ impl AppState {
             .get(id)
             .filter(|upload| {
                 upload.active()
-                    && upload.opening.is_open()
+                    && upload.binding_is_live()
+                    && caller.events_are_live()
+                    && upload.event_scope == caller.read_scope()
                     && upload.owner == caller.session_id()
                     && upload.opening.is(&caller.opening())
             })
@@ -268,7 +283,7 @@ impl AppState {
                 .map_err(ApiError::classify)?,
         )?;
         let removed = self.take_idle_uploads(Instant::now());
-        if !caller.session_is_open() {
+        if !caller.events_are_live() {
             // No staging can be dropped under app on an admission refusal.
             return Ok(self.defer_file(
                 move || {
@@ -323,6 +338,8 @@ impl AppState {
             target: target.clone(),
             owner: caller.session_id().into(),
             opening: caller.opening(),
+            event_scope: caller.read_scope(),
+            event_live: caller.event_liveness(),
             size: params.size,
             last_chunk_at: Instant::now(),
             file: Arc::new(Mutex::new(None)),
@@ -607,4 +624,110 @@ fn finish_upload(
     // Remove the published staging descriptor off-lock, including failures.
     file.take();
     Ok((path, super::deferred::persist_reopen(reopened)))
+}
+
+#[cfg(test)]
+mod binding_resources {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    fn context(opening: Opening, scope: u64) -> (SessionSender, Arc<AtomicBool>) {
+        let live = Arc::new(AtomicBool::new(true));
+        let check = live.clone();
+        (
+            SessionSender::legacy("same-session", opening, Arc::new(|_| true)).bound(
+                scope,
+                Arc::new(move || check.load(Ordering::Acquire)),
+                Arc::new(Mutex::new(())),
+            ),
+            live,
+        )
+    }
+
+    fn upload(root: &Path, context: &SessionSender) -> Upload {
+        let destination = Destination::open(root, "", "finished.txt").unwrap();
+        Upload {
+            target: FileTarget::host(root.to_path_buf()),
+            root: root.to_path_buf(),
+            path: "finished.txt".into(),
+            owner: context.session_id().into(),
+            opening: context.opening(),
+            event_scope: context.read_scope(),
+            event_live: context.event_liveness(),
+            size: 0,
+            last_chunk_at: Instant::now(),
+            file: Arc::new(Mutex::new(Some(UploadFile {
+                staged: destination.stage("binding-upload", false).unwrap(),
+                received: 0,
+            }))),
+            lifecycle: Arc::new(AtomicU8::new(ACTIVE)),
+        }
+    }
+
+    #[test]
+    fn successor_cannot_use_old_binding_upload_and_reaper_releases_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let opening = Opening::new();
+        let (old, live) = context(opening.clone(), 1);
+        let (new, _) = context(opening, 2);
+        let state = tempfile::tempdir().unwrap();
+        let mut app = AppState::new_unrooted(state.path(), "main", true, "unused.sock");
+        app.uploads
+            .insert("upload".into(), upload(root.path(), &old));
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        assert!(app
+            .fs_upload_abort(
+                FsUploadIdParams {
+                    upload_id: "upload".into()
+                },
+                &new
+            )
+            .is_err());
+        assert!(app
+            .fs_upload_finish(
+                FsUploadIdParams {
+                    upload_id: "upload".into()
+                },
+                &new
+            )
+            .is_err());
+        assert!(app
+            .fs_upload_chunk(
+                FsUploadChunkParams {
+                    upload_id: "upload".into(),
+                    offset: 0,
+                    content_b64: String::new()
+                },
+                &new
+            )
+            .is_err());
+        live.store(false, Ordering::Release);
+        assert_eq!(app.reap_idle_uploads_at(Instant::now()), 1);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        assert!(app.uploads.is_empty());
+    }
+
+    #[test]
+    fn publication_claim_settles_after_binding_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, live) = context(Opening::new(), 1);
+        let upload = upload(root.path(), &old);
+        upload.claim_publication().unwrap();
+        live.store(false, Ordering::Release);
+        assert!(upload.try_cancel().is_err());
+        let mut file = upload.file.lock().unwrap();
+        file.as_mut().unwrap().staged.finish(0).unwrap();
+        file.take();
+        assert!(root.path().join("finished.txt").is_file());
+    }
+
+    #[test]
+    fn replaced_binding_cannot_continue_or_publish_its_upload() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, live) = context(Opening::new(), 1);
+        let upload = upload(root.path(), &old);
+        live.store(false, Ordering::Release);
+        assert!(upload.validate().is_err());
+        assert!(upload.claim_publication().is_err());
+    }
 }

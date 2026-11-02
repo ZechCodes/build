@@ -115,7 +115,7 @@ Modules are declared in `bridge/src/lib.rs`. The main groups (paths relative to 
 | --- | --- |
 | RPC and state | `app.rs` + `app/` (`AppState`, `app/rpc.rs` dispatch, one submodule per area: `board`, `captures`, `config`, `conversations`, `git`, `tasks`, `projects`, `rtc`, `runs`, `runtime`, `tracker`, `updates`, `watchers`, `workspaces`, `worktrees`) |
 | Wire contract | `api/` (`API_VERSION`, capabilities, `ApiError`), `api/v1/` (typed verbs, one file per family) |
-| Transport | `carrier.rs` + `carrier/` (relay socket or DataChannel behind one boundary; worker pool), `transport.rs` (E2EE), `relay.rs` (relay client), `rtc.rs` + `rtc/` (WebRTC peer, ICE policy, chunking), `liveness.rs`, `presence.rs`, `reachability.rs` |
+| Transport | `carrier.rs` + `carrier/` (relay socket or DataChannel adapters), `execution.rs` + `execution/` (shared admission, workers, caller authority and output bindings), `transport.rs` (E2EE), `relay.rs` (relay client), `rtc.rs` + `rtc/` (WebRTC peer, ICE policy, chunking), `liveness.rs`, `presence.rs`, `reachability.rs` |
 | Push | `changes.rs` (`ChangeBus`) |
 | Persistence | `store.rs` + `store/` (SQLite), `identity.rs`, `workspace.rs` (manifests) |
 | Checkouts | `worktree.rs` + `worktree/` (`WorktreeManager`), `isolation/` (git worktree, Rift, plain copy), `lifecycle/`, `watch.rs`, `diff.rs`, `gitgui/`, `git_process.rs` |
@@ -162,7 +162,16 @@ matches none as a push. Contract fixtures for
 every verb live in `fixtures/api/v1/` and are checked by
 `bridge/tests/api_contract.rs` and `spa/test/apiContract.test.js`.
 
-**Admission.** `FrameIntake` in `bridge/src/carrier.rs` sees every frame first:
+**Admission.** `ExecutionService` in `bridge/src/execution/service.rs` owns the
+shared application entry. `Invocation` uses the existing typed v1 normalization;
+legacy parameter objects preserve their existing domain validation and unknown
+fields. `RequestContext` captures an exact opening, live authorization lease,
+independent reply sink and optional exact event binding. HTTP and WebRTC share
+the dispatcher and read workers. No adapter creates another execution pool.
+The [implementation interface](docs/shared-execution-api.md) describes the
+restricted caller constructors, cancellation and adapter handoff.
+
+`FrameIntake` in `bridge/src/carrier.rs` remains the WebRTC adapter:
 
 - It refuses non-signaling frames that arrive over the relay.
 - It answers `ping` itself.
@@ -174,7 +183,7 @@ The twelve SQL-lane methods (`thread.page`, `thread.activity`, `thread.operation
 `thread.revision`, `tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`,
 `tasks.filterChoices`, `tasks.counts`, `tasks.lookup`, `writes.status` and
 `writes.subscribe`) enter a separate lane
-before terminal or write admission. `carrier/sql.rs` owns eight dedicated
+before terminal or write admission. `execution/sql.rs` owns eight dedicated
 threads and a fair queue with at most 16 waiting callers per session opening.
 Callers waiting for a read connection still count against that bound. Excess
 SQL parks ordered intake on its carrier; it never returns capacity `busy`.
@@ -233,13 +242,45 @@ A full opening still parks its subsequent ordered intake. Queued-only folding,
 carrier cancellation and the eight-worker physical-I/O bound remain in force.
 
 Other queued work uses the worker pool in
-`bridge/src/carrier/dispatch.rs`, which runs handlers on blocking threads.
+`bridge/src/execution/dispatch.rs`, which runs handlers on blocking threads.
 Before that pool, a bounded per-wire admitter in `carrier.rs` feeds frames in
 arrival order; its overflow answers retryable `busy`. The pool has eight
 workers and separate foreground/background queues, with at most two workers
 running background frames. Terminal lanes and immediate handlers run outside
 that eight-worker bound. Deferred writers release the app lock during external
 work and retain their dispatch worker until they finish.
+
+Shared sessions admit at most 32 unfinished requests per opening. Cancellation
+suppresses queued work and output; running effects and deferred settlement retain
+their request permits and reply-owned budget guards until completion. Event
+replacement fences old producers independently of ordinary request replies.
+Legacy work already admitted to ordinary dispatch retains the original opening
+lifetime when a carrier closes; reads and output keep their exact carrier fence.
+Internal owner close cleanup remains valid after retirement.
+Session expiry/revocation retires the exact opening; the daemon's coalesced
+cleanup pass releases dead producer resources without per-close task spawning.
+
+The HTTP adapter reserves buffers from two pools in `bridge/src/http/limits.rs`.
+RPCs reserve their request and response maxima from the 32 MiB
+`TOTAL_BUFFER_BYTES` budget. Each SSE stream reserves its 1 MiB queue
+(`MAX_QUEUED_BYTES`) from the separate 32 MiB `STREAM_BUFFER_BYTES` pool, so at
+most thirty-two streams are open at once. Queued adapter bytes are therefore
+bounded by 32 MiB of RPC plus 32 MiB of stream buffers, before parse and encode
+copies. One credential family holds at most eight live streams
+(`MAX_FAMILY_STREAMS`), so no family can fill more than a quarter of the pool. The
+stream reservation, and the family's count, are held until the stream's body
+drops: a replaced stream whose socket write is stalled keeps counting against
+its own family until it is cut. Streams never draw on the RPC budget, so streams
+held by stalled clients cannot cause an RPC to be refused with 429. When the
+pool is full, or the family is at its cap, the next stream GET is refused with
+429 `overloaded` and `retryable` set, and reserves and binds nothing. Openings
+are capped separately, at 16 per family and 1,024 in all, with one stream slot
+each. There is no per-account stream limit.
+A stream also ends, and returns its reservation, on any of these:
+
+- a full queue;
+- a socket write that stalls for 10 s;
+- any failed push to its binding.
 
 **Dispatch.** Each handled frame goes to `dispatch_frame` in
 `bridge/src/app/rpc.rs`, which tries these in order:
@@ -253,6 +294,12 @@ work and retain their dispatch worker until they finish.
 4. `routed()` → `AppState::route` → `crate::api::v1::dispatch`, then the legacy
    arms (`ping`, `term.list`, `term.close`, and the QA stream fixtures). Native read frames
    have already entered their snapshot, SQL or observation lane at intake.
+
+Application dispatch receives an explicit neutral `CallContext`; it does not
+recover caller identity from thread-local state. Base execution greeting reads
+register no producers. Explicit `session.hello` activates update/model/harness
+subscriptions only on its captured live Application binding; repeated hello
+upserts that binding. Stored producer contexts omit request reply resources.
 
 Routed requests retain their update-admission lease through the reply and
 share it with delivery and compaction workers. Their drain does not acquire
@@ -2331,6 +2378,19 @@ remain viewed across snapshots.
 | `CodexAppServer` | `bridge/src/harness/codex_app_server/` | Codex's app-server JSON protocol |
 | `Pi` | `bridge/src/harness/pi.rs` | Pi, with the `build-tools.ts` extension |
 
+The provider command table distinguishes native app-server commands from text
+sent to a terminal or stream-json harness. For Codex app-server, `/compact` keeps
+its existing routing; other command-shaped input in standalone human submissions
+(first token `/name` followed by optional arguments) is refused locally with a
+visible Build notice. A token with no further `/` counts as a command, including
+bare single-segment paths such as `/tmp`; slash paths such as `/tmp/foo` or
+`/home/user/file` remain ordinary input. The request, failed delivery
+mark and notice are saved with a terminal operation receipt in one transaction,
+so retries cannot duplicate the notice or deliver the command. No provider turn
+is started or interrupted. Legacy callers without an operation ID receive an
+error before acceptance. Claude's command path is unchanged. This is command
+feedback, not native Daybreak support; that integration is tracked by #929.
+
 Codex app-server provider errors are turn failures, so an exhausted
 `error` notification (`willRetry: false`) keeps the process and provider thread
 available for the next message. Build classifies `codexErrorInfo`, its upstream
@@ -2544,6 +2604,53 @@ snapshot's `refresh.completed` reaches `request` when that observation is in.
 The SPA routes the push per device whether or not change subscriptions are
 armed (`spa/src/core/harnessInventoryEvents.js`). Controls and evidence:
 `planning/v2/Harness Authentication Security Checklist.md`.
+
+### Messages to agents
+
+Everything Build says into an agent's conversation goes through
+`bridge/src/agent_message/`. A message is a `MessageKind` (a delivery, a
+thread nudge, a task notice, a restart, a usage-limit resume, a compaction, a
+provider command the user typed, …), a body, and typed attachments.
+`ComposedMessage::framed_for(harness)` turns it into the text one harness is
+handed. Four `Harness` methods have no default, so a new harness does not
+compile until it answers all of them, and each terminal harness's `framing`
+names every kind, so a new kind does not compile until each has decided on it:
+
+- `framing(kind)`: `WithAttachments`, or `Bare` for a command the CLI parses
+  as typed (`/clear`, Claude's `/compact`, the compaction command);
+- `wrap_attachment(text)`: how Build's instructions are marked apart from the
+  user's words. Claude and adk use `<system-reminder>`; Codex, the app server
+  and Pi use `<build_instructions>`;
+- `build_tool_name(tool)`: a `BuildTool` as the model sees it,
+  `mcp__build__<tool>` everywhere but Pi, whose extension registers the bare
+  name;
+- `tool_loading()`: `ToolSearch` on Claude and adk, whose Build tools wait
+  behind tool search, `Loaded` elsewhere.
+
+Attachments are short. A **reply** attachment names where the message is
+answered, chosen from where the speaker spoke (`OperationPayload::turn_attachments`
+in `bridge/src/operation.rs`): the user in the thread → `post_thread_message`,
+a task comment → `comment_task`, another agent → `message_agent`. A **tool
+hint** names the other Build tools the words ask for; on a `ToolSearch`
+harness it says to load them with `ToolSearch select:`, and elsewhere it adds
+nothing. Attachments ride in the turn's text after the body: no harness has a
+per-turn system channel, and the app server's receipts match the echoed text,
+so the transport and the wire are untouched.
+
+Stored thread bodies (tracker, dependency and runtime notices) name tools
+bare, because they are thread content any harness may later read; the
+harness-exact name travels on the attachment of the turn that delivers them.
+The nudge that sends an agent to its unread thread
+(`new_thread_messages_prompt(provider)`, `TurnText::reading_unread`) is
+rendered for the harness that will hear it.
+
+The words live in `bridge/templates/messages/`, beside the role prompts, as
+`MESSAGE_*` constants in `bridge/src/templates.rs` filled by
+`templates::fill`: one pass, a value is never rescanned, an unknown
+`{placeholder}` is kept as written. Code does not `format!` text an agent
+reads. Each harness's exact bytes for each scenario are pinned in
+`bridge/src/agent_message/golden/<harness>/`; regenerate them with
+`UPDATE_GOLDENS=1` only for a deliberate change, and review the diff.
 
 ### Conversation resets
 
@@ -4690,6 +4797,7 @@ whose ratchet count is pinned by `spa/test/complexityRatchet.test.js`.
 | Change the Files explorer | `spa/src/views/files.js` shares previews, edits and file tabs; `spa/src/core/filesRoots.js` provides project/workspace roots; `fileRoots.js` and `fileTree.js` mount their trees; `directoryScope.js` separates directory records from layout state |
 | Add an MCP tool | a `BridgeAction` variant with its `tool_name()` and `surfaces()` arms and a schema in the right `*_tools()` list in `bridge/src/mcp.rs`; handle it in `bridge/src/app/mcp.rs` (or `bridge/src/app/conversations/` for thread actions) |
 | Add a harness | a `Harness` impl in `bridge/src/harness/`, an `AgentProvider` variant in `bridge/src/models.rs`, and its arm in `harness_for()` |
+| Change what Build says to an agent | the wording in `bridge/templates/messages/` and its `MESSAGE_*` constant in `bridge/src/templates.rs`; a new kind of message is a `MessageKind` variant every harness's `framing()` answers (`bridge/src/agent_message/`); goldens in `bridge/src/agent_message/golden/` ([Messages to agents](#messages-to-agents)) |
 | Change what an agent runs under | `bridge/src/priority.rs`, `bridge/src/service/systemd.rs` |
 | Render markdown, or add a reference shape | always `markdownHtml(text, { place, mode })` from `spa/src/core/markdown.js`, the one entry point (`spa/test/markdownEntry.test.js` fails anything else); blocks in `spa/src/core/markdownBlocks.js`; reference syntax in `spa/src/core/markdownRefs.js`, links and labels in `spa/src/core/markdownLinks.js`, web links (`[text](url)`, bare http(s) URLs; http/https/mailto only, new tab) in `spa/src/core/markdownWebLinks.js`, resolution against the account-wide index in `spa/src/core/referenceTargets.js`/`referenceIndex.js` (filled by `referenceIndexFeed.js`); teach agents a new shape in `bridge/templates/notes/link_markup.md`, the protocol bullet in `bridge/src/orchestrator/workspace.rs` and `reference_shapes_note!` in `bridge/src/mcp.rs`; the XSS rules are `planning/v2/Markdown Rendering Security Checklist.md` |
 | Change how a device is paired | the bridge's printed block and approve link in `bridge/src/pairing.rs`; the installers' framing in `scripts/install.sh`; `#/pair/<code>` in `spa/src/core/pairLink.js` opens `spa/src/sheets/addDevice.js` (`openPairingLink` in `spa/src/views/gate.js`); the fragment survives sign-in through `withArrivalFragment` in `skriftapp/buildapp/landing/passkey-signin.js`; the rules are `planning/v2/Device Pairing Security Checklist.md` |

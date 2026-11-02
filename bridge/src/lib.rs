@@ -43,6 +43,7 @@
 #![deny(clippy::await_holding_lock)]
 
 pub mod agent;
+pub mod agent_message;
 pub mod agent_modes;
 pub mod api;
 pub mod app;
@@ -59,6 +60,7 @@ pub mod config;
 pub mod delivery;
 pub mod diff;
 pub(crate) mod encoding;
+pub mod execution;
 pub(crate) mod fs_scope;
 #[cfg(test)]
 pub mod git_fixture;
@@ -66,6 +68,7 @@ pub mod git_process;
 pub mod gitgui;
 pub mod github;
 pub mod harness;
+pub mod http;
 pub mod identity;
 pub mod isolation;
 pub mod lifecycle;

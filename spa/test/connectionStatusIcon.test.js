@@ -26,6 +26,7 @@ const recovery = vi.hoisted(() => ({ states: [], listener: null }));
 const contexts = vi.hoisted(() => ({ live: [], listener: null, paths: new Map(), restoring: new Set() }));
 
 vi.mock("../src/connection.js", () => ({
+  chooseDeviceTransport: async () => null,
   deviceRecoverySnapshot: () => recovery.states,
   onDeviceRecoveryChanged: (listener) => {
     recovery.listener = listener;

@@ -60,8 +60,8 @@ fn sessions_and_replacement_carriers_share_the_process_epoch() {
 fn simulated_process_restart_rotates_epoch_without_relabeling_old_frames() {
     let (mut old, mut old_wire, old_key) = SessionSender::observable("reused-session");
     let (mut next, mut next_wire, next_key) = SessionSender::observable("reused-session");
-    old.bridge_epoch = crate::bridge_epoch::new_boot();
-    next.bridge_epoch = crate::bridge_epoch::new_boot();
+    old.set_epoch_for_test(crate::bridge_epoch::new_boot());
+    next.set_epoch_for_test(crate::bridge_epoch::new_boot());
     assert_ne!(old.bridge_epoch(), next.bridge_epoch());
     assert!(old.push(json!({"type": "term.output", "data": "old"})));
     assert!(next.push(json!({"type": "term.output", "data": "new"})));
@@ -93,7 +93,10 @@ fn scoped_pushes_stop_at_the_original_carrier_and_opening() {
         json!({"id": 1, "method": "rtc.ice", "params": {}}),
     );
     let (_, sender) = registry.admit(&request, &carrier).unwrap();
-    sender.carrier_open.store(false, Ordering::SeqCst);
+    let (other, _other_wire) = CarrierHandle::open();
+    registry.open("released", key.clone(), &other).unwrap();
+    registry.release_carrier(&carrier);
+    assert!(sender.session_is_open());
     assert!(!sender.push_scoped(json!({"type": "writes.confirmed"})));
     assert!(wire.try_recv().is_err());
 }

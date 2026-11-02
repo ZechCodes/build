@@ -39,6 +39,64 @@ function harness(options = {}) {
 }
 
 describe("terminal follow controller", () => {
+  it("detaches a current initial follow after mint failure so terminal waiters settle", async () => {
+    const h = harness({ mint: vi.fn(async () => { throw new Error("RTC unavailable"); }), isDesired: () => true });
+    h.controller.request(target({ peerLink: {}, carrier: null })); await settle();
+    expect(h.effects.detach).toHaveBeenCalledOnce();
+    expect(h.controller.snapshot().phase).toBe("empty");
+  });
+
+  it("does not detach a successor when an obsolete mint later fails", async () => {
+    let rejectOld;
+    const old = new Promise((_, reject) => { rejectOld = reject; });
+    const session = { sessionId: "successor", deviceId: "dev-a", release: vi.fn() };
+    const h = harness({ mint: vi.fn().mockReturnValueOnce(old).mockResolvedValueOnce(session), adopt: vi.fn(async () => {}), isDesired: () => true });
+    h.controller.request(target({ peerLink: {} })); await Promise.resolve();
+    h.controller.request(target({ peerLink: {} })); await settle();
+    rejectOld(new Error("obsolete RTC failure")); await settle();
+    expect(h.effects.detach).not.toHaveBeenCalled();
+    expect(h.controller.snapshot()).toMatchObject({ phase: "confirmed", sessionId: "successor" });
+  });
+
+  it("adopts a newly bound carrier only from its exact peer link", async () => {
+    const peerLink = { term: null, recovery: {} };
+    const carrier = { id: "bound-clear-term" };
+    const h = harness({ isDesired: (candidate) => candidate.peerLink === peerLink });
+    const request = target({ peerLink, carrier: null, recovery: null });
+    h.controller.request(request); await Promise.resolve();
+    peerLink.term = carrier;
+    const minted = { sessionId: "bound", deviceId: "dev-a", peerLink, carrier, release: vi.fn() };
+    h.minted.resolve(minted); await settle(); h.adopted.resolve(); await settle();
+    expect(h.effects.adopt).toHaveBeenCalledWith(minted, carrier, expect.any(Function), peerLink.recovery);
+    expect(h.controller.snapshot()).toMatchObject({ phase: "confirmed", carrier });
+    expect(minted.release).toHaveBeenCalledOnce();
+  });
+
+  it("does not duplicate a pending transition when that same link's term getter changes", async () => {
+    const peerLink = { term: null };
+    const h = harness({ isDesired: () => true }); const request = target({ peerLink, carrier: null });
+    h.controller.request(request); await Promise.resolve();
+    peerLink.term = {};
+    h.controller.request({ ...request, carrier: peerLink.term, recovery: {} });
+    await settle(); expect(h.effects.mint).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a transplanted minted carrier from another peer on the same device", async () => {
+    const h = harness({ isDesired: () => true });
+    h.controller.request(target({ peerLink: {}, carrier: null })); await Promise.resolve();
+    const minted = { sessionId: "wrong-peer", deviceId: "dev-a", peerLink: {}, carrier: {}, release: vi.fn() };
+    h.minted.resolve(minted); await settle();
+    expect(h.effects.adopt).not.toHaveBeenCalled(); expect(minted.release).toHaveBeenCalledOnce();
+    expect(h.controller.snapshot().phase).toBe("empty");
+  });
+
+  it("does not trust a changed minted carrier without captured peer identity", async () => {
+    const h = harness({ isDesired: () => true }); h.controller.request(target()); await Promise.resolve();
+    const minted = { sessionId: "unproven-carrier", deviceId: "dev-a", carrier: {}, release: vi.fn() };
+    h.minted.resolve(minted); await settle();
+    expect(h.effects.adopt).not.toHaveBeenCalled(); expect(minted.release).toHaveBeenCalledOnce();
+  });
+
   it("owns one pending transition and promotes its complete identity only after confirmation", async () => {
     const h = harness();
     const request = h.desire(target());

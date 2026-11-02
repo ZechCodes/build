@@ -91,7 +91,7 @@ async fn assert_unpublished_terminal_pushes(case: Unpublished) {
     );
     let created = {
         let timer = clock.frame("term.create");
-        crate::app::runtime::terminals::term_create(&state, &selector, &timer).unwrap()
+        crate::app::runtime::terminals::term_create(&state, None, &selector, &timer).unwrap()
     };
     if !matches!(case, Unpublished::Initial) {
         state.lock().unwrap().publish_snapshot_projection();

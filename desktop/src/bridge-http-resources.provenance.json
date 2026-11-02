@@ -1,0 +1,11 @@
+{
+  "sourceTask": 913,
+  "sourcePath": "fixtures/api/http/resource-manifest.json",
+  "sha256": "bf75fca58d9ea75db89092d65621d99ca422bda7b164dfcabb3c40a1c713cd97",
+  "predecessor": {
+    "sourceTask": 915,
+    "sourceCommit": "79d60d9526e6d2acbe8a49bf307395c3bb45c4be",
+    "sha256": "bcada2539a96e5784e864abf4e17564bb2d7260ac612f729db4dd5b7adbde616"
+  },
+  "scope": "#913 inventory-drift reconciliation adds tasks.counts and tasks.lookup only; not runtime, hosted authorization or release acceptance."
+}

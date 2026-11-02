@@ -451,6 +451,8 @@ impl AppState {
     pub(in crate::app) fn canonical_root(path: &std::path::Path) -> std::path::PathBuf {
         #[cfg(test)]
         crate::app::workspaces::record_path_canonicalizations(1);
+        #[cfg(test)]
+        crate::workspace::warm_work_counts::canonicalize(path);
         crate::worktree::canonical_root(path)
     }
 }

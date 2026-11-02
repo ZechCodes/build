@@ -1,5 +1,10 @@
 # Multi-stage build for the two Rust binaries. `--target relay` and
 # `--target bridge` share the compiled `build` stage.
+#
+# The context is bridge/, plus the repo's fixtures/ as the named context
+# `fixtures`, which the crate includes at build time:
+#
+#   docker build --target relay --build-context fixtures=fixtures -f bridge/Containerfile bridge
 
 FROM docker.io/library/rust:1-bookworm AS build
 RUN apt-get update \
@@ -7,6 +12,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
+# src/http/routes/mod.rs include_str!s ../../../../fixtures/api/http/…, which
+# from /src/src/http/routes is /fixtures. bridge/tests/image_context.rs holds
+# every build-time read outside bridge/ to a copy like this one.
+COPY --from=fixtures api/http/ /fixtures/api/http/
 RUN cargo build --release --bin relay --bin build-bridge
 
 # --- relay: the opaque-envelope forwarder ---------------------------------

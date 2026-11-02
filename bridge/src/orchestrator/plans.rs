@@ -116,7 +116,7 @@ impl ActivePlan {
 use super::reporting::merge_stage_docs;
 use super::workspace::{
     append_stage_catalog, dir_holds_a_file, gate_plan_message, gate_plan_stage_notes,
-    plan_docs_dir_display, NEW_THREAD_MESSAGES_PROMPT,
+    new_thread_messages_prompt, plan_docs_dir_display,
 };
 use super::{ActiveRun, AgentTurn, Orchestrator, OrchestratorError};
 
@@ -450,17 +450,9 @@ impl Orchestrator {
         active.workspace = Some(workspace);
         active.revising_stage_id = Some(stage_id.to_string());
         active.last_error = None;
-        let prompt = self.render_plan_stage(
-            &self.templates.revise_stage,
-            active,
-            index,
-            NEW_THREAD_MESSAGES_PROMPT,
-        );
-        Ok(AgentTurn::posted(
-            prompt,
-            NEW_THREAD_MESSAGES_PROMPT,
-            "revise",
-        ))
+        let nudge = nudge_for(&active.agents, &active.model_choice);
+        let prompt = self.render_plan_stage(&self.templates.revise_stage, active, index, &nudge);
+        Ok(AgentTurn::posted(prompt, &nudge, "revise"))
     }
     /// A freeform human message to the plan's agent (the plan-side `message`).
     /// A live `Drafting` session is redirected; parked states (blocked / failed
@@ -505,12 +497,8 @@ impl Orchestrator {
                 let index = active
                     .stage_doc_index(&stage_id)
                     .map_err(OrchestratorError::Gate)?;
-                self.render_plan_stage(
-                    &self.templates.revise_stage,
-                    active,
-                    index,
-                    NEW_THREAD_MESSAGES_PROMPT,
-                )
+                let nudge = nudge_for(&active.agents, &active.model_choice);
+                self.render_plan_stage(&self.templates.revise_stage, active, index, &nudge)
             }
             None => self.render_plan(&self.templates.plan, active, ""),
         };
@@ -611,18 +599,15 @@ impl Orchestrator {
         }
         active.revising_stage_id = Some(stage_id.to_string());
         active.last_error = None;
+        let nudge = nudge_for(&active.agents, &active.model_choice);
         let prompt = self.render_run_stage(
             &self.templates.revise_stage,
             active,
             &plan.stages,
             doc_index,
-            NEW_THREAD_MESSAGES_PROMPT,
+            &nudge,
         );
-        Ok(AgentTurn::posted(
-            prompt,
-            NEW_THREAD_MESSAGES_PROMPT,
-            "revise",
-        ))
+        Ok(AgentTurn::posted(prompt, &nudge, "revise"))
     }
     pub(super) fn render_plan(
         &self,
@@ -643,4 +628,13 @@ impl Orchestrator {
         );
         append_stage_catalog(rendered, &active.stages, |_| "not started".to_string())
     }
+}
+
+/// The read-your-messages nudge for the agent a plan or run turn reaches:
+/// its primary, or one on `fallback` when the roster is still empty.
+fn nudge_for(agents: &AgentRoster, fallback: &ModelChoice) -> String {
+    let provider = agents
+        .primary()
+        .map_or(fallback.provider, |agent| agent.choice.provider);
+    new_thread_messages_prompt(provider)
 }

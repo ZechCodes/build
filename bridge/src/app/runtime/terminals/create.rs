@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 pub(super) fn create(
     state: &Arc<Mutex<AppState>>,
+    sender: Option<&crate::execution::CallContext>,
     params: &Value,
     timer: &FrameTimer,
 ) -> Result<Value, String> {
@@ -20,6 +21,9 @@ pub(super) fn create(
     let selector = Selector::parse(params)?;
     let captured = {
         let app = timer.lock(state);
+        if sender.is_some_and(|sender| !sender.execution_is_live()) {
+            return Err("request authorization has ended".into());
+        }
         #[cfg(test)]
         let mut app = app;
         #[cfg(test)]
@@ -40,11 +44,16 @@ pub(super) fn create(
     }
     let captured = captured.scope;
     let resolved = captured.probe()?;
-    let mut reserved = reserve(state, &selector, &captured, &resolved, timer)?;
+    let mut reserved = reserve(state, &selector, &captured, &resolved, sender, timer)?;
+    if sender.is_some_and(|sender| !sender.execution_is_live()) {
+        return Err("request authorization has ended".into());
+    }
     let (mut tab, output) = {
         // The collector records this phase only if an app guard is held.
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("term.create.spawn");
+        #[cfg(test)]
+        crate::timing::note_test_terminal_spawn();
         Tab::spawn_shell(
             &shell_harness_spec(&reserved.shell),
             reserved.key.tab_id.clone(),
@@ -127,9 +136,13 @@ fn reserve<'timer>(
     selector: &Selector,
     captured: &CapturedScope,
     resolved: &ResolvedScope,
+    sender: Option<&crate::execution::CallContext>,
     timer: &'timer FrameTimer,
 ) -> Result<ReservedShell<'timer>, String> {
     let mut app = timer.lock(state);
+    if sender.is_some_and(|sender| !sender.execution_is_live()) {
+        return Err("request authorization has ended".into());
+    }
     #[cfg(test)]
     let _phase = crate::timing::phase_samples::phase("term.create.reserve");
     validate_identity(&app, selector, captured, resolved)?;

@@ -60,3 +60,19 @@ fixtures/api/v1/git.unpushed.json:generic-api-key:6
 # Scope these exceptions to the introducing commit, file and exact lines.
 1f7db8234664b3425b6d5116566dbe50cfb16659:transport/fixtures/v1.json:generic-api-key:308
 1f7db8234664b3425b6d5116566dbe50cfb16659:transport/fixtures/v1.json:generic-api-key:310
+
+# #915 public source checksum, not a credential: this exact historical finding
+# is SHA-256 of frozen fd234144 spa/src/core/pushKeySync.js. Later snapshots
+# display source digests in short parts; this exemption covers only this commit.
+265d9215af384bc534616edad934702d8f376065:scripts/http-resource-coverage.test.mjs:generic-api-key:242
+
+# #911 provenance-preserving cherry-pick of the exact #915 public-source
+# checksum finding above; independently recomputed from the frozen git object.
+f9743f792a7a4b0854b24464cb0c890aa50be435:scripts/http-resource-coverage.test.mjs:generic-api-key:242
+
+# #910 public cross-language JWS vectors: fixed public test seed byte 7 repeated
+# 32 times, synthetic challenge/device and bridge.example; no deployed authority.
+# Exact historical fingerprints only; the JWT rule remains enabled everywhere.
+e8f22fde3b31141c5c7019ccdc7086a0eec99442:fixtures/bridge-http/device-proofs.json:jwt:3
+e8f22fde3b31141c5c7019ccdc7086a0eec99442:fixtures/bridge-http/device-proofs.json:jwt:5
+e8f22fde3b31141c5c7019ccdc7086a0eec99442:fixtures/bridge-http/device-proofs.json:jwt:7

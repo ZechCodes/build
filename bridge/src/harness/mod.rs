@@ -234,6 +234,24 @@ pub trait Harness: Send + Sync {
         false
     }
 
+    /// How this harness carries a message of `kind`. Required, and the
+    /// terminal harnesses (claude, codex, pi) answer with a `match` that names
+    /// each kind, so a new kind does not compile until each has decided on it.
+    /// adk and the app server run the Claude Code and Codex CLIs, and take
+    /// those answers.
+    fn framing(&self, kind: crate::agent_message::MessageKind) -> crate::agent_message::Framing;
+
+    /// `text`, one of Build's attachments, marked so the agent reads it as
+    /// Build's instruction rather than the user's words.
+    fn wrap_attachment(&self, text: &str) -> String;
+
+    /// What this harness's model calls `tool`, exactly as it must type it.
+    fn build_tool_name(&self, tool: crate::agent_message::BuildTool) -> String;
+
+    /// Whether Build's tools are loaded from the start on this harness, or
+    /// wait behind tool search.
+    fn tool_loading(&self) -> crate::agent_message::ToolLoading;
+
     /// Whether an exact terminal command starts a compaction cycle whose
     /// completion will later appear in the provider transcript.
     fn starts_compaction(&self, _prompt: &str) -> bool {
@@ -572,6 +590,44 @@ fn refuse_a_session_nobody_can_watch(session: &dyn AgentSession) -> Result<(), H
 /// command spells it this way, and says so through
 /// [`Harness::compacts_on_command`].
 pub const COMPACT_COMMAND: &str = "/compact";
+
+/// Native command admission is explicit per provider; terminal providers keep
+/// their existing passthrough behavior.
+enum SlashCommands {
+    Passthrough,
+    Native(&'static [&'static str]),
+}
+
+const PROVIDER_SLASH_COMMANDS: &[(AgentProvider, SlashCommands)] = &[
+    (AgentProvider::Claude, SlashCommands::Passthrough),
+    (AgentProvider::Codex, SlashCommands::Passthrough),
+    (AgentProvider::ClaudeAdk, SlashCommands::Passthrough),
+    (
+        AgentProvider::CodexAppServer,
+        SlashCommands::Native(&[COMPACT_COMMAND]),
+    ),
+    (AgentProvider::Pi, SlashCommands::Passthrough),
+];
+
+pub(crate) fn unsupported_slash_command(provider: AgentProvider, body: &str) -> Option<&str> {
+    let (_, SlashCommands::Native(supported)) = PROVIDER_SLASH_COMMANDS
+        .iter()
+        .find(|(candidate, _)| *candidate == provider)?
+    else {
+        return None;
+    };
+    let token = body.split_whitespace().next()?;
+    let name = token.strip_prefix('/')?;
+    if !name.as_bytes().first()?.is_ascii_alphabetic()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        || supported.contains(&token)
+    {
+        return None;
+    }
+    Some(token)
+}
 
 /// The implementation for `provider`. The only way to reach one.
 pub fn harness_for(provider: AgentProvider) -> &'static dyn Harness {
@@ -1054,6 +1110,25 @@ mod tests {
 
             fn model_args(&self, choice: &ModelChoice) -> Vec<String> {
                 claude::ClaudeHarness.model_args(choice)
+            }
+
+            fn framing(
+                &self,
+                kind: crate::agent_message::MessageKind,
+            ) -> crate::agent_message::Framing {
+                claude::ClaudeHarness.framing(kind)
+            }
+
+            fn wrap_attachment(&self, text: &str) -> String {
+                claude::ClaudeHarness.wrap_attachment(text)
+            }
+
+            fn build_tool_name(&self, tool: crate::agent_message::BuildTool) -> String {
+                claude::ClaudeHarness.build_tool_name(tool)
+            }
+
+            fn tool_loading(&self) -> crate::agent_message::ToolLoading {
+                claude::ClaudeHarness.tool_loading()
             }
 
             fn spec(

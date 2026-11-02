@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use super::AppState;
-use crate::carrier::SessionSender;
 use crate::changes::models_changed_payload;
+use crate::execution::CallContext as SessionSender;
 use crate::harness::harness_for;
 use crate::harness::installed::{model_offer_from, Readings};
 use crate::models::{
@@ -32,6 +32,9 @@ impl AppState {
     /// already holds is the catalog it asked for, so the answer standing now
     /// is not news.
     pub(in crate::app) fn subscribe_models_changed(&mut self, sender: &SessionSender) {
+        if !sender.events_are_live() {
+            return;
+        }
         // A greeting answered off any runtime (a synchronous test) has no one
         // to watch for it; a real session is always greeted on one.
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -40,7 +43,8 @@ impl AppState {
         self.unsubscribe_models_changed(sender.session_id());
         let mut changes = self.cli_readings.changes();
         changes.mark_unchanged();
-        let sender = sender.clone();
+        let context = sender.event_context();
+        let sender = context.clone();
         let session_id = sender.session_id().to_string();
         let task = runtime.spawn(async move {
             while changes.changed().await.is_ok() {
@@ -49,11 +53,12 @@ impl AppState {
                 }
             }
         });
-        self.models_subscriptions.insert(session_id, task);
+        self.models_subscriptions
+            .insert(session_id, (context, task));
     }
 
     pub(in crate::app) fn unsubscribe_models_changed(&mut self, session_id: &str) {
-        if let Some(task) = self.models_subscriptions.remove(session_id) {
+        if let Some((_, task)) = self.models_subscriptions.remove(session_id) {
             task.abort();
         }
     }

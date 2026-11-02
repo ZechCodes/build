@@ -1,6 +1,7 @@
 controllers:
   - buildapp.root_controller:RootController
   - buildapp.controllers:BuildController
+  - buildapp.bridge_http_controller:BridgeHttpController
   - buildapp.health_controller:HealthController
   - buildapp.health_controller:ReadinessController
   - buildapp.devices_controller:DevicesController
@@ -14,6 +15,9 @@ controllers:
   - buildapp.waitlist_admin:WaitlistAdminController
   - buildapp.auth_controller:BuildAuthController
   - skrift.admin.controller:AdminController
+middleware:
+  - buildapp.bridge_http_login_guard:BrowserLoginGuard
+  - buildapp.bridge_http_policy:BuildBridgeCSPMiddleware
 models:
   - buildapp.models
 db:

@@ -1,0 +1,43 @@
+[200~The project agent assigned you Build task #42 — Fix the parser
+
+Process only reviewer operation `op-1` (conversation sequences 7 through 7).
+The task is `task-42` — read it with mcp__build__get_task before you start. Comment on the task with mcp__build__comment_task when something changes what the reader should know: a decision or finding that changes the plan, a question (use mcp__build__mention_user only when it is the user's call), a handoff, or the final result with its evidence. The board already shows the task's column and assignee; do not comment to say you are still working. Then move it to In review with mcp__build__move_task when you report Complete.
+
+This native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.
+Exact accepted messages:
+[
+  {
+    "id": "message-7",
+    "sequence": 7,
+    "updated_sequence": 7,
+    "role": "user",
+    "from_agent": {
+      "id": "project-1",
+      "name": "Coordinator"
+    },
+    "from_task": {
+      "task_id": "task-42",
+      "number": 42,
+      "title": "Fix the parser",
+      "links": {
+        "workspace_ids": [
+          "ws-1"
+        ],
+        "branches": [],
+        "commits": [],
+        "conversation_ids": [],
+        "parent_task_id": null
+      }
+    },
+    "body": "The project agent assigned you Build task #42 — Fix the parser",
+    "created_at": "2026-11-02T12:00:00Z"
+  }
+]
+
+<system-reminder>
+Agent `project-1` sent this, not the user. Reply to it with `mcp__build__message_agent`.
+</system-reminder>
+
+<system-reminder>
+Build tools load on demand: call ToolSearch with `select:mcp__build__message_agent,mcp__build__get_task,mcp__build__comment_task,mcp__build__mention_user,mcp__build__move_task` before you use them.
+</system-reminder>[201~

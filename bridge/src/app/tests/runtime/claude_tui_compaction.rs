@@ -199,6 +199,8 @@ async fn claude_tui_native_hooks_preserve_open_turn_and_deliver_queued_follow_up
     reached(directory.path(), "started").await;
     let mut turn = agent.turn(false);
     turn.say = Some(TurnText {
+        attachments: Default::default(),
+        kind: None,
         cold: "queued follow-up".into(),
         warm: "queued follow-up".into(),
     });

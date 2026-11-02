@@ -949,6 +949,7 @@ export async function greetBridge(
     acceptGreeting = () => true,
     install = (selection) => (selection.unsupported ? null : selection.create(call)),
     strict = false,
+    beforeRefresh,
   } = {},
 ) {
   const { greeting, current } = await negotiate(call, isCurrent, strict);
@@ -959,7 +960,7 @@ export async function greetBridge(
   // synchronously. That newer greeting now owns the shared bridge state too.
   if (!isCurrent()) return changeEventsArmed(deviceId);
   rememberGreetedReviews(deviceId, adapter, isCurrent);
-  return publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurrent);
+  return publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurrent, beforeRefresh);
 }
 
 function acceptCurrentGreeting(current, isCurrent, acceptGreeting, greeting) {
@@ -1005,7 +1006,7 @@ function announceGreeted(deviceId) {
 }
 
 /** Publish the current selection to capability readers and subscriptions. */
-function publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurrent) {
+function publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurrent, beforeRefresh) {
   const state = bridgeState(deviceId);
   state.apiVersion = greetingVersion(greeting);
   state.adapter = adapter || null;
@@ -1035,6 +1036,21 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurren
   onGreeting(greeting);
   armChangeEvents(greeting, deviceId);
   adoptGreetedSession(state, call);
+  if (beforeRefresh) return refreshAfterSubscriptions(state, call, isCurrent, beforeRefresh);
   refetchEverything(deviceId);
   return changeEventsArmed(deviceId);
+}
+
+// HTTP installs its application stream before greeting. Ordinary reads remain
+// gated until these exact opening's logical subscriptions have been accepted.
+async function refreshAfterSubscriptions(state, call, isCurrent, beforeRefresh) {
+  await subscriptionsSettledFor(state.deviceId);
+  if (state.call !== call || !isCurrent()) return false;
+  const desired = desiredSubscriptions(state.deviceId);
+  const complete = [...desired].every(([id, spec]) => state.live.get(id) === JSON.stringify(spec));
+  if (!state.subscriptions || !complete) throw new Error("The bridge could not establish live subscriptions.");
+  beforeRefresh();
+  if (state.call !== call || !isCurrent()) return false;
+  refetchEverything(state.deviceId);
+  return changeEventsArmed(state.deviceId);
 }

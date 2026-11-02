@@ -19,7 +19,9 @@ fn a_digest_time_is_two_digit_hours_and_minutes() {
     assert_eq!(DigestTime::parse("09:00"), DigestTime::new(9, 0));
     assert_eq!(DigestTime::parse("23:59"), DigestTime::new(23, 59));
     assert_eq!(DigestTime::parse("00:00"), DigestTime::new(0, 0));
-    for refused in ["9:00", "24:00", "12:60", "12:5", "1200", "12:00:00", " 09:00", "ab:cd", ""] {
+    for refused in [
+        "9:00", "24:00", "12:60", "12:5", "1200", "12:00:00", " 09:00", "ab:cd", "",
+    ] {
         assert_eq!(DigestTime::parse(refused), None, "{refused:?}");
     }
     assert_eq!(DigestTime::new(7, 5).unwrap().to_string(), "07:05");

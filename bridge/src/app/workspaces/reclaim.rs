@@ -37,8 +37,7 @@ use crate::app::{off_the_workers, AppState, DeliveryRunner};
 use crate::reclaim::artifacts::{self, Artifact};
 use crate::reclaim::containment::WorkspaceBoundary;
 use crate::reclaim::{
-    Budget, IndexSnapshot, LifecycleRecord, LinkedTask, ReclaimPolicy, Subject,
-    HOLD_LOCKED,
+    Budget, IndexSnapshot, LifecycleRecord, LinkedTask, ReclaimPolicy, Subject, HOLD_LOCKED,
 };
 use crate::tracker::{Actor, Task, TaskEventKind, TaskState};
 use crate::workspace::{Workspace, WorkspaceStatus};

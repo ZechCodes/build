@@ -38,7 +38,8 @@ impl AppState {
         let mut quiet = self.quiet_workspaces_by_project();
         for project_id in owed {
             let workspaces = quiet.remove(&project_id).unwrap_or_default();
-            if workspaces.is_empty() || self.send_idle_digest(&project_id, &workspaces, now_ms, policy)
+            if workspaces.is_empty()
+                || self.send_idle_digest(&project_id, &workspaces, now_ms, policy)
             {
                 self.idle_digest_sent.insert(project_id, day.clone());
             }

@@ -773,7 +773,10 @@ fn the_idle_digest_time_defaults_sets_and_survives_a_reload() {
     {
         let mut state = open();
         let settings = state.handle(req("settings.get", json!({})))["result"].clone();
-        assert_eq!(settings["workspace_idle_digest_at"], "09:00", "{settings:?}");
+        assert_eq!(
+            settings["workspace_idle_digest_at"], "09:00",
+            "{settings:?}"
+        );
 
         for refused in ["9:00", "24:00", "noon", ""] {
             let answer = state.handle(req(
@@ -806,7 +809,10 @@ fn the_idle_digest_time_defaults_sets_and_survives_a_reload() {
     }
     let mut reloaded = open();
     let settings = reloaded.handle(req("settings.get", json!({})))["result"].clone();
-    assert_eq!(settings["workspace_idle_digest_at"], "17:30", "{settings:?}");
+    assert_eq!(
+        settings["workspace_idle_digest_at"], "17:30",
+        "{settings:?}"
+    );
     assert_eq!(
         reloaded.reclaim_policy_now().digest.at,
         crate::reclaim::DigestTime::new(17, 30).unwrap()

@@ -25,7 +25,8 @@ pub struct DigestTime {
 
 impl DigestTime {
     pub fn new(hour: i8, minute: i8) -> Option<DigestTime> {
-        ((0..24).contains(&hour) && (0..60).contains(&minute)).then_some(DigestTime { hour, minute })
+        ((0..24).contains(&hour) && (0..60).contains(&minute))
+            .then_some(DigestTime { hour, minute })
     }
 
     /// `HH:MM` exactly, two digits each; anything else is `None`.

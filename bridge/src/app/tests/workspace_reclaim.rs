@@ -288,7 +288,10 @@ fn locked_workspaces_are_listed_daily_in_their_own_group() {
         let (open, held) = latest
             .split_once("Locked by the user, so kept on purpose.")
             .unwrap_or_else(|| panic!("no locked group in {latest}"));
-        assert!(open.contains(&unlocked) && !open.contains(&locked), "{latest}");
+        assert!(
+            open.contains(&unlocked) && !open.contains(&locked),
+            "{latest}"
+        );
         assert_says_everything(
             held,
             &[
@@ -405,7 +408,10 @@ fn a_workspace_going_quiet_sends_nothing_by_itself() {
         AppState::sweep_workspaces(&state, &at_nine(), at);
     }
     assert_eq!(lifecycle(&state, &ws)["idle"], true);
-    assert_eq!(project_agent_notices(&state, &project_id), Vec::<String>::new());
+    assert_eq!(
+        project_agent_notices(&state, &project_id),
+        Vec::<String>::new()
+    );
     assert_eq!(timeline_kinds(&state, &task), Vec::<Value>::new());
     assert_eq!(lifecycle(&state, &ws)["noticed_at_ms"], Value::Null);
 }
@@ -424,7 +430,11 @@ fn the_scan_at_its_time_sends_exactly_one_digest_a_day() {
         &notices[0],
         &["1 workspace has had no activity for 24 hours or more", &ws],
     );
-    for at in [day + 10 * HOUR_MS, day + 23 * HOUR_MS, day + DAY_MS + 8 * HOUR_MS] {
+    for at in [
+        day + 10 * HOUR_MS,
+        day + 23 * HOUR_MS,
+        day + DAY_MS + 8 * HOUR_MS,
+    ] {
         AppState::sweep_workspaces(&state, &at_nine(), at);
         assert_eq!(project_agent_notices(&state, &project_id).len(), 1, "{at}");
     }
@@ -466,7 +476,10 @@ fn nothing_is_sent_when_nothing_is_quiet() {
     };
     AppState::sweep_workspaces(&state, &patient, day + 9 * HOUR_MS);
     assert_eq!(lifecycle(&state, &ws)["idle"], false);
-    assert_eq!(project_agent_notices(&state, &project_id), Vec::<String>::new());
+    assert_eq!(
+        project_agent_notices(&state, &project_id),
+        Vec::<String>::new()
+    );
 
     AppState::sweep_workspaces(&state, &at_nine(), day + 15 * HOUR_MS);
     assert_eq!(lifecycle(&state, &ws)["idle"], true);

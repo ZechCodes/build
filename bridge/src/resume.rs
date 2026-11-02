@@ -405,6 +405,6 @@ mod tests {
         );
         // A version shaped like a placeholder is said as written.
         assert!(restart_notice(at, "{last_turn}", false, false)
-            .contains("(bridge {last_turn}) and brought"),);
+            .contains("(bridge {last_turn}) and brought"));
     }
 }

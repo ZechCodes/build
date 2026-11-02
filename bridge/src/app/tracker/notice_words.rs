@@ -204,7 +204,7 @@ mod tests {
         task.title = "{task_id} and {number}".into();
         let unblocked = event(TaskEventKind::Unblocked, json!({}));
         assert!(dependency_line(&task, &unblocked, false)
-            .starts_with("Task #13 — {task_id} and {number} (task-13) is unblocked."),);
+            .starts_with("Task #13 — {task_id} and {number} (task-13) is unblocked."));
         assert_eq!(
             prerequisites_closed(&[(7, "{task_id}", "task-7")], &task)
                 .lines()

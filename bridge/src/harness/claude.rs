@@ -6,6 +6,7 @@
 //! session opens in it. That is the one place Build writes outside its own
 //! tree, and it only ever adds the flag for a path Build itself created.
 
+use crate::agent_message::{Framing, MessageKind};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -162,6 +163,30 @@ impl Harness for ClaudeHarness {
             prompt.split_whitespace().next(),
             Some("/clear" | "/compact")
         )
+    }
+
+    /// Commands the TUI parses (`/compact`, `/clear`) travel bare; everything
+    /// else carries its attachments in `<system-reminder>`s.
+    fn framing(&self, kind: MessageKind) -> Framing {
+        match kind {
+            MessageKind::Delivery
+            | MessageKind::ThreadNudge
+            | MessageKind::ColdStart
+            | MessageKind::TaskNotice
+            | MessageKind::TaskAssignment
+            | MessageKind::DependencyNotice
+            | MessageKind::TaskReminder
+            | MessageKind::IdleWorkspaces
+            | MessageKind::Restarted
+            | MessageKind::UsageLimitResume
+            | MessageKind::AgentFailure
+            | MessageKind::ProviderRecoveryFailure => Framing::WithAttachments,
+            MessageKind::Compaction | MessageKind::ProviderCommand => Framing::Bare,
+        }
+    }
+
+    fn wrap_attachment(&self, text: &str) -> String {
+        crate::agent_message::system_reminder(text)
     }
 
     fn compacts_on_command(&self) -> bool {

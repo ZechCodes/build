@@ -32,7 +32,7 @@ macro_rules! template {
 
 /// A template file ends in one newline, as every text file does; the text it
 /// holds does not, because composition puts its own blank line between texts.
-const fn without_final_newline(text: &'static str) -> &'static str {
+pub(crate) const fn without_final_newline(text: &'static str) -> &'static str {
     match text.as_bytes() {
         [body @ .., b'\n'] => match std::str::from_utf8(body) {
             Ok(body) => body,

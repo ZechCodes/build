@@ -1848,6 +1848,85 @@ mod tests {
         );
     }
 
+    /// Build's attachments ride in the turn text, so the echo Codex sends back
+    /// carries them too: the receipt compares against the whole framed text,
+    /// and an echo of the body alone is some other turn.
+    #[test]
+    fn a_turn_carrying_an_attachment_settles_on_the_echo_of_its_framed_text() {
+        use crate::agent_message::{ComposedMessage, MessageKind};
+
+        let root = tempfile::tempdir().unwrap();
+        let turn_response = json!({"id":4,"result":{"turn":{"id":TURN_ID}}});
+        let script = opened_thread_script(
+            root.path(),
+            &format!(
+                "read turn; printf '%s\\n' '{}'; cat >/dev/null",
+                turn_response
+            ),
+        );
+        let (session, _activity) = scripted_session(root.path(), &script);
+        let state = session.core.state.lock().unwrap();
+        let (state, _) = session
+            .core
+            .state_changed
+            .wait_timeout_while(state, Duration::from_secs(2), |state| {
+                state.session_id().is_none()
+            })
+            .unwrap();
+        assert!(
+            state.session_id().is_some(),
+            "the session never opened its thread"
+        );
+        drop(state);
+        let receipts = session.turn_receipts().unwrap();
+
+        let mut message = ComposedMessage::new(MessageKind::Delivery, "fix the parser");
+        message
+            .attachments
+            .push("Answer with post_thread_message.".to_string());
+        let framed = message.framed_for(&super::super::CodexAppServerHarness);
+        assert_ne!(framed, message.body, "the attachment is in the text");
+        session
+            .send_turn(&Turn::new(framed.clone()).with_operation_id("operation-framed"))
+            .unwrap();
+        let state = session.core.state.lock().unwrap();
+        let (state, _) = session
+            .core
+            .state_changed
+            .wait_timeout_while(state, Duration::from_secs(2), |state| {
+                state.diagnostic_phase() != "working"
+            })
+            .unwrap();
+        assert_eq!(state.diagnostic_phase(), "working");
+        drop(state);
+
+        session
+            .core
+            .dispatch_notification(ServerNotification::Item(user_message(
+                "echo-body",
+                &message.body,
+                ItemLifecycle::Started,
+            )))
+            .unwrap();
+        assert!(
+            receipts.borrow().seen_operation_ids.is_empty(),
+            "an echo without the attachment is not this turn"
+        );
+        session
+            .core
+            .dispatch_notification(ServerNotification::Item(user_message(
+                "echo-framed",
+                &framed,
+                ItemLifecycle::Started,
+            )))
+            .unwrap();
+        assert_eq!(
+            receipts.borrow().seen_operation_ids,
+            vec!["operation-framed".to_string()]
+        );
+        session.end();
+    }
+
     #[test]
     fn turn_start_response_does_not_publish_seen_without_the_user_message_item() {
         let root = tempfile::tempdir().unwrap();

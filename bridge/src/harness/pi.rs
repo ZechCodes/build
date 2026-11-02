@@ -1,3 +1,4 @@
+use crate::agent_message::{Framing, MessageKind};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -38,6 +39,30 @@ impl Harness for PiHarness {
 
     fn auth(&self) -> &'static dyn crate::harness::inventory::AuthAdapter {
         &crate::harness::inventory::PI_AUTH
+    }
+
+    /// Commands Pi parses travel bare; everything else carries its attachments
+    /// as a marked Build block.
+    fn framing(&self, kind: MessageKind) -> Framing {
+        match kind {
+            MessageKind::Delivery
+            | MessageKind::ThreadNudge
+            | MessageKind::ColdStart
+            | MessageKind::TaskNotice
+            | MessageKind::TaskAssignment
+            | MessageKind::DependencyNotice
+            | MessageKind::TaskReminder
+            | MessageKind::IdleWorkspaces
+            | MessageKind::Restarted
+            | MessageKind::UsageLimitResume
+            | MessageKind::AgentFailure
+            | MessageKind::ProviderRecoveryFailure => Framing::WithAttachments,
+            MessageKind::Compaction | MessageKind::ProviderCommand => Framing::Bare,
+        }
+    }
+
+    fn wrap_attachment(&self, text: &str) -> String {
+        crate::agent_message::build_instructions(text)
     }
 
     fn cli_probe(&self) -> &'static dyn crate::harness::installed::CliProbe {

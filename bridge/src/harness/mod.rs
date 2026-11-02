@@ -234,6 +234,15 @@ pub trait Harness: Send + Sync {
         false
     }
 
+    /// How this harness carries a message of `kind`. Required, and every
+    /// harness answers with a `match` that names each kind, so a new kind
+    /// does not compile until each harness has decided on it.
+    fn framing(&self, kind: crate::agent_message::MessageKind) -> crate::agent_message::Framing;
+
+    /// `text`, one of Build's attachments, marked so the agent reads it as
+    /// Build's instruction rather than the user's words.
+    fn wrap_attachment(&self, text: &str) -> String;
+
     /// Whether an exact terminal command starts a compaction cycle whose
     /// completion will later appear in the provider transcript.
     fn starts_compaction(&self, _prompt: &str) -> bool {
@@ -1092,6 +1101,17 @@ mod tests {
 
             fn model_args(&self, choice: &ModelChoice) -> Vec<String> {
                 claude::ClaudeHarness.model_args(choice)
+            }
+
+            fn framing(
+                &self,
+                kind: crate::agent_message::MessageKind,
+            ) -> crate::agent_message::Framing {
+                claude::ClaudeHarness.framing(kind)
+            }
+
+            fn wrap_attachment(&self, text: &str) -> String {
+                claude::ClaudeHarness.wrap_attachment(text)
             }
 
             fn spec(

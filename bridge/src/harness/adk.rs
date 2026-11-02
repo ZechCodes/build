@@ -1,5 +1,6 @@
 //! Claude Code's headless stream-JSON provider.
 
+use crate::agent_message::{Framing, MessageKind};
 use crate::harness::claude::ClaudeHarness;
 use crate::harness::{
     installed, AgentSession, Harness, HarnessContext, HarnessError, OpenedSession, SessionLocator,
@@ -90,6 +91,14 @@ impl Harness for AdkHarness {
 
     fn requires_unadorned_command(&self, prompt: &str) -> bool {
         ClaudeHarness.requires_unadorned_command(prompt)
+    }
+
+    fn framing(&self, kind: MessageKind) -> Framing {
+        ClaudeHarness.framing(kind)
+    }
+
+    fn wrap_attachment(&self, text: &str) -> String {
+        ClaudeHarness.wrap_attachment(text)
     }
 
     fn compacts_on_command(&self) -> bool {

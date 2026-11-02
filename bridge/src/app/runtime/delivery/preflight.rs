@@ -1,4 +1,5 @@
 use super::compaction::compact_before_turn;
+use crate::agent_message::{ComposedMessage, MessageKind};
 use crate::app::conversations::FrozenLegacyDelivery;
 use crate::app::{
     ensure_agent_tab, still_pumping_instance, AgentSpawnRequest, AppState, DeliveryOutcome,
@@ -362,6 +363,13 @@ pub(in crate::app) fn deliver(
     } else {
         prompt
     };
+    let harness = crate::harness::harness_for(model_choice.provider);
+    let kind = if harness.requires_unadorned_command(&prompt) {
+        MessageKind::ProviderCommand
+    } else {
+        MessageKind::Delivery
+    };
+    let prompt = ComposedMessage::new(kind, prompt).framed_for(harness);
     let mut native_turn = Turn::with_choice(prompt, model_choice.clone(), *choice_revision);
     native_turn.operation_id = turn.operation_id.clone().or_else(|| {
         legacy_payload.as_ref().map(|payload| {

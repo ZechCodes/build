@@ -163,14 +163,7 @@ impl AppState {
                 &operation.operation_id,
             )
         });
-        let body = format!(
-            "Agent @agent:{} failed{}: {}",
-            episode.scope.agent_id,
-            task.as_ref()
-                .map(|task| format!(" while handling #{}", task.number))
-                .unwrap_or_default(),
-            episode.summary
-        );
+        let body = failure_notice(&episode.scope.agent_id, task.as_ref(), &episode.summary);
         self.persist_recovery_outcome(&episode, operation.as_ref(), &key)?;
         if let Some(task) = &task {
             self.comment_terminal_agent_failure(task.clone(), &key, &body)?;
@@ -398,5 +391,46 @@ fn thread_has_message(thread: &crate::thread::Thread, id: &str) -> bool {
 fn set_last_message_id(thread: &mut crate::thread::Thread, id: &str) {
     if let Some(ThreadItem::Message(message)) = thread.items.last_mut() {
         message.id = id.into();
+    }
+}
+
+/// What the coordinator is told about an agent that failed, and the task it
+/// failed on when there was one.
+fn failure_notice(agent_id: &str, task: Option<&crate::tracker::Task>, summary: &str) -> String {
+    use crate::templates::{fill, MESSAGE_AGENT_FAILED, MESSAGE_AGENT_FAILED_ON_TASK};
+    let Some(task) = task else {
+        return fill(
+            MESSAGE_AGENT_FAILED,
+            &[("agent_id", agent_id), ("summary", summary)],
+        );
+    };
+    let number = task.number.to_string();
+    fill(
+        MESSAGE_AGENT_FAILED_ON_TASK,
+        &[
+            ("agent_id", agent_id),
+            ("number", number.as_str()),
+            ("summary", summary),
+        ],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::failure_notice;
+    use crate::tracker::{Actor, Task};
+
+    #[test]
+    fn a_failure_notice_names_the_agent_and_the_task_it_failed_on() {
+        let mut task = Task::drafted("/repo", "Kanban drag", Actor::User, "2026-09-20T15:00:00Z");
+        task.number = 13;
+        assert_eq!(
+            failure_notice("agent-1", Some(&task), "{summary} went away"),
+            "Agent @agent:agent-1 failed while handling #13: {summary} went away"
+        );
+        assert_eq!(
+            failure_notice("agent-1", None, "stream disconnected"),
+            "Agent @agent:agent-1 failed: stream disconnected"
+        );
     }
 }

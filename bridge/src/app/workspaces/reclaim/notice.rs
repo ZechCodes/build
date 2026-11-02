@@ -2,6 +2,12 @@
 
 use super::Quiet;
 use crate::reclaim::{LifecycleRecord, LinkedTask, ReclaimPolicy, Subject};
+use crate::templates::{
+    fill, MESSAGE_WORKSPACES_QUIET, MESSAGE_WORKSPACES_QUIET_MANY, MESSAGE_WORKSPACES_QUIET_ONE,
+    MESSAGE_WORKSPACE_QUIET, MESSAGE_WORKSPACE_QUIET_HELD, MESSAGE_WORKSPACE_QUIET_LOCKED,
+    MESSAGE_WORKSPACE_QUIET_NO_TASK, MESSAGE_WORKSPACE_QUIET_PRUNED,
+    MESSAGE_WORKSPACE_QUIET_RECLAIMABLE, MESSAGE_WORKSPACE_QUIET_TASK,
+};
 
 /// The phase a quiet-workspace notice's turn is queued under.
 pub(super) const PHASE: &str = "workspace_idle";
@@ -10,88 +16,124 @@ pub(super) const PHASE: &str = "workspace_idle";
 /// workspace with everything a decision needs, then how to handle it and when
 /// the user needs to hear about it.
 pub(super) fn quiet_workspaces(workspaces: &[Quiet], policy: &ReclaimPolicy) -> String {
-    let hours = policy.idle_after.as_secs() / 3600;
-    let count = workspaces.len();
-    let these = if count == 1 {
-        "workspace has"
+    let hours = (policy.idle_after.as_secs() / 3600).to_string();
+    let count = workspaces.len().to_string();
+    let these = if workspaces.len() == 1 {
+        MESSAGE_WORKSPACES_QUIET_ONE
     } else {
-        "workspaces have"
+        MESSAGE_WORKSPACES_QUIET_MANY
     };
+    let quiet = fill(these, &[("count", count.as_str())]);
     let lines: Vec<String> = workspaces
         .iter()
         .map(|quiet| quiet_workspace_line(&quiet.subject, &quiet.record))
         .collect();
-    format!(
-        "{count} {these} had no activity for {hours} hours. This message is from Build, not from \
-         the user.\n\n{}\n\nOnly message the user if necessary, such as a decision only they can make. \
-         Otherwise merge, reclaim, or leave the workspace without posting to the user. \
-         If a user decision is necessary, ask one question on the linked task and leave the \
-         workspace alone.\n\nFor each unlocked workspace, decide: merge it (branch reviewed and \
-         green: merge to main, then reclaim_workspace), delete it (abandoned or superseded: \
-         delete_workspace), or leave it. Never delete a workspace with uncommitted or unpushed \
-         work without asking the user first.",
-        lines.join("\n")
+    fill(
+        MESSAGE_WORKSPACES_QUIET,
+        &[
+            ("quiet", quiet.as_str()),
+            ("hours", hours.as_str()),
+            ("workspaces", lines.join("\n").as_str()),
+        ],
     )
 }
 
 fn quiet_workspace_line(subject: &Subject, record: &LifecycleRecord) -> String {
-    let tasks = if subject.tasks.is_empty() {
-        "no linked task".to_string()
-    } else {
-        subject
-            .tasks
-            .iter()
-            .map(|task| format!("#{} {} ({})", task.number, task.title, task_column(task)))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
     let branches: Vec<&str> = subject
         .repositories
         .iter()
         .filter_map(|(_, branch)| branch.as_deref())
         .collect();
-    let verdict = if record.reclaimable {
-        "reclaimable: reclaim_workspace removes it".to_string()
+    let branches = if branches.is_empty() {
+        "none".to_string()
     } else {
-        format!(
-            "held: {}",
-            record
-                .holds
-                .iter()
-                .map(|hold| crate::reclaim::hold_sentence(hold))
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
+        branches.join(", ")
     };
-    format!(
-        "- {} ({}): {tasks}. Branch {}; {} uncommitted files, {} unpushed commits, {} behind. {} on \
-         disk{}. Last activity {}. {verdict}.{}",
-        subject.name,
-        subject.workspace_id,
-        if branches.is_empty() { "none".to_string() } else { branches.join(", ") },
-        record.dirty_files,
-        record.unpushed_commits,
-        record.behind_commits,
-        record
-            .size_bytes
-            .map(crate::reclaim::human_bytes)
-            .unwrap_or_else(|| "unmeasured".to_string()),
-        if record.pruned_bytes > 0 {
-            format!(", {} of build output dropped", crate::reclaim::human_bytes(record.pruned_bytes))
-        } else {
-            String::new()
-        },
-        record
-            .last_activity_ms
-            .and_then(rfc3339_of_ms)
-            .unwrap_or_else(|| "unknown".to_string()),
-        if record.holds.iter().any(|hold| hold == crate::reclaim::HOLD_LOCKED) {
-            " The user locked this workspace on purpose; evaluate whether the user should be \
-              reminded about it. Do not reclaim it or ask the user to unlock it by default."
-        } else {
-            ""
-        },
+    let size = record
+        .size_bytes
+        .map(crate::reclaim::human_bytes)
+        .unwrap_or_else(|| "unmeasured".to_string());
+    let last_activity = record
+        .last_activity_ms
+        .and_then(rfc3339_of_ms)
+        .unwrap_or_else(|| "unknown".to_string());
+    let counts = [
+        record.dirty_files.to_string(),
+        record.unpushed_commits.to_string(),
+        record.behind_commits.to_string(),
+    ];
+    fill(
+        MESSAGE_WORKSPACE_QUIET,
+        &[
+            ("name", subject.name.as_str()),
+            ("workspace_id", subject.workspace_id.as_str()),
+            ("tasks", linked_tasks(&subject.tasks).as_str()),
+            ("branches", branches.as_str()),
+            ("dirty_files", counts[0].as_str()),
+            ("unpushed_commits", counts[1].as_str()),
+            ("behind_commits", counts[2].as_str()),
+            ("size", size.as_str()),
+            ("pruned", pruned(record).as_str()),
+            ("last_activity", last_activity.as_str()),
+            ("verdict", verdict(record).as_str()),
+            ("locked", locked_note(record)),
+        ],
     )
+}
+
+fn linked_tasks(tasks: &[LinkedTask]) -> String {
+    if tasks.is_empty() {
+        return MESSAGE_WORKSPACE_QUIET_NO_TASK.to_string();
+    }
+    tasks
+        .iter()
+        .map(|task| {
+            let number = task.number.to_string();
+            let column = task_column(task);
+            fill(
+                MESSAGE_WORKSPACE_QUIET_TASK,
+                &[
+                    ("number", number.as_str()),
+                    ("title", task.title.as_str()),
+                    ("column", column.as_str()),
+                ],
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn pruned(record: &LifecycleRecord) -> String {
+    if record.pruned_bytes == 0 {
+        return String::new();
+    }
+    let size = crate::reclaim::human_bytes(record.pruned_bytes);
+    fill(MESSAGE_WORKSPACE_QUIET_PRUNED, &[("size", size.as_str())])
+}
+
+fn verdict(record: &LifecycleRecord) -> String {
+    if record.reclaimable {
+        return MESSAGE_WORKSPACE_QUIET_RECLAIMABLE.to_string();
+    }
+    let holds = record
+        .holds
+        .iter()
+        .map(|hold| crate::reclaim::hold_sentence(hold))
+        .collect::<Vec<_>>()
+        .join("; ");
+    fill(MESSAGE_WORKSPACE_QUIET_HELD, &[("holds", holds.as_str())])
+}
+
+fn locked_note(record: &LifecycleRecord) -> &'static str {
+    if record
+        .holds
+        .iter()
+        .any(|hold| hold == crate::reclaim::HOLD_LOCKED)
+    {
+        MESSAGE_WORKSPACE_QUIET_LOCKED
+    } else {
+        ""
+    }
 }
 
 fn rfc3339_of_ms(ms: i64) -> Option<String> {

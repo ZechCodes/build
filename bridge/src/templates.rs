@@ -140,6 +140,78 @@ pub(crate) const MESSAGE_TASK_COMMENT_ON_YOURS: &str =
 /// Any other change to a watched task: `{change}` is what happened.
 pub(crate) const MESSAGE_TASK_CHANGED: &str = template!("messages/task_changed.md");
 
+/// What an agent hears when Build restarted and brought its session back.
+pub(crate) const MESSAGE_RESTART: &str = template!("messages/restart.md");
+
+/// The restart notice's sentence on the task rename (#190), with its leading space.
+pub(crate) const MESSAGE_RESTART_TASKS_RENAMED: &str =
+    template!("messages/restart_tasks_renamed.md");
+
+/// The restart notice's `{last_turn}` when the agent was mid-turn.
+pub(crate) const MESSAGE_RESTART_MID_TURN: &str = template!("messages/restart_mid_turn.md");
+
+/// The restart notice's `{last_turn}` when the agent was at its prompt.
+pub(crate) const MESSAGE_RESTART_LIVE: &str = template!("messages/restart_live.md");
+
+/// What an agent whose turn died at a usage limit hears when it lifts.
+pub(crate) const MESSAGE_USAGE_LIMIT_RETRY: &str = template!("messages/usage_limit_retry.md");
+
+/// The turn Build retries once after a transient provider error.
+pub(crate) const MESSAGE_PROVIDER_RETRY: &str = template!("messages/provider_retry.md");
+
+/// The coordinator told an agent failed.
+pub(crate) const MESSAGE_AGENT_FAILED: &str = template!("messages/agent_failed.md");
+
+/// The coordinator told an agent failed on a task.
+pub(crate) const MESSAGE_AGENT_FAILED_ON_TASK: &str = template!("messages/agent_failed_on_task.md");
+
+/// An agent that reported Complete while still holding open tasks.
+pub(crate) const MESSAGE_REMINDER: &str = template!("messages/reminder.md");
+
+/// The reminder's `{still_held}` for one task.
+pub(crate) const MESSAGE_REMINDER_HELD_ONE: &str = template!("messages/reminder_held_one.md");
+
+/// The reminder's `{still_held}` for more than one.
+pub(crate) const MESSAGE_REMINDER_HELD_MANY: &str = template!("messages/reminder_held_many.md");
+
+/// One held task in the reminder's list.
+pub(crate) const MESSAGE_REMINDER_TASK: &str = template!("messages/reminder_task.md");
+
+/// The project agent told about its quiet workspaces.
+pub(crate) const MESSAGE_WORKSPACES_QUIET: &str = template!("messages/workspaces_quiet.md");
+
+/// The quiet-workspaces notice's `{quiet}` for one.
+pub(crate) const MESSAGE_WORKSPACES_QUIET_ONE: &str = template!("messages/workspaces_quiet_one.md");
+
+/// The quiet-workspaces notice's `{quiet}` for more than one.
+pub(crate) const MESSAGE_WORKSPACES_QUIET_MANY: &str =
+    template!("messages/workspaces_quiet_many.md");
+
+/// One quiet workspace, with everything a decision needs.
+pub(crate) const MESSAGE_WORKSPACE_QUIET: &str = template!("messages/workspace_quiet.md");
+
+/// A task linked to a quiet workspace.
+pub(crate) const MESSAGE_WORKSPACE_QUIET_TASK: &str = template!("messages/workspace_quiet_task.md");
+
+/// A quiet workspace's `{tasks}` when none is linked.
+pub(crate) const MESSAGE_WORKSPACE_QUIET_NO_TASK: &str =
+    template!("messages/workspace_quiet_no_task.md");
+
+/// How much build output a quiet workspace dropped.
+pub(crate) const MESSAGE_WORKSPACE_QUIET_PRUNED: &str =
+    template!("messages/workspace_quiet_pruned.md");
+
+/// A quiet workspace nothing holds.
+pub(crate) const MESSAGE_WORKSPACE_QUIET_RECLAIMABLE: &str =
+    template!("messages/workspace_quiet_reclaimable.md");
+
+/// What holds a quiet workspace.
+pub(crate) const MESSAGE_WORKSPACE_QUIET_HELD: &str = template!("messages/workspace_quiet_held.md");
+
+/// A locked quiet workspace's closing sentence, with its leading space.
+pub(crate) const MESSAGE_WORKSPACE_QUIET_LOCKED: &str =
+    template!("messages/workspace_quiet_locked.md");
+
 /// `template` with each `{name}` in `values` replaced by its value, in one
 /// pass: a value is copied as it is and never searched for placeholders, so a
 /// task title that reads `{get_task}` is said as the user wrote it. A brace

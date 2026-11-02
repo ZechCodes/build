@@ -225,9 +225,6 @@ pub fn clear_opt_out_file(dir: &Path) {
 }
 
 /// The sentence the boot that ran the task rename adds to the notice.
-const TASKS_RENAMED: &str = " Build's `*_issue` tools are now `*_task` (e.g. comment_issue → \
-     comment_task); old issue-… ids still work.";
-
 /// What the agent is told when it comes back.
 ///
 /// Written to be actionable by a model that has just been handed a transcript
@@ -240,19 +237,28 @@ const TASKS_RENAMED: &str = " Build's `*_issue` tools are now `*_task` (e.g. com
 /// tools are called now: the agent's transcript is full of the old names, and a
 /// strict MCP config answers them with nothing but "No such tool".
 pub fn restart_notice(at: &str, version: &str, was_working: bool, tasks_renamed: bool) -> String {
-    let renamed = if tasks_renamed { TASKS_RENAMED } else { "" };
-    let turn = if was_working {
-        "You were part-way through a turn when it went down, so your last action may have been \
-         cut short: assume nothing you were doing finished, and check rather than trust it."
-    } else {
-        "Your session was live when it went down, so anything you had not finished is unfinished."
+    use crate::templates::{
+        fill, MESSAGE_RESTART, MESSAGE_RESTART_LIVE, MESSAGE_RESTART_MID_TURN,
+        MESSAGE_RESTART_TASKS_RENAMED,
     };
-    format!(
-        "Build restarted at {at} (bridge {version}) and brought your session back. This message \
-         is from Build, not from the user — nobody is waiting on an answer to it.{renamed}\n\n{turn}\n\n\
-         Read your conversation from where you left off, work out what you had reached, and \
-         carry on with it. If the work was already finished, say so and stop; if you cannot tell \
-         what you were doing, ask."
+    let renamed = if tasks_renamed {
+        MESSAGE_RESTART_TASKS_RENAMED
+    } else {
+        ""
+    };
+    let last_turn = if was_working {
+        MESSAGE_RESTART_MID_TURN
+    } else {
+        MESSAGE_RESTART_LIVE
+    };
+    fill(
+        MESSAGE_RESTART,
+        &[
+            ("at", at),
+            ("version", version),
+            ("tasks_renamed", renamed),
+            ("last_turn", last_turn),
+        ],
     )
 }
 #[cfg(test)]

@@ -215,10 +215,9 @@ fn rfc3339(at: OffsetDateTime) -> String {
 /// What an agent whose turn died at the limit is told when it lifts.
 fn resume_notice(harness: AgentProvider, said: &str) -> String {
     let label = crate::harness::harness_for(harness).label();
-    format!(
-        "Retrying {label} after its reported usage limit. Your last turn stopped \
-         (“{said}”), so it did not finish: pick up where you left off, starting \
-         from what is in your working tree."
+    crate::templates::fill(
+        crate::templates::MESSAGE_USAGE_LIMIT_RETRY,
+        &[("harness", label), ("said", said)],
     )
 }
 

@@ -140,27 +140,37 @@ impl AppState {
 /// something is unfinished will pick one of them at random — most often
 /// reporting Complete again.
 fn reminder_body(held: &[Task]) -> String {
+    use crate::templates::{
+        fill, MESSAGE_REMINDER, MESSAGE_REMINDER_HELD_MANY, MESSAGE_REMINDER_HELD_ONE,
+        MESSAGE_REMINDER_TASK,
+    };
     let listed: Vec<String> = held
         .iter()
         .map(|task| {
-            format!(
-                "- #{} {} ({})",
-                task.number,
-                task.title,
-                column_name(&task.status)
+            let number = task.number.to_string();
+            fill(
+                MESSAGE_REMINDER_TASK,
+                &[
+                    ("number", number.as_str()),
+                    ("title", task.title.as_str()),
+                    ("column", column_name(&task.status)),
+                ],
             )
         })
         .collect();
-    let count = held.len();
-    let these = if count == 1 { "task" } else { "tasks" };
-    format!(
-        "You reported Complete, but {count} Build {these} assigned to you {} still open. This \
-         message is from Build, not from the user — nobody is waiting on an answer to it.\n\n{}\n\n\
-         Each one needs finishing, or a comment saying where it got to, or — if you cannot do it \
-         — handing back with a comment saying why, so whoever assigned it knows. Move a task to \
-         In review when it is ready to be looked at, and close it only when it is done with.",
-        if count == 1 { "is" } else { "are" },
-        listed.join("\n")
+    let count = held.len().to_string();
+    let held_phrase = if held.len() == 1 {
+        MESSAGE_REMINDER_HELD_ONE
+    } else {
+        MESSAGE_REMINDER_HELD_MANY
+    };
+    let still_held = fill(held_phrase, &[("count", count.as_str())]);
+    fill(
+        MESSAGE_REMINDER,
+        &[
+            ("still_held", still_held.as_str()),
+            ("tasks", listed.join("\n").as_str()),
+        ],
     )
 }
 

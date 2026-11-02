@@ -477,10 +477,11 @@ async fn legacy_post_asks_an_unnamed_agent_once_when_its_turn_is_sent() {
 const CLAUDE_THREAD_REPLY: &str = "<system-reminder>\nThe user wrote this in the thread. \
      Reply there with `mcp__build__post_thread_message`.\n</system-reminder>";
 
-/// Post `body` to a fresh unnamed agent's thread as an unread message, run
-/// the catch-up drain that reads it, and return what its Claude session heard
-/// once `needle` arrived.
-async fn heard_after_posting(owner: &str, body: &str, needle: &str) -> String {
+/// What a fresh unnamed agent's Claude session heard once `needle` arrived,
+/// after `body` was posted to its thread as an unread message and the
+/// catch-up drain that reads it ran, and whether the agent was asked for a
+/// name.
+async fn heard_after_posting(owner: &str, body: &str, needle: &str) -> (String, bool) {
     let (dir, repo) = init_repo();
     let (state, _handler, _root) = agent_tab_fixture(&repo, dir.path(), owner);
     let capture = capture_turns(&state, &repo, dir.path());
@@ -491,7 +492,16 @@ async fn heard_after_posting(owner: &str, body: &str, needle: &str) -> String {
     ));
     assert_eq!(posted["ok"], true, "{posted:?}");
     deliver_pending_agent_turns(&state);
-    capture_containing(&capture, needle).await
+    let heard = capture_containing(&capture, needle).await;
+    let name_asked = state
+        .lock()
+        .unwrap()
+        .entity_agents(owner)
+        .unwrap()
+        .by_id(&agent_id)
+        .unwrap()
+        .name_asked;
+    (heard, name_asked)
 }
 
 #[tokio::test]
@@ -499,20 +509,26 @@ async fn a_catch_up_turn_carries_the_threads_reply_and_tool_hint_once() {
     let hint = "<system-reminder>\nBuild tools load on demand: call ToolSearch with \
                 `select:mcp__build__post_thread_message,mcp__build__set_name` before you use them.\n\
                 </system-reminder>";
-    let heard = heard_after_posting("run-catch-up-reply", "what changed?", hint).await;
+    let (heard, name_asked) =
+        heard_after_posting("run-catch-up-reply", "what changed?", hint).await;
     assert_eq!(heard.matches(CLAUDE_THREAD_REPLY).count(), 1, "{heard}");
     assert_eq!(heard.matches(hint).count(), 1, "{heard}");
     assert!(
         heard.find(CLAUDE_THREAD_REPLY) > heard.find("what changed?"),
         "attachments follow the words: {heard}"
     );
+    assert!(name_asked);
 }
 
+/// A provider command read from the unread thread reaches Claude as exactly
+/// the command and its submit, and an unnamed agent is not asked for a name
+/// in front of it.
 #[tokio::test]
-async fn a_caught_up_provider_command_reaches_claude_bare() {
-    let heard = heard_after_posting("run-catch-up-compact", "/compact", "/compact").await;
-    assert!(!heard.contains("system-reminder"), "{heard}");
-    assert!(!heard.contains("Process only"), "{heard}");
+async fn a_caught_up_provider_command_reaches_claude_bare_and_unprefixed() {
+    let (heard, name_asked) =
+        heard_after_posting("run-caught-up-compact", "/compact", "/compact\n").await;
+    assert_eq!(heard, "/compact\n");
+    assert!(!name_asked);
 }
 
 /// An agent needs a folder, not a repository (#297): a project on a folder

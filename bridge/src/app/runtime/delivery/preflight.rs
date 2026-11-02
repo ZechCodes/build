@@ -1,4 +1,5 @@
 use super::compaction::compact_before_turn;
+use crate::agent_message::MessageKind;
 use crate::app::conversations::FrozenLegacyDelivery;
 use crate::app::{
     ensure_agent_tab, still_pumping_instance, AgentSpawnRequest, AppState, DeliveryOutcome,
@@ -71,15 +72,34 @@ fn delivered_prompt(
     }
 }
 
-/// The exact text a turn hands `provider`'s session: its own words with any
-/// unread thread it reads, the naming request, and every attachment the turn
-/// and the thread it reads ask for, framed by the harness. The unread thread
-/// decides whether the turn is a bare provider command.
+/// What a turn sends `provider`: decided by the unread thread it reads, else
+/// where its text was rendered, else read from the text as typed.
+fn turn_kind(
+    prompt: &str,
+    say: Option<&TurnText>,
+    payload: Option<&crate::operation::OperationPayload>,
+    provider: crate::models::AgentProvider,
+) -> MessageKind {
+    payload
+        .map(|payload| payload.message_kind(provider))
+        .or(say.and_then(|say| say.kind))
+        .unwrap_or_else(|| {
+            crate::agent_message::turn_message(
+                crate::harness::harness_for(provider),
+                prompt.to_string(),
+            )
+            .kind
+        })
+}
+
+/// The exact text a turn of `kind` hands `provider`'s session: its own words
+/// with any unread thread it reads, the naming request, and every attachment
+/// the turn and the thread it reads ask for, framed by the harness.
 fn framed_turn(
     prompt: &str,
     say: Option<&TurnText>,
     payload: Option<&crate::operation::OperationPayload>,
-    asks_name: bool,
+    (kind, asks_name): (MessageKind, bool),
     provider: crate::models::AgentProvider,
 ) -> String {
     let mut text = delivered_prompt(prompt, payload, provider);
@@ -96,9 +116,6 @@ fn framed_turn(
             tools: vec![crate::agent_message::BuildTool::SetName],
         });
     }
-    let kind = payload
-        .map(|payload| payload.message_kind(provider))
-        .or(say.and_then(|say| say.kind));
     crate::agent_message::turn_text(crate::harness::harness_for(provider), text, kind, asks)
 }
 
@@ -309,7 +326,7 @@ pub(in crate::app) fn deliver(
     // sweep wait on that lock, and how long a session takes to accept a turn is
     // its own business — a protocol write to a full pipe, an ack a harness
     // answers late, the exit-race wait below.
-    let (session, instance, legacy_payload, asks_name) = {
+    let (session, instance, legacy_payload, (kind, asks_name)) = {
         let mut s = timer.lock(state);
         if !s.queued_agent_target_exists(turn) {
             return Ok(DeliveryOutcome::Delivered(None));
@@ -354,11 +371,14 @@ pub(in crate::app) fn deliver(
         // Every entry path reaches this point: native and legacy posts,
         // notices, reminders, catch-up, and starts with no existing text.
         // Slash commands must remain unadorned for the provider to parse.
-        let asks_name = !legacy_payload.as_ref().is_some_and(|frozen| {
-            frozen
-                .payload
-                .requires_unadorned_delivery(model_choice.provider)
-        }) && s.claim_agent_name_request(owner, agent_id);
+        let kind = turn_kind(
+            prompt.unwrap_or_default(),
+            say.as_ref(),
+            legacy_payload.as_ref().map(|frozen| &frozen.payload),
+            model_choice.provider,
+        );
+        let asks_name =
+            kind != MessageKind::ProviderCommand && s.claim_agent_name_request(owner, agent_id);
         if say.is_none() && !asks_name {
             return Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))));
         }
@@ -374,7 +394,7 @@ pub(in crate::app) fn deliver(
             Arc::clone(&tab.session),
             tab.instance.clone(),
             legacy_payload,
-            asks_name,
+            (kind, asks_name),
         )
     };
     if *interrupt && spawned == Spawned::Warm {
@@ -387,7 +407,7 @@ pub(in crate::app) fn deliver(
         prompt.unwrap_or_default(),
         say.as_ref(),
         legacy_payload.as_ref().map(|frozen| &frozen.payload),
-        asks_name,
+        (kind, asks_name),
         model_choice.provider,
     );
     let mut native_turn = Turn::with_choice(prompt, model_choice.clone(), *choice_revision);

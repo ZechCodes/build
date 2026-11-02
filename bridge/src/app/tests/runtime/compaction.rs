@@ -821,6 +821,46 @@ fn the_kind_frozen_with_a_turn_decides_whether_it_travels_bare() {
     );
 }
 
+/// An unnamed agent handed a provider command as an operation hears exactly
+/// the command: the request for a name waits for its next turn, which carries
+/// it.
+#[test]
+fn an_unnamed_agent_hears_a_provider_command_without_the_name_request() {
+    let agent = CompactingAgent::new();
+    agent
+        .state
+        .lock()
+        .unwrap()
+        .edit_agent_record("test_unname", RUN, &agent.agent_id, |record| {
+            record.name = None;
+            record.name_asked = false;
+        });
+    for (kind, text) in [
+        (
+            crate::agent_message::MessageKind::ProviderCommand,
+            "/compact",
+        ),
+        (crate::agent_message::MessageKind::Delivery, "warm"),
+    ] {
+        let mut turn = agent.turn(false);
+        turn.say = Some(TurnText {
+            attachments: Default::default(),
+            kind: Some(kind),
+            cold: text.into(),
+            warm: text.into(),
+        });
+        agent.state.lock().unwrap().delivery_queue.enqueue(turn);
+        deliver_pending_agent_turns(&agent.state);
+    }
+    let turns = agent.log.turns();
+    assert_eq!(turns[0], "/compact");
+    assert!(
+        turns[1].starts_with(crate::operation::AGENT_NAME_NOTE),
+        "{turns:?}"
+    );
+    assert!(agent.agent().name_asked);
+}
+
 #[test]
 fn an_unknown_context_never_schedules_automatic_compaction() {
     let agent = CompactingAgent::new();

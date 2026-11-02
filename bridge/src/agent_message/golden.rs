@@ -53,7 +53,7 @@ impl Scenario {
         super::turn_text(
             crate::harness::harness_for(provider),
             prompt,
-            Some(self.payload.message_kind(provider)),
+            self.payload.message_kind(provider),
             self.payload.turn_attachments(),
         )
     }

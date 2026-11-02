@@ -320,7 +320,13 @@ fn assert_native_delivery(prompt: String, stored: Vec<crate::thread::ThreadItem>
     let (_, payload) = prompt
         .split_once(crate::operation::NATIVE_REVIEWER_MESSAGES_HEADING)
         .expect("warm delivery includes the real native envelope");
-    let accepted: Vec<Value> = serde_json::from_str(payload.trim()).unwrap();
+    // The envelope's JSON leads; the turn's reply attachment follows it.
+    let accepted: Vec<Value> = serde_json::Deserializer::from_str(payload.trim())
+        .into_iter()
+        .next()
+        .unwrap()
+        .unwrap();
+    assert!(prompt.contains("post_thread_message"), "{prompt}");
     assert_eq!(accepted.len(), 1);
     assert_eq!(accepted[0]["body"], "lease survives the reply");
     assert_eq!(accepted[0]["role"], "user");

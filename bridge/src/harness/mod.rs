@@ -245,6 +245,13 @@ pub trait Harness: Send + Sync {
     /// Build's instruction rather than the user's words.
     fn wrap_attachment(&self, text: &str) -> String;
 
+    /// What this harness's model calls `tool`, exactly as it must type it.
+    fn build_tool_name(&self, tool: crate::agent_message::BuildTool) -> String;
+
+    /// Whether Build's tools are loaded from the start on this harness, or
+    /// wait behind tool search.
+    fn tool_loading(&self) -> crate::agent_message::ToolLoading;
+
     /// Whether an exact terminal command starts a compaction cycle whose
     /// completion will later appear in the provider transcript.
     fn starts_compaction(&self, _prompt: &str) -> bool {
@@ -1114,6 +1121,14 @@ mod tests {
 
             fn wrap_attachment(&self, text: &str) -> String {
                 claude::ClaudeHarness.wrap_attachment(text)
+            }
+
+            fn build_tool_name(&self, tool: crate::agent_message::BuildTool) -> String {
+                claude::ClaudeHarness.build_tool_name(tool)
+            }
+
+            fn tool_loading(&self) -> crate::agent_message::ToolLoading {
+                claude::ClaudeHarness.tool_loading()
             }
 
             fn spec(

@@ -25,4 +25,12 @@ Exact accepted messages:
     "body": "is this one done?",
     "created_at": "2026-11-02T12:00:00Z"
   }
-][201~
+]
+
+<system-reminder>
+The user wrote this in the thread. Reply there with `mcp__build__post_thread_message`.
+</system-reminder>
+
+<system-reminder>
+Build tools load on demand: call ToolSearch with `select:mcp__build__post_thread_message,mcp__build__get_task` before you use them.
+</system-reminder>[201~

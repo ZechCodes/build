@@ -1850,10 +1850,11 @@ mod tests {
 
     /// Build's attachments ride in the turn text, so the echo Codex sends back
     /// carries them too: the receipt compares against the whole framed text,
-    /// and an echo of the body alone is some other turn.
+    /// and an echo of the body alone is some other turn — for a turn started
+    /// and for one steered into it.
     #[test]
-    fn a_turn_carrying_an_attachment_settles_on_the_echo_of_its_framed_text() {
-        use crate::agent_message::{ComposedMessage, MessageKind};
+    fn turns_and_steers_carrying_attachments_settle_on_the_echo_of_their_framed_text() {
+        use crate::agent_message::{ComposedMessage, MessageKind, ReplyChannel, TurnAttachments};
 
         let root = tempfile::tempdir().unwrap();
         let turn_response = json!({"id":4,"result":{"turn":{"id":TURN_ID}}});
@@ -1880,10 +1881,11 @@ mod tests {
         drop(state);
         let receipts = session.turn_receipts().unwrap();
 
-        let mut message = ComposedMessage::new(MessageKind::Delivery, "fix the parser");
-        message
-            .attachments
-            .push("Answer with post_thread_message.".to_string());
+        let message =
+            ComposedMessage::new(MessageKind::Delivery, "fix the parser").with(TurnAttachments {
+                replies: vec![ReplyChannel::Thread],
+                tools: Vec::new(),
+            });
         let framed = message.framed_for(&super::super::CodexAppServerHarness);
         assert_ne!(framed, message.body, "the attachment is in the text");
         session
@@ -1923,6 +1925,60 @@ mod tests {
         assert_eq!(
             receipts.borrow().seen_operation_ids,
             vec!["operation-framed".to_string()]
+        );
+
+        // The same holds for a turn steered into the running one.
+        let steer =
+            ComposedMessage::new(MessageKind::Delivery, "also the lexer").with(TurnAttachments {
+                replies: vec![ReplyChannel::Thread],
+                tools: Vec::new(),
+            });
+        let steered = steer.framed_for(&super::super::CodexAppServerHarness);
+        session
+            .send_turn(&Turn::new(steered.clone()).with_operation_id("operation-steered"))
+            .unwrap();
+        session
+            .core
+            .handle_connection(ConnectionEvent::Response {
+                operation: PendingOperation::SteerTurn {
+                    thread_id: THREAD_ID.to_string(),
+                    turn_id: TURN_ID.to_string(),
+                    input: steered.clone(),
+                },
+                result: Ok(OperationResult::TurnSteered(
+                    super::super::protocol::TurnSteerResult {
+                        turn_id: TURN_ID.to_string(),
+                    },
+                )),
+            })
+            .unwrap();
+        session
+            .core
+            .dispatch_notification(ServerNotification::Item(user_message(
+                "echo-steer-body",
+                &steer.body,
+                ItemLifecycle::Started,
+            )))
+            .unwrap();
+        assert_eq!(
+            receipts.borrow().seen_operation_ids.len(),
+            1,
+            "an echo of the steer without its attachment is not this steer"
+        );
+        session
+            .core
+            .dispatch_notification(ServerNotification::Item(user_message(
+                "echo-steered",
+                &steered,
+                ItemLifecycle::Started,
+            )))
+            .unwrap();
+        assert_eq!(
+            receipts.borrow().seen_operation_ids,
+            vec![
+                "operation-framed".to_string(),
+                "operation-steered".to_string()
+            ]
         );
         session.end();
     }

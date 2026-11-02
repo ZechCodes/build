@@ -211,6 +211,7 @@ impl AppState {
                 // The message is already on the thread, so the turn says what
                 // every other unread message says: go and read it.
                 say: Some(TurnText {
+                    attachments: Default::default(),
                     cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                     warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
                 }),

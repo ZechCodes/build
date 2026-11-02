@@ -76,6 +76,7 @@ impl PendingAgentTurn {
             choice_revision: delivery.choice_revision,
             interrupt: delivery.interrupt,
             say: Some(TurnText {
+                attachments: payload.turn_attachments(),
                 cold: payload.delivery_prompt(
                     &receipt.operation_id,
                     true,
@@ -170,6 +171,7 @@ impl PendingAgentTurn {
             choice_revision: agent.choice_revision,
             interrupt: false,
             say: Some(TurnText {
+                attachments: Default::default(),
                 cold: turn.cold,
                 warm: turn.warm,
             }),
@@ -200,6 +202,7 @@ impl PendingAgentTurn {
             interrupt: false,
             agent_id,
             say: Some(TurnText {
+                attachments: Default::default(),
                 cold: turn.cold,
                 warm: turn.warm,
             }),
@@ -221,6 +224,10 @@ impl PendingAgentTurn {
 pub(in crate::app) struct TurnText {
     pub(in crate::app) cold: String,
     pub(in crate::app) warm: String,
+    /// Where the agent answers and which Build tools the words name, decided
+    /// from the operation the turn delivers. A turn that reads the unread
+    /// thread learns its own when it is sent.
+    pub(in crate::app) attachments: crate::agent_message::TurnAttachments,
 }
 
 /// The live implementation a Task's conversation actually speaks to: the

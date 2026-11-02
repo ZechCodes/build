@@ -6,7 +6,7 @@
 //! session opens in it. That is the one place Build writes outside its own
 //! tree, and it only ever adds the flag for a path Build itself created.
 
-use crate::agent_message::{Framing, MessageKind};
+use crate::agent_message::{BuildTool, Framing, MessageKind, ToolLoading};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -188,6 +188,16 @@ impl Harness for ClaudeHarness {
 
     fn wrap_attachment(&self, text: &str) -> String {
         crate::agent_message::system_reminder(text)
+    }
+
+    /// Claude Code names an MCP tool `mcp__<server>__<tool>`.
+    fn build_tool_name(&self, tool: BuildTool) -> String {
+        tool.mcp_name()
+    }
+
+    /// Claude Code lists MCP tools by name and loads them with ToolSearch.
+    fn tool_loading(&self) -> ToolLoading {
+        ToolLoading::ToolSearch
     }
 
     fn compacts_on_command(&self) -> bool {

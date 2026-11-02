@@ -266,6 +266,7 @@ impl AppState {
             // died, so it gets the cold form — the protocol and the catch-up
             // packet — exactly as a hand-started agent does.
             say: Some(TurnText {
+                attachments: Default::default(),
                 cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             }),

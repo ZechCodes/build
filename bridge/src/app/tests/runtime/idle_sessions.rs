@@ -700,6 +700,7 @@ fn unreachable_turn(state: &mut AppState, owner: &str) -> PendingAgentTurn {
         choice_revision: agent.choice_revision,
         interrupt: false,
         say: Some(TurnText {
+            attachments: Default::default(),
             cold: "cold turn".into(),
             warm: "warm turn".into(),
         }),

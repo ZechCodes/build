@@ -364,6 +364,7 @@ impl CompactingAgent {
             choice_revision: agent.choice_revision,
             interrupt,
             say: Some(TurnText {
+                attachments: Default::default(),
                 cold: "cold".into(),
                 warm: "warm".into(),
             }),
@@ -744,6 +745,7 @@ fn native_policy_does_not_schedule_automatic_compaction_but_manual_commands_stil
     assert_eq!(agent.log.turns(), vec!["warm".to_string()]);
     let mut turn = agent.turn(false);
     turn.say = Some(TurnText {
+        attachments: Default::default(),
         cold: "/compact".into(),
         warm: "/compact".into(),
     });
@@ -752,6 +754,34 @@ fn native_policy_does_not_schedule_automatic_compaction_but_manual_commands_stil
     assert_eq!(
         agent.log.turns(),
         vec!["warm".to_string(), "/compact".to_string()]
+    );
+}
+
+#[test]
+fn a_delivered_turn_carries_its_reply_attachment_and_a_provider_command_stays_bare() {
+    let agent = CompactingAgent::new();
+    let thread = crate::agent_message::TurnAttachments {
+        replies: vec![crate::agent_message::ReplyChannel::Thread],
+        tools: Vec::new(),
+    };
+    for text in ["warm", "/compact"] {
+        let mut turn = agent.turn(false);
+        turn.say = Some(TurnText {
+            attachments: thread.clone(),
+            cold: text.into(),
+            warm: text.into(),
+        });
+        agent.state.lock().unwrap().delivery_queue.enqueue(turn);
+        deliver_pending_agent_turns(&agent.state);
+    }
+    assert_eq!(
+        agent.log.turns(),
+        vec![
+            "warm\n\n<build_instructions>\nThe user wrote this in the thread. \
+             Reply there with `mcp__build__post_thread_message`.\n</build_instructions>"
+                .to_string(),
+            "/compact".to_string(),
+        ]
     );
 }
 

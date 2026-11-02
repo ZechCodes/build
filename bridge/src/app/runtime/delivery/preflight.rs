@@ -362,8 +362,21 @@ pub(in crate::app) fn deliver(
     } else {
         prompt
     };
+    let mut asks = say
+        .as_ref()
+        .map(|say| say.attachments.clone())
+        .unwrap_or_default();
+    if let Some(frozen) = legacy_payload.as_ref() {
+        asks.merge(frozen.payload.turn_attachments());
+    }
+    if asks_name {
+        asks.merge(crate::agent_message::TurnAttachments {
+            replies: Vec::new(),
+            tools: vec![crate::agent_message::BuildTool::SetName],
+        });
+    }
     let harness = crate::harness::harness_for(model_choice.provider);
-    let prompt = crate::agent_message::turn_message(harness, prompt).framed_for(harness);
+    let prompt = crate::agent_message::turn_text(harness, prompt, asks);
     let mut native_turn = Turn::with_choice(prompt, model_choice.clone(), *choice_revision);
     native_turn.operation_id = turn.operation_id.clone().or_else(|| {
         legacy_payload.as_ref().map(|payload| {

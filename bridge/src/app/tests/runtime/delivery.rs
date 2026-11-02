@@ -534,6 +534,7 @@ async fn direct_task_notice_asks_an_unnamed_agent_on_its_first_turn() {
             choice_revision: 0,
             interrupt: false,
             say: Some(TurnText {
+                attachments: Default::default(),
                 cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             }),
@@ -627,6 +628,7 @@ async fn an_immediately_exiting_harness_leaves_one_closed_session() {
             choice_revision: 0,
             interrupt: false,
             say: Some(TurnText {
+                attachments: Default::default(),
                 cold: "cold".into(),
                 warm: "warm".into(),
             }),

@@ -40,15 +40,21 @@ pub(crate) struct Scenario {
 }
 
 impl Scenario {
-    /// The prompt Build hands `provider` for this delivery.
+    /// The text Build hands `provider`'s session for this delivery: the
+    /// queue's prompt with its attachments framed, as `deliver` frames it.
     pub(crate) fn prompt(&self, provider: AgentProvider) -> String {
-        match self.scope {
+        let prompt = match self.scope {
             Scope::Native(operation_id) => {
                 self.payload
                     .delivery_prompt(operation_id, self.cold, provider)
             }
             Scope::Legacy => self.payload.legacy_delivery_prompt(self.cold, provider),
-        }
+        };
+        super::turn_text(
+            crate::harness::harness_for(provider),
+            prompt,
+            self.payload.turn_attachments(),
+        )
     }
 }
 

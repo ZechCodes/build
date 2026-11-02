@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::agent_message::{BuildTool, ReplyChannel, TurnAttachments};
 use crate::models::{AgentProvider, ModelChoice};
 use crate::thread::ThreadMessage;
 
@@ -124,7 +125,6 @@ impl OperationPayload {
         // Keep the reviewer's words first. Provider slash commands are parsed
         // only when the slash is the first token; putting Build's delivery
         // envelope ahead of it turns commands such as `/goal ...` into prose.
-        let sender = self.sender_note();
         let sender_context = self.sender_context_note();
         let workspace = self.workspace_note();
         let task = self.task_note();
@@ -136,45 +136,12 @@ impl OperationPayload {
             .map(|message| message.body.trim())
             .filter(|body| !body.is_empty())
             .unwrap_or("Review the exact accepted messages below.");
-        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{sender_context}{workspace}{task}{looking}{naming}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender_context}{workspace}{task}{looking}{naming}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
             prompt
         }
-    }
-
-    /// One line naming the agent these words came from, when an agent sent
-    /// them rather than the human, and how to write back to it. Empty for
-    /// everything the human said.
-    ///
-    /// The payload carries `from_agent` on the message itself, but the message
-    /// is JSON inside a prompt written in the user's voice, and the sentence
-    /// around it is what an agent actually reads. So the envelope says it too:
-    /// this is work being handed over, the person to answer is not here, and
-    /// the reply handle is the id spelled out rather than something to go and
-    /// look up.
-    fn sender_note(&self) -> String {
-        let mut senders: Vec<&str> = self
-            .messages
-            .iter()
-            .filter_map(|message| message.from_agent.as_deref())
-            .map(|sender| sender.id.as_str())
-            .collect();
-        senders.dedup();
-        if senders.is_empty() {
-            return String::new();
-        }
-        let named: Vec<String> = senders
-            .iter()
-            .map(|sender| format!("agent `{sender}`"))
-            .collect();
-        let handles: Vec<String> = senders.iter().map(|sender| format!("`{sender}`")).collect();
-        format!(
-            "\nThese messages came from {}, not from the user. Reply with message_agent to {}.\n",
-            named.join(" and "),
-            handles.join(" and ")
-        )
     }
 
     /// One line per sending agent saying how full its context was when it
@@ -222,23 +189,18 @@ impl OperationPayload {
     /// written in the user's voice, and the sentence around it is what an agent
     /// actually acts on.
     fn task_note(&self) -> String {
-        self.messages
-            .iter()
-            .filter(|message| !message.from_build)
-            .filter_map(|message| message.from_task.as_deref())
-            .next()
-            .map_or_else(String::new, |task| {
-                format!(
-                    "\nThe task is `{}` — read it with get_task before you start. \
+        self.handed_task().map_or_else(String::new, |task| {
+            format!(
+                "\nThe task is `{}` — read it with get_task before you start. \
                      Comment on the task with comment_task when something changes what the \
                      reader should know: a decision or finding that changes the plan, a question \
                      (use mention_user only when it is the user's call), a handoff, or the final \
                      result with its evidence. The board already shows the task's column and \
                      assignee; do not comment to say you are still working. Then move it to \
                      In review with move_task when you report Complete.\n",
-                    task.task_id
-                )
-            })
+                task.task_id
+            )
+        })
     }
 
     /// One line naming the workspace the user was standing in, when the message
@@ -283,16 +245,87 @@ impl OperationPayload {
     /// the message is sent, so the agent is told to go and read it rather than
     /// handed a copy that reads as current and is not.
     fn viewing_task_note(&self) -> String {
-        self.messages
-            .iter()
-            .filter_map(|message| message.viewing_context.as_deref())
-            .find_map(crate::thread::ViewingContext::task)
+        self.viewed_task()
             .map_or_else(String::new, |(number, title, task_id)| {
                 format!(
                     "\nThe user is looking at task #{number} \"{title}\" (`{task_id}`); read it \
                      with get_task before answering about it.\n"
                 )
             })
+    }
+
+    /// Where each of these messages is answered, and the other Build tools
+    /// the envelope tells the agent to use: what the delivery attaches.
+    ///
+    /// The user's words are answered in the thread, another agent's to that
+    /// agent, and a comment on a task on the task — a tracking notice about
+    /// one included. Build's other notices ask for no answer.
+    pub fn turn_attachments(&self) -> TurnAttachments {
+        let mut asks = TurnAttachments::default();
+        for message in &self.messages {
+            let reply = if message.from_build {
+                message
+                    .task_notice
+                    .as_deref()
+                    .filter(|notice| notice.action == "commented")
+                    .and(message.from_task.as_deref())
+                    .map(|task| ReplyChannel::Task {
+                        task_id: task.task_id.clone(),
+                    })
+            } else if let Some(sender) = message.from_agent.as_deref() {
+                Some(ReplyChannel::Agent {
+                    agent_id: sender.id.clone(),
+                })
+            } else {
+                Some(ReplyChannel::Thread)
+            };
+            let reads_comment = matches!(reply, Some(ReplyChannel::Task { .. }));
+            asks.merge(TurnAttachments {
+                replies: reply.into_iter().collect(),
+                tools: if reads_comment {
+                    vec![BuildTool::ReadComment]
+                } else {
+                    Vec::new()
+                },
+            });
+        }
+        let mut tools = Vec::new();
+        if self.handed_task().is_some() {
+            tools.extend([
+                BuildTool::GetTask,
+                BuildTool::CommentTask,
+                BuildTool::MentionUser,
+                BuildTool::MoveTask,
+            ]);
+        }
+        if self.viewed_task().is_some() {
+            tools.push(BuildTool::GetTask);
+        }
+        if self.ask_to_name {
+            tools.push(BuildTool::SetName);
+        }
+        asks.merge(TurnAttachments {
+            replies: Vec::new(),
+            tools,
+        });
+        asks
+    }
+
+    /// The task this turn hands over, when being handed one is what sent it:
+    /// see [`Self::task_note`].
+    fn handed_task(&self) -> Option<&crate::thread::TaskEnvelope> {
+        self.messages
+            .iter()
+            .filter(|message| !message.from_build)
+            .find_map(|message| message.from_task.as_deref())
+    }
+
+    /// The task the user was looking at, as `(number, title, task_id)`.
+    fn viewed_task(&self) -> Option<(u64, &str, &str)> {
+        self.messages
+            .iter()
+            .filter_map(|message| message.viewing_context.as_deref())
+            .find_map(crate::thread::ViewingContext::task)
     }
 
     /// Commands that must reach the provider's command parser byte-for-byte.
@@ -718,20 +751,126 @@ mod tests {
             ..payload()
         };
 
+        assert_eq!(
+            handed_over.turn_attachments().replies,
+            vec![ReplyChannel::Agent {
+                agent_id: "router-7".to_string()
+            }]
+        );
         let prompt = handed_over.legacy_delivery_prompt(false, AgentProvider::Claude);
         assert!(
-            prompt.contains(
-                "These messages came from agent `router-7`, not from the user. \
-                 Reply with message_agent to `router-7`."
-            ),
-            "{prompt}"
+            !prompt.contains("message_agent"),
+            "the reply attachment says it, once: {prompt}"
         );
-        assert!(
-            !payload()
-                .legacy_delivery_prompt(false, AgentProvider::Claude)
-                .contains("came from agent"),
-            "the user's own words claim no sender"
+        assert_eq!(
+            payload().turn_attachments().replies,
+            vec![ReplyChannel::Thread],
+            "the user's own words are answered in the thread"
         );
+    }
+
+    /// A comment on a task is answered on that task, whether it reached the
+    /// agent as a tracking notice or inside a delivery beside other words;
+    /// Build's other notices ask for no answer.
+    #[test]
+    fn a_task_comment_is_answered_on_the_task() {
+        let comment = |actor: crate::tracker::Actor| ThreadMessage {
+            from_build: true,
+            body: "New comment tc-9 on #42 from the user.".into(),
+            from_task: Some(Box::new(crate::thread::TaskEnvelope {
+                task_id: "task-42".into(),
+                number: 42,
+                title: "Fix the parser".into(),
+                links: crate::tracker::TaskLinks::default(),
+            })),
+            task_notice: Some(Box::new(crate::thread::TaskNotice {
+                actor: crate::thread::NoticeActor {
+                    who: actor,
+                    name: None,
+                    identity: None,
+                },
+                action: "commented".into(),
+                comment_id: Some("tc-9".into()),
+                from: None,
+                to: None,
+                assignee: None,
+                assignee_identity: None,
+            })),
+            ..payload().messages[0].clone()
+        };
+        let on_the_task = ReplyChannel::Task {
+            task_id: "task-42".to_string(),
+        };
+
+        let notice = OperationPayload {
+            messages: vec![comment(crate::tracker::Actor::User)],
+            ..payload()
+        };
+        assert_eq!(
+            notice.turn_attachments(),
+            TurnAttachments {
+                replies: vec![on_the_task.clone()],
+                tools: vec![BuildTool::ReadComment],
+            }
+        );
+
+        let beside_the_thread = OperationPayload {
+            messages: vec![
+                payload().messages[0].clone(),
+                comment(crate::tracker::Actor::User),
+            ],
+            ..payload()
+        };
+        assert_eq!(
+            beside_the_thread.turn_attachments().replies,
+            vec![ReplyChannel::Thread, on_the_task]
+        );
+
+        let moved = OperationPayload {
+            messages: vec![ThreadMessage {
+                task_notice: Some(Box::new(crate::thread::TaskNotice {
+                    action: "moved".into(),
+                    comment_id: None,
+                    to: Some("in_review".into()),
+                    ..*comment(crate::tracker::Actor::User).task_notice.unwrap()
+                })),
+                ..comment(crate::tracker::Actor::User)
+            }],
+            ..payload()
+        };
+        assert_eq!(moved.turn_attachments(), TurnAttachments::default());
+    }
+
+    /// The tools the envelope tells the agent to use are the ones its tool
+    /// hint loads: the hand-off's four, `get_task` for a task on screen, and
+    /// `set_name` on the turn that asks for a name.
+    #[test]
+    fn the_envelope_names_the_tools_it_asks_for() {
+        let envelope = crate::thread::TaskEnvelope {
+            task_id: "task-42".into(),
+            number: 42,
+            title: "Fix the parser".into(),
+            links: crate::tracker::TaskLinks::default(),
+        };
+        let handed = OperationPayload {
+            messages: vec![ThreadMessage {
+                from_task: Some(Box::new(envelope)),
+                ..payload().messages[0].clone()
+            }],
+            ask_to_name: true,
+            ..payload()
+        };
+        assert_eq!(
+            handed.turn_attachments().tools,
+            vec![
+                BuildTool::GetTask,
+                BuildTool::CommentTask,
+                BuildTool::MentionUser,
+                BuildTool::MoveTask,
+                BuildTool::SetName,
+            ]
+        );
+        assert_eq!(payload().turn_attachments().tools, Vec::new());
     }
 
     /// The workspace the user was standing in is named in the envelope, not

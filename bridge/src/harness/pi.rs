@@ -1,4 +1,4 @@
-use crate::agent_message::{Framing, MessageKind};
+use crate::agent_message::{BuildTool, Framing, MessageKind, ToolLoading};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -64,6 +64,16 @@ impl Harness for PiHarness {
 
     fn wrap_attachment(&self, text: &str) -> String {
         crate::agent_message::build_instructions(text)
+    }
+
+    /// Build's Pi extension registers each tool under its own name.
+    fn build_tool_name(&self, tool: BuildTool) -> String {
+        tool.name().to_string()
+    }
+
+    /// The extension registers every tool when Pi starts.
+    fn tool_loading(&self) -> ToolLoading {
+        ToolLoading::Loaded
     }
 
     fn cli_probe(&self) -> &'static dyn crate::harness::installed::CliProbe {

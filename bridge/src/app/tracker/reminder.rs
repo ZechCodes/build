@@ -119,6 +119,7 @@ impl AppState {
                 choice_revision: addressed.choice_revision,
                 interrupt: false,
                 say: Some(TurnText {
+                    attachments: Default::default(),
                     cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                     warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
                 }),

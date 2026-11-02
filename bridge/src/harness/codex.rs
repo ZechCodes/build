@@ -6,7 +6,7 @@
 //! handling Build's prompt delivery depends on. Nothing is written outside the
 //! process, which is why this harness needs no workspace preparation.
 
-use crate::agent_message::{Framing, MessageKind};
+use crate::agent_message::{BuildTool, Framing, MessageKind, ToolLoading};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -182,6 +182,16 @@ impl Harness for CodexHarness {
 
     fn wrap_attachment(&self, text: &str) -> String {
         crate::agent_message::build_instructions(text)
+    }
+
+    /// Codex names an MCP tool `mcp__<server>__<tool>`.
+    fn build_tool_name(&self, tool: BuildTool) -> String {
+        tool.mcp_name()
+    }
+
+    /// Codex hands the model every MCP tool up front.
+    fn tool_loading(&self) -> ToolLoading {
+        ToolLoading::Loaded
     }
 
     fn starts_compaction(&self, prompt: &str) -> bool {

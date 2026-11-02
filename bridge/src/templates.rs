@@ -50,6 +50,20 @@ pub(crate) const MESSAGE_SYSTEM_REMINDER: &str = template!("messages/wrap_system
 pub(crate) const MESSAGE_BUILD_INSTRUCTIONS: &str =
     template!("messages/wrap_build_instructions.md");
 
+/// Where to answer the user's words in the thread: `{tool}`.
+pub(crate) const MESSAGE_REPLY_THREAD: &str = template!("messages/reply_thread.md");
+
+/// Where to answer a comment on a task: `{task_id}`, `{tool}`.
+pub(crate) const MESSAGE_REPLY_TASK: &str = template!("messages/reply_task.md");
+
+/// Where to answer another agent: `{agent_id}`, `{tool}`.
+pub(crate) const MESSAGE_REPLY_AGENT: &str = template!("messages/reply_agent.md");
+
+/// How to load the Build tools a message names on a harness that defers them
+/// behind ToolSearch: `{tools}`, comma-separated.
+pub(crate) const MESSAGE_TOOL_HINT_TOOL_SEARCH: &str =
+    template!("messages/tool_hint_tool_search.md");
+
 const PLAN: &str = template!("plan.md");
 
 const BUILD: &str = template!("build.md");

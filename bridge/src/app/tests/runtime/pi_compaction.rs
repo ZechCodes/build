@@ -273,6 +273,7 @@ async fn start_and_queue(agent: &CompactingAgent, session: &dyn AgentSession, di
     .expect("real status pump persists inclusive threshold crossing");
     let mut turn = agent.turn(false);
     turn.say = Some(TurnText {
+        attachments: Default::default(),
         cold: "queued follow-up".into(),
         warm: "queued follow-up".into(),
     });
@@ -451,6 +452,7 @@ async fn manual_compaction_history(outcome: &str) {
     if outcome == "manual-command" {
         let mut turn = agent.turn(false);
         turn.say = Some(TurnText {
+            attachments: Default::default(),
             cold: "/compact".into(),
             warm: "/compact".into(),
         });

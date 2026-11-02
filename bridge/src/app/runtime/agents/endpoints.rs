@@ -235,6 +235,7 @@ pub(in crate::app) fn agent_start(
             // what waits for it gets the cold form: the conversation protocol
             // and the catch-up packet around the nudge.
             say: agent.has_unread.then(|| TurnText {
+                attachments: Default::default(),
                 cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             }),

@@ -746,6 +746,7 @@ impl AppState {
                     ..self.payload_for_reader(&delivery.owner_id, payload.clone())
                 };
                 TurnText {
+                    attachments: payload.turn_attachments(),
                     cold: payload.delivery_prompt(
                         &receipt.operation_id,
                         true,
@@ -770,6 +771,7 @@ impl AppState {
             interrupt: delivery.interrupt,
             say: operation_prompt.or_else(|| {
                 Some(TurnText {
+                    attachments: Default::default(),
                     cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                     warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
                 })

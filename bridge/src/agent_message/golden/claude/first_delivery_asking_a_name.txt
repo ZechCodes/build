@@ -34,4 +34,12 @@ Exact accepted messages:
       }
     ]
   }
-][201~
+]
+
+<system-reminder>
+The user wrote this in the thread. Reply there with `mcp__build__post_thread_message`.
+</system-reminder>
+
+<system-reminder>
+Build tools load on demand: call ToolSearch with `select:mcp__build__post_thread_message,mcp__build__set_name` before you use them.
+</system-reminder>[201~

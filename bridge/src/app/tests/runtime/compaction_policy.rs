@@ -604,6 +604,7 @@ async fn first_user_turn_after_exact_reopen_delegates_compaction_to_claude_nativ
             choice_revision: agent.choice_revision,
             interrupt: false,
             say: Some(TurnText {
+                attachments: Default::default(),
                 cold: USER_TURN.into(),
                 warm: USER_TURN.into(),
             }),

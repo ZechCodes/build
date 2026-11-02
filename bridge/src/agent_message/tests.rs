@@ -11,27 +11,30 @@ const PROVIDERS: [AgentProvider; 5] = [
 ];
 
 fn with_reply_note(kind: MessageKind) -> ComposedMessage {
-    let mut message = ComposedMessage::new(kind, "fix the parser");
-    message
-        .attachments
-        .push("Answer with post_thread_message.".to_string());
-    message
+    ComposedMessage::new(kind, "fix the parser").with(TurnAttachments {
+        replies: vec![ReplyChannel::Thread],
+        tools: Vec::new(),
+    })
 }
 
-/// The exact text each harness is handed for a message carrying one
-/// attachment: Claude Code's own tag where the harness is Claude Code, a
-/// marked Build block elsewhere.
+/// The exact text each harness is handed for a message the user wrote in the
+/// thread: the reply tool as that harness's model types it, and on the Claude
+/// Code harnesses, which keep Build's tools behind ToolSearch, how to load it.
 #[test]
-fn each_harness_marks_an_attachment_its_own_way() {
-    let reminder =
-        "fix the parser\n\n<system-reminder>\nAnswer with post_thread_message.\n</system-reminder>";
-    let build = "fix the parser\n\n<build_instructions>\nAnswer with post_thread_message.\n</build_instructions>";
+fn each_harness_names_the_reply_tool_its_own_way() {
+    let claude = "fix the parser\n\n\
+<system-reminder>\nThe user wrote this in the thread. Reply there with `mcp__build__post_thread_message`.\n</system-reminder>\n\n\
+<system-reminder>\nBuild tools load on demand: call ToolSearch with `select:mcp__build__post_thread_message` before you use them.\n</system-reminder>";
+    let codex = "fix the parser\n\n\
+<build_instructions>\nThe user wrote this in the thread. Reply there with `mcp__build__post_thread_message`.\n</build_instructions>";
+    let pi = "fix the parser\n\n\
+<build_instructions>\nThe user wrote this in the thread. Reply there with `post_thread_message`.\n</build_instructions>";
     let expected = [
-        (AgentProvider::ClaudeAdk, reminder),
-        (AgentProvider::Claude, reminder),
-        (AgentProvider::Codex, build),
-        (AgentProvider::CodexAppServer, build),
-        (AgentProvider::Pi, build),
+        (AgentProvider::ClaudeAdk, claude),
+        (AgentProvider::Claude, claude),
+        (AgentProvider::Codex, codex),
+        (AgentProvider::CodexAppServer, codex),
+        (AgentProvider::Pi, pi),
     ];
     let message = with_reply_note(MessageKind::Delivery);
     for (provider, text) in expected {
@@ -40,6 +43,99 @@ fn each_harness_marks_an_attachment_its_own_way() {
             text,
             "{provider:?}"
         );
+    }
+}
+
+/// A comment on a task is answered on that task, and another agent's words
+/// are answered to that agent, each by its exact id.
+#[test]
+fn a_reply_names_the_task_or_agent_it_goes_back_to() {
+    let message = ComposedMessage::new(MessageKind::Delivery, "body").with(TurnAttachments {
+        replies: vec![
+            ReplyChannel::Task {
+                task_id: "task-42".to_string(),
+            },
+            ReplyChannel::Agent {
+                agent_id: "agent-3".to_string(),
+            },
+        ],
+        tools: Vec::new(),
+    });
+    assert_eq!(
+        message.framed_for(harness_for(AgentProvider::Pi)),
+        "body\n\n\
+<build_instructions>\nThis came from a comment on task `task-42`. Reply on the task with `comment_task`.\n</build_instructions>\n\n\
+<build_instructions>\nAgent `agent-3` sent this, not the user. Reply to it with `message_agent`.\n</build_instructions>"
+    );
+}
+
+/// One tool hint for the whole turn: the reply tools first, then the tools
+/// the words name, each once.
+#[test]
+fn the_tool_hint_names_each_tool_once_reply_tools_first() {
+    let message = ComposedMessage::new(MessageKind::Delivery, "body").with(TurnAttachments {
+        replies: vec![ReplyChannel::Task {
+            task_id: "task-42".to_string(),
+        }],
+        tools: vec![BuildTool::ReadComment, BuildTool::CommentTask],
+    });
+    assert_eq!(
+        message.attachments.last(),
+        Some(&Attachment::ToolHint(vec![
+            BuildTool::CommentTask,
+            BuildTool::ReadComment
+        ]))
+    );
+    assert!(message
+        .framed_for(harness_for(AgentProvider::Claude))
+        .ends_with(
+            "call ToolSearch with `select:mcp__build__comment_task,mcp__build__read_comment` \
+             before you use them.\n</system-reminder>"
+        ));
+}
+
+/// Every attachment, on every harness, is a sentence or two: the turn's own
+/// words stay the bulk of what the agent reads.
+#[test]
+fn every_attachment_is_a_sentence_or_two() {
+    let attachments = [
+        Attachment::Reply(ReplyChannel::Thread),
+        Attachment::Reply(ReplyChannel::Task {
+            task_id: "task-01M6EK32EA914912VZT05W8R8G".to_string(),
+        }),
+        Attachment::Reply(ReplyChannel::Agent {
+            agent_id: "agent-01M6EN9NVJ8WS82KE6MCPNGA8B".to_string(),
+        }),
+        Attachment::ToolHint(vec![
+            BuildTool::PostThreadMessage,
+            BuildTool::GetTask,
+            BuildTool::SetName,
+        ]),
+    ];
+    for provider in PROVIDERS {
+        for attachment in &attachments {
+            let Some(text) = attachment.text(harness_for(provider)) else {
+                continue;
+            };
+            let sentences = text.matches(". ").count() + usize::from(text.ends_with('.'));
+            assert!(
+                (1..=2).contains(&sentences) && !text.contains('\n'),
+                "{provider:?}: {text}"
+            );
+        }
+    }
+}
+
+/// The tool hint says nothing where Build's tools are already loaded.
+#[test]
+fn the_tool_hint_is_silent_where_tools_are_loaded() {
+    let hint = Attachment::ToolHint(vec![BuildTool::GetTask]);
+    for provider in [
+        AgentProvider::Codex,
+        AgentProvider::CodexAppServer,
+        AgentProvider::Pi,
+    ] {
+        assert_eq!(hint.text(harness_for(provider)), None, "{provider:?}");
     }
 }
 

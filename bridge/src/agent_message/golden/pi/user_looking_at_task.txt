@@ -25,4 +25,8 @@ Exact accepted messages:
     "body": "is this one done?",
     "created_at": "2026-11-02T12:00:00Z"
   }
-][201~
+]
+
+<build_instructions>
+The user wrote this in the thread. Reply there with `post_thread_message`.
+</build_instructions>[201~

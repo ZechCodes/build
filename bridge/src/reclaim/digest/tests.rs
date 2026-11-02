@@ -10,7 +10,7 @@ const MIDNIGHT_UTC_MS: i64 = 1_793_577_600_000;
 fn utc_at(hour: i8, minute: i8) -> DigestSchedule {
     DigestSchedule {
         at: DigestTime::new(hour, minute).unwrap(),
-        zone: TimeZone::UTC,
+        zone: Some(TimeZone::UTC),
     }
 }
 
@@ -50,7 +50,7 @@ fn the_digest_is_due_from_its_time_until_the_day_ends() {
 fn the_day_is_the_devices_local_day() {
     let schedule = DigestSchedule {
         at: DigestTime::new(9, 0).unwrap(),
-        zone: TimeZone::fixed(jiff::tz::offset(-5)),
+        zone: Some(TimeZone::fixed(jiff::tz::offset(-5))),
     };
     // 09:00 at UTC-5 is 14:00Z.
     assert_eq!(schedule.due_day(MIDNIGHT_UTC_MS + 13 * HOUR_MS), None);
@@ -87,7 +87,7 @@ fn a_digest_time_skipped_by_a_clock_change_still_comes_that_day() {
     let zone = TimeZone::get("America/New_York").unwrap();
     let schedule = DigestSchedule {
         at: DigestTime::new(2, 30).unwrap(),
-        zone: zone.clone(),
+        zone: Some(zone.clone()),
     };
     // 2026-03-08: New York skips from 02:00 to 03:00.
     let before = jiff::civil::date(2026, 3, 8)
@@ -114,7 +114,7 @@ fn a_digest_time_repeated_by_a_clock_change_is_waited_for_again() {
     let zone = TimeZone::get("America/New_York").unwrap();
     let schedule = DigestSchedule {
         at: DigestTime::new(1, 45).unwrap(),
-        zone: zone.clone(),
+        zone: Some(zone.clone()),
     };
     // 2026-11-01: New York repeats 01:00–02:00. 01:30 the second time is EST.
     let second_half_past_one = jiff::civil::date(2026, 11, 1)

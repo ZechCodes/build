@@ -15,7 +15,7 @@ const DAY_MS: i64 = 24 * HOUR_MS;
 fn digest_at(hour: i8) -> DigestSchedule {
     DigestSchedule {
         at: DigestTime::new(hour, 0).unwrap(),
-        zone: jiff::tz::TimeZone::UTC,
+        zone: Some(jiff::tz::TimeZone::UTC),
     }
 }
 
@@ -512,6 +512,28 @@ fn a_restart_does_not_send_the_digest_twice() {
     assert_eq!(project_agent_notices(&reopened, &project_id).len(), 1);
     AppState::sweep_workspaces(&reopened, &at_nine(), day + DAY_MS + 9 * HOUR_MS);
     assert_eq!(project_agent_notices(&reopened, &project_id).len(), 2);
+}
+
+/// A machine that moves west after its digest went out is back on a day it
+/// has already had: it is not sent again.
+#[test]
+fn moving_zones_never_sends_a_day_twice() {
+    let (_tmp, state, project_id, _ws, _task) = linked_workspace();
+    let day = quiet_day();
+    let in_zone = |hours: i8| ReclaimPolicy {
+        digest: DigestSchedule {
+            at: DigestTime::new(9, 0).unwrap(),
+            zone: Some(jiff::tz::TimeZone::fixed(jiff::tz::offset(hours))),
+        },
+        ..ReclaimPolicy::default()
+    };
+    // 01:00Z the next day is 10:00 in Tokyo, and 17:00 the day before in
+    // Los Angeles.
+    let next_morning = day + DAY_MS + HOUR_MS;
+    AppState::sweep_workspaces(&state, &in_zone(9), next_morning);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
+    AppState::sweep_workspaces(&state, &in_zone(-8), next_morning + HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
 }
 
 /// A bridge that was down at the scan time sends the day's digest at its

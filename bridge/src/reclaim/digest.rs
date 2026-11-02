@@ -58,14 +58,16 @@ impl fmt::Display for DigestTime {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DigestSchedule {
     pub at: DigestTime,
-    pub zone: TimeZone,
+    /// `None` is the device's zone, read again each time it is needed, so a
+    /// machine that moves zones while the bridge runs follows it.
+    pub zone: Option<TimeZone>,
 }
 
 impl Default for DigestSchedule {
     fn default() -> Self {
         Self {
             at: DEFAULT_DIGEST_AT,
-            zone: TimeZone::system(),
+            zone: None,
         }
     }
 }
@@ -93,7 +95,7 @@ impl DigestSchedule {
         } else {
             self.at.on(local.date().tomorrow().unwrap_or(local.date()))
         };
-        let showings = self.zone.to_ambiguous_timestamp(next);
+        let showings = self.zone().to_ambiguous_timestamp(next);
         let next_ms = [showings.clone().compatible(), showings.later()]
             .into_iter()
             .filter_map(Result::ok)
@@ -106,7 +108,11 @@ impl DigestSchedule {
 
     fn local(&self, now_ms: i64) -> Option<DateTime> {
         let now = Timestamp::from_millisecond(now_ms).ok()?;
-        Some(self.zone.to_datetime(now))
+        Some(self.zone().to_datetime(now))
+    }
+
+    fn zone(&self) -> TimeZone {
+        self.zone.clone().unwrap_or_else(TimeZone::system)
     }
 }
 

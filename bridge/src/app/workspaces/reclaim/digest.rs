@@ -30,7 +30,13 @@ impl AppState {
             .projects
             .iter()
             .map(|project| project.id.clone())
-            .filter(|project_id| self.idle_digest_sent.get(project_id) != Some(&day))
+            // ISO dates order as text. A day already had, or one a zone ahead
+            // has had, is not owed again.
+            .filter(|project_id| {
+                self.idle_digest_sent
+                    .get(project_id)
+                    .is_none_or(|sent| *sent < day)
+            })
             .collect();
         if owed.is_empty() {
             return;

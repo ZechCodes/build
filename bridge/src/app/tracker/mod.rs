@@ -36,6 +36,7 @@ mod failures;
 mod handoff;
 mod identities;
 mod inbox;
+mod notice_words;
 mod notices;
 mod observed_identities;
 mod pages;

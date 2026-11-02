@@ -1,0 +1,37 @@
+[200~The project agent assigned you Build task #42 — Fix the parser
+
+Process only reviewer operation `op-1` (conversation sequences 7 through 7).
+These messages came from agent `project-1`, not from the user. Reply with message_agent to `project-1`.
+
+The task is `task-42` — read it with get_task before you start. Comment on the task with comment_task when something changes what the reader should know: a decision or finding that changes the plan, a question (use mention_user only when it is the user's call), a handoff, or the final result with its evidence. The board already shows the task's column and assignee; do not comment to say you are still working. Then move it to In review with move_task when you report Complete.
+
+This native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.
+Exact accepted messages:
+[
+  {
+    "id": "message-7",
+    "sequence": 7,
+    "updated_sequence": 7,
+    "role": "user",
+    "from_agent": {
+      "id": "project-1",
+      "name": "Coordinator"
+    },
+    "from_task": {
+      "task_id": "task-42",
+      "number": 42,
+      "title": "Fix the parser",
+      "links": {
+        "workspace_ids": [
+          "ws-1"
+        ],
+        "branches": [],
+        "commits": [],
+        "conversation_ids": [],
+        "parent_task_id": null
+      }
+    },
+    "body": "The project agent assigned you Build task #42 — Fix the parser",
+    "created_at": "2026-11-02T12:00:00Z"
+  }
+][201~

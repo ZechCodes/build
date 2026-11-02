@@ -1,0 +1,38 @@
+[200~#42 moved to In review by the Build project's agent.
+
+Process only the newly delivered reviewer messages (conversation sequences 7 through 7).
+This native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.
+Exact accepted messages:
+[
+  {
+    "id": "message-7",
+    "sequence": 7,
+    "updated_sequence": 7,
+    "role": "user",
+    "from_build": true,
+    "from_task": {
+      "task_id": "task-42",
+      "number": 42,
+      "title": "Fix the parser",
+      "links": {
+        "workspace_ids": [
+          "ws-1"
+        ],
+        "branches": [],
+        "commits": [],
+        "conversation_ids": [],
+        "parent_task_id": null
+      }
+    },
+    "task_notice": {
+      "actor": {
+        "kind": "agent",
+        "agent_id": "project-1"
+      },
+      "action": "moved",
+      "to": "in_review"
+    },
+    "body": "#42 moved to In review by the Build project's agent.",
+    "created_at": "2026-11-02T12:00:00Z"
+  }
+][201~

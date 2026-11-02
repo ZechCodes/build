@@ -1,0 +1,15 @@
+[200~/compact
+
+Process only reviewer operation `op-1` (conversation sequences 7 through 7).
+This native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.
+Exact accepted messages:
+[
+  {
+    "id": "message-7",
+    "sequence": 7,
+    "updated_sequence": 7,
+    "role": "user",
+    "body": "/compact",
+    "created_at": "2026-11-02T12:00:00Z"
+  }
+][201~

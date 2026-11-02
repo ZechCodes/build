@@ -1626,3 +1626,32 @@ fn a_child_that_never_announces_itself_is_ended_at_the_deadline_after_its_first_
     assert_eq!(session.epitaph(), None);
     session.end();
 }
+
+/// Each delivery in `agent_message::golden` reaches the adk child as the one
+/// `user` line pinned in `golden/adk/`, byte for byte.
+#[test]
+fn deliveries_reach_the_child_as_their_golden_lines() {
+    use crate::agent_message::golden::{assert_golden, scenarios};
+
+    for scenario in scenarios() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let capture = dir.path().join("stdin.jsonl");
+        let session = open(&HarnessSpec::new("sh").arg("-c").arg(format!(
+            "printf '%s\\n' '{INIT}'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> {}; done\n",
+            capture.display()
+        )));
+        wait_for_status(&session, AgentStatus::Waiting);
+        session
+            .send_turn(&Turn::new(scenario.prompt(AgentProvider::ClaudeAdk)))
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut written = String::new();
+        while Instant::now() < deadline && !written.ends_with('\n') {
+            written = std::fs::read_to_string(&capture).unwrap_or_default();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_golden("adk", scenario.name, &written);
+        session.end();
+    }
+}

@@ -4296,3 +4296,53 @@ fn checked_in_fixtures_retain_no_account_or_machine_material() {
 }
 
 mod compaction;
+
+/// Each delivery in `agent_message::golden` reaches the app server as the
+/// `turn/start` request pinned in `golden/codex_app_server/`, byte for byte,
+/// through the session's own send path.
+#[test]
+fn deliveries_reach_the_server_as_their_golden_requests() {
+    use crate::agent_message::golden::{assert_golden, scenarios};
+
+    for scenario in scenarios() {
+        let root = tempfile::tempdir().unwrap();
+        let capture = root.path().join("turn.jsonl");
+        let cwd = root.path().display().to_string();
+        let initialize = json!({"id":1,"result":initialize_result(&supported_user_agent())});
+        let opened =
+            json!({"id":2,"result":thread_opened_at(&cwd, THREAD_ID, Some(SELECTED_EFFORT))});
+        let goal = json!({"id":3,"result":{"goal":null}});
+        let script = format!(
+            "read initialize; printf '%s\\n' '{initialize}'; read initialized; read thread; printf '%s\\n' '{opened}'; read goal; printf '%s\\n' '{goal}'; IFS= read -r turn; printf '%s\\n' \"$turn\" > '{}'; read hold",
+            capture.display()
+        );
+        let spec = HarnessSpec::new("sh").arg("-c").arg(script);
+        let (session, _activity) = CodexAppServerSession::spawn(
+            &spec,
+            root.path().to_path_buf(),
+            selected_choice(),
+            None,
+            AppServerLimits::default(),
+        )
+        .unwrap();
+        let mut waited = 0;
+        while session.session_id().is_none() || session.status() != AgentStatus::Waiting {
+            assert!(waited < 1000, "the session never opened its thread");
+            std::thread::sleep(Duration::from_millis(5));
+            waited += 1;
+        }
+        session
+            .send_turn(&Turn::new(scenario.prompt(AgentProvider::CodexAppServer)))
+            .unwrap();
+        let mut written = String::new();
+        for _ in 0..1000 {
+            written = std::fs::read_to_string(&capture).unwrap_or_default();
+            if written.ends_with('\n') {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_golden("codex_app_server", scenario.name, &written);
+        session.end();
+    }
+}

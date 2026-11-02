@@ -272,6 +272,7 @@ async fn start_and_queue(
     let mut turn = agent.turn(false);
     turn.say = Some(TurnText {
         attachments: Default::default(),
+        kind: None,
         cold: "queued follow-up".into(),
         warm: "queued follow-up".into(),
     });

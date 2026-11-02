@@ -416,6 +416,7 @@ async fn done_then_a_warm_turn_stays_in_one_open_session() {
                 interrupt: false,
                 say: Some(TurnText {
                     attachments: Default::default(),
+                    kind: None,
                     cold: "COLD-TURN".into(),
                     warm: "WARM-TURN".into(),
                 }),
@@ -736,6 +737,7 @@ fn ended_native_session_with_a_changed_choice_restarts_fresh() {
         phase: "build",
         say: Some(TurnText {
             attachments: Default::default(),
+            kind: None,
             cold: "cold".to_string(),
             warm: "warm".to_string(),
         }),

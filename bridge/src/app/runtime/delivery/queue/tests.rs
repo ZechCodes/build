@@ -14,6 +14,7 @@ fn turn(owner: &str, agent: &str, says: bool, survives_refusal: bool) -> Pending
         interrupt: false,
         say: says.then(|| TurnText {
             attachments: Default::default(),
+            kind: None,
             cold: "cold".into(),
             warm: "warm".into(),
         }),
@@ -133,6 +134,7 @@ fn attaching_an_operation_rebuilds_one_scoped_cold_protocol() {
     let mut pending = turn("owner", "agent", true, false);
     pending.say = Some(TurnText {
         attachments: Default::default(),
+        kind: None,
         cold: crate::orchestrator::conversation_prompt("do planned work"),
         warm: "do planned work".into(),
     });

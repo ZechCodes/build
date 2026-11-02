@@ -274,6 +274,7 @@ async fn start_and_queue(agent: &CompactingAgent, session: &dyn AgentSession, di
     let mut turn = agent.turn(false);
     turn.say = Some(TurnText {
         attachments: Default::default(),
+        kind: None,
         cold: "queued follow-up".into(),
         warm: "queued follow-up".into(),
     });
@@ -453,6 +454,7 @@ async fn manual_compaction_history(outcome: &str) {
         let mut turn = agent.turn(false);
         turn.say = Some(TurnText {
             attachments: Default::default(),
+            kind: None,
             cold: "/compact".into(),
             warm: "/compact".into(),
         });

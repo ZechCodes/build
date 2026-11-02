@@ -54,6 +54,7 @@ fn turn_at(root: &Path, (owner, agent_id): &(String, String)) -> PendingAgentTur
         interrupt: false,
         say: Some(TurnText {
             attachments: Default::default(),
+            kind: None,
             cold: "cold".into(),
             warm: "warm".into(),
         }),

@@ -212,6 +212,7 @@ impl AppState {
                 // every other unread message says: go and read it.
                 say: Some(TurnText {
                     attachments: Default::default(),
+                    kind: None,
                     cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                     warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
                 }),

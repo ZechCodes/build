@@ -301,6 +301,7 @@ impl AppState {
             interrupt: false,
             say: Some(TurnText {
                 attachments: Default::default(),
+                kind: None,
                 cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             }),

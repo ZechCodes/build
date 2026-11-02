@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::agent_message::{BuildTool, ReplyChannel, TurnAttachments};
+use crate::agent_message::{BuildTool, MessageKind, ReplyChannel, TurnAttachments};
 use crate::models::{AgentProvider, ModelChoice};
 use crate::thread::ThreadMessage;
 
@@ -258,28 +258,14 @@ impl OperationPayload {
     /// the envelope tells the agent to use: what the delivery attaches.
     ///
     /// The user's words are answered in the thread, another agent's to that
-    /// agent, and a comment on a task on the task — a tracking notice about
-    /// one included. Build's other notices ask for no answer.
+    /// agent, and a task the user handed over or commented on on the task — a
+    /// tracking notice about a comment included. Build's other notices ask
+    /// for no answer.
     pub fn turn_attachments(&self) -> TurnAttachments {
         let mut asks = TurnAttachments::default();
         for message in &self.messages {
-            let reply = if message.from_build {
-                message
-                    .task_notice
-                    .as_deref()
-                    .filter(|notice| notice.action == "commented")
-                    .and(message.from_task.as_deref())
-                    .map(|task| ReplyChannel::Task {
-                        task_id: task.task_id.clone(),
-                    })
-            } else if let Some(sender) = message.from_agent.as_deref() {
-                Some(ReplyChannel::Agent {
-                    agent_id: sender.id.clone(),
-                })
-            } else {
-                Some(ReplyChannel::Thread)
-            };
-            let reads_comment = matches!(reply, Some(ReplyChannel::Task { .. }));
+            let reply = reply_channel(message);
+            let reads_comment = message.from_build && reply.is_some();
             asks.merge(TurnAttachments {
                 replies: reply.into_iter().collect(),
                 tools: if reads_comment {
@@ -346,6 +332,43 @@ impl OperationPayload {
     pub(crate) fn requires_unadorned_delivery(&self, provider: AgentProvider) -> bool {
         self.unadorned_command(provider).is_some()
     }
+
+    /// What delivering this payload to `provider` sends: its one provider
+    /// command bare, or a delivery. Read from the messages, not the rendered
+    /// text, whose first word is the first message's.
+    pub fn message_kind(&self, provider: AgentProvider) -> MessageKind {
+        if self.requires_unadorned_delivery(provider) {
+            MessageKind::ProviderCommand
+        } else {
+            MessageKind::Delivery
+        }
+    }
+}
+
+/// Where `message` is answered: see [`OperationPayload::turn_attachments`].
+fn reply_channel(message: &crate::thread::ThreadMessage) -> Option<ReplyChannel> {
+    let on_task = |task: &crate::thread::TaskEnvelope| ReplyChannel::Task {
+        task_id: task.task_id.clone(),
+    };
+    if message.from_build {
+        return message
+            .task_notice
+            .as_deref()
+            .filter(|notice| notice.action == "commented")
+            .and(message.from_task.as_deref())
+            .map(on_task);
+    }
+    if let Some(sender) = message.from_agent.as_deref() {
+        return Some(ReplyChannel::Agent {
+            agent_id: sender.id.clone(),
+        });
+    }
+    Some(
+        message
+            .from_task
+            .as_deref()
+            .map_or(ReplyChannel::Thread, on_task),
+    )
 }
 
 /// Who asked for an operation, when an agent did rather than the human.
@@ -871,6 +894,50 @@ mod tests {
             ]
         );
         assert_eq!(payload().turn_attachments().tools, Vec::new());
+    }
+
+    /// A task the user handed over is reported on the task, as its envelope
+    /// says; one another agent handed over is answered to that agent.
+    #[test]
+    fn a_handed_task_is_answered_where_it_came_from() {
+        let envelope = crate::thread::TaskEnvelope {
+            task_id: "task-42".into(),
+            number: 42,
+            title: "Fix the parser".into(),
+            links: crate::tracker::TaskLinks::default(),
+        };
+        let from_user = ThreadMessage {
+            from_task: Some(Box::new(envelope)),
+            ..payload().messages[0].clone()
+        };
+        let from_agent = ThreadMessage {
+            from_agent: Some(Box::new(crate::thread::AgentIdentity::new("router-7"))),
+            ..from_user.clone()
+        };
+        let user_handed = OperationPayload {
+            messages: vec![from_user],
+            ..payload()
+        };
+        let agent_handed = OperationPayload {
+            messages: vec![from_agent],
+            ..payload()
+        };
+        assert_eq!(
+            user_handed.turn_attachments().replies,
+            vec![ReplyChannel::Task {
+                task_id: "task-42".into()
+            }]
+        );
+        assert!(!user_handed
+            .turn_attachments()
+            .tools
+            .contains(&BuildTool::ReadComment));
+        assert_eq!(
+            agent_handed.turn_attachments().replies,
+            vec![ReplyChannel::Agent {
+                agent_id: "router-7".into()
+            }]
+        );
     }
 
     /// The workspace the user was standing in is named in the envelope, not

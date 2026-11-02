@@ -75,19 +75,11 @@ impl PendingAgentTurn {
             model_choice: delivery.model_choice.clone(),
             choice_revision: delivery.choice_revision,
             interrupt: delivery.interrupt,
-            say: Some(TurnText {
-                attachments: payload.turn_attachments(),
-                cold: payload.delivery_prompt(
-                    &receipt.operation_id,
-                    true,
-                    delivery.model_choice.provider,
-                ),
-                warm: payload.delivery_prompt(
-                    &receipt.operation_id,
-                    false,
-                    delivery.model_choice.provider,
-                ),
-            }),
+            say: Some(TurnText::for_operation(
+                payload,
+                &receipt.operation_id,
+                delivery.model_choice.provider,
+            )),
             phase: "revive",
             wants_catch_up: false,
             survives_refusal: true,
@@ -172,6 +164,7 @@ impl PendingAgentTurn {
             interrupt: false,
             say: Some(TurnText {
                 attachments: Default::default(),
+                kind: None,
                 cold: turn.cold,
                 warm: turn.warm,
             }),
@@ -203,6 +196,7 @@ impl PendingAgentTurn {
             agent_id,
             say: Some(TurnText {
                 attachments: Default::default(),
+                kind: None,
                 cold: turn.cold,
                 warm: turn.warm,
             }),
@@ -228,6 +222,27 @@ pub(in crate::app) struct TurnText {
     /// from the operation the turn delivers. A turn that reads the unread
     /// thread learns its own when it is sent.
     pub(in crate::app) attachments: crate::agent_message::TurnAttachments,
+    /// What kind of message the text is, decided where it was rendered from
+    /// an operation. `None` reads it from the text: a provider command the
+    /// harness parses travels bare, anything else as a delivery.
+    pub(in crate::app) kind: Option<crate::agent_message::MessageKind>,
+}
+
+impl TurnText {
+    /// Both halves of the turn that delivers `payload` as `operation_id` to
+    /// `provider`, with what the payload attaches.
+    pub(in crate::app) fn for_operation(
+        payload: &crate::operation::OperationPayload,
+        operation_id: &str,
+        provider: crate::models::AgentProvider,
+    ) -> TurnText {
+        TurnText {
+            attachments: payload.turn_attachments(),
+            kind: Some(payload.message_kind(provider)),
+            cold: payload.delivery_prompt(operation_id, true, provider),
+            warm: payload.delivery_prompt(operation_id, false, provider),
+        }
+    }
 }
 
 /// The live implementation a Task's conversation actually speaks to: the

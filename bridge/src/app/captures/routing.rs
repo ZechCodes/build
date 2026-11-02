@@ -156,6 +156,7 @@ impl AppState {
             // catch-up packet either.
             say: Some(TurnText {
                 attachments: Default::default(),
+                kind: None,
                 cold: prompt.clone(),
                 warm: prompt,
             }),

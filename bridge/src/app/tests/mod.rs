@@ -138,6 +138,7 @@ mod untimed {
     ) -> Result<(String, Spawned), String> {
         let say = TurnText {
             attachments: Default::default(),
+            kind: None,
             cold: cold.to_string(),
             warm: warm.to_string(),
         };

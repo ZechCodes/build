@@ -277,10 +277,20 @@ pub fn turn_message(harness: &dyn Harness, text: String) -> ComposedMessage {
     ComposedMessage::new(kind, text)
 }
 
-/// What `harness` is handed for a queued turn's `text`: the turn as
-/// [`turn_message`] reads it, carrying what `asks` attaches.
-pub fn turn_text(harness: &dyn Harness, text: String, asks: TurnAttachments) -> String {
-    turn_message(harness, text).with(asks).framed_for(harness)
+/// What `harness` is handed for a queued turn's `text`: a message of `kind`,
+/// or of the kind [`turn_message`] reads from the text when it was not
+/// decided where the text was rendered, carrying what `asks` attaches.
+pub fn turn_text(
+    harness: &dyn Harness,
+    text: String,
+    kind: Option<MessageKind>,
+    asks: TurnAttachments,
+) -> String {
+    let message = match kind {
+        Some(kind) => ComposedMessage::new(kind, text),
+        None => turn_message(harness, text),
+    };
+    message.with(asks).framed_for(harness)
 }
 
 /// `text` inside a `<system-reminder>`, the tag Claude Code gives the context

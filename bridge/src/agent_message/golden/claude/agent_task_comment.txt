@@ -38,7 +38,7 @@ Exact accepted messages:
 ]
 
 <system-reminder>
-This came from a comment on task `task-42`. Reply on the task with `mcp__build__comment_task`.
+This is about task `task-42`. Reply on the task with `mcp__build__comment_task`.
 </system-reminder>
 
 <system-reminder>

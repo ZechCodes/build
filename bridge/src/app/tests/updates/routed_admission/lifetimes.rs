@@ -326,7 +326,9 @@ fn assert_native_delivery(prompt: String, stored: Vec<crate::thread::ThreadItem>
         .next()
         .unwrap()
         .unwrap();
-    assert!(prompt.contains("post_thread_message"), "{prompt}");
+    let reply = "<system-reminder>\nThe user wrote this in the thread. \
+                 Reply there with `mcp__build__post_thread_message`.\n</system-reminder>";
+    assert_eq!(prompt.matches(reply).count(), 1, "{prompt}");
     assert_eq!(accepted.len(), 1);
     assert_eq!(accepted[0]["body"], "lease survives the reply");
     assert_eq!(accepted[0]["role"], "user");

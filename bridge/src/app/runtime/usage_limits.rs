@@ -386,6 +386,7 @@ impl AppState {
             // there and remembers the turn that stopped.
             say: Some(TurnText {
                 attachments: Default::default(),
+                kind: None,
                 cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             }),

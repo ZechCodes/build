@@ -701,6 +701,7 @@ fn unreachable_turn(state: &mut AppState, owner: &str) -> PendingAgentTurn {
         interrupt: false,
         say: Some(TurnText {
             attachments: Default::default(),
+            kind: None,
             cold: "cold turn".into(),
             warm: "warm turn".into(),
         }),

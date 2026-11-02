@@ -2,7 +2,7 @@ use super::compaction::compact_before_turn;
 use crate::app::conversations::FrozenLegacyDelivery;
 use crate::app::{
     ensure_agent_tab, still_pumping_instance, AgentSpawnRequest, AppState, DeliveryOutcome,
-    DeliveryPreflight, LifecycleDiagnostic, PendingAgentTurn, Spawned, TabKey, TabRole,
+    DeliveryPreflight, LifecycleDiagnostic, PendingAgentTurn, Spawned, TabKey, TabRole, TurnText,
     TAB_CLOSED_UNDER_A_TURN,
 };
 use crate::delivery::StartFailure;
@@ -69,6 +69,37 @@ fn delivered_prompt(
         ),
         None => prompt.to_string(),
     }
+}
+
+/// The exact text a turn hands `provider`'s session: its own words with any
+/// unread thread it reads, the naming request, and every attachment the turn
+/// and the thread it reads ask for, framed by the harness. The unread thread
+/// decides whether the turn is a bare provider command.
+fn framed_turn(
+    prompt: &str,
+    say: Option<&TurnText>,
+    payload: Option<&crate::operation::OperationPayload>,
+    asks_name: bool,
+    provider: crate::models::AgentProvider,
+) -> String {
+    let mut text = delivered_prompt(prompt, payload, provider);
+    if asks_name {
+        text = format!("{}{text}", crate::operation::AGENT_NAME_NOTE);
+    }
+    let mut asks = say.map(|say| say.attachments.clone()).unwrap_or_default();
+    if let Some(payload) = payload {
+        asks.merge(payload.turn_attachments());
+    }
+    if asks_name {
+        asks.merge(crate::agent_message::TurnAttachments {
+            replies: Vec::new(),
+            tools: vec![crate::agent_message::BuildTool::SetName],
+        });
+    }
+    let kind = payload
+        .map(|payload| payload.message_kind(provider))
+        .or(say.and_then(|say| say.kind));
+    crate::agent_message::turn_text(crate::harness::harness_for(provider), text, kind, asks)
 }
 
 /// Decide how one frozen turn reaches its exact captured destination before
@@ -352,31 +383,13 @@ pub(in crate::app) fn deliver(
         }
     }
     let reports_turn_boundaries = session.reports_turn_ends();
-    let prompt = delivered_prompt(
+    let prompt = framed_turn(
         prompt.unwrap_or_default(),
+        say.as_ref(),
         legacy_payload.as_ref().map(|frozen| &frozen.payload),
+        asks_name,
         model_choice.provider,
     );
-    let prompt = if asks_name {
-        format!("{}{prompt}", crate::operation::AGENT_NAME_NOTE)
-    } else {
-        prompt
-    };
-    let mut asks = say
-        .as_ref()
-        .map(|say| say.attachments.clone())
-        .unwrap_or_default();
-    if let Some(frozen) = legacy_payload.as_ref() {
-        asks.merge(frozen.payload.turn_attachments());
-    }
-    if asks_name {
-        asks.merge(crate::agent_message::TurnAttachments {
-            replies: Vec::new(),
-            tools: vec![crate::agent_message::BuildTool::SetName],
-        });
-    }
-    let harness = crate::harness::harness_for(model_choice.provider);
-    let prompt = crate::agent_message::turn_text(harness, prompt, asks);
     let mut native_turn = Turn::with_choice(prompt, model_choice.clone(), *choice_revision);
     native_turn.operation_id = turn.operation_id.clone().or_else(|| {
         legacy_payload.as_ref().map(|payload| {

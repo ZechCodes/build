@@ -605,6 +605,7 @@ async fn first_user_turn_after_exact_reopen_delegates_compaction_to_claude_nativ
             interrupt: false,
             say: Some(TurnText {
                 attachments: Default::default(),
+                kind: None,
                 cold: USER_TURN.into(),
                 warm: USER_TURN.into(),
             }),

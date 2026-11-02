@@ -267,6 +267,7 @@ impl AppState {
             // packet — exactly as a hand-started agent does.
             say: Some(TurnText {
                 attachments: Default::default(),
+                kind: None,
                 cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             }),

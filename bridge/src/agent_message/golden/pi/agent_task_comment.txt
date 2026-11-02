@@ -38,5 +38,5 @@ Exact accepted messages:
 ]
 
 <build_instructions>
-This came from a comment on task `task-42`. Reply on the task with `comment_task`.
+This is about task `task-42`. Reply on the task with `comment_task`.
 </build_instructions>[201~

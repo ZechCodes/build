@@ -2,8 +2,8 @@
 //! byte in `golden/<harness>/<scenario>.txt`.
 //!
 //! The scenarios are the messages Build sends most: the user in the thread,
-//! a cold start, an agent handing over a task, task notices, and a bare
-//! provider command. Each harness's own tests feed them through its session
+//! a cold start, the user or an agent handing over a task, task notices, and
+//! a provider command, alone and among other words. Each harness's own tests feed them through its session
 //! and compare what reached the child with the file here, so a change to the
 //! words or their framing shows up as a diff to a file a reviewer can read.
 //!
@@ -53,6 +53,7 @@ impl Scenario {
         super::turn_text(
             crate::harness::harness_for(provider),
             prompt,
+            Some(self.payload.message_kind(provider)),
             self.payload.turn_attachments(),
         )
     }
@@ -137,6 +138,14 @@ fn agent_assignment() -> ThreadMessage {
     }))
 }
 
+/// The user handing over a task from the board.
+fn user_assignment() -> ThreadMessage {
+    message(serde_json::json!({
+        "body": "The user assigned you Build task #42 — Fix the parser",
+        "from_task": task_envelope(),
+    }))
+}
+
 /// Build telling a tracker about a comment on a task.
 fn comment_notice(actor: serde_json::Value, who: &str) -> ThreadMessage {
     message(serde_json::json!({
@@ -199,7 +208,13 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             )],
         ),
         legacy("task_moved", vec![moved_notice()]),
+        native("user_assignment", vec![user_assignment()], false),
         native("compact_command", vec![compact_command()], false),
+        native(
+            "compact_among_other_words",
+            vec![compact_command(), user_in_thread()],
+            false,
+        ),
         Scenario {
             name: "first_delivery_asking_a_name",
             payload: OperationPayload {

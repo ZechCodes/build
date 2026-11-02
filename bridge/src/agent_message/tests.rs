@@ -64,7 +64,7 @@ fn a_reply_names_the_task_or_agent_it_goes_back_to() {
     assert_eq!(
         message.framed_for(harness_for(AgentProvider::Pi)),
         "body\n\n\
-<build_instructions>\nThis came from a comment on task `task-42`. Reply on the task with `comment_task`.\n</build_instructions>\n\n\
+<build_instructions>\nThis is about task `task-42`. Reply on the task with `comment_task`.\n</build_instructions>\n\n\
 <build_instructions>\nAgent `agent-3` sent this, not the user. Reply to it with `message_agent`.\n</build_instructions>"
     );
 }

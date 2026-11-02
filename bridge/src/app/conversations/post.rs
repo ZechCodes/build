@@ -745,19 +745,11 @@ impl AppState {
                         .is_project_coordinator(&delivery.owner_id, &delivery.agent_id),
                     ..self.payload_for_reader(&delivery.owner_id, payload.clone())
                 };
-                TurnText {
-                    attachments: payload.turn_attachments(),
-                    cold: payload.delivery_prompt(
-                        &receipt.operation_id,
-                        true,
-                        delivery.model_choice.provider,
-                    ),
-                    warm: payload.delivery_prompt(
-                        &receipt.operation_id,
-                        false,
-                        delivery.model_choice.provider,
-                    ),
-                }
+                TurnText::for_operation(
+                    &payload,
+                    &receipt.operation_id,
+                    delivery.model_choice.provider,
+                )
             })
         });
         self.delivery_queue.enqueue(PendingAgentTurn {
@@ -772,6 +764,7 @@ impl AppState {
             say: operation_prompt.or_else(|| {
                 Some(TurnText {
                     attachments: Default::default(),
+                    kind: None,
                     cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                     warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
                 })

@@ -25,7 +25,7 @@
 //! The way out is to finish them, say something on them, or hand them back,
 //! and all three are one tool call.
 
-use crate::app::{AppState, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT};
+use crate::app::{AppState, PendingAgentTurn, TurnText};
 use crate::store::TaskFilter;
 use crate::tracker::{Task, TaskState, STILL_TO_FINISH};
 
@@ -118,12 +118,7 @@ impl AppState {
                 model_choice: addressed.model_choice.clone(),
                 choice_revision: addressed.choice_revision,
                 interrupt: false,
-                say: Some(TurnText {
-                    attachments: Default::default(),
-                    kind: None,
-                    cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                    warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-                }),
+                say: Some(TurnText::reading_unread(addressed.model_choice.provider)),
                 phase: "task_reminder",
                 wants_catch_up: true,
                 survives_refusal: false,

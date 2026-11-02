@@ -10,9 +10,7 @@
 //! `agent.start` button queues — so the relaunch is the spawn path that already
 //! works, resume session id and all, rather than a second one to keep in step.
 
-use crate::app::{
-    AppState, DeliveryRunner, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT,
-};
+use crate::app::{AppState, DeliveryRunner, PendingAgentTurn, TurnText};
 use crate::resume::{
     clear_opt_out_file, restart_notice, resume_is_wanted, LiveRoster, ResumeRoster, ResumingAgent,
 };
@@ -265,12 +263,7 @@ impl AppState {
             // resumed session is a new process with no memory of the turn that
             // died, so it gets the cold form — the protocol and the catch-up
             // packet — exactly as a hand-started agent does.
-            say: Some(TurnText {
-                attachments: Default::default(),
-                kind: None,
-                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-            }),
+            say: Some(TurnText::reading_unread(addressed.model_choice.provider)),
             phase: "resume",
             wants_catch_up: true,
             survives_refusal: false,

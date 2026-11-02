@@ -7,7 +7,7 @@ use super::read::thread_detail;
 use super::{AppState, ConversationAddress};
 use crate::app::{
     named_agent_id, plan_state_str, require_str, run_state_str, ImplementationTarget,
-    PendingAgentTurn, PlanDraftingStarted, TurnText, NEW_THREAD_MESSAGES_PROMPT,
+    PendingAgentTurn, PlanDraftingStarted, TurnText,
 };
 use crate::operation::OperationPayload;
 use crate::operation::{
@@ -761,14 +761,8 @@ impl AppState {
             model_choice: delivery.model_choice.clone(),
             choice_revision: delivery.choice_revision,
             interrupt: delivery.interrupt,
-            say: operation_prompt.or_else(|| {
-                Some(TurnText {
-                    attachments: Default::default(),
-                    kind: None,
-                    cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                    warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-                })
-            }),
+            say: operation_prompt
+                .or_else(|| Some(TurnText::reading_unread(delivery.model_choice.provider))),
             phase: "revive",
             wants_catch_up: receipt.is_none(),
             survives_refusal: receipt.is_some(),

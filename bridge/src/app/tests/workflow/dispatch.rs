@@ -79,7 +79,10 @@ fn branch_dispatch_cuts_a_branch_and_puts_an_agent_to_work_on_it() {
         delivered.contains("Add a health endpoint"),
         "a cold agent reads the instruction out of the packet composed at delivery: {delivered}"
     );
-    assert_eq!(queued.said().warm, NEW_THREAD_MESSAGES_PROMPT);
+    assert_eq!(
+        queued.said().warm,
+        crate::orchestrator::new_thread_messages_prompt(crate::models::AgentProvider::default())
+    );
 
     // …and the work is on the feed as one branch row.
     let board = state.handle(req("board.list", json!({})));

@@ -205,11 +205,16 @@ pub type ResumeIdProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider, &str) -> bo
 /// every phase, every path. The plan-side revise turns used to carry a
 /// shorter cousin of this line, so one agent heard two wordings of the
 /// same instruction depending on which door the message came through.
-///
-/// TODO(#957 slice 6): it still names `post_thread_message` bare on every
-/// harness; the turn constructors that replace its `TurnText` literals render
-/// it per harness.
-pub const NEW_THREAD_MESSAGES_PROMPT: &str = crate::templates::MESSAGE_NEW_THREAD_MESSAGES;
+/// `provider` is the harness that hears it, which names the reporting tool
+/// its own way.
+pub fn new_thread_messages_prompt(provider: AgentProvider) -> String {
+    let tool = crate::harness::harness_for(provider)
+        .build_tool_name(crate::agent_message::BuildTool::PostThreadMessage);
+    crate::templates::fill(
+        crate::templates::MESSAGE_NEW_THREAD_MESSAGES,
+        &[("post_thread_message", tool.as_str())],
+    )
+}
 
 /// How long a failed prompt write waits for the harness's exit status to
 /// become reapable before the failure is treated as fatal. Long enough to
@@ -264,7 +269,7 @@ pub(crate) fn conversation_prompt(prompt: &str) -> String {
     let mut out = String::with_capacity(prompt.len() + 2048);
     out.push_str(prompt);
     // This block is the canonical reply policy. The `post_thread_message` tool
-    // description in mcp.rs and NEW_THREAD_MESSAGES_PROMPT above defer to
+    // description in mcp.rs and new_thread_messages_prompt above defer to
     // it by reference — never restate these bullets elsewhere, restated copies
     // drift. The ambiguity rule stays above the silent-directive allowance so
     // an in-order reader hits the carve-out before committing to silence.

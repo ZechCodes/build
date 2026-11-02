@@ -229,6 +229,19 @@ pub(in crate::app) struct TurnText {
 }
 
 impl TurnText {
+    /// The turn that sends an agent on `provider` to its unread thread: the
+    /// nudge, wrapped for a cold agent in the conversation protocol. What the
+    /// thread attaches is learned when the turn is sent.
+    pub(in crate::app) fn reading_unread(provider: crate::models::AgentProvider) -> TurnText {
+        let nudge = crate::orchestrator::new_thread_messages_prompt(provider);
+        TurnText {
+            attachments: Default::default(),
+            kind: None,
+            cold: crate::orchestrator::conversation_prompt(&nudge),
+            warm: nudge,
+        }
+    }
+
     /// Both halves of the turn that delivers `payload` as `operation_id` to
     /// `provider`, with what the payload attaches.
     pub(in crate::app) fn for_operation(

@@ -590,12 +590,7 @@ async fn direct_task_notice_asks_an_unnamed_agent_on_its_first_turn() {
             model_choice: ModelChoice::default(),
             choice_revision: 0,
             interrupt: false,
-            say: Some(TurnText {
-                attachments: Default::default(),
-                kind: None,
-                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-            }),
+            say: Some(TurnText::reading_unread(AgentProvider::default())),
             phase: "task_notice",
             wants_catch_up: true,
             survives_refusal: false,

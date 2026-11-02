@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-use crate::app::{AppState, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT};
+use crate::app::{AppState, PendingAgentTurn, TurnText};
 use crate::harness::usage_limit::UsageLimited;
 use crate::models::AgentProvider;
 
@@ -383,12 +383,7 @@ impl AppState {
             // The notice is on the thread; the turn is the nudge to read it.
             // Cold when the session went with the limit, warm when it is still
             // there and remembers the turn that stopped.
-            say: Some(TurnText {
-                attachments: Default::default(),
-                kind: None,
-                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-            }),
+            say: Some(TurnText::reading_unread(addressed.model_choice.provider)),
             phase: "resume",
             wants_catch_up: true,
             survives_refusal: false,

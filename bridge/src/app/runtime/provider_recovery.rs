@@ -1,6 +1,6 @@
 //! Replay the durable provider-failure outbox independently of normal resume.
 
-use crate::app::{sha256_hex, AppState, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT};
+use crate::app::{sha256_hex, AppState, PendingAgentTurn, TurnText};
 use crate::mcp::{DoneReport, DoneStatus};
 use crate::operation::OperationReceipt;
 use crate::provider_recovery::{
@@ -344,15 +344,10 @@ impl AppState {
                 owner: addressed.entity_id,
                 agent_id: addressed.agent_id,
                 conversation_id: addressed.conversation_id,
+                say: Some(TurnText::reading_unread(addressed.model_choice.provider)),
                 model_choice: addressed.model_choice,
                 choice_revision: addressed.choice_revision,
                 interrupt: false,
-                say: Some(TurnText {
-                    attachments: Default::default(),
-                    kind: None,
-                    cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                    warm: NEW_THREAD_MESSAGES_PROMPT.into(),
-                }),
                 phase: "agent_failure",
                 wants_catch_up: true,
                 survives_refusal: false,

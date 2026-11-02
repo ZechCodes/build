@@ -23,7 +23,7 @@
 
 use super::TaskWrite;
 use crate::app::runtime::agents::endpoints::AddressedAgent;
-use crate::app::{AppState, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT};
+use crate::app::{AppState, PendingAgentTurn, TurnText};
 use crate::templates::{
     fill, MESSAGE_TASK_CHANGED, MESSAGE_TASK_COMMENT, MESSAGE_TASK_COMMENT_ON_YOURS,
 };
@@ -213,12 +213,7 @@ impl AppState {
                 interrupt: false,
                 // The message is already on the thread, so the turn says what
                 // every other unread message says: go and read it.
-                say: Some(TurnText {
-                    attachments: Default::default(),
-                    kind: None,
-                    cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                    warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-                }),
+                say: Some(TurnText::reading_unread(addressed.model_choice.provider)),
                 phase,
                 wants_catch_up: true,
                 survives_refusal: false,

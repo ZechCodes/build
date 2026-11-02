@@ -101,7 +101,8 @@ pub(crate) const MESSAGE_DELIVERY_EMPTY_BODY: &str = template!("messages/deliver
 /// The request an unnamed agent hears on its first turn: the tool `{set_name}`.
 pub(crate) const MESSAGE_AGENT_NAME: &str = template!("messages/agent_name.md");
 
-/// The turn that tells an agent its thread has new messages.
+/// The turn that tells an agent its thread has new messages:
+/// `{post_thread_message}` is that tool as the agent's harness names it.
 pub(crate) const MESSAGE_NEW_THREAD_MESSAGES: &str = template!("messages/new_thread_messages.md");
 
 /// The project agent told an unassigned task has no unresolved prerequisites.

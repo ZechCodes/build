@@ -314,7 +314,9 @@ async fn routed_post_worker_retains_admission_after_reply_until_delivery_finishe
 /// delivery receipts legitimately advance after the payload has been frozen.
 fn assert_native_delivery(prompt: String, stored: Vec<crate::thread::ThreadItem>) {
     assert!(
-        prompt.contains(crate::app::NEW_THREAD_MESSAGES_PROMPT),
+        prompt.contains(&crate::orchestrator::new_thread_messages_prompt(
+            crate::models::AgentProvider::default()
+        )),
         "{prompt}"
     );
     let (_, payload) = prompt

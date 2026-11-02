@@ -2601,6 +2601,50 @@ The SPA routes the push per device whether or not change subscriptions are
 armed (`spa/src/core/harnessInventoryEvents.js`). Controls and evidence:
 `planning/v2/Harness Authentication Security Checklist.md`.
 
+### Messages to agents
+
+Everything Build says into an agent's conversation goes through
+`bridge/src/agent_message/`. A message is a `MessageKind` (a delivery, a
+thread nudge, a task notice, a restart, a usage-limit resume, a compaction, a
+provider command the user typed, …), a body, and typed attachments.
+`ComposedMessage::framed_for(harness)` turns it into the text one harness is
+handed. Two `Harness` methods have no default, so a new kind or a new harness
+does not compile until it answers both:
+
+- `framing(kind)`: `WithAttachments`, or `Bare` for a command the CLI parses
+  as typed (`/clear`, Claude's `/compact`, the compaction command);
+- `wrap_attachment(text)`: how Build's instructions are marked apart from the
+  user's words. Claude and adk use `<system-reminder>`; Codex, the app server
+  and Pi use `<build_instructions>`.
+
+Attachments are short. A **reply** attachment names where the message is
+answered, chosen from where the speaker spoke (`OperationPayload::turn_attachments`
+in `bridge/src/operation.rs`): the user in the thread → `post_thread_message`,
+a task comment → `comment_task`, another agent → `message_agent`. A **tool
+hint** names the other Build tools the words ask for, and on harnesses whose
+tools wait behind tool search (`tool_loading()`: Claude, adk) says to load
+them with `ToolSearch select:`. Tools are `BuildTool`s, spelled by
+`build_tool_name()` as the model sees them: `mcp__build__<tool>` everywhere
+but Pi, whose extension registers the bare name. Attachments ride in the
+turn's text after the body: no harness has a per-turn system channel, and the
+app server's receipts match the echoed text, so the transport and the wire
+are untouched.
+
+Stored thread bodies (tracker, dependency and runtime notices) name tools
+bare, because they are thread content any harness may later read; the
+harness-exact name travels on the attachment of the turn that delivers them.
+The nudge that sends an agent to its unread thread
+(`new_thread_messages_prompt(provider)`, `TurnText::reading_unread`) is
+rendered for the harness that will hear it.
+
+The words live in `bridge/templates/messages/`, beside the role prompts, as
+`MESSAGE_*` constants in `bridge/src/templates.rs` filled by
+`templates::fill`: one pass, a value is never rescanned, an unknown
+`{placeholder}` is kept as written. Code does not `format!` text an agent
+reads. Each harness's exact bytes for each scenario are pinned in
+`bridge/src/agent_message/golden/<harness>/`; regenerate them with
+`UPDATE_GOLDENS=1` only for a deliberate change, and review the diff.
+
 ### Conversation resets
 
 An agent is a durable identity; its harness process and transcript are
@@ -4746,6 +4790,7 @@ whose ratchet count is pinned by `spa/test/complexityRatchet.test.js`.
 | Change the Files explorer | `spa/src/views/files.js` shares previews, edits and file tabs; `spa/src/core/filesRoots.js` provides project/workspace roots; `fileRoots.js` and `fileTree.js` mount their trees; `directoryScope.js` separates directory records from layout state |
 | Add an MCP tool | a `BridgeAction` variant with its `tool_name()` and `surfaces()` arms and a schema in the right `*_tools()` list in `bridge/src/mcp.rs`; handle it in `bridge/src/app/mcp.rs` (or `bridge/src/app/conversations/` for thread actions) |
 | Add a harness | a `Harness` impl in `bridge/src/harness/`, an `AgentProvider` variant in `bridge/src/models.rs`, and its arm in `harness_for()` |
+| Change what Build says to an agent | the wording in `bridge/templates/messages/` and its `MESSAGE_*` constant in `bridge/src/templates.rs`; a new kind of message is a `MessageKind` variant every harness's `framing()` answers (`bridge/src/agent_message/`); goldens in `bridge/src/agent_message/golden/` ([Messages to agents](#messages-to-agents)) |
 | Change what an agent runs under | `bridge/src/priority.rs`, `bridge/src/service/systemd.rs` |
 | Render markdown, or add a reference shape | always `markdownHtml(text, { place, mode })` from `spa/src/core/markdown.js`, the one entry point (`spa/test/markdownEntry.test.js` fails anything else); blocks in `spa/src/core/markdownBlocks.js`; reference syntax in `spa/src/core/markdownRefs.js`, links and labels in `spa/src/core/markdownLinks.js`, web links (`[text](url)`, bare http(s) URLs; http/https/mailto only, new tab) in `spa/src/core/markdownWebLinks.js`, resolution against the account-wide index in `spa/src/core/referenceTargets.js`/`referenceIndex.js` (filled by `referenceIndexFeed.js`); teach agents a new shape in `bridge/templates/notes/link_markup.md`, the protocol bullet in `bridge/src/orchestrator/workspace.rs` and `reference_shapes_note!` in `bridge/src/mcp.rs`; the XSS rules are `planning/v2/Markdown Rendering Security Checklist.md` |
 | Change how a device is paired | the bridge's printed block and approve link in `bridge/src/pairing.rs`; the installers' framing in `scripts/install.sh`; `#/pair/<code>` in `spa/src/core/pairLink.js` opens `spa/src/sheets/addDevice.js` (`openPairingLink` in `spa/src/views/gate.js`); the fragment survives sign-in through `withArrivalFragment` in `skriftapp/buildapp/landing/passkey-signin.js`; the rules are `planning/v2/Device Pairing Security Checklist.md` |

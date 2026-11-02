@@ -1,0 +1,2 @@
+# Byte-exact captures of what each harness is handed, PTY submit bytes included.
+*.txt -whitespace -text

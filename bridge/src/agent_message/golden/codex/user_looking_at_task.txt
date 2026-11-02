@@ -1,7 +1,7 @@
 [200~is this one done?
 
 Process only reviewer operation `op-1` (conversation sequences 7 through 7).
-The user is looking at task #42 "Fix the parser" (`task-42`); read it with get_task before answering about it.
+The user is looking at task #42 "Fix the parser" (`task-42`); read it with mcp__build__get_task before answering about it.
 
 This native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.
 Exact accepted messages:

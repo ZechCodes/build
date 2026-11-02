@@ -444,7 +444,7 @@ async fn legacy_post_asks_an_unnamed_agent_once_when_its_turn_is_sent() {
     assert_eq!(posted["ok"], true, "{posted:?}");
     deliver_pending_agent_turns(&state);
     let first = capture_containing(&capture, "first legacy message").await;
-    assert!(first.contains("call set_name"), "{first}");
+    assert!(first.contains("call mcp__build__set_name"), "{first}");
     assert!(
         state
             .lock()
@@ -603,7 +603,7 @@ async fn direct_task_notice_asks_an_unnamed_agent_on_its_first_turn() {
     }
     deliver_pending_agent_turns(&state);
     let heard = capture_containing(&capture, "Task moved").await;
-    assert!(heard.contains("call set_name"), "{heard}");
+    assert!(heard.contains("call mcp__build__set_name"), "{heard}");
 }
 
 /// The rendered turn is always multi-line (the conversation protocol block

@@ -34,8 +34,8 @@ pub(crate) fn agent_name_note(provider: AgentProvider) -> String {
 }
 
 /// `tool` as a delivery's wording names it to `provider`'s model.
-fn tool_name(_provider: AgentProvider, tool: BuildTool) -> String {
-    tool.name().to_string()
+fn tool_name(provider: AgentProvider, tool: BuildTool) -> String {
+    crate::harness::harness_for(provider).build_tool_name(tool)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -700,9 +700,9 @@ mod tests {
         for absent in [
             "which you are tracking",
             "nobody is waiting",
-            "read it with get_task before you start",
-            "Comment on the task with comment_task",
-            "move it to In review with move_task",
+            "before you start",
+            "Comment on the task with",
+            "move it to In review with",
         ] {
             assert!(!warm.contains(absent), "{absent:?} is still said: {warm}");
         }
@@ -718,15 +718,17 @@ mod tests {
         };
         let brief = handed.delivery_prompt("post-1", false, AgentProvider::Claude);
         assert!(
-            brief.contains("read it with get_task before you start"),
+            brief.contains("read it with mcp__build__get_task before you start"),
             "{brief}"
         );
         assert!(
-            brief.contains("move it to In review with move_task"),
+            brief.contains("move it to In review with mcp__build__move_task"),
             "{brief}"
         );
+        // Pi names Build's tools plainly, as the role prompts do, so its
+        // envelope says the shared rule word for word.
         for cold in [false, true] {
-            let prompt = handed.delivery_prompt("post-1", cold, AgentProvider::Claude);
+            let prompt = handed.delivery_prompt("post-1", cold, AgentProvider::Pi);
             assert!(says(&prompt, TASK_COMMENT_EVENTS), "{prompt}");
             assert!(
                 !says(&prompt, "Comment your progress"),
@@ -768,7 +770,7 @@ mod tests {
             "{warm}"
         );
         assert!(
-            warm.contains("read it with get_task"),
+            warm.contains("read it with mcp__build__get_task"),
             "the agent is told how to read it: {warm}"
         );
         assert!(
@@ -959,6 +961,45 @@ mod tests {
                 agent_id: "router-7".into()
             }]
         );
+    }
+
+    /// The envelope names each tool it tells the agent to use the way that
+    /// harness's model sees it: `mcp__build__get_task` through Claude Code's
+    /// and Codex's MCP client, the plain name on Pi.
+    #[test]
+    fn the_envelope_names_its_tools_as_each_harness_sees_them() {
+        let handed = OperationPayload {
+            ask_to_name: true,
+            messages: vec![ThreadMessage {
+                from_task: Some(Box::new(crate::thread::TaskEnvelope {
+                    task_id: "task-42".into(),
+                    number: 42,
+                    title: "Fix the parser".into(),
+                    links: crate::tracker::TaskLinks::default(),
+                })),
+                ..payload().messages[0].clone()
+            }],
+            ..payload()
+        };
+        let claude = handed.delivery_prompt("op-1", false, AgentProvider::Claude);
+        assert!(
+            claude.contains("read it with mcp__build__get_task before you start. Comment on the task with mcp__build__comment_task"),
+            "{claude}"
+        );
+        assert!(
+            claude.contains("call mcp__build__set_name with"),
+            "{claude}"
+        );
+        assert!(
+            claude.contains("In review with mcp__build__move_task when"),
+            "{claude}"
+        );
+        let pi = handed.delivery_prompt("op-1", false, AgentProvider::Pi);
+        assert!(
+            pi.contains("read it with get_task before you start."),
+            "{pi}"
+        );
+        assert!(!pi.contains("mcp__build__"), "{pi}");
     }
 
     /// The workspace the user was standing in is named in the envelope, not

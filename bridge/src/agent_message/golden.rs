@@ -263,37 +263,39 @@ fn every_golden_file_is_a_live_scenario() {
 
 /// The terminal harnesses: what lands on the child's stdin for each delivery,
 /// paste frame and submit key included, written by each harness's own spec.
+/// Each harness runs its scenarios in turn; the harnesses run side by side.
 #[tokio::test]
 async fn terminal_harnesses_are_handed_their_golden_bytes() {
+    tokio::join!(
+        hand_over_every_scenario(AgentProvider::Claude, "claude"),
+        hand_over_every_scenario(AgentProvider::Codex, "codex"),
+        hand_over_every_scenario(AgentProvider::Pi, "pi"),
+    );
+}
+
+async fn hand_over_every_scenario(provider: AgentProvider, harness: &str) {
     use crate::harness::{AgentSession, Turn};
     use crate::pty::PtySession;
 
-    let terminal = [
-        (AgentProvider::Claude, "claude"),
-        (AgentProvider::Codex, "codex"),
-        (AgentProvider::Pi, "pi"),
-    ];
-    for (provider, harness) in terminal {
-        for scenario in scenarios() {
-            let directory = tempfile::tempdir().unwrap();
-            let capture = directory.path().join("stdin.txt");
-            let spec = capture_spec(provider, directory.path(), &capture);
-            let size = portable_pty::PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            };
-            let session = PtySession::spawn(&spec, None, size).unwrap();
-            // The child turns paste mode on once its tty is raw.
-            assert!(session.ready_within(std::time::Duration::from_secs(5)));
-            session
-                .send_turn(&Turn::new(scenario.prompt(provider)))
-                .unwrap();
-            let captured = captured_through_submit(&capture).await;
-            assert_golden(harness, scenario.name, &captured);
-            session.end();
-        }
+    for scenario in scenarios() {
+        let directory = tempfile::tempdir().unwrap();
+        let capture = directory.path().join("stdin.txt");
+        let spec = capture_spec(provider, directory.path(), &capture);
+        let size = portable_pty::PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let session = PtySession::spawn(&spec, None, size).unwrap();
+        // The child turns paste mode on once its tty is raw.
+        assert!(session.ready_within(std::time::Duration::from_secs(5)));
+        session
+            .send_turn(&Turn::new(scenario.prompt(provider)))
+            .unwrap();
+        let captured = captured_through_submit(&capture).await;
+        assert_golden(harness, scenario.name, &captured);
+        session.end();
     }
 }
 
@@ -343,9 +345,10 @@ fn capture_spec(
 }
 
 /// What the child has read once its input ends in the submit key (raw, so
-/// `\r` arrives as written) and has stopped growing.
+/// `\r` arrives as written) and has stopped growing. The deadline only bounds
+/// a broken run; a settled read returns as soon as it is stable.
 async fn captured_through_submit(capture: &std::path::Path) -> String {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut last = String::new();
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

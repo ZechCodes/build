@@ -1381,7 +1381,11 @@ impl CodexSessionState {
             && matches!(self.phase, Phase::Waiting)
         {
             let failure = self.recovery.take().expect("the retry is due");
-            let input = format!("Your last turn failed with this provider error: {:?}. Please continue your assigned work from the preserved context. This is Build's single automatic retry.", failure.error.safe_message());
+            let error = format!("{:?}", failure.error.safe_message());
+            let input = crate::templates::fill(
+                crate::templates::MESSAGE_PROVIDER_RETRY,
+                &[("error", error.as_str())],
+            );
             let mut turn = Turn::new(input);
             turn.operation_id = failure.operation_id;
             let effect = self.begin_start_turn(AcceptedTurn {

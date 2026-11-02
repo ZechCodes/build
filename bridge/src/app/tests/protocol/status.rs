@@ -784,7 +784,9 @@ fn the_nudge_hands_the_agent_a_turn() {
     nudge_live_agent_tab(&tabs, &root, agent_id, "run-nudge", false);
     assert_eq!(
         log.turns(),
-        vec![NEW_THREAD_MESSAGES_PROMPT.to_string()],
+        vec![crate::orchestrator::new_thread_messages_prompt(
+            crate::models::AgentProvider::default()
+        )],
         "the waiting agent is told a message arrived, as one turn"
     );
 

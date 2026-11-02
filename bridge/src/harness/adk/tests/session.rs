@@ -1626,3 +1626,39 @@ fn a_child_that_never_announces_itself_is_ended_at_the_deadline_after_its_first_
     assert_eq!(session.epitaph(), None);
     session.end();
 }
+
+/// Each delivery in `agent_message::golden` reaches the adk child as the one
+/// `user` line pinned in `golden/adk/`, byte for byte.
+#[test]
+fn deliveries_reach_the_child_as_their_golden_lines() {
+    use crate::agent_message::golden::{assert_golden, scenarios};
+
+    for scenario in scenarios() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let capture = dir.path().join("stdin.jsonl");
+        let session = open(&HarnessSpec::new("sh").arg("-c").arg(format!(
+            "printf '%s\\n' '{INIT}'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> {}; done\n",
+            capture.display()
+        )));
+        wait_for_status(&session, AgentStatus::Waiting);
+        session
+            .send_turn(&Turn::new(scenario.prompt(AgentProvider::ClaudeAdk)))
+            .unwrap();
+
+        // Everything the child read, once it has ended a line and stopped
+        // growing, so a second line written after the first shows up too.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut last = String::new();
+        let written = loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let written = std::fs::read_to_string(&capture).unwrap_or_default();
+            let settled = written.ends_with('\n') && written == last;
+            if settled || Instant::now() > deadline {
+                break written;
+            }
+            last = written;
+        };
+        assert_golden("adk", scenario.name, &written);
+        session.end();
+    }
+}

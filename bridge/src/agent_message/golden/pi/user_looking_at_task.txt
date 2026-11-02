@@ -1,0 +1,32 @@
+[200~is this one done?
+
+Process only reviewer operation `op-1` (conversation sequences 7 through 7).
+The user is looking at task #42 "Fix the parser" (`task-42`); read it with get_task before answering about it.
+
+This native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.
+Exact accepted messages:
+[
+  {
+    "id": "message-7",
+    "sequence": 7,
+    "updated_sequence": 7,
+    "role": "user",
+    "viewing_context": {
+      "version": 1,
+      "items": [
+        {
+          "kind": "task",
+          "task_id": "task-42",
+          "number": 42,
+          "title": "Fix the parser"
+        }
+      ]
+    },
+    "body": "is this one done?",
+    "created_at": "2026-11-02T12:00:00Z"
+  }
+]
+
+<build_instructions>
+The user wrote this in the thread. Reply there with `post_thread_message`.
+</build_instructions>[201~

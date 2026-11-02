@@ -489,8 +489,9 @@ fn a_project_agents_cold_prompt_is_its_own_and_not_a_coding_agents() {
     let workspace_id = workspace(&mut state, &project_id, "one");
     let (owner, agent_id) = project_agent(&mut state, &project_id);
 
-    let cold =
-        crate::orchestrator::conversation_prompt(crate::orchestrator::NEW_THREAD_MESSAGES_PROMPT);
+    let cold = crate::orchestrator::conversation_prompt(
+        &crate::orchestrator::new_thread_messages_prompt(crate::models::AgentProvider::default()),
+    );
     let prompt = state.cold_prompt_with_catch_up(&owner, &agent_id, &cold);
     assert!(
         prompt.contains(&format!("agent for the project {name}")),

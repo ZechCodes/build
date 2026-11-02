@@ -7,7 +7,7 @@ use super::read::thread_detail;
 use super::{AppState, ConversationAddress};
 use crate::app::{
     named_agent_id, plan_state_str, require_str, run_state_str, ImplementationTarget,
-    PendingAgentTurn, PlanDraftingStarted, TurnText, NEW_THREAD_MESSAGES_PROMPT,
+    PendingAgentTurn, PlanDraftingStarted, TurnText,
 };
 use crate::operation::OperationPayload;
 use crate::operation::{
@@ -745,18 +745,11 @@ impl AppState {
                         .is_project_coordinator(&delivery.owner_id, &delivery.agent_id),
                     ..self.payload_for_reader(&delivery.owner_id, payload.clone())
                 };
-                TurnText {
-                    cold: payload.delivery_prompt(
-                        &receipt.operation_id,
-                        true,
-                        delivery.model_choice.provider,
-                    ),
-                    warm: payload.delivery_prompt(
-                        &receipt.operation_id,
-                        false,
-                        delivery.model_choice.provider,
-                    ),
-                }
+                TurnText::for_operation(
+                    &payload,
+                    &receipt.operation_id,
+                    delivery.model_choice.provider,
+                )
             })
         });
         self.delivery_queue.enqueue(PendingAgentTurn {
@@ -768,12 +761,8 @@ impl AppState {
             model_choice: delivery.model_choice.clone(),
             choice_revision: delivery.choice_revision,
             interrupt: delivery.interrupt,
-            say: operation_prompt.or_else(|| {
-                Some(TurnText {
-                    cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                    warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-                })
-            }),
+            say: operation_prompt
+                .or_else(|| Some(TurnText::reading_unread(delivery.model_choice.provider))),
             phase: "revive",
             wants_catch_up: receipt.is_none(),
             survives_refusal: receipt.is_some(),

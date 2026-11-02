@@ -1,3 +1,4 @@
+use crate::agent_message::{BuildTool, Framing, MessageKind, ToolLoading};
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -144,6 +145,22 @@ impl Harness for CodexAppServerHarness {
     /// so it arrives bare rather than wrapped as a reviewer turn.
     fn requires_unadorned_command(&self, prompt: &str) -> bool {
         CodexHarness.requires_unadorned_command(prompt) || self.starts_compaction(prompt)
+    }
+
+    fn framing(&self, kind: MessageKind) -> Framing {
+        CodexHarness.framing(kind)
+    }
+
+    fn wrap_attachment(&self, text: &str) -> String {
+        CodexHarness.wrap_attachment(text)
+    }
+
+    fn build_tool_name(&self, tool: BuildTool) -> String {
+        CodexHarness.build_tool_name(tool)
+    }
+
+    fn tool_loading(&self) -> ToolLoading {
+        CodexHarness.tool_loading()
     }
 
     fn starts_compaction(&self, prompt: &str) -> bool {

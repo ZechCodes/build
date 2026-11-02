@@ -1,6 +1,6 @@
 use crate::app::{
     has_agent_choice, model_choice_from, require_str, AppState, PendingAgentTurn, RouteRecorded,
-    RoutedCapture, TurnText, NEW_THREAD_MESSAGES_PROMPT,
+    RoutedCapture, TurnText,
 };
 use crate::lifecycle::holders::ProjectCheckouts;
 #[cfg(test)]
@@ -296,13 +296,10 @@ impl AppState {
             owner: run_id.to_string(),
             agent_id: agent_id.clone(),
             conversation_id,
+            say: Some(TurnText::reading_unread(model_choice.provider)),
             model_choice,
             choice_revision,
             interrupt: false,
-            say: Some(TurnText {
-                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-            }),
             phase: "dispatch",
             wants_catch_up: true,
             survives_refusal: false,

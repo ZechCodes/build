@@ -1,8 +1,9 @@
 use super::compaction::compact_before_turn;
+use crate::agent_message::MessageKind;
 use crate::app::conversations::FrozenLegacyDelivery;
 use crate::app::{
     ensure_agent_tab, still_pumping_instance, AgentSpawnRequest, AppState, DeliveryOutcome,
-    DeliveryPreflight, LifecycleDiagnostic, PendingAgentTurn, Spawned, TabKey, TabRole,
+    DeliveryPreflight, LifecycleDiagnostic, PendingAgentTurn, Spawned, TabKey, TabRole, TurnText,
     TAB_CLOSED_UNDER_A_TURN,
 };
 use crate::delivery::StartFailure;
@@ -12,8 +13,6 @@ use crate::thread::SessionInstance;
 use crate::timing::FrameTimer;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
-
-pub(in crate::app) use crate::orchestrator::NEW_THREAD_MESSAGES_PROMPT;
 
 /// Mint the `Compaction` row for a command said to a terminal session, which
 /// has no event stream of its own to report the compaction's start.
@@ -69,6 +68,53 @@ fn delivered_prompt(
         ),
         None => prompt.to_string(),
     }
+}
+
+/// What a turn sends `provider`: decided by the unread thread it reads, else
+/// where its text was rendered, else read from the text as typed.
+fn turn_kind(
+    prompt: &str,
+    say: Option<&TurnText>,
+    payload: Option<&crate::operation::OperationPayload>,
+    provider: crate::models::AgentProvider,
+) -> MessageKind {
+    payload
+        .map(|payload| payload.message_kind(provider))
+        .or(say.and_then(|say| say.kind))
+        .unwrap_or_else(|| {
+            crate::agent_message::turn_message(
+                crate::harness::harness_for(provider),
+                prompt.to_string(),
+            )
+            .kind
+        })
+}
+
+/// The exact text a turn of `kind` hands `provider`'s session: its own words
+/// with any unread thread it reads, the naming request, and every attachment
+/// the turn and the thread it reads ask for, framed by the harness.
+fn framed_turn(
+    prompt: &str,
+    say: Option<&TurnText>,
+    payload: Option<&crate::operation::OperationPayload>,
+    (kind, asks_name): (MessageKind, bool),
+    provider: crate::models::AgentProvider,
+) -> String {
+    let mut text = delivered_prompt(prompt, payload, provider);
+    if asks_name {
+        text = format!("{}{text}", crate::operation::agent_name_note(provider));
+    }
+    let mut asks = say.map(|say| say.attachments.clone()).unwrap_or_default();
+    if let Some(payload) = payload {
+        asks.merge(payload.turn_attachments());
+    }
+    if asks_name {
+        asks.merge(crate::agent_message::TurnAttachments {
+            replies: Vec::new(),
+            tools: vec![crate::agent_message::BuildTool::SetName],
+        });
+    }
+    crate::agent_message::turn_text(crate::harness::harness_for(provider), text, kind, asks)
 }
 
 /// Decide how one frozen turn reaches its exact captured destination before
@@ -278,7 +324,7 @@ pub(in crate::app) fn deliver(
     // sweep wait on that lock, and how long a session takes to accept a turn is
     // its own business — a protocol write to a full pipe, an ack a harness
     // answers late, the exit-race wait below.
-    let (session, instance, legacy_payload, asks_name) = {
+    let (session, instance, legacy_payload, (kind, asks_name)) = {
         let mut s = timer.lock(state);
         if !s.queued_agent_target_exists(turn) {
             return Ok(DeliveryOutcome::Delivered(None));
@@ -323,11 +369,14 @@ pub(in crate::app) fn deliver(
         // Every entry path reaches this point: native and legacy posts,
         // notices, reminders, catch-up, and starts with no existing text.
         // Slash commands must remain unadorned for the provider to parse.
-        let asks_name = !legacy_payload.as_ref().is_some_and(|frozen| {
-            frozen
-                .payload
-                .requires_unadorned_delivery(model_choice.provider)
-        }) && s.claim_agent_name_request(owner, agent_id);
+        let kind = turn_kind(
+            prompt.unwrap_or_default(),
+            say.as_ref(),
+            legacy_payload.as_ref().map(|frozen| &frozen.payload),
+            model_choice.provider,
+        );
+        let asks_name =
+            kind != MessageKind::ProviderCommand && s.claim_agent_name_request(owner, agent_id);
         if say.is_none() && !asks_name {
             return Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))));
         }
@@ -343,7 +392,7 @@ pub(in crate::app) fn deliver(
             Arc::clone(&tab.session),
             tab.instance.clone(),
             legacy_payload,
-            asks_name,
+            (kind, asks_name),
         )
     };
     if *interrupt && spawned == Spawned::Warm {
@@ -352,16 +401,13 @@ pub(in crate::app) fn deliver(
         }
     }
     let reports_turn_boundaries = session.reports_turn_ends();
-    let prompt = delivered_prompt(
+    let prompt = framed_turn(
         prompt.unwrap_or_default(),
+        say.as_ref(),
         legacy_payload.as_ref().map(|frozen| &frozen.payload),
+        (kind, asks_name),
         model_choice.provider,
     );
-    let prompt = if asks_name {
-        format!("{}{prompt}", crate::operation::AGENT_NAME_NOTE)
-    } else {
-        prompt
-    };
     let mut native_turn = Turn::with_choice(prompt, model_choice.clone(), *choice_revision);
     native_turn.operation_id = turn.operation_id.clone().or_else(|| {
         legacy_payload.as_ref().map(|payload| {

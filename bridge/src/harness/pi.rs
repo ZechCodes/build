@@ -1,3 +1,4 @@
+use crate::agent_message::{BuildTool, Framing, MessageKind, ToolLoading};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -38,6 +39,41 @@ impl Harness for PiHarness {
 
     fn auth(&self) -> &'static dyn crate::harness::inventory::AuthAdapter {
         &crate::harness::inventory::PI_AUTH
+    }
+
+    /// Provider commands and compaction travel bare; everything else carries
+    /// its attachments as a marked Build block. Pi names no provider commands,
+    /// so a `/compact` from the thread is delivered like any other message.
+    fn framing(&self, kind: MessageKind) -> Framing {
+        match kind {
+            MessageKind::Delivery
+            | MessageKind::ThreadNudge
+            | MessageKind::ColdStart
+            | MessageKind::TaskNotice
+            | MessageKind::TaskAssignment
+            | MessageKind::DependencyNotice
+            | MessageKind::TaskReminder
+            | MessageKind::IdleWorkspaces
+            | MessageKind::Restarted
+            | MessageKind::UsageLimitResume
+            | MessageKind::AgentFailure
+            | MessageKind::ProviderRecoveryFailure => Framing::WithAttachments,
+            MessageKind::Compaction | MessageKind::ProviderCommand => Framing::Bare,
+        }
+    }
+
+    fn wrap_attachment(&self, text: &str) -> String {
+        crate::agent_message::build_instructions(text)
+    }
+
+    /// Build's Pi extension registers each tool under its own name.
+    fn build_tool_name(&self, tool: BuildTool) -> String {
+        tool.name().to_string()
+    }
+
+    /// The extension registers every tool when Pi starts.
+    fn tool_loading(&self) -> ToolLoading {
+        ToolLoading::Loaded
     }
 
     fn cli_probe(&self) -> &'static dyn crate::harness::installed::CliProbe {

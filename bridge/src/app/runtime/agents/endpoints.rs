@@ -2,7 +2,7 @@ use crate::app::runtime::terminals::terminal_scope_root;
 use crate::app::{
     agent_tab_id, attach_to_tab, attach_view, optional_nonempty_string, require_str,
     working_time_json, AddressedSession, AppState, DeliveryRunner, LifecycleDiagnostic,
-    PendingAgentTurn, SelfReport, TabFacts, TabKey, TurnText, NEW_THREAD_MESSAGES_PROMPT,
+    PendingAgentTurn, SelfReport, TabFacts, TabKey, TurnText,
 };
 #[cfg(test)]
 use crate::app::{Tab, TabRole};
@@ -234,10 +234,9 @@ pub(in crate::app) fn agent_start(
             // ignore every one of them. A hand-started agent has no context, so
             // what waits for it gets the cold form: the conversation protocol
             // and the catch-up packet around the nudge.
-            say: agent.has_unread.then(|| TurnText {
-                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-            }),
+            say: agent
+                .has_unread
+                .then(|| TurnText::reading_unread(agent.model_choice.provider)),
             phase: "start",
             wants_catch_up: true,
             survives_refusal: false,

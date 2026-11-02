@@ -23,7 +23,10 @@
 
 use super::TaskWrite;
 use crate::app::runtime::agents::endpoints::AddressedAgent;
-use crate::app::{AppState, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT};
+use crate::app::{AppState, PendingAgentTurn, TurnText};
+use crate::templates::{
+    fill, MESSAGE_TASK_CHANGED, MESSAGE_TASK_COMMENT, MESSAGE_TASK_COMMENT_ON_YOURS,
+};
 use crate::thread::{TaskEnvelope, TaskNotice};
 use crate::tracker::{Actor, Task, TaskEvent, TaskEventKind, FINISHED_UNTRACK};
 
@@ -210,10 +213,7 @@ impl AppState {
                 interrupt: false,
                 // The message is already on the thread, so the turn says what
                 // every other unread message says: go and read it.
-                say: Some(TurnText {
-                    cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                    warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-                }),
+                say: Some(TurnText::reading_unread(addressed.model_choice.provider)),
                 phase,
                 wants_catch_up: true,
                 survives_refusal: false,
@@ -483,37 +483,49 @@ pub(in crate::app) fn notice_line(
 }
 
 fn agent_line(notice: &TaskNotice, task: &Task, who: &str, holds_it: bool) -> String {
-    let number = task.number;
+    let number = task.number.to_string();
+    if notice.action == "commented" {
+        let template = if holds_it {
+            MESSAGE_TASK_COMMENT_ON_YOURS
+        } else {
+            MESSAGE_TASK_COMMENT
+        };
+        let comment = notice.comment_id.as_deref().unwrap_or("");
+        return fill(
+            template,
+            &[
+                ("comment_id", comment),
+                ("number", number.as_str()),
+                ("who", who),
+            ],
+        );
+    }
+    let change = change_phrase(notice, holds_it);
+    fill(
+        MESSAGE_TASK_CHANGED,
+        &[
+            ("number", number.as_str()),
+            ("change", change.as_str()),
+            ("who", who),
+        ],
+    )
+}
+
+/// What happened to the task, as the agent line says it between the number
+/// and who did it.
+fn change_phrase(notice: &TaskNotice, holds_it: bool) -> String {
     match notice.action.as_str() {
-        "commented" => {
-            let comment = notice.comment_id.as_deref().unwrap_or("");
-            if holds_it {
-                format!(
-                    "New comment {comment} on #{number} from {who} — read_comment for their \
-                     message, answer on the task with comment_task."
-                )
-            } else {
-                format!(
-                    "New comment {comment} on #{number} from {who} — read_comment for their \
-                     message."
-                )
-            }
-        }
         "moved" => match notice.to.as_deref() {
-            Some(to) => format!("#{number} moved to {} by {who}.", column_name(to)),
-            None => format!("#{number} moved by {who}."),
+            Some(to) => format!("moved to {}", column_name(to)),
+            None => "moved".into(),
         },
-        "assigned" if holds_it => format!("#{number} assigned to you by {who}."),
+        "assigned" if holds_it => "assigned to you".into(),
         "assigned" => match notice.assignee.as_ref().map(assignee_name) {
-            Some(to) => format!("#{number} assigned to {to} by {who}."),
-            None => format!("#{number} assigned by {who}."),
+            Some(to) => format!("assigned to {to}"),
+            None => "assigned".into(),
         },
-        "unassigned" => format!("#{number} unassigned by {who}."),
-        "created" => format!("#{number} created by {who}."),
-        "closed" => format!("#{number} closed by {who}."),
-        "reopened" => format!("#{number} reopened by {who}."),
-        "linked" => format!("#{number} linked by {who}."),
-        _ => format!("#{number} edited by {who}."),
+        action @ ("unassigned" | "created" | "closed" | "reopened" | "linked") => action.into(),
+        _ => "edited".into(),
     }
 }
 
@@ -690,13 +702,10 @@ mod tests {
         // The agent that HOLDS the task is being asked something, and the
         // line says where to answer.
         let holding = body_for_holder(&write, "the user");
-        assert!(
-            holding.starts_with("New comment tc-1 on #13 from the user"),
-            "{holding}"
-        );
-        assert!(
-            holding.ends_with("answer on the task with comment_task."),
-            "{holding}"
+        assert_eq!(
+            holding,
+            "New comment tc-1 on #13 from the user — read_comment for their message, answer \
+             on the task with comment_task."
         );
         assert!(!holding.contains("Reproduced it"), "{holding}");
     }
@@ -810,6 +819,20 @@ mod tests {
                 "no title on the line: {said}"
             );
             assert_eq!(said.lines().count(), 1, "one line: {said}");
+        }
+    }
+
+    /// A move or an assignment whose event names no column or assignee still
+    /// says what happened and who did it.
+    #[test]
+    fn a_change_with_no_target_still_says_what_happened() {
+        for (kind, expected) in [
+            (TaskEventKind::Moved, "#13 moved by the user."),
+            (TaskEventKind::Assigned, "#13 assigned by the user."),
+        ] {
+            let mut write = write_by(Actor::User);
+            write.event(&Actor::User, kind, json!({}), "2026-09-20T15:01:00Z");
+            assert_eq!(body_of(&write, "the user"), expected, "{kind:?}");
         }
     }
 

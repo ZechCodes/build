@@ -1,0 +1,31 @@
+[200~Review the exact accepted messages below.
+
+Process only reviewer operation `op-1` (conversation sequences 7 through 7).
+This native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.
+Exact accepted messages:
+[
+  {
+    "id": "message-7",
+    "sequence": 7,
+    "updated_sequence": 7,
+    "role": "user",
+    "body": "",
+    "created_at": "2026-11-02T12:00:00Z",
+    "attachments": [
+      {
+        "name": "failure.png",
+        "path": ".build/attachments/failure.png",
+        "mime": "image/png",
+        "size": 123
+      }
+    ]
+  }
+]
+
+<system-reminder>
+The user wrote this in the thread. Reply there with `mcp__build__post_thread_message`.
+</system-reminder>
+
+<system-reminder>
+Build tools load on demand: call ToolSearch with `select:mcp__build__post_thread_message` before you use them.
+</system-reminder>[201~

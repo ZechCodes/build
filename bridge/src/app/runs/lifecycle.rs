@@ -2,13 +2,12 @@ use crate::app::{
     abandoned_branch_summary, close_abandoned_run_conversations, err, model_choice_from,
     parse_viewing_context, reconcile_missing_run_worktree, record_current_stage_started,
     require_str, thread_detail, AppState, DigestScope, PendingAgentTurn,
-    NEW_THREAD_MESSAGES_PROMPT,
 };
 use crate::lifecycle::{
     AdoptCheckout, AdoptionTarget, DiscardCheckout, DiscardedCheckout, PendingRow, RemovedCheckout,
 };
 use crate::models::ModelChoice;
-use crate::orchestrator::{ActiveRun, AgentTurn};
+use crate::orchestrator::{new_thread_messages_prompt, ActiveRun, AgentTurn};
 use crate::run::{run_transition, RunEvent, RunId, RunState};
 use crate::store::now_rfc3339;
 use serde_json::{json, Value};
@@ -278,9 +277,14 @@ impl AppState {
         })?;
         let mut active = self.take_run(&run_id)?;
         let outcome = (|| -> Result<(), String> {
+            let provider = active.agents.resolve(Some(&agent_id))?.choice.provider;
             let turn = self
                 .orch_for(&project_id)?
-                .message_run(&mut active, &plan_docs, NEW_THREAD_MESSAGES_PROMPT)
+                .message_run(
+                    &mut active,
+                    &plan_docs,
+                    &new_thread_messages_prompt(provider),
+                )
                 .map_err(err)?;
             self.delivery_queue
                 .enqueue(PendingAgentTurn::for_run(&run_id, &mut active, turn));

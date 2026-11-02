@@ -89,6 +89,8 @@ fn workspace_summaries_keep_working_aliases_delivery_and_fresh_statuses() {
         choice_revision: 0,
         interrupt: false,
         say: Some(crate::app::TurnText {
+            attachments: Default::default(),
+            kind: None,
             cold: "hello".into(),
             warm: "hello".into(),
         }),

@@ -364,6 +364,8 @@ impl CompactingAgent {
             choice_revision: agent.choice_revision,
             interrupt,
             say: Some(TurnText {
+                attachments: Default::default(),
+                kind: None,
                 cold: "cold".into(),
                 warm: "warm".into(),
             }),
@@ -744,6 +746,8 @@ fn native_policy_does_not_schedule_automatic_compaction_but_manual_commands_stil
     assert_eq!(agent.log.turns(), vec!["warm".to_string()]);
     let mut turn = agent.turn(false);
     turn.say = Some(TurnText {
+        attachments: Default::default(),
+        kind: None,
         cold: "/compact".into(),
         warm: "/compact".into(),
     });
@@ -753,6 +757,110 @@ fn native_policy_does_not_schedule_automatic_compaction_but_manual_commands_stil
         agent.log.turns(),
         vec!["warm".to_string(), "/compact".to_string()]
     );
+}
+
+#[test]
+fn a_delivered_turn_carries_its_reply_attachment_and_a_provider_command_stays_bare() {
+    let agent = CompactingAgent::new();
+    let thread = crate::agent_message::TurnAttachments {
+        replies: vec![crate::agent_message::ReplyChannel::Thread],
+        tools: Vec::new(),
+    };
+    for text in ["warm", "/compact"] {
+        let mut turn = agent.turn(false);
+        turn.say = Some(TurnText {
+            attachments: thread.clone(),
+            kind: None,
+            cold: text.into(),
+            warm: text.into(),
+        });
+        agent.state.lock().unwrap().delivery_queue.enqueue(turn);
+        deliver_pending_agent_turns(&agent.state);
+    }
+    assert_eq!(
+        agent.log.turns(),
+        vec![
+            "warm\n\n<build_instructions>\nThe user wrote this in the thread. \
+             Reply there with `mcp__build__post_thread_message`.\n</build_instructions>"
+                .to_string(),
+            "/compact".to_string(),
+        ]
+    );
+}
+
+/// A payload of several messages whose first is `/compact` renders text that
+/// starts with the command, yet it was frozen as a delivery when queued: it
+/// keeps its attachments. Text with no frozen kind is read as typed.
+#[test]
+fn the_kind_frozen_with_a_turn_decides_whether_it_travels_bare() {
+    let agent = CompactingAgent::new();
+    let text = "/compact\n\nthen fix the parser";
+    for kind in [Some(crate::agent_message::MessageKind::Delivery), None] {
+        let mut turn = agent.turn(false);
+        turn.say = Some(TurnText {
+            attachments: crate::agent_message::TurnAttachments {
+                replies: vec![crate::agent_message::ReplyChannel::Thread],
+                tools: Vec::new(),
+            },
+            kind,
+            cold: text.into(),
+            warm: text.into(),
+        });
+        agent.state.lock().unwrap().delivery_queue.enqueue(turn);
+        deliver_pending_agent_turns(&agent.state);
+    }
+    assert_eq!(
+        agent.log.turns(),
+        vec![
+            format!(
+                "{text}\n\n<build_instructions>\nThe user wrote this in the thread. \
+                 Reply there with `mcp__build__post_thread_message`.\n</build_instructions>"
+            ),
+            text.to_string(),
+        ]
+    );
+}
+
+/// An unnamed agent handed a provider command as an operation hears exactly
+/// the command: the request for a name waits for its next turn, which carries
+/// it.
+#[test]
+fn an_unnamed_agent_hears_a_provider_command_without_the_name_request() {
+    let agent = CompactingAgent::new();
+    agent
+        .state
+        .lock()
+        .unwrap()
+        .edit_agent_record("test_unname", RUN, &agent.agent_id, |record| {
+            record.name = None;
+            record.name_asked = false;
+        });
+    for (kind, text) in [
+        (
+            crate::agent_message::MessageKind::ProviderCommand,
+            "/compact",
+        ),
+        (crate::agent_message::MessageKind::Delivery, "warm"),
+    ] {
+        let mut turn = agent.turn(false);
+        turn.say = Some(TurnText {
+            attachments: Default::default(),
+            kind: Some(kind),
+            cold: text.into(),
+            warm: text.into(),
+        });
+        agent.state.lock().unwrap().delivery_queue.enqueue(turn);
+        deliver_pending_agent_turns(&agent.state);
+    }
+    let turns = agent.log.turns();
+    assert_eq!(turns[0], "/compact");
+    assert!(
+        turns[1].starts_with(&crate::operation::agent_name_note(
+            crate::models::AgentProvider::CodexAppServer
+        )),
+        "{turns:?}"
+    );
+    assert!(agent.agent().name_asked);
 }
 
 #[test]

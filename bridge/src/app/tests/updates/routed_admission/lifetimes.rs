@@ -314,13 +314,23 @@ async fn routed_post_worker_retains_admission_after_reply_until_delivery_finishe
 /// delivery receipts legitimately advance after the payload has been frozen.
 fn assert_native_delivery(prompt: String, stored: Vec<crate::thread::ThreadItem>) {
     assert!(
-        prompt.contains(crate::app::NEW_THREAD_MESSAGES_PROMPT),
+        prompt.contains(&crate::orchestrator::new_thread_messages_prompt(
+            crate::models::AgentProvider::default()
+        )),
         "{prompt}"
     );
     let (_, payload) = prompt
         .split_once(crate::operation::NATIVE_REVIEWER_MESSAGES_HEADING)
         .expect("warm delivery includes the real native envelope");
-    let accepted: Vec<Value> = serde_json::from_str(payload.trim()).unwrap();
+    // The envelope's JSON leads; the turn's reply attachment follows it.
+    let accepted: Vec<Value> = serde_json::Deserializer::from_str(payload.trim())
+        .into_iter()
+        .next()
+        .unwrap()
+        .unwrap();
+    let reply = "<system-reminder>\nThe user wrote this in the thread. \
+                 Reply there with `mcp__build__post_thread_message`.\n</system-reminder>";
+    assert_eq!(prompt.matches(reply).count(), 1, "{prompt}");
     assert_eq!(accepted.len(), 1);
     assert_eq!(accepted[0]["body"], "lease survives the reply");
     assert_eq!(accepted[0]["role"], "user");

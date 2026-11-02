@@ -234,6 +234,24 @@ pub trait Harness: Send + Sync {
         false
     }
 
+    /// How this harness carries a message of `kind`. Required, and the
+    /// terminal harnesses (claude, codex, pi) answer with a `match` that names
+    /// each kind, so a new kind does not compile until each has decided on it.
+    /// adk and the app server run the Claude Code and Codex CLIs, and take
+    /// those answers.
+    fn framing(&self, kind: crate::agent_message::MessageKind) -> crate::agent_message::Framing;
+
+    /// `text`, one of Build's attachments, marked so the agent reads it as
+    /// Build's instruction rather than the user's words.
+    fn wrap_attachment(&self, text: &str) -> String;
+
+    /// What this harness's model calls `tool`, exactly as it must type it.
+    fn build_tool_name(&self, tool: crate::agent_message::BuildTool) -> String;
+
+    /// Whether Build's tools are loaded from the start on this harness, or
+    /// wait behind tool search.
+    fn tool_loading(&self) -> crate::agent_message::ToolLoading;
+
     /// Whether an exact terminal command starts a compaction cycle whose
     /// completion will later appear in the provider transcript.
     fn starts_compaction(&self, _prompt: &str) -> bool {
@@ -1092,6 +1110,25 @@ mod tests {
 
             fn model_args(&self, choice: &ModelChoice) -> Vec<String> {
                 claude::ClaudeHarness.model_args(choice)
+            }
+
+            fn framing(
+                &self,
+                kind: crate::agent_message::MessageKind,
+            ) -> crate::agent_message::Framing {
+                claude::ClaudeHarness.framing(kind)
+            }
+
+            fn wrap_attachment(&self, text: &str) -> String {
+                claude::ClaudeHarness.wrap_attachment(text)
+            }
+
+            fn build_tool_name(&self, tool: crate::agent_message::BuildTool) -> String {
+                claude::ClaudeHarness.build_tool_name(tool)
+            }
+
+            fn tool_loading(&self) -> crate::agent_message::ToolLoading {
+                claude::ClaudeHarness.tool_loading()
             }
 
             fn spec(

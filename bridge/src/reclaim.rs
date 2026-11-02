@@ -17,11 +17,13 @@
 pub mod artifacts;
 mod budget;
 pub mod containment;
+pub mod digest;
 mod git_probe;
 mod measure;
 mod sizes;
 
 pub use budget::{Budget, Unfinished};
+pub use digest::{DigestSchedule, DigestTime, DEFAULT_DIGEST_AT};
 pub use git_probe::{reading_line as git_reading_line, GitProbe, IndexSnapshot};
 pub use measure::{
     measure_repositories, measure_repositories_with_candidates, newest_change_ms, RepositoryMeasure,

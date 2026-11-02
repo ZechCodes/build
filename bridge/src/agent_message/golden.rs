@@ -170,6 +170,32 @@ fn moved_notice() -> ThreadMessage {
     }))
 }
 
+/// Another agent reporting to the project agent, with how full its context
+/// was when it wrote.
+fn agent_report() -> ThreadMessage {
+    message(serde_json::json!({
+        "body": "The parser fix is ready for review.",
+        "from_agent": {
+            "id": "agent-3",
+            "name": "Parser",
+            "context": {"tokens": 190000, "compact_at": 200000, "at": "2026-11-02T11:59:00Z"}
+        },
+    }))
+}
+
+/// A message with no words, only an attachment.
+fn attachment_only() -> ThreadMessage {
+    message(serde_json::json!({
+        "body": "",
+        "attachments": [{
+            "name": "failure.png",
+            "path": ".build/attachments/failure.png",
+            "mime": "image/png",
+            "size": 123
+        }],
+    }))
+}
+
 /// A provider command, which must reach the provider untouched.
 fn compact_command() -> ThreadMessage {
     message(serde_json::json!({"body": "/compact"}))
@@ -209,6 +235,16 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
         ),
         legacy("task_moved", vec![moved_notice()]),
         native("user_assignment", vec![user_assignment()], false),
+        native("attachment_only", vec![attachment_only()], false),
+        Scenario {
+            name: "agent_report_to_project_agent",
+            payload: OperationPayload {
+                tells_sender_context: true,
+                ..payload(vec![agent_report()])
+            },
+            scope: Scope::Native("op-1"),
+            cold: false,
+        },
         native("compact_command", vec![compact_command()], false),
         native(
             "compact_among_other_words",

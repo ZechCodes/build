@@ -771,12 +771,13 @@ pub(in crate::app) fn nudge_live_agent_tab(
     // Build's turns, so it travels the way every other one does and the
     // session decides what that means. Hardcoding \r submits into a SubmitKey::None
     // harness that never asked for it, leaves the notification unframed — and
-    // says nothing at all to a session with no keyboard.
-    if let Err(error) = tab
-        .session
-        .send_turn(&Turn::new(crate::app::new_thread_messages_prompt(
-            crate::models::AgentProvider::default(),
-        )))
+    // says nothing at all to a session with no keyboard. A test stand-in:
+    // the tab does not know its harness, so the nudge is Claude-shaped.
+    if let Err(error) =
+        tab.session
+            .send_turn(&Turn::new(crate::orchestrator::new_thread_messages_prompt(
+                crate::models::AgentProvider::default(),
+            )))
     {
         eprintln!("thread.post {entity_id}: agent notify failed: {error}");
     }

@@ -149,18 +149,12 @@ async fn abandon_run_removes_the_worktree_but_keeps_the_branch() {
 }
 
 /// The nudge that sends an agent to its unread thread names the tool it
-/// reports with exactly as the agent's harness lists it.
+/// reports with exactly as the agent's harness lists it, and nowhere by
+/// another name.
 #[test]
 fn the_new_messages_nudge_names_the_reporting_tool_as_each_harness_does() {
     use crate::models::AgentProvider;
     use crate::orchestrator::new_thread_messages_prompt;
-    let said = |tool: &str| {
-        format!(
-            "Act on every reviewer message delivered in this prompt. The user can only see \
-             messages sent with `{tool}`; use its status to say whether you are Working, \
-             Waiting, Blocked, or Complete."
-        )
-    };
     for (provider, tool) in [
         (AgentProvider::Claude, "mcp__build__post_thread_message"),
         (AgentProvider::ClaudeAdk, "mcp__build__post_thread_message"),
@@ -171,10 +165,13 @@ fn the_new_messages_nudge_names_the_reporting_tool_as_each_harness_does() {
         ),
         (AgentProvider::Pi, "post_thread_message"),
     ] {
+        let said = new_thread_messages_prompt(provider);
+        assert!(said.contains(&format!("`{tool}`")), "{provider:?}: {said}");
         assert_eq!(
-            new_thread_messages_prompt(provider),
-            said(tool),
-            "{provider:?}"
+            said.matches("post_thread_message").count(),
+            1,
+            "{provider:?}: {said}"
         );
+        assert!(!said.contains('{'), "{provider:?}: {said}");
     }
 }

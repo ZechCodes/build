@@ -479,3 +479,25 @@ impl AppState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::TurnText;
+    use crate::models::AgentProvider;
+
+    /// Both halves of the read-your-thread turn name the reporting tool as
+    /// the agent's harness does, and the cold half opens on the warm one.
+    #[test]
+    fn reading_unread_speaks_to_the_agents_harness() {
+        let turn = TurnText::reading_unread(AgentProvider::Pi);
+        assert!(turn.warm.contains("`post_thread_message`"), "{}", turn.warm);
+        assert!(!turn.warm.contains("mcp__build__"), "{}", turn.warm);
+        assert!(turn.cold.starts_with(&turn.warm), "{}", turn.cold);
+        assert!(turn.cold.contains("Build conversation protocol"));
+        assert_eq!(turn.kind, None);
+        assert_eq!(turn.attachments, Default::default());
+
+        let claude = TurnText::reading_unread(AgentProvider::Claude);
+        assert!(claude.warm.contains("`mcp__build__post_thread_message`"));
+    }
+}

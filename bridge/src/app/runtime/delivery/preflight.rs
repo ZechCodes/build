@@ -14,8 +14,6 @@ use crate::timing::FrameTimer;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
-pub(in crate::app) use crate::orchestrator::new_thread_messages_prompt;
-
 /// Mint the `Compaction` row for a command said to a terminal session, which
 /// has no event stream of its own to report the compaction's start.
 pub(super) fn record_command_activity(

@@ -450,7 +450,7 @@ impl Orchestrator {
         active.workspace = Some(workspace);
         active.revising_stage_id = Some(stage_id.to_string());
         active.last_error = None;
-        let nudge = new_thread_messages_prompt(active.agents.sole().choice.provider);
+        let nudge = nudge_for(&active.agents, &active.model_choice);
         let prompt = self.render_plan_stage(&self.templates.revise_stage, active, index, &nudge);
         Ok(AgentTurn::posted(prompt, &nudge, "revise"))
     }
@@ -497,7 +497,7 @@ impl Orchestrator {
                 let index = active
                     .stage_doc_index(&stage_id)
                     .map_err(OrchestratorError::Gate)?;
-                let nudge = new_thread_messages_prompt(active.agents.sole().choice.provider);
+                let nudge = nudge_for(&active.agents, &active.model_choice);
                 self.render_plan_stage(&self.templates.revise_stage, active, index, &nudge)
             }
             None => self.render_plan(&self.templates.plan, active, ""),
@@ -599,11 +599,7 @@ impl Orchestrator {
         }
         active.revising_stage_id = Some(stage_id.to_string());
         active.last_error = None;
-        let provider = active
-            .agents
-            .primary()
-            .map_or(active.model_choice.provider, |agent| agent.choice.provider);
-        let nudge = new_thread_messages_prompt(provider);
+        let nudge = nudge_for(&active.agents, &active.model_choice);
         let prompt = self.render_run_stage(
             &self.templates.revise_stage,
             active,
@@ -632,4 +628,13 @@ impl Orchestrator {
         );
         append_stage_catalog(rendered, &active.stages, |_| "not started".to_string())
     }
+}
+
+/// The read-your-messages nudge for the agent a plan or run turn reaches:
+/// its primary, or one on `fallback` when the roster is still empty.
+fn nudge_for(agents: &AgentRoster, fallback: &ModelChoice) -> String {
+    let provider = agents
+        .primary()
+        .map_or(fallback.provider, |agent| agent.choice.provider);
+    new_thread_messages_prompt(provider)
 }

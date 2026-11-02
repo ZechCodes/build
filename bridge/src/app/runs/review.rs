@@ -1,7 +1,8 @@
 use crate::app::{
-    append_user_thread_messages, dispatchable_next_run_stage, err, new_thread_messages_prompt,
-    parse_thread_inputs, require_str, thread_detail, AppState, PendingAgentTurn, ReadSubject,
+    append_user_thread_messages, dispatchable_next_run_stage, err, parse_thread_inputs,
+    require_str, thread_detail, AppState, PendingAgentTurn, ReadSubject,
 };
+use crate::orchestrator::new_thread_messages_prompt;
 use crate::run::{PublicationAttempt, RunState, StagePublication};
 use crate::store::now_rfc3339;
 use crate::worktree::{git_stdout, Worktree};

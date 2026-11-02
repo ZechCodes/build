@@ -1,14 +1,13 @@
 use crate::app::{
     abandoned_branch_summary, close_abandoned_run_conversations, err, model_choice_from,
-    new_thread_messages_prompt, parse_viewing_context, reconcile_missing_run_worktree,
-    record_current_stage_started, require_str, thread_detail, AppState, DigestScope,
-    PendingAgentTurn,
+    parse_viewing_context, reconcile_missing_run_worktree, record_current_stage_started,
+    require_str, thread_detail, AppState, DigestScope, PendingAgentTurn,
 };
 use crate::lifecycle::{
     AdoptCheckout, AdoptionTarget, DiscardCheckout, DiscardedCheckout, PendingRow, RemovedCheckout,
 };
 use crate::models::ModelChoice;
-use crate::orchestrator::{ActiveRun, AgentTurn};
+use crate::orchestrator::{new_thread_messages_prompt, ActiveRun, AgentTurn};
 use crate::run::{run_transition, RunEvent, RunId, RunState};
 use crate::store::now_rfc3339;
 use serde_json::{json, Value};

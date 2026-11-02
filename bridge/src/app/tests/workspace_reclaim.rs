@@ -537,6 +537,20 @@ fn moving_zones_never_sends_a_day_twice() {
     assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
 }
 
+/// A clock set years ahead once, then put right, does not silence the
+/// digest until the date catches up with the day it wrote.
+#[test]
+fn a_clock_set_far_ahead_and_corrected_still_sends() {
+    let (_tmp, state, project_id, _ws, _task) = linked_workspace();
+    let day = quiet_day();
+    AppState::sweep_workspaces(&state, &at_nine(), day + 3650 * DAY_MS + 9 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
+    AppState::sweep_workspaces(&state, &at_nine(), day + 9 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 2);
+    AppState::sweep_workspaces(&state, &at_nine(), day + 10 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 2);
+}
+
 /// A bridge that was down at the scan time sends the day's digest at its
 /// first sweep after, once. A day missed entirely is not made up the next
 /// morning before that day's time.

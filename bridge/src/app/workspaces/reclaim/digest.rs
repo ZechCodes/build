@@ -14,6 +14,7 @@ use crate::agent_message::MessageKind;
 use crate::app::AppState;
 use crate::reclaim::ReclaimPolicy;
 use crate::tracker::TaskEventKind;
+use jiff::civil::Date;
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -25,17 +26,14 @@ impl AppState {
         let Some(day) = policy.digest.due_day(now_ms) else {
             return;
         };
-        let day = day.to_string();
         let owed: Vec<String> = self
             .projects
             .iter()
             .map(|project| project.id.clone())
-            // ISO dates order as text. A day already had, or one a zone ahead
-            // has had, is not owed again.
             .filter(|project_id| {
                 self.idle_digest_sent
                     .get(project_id)
-                    .is_none_or(|sent| *sent < day)
+                    .is_none_or(|sent| owed_after(sent, day))
             })
             .collect();
         if owed.is_empty() {
@@ -47,7 +45,7 @@ impl AppState {
             if workspaces.is_empty()
                 || self.send_idle_digest(&project_id, &workspaces, now_ms, policy)
             {
-                self.idle_digest_sent.insert(project_id, day.clone());
+                self.idle_digest_sent.insert(project_id, day.to_string());
             }
         }
         let projects = &self.projects;
@@ -152,4 +150,16 @@ impl AppState {
             }
         }
     }
+}
+
+/// Whether a project whose digest last went out for `sent` is owed `day`'s.
+/// A day already had is not owed again, nor one a zone ahead has had. A day
+/// more than two days ahead was written by a clock that was wrong, and is
+/// forgotten, so correcting the clock does not silence the digest until the
+/// date catches up.
+fn owed_after(sent: &str, day: Date) -> bool {
+    sent.parse::<Date>()
+        .ok()
+        .and_then(|sent| day.until(sent).ok())
+        .is_none_or(|ahead| !(0..=2).contains(&ahead.get_days()))
 }

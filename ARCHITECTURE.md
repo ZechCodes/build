@@ -1841,7 +1841,7 @@ before that day's time. The day each project was sent is kept in the store
 failed to land is tried at the next sweep. It is queued as
 `MessageKind::IdleWorkspaces`, its wording in `bridge/templates/messages/`.
 Every digest tells the agent to message the user only if necessary and
-otherwise merge, reclaim or leave the workspace without posting to the user.
+otherwise handle or leave the workspace without posting to the user.
 Locked workspaces are listed every day in their own group, each with whatever
 else holds it: the agent evaluates whether a reminder is needed, without
 reclaiming them or asking to unlock them. The linked tasks record

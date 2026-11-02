@@ -2,4 +2,4 @@
 
 {workspaces}
 
-Only message the user if necessary, such as a decision only they can make. Otherwise merge, reclaim, or leave the workspace without posting to the user. If a user decision is necessary, ask one question on the linked task and leave the workspace alone.
+Only message the user if necessary, such as a decision only they can make. Otherwise handle or leave the workspace without posting to the user. If a user decision is necessary, ask one question on the linked task and leave the workspace alone.

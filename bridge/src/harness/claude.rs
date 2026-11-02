@@ -165,8 +165,9 @@ impl Harness for ClaudeHarness {
         )
     }
 
-    /// Commands the TUI parses (`/compact`, `/clear`) travel bare; everything
-    /// else carries its attachments in `<system-reminder>`s.
+    /// Provider commands and compaction travel bare; everything else carries
+    /// its attachments in `<system-reminder>`s. Which queued texts are
+    /// provider commands is [`requires_unadorned_command`](Self::requires_unadorned_command).
     fn framing(&self, kind: MessageKind) -> Framing {
         match kind {
             MessageKind::Delivery

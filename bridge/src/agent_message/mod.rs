@@ -21,21 +21,7 @@
 pub(crate) mod golden;
 
 use crate::harness::Harness;
-use crate::templates::without_final_newline;
-
-/// A message template: its markdown file under `bridge/templates/messages/`,
-/// compiled in.
-macro_rules! message_template {
-    ($file:literal) => {
-        without_final_newline(include_str!(concat!("../../templates/messages/", $file)))
-    };
-}
-
-/// An attachment marked the way Claude Code marks its own context.
-const SYSTEM_REMINDER: &str = message_template!("wrap_system_reminder.md");
-
-/// An attachment marked as Build's, on a harness with no convention of its own.
-const BUILD_INSTRUCTIONS: &str = message_template!("wrap_build_instructions.md");
+use crate::templates::{MESSAGE_BUILD_INSTRUCTIONS, MESSAGE_SYSTEM_REMINDER};
 
 /// Every kind of message Build sends into an agent's conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,15 +100,26 @@ impl ComposedMessage {
     }
 }
 
+/// The message a queued turn's text makes on `harness`: a provider command
+/// the harness must receive as typed, or a delivery.
+pub fn turn_message(harness: &dyn Harness, text: String) -> ComposedMessage {
+    let kind = if harness.requires_unadorned_command(&text) {
+        MessageKind::ProviderCommand
+    } else {
+        MessageKind::Delivery
+    };
+    ComposedMessage::new(kind, text)
+}
+
 /// `text` inside a `<system-reminder>`, the tag Claude Code gives the context
 /// it adds to a user turn.
 pub fn system_reminder(text: &str) -> String {
-    SYSTEM_REMINDER.replace("{text}", text)
+    MESSAGE_SYSTEM_REMINDER.replace("{text}", text)
 }
 
 /// `text` inside a block marked as Build's instructions.
 pub fn build_instructions(text: &str) -> String {
-    BUILD_INSTRUCTIONS.replace("{text}", text)
+    MESSAGE_BUILD_INSTRUCTIONS.replace("{text}", text)
 }
 
 #[cfg(test)]

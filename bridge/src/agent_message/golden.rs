@@ -207,6 +207,12 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
     ]
 }
 
+/// Whether this run rewrites the goldens. An empty `UPDATE_GOLDENS=` is unset,
+/// so a stray export cannot turn every comparison into a write.
+fn updating() -> bool {
+    std::env::var_os("UPDATE_GOLDENS").is_some_and(|value| !value.is_empty())
+}
+
 fn golden_path(harness: &str, scenario: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("src/agent_message/golden")
@@ -218,7 +224,7 @@ fn golden_path(harness: &str, scenario: &str) -> PathBuf {
 /// rewrite the file under `UPDATE_GOLDENS=1`.
 pub(crate) fn assert_golden(harness: &str, scenario: &str, actual: &str) {
     let path = golden_path(harness, scenario);
-    if std::env::var_os("UPDATE_GOLDENS").is_some() {
+    if updating() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, actual).unwrap();
         return;
@@ -237,7 +243,7 @@ pub(crate) fn assert_golden(harness: &str, scenario: &str, actual: &str) {
 /// so a renamed scenario cannot leave a stale file behind that pins nothing.
 #[test]
 fn every_golden_file_is_a_live_scenario() {
-    if std::env::var_os("UPDATE_GOLDENS").is_some() {
+    if updating() {
         // The harness tests are rewriting the files alongside this one.
         return;
     }
@@ -256,11 +262,11 @@ fn every_golden_file_is_a_live_scenario() {
 }
 
 /// The terminal harnesses: what lands on the child's stdin for each delivery,
-/// paste frame and submit key included.
+/// paste frame and submit key included, written by each harness's own spec.
 #[tokio::test]
 async fn terminal_harnesses_are_handed_their_golden_bytes() {
     use crate::harness::{AgentSession, Turn};
-    use crate::pty::{HarnessSpec, PtySession};
+    use crate::pty::PtySession;
 
     let terminal = [
         (AgentProvider::Claude, "claude"),
@@ -271,11 +277,7 @@ async fn terminal_harnesses_are_handed_their_golden_bytes() {
         for scenario in scenarios() {
             let directory = tempfile::tempdir().unwrap();
             let capture = directory.path().join("stdin.txt");
-            let spec = HarnessSpec::new("sh")
-                .arg("-c")
-                .arg("stty raw -echo && printf '\\033[?2004h' && cat > \"$1\"")
-                .arg("build-stdin-capture")
-                .arg(capture.to_string_lossy());
+            let spec = capture_spec(provider, directory.path(), &capture);
             let size = portable_pty::PtySize {
                 rows: 24,
                 cols: 80,
@@ -293,6 +295,51 @@ async fn terminal_harnesses_are_handed_their_golden_bytes() {
             session.end();
         }
     }
+}
+
+/// `provider`'s real launch spec — its submit key, submit delay and settle —
+/// with the binary swapped for a shell that puts its tty in raw mode, turns
+/// paste mode on, and writes everything it reads to `capture`.
+fn capture_spec(
+    provider: AgentProvider,
+    directory: &std::path::Path,
+    capture: &std::path::Path,
+) -> crate::pty::HarnessSpec {
+    use crate::harness::{harness_for, HarnessContext};
+    use crate::models::ModelChoice;
+    use crate::orchestrator::SpawnOptions;
+
+    let checkout = directory.join("checkout");
+    let state_root = directory.join("state");
+    std::fs::create_dir_all(&checkout).unwrap();
+    std::fs::create_dir_all(&state_root).unwrap();
+    let choice = ModelChoice {
+        provider,
+        ..ModelChoice::default()
+    };
+    let options = SpawnOptions {
+        cwd: checkout,
+        owner_id: "agent-1".to_string(),
+        ..SpawnOptions::default()
+    };
+    let context = HarnessContext {
+        channel: crate::config::Channel::Prod,
+        state_root,
+        bridge_exe: directory.join("unused-bridge"),
+        mcp_socket: directory.join("unused-socket"),
+    };
+    let mut spec = harness_for(provider)
+        .spec(&choice, &options, &context)
+        .unwrap();
+    spec.binary = "sh".to_string();
+    spec.args = vec![
+        "-c".to_string(),
+        "stty raw -echo && printf '\\033[?2004h' && cat > \"$1\"".to_string(),
+        "build-stdin-capture".to_string(),
+        capture.to_string_lossy().into_owned(),
+    ];
+    spec.env.clear();
+    spec
 }
 
 /// What the child has read once its input ends in the submit key (raw, so

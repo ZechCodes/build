@@ -32,7 +32,7 @@ macro_rules! template {
 
 /// A template file ends in one newline, as every text file does; the text it
 /// holds does not, because composition puts its own blank line between texts.
-pub(crate) const fn without_final_newline(text: &'static str) -> &'static str {
+const fn without_final_newline(text: &'static str) -> &'static str {
     match text.as_bytes() {
         [body @ .., b'\n'] => match std::str::from_utf8(body) {
             Ok(body) => body,
@@ -41,6 +41,14 @@ pub(crate) const fn without_final_newline(text: &'static str) -> &'static str {
         _ => text,
     }
 }
+
+/// How an attachment is marked on a Claude Code harness: `{text}` inside the
+/// tag Claude Code gives the context it adds to a user turn.
+pub(crate) const MESSAGE_SYSTEM_REMINDER: &str = template!("messages/wrap_system_reminder.md");
+
+/// How an attachment is marked on a harness with no convention of its own.
+pub(crate) const MESSAGE_BUILD_INSTRUCTIONS: &str =
+    template!("messages/wrap_build_instructions.md");
 
 const PLAN: &str = template!("plan.md");
 

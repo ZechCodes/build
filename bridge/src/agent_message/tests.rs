@@ -90,3 +90,49 @@ fn a_message_without_attachments_is_its_body() {
         }
     }
 }
+
+/// Which queued texts reach each harness as a command it parses, and so
+/// travel bare: the commands its `requires_unadorned_command` names, and
+/// nothing else. Codex and Pi take `/compact` inside the delivery today.
+#[test]
+fn a_turn_is_a_provider_command_only_where_the_harness_parses_it() {
+    let expected = [
+        (
+            AgentProvider::ClaudeAdk,
+            "/compact",
+            MessageKind::ProviderCommand,
+        ),
+        (
+            AgentProvider::Claude,
+            "/compact",
+            MessageKind::ProviderCommand,
+        ),
+        (
+            AgentProvider::Claude,
+            "/clear",
+            MessageKind::ProviderCommand,
+        ),
+        (AgentProvider::Codex, "/clear", MessageKind::ProviderCommand),
+        (AgentProvider::Codex, "/compact", MessageKind::Delivery),
+        (
+            AgentProvider::CodexAppServer,
+            "/compact",
+            MessageKind::ProviderCommand,
+        ),
+        (AgentProvider::Pi, "/compact", MessageKind::Delivery),
+    ];
+    for (provider, text, kind) in expected {
+        assert_eq!(
+            turn_message(harness_for(provider), text.to_string()).kind,
+            kind,
+            "{provider:?} {text}"
+        );
+    }
+    for provider in PROVIDERS {
+        assert_eq!(
+            turn_message(harness_for(provider), "fix the parser".to_string()).kind,
+            MessageKind::Delivery,
+            "{provider:?}"
+        );
+    }
+}

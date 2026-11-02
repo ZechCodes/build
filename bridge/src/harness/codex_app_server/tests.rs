@@ -4313,7 +4313,7 @@ fn deliveries_reach_the_server_as_their_golden_requests() {
             json!({"id":2,"result":thread_opened_at(&cwd, THREAD_ID, Some(SELECTED_EFFORT))});
         let goal = json!({"id":3,"result":{"goal":null}});
         let script = format!(
-            "read initialize; printf '%s\\n' '{initialize}'; read initialized; read thread; printf '%s\\n' '{opened}'; read goal; printf '%s\\n' '{goal}'; IFS= read -r turn; printf '%s\\n' \"$turn\" > '{}'; read hold",
+            "read initialize; printf '%s\\n' '{initialize}'; read initialized; read thread; printf '%s\\n' '{opened}'; read goal; printf '%s\\n' '{goal}'; cat > '{}'",
             capture.display()
         );
         let spec = HarnessSpec::new("sh").arg("-c").arg(script);
@@ -4334,13 +4334,17 @@ fn deliveries_reach_the_server_as_their_golden_requests() {
         session
             .send_turn(&Turn::new(scenario.prompt(AgentProvider::CodexAppServer)))
             .unwrap();
+        // Every request the server read after its goal, once the last has
+        // ended and nothing more arrives: the turn, and nothing after it.
+        let mut last = String::new();
         let mut written = String::new();
-        for _ in 0..1000 {
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(100));
             written = std::fs::read_to_string(&capture).unwrap_or_default();
-            if written.ends_with('\n') {
+            if written.ends_with('\n') && written == last {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(5));
+            last = written.clone();
         }
         assert_golden("codex_app_server", scenario.name, &written);
         session.end();

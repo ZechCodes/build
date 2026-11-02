@@ -41,8 +41,9 @@ impl Harness for PiHarness {
         &crate::harness::inventory::PI_AUTH
     }
 
-    /// Commands Pi parses travel bare; everything else carries its attachments
-    /// as a marked Build block.
+    /// Provider commands and compaction travel bare; everything else carries
+    /// its attachments as a marked Build block. Pi names no provider commands,
+    /// so a `/compact` from the thread is delivered like any other message.
     fn framing(&self, kind: MessageKind) -> Framing {
         match kind {
             MessageKind::Delivery

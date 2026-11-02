@@ -158,8 +158,10 @@ impl Harness for CodexHarness {
         prompt.split_whitespace().next() == Some("/clear")
     }
 
-    /// Commands the TUI parses travel bare; everything else carries its
-    /// attachments as a marked Build block, Codex having no tag of its own.
+    /// Provider commands and compaction travel bare; everything else carries
+    /// its attachments as a marked Build block, Codex having no tag of its
+    /// own. Only `/clear` is a provider command here: `/compact` from the
+    /// thread is delivered like any other message.
     fn framing(&self, kind: MessageKind) -> Framing {
         match kind {
             MessageKind::Delivery

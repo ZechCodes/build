@@ -1645,12 +1645,19 @@ fn deliveries_reach_the_child_as_their_golden_lines() {
             .send_turn(&Turn::new(scenario.prompt(AgentProvider::ClaudeAdk)))
             .unwrap();
 
+        // Everything the child read, once it has ended a line and stopped
+        // growing, so a second line written after the first shows up too.
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut written = String::new();
-        while Instant::now() < deadline && !written.ends_with('\n') {
-            written = std::fs::read_to_string(&capture).unwrap_or_default();
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        let mut last = String::new();
+        let written = loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let written = std::fs::read_to_string(&capture).unwrap_or_default();
+            let settled = written.ends_with('\n') && written == last;
+            if settled || Instant::now() > deadline {
+                break written;
+            }
+            last = written;
+        };
         assert_golden("adk", scenario.name, &written);
         session.end();
     }

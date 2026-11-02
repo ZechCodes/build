@@ -234,9 +234,11 @@ pub trait Harness: Send + Sync {
         false
     }
 
-    /// How this harness carries a message of `kind`. Required, and every
-    /// harness answers with a `match` that names each kind, so a new kind
-    /// does not compile until each harness has decided on it.
+    /// How this harness carries a message of `kind`. Required, and the
+    /// terminal harnesses (claude, codex, pi) answer with a `match` that names
+    /// each kind, so a new kind does not compile until each has decided on it.
+    /// adk and the app server run the Claude Code and Codex CLIs, and take
+    /// those answers.
     fn framing(&self, kind: crate::agent_message::MessageKind) -> crate::agent_message::Framing;
 
     /// `text`, one of Build's attachments, marked so the agent reads it as

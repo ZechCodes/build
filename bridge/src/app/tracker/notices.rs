@@ -692,13 +692,10 @@ mod tests {
         // The agent that HOLDS the task is being asked something, and the
         // line says where to answer.
         let holding = body_for_holder(&write, "the user");
-        assert!(
-            holding.starts_with("New comment tc-1 on #13 from the user"),
-            "{holding}"
-        );
-        assert!(
-            holding.ends_with("answer on the task with comment_task."),
-            "{holding}"
+        assert_eq!(
+            holding,
+            "New comment tc-1 on #13 from the user — read_comment for their message, answer \
+             on the task with comment_task."
         );
         assert!(!holding.contains("Reproduced it"), "{holding}");
     }
@@ -812,6 +809,20 @@ mod tests {
                 "no title on the line: {said}"
             );
             assert_eq!(said.lines().count(), 1, "one line: {said}");
+        }
+    }
+
+    /// A move or an assignment whose event names no column or assignee still
+    /// says what happened and who did it.
+    #[test]
+    fn a_change_with_no_target_still_says_what_happened() {
+        for (kind, expected) in [
+            (TaskEventKind::Moved, "#13 moved by the user."),
+            (TaskEventKind::Assigned, "#13 assigned by the user."),
+        ] {
+            let mut write = write_by(Actor::User);
+            write.event(&Actor::User, kind, json!({}), "2026-09-20T15:01:00Z");
+            assert_eq!(body_of(&write, "the user"), expected, "{kind:?}");
         }
     }
 

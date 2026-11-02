@@ -12,6 +12,9 @@
 //! `{comments}`, `{base_branch}`, `{stage_id}`, `{stage_title}`, `{stage_path}`,
 //! `{stage_summary}`, `{next_stage_path}`, `{stage_start_sha}`, `{capture_text}`,
 //! `{project_name}`, `{project_base}`, `{project_sources}`, `{user_answer}`.
+//!
+//! What Build says to agents is under `bridge/templates/messages/`, filled by
+//! [`fill`]; each `MESSAGE_*` constant's doc names its own placeholders.
 
 /// Where a single-document plan lives. A plan whose docs dir holds
 /// `STAGES_MANIFEST_PATH` when its agent reports Complete is multi-stage

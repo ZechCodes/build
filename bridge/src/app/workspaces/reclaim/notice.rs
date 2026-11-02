@@ -247,4 +247,20 @@ mod tests {
              unpushed work without asking the user first."
         );
     }
+
+    /// A workspace name or task title shaped like a placeholder is said as
+    /// written.
+    #[test]
+    fn placeholder_shaped_names_are_said_as_written() {
+        let task = LinkedTask {
+            task_id: "task-1".into(),
+            number: 1,
+            title: "{locked}".into(),
+            status: "done".into(),
+            state: "open".into(),
+        };
+        let named = quiet("{verdict}", vec![task], None, LifecycleRecord::default());
+        assert!(quiet_workspaces(&[named], &ReclaimPolicy::default())
+            .contains("- {verdict} (ws-{verdict}): #1 {locked} (Done). Branch none;"));
+    }
 }

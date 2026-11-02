@@ -545,5 +545,8 @@ mod tests {
              not finish: pick up where you left off, starting from what is in your working \
              tree."
         );
+        assert!(
+            resume_notice(HARNESS, "{harness} says no").contains("stopped (“{harness} says no”)")
+        );
     }
 }

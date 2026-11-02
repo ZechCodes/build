@@ -224,7 +224,6 @@ pub fn clear_opt_out_file(dir: &Path) {
     let _ = std::fs::remove_file(dir.join(OPT_OUT_FILE));
 }
 
-/// The sentence the boot that ran the task rename adds to the notice.
 /// What the agent is told when it comes back.
 ///
 /// Written to be actionable by a model that has just been handed a transcript
@@ -404,5 +403,8 @@ mod tests {
             restart_notice(at, "0.2.0", false, true),
             format!("{head}{renamed}{live}{tail}")
         );
+        // A version shaped like a placeholder is said as written.
+        assert!(restart_notice(at, "{last_turn}", false, false)
+            .contains("(bridge {last_turn}) and brought"),);
     }
 }

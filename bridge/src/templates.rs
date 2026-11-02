@@ -101,6 +101,45 @@ pub(crate) const MESSAGE_AGENT_NAME: &str = template!("messages/agent_name.md");
 /// The turn that tells an agent its thread has new messages.
 pub(crate) const MESSAGE_NEW_THREAD_MESSAGES: &str = template!("messages/new_thread_messages.md");
 
+/// The project agent told an unassigned task has no unresolved prerequisites.
+pub(crate) const MESSAGE_TASK_RELEASED_TO_COORDINATOR: &str =
+    template!("messages/task_released_to_coordinator.md");
+
+/// A task's prerequisites resolved, said as information.
+pub(crate) const MESSAGE_TASK_UNBLOCKED: &str = template!("messages/task_unblocked.md");
+
+/// A saved assignment that could not be delivered: `{error}`.
+pub(crate) const MESSAGE_TASK_DISPATCH_FAILED: &str = template!("messages/task_dispatch_failed.md");
+
+/// A task blocked again by the prerequisites in `{unresolved}`.
+pub(crate) const MESSAGE_TASK_BLOCKED_AGAIN: &str = template!("messages/task_blocked_again.md");
+
+/// One removed prerequisite, named.
+pub(crate) const MESSAGE_PREREQUISITE_REMOVED: &str = template!("messages/prerequisite_removed.md");
+
+/// The prerequisite edges a release removed, already named.
+pub(crate) const MESSAGE_PREREQUISITES_REMOVED: &str =
+    template!("messages/prerequisites_removed.md");
+
+/// One prerequisite closed without Done, as a list line.
+pub(crate) const MESSAGE_PREREQUISITE_CLOSED: &str = template!("messages/prerequisite_closed.md");
+
+/// The prerequisites closed without Done, and what to do about them.
+pub(crate) const MESSAGE_PREREQUISITES_CLOSED: &str = template!("messages/prerequisites_closed.md");
+
+/// The first line of an assignment.
+pub(crate) const MESSAGE_TASK_ASSIGNED: &str = template!("messages/task_assigned.md");
+
+/// A new comment on a task the agent watches.
+pub(crate) const MESSAGE_TASK_COMMENT: &str = template!("messages/task_comment.md");
+
+/// A new comment on a task the agent holds, with where to answer.
+pub(crate) const MESSAGE_TASK_COMMENT_ON_YOURS: &str =
+    template!("messages/task_comment_on_yours.md");
+
+/// Any other change to a watched task: `{change}` is what happened.
+pub(crate) const MESSAGE_TASK_CHANGED: &str = template!("messages/task_changed.md");
+
 /// `template` with each `{name}` in `values` replaced by its value, in one
 /// pass: a value is copied as it is and never searched for placeholders, so a
 /// task title that reads `{get_task}` is said as the user wrote it. A brace

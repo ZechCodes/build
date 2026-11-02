@@ -459,9 +459,14 @@ impl AppState {
 /// even begins. So the agent is told what it has and reads it with `get_task`
 /// when it is ready to start, which is also when the task is current.
 pub(in crate::app) fn assignment_notice(task: &Task, assigner: &str, note: Option<&str>) -> String {
-    let mut body = format!(
-        "{assigner} assigned you Build task #{} — {}",
-        task.number, task.title
+    let number = task.number.to_string();
+    let mut body = crate::templates::fill(
+        crate::templates::MESSAGE_TASK_ASSIGNED,
+        &[
+            ("assigner", assigner),
+            ("number", number.as_str()),
+            ("title", task.title.as_str()),
+        ],
     );
     if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
         body.push_str("\n\n");

@@ -1829,7 +1829,9 @@ An invalid boundary leaves the workspace unmeasured and preserves its files.
 Each project agent gets one digest a day listing every quiet workspace in its
 project, including ones listed on earlier days (#958,
 `bridge/src/app/workspaces/reclaim/digest.rs`). Going quiet sends nothing by
-itself, and a day with nothing quiet sends nothing. The digest goes out at the
+itself, and a day with nothing quiet sends nothing. Nor does a quiet
+workspace's task finishing: it shows as reclaimable in the next digest, not
+in a notice of its own. The digest goes out at the
 first sweep at or after the day's time: 09:00 device-local, or the device's
 `workspace_idle_digest_at` setting (`HH:MM`). The service wakes for that time
 as well as its sweep interval, and a bridge that was down then sends at its

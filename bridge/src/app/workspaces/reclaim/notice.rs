@@ -4,11 +4,12 @@
 use super::Quiet;
 use crate::reclaim::{LifecycleRecord, LinkedTask, ReclaimPolicy, Subject, HOLD_LOCKED};
 use crate::templates::{
-    fill, MESSAGE_WORKSPACES_QUIET, MESSAGE_WORKSPACES_QUIET_LOCKED, MESSAGE_WORKSPACES_QUIET_MANY,
-    MESSAGE_WORKSPACES_QUIET_ONE, MESSAGE_WORKSPACE_QUIET, MESSAGE_WORKSPACE_QUIET_HELD,
-    MESSAGE_WORKSPACE_QUIET_LOCKED, MESSAGE_WORKSPACE_QUIET_LOCKED_HELD,
-    MESSAGE_WORKSPACE_QUIET_NO_TASK, MESSAGE_WORKSPACE_QUIET_PRUNED,
-    MESSAGE_WORKSPACE_QUIET_RECLAIMABLE, MESSAGE_WORKSPACE_QUIET_TASK,
+    fill, MESSAGE_WORKSPACES_QUIET, MESSAGE_WORKSPACES_QUIET_DECIDE,
+    MESSAGE_WORKSPACES_QUIET_LOCKED, MESSAGE_WORKSPACES_QUIET_MANY, MESSAGE_WORKSPACES_QUIET_ONE,
+    MESSAGE_WORKSPACE_QUIET, MESSAGE_WORKSPACE_QUIET_HELD, MESSAGE_WORKSPACE_QUIET_LOCKED,
+    MESSAGE_WORKSPACE_QUIET_LOCKED_HELD, MESSAGE_WORKSPACE_QUIET_NO_TASK,
+    MESSAGE_WORKSPACE_QUIET_PRUNED, MESSAGE_WORKSPACE_QUIET_RECLAIMABLE,
+    MESSAGE_WORKSPACE_QUIET_TASK,
 };
 
 /// The phase a quiet-workspace digest's turn is queued under.
@@ -16,8 +17,8 @@ pub(super) const PHASE: &str = "workspace_idle";
 
 /// The project agent's daily digest: one line per quiet workspace with
 /// everything a decision needs, the ones the user locked in their own group
-/// with what else holds them, then how to handle them and when the user needs
-/// to hear about it.
+/// with what else holds them, then when the user needs to hear about it and,
+/// if any is not locked, how to decide about those.
 pub(super) fn quiet_workspaces(workspaces: &[Quiet], policy: &ReclaimPolicy) -> String {
     let hours = (policy.idle_after.as_secs() / 3600).to_string();
     let count = workspaces.len().to_string();
@@ -40,14 +41,19 @@ pub(super) fn quiet_workspaces(workspaces: &[Quiet], policy: &ReclaimPolicy) -> 
             lines(&locked)
         ));
     }
-    fill(
+    let digest = fill(
         MESSAGE_WORKSPACES_QUIET,
         &[
             ("quiet", quiet.as_str()),
             ("hours", hours.as_str()),
             ("workspaces", groups.join("\n\n").as_str()),
         ],
-    )
+    );
+    if unlocked.is_empty() {
+        digest
+    } else {
+        format!("{digest}\n\n{MESSAGE_WORKSPACES_QUIET_DECIDE}")
+    }
 }
 
 fn lines(workspaces: &[&Quiet]) -> String {
@@ -284,7 +290,8 @@ mod tests {
     }
 
     /// With nothing locked there is no locked group, and with only locked
-    /// workspaces there is nothing above it.
+    /// workspaces there is nothing above it and no word on deciding about
+    /// the unlocked ones.
     #[test]
     fn the_locked_group_is_there_only_when_something_is_locked() {
         let open = quiet("open", Vec::new(), None, LifecycleRecord::default());
@@ -299,9 +306,18 @@ mod tests {
                 ..LifecycleRecord::default()
             },
         );
-        assert!(quiet_workspaces(&[locked], &policy).contains(
+        let digest = quiet_workspaces(&[locked], &policy);
+        assert!(
+            digest.starts_with("1 workspace has had no activity"),
+            "{digest}"
+        );
+        assert!(digest.contains(
             "earlier days. This message is from Build, not from the user.\n\nLocked by the user"
         ));
+        assert!(
+            digest.ends_with("ask one question on the linked task and leave the workspace alone."),
+            "nothing to decide about when everything is locked: {digest}"
+        );
     }
 
     /// A workspace name or task title shaped like a placeholder is said as

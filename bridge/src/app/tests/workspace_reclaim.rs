@@ -5,6 +5,7 @@ use super::project_agent::{rooted, workspace};
 use super::tracker::{filed, tracked_with_origin};
 use super::*;
 use crate::reclaim::{DigestSchedule, DigestTime, ReclaimPolicy};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -554,6 +555,95 @@ fn a_missed_scan_is_caught_up_once() {
     assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
     AppState::sweep_workspaces(&state, &at_nine(), day + 2 * DAY_MS + 9 * HOUR_MS);
     assert_eq!(project_agent_notices(&state, &project_id).len(), 2);
+}
+
+/// Put a file where the project's conversation scratch goes, so the project
+/// agent cannot be reached and every digest to it fails to land; the
+/// returned path is removed to let it through again.
+fn block_project_agent(state: &Arc<Mutex<AppState>>, project_id: &str) -> PathBuf {
+    let app = state.lock().unwrap();
+    let repo = app.projects.get(project_id).unwrap().repo_path.clone();
+    let scratch = crate::app::projects::scratch_dir(&app.state_root, &repo);
+    std::fs::create_dir_all(scratch.parent().unwrap()).unwrap();
+    std::fs::write(&scratch, "not a directory").unwrap();
+    scratch
+}
+
+fn digest_days_stored(state: &Arc<Mutex<AppState>>) -> BTreeMap<String, String> {
+    let app = state.lock().unwrap();
+    app.store
+        .as_ref()
+        .unwrap()
+        .load_idle_digests_sent()
+        .unwrap()
+}
+
+/// A digest that fails to land counts as not sent: the day stays owed, the
+/// workspace stays unlisted and its task unwritten, and the next sweep that
+/// day sends it.
+#[test]
+fn a_digest_that_fails_to_land_is_sent_at_the_next_sweep() {
+    let (_tmp, state, project_id, ws, task) = linked_workspace();
+    let day = quiet_day();
+    let blocker = block_project_agent(&state, &project_id);
+    AppState::sweep_workspaces(&state, &at_nine(), day + 9 * HOUR_MS);
+    assert_eq!(lifecycle(&state, &ws)["idle"], true);
+    assert_eq!(digest_days_stored(&state), BTreeMap::new());
+    assert_eq!(lifecycle(&state, &ws)["noticed_at_ms"], Value::Null);
+    assert_eq!(timeline_kinds(&state, &task), Vec::<Value>::new());
+
+    std::fs::remove_file(blocker).unwrap();
+    AppState::sweep_workspaces(&state, &at_nine(), day + 10 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
+    assert_eq!(
+        lifecycle(&state, &ws)["noticed_at_ms"],
+        json!(day + 10 * HOUR_MS)
+    );
+    assert_eq!(timeline_kinds(&state, &task).len(), 1);
+    let sent = digest_days_stored(&state);
+    assert_eq!(sent.keys().collect::<Vec<_>>(), [&project_id]);
+}
+
+/// Each project's digest stands alone: one failing does not hold back
+/// another, and one sent is not sent again while another catches up. A
+/// deleted project's day is forgotten.
+#[test]
+fn each_project_has_its_own_digest_and_a_deleted_one_is_forgotten() {
+    let (tmp, state, first, _ws, _task) = linked_workspace();
+    let second = {
+        let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+        let repo = std::fs::canonicalize(init_repo_named(&state_root, "second")).unwrap();
+        let mut app = state.lock().unwrap();
+        let second = super::project_agent::added_project(&mut app, &repo);
+        workspace(&mut app, &second, "also-quiet");
+        second
+    };
+    let day = quiet_day();
+    let blocker = block_project_agent(&state, &first);
+    AppState::sweep_workspaces(&state, &at_nine(), day + 9 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &second).len(), 1);
+    assert_eq!(
+        digest_days_stored(&state).keys().collect::<Vec<_>>(),
+        [&second]
+    );
+
+    std::fs::remove_file(blocker).unwrap();
+    AppState::sweep_workspaces(&state, &at_nine(), day + 10 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &first).len(), 1);
+    assert_eq!(project_agent_notices(&state, &second).len(), 1);
+
+    let deleted = call(
+        &state,
+        "project.delete",
+        json!({ "project_id": second, "confirm": true }),
+    );
+    assert_eq!(deleted["ok"], true, "{deleted:?}");
+    AppState::sweep_workspaces(&state, &at_nine(), day + DAY_MS + 9 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &first).len(), 2);
+    assert_eq!(
+        digest_days_stored(&state).keys().collect::<Vec<_>>(),
+        [&first]
+    );
 }
 
 /// Once its task is Done and its work is pushed, a quiet workspace is

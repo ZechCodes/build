@@ -96,7 +96,7 @@ impl DigestSchedule {
             self.at.on(local.date().tomorrow().unwrap_or(local.date()))
         };
         let showings = self.zone().to_ambiguous_timestamp(next);
-        let next_ms = [showings.clone().compatible(), showings.later()]
+        let next_ms = [showings.compatible(), showings.later()]
             .into_iter()
             .filter_map(Result::ok)
             .map(|at| at.as_millisecond())

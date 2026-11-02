@@ -184,10 +184,10 @@ pub(crate) const MESSAGE_REMINDER_TASK: &str = template!("messages/reminder_task
 /// The project agent's daily list of its quiet workspaces (#958).
 pub(crate) const MESSAGE_WORKSPACES_QUIET: &str = template!("messages/workspaces_quiet.md");
 
-/// The quiet-workspaces notice's `{quiet}` for one.
+/// The quiet-workspaces digest's `{quiet}` for one.
 pub(crate) const MESSAGE_WORKSPACES_QUIET_ONE: &str = template!("messages/workspaces_quiet_one.md");
 
-/// The quiet-workspaces notice's `{quiet}` for more than one.
+/// The quiet-workspaces digest's `{quiet}` for more than one.
 pub(crate) const MESSAGE_WORKSPACES_QUIET_MANY: &str =
     template!("messages/workspaces_quiet_many.md");
 
@@ -211,6 +211,11 @@ pub(crate) const MESSAGE_WORKSPACE_QUIET_RECLAIMABLE: &str =
 
 /// What holds a quiet workspace.
 pub(crate) const MESSAGE_WORKSPACE_QUIET_HELD: &str = template!("messages/workspace_quiet_held.md");
+
+/// How to decide about the quiet workspaces the user did not lock: said
+/// only when the digest lists one (#958).
+pub(crate) const MESSAGE_WORKSPACES_QUIET_DECIDE: &str =
+    template!("messages/workspaces_quiet_decide.md");
 
 /// The heading over the quiet workspaces the user locked (#958).
 pub(crate) const MESSAGE_WORKSPACES_QUIET_LOCKED: &str =

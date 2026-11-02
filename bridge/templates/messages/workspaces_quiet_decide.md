@@ -1,0 +1,1 @@
+For each workspace that is not locked, decide: merge it (branch reviewed and green: merge to main, then reclaim_workspace), delete it (abandoned or superseded: delete_workspace), or leave it. Never delete a workspace with uncommitted or unpushed work without asking the user first.

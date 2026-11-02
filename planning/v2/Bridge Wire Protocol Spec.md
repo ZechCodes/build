@@ -907,7 +907,8 @@ time of day, `HH:MM` on a 24-hour clock, the daily quiet-workspace digest goes
 out (`09:00` until the device chooses). `settings.set` takes it as that string
 and refuses anything else `invalid_params`. No environment variable sets it
 and no capability names it: a bridge without it answers without the field and
-refuses the param as undeclared.
+refuses the param as undeclared (`invalid_params`,
+`unknown param: workspace_idle_digest_at`).
 
 The names in the table below describe additions to existing verbs, so the
 verb names alone cannot establish whether a bridge provides them. The SPA

@@ -4,15 +4,17 @@
 //! gigabytes of build output. The bridge does not decide what becomes of one
 //! (Zech, 24 Sep 2026): once a workspace has gone a day without activity, the
 //! project agent's daily digest lists it (#958), and the agent merges it,
-//! deletes it, or puts it in front of the user. The bridge measures every workspace without asking anybody. When
-//! `BRIDGE_WORKSPACE_PRUNE` is on and nothing holds a quiet workspace, it also
-//! drops that workspace's build output and keeps the source (tier 1). That is
-//! off unless the switch is set. Removing a workspace (tier 2) is only ever
-//! the explicit `workspace.reclaim`.
+//! deletes it, or puts it in front of the user. The bridge measures every
+//! workspace without asking anybody. When `BRIDGE_WORKSPACE_PRUNE` is on and
+//! nothing holds a quiet workspace, it also drops that workspace's build
+//! output and keeps the source (tier 1). That is off unless the switch is
+//! set. Removing a workspace (tier 2) is only ever the explicit
+//! `workspace.reclaim`.
 //!
 //! This module has no app state. It holds what counts as activity, what counts
-//! as build output, and when the daily digest is due (`digest.rs`). The service that runs it and
-//! writes its verdict is `app/workspaces/reclaim.rs`.
+//! as build output, and when the daily digest is due (`digest.rs`). The
+//! service that runs it and writes its verdict is
+//! `app/workspaces/reclaim.rs`.
 
 pub mod artifacts;
 mod budget;

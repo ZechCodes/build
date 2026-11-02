@@ -205,6 +205,10 @@ pub type ResumeIdProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider, &str) -> bo
 /// every phase, every path. The plan-side revise turns used to carry a
 /// shorter cousin of this line, so one agent heard two wordings of the
 /// same instruction depending on which door the message came through.
+///
+/// TODO(#957 slice 6): it still names `post_thread_message` bare on every
+/// harness; the turn constructors that replace its `TurnText` literals render
+/// it per harness.
 pub const NEW_THREAD_MESSAGES_PROMPT: &str = crate::templates::MESSAGE_NEW_THREAD_MESSAGES;
 
 /// How long a failed prompt write waits for the harness's exit status to

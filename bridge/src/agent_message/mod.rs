@@ -27,8 +27,8 @@ pub(crate) mod golden;
 
 use crate::harness::Harness;
 use crate::templates::{
-    MESSAGE_BUILD_INSTRUCTIONS, MESSAGE_REPLY_AGENT, MESSAGE_REPLY_TASK, MESSAGE_REPLY_THREAD,
-    MESSAGE_SYSTEM_REMINDER, MESSAGE_TOOL_HINT_TOOL_SEARCH,
+    fill, MESSAGE_BUILD_INSTRUCTIONS, MESSAGE_REPLY_AGENT, MESSAGE_REPLY_TASK,
+    MESSAGE_REPLY_THREAD, MESSAGE_SYSTEM_REMINDER, MESSAGE_TOOL_HINT_TOOL_SEARCH,
 };
 
 /// Every kind of message Build sends into an agent's conversation.
@@ -159,13 +159,14 @@ impl Attachment {
             Attachment::Reply(channel) => {
                 let tool = harness.build_tool_name(channel.tool());
                 Some(match channel {
-                    ReplyChannel::Thread => MESSAGE_REPLY_THREAD.replace("{tool}", &tool),
-                    ReplyChannel::Task { task_id } => MESSAGE_REPLY_TASK
-                        .replace("{task_id}", task_id)
-                        .replace("{tool}", &tool),
-                    ReplyChannel::Agent { agent_id } => MESSAGE_REPLY_AGENT
-                        .replace("{agent_id}", agent_id)
-                        .replace("{tool}", &tool),
+                    ReplyChannel::Thread => fill(MESSAGE_REPLY_THREAD, &[("tool", &tool)]),
+                    ReplyChannel::Task { task_id } => {
+                        fill(MESSAGE_REPLY_TASK, &[("task_id", task_id), ("tool", &tool)])
+                    }
+                    ReplyChannel::Agent { agent_id } => fill(
+                        MESSAGE_REPLY_AGENT,
+                        &[("agent_id", agent_id), ("tool", &tool)],
+                    ),
                 })
             }
             Attachment::ToolHint(tools) => match harness.tool_loading() {
@@ -174,7 +175,10 @@ impl Attachment {
                         .iter()
                         .map(|tool| harness.build_tool_name(*tool))
                         .collect();
-                    Some(MESSAGE_TOOL_HINT_TOOL_SEARCH.replace("{tools}", &names.join(",")))
+                    Some(fill(
+                        MESSAGE_TOOL_HINT_TOOL_SEARCH,
+                        &[("tools", &names.join(","))],
+                    ))
                 }
                 ToolLoading::Loaded => None,
             },
@@ -293,12 +297,12 @@ pub fn turn_text(
 /// `text` inside a `<system-reminder>`, the tag Claude Code gives the context
 /// it adds to a user turn.
 pub fn system_reminder(text: &str) -> String {
-    MESSAGE_SYSTEM_REMINDER.replace("{text}", text)
+    fill(MESSAGE_SYSTEM_REMINDER, &[("text", text)])
 }
 
 /// `text` inside a block marked as Build's instructions.
 pub fn build_instructions(text: &str) -> String {
-    MESSAGE_BUILD_INSTRUCTIONS.replace("{text}", text)
+    fill(MESSAGE_BUILD_INSTRUCTIONS, &[("text", text)])
 }
 
 #[cfg(test)]

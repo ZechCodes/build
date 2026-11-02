@@ -101,6 +101,37 @@ pub(crate) const MESSAGE_AGENT_NAME: &str = template!("messages/agent_name.md");
 /// The turn that tells an agent its thread has new messages.
 pub(crate) const MESSAGE_NEW_THREAD_MESSAGES: &str = template!("messages/new_thread_messages.md");
 
+/// `template` with each `{name}` in `values` replaced by its value, in one
+/// pass: a value is copied as it is and never searched for placeholders, so a
+/// task title that reads `{get_task}` is said as the user wrote it. A brace
+/// that opens no named placeholder stays as written.
+pub(crate) fn fill(template: &str, values: &[(&str, &str)]) -> String {
+    let mut filled = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        filled.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let value = after.find('}').and_then(|close| {
+            values
+                .iter()
+                .find(|(name, _)| *name == &after[..close])
+                .map(|(_, value)| (close, *value))
+        });
+        match value {
+            Some((close, value)) => {
+                filled.push_str(value);
+                rest = &after[close + 1..];
+            }
+            None => {
+                filled.push('{');
+                rest = after;
+            }
+        }
+    }
+    filled.push_str(rest);
+    filled
+}
+
 const PLAN: &str = template!("plan.md");
 
 const BUILD: &str = template!("build.md");
@@ -316,6 +347,17 @@ pub fn render(template: &str, vars: &Vars) -> String {
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn fill_says_a_value_as_written_and_leaves_unknown_braces() {
+        assert_eq!(
+            fill(
+                "read {title} with {tool} {kept} {open",
+                &[("title", "{tool} {title}"), ("tool", "get_task")]
+            ),
+            "read {tool} {title} with get_task {kept} {open"
+        );
+    }
 
     /// Collapse every run of whitespace to a single space and trim the ends,
     /// so a template's wording can be asserted across its line wrapping.

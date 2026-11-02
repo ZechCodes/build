@@ -64,6 +64,43 @@ pub(crate) const MESSAGE_REPLY_AGENT: &str = template!("messages/reply_agent.md"
 pub(crate) const MESSAGE_TOOL_HINT_TOOL_SEARCH: &str =
     template!("messages/tool_hint_tool_search.md");
 
+/// What a delivery asks for, as one native operation: `{operation_id}`,
+/// `{start}`, `{end}`.
+pub(crate) const MESSAGE_DELIVERY_SCOPE_OPERATION: &str =
+    template!("messages/delivery_scope_operation.md");
+
+/// What a delivery asks for, as the thread's unread messages: `{start}`, `{end}`.
+pub(crate) const MESSAGE_DELIVERY_SCOPE_UNREAD: &str =
+    template!("messages/delivery_scope_unread.md");
+
+/// The conversation a cold session missed: `{context}`.
+pub(crate) const MESSAGE_DELIVERY_PRIOR_CONTEXT: &str =
+    template!("messages/delivery_prior_context.md");
+
+/// The workspace the user wrote from: `{name}`, `{workspace_id}`.
+pub(crate) const MESSAGE_DELIVERY_WORKSPACE: &str = template!("messages/delivery_workspace.md");
+
+/// What to do with a task handed over: `{task_id}` and the tools `{get_task}`,
+/// `{comment_task}`, `{mention_user}`, `{move_task}`.
+pub(crate) const MESSAGE_DELIVERY_HANDED_TASK: &str = template!("messages/delivery_handed_task.md");
+
+/// The task the user was looking at: `{number}`, `{title}`, `{task_id}`, and
+/// the tool `{get_task}`.
+pub(crate) const MESSAGE_DELIVERY_VIEWED_TASK: &str = template!("messages/delivery_viewed_task.md");
+
+/// Why the delivered messages travel inside the turn.
+pub(crate) const MESSAGE_DELIVERY_NATIVE_PAYLOAD: &str =
+    template!("messages/delivery_native_payload.md");
+
+/// What a delivery says first when its first message has no words.
+pub(crate) const MESSAGE_DELIVERY_EMPTY_BODY: &str = template!("messages/delivery_empty_body.md");
+
+/// The request an unnamed agent hears on its first turn: the tool `{set_name}`.
+pub(crate) const MESSAGE_AGENT_NAME: &str = template!("messages/agent_name.md");
+
+/// The turn that tells an agent its thread has new messages.
+pub(crate) const MESSAGE_NEW_THREAD_MESSAGES: &str = template!("messages/new_thread_messages.md");
+
 const PLAN: &str = template!("plan.md");
 
 const BUILD: &str = template!("build.md");

@@ -855,7 +855,9 @@ fn an_unnamed_agent_hears_a_provider_command_without_the_name_request() {
     let turns = agent.log.turns();
     assert_eq!(turns[0], "/compact");
     assert!(
-        turns[1].starts_with(crate::operation::AGENT_NAME_NOTE),
+        turns[1].starts_with(&crate::operation::agent_name_note(
+            crate::models::AgentProvider::CodexAppServer
+        )),
         "{turns:?}"
     );
     assert!(agent.agent().name_asked);

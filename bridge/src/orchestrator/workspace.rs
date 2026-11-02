@@ -205,8 +205,7 @@ pub type ResumeIdProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider, &str) -> bo
 /// every phase, every path. The plan-side revise turns used to carry a
 /// shorter cousin of this line, so one agent heard two wordings of the
 /// same instruction depending on which door the message came through.
-pub const NEW_THREAD_MESSAGES_PROMPT: &str =
-    "Act on every reviewer message delivered in this prompt. The user can only see messages sent with `post_thread_message`; use its status to say whether you are Working, Waiting, Blocked, or Complete.";
+pub const NEW_THREAD_MESSAGES_PROMPT: &str = crate::templates::MESSAGE_NEW_THREAD_MESSAGES;
 
 /// How long a failed prompt write waits for the harness's exit status to
 /// become reapable before the failure is treated as fatal. Long enough to

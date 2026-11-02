@@ -13,15 +13,30 @@ use sha2::{Digest, Sha256};
 
 use crate::agent_message::{BuildTool, MessageKind, ReplyChannel, TurnAttachments};
 use crate::models::{AgentProvider, ModelChoice};
+use crate::templates::{
+    MESSAGE_AGENT_NAME, MESSAGE_DELIVERY_EMPTY_BODY, MESSAGE_DELIVERY_HANDED_TASK,
+    MESSAGE_DELIVERY_NATIVE_PAYLOAD, MESSAGE_DELIVERY_PRIOR_CONTEXT,
+    MESSAGE_DELIVERY_SCOPE_OPERATION, MESSAGE_DELIVERY_SCOPE_UNREAD, MESSAGE_DELIVERY_VIEWED_TASK,
+    MESSAGE_DELIVERY_WORKSPACE,
+};
 use crate::thread::ThreadMessage;
 
 pub const THREAD_POST_METHOD: &str = "thread.post";
 pub const NATIVE_REVIEWER_MESSAGES_HEADING: &str = "Exact accepted messages:";
-pub(crate) const AGENT_NAME_NOTE: &str =
-    "\nYou have no name yet. Before you answer, call set_name with one or two meaningful \
-words for what you are working on — \"Tracker\", \"Rail scroll\", \"Transport\". It is \
-what the user sees instead of \"Agent 1\" everywhere you are named, so pick something \
-they would recognise from across a list. Then answer normally.\n";
+
+/// The request an unnamed agent hears on its first turn, on its own lines.
+pub(crate) fn agent_name_note(provider: AgentProvider) -> String {
+    let set_name = tool_name(provider, BuildTool::SetName);
+    format!(
+        "\n{}\n",
+        MESSAGE_AGENT_NAME.replace("{set_name}", &set_name)
+    )
+}
+
+/// `tool` as a delivery's wording names it to `provider`'s model.
+fn tool_name(_provider: AgentProvider, tool: BuildTool) -> String {
+    tool.name().to_string()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -88,24 +103,22 @@ impl OperationPayload {
         provider: AgentProvider,
     ) -> String {
         self.render_delivery_prompt(
-            format!(
-                "Process only reviewer operation `{operation_id}` (conversation sequences {} through {}).",
-                self.start_sequence, self.end_sequence
-            ),
+            self.scoped(MESSAGE_DELIVERY_SCOPE_OPERATION)
+                .replace("{operation_id}", operation_id),
             cold,
             provider,
         )
     }
 
     pub fn legacy_delivery_prompt(&self, cold: bool, provider: AgentProvider) -> String {
-        self.render_delivery_prompt(
-            format!(
-                "Process only the newly delivered reviewer messages (conversation sequences {} through {}).",
-                self.start_sequence, self.end_sequence
-            ),
-            cold,
-            provider,
-        )
+        self.render_delivery_prompt(self.scoped(MESSAGE_DELIVERY_SCOPE_UNREAD), cold, provider)
+    }
+
+    /// `template` naming the sequences this payload covers.
+    fn scoped(&self, template: &str) -> String {
+        template
+            .replace("{start}", &self.start_sequence.to_string())
+            .replace("{end}", &self.end_sequence.to_string())
     }
 
     fn render_delivery_prompt(&self, scope: String, cold: bool, provider: AgentProvider) -> String {
@@ -116,8 +129,8 @@ impl OperationPayload {
             .expect("operation messages always serialize");
         let context = if cold && !self.prior_context.is_empty() {
             format!(
-                "\nConversation context before this operation:\n{}\n",
-                self.prior_context
+                "\n{}\n",
+                MESSAGE_DELIVERY_PRIOR_CONTEXT.replace("{context}", &self.prior_context)
             )
         } else {
             String::new()
@@ -127,16 +140,16 @@ impl OperationPayload {
         // envelope ahead of it turns commands such as `/goal ...` into prose.
         let sender_context = self.sender_context_note();
         let workspace = self.workspace_note();
-        let task = self.task_note();
-        let looking = self.viewing_task_note();
-        let naming = self.name_note();
+        let task = self.task_note(provider);
+        let looking = self.viewing_task_note(provider);
+        let naming = self.name_note(provider);
         let user_prompt = self
             .messages
             .first()
             .map(|message| message.body.trim())
             .filter(|body| !body.is_empty())
-            .unwrap_or("Review the exact accepted messages below.");
-        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender_context}{workspace}{task}{looking}{naming}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+            .unwrap_or(MESSAGE_DELIVERY_EMPTY_BODY);
+        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender_context}{workspace}{task}{looking}{naming}\n{MESSAGE_DELIVERY_NATIVE_PAYLOAD}\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
@@ -188,18 +201,21 @@ impl OperationPayload {
     /// honest about where the work got to. The payload is JSON inside a prompt
     /// written in the user's voice, and the sentence around it is what an agent
     /// actually acts on.
-    fn task_note(&self) -> String {
+    fn task_note(&self, provider: AgentProvider) -> String {
         self.handed_task().map_or_else(String::new, |task| {
-            format!(
-                "\nThe task is `{}` — read it with get_task before you start. \
-                     Comment on the task with comment_task when something changes what the \
-                     reader should know: a decision or finding that changes the plan, a question \
-                     (use mention_user only when it is the user's call), a handoff, or the final \
-                     result with its evidence. The board already shows the task's column and \
-                     assignee; do not comment to say you are still working. Then move it to \
-                     In review with move_task when you report Complete.\n",
-                task.task_id
-            )
+            let note = MESSAGE_DELIVERY_HANDED_TASK
+                .replace("{task_id}", &task.task_id)
+                .replace("{get_task}", &tool_name(provider, BuildTool::GetTask))
+                .replace(
+                    "{comment_task}",
+                    &tool_name(provider, BuildTool::CommentTask),
+                )
+                .replace(
+                    "{mention_user}",
+                    &tool_name(provider, BuildTool::MentionUser),
+                )
+                .replace("{move_task}", &tool_name(provider, BuildTool::MoveTask));
+            format!("\n{note}\n")
         })
     }
 
@@ -216,7 +232,10 @@ impl OperationPayload {
             .filter_map(|message| message.viewing_context.as_deref())
             .find_map(crate::thread::ViewingContext::workspace)
             .map_or_else(String::new, |(workspace_id, name)| {
-                format!("\nThe user sent this from workspace \"{name}\" ({workspace_id}).\n")
+                let note = MESSAGE_DELIVERY_WORKSPACE
+                    .replace("{name}", name)
+                    .replace("{workspace_id}", workspace_id);
+                format!("\n{note}\n")
             })
     }
 
@@ -225,11 +244,11 @@ impl OperationPayload {
     /// The first turn of an agent that has no name, and only then: an agent
     /// that was asked and did not do it has decided, and asking
     /// again on every message would be nagging in the user's voice.
-    fn name_note(&self) -> String {
+    fn name_note(&self, provider: AgentProvider) -> String {
         if !self.ask_to_name {
             return String::new();
         }
-        AGENT_NAME_NOTE.to_string()
+        agent_name_note(provider)
     }
 
     /// One line naming the task the user was LOOKING at, when the message
@@ -244,13 +263,15 @@ impl OperationPayload {
     /// It carries no body, because the item does not: a task moves on after
     /// the message is sent, so the agent is told to go and read it rather than
     /// handed a copy that reads as current and is not.
-    fn viewing_task_note(&self) -> String {
+    fn viewing_task_note(&self, provider: AgentProvider) -> String {
         self.viewed_task()
             .map_or_else(String::new, |(number, title, task_id)| {
-                format!(
-                    "\nThe user is looking at task #{number} \"{title}\" (`{task_id}`); read it \
-                     with get_task before answering about it.\n"
-                )
+                let note = MESSAGE_DELIVERY_VIEWED_TASK
+                    .replace("{number}", &number.to_string())
+                    .replace("{title}", title)
+                    .replace("{task_id}", task_id)
+                    .replace("{get_task}", &tool_name(provider, BuildTool::GetTask));
+                format!("\n{note}\n")
             })
     }
 

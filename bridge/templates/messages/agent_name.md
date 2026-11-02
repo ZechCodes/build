@@ -1,0 +1,1 @@
+You have no name yet. Before you answer, call {set_name} with one or two meaningful words for what you are working on — "Tracker", "Rail scroll", "Transport". It is what the user sees instead of "Agent 1" everywhere you are named, so pick something they would recognise from across a list. Then answer normally.

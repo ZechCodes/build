@@ -104,7 +104,7 @@ fn framed_turn(
 ) -> String {
     let mut text = delivered_prompt(prompt, payload, provider);
     if asks_name {
-        text = format!("{}{text}", crate::operation::AGENT_NAME_NOTE);
+        text = format!("{}{text}", crate::operation::agent_name_note(provider));
     }
     let mut asks = say.map(|say| say.attachments.clone()).unwrap_or_default();
     if let Some(payload) = payload {

@@ -214,4 +214,31 @@ mod tests {
             "one reads as one: {body}"
         );
     }
+
+    #[test]
+    fn the_reminder_is_said_exactly() {
+        let open = "Each one needs finishing, or a comment saying where it got to, or — if you \
+                    cannot do it — handing back with a comment saying why, so whoever assigned \
+                    it knows. Move a task to In review when it is ready to be looked at, and \
+                    close it only when it is done with.";
+        assert_eq!(
+            reminder_body(&[task(13, "Task tracking", "in_progress")]),
+            format!(
+                "You reported Complete, but 1 Build task assigned to you is still open. This \
+                 message is from Build, not from the user — nobody is waiting on an answer to \
+                 it.\n\n- #13 Task tracking (In progress)\n\n{open}"
+            )
+        );
+        assert_eq!(
+            reminder_body(&[
+                task(13, "Task tracking", "in_progress"),
+                task(15, "{count}", "in_review"),
+            ]),
+            format!(
+                "You reported Complete, but 2 Build tasks assigned to you are still open. This \
+                 message is from Build, not from the user — nobody is waiting on an answer to \
+                 it.\n\n- #13 Task tracking (In progress)\n- #15 {{count}} (In review)\n\n{open}"
+            )
+        );
+    }
 }

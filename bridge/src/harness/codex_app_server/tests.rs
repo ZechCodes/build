@@ -1726,6 +1726,15 @@ fn successful_recovery_releases_work_queued_during_the_backoff() {
     let [SessionEffect::Request(operation)] = retry.effects.as_slice() else {
         panic!("no recovery request")
     };
+    let PendingOperation::StartTurn { input, .. } = operation else {
+        panic!("the recovery starts a turn: {operation:?}")
+    };
+    assert_eq!(
+        input,
+        "Your last turn failed with this provider error: \"server unavailable\". Please \
+         continue your assigned work from the preserved context. This is Build's single \
+         automatic retry."
+    );
     let retry = retry
         .state
         .transition(

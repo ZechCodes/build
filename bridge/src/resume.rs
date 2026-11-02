@@ -368,4 +368,35 @@ mod tests {
             "{notice}"
         );
     }
+
+    /// Every word of the notice, in each of its shapes.
+    #[test]
+    fn the_notice_is_said_exactly() {
+        let head = "Build restarted at 2026-09-20T03:00:00Z (bridge 0.2.0) and brought your \
+                    session back. This message is from Build, not from the user — nobody is \
+                    waiting on an answer to it.";
+        let tail = "\n\nRead your conversation from where you left off, work out what you had \
+                    reached, and carry on with it. If the work was already finished, say so and \
+                    stop; if you cannot tell what you were doing, ask.";
+        let working = "\n\nYou were part-way through a turn when it went down, so your last \
+                       action may have been cut short: assume nothing you were doing finished, \
+                       and check rather than trust it.";
+        let live = "\n\nYour session was live when it went down, so anything you had not \
+                    finished is unfinished.";
+        let renamed = " Build's `*_issue` tools are now `*_task` (e.g. comment_issue → \
+                       comment_task); old issue-… ids still work.";
+        let at = "2026-09-20T03:00:00Z";
+        assert_eq!(
+            restart_notice(at, "0.2.0", true, false),
+            format!("{head}{working}{tail}")
+        );
+        assert_eq!(
+            restart_notice(at, "0.2.0", false, false),
+            format!("{head}{live}{tail}")
+        );
+        assert_eq!(
+            restart_notice(at, "0.2.0", false, true),
+            format!("{head}{renamed}{live}{tail}")
+        );
+    }
 }

@@ -536,4 +536,15 @@ mod tests {
         assert!(resume.contains("after its reported usage limit"));
         assert!(resume.contains(SAID));
     }
+
+    #[test]
+    fn the_resume_notice_is_said_exactly() {
+        assert_eq!(
+            resume_notice(HARNESS, SAID),
+            "Retrying Claude Code after its reported usage limit. Your last turn stopped \
+             (“You've hit your session limit · resets 6:20pm (America/New_York)”), so it did \
+             not finish: pick up where you left off, starting from what is in your working \
+             tree."
+        );
+    }
 }

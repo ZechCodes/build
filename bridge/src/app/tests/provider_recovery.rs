@@ -165,6 +165,21 @@ impl RecoveryFixture {
             1,
             "{notices:?}"
         );
+        let summary = self.persisted_episode().summary;
+        let number = read["result"]["task"]["number"]
+            .as_u64()
+            .expect("the task's number");
+        let notice = notices
+            .iter()
+            .find(|row| row["data"]["from_build"] == true)
+            .expect("the coordinator's notice");
+        assert_eq!(
+            notice["data"]["body"],
+            format!(
+                "Agent @agent:{} failed while handling #{number}: {}",
+                scope.agent_id, summary
+            )
+        );
     }
 }
 

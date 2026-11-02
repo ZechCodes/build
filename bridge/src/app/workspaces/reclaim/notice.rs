@@ -110,3 +110,99 @@ fn task_column(task: &LinkedTask) -> String {
         .map(|column| column.name.to_string())
         .unwrap_or_else(|| task.status.clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn quiet(
+        name: &str,
+        tasks: Vec<LinkedTask>,
+        branch: Option<&str>,
+        record: LifecycleRecord,
+    ) -> Quiet {
+        Quiet {
+            subject: Subject {
+                workspace_id: format!("ws-{name}"),
+                project_id: "project-1".into(),
+                name: name.into(),
+                root: PathBuf::from("/workspaces").join(name),
+                boundary: None,
+                repositories: branch
+                    .map(|branch| vec![(PathBuf::from("/workspaces/repo"), Some(branch.into()))])
+                    .unwrap_or_default(),
+                holds: Vec::new(),
+                tasks,
+                conversation_activity_ms: None,
+                previous: None,
+            },
+            record,
+            first: true,
+        }
+    }
+
+    /// Every word of the notice: a reclaimable workspace with its task and
+    /// branch, and a locked one with none and nothing measured.
+    #[test]
+    fn the_quiet_workspaces_notice_is_said_exactly() {
+        let finished = quiet(
+            "alpha",
+            vec![LinkedTask {
+                task_id: "task-1".into(),
+                number: 1,
+                title: "Quiet work".into(),
+                status: "done".into(),
+                state: "open".into(),
+            }],
+            Some("task/1"),
+            LifecycleRecord {
+                last_activity_ms: Some(1_758_340_800_000),
+                idle: true,
+                reclaimable: true,
+                behind_commits: 2,
+                size_bytes: Some(1_500_000),
+                ..LifecycleRecord::default()
+            },
+        );
+        let locked = quiet(
+            "beta",
+            Vec::new(),
+            None,
+            LifecycleRecord {
+                idle: true,
+                holds: vec![crate::reclaim::HOLD_LOCKED.into()],
+                dirty_files: 3,
+                unpushed_commits: 1,
+                pruned_bytes: 2_000,
+                ..LifecycleRecord::default()
+            },
+        );
+        let policy = ReclaimPolicy {
+            idle_after: Duration::from_secs(24 * 3600),
+            ..ReclaimPolicy::default()
+        };
+        assert_eq!(
+            quiet_workspaces(&[finished, locked], &policy),
+            "2 workspaces have had no activity for 24 hours. This message is from Build, not \
+             from the user.\n\n\
+             - alpha (ws-alpha): #1 Quiet work (Done). Branch task/1; 0 uncommitted files, 0 \
+             unpushed commits, 2 behind. 1.5 MB on disk. Last activity 2025-09-20T04:00:00Z. \
+             reclaimable: reclaim_workspace removes it.\n\
+             - beta (ws-beta): no linked task. Branch none; 3 uncommitted files, 1 unpushed \
+             commits, 0 behind. unmeasured on disk, 2.0 KB of build output dropped. Last \
+             activity unknown. held: the workspace is locked. The user locked this workspace on \
+             purpose; evaluate whether the user should be reminded about it. Do not reclaim it \
+             or ask the user to unlock it by default.\n\n\
+             Only message the user if necessary, such as a decision only they can make. \
+             Otherwise merge, reclaim, or leave the workspace without posting to the user. If a \
+             user decision is necessary, ask one question on the linked task and leave the \
+             workspace alone.\n\n\
+             For each unlocked workspace, decide: merge it (branch reviewed and green: merge to \
+             main, then reclaim_workspace), delete it (abandoned or superseded: \
+             delete_workspace), or leave it. Never delete a workspace with uncommitted or \
+             unpushed work without asking the user first."
+        );
+    }
+}

@@ -12,6 +12,9 @@ use jiff::Timestamp;
 use std::fmt;
 use std::time::Duration;
 
+/// The shortest the service waits for the digest.
+const MIN_WAIT: Duration = Duration::from_secs(60);
+
 /// 09:00 on the device's clock.
 pub const DEFAULT_DIGEST_AT: DigestTime = DigestTime { hour: 9, minute: 0 };
 
@@ -76,7 +79,10 @@ impl DigestSchedule {
     }
 
     /// How long from `now_ms` until the digest is next due: today's time if
-    /// it is still ahead, else tomorrow's.
+    /// it is still ahead, else tomorrow's. A time the clocks repeat counts
+    /// from its first showing, unless that has passed. Never less than a
+    /// minute, so a clock that cannot be read never has the service sweep
+    /// back to back.
     pub fn until_next(&self, now_ms: i64) -> Duration {
         let Some(local) = self.local(now_ms) else {
             return Duration::from_secs(24 * 60 * 60);
@@ -87,11 +93,15 @@ impl DigestSchedule {
         } else {
             self.at.on(local.date().tomorrow().unwrap_or(local.date()))
         };
-        let next_ms = next
-            .to_zoned(self.zone.clone())
-            .map(|zoned| zoned.timestamp().as_millisecond())
+        let showings = self.zone.to_ambiguous_timestamp(next);
+        let next_ms = [showings.clone().compatible(), showings.later()]
+            .into_iter()
+            .filter_map(Result::ok)
+            .map(|at| at.as_millisecond())
+            .find(|at| *at > now_ms)
             .unwrap_or(now_ms);
-        Duration::from_millis(u64::try_from(next_ms.saturating_sub(now_ms)).unwrap_or(0))
+        let wait = Duration::from_millis(u64::try_from(next_ms - now_ms).unwrap_or(0));
+        wait.max(MIN_WAIT)
     }
 
     fn local(&self, now_ms: i64) -> Option<DateTime> {

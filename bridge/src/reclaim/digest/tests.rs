@@ -105,3 +105,27 @@ fn a_digest_time_skipped_by_a_clock_change_still_comes_that_day() {
     let after = before + i64::try_from(waited.as_millis()).unwrap();
     assert_eq!(schedule.due_day(after), Some(jiff::civil::date(2026, 3, 8)));
 }
+
+/// On the night the clocks go back, a time in the repeated hour has passed
+/// once already: the wait runs to its second showing, never to nothing, so
+/// the service does not sweep back to back.
+#[test]
+fn a_digest_time_repeated_by_a_clock_change_is_waited_for_again() {
+    let zone = TimeZone::get("America/New_York").unwrap();
+    let schedule = DigestSchedule {
+        at: DigestTime::new(1, 45).unwrap(),
+        zone: zone.clone(),
+    };
+    // 2026-11-01: New York repeats 01:00–02:00. 01:30 the second time is EST.
+    let second_half_past_one = jiff::civil::date(2026, 11, 1)
+        .at(1, 30, 0, 0)
+        .to_zoned(zone)
+        .unwrap()
+        .timestamp()
+        .as_millisecond()
+        + HOUR_MS;
+    assert_eq!(
+        schedule.until_next(second_half_past_one),
+        Duration::from_secs(15 * 60)
+    );
+}

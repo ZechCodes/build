@@ -44,9 +44,9 @@ use std::time::Duration;
 /// before the project agent hears about it. A user only looking at it is not
 /// activity (Zech, #135).
 pub const DEFAULT_IDLE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
-/// Locked workspaces are intentional: remind the project agent at most weekly,
-/// even when activity has happened since the last notice.
-const LOCKED_NOTICE_INTERVAL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// A quiet workspace's size is walked again when the last walk is this old,
+/// so each daily digest reads a size no older than a day.
+const SIZE_FOR_DIGEST_MAX_AGE_MS: i64 = 24 * 60 * 60 * 1000;
 /// How often the service measures every workspace.
 pub const DEFAULT_SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 /// How long after startup the first sweep waits, so it does not compete with
@@ -104,6 +104,8 @@ pub struct ReclaimPolicy {
     pub prune: bool,
     /// What the environment set, which the device's settings do not move.
     pub pinned_by_env: PinnedByEnv,
+    /// When each project agent hears about its quiet workspaces (#958).
+    pub digest: DigestSchedule,
 }
 
 /// Which of the device's lifecycle settings an environment variable set, and
@@ -126,6 +128,9 @@ pub struct ReclaimSettings {
     /// `workspace_prune`: whether a quiet, unheld workspace loses its build
     /// output.
     pub prune: Option<bool>,
+    /// `workspace_idle_digest_at`: the time of day the project agents hear
+    /// about their quiet workspaces (#958).
+    pub idle_digest_at: Option<DigestTime>,
 }
 
 impl Default for ReclaimPolicy {
@@ -140,6 +145,7 @@ impl Default for ReclaimPolicy {
             git: GitProbe::bridge(),
             prune: false,
             pinned_by_env: PinnedByEnv::default(),
+            digest: DigestSchedule::default(),
         }
     }
 }
@@ -182,6 +188,9 @@ impl ReclaimPolicy {
         }
         if let (false, Some(prune)) = (self.pinned_by_env.prune, settings.prune) {
             policy.prune = prune;
+        }
+        if let Some(at) = settings.idle_digest_at {
+            policy.digest.at = at;
         }
         policy
     }
@@ -273,32 +282,21 @@ pub struct LifecycleRecord {
 }
 
 impl LifecycleRecord {
-    /// Whether the project agent should hear about this workspace now.
-    ///
-    /// An idle workspace is announced once when it goes quiet. Unlocked
-    /// workspaces repeat once per idle period; activity after the last notice
-    /// starts over, so going quiet again is news straight away. Locked
-    /// workspaces repeat only after seven days, even after intervening activity.
-    pub fn notice_due(&self, now_ms: i64, policy: &ReclaimPolicy) -> NoticeDue {
-        if !self.idle {
-            return NoticeDue::No;
-        }
-        let locked = self.holds.iter().any(|hold| hold == HOLD_LOCKED);
-        let interval_ms = if locked {
-            LOCKED_NOTICE_INTERVAL_MS
-        } else {
-            policy.idle_after_ms()
-        };
-        match self.noticed_at_ms {
-            Some(noticed) if locked || self.last_activity_ms.is_some_and(|at| at <= noticed) => {
-                if now_ms.saturating_sub(noticed) >= interval_ms {
-                    NoticeDue::Again
-                } else {
-                    NoticeDue::No
-                }
-            }
-            _ => NoticeDue::First,
-        }
+    /// Whether a digest has already listed this workspace since it last went
+    /// quiet. The first digest that lists it is recorded on its tasks;
+    /// activity after that starts a new quiet stretch.
+    pub fn listed_since_quiet(&self) -> bool {
+        self.noticed_at_ms
+            .is_some_and(|noticed| self.last_activity_ms.is_some_and(|at| at <= noticed))
+    }
+
+    /// Whether the size on disk is worth walking for again: never measured,
+    /// or measured before the last day's digest could have read it.
+    fn size_is_stale(&self, now_ms: i64) -> bool {
+        self.size_bytes.is_none()
+            || self
+                .size_measured_at_ms
+                .is_none_or(|at| now_ms.saturating_sub(at) >= SIZE_FOR_DIGEST_MAX_AGE_MS)
     }
 }
 
@@ -333,17 +331,6 @@ impl LifecycleRecord {
         self.holds.sort_by_key(|hold| hold_order(hold));
         self.reclaimable = self.holds.is_empty();
     }
-}
-
-/// See [`LifecycleRecord::notice_due`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NoticeDue {
-    No,
-    /// The workspace just went quiet. The linked tasks' timelines record it.
-    First,
-    /// Quiet again after the notice interval: seven days when locked,
-    /// otherwise a whole idle period.
-    Again,
 }
 
 /// What the service reads of one workspace under the app mutex, so the slow
@@ -432,8 +419,7 @@ impl Subject {
         record.reclaimable = record.holds.is_empty();
         // Sizing walks the whole tree, build output included, so it runs when
         // the number is about to be read rather than every sweep.
-        let wants_size = record.idle
-            && (record.size_bytes.is_none() || record.notice_due(now_ms, policy) != NoticeDue::No);
+        let wants_size = record.idle && record.size_is_stale(now_ms);
         let sized = !wants_size || self.resize(&mut record, budget, now_ms);
         if git.unfinished
             || changed.is_err()

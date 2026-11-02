@@ -28,6 +28,7 @@
 //! same final deadline bounds the child, checks and moves. The reservation
 //! ends before trash is emptied off the mutex.
 
+mod digest;
 mod explicit;
 mod notice;
 
@@ -35,13 +36,13 @@ use crate::app::{off_the_workers, AppState, DeliveryRunner};
 use crate::reclaim::artifacts::{self, Artifact};
 use crate::reclaim::containment::WorkspaceBoundary;
 use crate::reclaim::{
-    Budget, IndexSnapshot, LifecycleRecord, LinkedTask, NoticeDue, ReclaimPolicy, Subject,
+    Budget, IndexSnapshot, LifecycleRecord, LinkedTask, ReclaimPolicy, Subject,
     HOLD_LOCKED,
 };
 use crate::tracker::{Actor, Task, TaskEventKind, TaskState};
 use crate::workspace::{Workspace, WorkspaceStatus};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -105,7 +106,7 @@ pub(in crate::app) enum PrunePhase {
 struct Quiet {
     subject: Subject,
     record: LifecycleRecord,
-    /// It has just gone quiet, rather than stayed quiet since the last notice.
+    /// No digest has listed it since it went quiet.
     first: bool,
 }
 
@@ -183,7 +184,8 @@ impl AppState {
         })
     }
     /// Run the service for the life of the daemon: the first sweep a little
-    /// after startup, then one every `sweep_every`, and one soon after a nudge.
+    /// after startup, then one every `sweep_every`, one at the daily digest's
+    /// time, and one soon after a nudge.
     ///
     /// No runtime worker waits on the app mutex here (#131): the policy is
     /// set and the handles read on the blocking pool, each sweep runs there,
@@ -217,12 +219,19 @@ impl AppState {
                     // Settings takes effect on the next sweep.
                     let policy_now = swept.lock().unwrap().reclaim_policy_now();
                     AppState::sweep_workspaces(&swept, &policy_now, now_ms());
-                    // The notices the sweep queued.
+                    // The digests the sweep queued.
                     AppState::deliver_after_sweep(&swept);
+                    policy_now.digest.until_next(now_ms())
                 });
-                if let Err(joined) = sweep.await {
-                    eprintln!("workspace reclaim: sweep failed: {joined}");
-                }
+                // The next sweep comes no later than the digest's time, so
+                // the digest goes out on time whatever the sweep interval.
+                let next_sweep = match sweep.await {
+                    Ok(until_digest) => policy.sweep_every.min(until_digest),
+                    Err(joined) => {
+                        eprintln!("workspace reclaim: sweep failed: {joined}");
+                        policy.sweep_every
+                    }
+                };
                 #[cfg(test)]
                 let after_check = if let Some(probe) = stop_probe.take() {
                     let _ = probe.before.send(());
@@ -240,7 +249,7 @@ impl AppState {
                     return;
                 }
                 tokio::select! {
-                    _ = tokio::time::sleep(policy.sweep_every) => {}
+                    _ = tokio::time::sleep(next_sweep) => {}
                     _ = nudge.notified() => tokio::time::sleep(NUDGE_SETTLE).await,
                 }
             }
@@ -504,7 +513,7 @@ impl AppState {
                 .load_workspace_lifecycle()
                 .map_err(|error| format!("workspace lifecycle restore: {error}"))?;
         }
-        Ok(())
+        self.restore_idle_digests_sent()
     }
 
     // ------------------------------------------------------- reservation ---
@@ -783,7 +792,7 @@ impl AppState {
     }
 
     /// Keep what was measured, record on the linked tasks what they should
-    /// hear, and tell each project agent about its quiet workspaces. A
+    /// hear, and send each project agent its daily digest once it is due. A
     /// workspace a stopped sweep never reached keeps its last verdict.
     pub(in crate::app) fn settle_workspace_sweep(
         &mut self,
@@ -794,7 +803,6 @@ impl AppState {
         let workspaces = &self.workspaces;
         self.workspace_lifecycle
             .retain(|workspace_id, _| workspaces.get(workspace_id).is_some());
-        let mut quiet: BTreeMap<String, Vec<Quiet>> = BTreeMap::new();
         for (subject, mut record) in measured {
             // Removed while it was being measured: nothing left to say.
             let Some(workspace) = self.workspaces.get(&subject.workspace_id) else {
@@ -816,80 +824,17 @@ impl AppState {
                     policy,
                 );
             }
-            let due = record.notice_due(now_ms, policy);
-            if due != NoticeDue::No {
-                quiet
-                    .entry(subject.project_id.clone())
-                    .or_default()
-                    .push(Quiet {
-                        subject: subject.clone(),
-                        record: record.clone(),
-                        first: due == NoticeDue::First,
-                    });
-            }
             self.workspace_lifecycle
                 .insert(subject.workspace_id, record);
         }
-        for (project_id, workspaces) in quiet {
-            self.announce_quiet_workspaces(&project_id, &workspaces, now_ms, policy);
-        }
+        self.send_idle_digests(now_ms, policy);
         self.persist_workspace_lifecycle();
         self.note_board_lists_changed(crate::changes::BoardLists::WORKSPACES);
     }
 
-    /// One notice for the project agent naming every quiet workspace in its
-    /// project. Only a notice that landed counts as told: one that failed is
-    /// tried again next sweep.
-    fn announce_quiet_workspaces(
-        &mut self,
-        project_id: &str,
-        workspaces: &[Quiet],
-        now_ms: i64,
-        policy: &ReclaimPolicy,
-    ) {
-        let body = notice::quiet_workspaces(workspaces, policy);
-        if let Err(error) = self.tell_project_agent(project_id, body) {
-            eprintln!(
-                "workspace reclaim: tell project {project_id} about quiet workspaces: {error}"
-            );
-            return;
-        }
-        for quiet in workspaces {
-            // A workspace that has just gone quiet is recorded on its tasks
-            // once, when the project agent has actually been told.
-            if quiet.first {
-                self.note_on_linked_tasks(
-                    &quiet.subject,
-                    TaskEventKind::WorkspaceIdle,
-                    &quiet.record,
-                    policy,
-                );
-            }
-            if let Some(record) = self
-                .workspace_lifecycle
-                .get_mut(&quiet.subject.workspace_id)
-            {
-                record.noticed_at_ms = Some(now_ms);
-            }
-        }
-    }
-
-    fn tell_project_agent(&mut self, project_id: &str, body: String) -> Result<(), String> {
-        let conversation =
-            self.project_ensure_conversation(&json!({ "project_id": project_id }))?;
-        let entity_id = conversation["run_id"]
-            .as_str()
-            .ok_or("the project conversation has no owner")?
-            .to_string();
-        let agent_id = self.ensure_primary_agent(&entity_id)?;
-        self.post_from_build_and_wake(&entity_id, &agent_id, notice::PHASE, |thread, now| {
-            thread.post_user_from_build(body, now);
-        })
-    }
-
     /// A timeline entry by Build on every task linking the workspace. Written
-    /// without waking the tasks' watchers: the project agent gets one notice
-    /// for the whole sweep instead.
+    /// without waking the tasks' watchers: the project agent gets one digest
+    /// for the whole project instead.
     fn note_on_linked_tasks(
         &mut self,
         subject: &Subject,

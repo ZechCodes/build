@@ -54,6 +54,9 @@ impl SettingsValues {
                     .workspace_idle_secs
                     .or(app.reclaim_settings.idle_after_secs),
                 prune: patch.workspace_prune.or(app.reclaim_settings.prune),
+                idle_digest_at: patch
+                    .workspace_idle_digest_at
+                    .or(app.reclaim_settings.idle_digest_at),
             },
         })
     }
@@ -77,6 +80,10 @@ impl SettingsValues {
         config["compact_above_tokens"] = json!(self.compact_above_tokens);
         config["workspace_idle_secs"] = json!(self.reclaim_settings.idle_after_secs);
         config["workspace_prune"] = json!(self.reclaim_settings.prune);
+        config["workspace_idle_digest_at"] = json!(self
+            .reclaim_settings
+            .idle_digest_at
+            .map(|at| at.to_string()));
         config
     }
 

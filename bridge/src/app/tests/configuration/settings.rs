@@ -758,6 +758,61 @@ fn workspace_lifecycle_settings_default_set_and_survive_a_reload() {
     assert_eq!(settings["workspace_prune"], true, "{settings:?}");
 }
 
+/// The idle-workspace digest's time of day (#958): 09:00 until the device
+/// says otherwise, `HH:MM` only, and what it says outlives a restart and is
+/// when the reclaim service sends the digest.
+#[test]
+fn the_idle_digest_time_defaults_sets_and_survives_a_reload() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.json");
+    let open = || {
+        AppState::new_unrooted(tmp.path().join("wt"), "main", true, "/tmp/test-mcp.sock")
+            .with_config(&cfg)
+            .unwrap()
+    };
+    {
+        let mut state = open();
+        let settings = state.handle(req("settings.get", json!({})))["result"].clone();
+        assert_eq!(settings["workspace_idle_digest_at"], "09:00", "{settings:?}");
+
+        for refused in ["9:00", "24:00", "noon", ""] {
+            let answer = state.handle(req(
+                "settings.set",
+                json!({ "workspace_idle_digest_at": refused }),
+            ));
+            assert_eq!(answer["ok"], false, "{refused:?} → {answer:?}");
+            assert_eq!(answer["error_code"], "invalid_params", "{answer:?}");
+            assert_eq!(
+                answer["error"],
+                "workspace_idle_digest_at must be a time of day like \"09:00\"."
+            );
+        }
+        let refused_number = state.handle(req(
+            "settings.set",
+            json!({ "workspace_idle_digest_at": 900 }),
+        ));
+        assert_eq!(refused_number["ok"], false, "{refused_number:?}");
+
+        let set = state.handle(req(
+            "settings.set",
+            json!({ "workspace_idle_digest_at": "17:30" }),
+        ));
+        assert_eq!(set["ok"], true, "{set:?}");
+        assert_eq!(set["result"]["workspace_idle_digest_at"], "17:30");
+        assert_eq!(
+            state.reclaim_policy_now().digest.at,
+            crate::reclaim::DigestTime::new(17, 30).unwrap()
+        );
+    }
+    let mut reloaded = open();
+    let settings = reloaded.handle(req("settings.get", json!({})))["result"].clone();
+    assert_eq!(settings["workspace_idle_digest_at"], "17:30", "{settings:?}");
+    assert_eq!(
+        reloaded.reclaim_policy_now().digest.at,
+        crate::reclaim::DigestTime::new(17, 30).unwrap()
+    );
+}
+
 /// `BRIDGE_WORKSPACE_IDLE_SECS` and `BRIDGE_WORKSPACE_PRUNE` stay overrides:
 /// a set variable is what the machine does and what it reports, the answer
 /// names the setting it pins, and a set still records the device's choice

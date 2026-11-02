@@ -104,6 +104,7 @@ pub use waiting_on::{DependencyDigest, DependencySummary, DependentsPage, Waitin
 mod terminal_attention;
 mod user_session;
 mod workspace_lifecycle;
+pub use workspace_lifecycle::IdleDigestsSent;
 
 #[cfg(test)]
 pub use conversations::items_decoded;

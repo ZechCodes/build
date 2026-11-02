@@ -53,6 +53,7 @@
     "compact_above_tokens": 200000,
     "workspace_idle_secs": 86400,
     "workspace_prune": false,
+    "workspace_idle_digest_at": "09:00",
     "workspace_pinned": [
       "workspace_prune"
     ],
@@ -204,6 +205,7 @@
         "compact_above_tokens": 200000,
         "workspace_idle_secs": 86400,
         "workspace_prune": false,
+        "workspace_idle_digest_at": "09:00",
         "workspace_pinned": [
           "workspace_prune"
         ],

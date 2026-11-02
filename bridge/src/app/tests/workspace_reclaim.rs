@@ -4,17 +4,43 @@
 use super::project_agent::{rooted, workspace};
 use super::tracker::{filed, tracked_with_origin};
 use super::*;
-use crate::reclaim::ReclaimPolicy;
+use crate::reclaim::{DigestSchedule, DigestTime, ReclaimPolicy};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+const HOUR_MS: i64 = 60 * 60 * 1000;
+const DAY_MS: i64 = 24 * HOUR_MS;
+
+/// The daily digest at `hour`:00 UTC, whatever the machine's zone (#958).
+fn digest_at(hour: i8) -> DigestSchedule {
+    DigestSchedule {
+        at: DigestTime::new(hour, 0).unwrap(),
+        zone: jiff::tz::TimeZone::UTC,
+    }
+}
+
+/// The default policy with its digest due all day, at midnight UTC: for
+/// tests about something other than when the digest goes out.
+pub(super) fn daily() -> ReclaimPolicy {
+    ReclaimPolicy {
+        digest: digest_at(0),
+        ..ReclaimPolicy::default()
+    }
+}
+
 /// Everything is idle at once: the threshold is zero. Pruning stays off, as
-/// it is unless `BRIDGE_WORKSPACE_PRUNE` is set.
+/// it is unless `BRIDGE_WORKSPACE_PRUNE` is set. The digest is due all day.
 pub(super) fn impatient() -> ReclaimPolicy {
     ReclaimPolicy {
         idle_after: std::time::Duration::ZERO,
-        ..ReclaimPolicy::default()
+        ..daily()
     }
+}
+
+/// Midnight UTC two days from now: far enough ahead that a workspace made
+/// now is past the default 24-hour threshold all that day.
+fn quiet_day() -> i64 {
+    (now_ms() / DAY_MS + 2) * DAY_MS
 }
 
 /// [`impatient`], with pruning switched on.
@@ -235,14 +261,16 @@ fn a_quiet_workspace_is_announced_to_the_project_agent_and_on_its_task() {
         "the threshold it went quiet by, which Settings can move (#167)"
     );
 
-    // The next sweep inside the idle period says nothing more.
-    AppState::sweep_workspaces(&state, &ReclaimPolicy::default(), now_ms());
+    // The next sweep the same day says nothing more.
+    AppState::sweep_workspaces(&state, &daily(), now_ms());
     assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
     assert_eq!(timeline_kinds(&state, &task).len(), 1);
 }
 
+/// A locked workspace is listed every day, in its own group with what else
+/// holds it, beside its unlocked sibling (#958).
 #[test]
-fn locked_workspaces_are_omitted_from_daily_notices_until_their_week_is_due() {
+fn locked_workspaces_are_listed_daily_in_their_own_group() {
     let (_tmp, state, project_id, locked, _task) = linked_workspace();
     let unlocked = workspace(&mut state.lock().unwrap(), &project_id, "unlocked");
     let reply = call(
@@ -251,48 +279,36 @@ fn locked_workspaces_are_omitted_from_daily_notices_until_their_week_is_due() {
         json!({"workspace_id": locked, "locked": true}),
     );
     assert_eq!(reply["ok"], true, "{reply:?}");
-    let day = 24 * 60 * 60 * 1000;
-    let start = now_ms() + 2 * day;
-    let policy = ReclaimPolicy::default();
-    AppState::sweep_workspaces(&state, &policy, start);
-    let notices = project_agent_notices(&state, &project_id);
-    assert_eq!(notices.len(), 1, "{notices:?}");
-    assert_says_everything(
-        &notices[0],
-        &[
-            &locked,
-            &unlocked,
-            "Only message the user if necessary",
-            "The user locked this workspace on purpose",
-            "evaluate whether the user should be reminded",
-            "Do not reclaim it or ask the user to unlock it by default",
-        ],
-    );
-
-    for days in 1..7 {
-        AppState::sweep_workspaces(&state, &policy, start + days * day);
+    let start = quiet_day();
+    for day in 0..3 {
+        AppState::sweep_workspaces(&state, &daily(), start + day * DAY_MS);
         let notices = project_agent_notices(&state, &project_id);
-        assert_eq!(notices.len(), (days + 1) as usize, "{notices:?}");
+        assert_eq!(notices.len(), (day + 1) as usize, "{notices:?}");
         let latest = notices.last().unwrap();
-        assert!(latest.contains(&unlocked), "{latest}");
-        assert!(!latest.contains(&locked), "{latest}");
-        assert_eq!(lifecycle(&state, &locked)["noticed_at_ms"], start);
+        let (open, held) = latest
+            .split_once("Locked by the user, so kept on purpose.")
+            .unwrap_or_else(|| panic!("no locked group in {latest}"));
+        assert!(open.contains(&unlocked) && !open.contains(&locked), "{latest}");
+        assert_says_everything(
+            held,
+            &[
+                &locked,
+                "Do not reclaim these or ask the user to unlock them",
+                "evaluate whether the user should be reminded",
+                "kept because the user locked it; also held: a task linked to it is not Done",
+            ],
+        );
+        assert!(!held.contains(&unlocked), "{latest}");
         assert_eq!(
-            lifecycle(&state, &unlocked)["noticed_at_ms"],
-            start + days * day
+            lifecycle(&state, &locked)["noticed_at_ms"],
+            start + day * DAY_MS
         );
     }
-    AppState::sweep_workspaces(&state, &policy, start + 7 * day - 1);
-    assert_eq!(project_agent_notices(&state, &project_id).len(), 7);
-    AppState::sweep_workspaces(&state, &policy, start + 7 * day);
-    let notices = project_agent_notices(&state, &project_id);
-    assert_eq!(notices.len(), 8, "{notices:?}");
-    assert_says_everything(notices.last().unwrap(), &[&locked, &unlocked]);
-    assert_eq!(lifecycle(&state, &locked)["noticed_at_ms"], start + 7 * day);
 }
 
+/// Settle a sweep whose measurements were taken before the lock changed.
 fn settle_after_lock_changes(state: &Arc<Mutex<AppState>>, ws: &str, locked: bool, at: i64) {
-    let policy = ReclaimPolicy::default();
+    let policy = daily();
     let subjects = state.lock().unwrap().reclaim_subjects();
     let measured = subjects
         .into_iter()
@@ -313,51 +329,35 @@ fn settle_after_lock_changes(state: &Arc<Mutex<AppState>>, ws: &str, locked: boo
         .settle_workspace_sweep(measured, at, &policy);
 }
 
+/// A lock that lands while the sweep measures puts the workspace in the
+/// locked group of that day's digest.
 #[test]
-fn locking_during_measurement_omits_the_workspace_and_keeps_due_sibling_notices() {
+fn locking_during_measurement_lists_the_workspace_as_locked() {
     let (_tmp, state, project_id, ws, _task) = linked_workspace();
     let sibling = workspace(&mut state.lock().unwrap(), &project_id, "sibling");
-    let day = 24 * 60 * 60 * 1000;
-    let start = now_ms() + 2 * day;
-    AppState::sweep_workspaces(&state, &ReclaimPolicy::default(), start);
+    let start = quiet_day();
+    AppState::sweep_workspaces(&state, &daily(), start);
 
-    settle_after_lock_changes(&state, &ws, true, start + day);
+    settle_after_lock_changes(&state, &ws, true, start + DAY_MS);
 
     let notices = project_agent_notices(&state, &project_id);
     assert_eq!(notices.len(), 2, "{notices:?}");
     let latest = notices.last().unwrap();
-    assert!(latest.contains(&sibling), "{latest}");
-    assert!(!latest.contains(&ws), "{latest}");
+    let (open, held) = latest
+        .split_once("Locked by the user")
+        .unwrap_or_else(|| panic!("no locked group in {latest}"));
+    assert!(open.contains(&sibling) && !open.contains(&ws), "{latest}");
+    assert!(held.contains(&ws), "{latest}");
     let record = lifecycle(&state, &ws);
-    assert_eq!(record["noticed_at_ms"], start);
+    assert_eq!(record["noticed_at_ms"], start + DAY_MS);
     assert_eq!(record["holds"], json!(["locked", "task_open"]));
     assert_eq!(record["reclaimable"], false);
 }
 
+/// An unlock that lands while the sweep measures takes the workspace out of
+/// the locked group.
 #[test]
-fn locking_before_the_first_notice_uses_current_lock_wording() {
-    let (_tmp, state, project_id, ws, _task) = linked_workspace();
-    let at = now_ms() + 2 * 24 * 60 * 60 * 1000;
-
-    settle_after_lock_changes(&state, &ws, true, at);
-
-    let notices = project_agent_notices(&state, &project_id);
-    assert_eq!(notices.len(), 1, "{notices:?}");
-    assert_says_everything(
-        &notices[0],
-        &[
-            "The user locked this workspace on purpose",
-            "evaluate whether the user should be reminded",
-        ],
-    );
-    assert_eq!(
-        lifecycle(&state, &ws)["holds"],
-        json!(["locked", "task_open"])
-    );
-}
-
-#[test]
-fn unlocking_during_measurement_restores_daily_notices_and_clears_lock_wording() {
+fn unlocking_during_measurement_lists_the_workspace_as_unlocked() {
     let (_tmp, state, project_id, ws, _task) = linked_workspace();
     let reply = call(
         &state,
@@ -365,24 +365,160 @@ fn unlocking_during_measurement_restores_daily_notices_and_clears_lock_wording()
         json!({"workspace_id": ws, "locked": true}),
     );
     assert_eq!(reply["ok"], true, "{reply:?}");
-    let day = 24 * 60 * 60 * 1000;
-    let start = now_ms() + 2 * day;
-    AppState::sweep_workspaces(&state, &ReclaimPolicy::default(), start);
+    let start = quiet_day();
+    AppState::sweep_workspaces(&state, &daily(), start);
 
-    settle_after_lock_changes(&state, &ws, false, start + day);
+    settle_after_lock_changes(&state, &ws, false, start + DAY_MS);
 
     let notices = project_agent_notices(&state, &project_id);
     assert_eq!(notices.len(), 2, "{notices:?}");
+    assert!(notices[0].contains("Locked by the user"), "{}", notices[0]);
     let latest = notices.last().unwrap();
     assert!(latest.contains(&ws), "{latest}");
-    assert!(!latest.contains("locked this workspace"), "{latest}");
+    assert!(!latest.contains("Locked by the user"), "{latest}");
     let record = lifecycle(&state, &ws);
-    assert_eq!(record["noticed_at_ms"], start + day);
+    assert_eq!(record["noticed_at_ms"], start + DAY_MS);
     assert_eq!(record["holds"], json!(["task_open"]));
     assert_eq!(
         record["reclaimable"], false,
         "the unrelated task hold stays"
     );
+}
+
+// --------------------------------------------------- the daily digest ---
+// #958: each sweep is given its time, and the digest's time is 09:00 UTC.
+
+fn at_nine() -> ReclaimPolicy {
+    ReclaimPolicy {
+        digest: digest_at(9),
+        ..ReclaimPolicy::default()
+    }
+}
+
+/// A workspace going quiet before the day's scan time sends nothing, and
+/// writes nothing on its task, however many sweeps see it.
+#[test]
+fn a_workspace_going_quiet_sends_nothing_by_itself() {
+    let (_tmp, state, project_id, ws, task) = linked_workspace();
+    let day = quiet_day();
+    for at in [day + 7 * HOUR_MS, day + 8 * HOUR_MS, day + 9 * HOUR_MS - 1] {
+        AppState::sweep_workspaces(&state, &at_nine(), at);
+    }
+    assert_eq!(lifecycle(&state, &ws)["idle"], true);
+    assert_eq!(project_agent_notices(&state, &project_id), Vec::<String>::new());
+    assert_eq!(timeline_kinds(&state, &task), Vec::<Value>::new());
+    assert_eq!(lifecycle(&state, &ws)["noticed_at_ms"], Value::Null);
+}
+
+/// The sweep at the scan time sends exactly one digest, and the day's later
+/// sweeps send no other. The next day's lists the same workspace again, and
+/// its task hears about it once.
+#[test]
+fn the_scan_at_its_time_sends_exactly_one_digest_a_day() {
+    let (_tmp, state, project_id, ws, task) = linked_workspace();
+    let day = quiet_day();
+    AppState::sweep_workspaces(&state, &at_nine(), day + 9 * HOUR_MS);
+    let notices = project_agent_notices(&state, &project_id);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_says_everything(
+        &notices[0],
+        &["1 workspace has had no activity for 24 hours or more", &ws],
+    );
+    for at in [day + 10 * HOUR_MS, day + 23 * HOUR_MS, day + DAY_MS + 8 * HOUR_MS] {
+        AppState::sweep_workspaces(&state, &at_nine(), at);
+        assert_eq!(project_agent_notices(&state, &project_id).len(), 1, "{at}");
+    }
+    AppState::sweep_workspaces(&state, &at_nine(), day + DAY_MS + 9 * HOUR_MS);
+    let notices = project_agent_notices(&state, &project_id);
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert!(notices[1].contains(&ws), "listed again: {}", notices[1]);
+    let entries = timeline_kinds(&state, &task);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0]["kind"], "workspace_idle");
+}
+
+/// The digest's turn is sent as the idle-workspaces message (#957), not as
+/// a plain delivery of the thread.
+#[test]
+fn the_digest_is_sent_as_an_idle_workspaces_message() {
+    let (_tmp, state, _project_id, _ws, _task) = linked_workspace();
+    AppState::sweep_workspaces(&state, &impatient(), now_ms());
+    let mut app = state.lock().unwrap();
+    app.delivery_queue.lapse_settle_windows();
+    let queued = app.delivery_queue.take_ready(|_| false);
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].phase, "workspace_idle");
+    assert_eq!(
+        queued[0].say.as_ref().and_then(|say| say.kind),
+        Some(crate::agent_message::MessageKind::IdleWorkspaces)
+    );
+}
+
+/// A day with nothing quiet at its scan sends nothing, and a workspace that
+/// goes quiet later that day waits for the next day's digest.
+#[test]
+fn nothing_is_sent_when_nothing_is_quiet() {
+    let (_tmp, state, project_id, ws, _task) = linked_workspace();
+    let day = quiet_day();
+    let patient = ReclaimPolicy {
+        idle_after: std::time::Duration::from_secs(1000 * 24 * 3600),
+        ..at_nine()
+    };
+    AppState::sweep_workspaces(&state, &patient, day + 9 * HOUR_MS);
+    assert_eq!(lifecycle(&state, &ws)["idle"], false);
+    assert_eq!(project_agent_notices(&state, &project_id), Vec::<String>::new());
+
+    AppState::sweep_workspaces(&state, &at_nine(), day + 15 * HOUR_MS);
+    assert_eq!(lifecycle(&state, &ws)["idle"], true);
+    assert_eq!(
+        project_agent_notices(&state, &project_id),
+        Vec::<String>::new(),
+        "crossing after the scan waits for tomorrow"
+    );
+
+    AppState::sweep_workspaces(&state, &at_nine(), day + DAY_MS + 9 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
+}
+
+/// A bridge restarted after the day's digest went out does not send it
+/// again: the day it was sent is in the store.
+#[test]
+fn a_restart_does_not_send_the_digest_twice() {
+    let (tmp, state, project_id, _ws, _task) = linked_workspace();
+    let day = quiet_day();
+    AppState::sweep_workspaces(&state, &at_nine(), day + 9 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
+    drop(state);
+
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let reopened = rooted(&state_root)
+        .with_task_store(state_root.join("store"))
+        .expect("the store opens");
+    let reopened = Arc::new(Mutex::new(reopened));
+    AppState::sweep_workspaces(&reopened, &at_nine(), day + 10 * HOUR_MS);
+    assert_eq!(project_agent_notices(&reopened, &project_id).len(), 1);
+    AppState::sweep_workspaces(&reopened, &at_nine(), day + DAY_MS + 9 * HOUR_MS);
+    assert_eq!(project_agent_notices(&reopened, &project_id).len(), 2);
+}
+
+/// A bridge that was down at the scan time sends the day's digest at its
+/// first sweep after, once. A day missed entirely is not made up the next
+/// morning before that day's time.
+#[test]
+fn a_missed_scan_is_caught_up_once() {
+    let (_tmp, state, project_id, _ws, _task) = linked_workspace();
+    let day = quiet_day();
+    AppState::sweep_workspaces(&state, &at_nine(), day + 14 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
+    AppState::sweep_workspaces(&state, &at_nine(), day + 15 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
+
+    // The next day passes with the bridge down; the morning after, its
+    // first sweep before 09:00 owes nothing.
+    AppState::sweep_workspaces(&state, &at_nine(), day + 2 * DAY_MS + 8 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
+    AppState::sweep_workspaces(&state, &at_nine(), day + 2 * DAY_MS + 9 * HOUR_MS);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 2);
 }
 
 /// Once its task is Done and its work is pushed, a quiet workspace is

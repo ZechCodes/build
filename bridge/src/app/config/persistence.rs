@@ -41,6 +41,7 @@ impl AppState {
             // Absent until the device chooses: `null` leaves the default.
             "workspace_idle_secs": self.reclaim_settings.idle_after_secs,
             "workspace_prune": self.reclaim_settings.prune,
+            "workspace_idle_digest_at": self.reclaim_settings.idle_digest_at.map(|at| at.to_string()),
             "agent_modes": self.agent_modes,
             "isolation": isolation,
             "router_model": self.router_choice,

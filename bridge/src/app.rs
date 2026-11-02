@@ -513,6 +513,9 @@ pub struct AppState {
     /// What the workspace reclaim service last concluded about each workspace
     /// (#135), by workspace id. Persisted in the store's `meta`.
     workspace_lifecycle: HashMap<String, crate::reclaim::LifecycleRecord>,
+    /// The local day each project's idle-workspace digest last went out for
+    /// (#958), by project id. Persisted in the store's `meta`.
+    idle_digest_sent: crate::store::IdleDigestsSent,
     /// Wakes the reclaim service early, when a task linking a workspace
     /// finishes.
     reclaim_nudge: std::sync::Arc<tokio::sync::Notify>,
@@ -767,6 +770,7 @@ impl AppState {
             task_delivery_in_flight: Default::default(),
             reminded_holdings: HashMap::new(),
             workspace_lifecycle: HashMap::new(),
+            idle_digest_sent: Default::default(),
             reclaim_nudge: Default::default(),
             source_sync_requested: Default::default(),
             source_sync_nudge: Default::default(),

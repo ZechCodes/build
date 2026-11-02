@@ -71,6 +71,7 @@ pub(in crate::app) struct SettingsPatch {
     pub(in crate::app) compaction_thresholds: Option<Value>,
     pub(in crate::app) workspace_idle_secs: Option<u64>,
     pub(in crate::app) workspace_prune: Option<bool>,
+    pub(in crate::app) workspace_idle_digest_at: Option<crate::reclaim::DigestTime>,
 }
 
 /// The list a `settings.set` asks for, refused before anything is written if
@@ -118,7 +119,7 @@ impl SettingsPatch {
     /// Read in this order, so a client that sends both `claude_mode` and
     /// `default_harness` is read by the newer word: they name one setting, and
     /// the later row lands on top of the earlier.
-    const FIELDS: [(&'static str, SettingsFieldParse); 13] = [
+    const FIELDS: [(&'static str, SettingsFieldParse); 14] = [
         ("projects_dir", |patch, value, _| {
             let named = value
                 .as_str()
@@ -205,6 +206,18 @@ impl SettingsPatch {
                 value
                     .as_bool()
                     .ok_or_else(|| "workspace_prune is true or false.".to_string())?,
+            );
+            Ok(())
+        }),
+        // The time of day the idle-workspace digest goes out (#958).
+        ("workspace_idle_digest_at", |patch, value, _| {
+            patch.workspace_idle_digest_at = Some(
+                value
+                    .as_str()
+                    .and_then(crate::reclaim::DigestTime::parse)
+                    .ok_or_else(|| {
+                        "workspace_idle_digest_at must be a time of day like \"09:00\".".to_string()
+                    })?,
             );
             Ok(())
         }),
@@ -449,6 +462,10 @@ impl AppState {
                 .and_then(Value::as_u64)
                 .filter(|secs| *secs > 0),
             prune: config.get("workspace_prune").and_then(Value::as_bool),
+            idle_digest_at: config
+                .get("workspace_idle_digest_at")
+                .and_then(Value::as_str)
+                .and_then(crate::reclaim::DigestTime::parse),
         };
         self.apply_agent_modes_config(config);
         if let Some(isolation) = configured_isolation(config, "isolation") {

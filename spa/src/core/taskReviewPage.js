@@ -81,12 +81,22 @@ export function mountTaskReviewPage(host, options) {
     options.markReviewRoute?.({ name: "trackerTask", ...scope, review: routeReviewSelection(selection) });
   }
 
+  function leaveReadingLayout() {
+    layout().classList.remove("task-review-reading");
+    layout().style.removeProperty("--task-review-reading-width");
+  }
+
+  function selectReview(changes) {
+    leaveReadingLayout();
+    choose(changes);
+  }
+
   function paintHead(saved) {
     setHtml(node("head"), reviewHeadHtml(review(), saved, support, { task: options.task?.(), scope, sinceCount: reviewSinceCount(record, reviewBaseline(review(), rows), directory()) }));
     const select = host.querySelector('[data-review-snapshot]');
     if (select) select.onchange = () => {
       const target = review().snapshots.find((row) => row.id === select.value);
-      choose({ snapshotId: target.id, revision: target.number });
+      selectReview({ snapshotId: target.id, revision: target.number });
     };
     const refresh = host.querySelector('[data-review-refresh]');
     if (refresh) refresh.onclick = () => { void repository.refresh(); void pane?.refresh(); void commitsReader?.refresh(); };
@@ -100,6 +110,7 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function setSheet(open) {
+    if (open) leaveReadingLayout();
     host.classList.toggle("task-review-sheet-open", open);
     host.querySelector('[data-review-commits-open]')?.setAttribute("aria-expanded", String(open));
     if (open) host.querySelector('[data-review-range]')?.focus();
@@ -118,7 +129,7 @@ export function mountTaskReviewPage(host, options) {
         if (verb !== "snapshot") return;
         await repository.refresh();
         await hydrate();
-        choose({ snapshotId: review()?.snapshots.at(-1)?.id, revision: review()?.snapshots.at(-1)?.number });
+        selectReview({ snapshotId: review()?.snapshots.at(-1)?.id, revision: review()?.snapshots.at(-1)?.number });
       },
     });
   }
@@ -153,7 +164,7 @@ export function mountTaskReviewPage(host, options) {
     });
   }
 
-  function openFiles(path = "") { choose({ view: "files", path, side: null, line: null }); }
+  function openFiles(path = "") { selectReview({ view: "files", path, side: null, line: null }); }
 
   function paintDirectories(saved, dir) {
     // Directory facts and source switching sit above the commit list.
@@ -164,17 +175,17 @@ export function mountTaskReviewPage(host, options) {
     if (saved?.directories.length < 2) template.content.querySelector(".workspace-dirtabs")?.remove();
     setHtml(node("directories"), template.innerHTML);
     const row = node("directories").querySelector('[role="tablist"]');
-    if (row) wireDirectoryTabs(row, (id) => choose({ directoryId: id, view: null, path: "", side: null, line: null }));
+    if (row) wireDirectoryTabs(row, (id) => selectReview({ directoryId: id, view: null, path: "", side: null, line: null }));
   }
 
   function paintRail() {
     if (disposed) return;
     setHtml(node("rail"), reviewRailHtml({ support, selection, commits, baseline: baseline() }));
     node("rail").querySelectorAll('[data-review-range]').forEach((button) => {
-      button.onclick = () => { choose({ mode: button.dataset.reviewRange }); setSheet(false); };
+      button.onclick = () => { selectReview({ mode: button.dataset.reviewRange }); setSheet(false); };
     });
     node("rail").querySelectorAll('[data-review-commit]').forEach((button) => {
-      button.onclick = () => { choose({ mode: "commit", commit: button.dataset.reviewCommit }); setSheet(false); };
+      button.onclick = () => { selectReview({ mode: "commit", commit: button.dataset.reviewCommit }); setSheet(false); };
     });
     const more = node("rail").querySelector('[data-review-more-commits]');
     if (more) more.onclick = () => void commitsReader?.more();
@@ -310,7 +321,7 @@ export function mountTaskReviewPage(host, options) {
     paintRail();
     host.querySelectorAll('[data-review-view]').forEach((button) => {
       button.setAttribute("aria-pressed", String(button.dataset.reviewView === view));
-      button.onclick = () => choose({ view: button.dataset.reviewView });
+      button.onclick = () => selectReview({ view: button.dataset.reviewView });
     });
     paintPane(saved, dir, contentView);
     paintNotices(saved);
@@ -392,7 +403,7 @@ export function mountTaskReviewPage(host, options) {
         return false;
       }
       notice = `Original context: Revision ${target.revision} · ${anchor.path} · ${anchor.side} line ${anchor.line}`;
-      choose(target);
+      selectReview(target);
       await pane?.reveal?.(anchor);
       return true;
     },

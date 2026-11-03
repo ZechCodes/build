@@ -125,6 +125,18 @@
 .task-review-description > summary { cursor: pointer; color: var(--muted); }
 .review-task-template .task-review-navigation, .review-task-template .task-review-centre, .review-task-template .task-review-comments { grid-row: 3; }
 .task-review-standalone-feedback { grid-column: 2; min-width: 0; }
+
+/* A first review arriving over task history keeps the reader's existing
+   column until they choose a review view. Narrowing that live prose into the
+   desktop comments rail would reflow the line they are reading. */
+.task-page.task-review-reading { grid-template-columns: minmax(0, 1fr); }
+.task-review-reading .task-review-centre { grid-column: 1; }
+.task-review-reading .task-review-comments { display: block; grid-column: 1; grid-row: 4; width: min(100%, var(--task-review-reading-width)); border-left: 0; padding-left: 0; }
+.task-review-reading .task-review-comments .task-entry { padding: 0; gap: 9px; }
+.task-review-reading .task-review-comments .task-entry-head { flex-wrap: nowrap; }
+.task-review-reading .task-review-comments .task-avatar { width: 24px; height: 24px; }
+.task-review-reading .task-review-navigation, .task-review-reading [data-review-content] { display: none; }
+.task-review-reading .task-review-comments-tab, .task-review-reading .task-review-phone-commits { display: inline-flex; }
 @media (max-width: 640px) {
   .review-task-template .task-review-comments { grid-row: 4; }
   .task-review-standalone-feedback { grid-column: 1; }

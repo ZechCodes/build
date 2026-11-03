@@ -2018,6 +2018,13 @@ comparison commit identity keeps range and per-commit threads distinct. Since
 comparisons show range anchors on the current head; old-side range anchors
 appear only when the bridge falls back to that revision's base.
 
+When the first review arrives while someone is reading ordinary task history,
+the task page migrates its mounted timeline and composer into the review
+template, retaining rows, text and loaded attachments. It keeps Comments
+visible at the existing reading width until the reader explicitly selects a
+review view, revision or commit. That temporary width is bounded by the
+viewport; a cold review still opens with the usual responsive columns or tabs.
+
 PR-style opening is a service in `bridge/src/reviews/opening.rs`, exposed by
 wire 3.15.0's typed RPC and MCP adapters (#405). `api/v1/reviews.rs` owns the
 strict wire selections; `app/tracker/reviews/` resolves project, workspace,

@@ -42,6 +42,7 @@ import {
   COMMENT_INPUT_ID,
   commentSendLabel,
   taskPageFrame,
+  REVIEW_COMMENTS_FRAME,
   isReviewTask,
   taskMissingHtml,
   taskPageParts,
@@ -268,6 +269,7 @@ export function mountTaskPage(host, options) {
    *  missing notice, or nothing yet). */
   let framed = false;
   let reviewTemplate = false;
+  let continuingReviewComments = false;
   let unframed = null;
   let commentFocused = false;
   let commentAnchorOpened = false;
@@ -341,6 +343,11 @@ export function mountTaskPage(host, options) {
     if (framed && nextTemplate === reviewTemplate) return;
     reviewPage?.dispose();
     reviewPage = null;
+    if (framed && nextTemplate) {
+      upgradeReviewFrame();
+      reviewTemplate = true;
+      return;
+    }
     waitingEditor?.dispose();
     waitingEditor = null;
     reviewTemplate = nextTemplate;
@@ -350,6 +357,50 @@ export function mountTaskPage(host, options) {
     host.innerHTML = taskPageFrame(reviewTemplate);
     reads.mark();
   };
+
+  function upgradeReviewFrame() {
+    const page = host.querySelector(".task-page");
+    const main = host.querySelector(".task-page-main");
+    const width = main.getBoundingClientRect().width;
+    continuingReviewComments = host.scrollTop > 0;
+    migrateReviewComments(main);
+    page.classList.add("review-task-template");
+    if (continuingReviewComments) {
+      // A new review must not narrow prose that is already being read. Keep
+      // its measured reading width until an explicit review selection.
+      page.classList.add("task-review-reading");
+      page.style.setProperty("--task-review-reading-width", `${width}px`);
+      page.dataset.reviewView = "comments";
+    }
+    held.main.get("review")?.nodes.forEach((node) => node.remove());
+    held.main.delete("review");
+  }
+
+  function migrateReviewComments(main) {
+    const template = host.ownerDocument.createElement("template");
+    template.innerHTML = REVIEW_COMMENTS_FRAME;
+    const comments = template.content.firstElementChild;
+    const timeline = main.querySelector(".task-timeline");
+    const oldTimeline = held.main.get("timeline");
+    main.insertBefore(comments, oldTimeline?.nodes[0] || null);
+    const placeholder = comments.querySelector(".task-timeline");
+    if (timeline) moveReadingNode(comments, timeline, placeholder);
+    placeholder.remove();
+    if (!timeline) comments.insertBefore(placeholder, comments.querySelector("[data-review-task-composer]"));
+    oldTimeline?.nodes.filter((node) => node !== timeline).forEach((node) => node.remove());
+    held.main.set("timeline", { key: "review-comments", nodes: [comments] });
+    const composer = held.main.get("composer");
+    if (!composer) return;
+    const target = comments.querySelector("[data-review-task-composer]");
+    composer.nodes.forEach((node) => moveReadingNode(target, node));
+    held.comments.set("composer", composer);
+    held.main.delete("composer");
+  }
+
+  function moveReadingNode(container, node, before = null) {
+    if (typeof container.moveBefore === "function") container.moveBefore(node, before);
+    else container.insertBefore(node, before);
+  }
 
   const paint = () => {
     if (state.disposed) return;
@@ -945,7 +996,9 @@ export function mountTaskPage(host, options) {
   function wireReview() {
     reviewPage?.dispose();
     reviewPage = mountTaskReviewPage(host.querySelector('[data-task-review]'), {
-      ...options, dedicated: reviewTemplate, feedbackHost: host.querySelector('[data-review-feedback-host]'), task: () => state.task, rows: () => state.rows, workspaces: projectWorkspaces, onTaskChanged: refresh,
+      ...options, dedicated: reviewTemplate,
+      reviewRoute: continuingReviewComments ? { ...options.reviewRoute, view: "comments" } : options.reviewRoute,
+      feedbackHost: host.querySelector('[data-review-feedback-host]'), task: () => state.task, rows: () => state.rows, workspaces: projectWorkspaces, onTaskChanged: refresh,
       generationOf: () => deviceSession(state.deviceId),
       keepReadingPlace,
     });

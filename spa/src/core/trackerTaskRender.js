@@ -311,6 +311,7 @@ export const TASK_PAGE_FRAME = '<div class="task-page"><div class="task-page-mai
 export const isReviewTask = (task, context = {}) => Boolean(task?.review_summary || context.review);
 export const taskPageFrame = (review) => review
   ? '<div class="task-page review-task-template"><div class="task-page-main"></div><aside class="task-rail" aria-label="About this task"></aside></div>' : TASK_PAGE_FRAME;
+export const REVIEW_COMMENTS_FRAME = '<aside class="task-review-comments" aria-label="Review comments"><h2>Comments</h2><ul class="task-timeline"></ul><div data-review-task-composer></div><div data-review-feedback-host></div></aside>';
 
 function reviewPageParts(task, context) {
   const timeline = timelineParts(context.rows, context);
@@ -318,7 +319,7 @@ function reviewPageParts(task, context) {
     main: [
       { name: "review", html: '<section data-task-review></section>', key: "review" },
       { name: "body", html: `<details class="task-review-description"><summary>Description</summary>${taskBodyHtml(task, context)}${taskAttachmentsHtml(task.attachments)}</details>` },
-      { name: "timeline", key: "review-comments", html: '<aside class="task-review-comments" aria-label="Review comments"><h2>Comments</h2><ul class="task-timeline"></ul><div data-review-task-composer></div><div data-review-feedback-host></div></aside>' },
+      { name: "timeline", key: "review-comments", html: REVIEW_COMMENTS_FRAME },
     ],
     rail: [
       { name: "rail", html: taskRailDetailsHtml(task, context) },

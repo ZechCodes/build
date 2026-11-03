@@ -1222,8 +1222,8 @@ mod tests {
                 "read it with `get_task` before you start",
                 "Comment on the task with `comment_task` when something changes what the reader should know",
                 "Move it to In review with `move_task` when you report Complete.",
-                "Moving a task with an open review to Done with `move_task` also",
-                "records the review as “Marked done”",
+                "Move an ordinary finished task to Done with `move_task`; this also closes an open review as",
+                "“Marked done”, attributed to whoever made that move",
                 "Hand work off by ASSIGNING the task, not by messaging.",
                 "File a Build task for follow-up work you find and do not do.",
             ] {

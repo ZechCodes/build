@@ -11,7 +11,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBDatabase, IDBFactory, IDBKeyRange, forceCloseDatabase } from "fake-indexeddb";
 import { createSessionRpc } from "../src/core/sessionRpc.js";
 import { normalizeError } from "../src/core/bridgeApi/index.js";
-import { task, columns } from "./trackerWireFixture.js";
+import { task as wireTask, columns } from "./trackerWireFixture.js";
+const task = (over = {}) => wireTask({ project_id: "proj-1", ...over });
 
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
@@ -24,10 +25,11 @@ vi.mock("../src/core/deviceReconnect.js", () => ({
   deviceSession: () => null,
   deviceWatch: () => ({ away: () => true, reconnecting: () => true, moved: () => () => {} }),
 }));
-vi.mock("../src/core/deviceContexts.js", async (original) => ({
-  ...await original(), contextFor: () => ({}),
-  whenGreeted: async (_context, dispatch) => ({ sent: dispatch(() => true), stands: () => true }),
-}));
+vi.mock("../src/core/deviceContexts.js", async (original) => {
+  const context = { active: () => true };
+  return { ...await original(), contextFor: () => context,
+    whenGreeted: async (_context, dispatch) => ({ sent: dispatch(() => true), stands: () => true }) };
+});
 
 const FAST_RECOVERY = { reopenDelaysMs: [0, 1, 2, 3], openTimeoutMs: 200, restMs: 60_000 };
 const address = { deviceId: "dev-1", entityId: "", kind: "settings" };

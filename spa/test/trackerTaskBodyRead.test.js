@@ -8,9 +8,10 @@ beforeEach(() => {
 });
 
 it("checks a task read's authority inside its cache transaction, after it was queued", async () => {
-  const { readTaskRecord, writeTaskRecord } = await import("../src/core/trackerCache.js");
+  const { readTaskRecord, writeTaskRecord, taskAddress } = await import("../src/core/trackerCache.js");
+  const { writeCached } = await import("../src/core/localCache.js");
   const newer = { task: { id: "task-347", body: "- [x] Saved", read_through: "tc-new" }, timeline: [] };
-  await writeTaskRecord("device", "project", "task-347", newer);
+  await writeCached(taskAddress("device", "project", "task-347"), newer);
   let current = true;
   const read = writeTaskRecord("device", "project", "task-347", {
     task: { id: "task-347", body: "- [ ] Saved" }, timeline: [],

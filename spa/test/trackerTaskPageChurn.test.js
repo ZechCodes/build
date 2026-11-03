@@ -6,7 +6,8 @@
 // is the page's own registration, fired the way core/changeEvents.js fires it.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { columns, task } from "./trackerWireFixture.js";
+import { columns, task as wireTask } from "./trackerWireFixture.js";
+const task = (over = {}) => wireTask({ project_id: "proj-1", ...over });
 
 let watchers = [];
 vi.mock("../src/core/changeEvents.js", () => ({

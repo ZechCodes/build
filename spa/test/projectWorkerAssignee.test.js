@@ -45,7 +45,7 @@ describe("cached project worker assignees", () => {
   });
   it("keeps a creation operation ID across a failed dispatch retry and preserves the worker name", async () => {
     const callRpc = vi.fn().mockRejectedValueOnce(new Error("Try again")).mockResolvedValue({ task: {} });
-    picker = openAssigneePicker({ task: { id: "task", number: 1 }, options: assigneeOptions(assignableAgents(feed, projectKey)),
+    picker = openAssigneePicker({ task: { id: "task", project_id: "proj-1", number: 1 }, options: assigneeOptions(assignableAgents(feed, projectKey)),
       current: "new_project_agent", callRpc });
     const name = document.querySelector("#task-assign-worker");
     expect(name).not.toBeNull();
@@ -63,7 +63,7 @@ describe("cached project worker assignees", () => {
   });
   it("reconciles a late cached roster without replacing the selection with another agent", async () => {
     const callRpc = vi.fn();
-    picker = openAssigneePicker({ task: { id: "task", number: 1 }, options: assigneeOptions(assignableAgents(feed, projectKey)),
+    picker = openAssigneePicker({ task: { id: "task", project_id: "proj-1", number: 1 }, options: assigneeOptions(assignableAgents(feed, projectKey)),
       current: `agent:${worker.id}`, callRpc });
     picker.setOptions(assigneeOptions(assignableAgents({ ...feed, projects: [{ ...project, projectRoster: {
       ...project.projectRoster, agents: [pin],

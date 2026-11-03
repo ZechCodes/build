@@ -28,7 +28,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { columns, comment, task } from "./trackerWireFixture.js";
+import { columns, comment, task as wireTask } from "./trackerWireFixture.js";
+const task = (over = {}) => wireTask({ project_id: "proj-1", ...over });
 
 vi.mock("../src/core/deviceReconnect.js", () => ({
   deviceSession: () => null,

@@ -20,7 +20,7 @@ const fullTask = (id, updated_at) => ({ ...task(id, updated_at), project_id: "pr
 const publicTask = ({ __task_content_cache, __task_watch_cache, ...value }) => value;
 const expectWatchProof = (value) => {
   expect(value.__task_watch_cache).toMatchObject({
-    scope: { deviceId: "dev", projectId: "project" }, taskId: "one", source: "read", uncertain: true,
+    scope: { deviceId: "dev", projectId: "project" }, taskId: "one", source: "read", uncertain: false,
     lineage: [["watched", true, false], ["watch_started_after", false, undefined]],
   });
   expect(value.__task_watch_cache.observed_read_order).toBeGreaterThan(0);

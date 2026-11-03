@@ -178,6 +178,37 @@ async function mountPrefix(commitPrefix, { revision = 1, rpc } = {}) {
 const shortCommitReads = (mock) => mock.mock.calls.filter(([method, params]) => method === "tasks.review.diff"
   && params.mode === "commit" && params.commit.length < 40);
 
+it("explains a pending prefix after a failed first commit-list read and clears the notice after a successful refresh", async () => {
+  await deleteCached([reviewCommitsAddress(identity)]);
+  let failRead;
+  let attempts = 0;
+  const callRpc = vi.fn((method, params) => {
+    if (method !== "tasks.review.diff" || params.mode !== "commits") return new Promise(() => {});
+    if (++attempts === 1) return new Promise((resolve, reject) => { failRead = reject; });
+    return Promise.resolve({ commits: [{ oid: commit }], commits_truncated: false });
+  });
+  await mountPrefix(commit.slice(0, 7), { rpc: callRpc });
+  await called(callRpc, () => Boolean(failRead));
+  const notice = host.querySelector("[data-review-notice]");
+  expect(notice).not.toBeNull();
+  expect(notice.hidden).toBe(false);
+  expect(notice.getAttribute("role")).toBe("status");
+  expect(notice.textContent).toBe("Waiting for this revision’s commits…");
+  failRead(new Error("Source unavailable"));
+  await painted(() => notice.textContent.includes("Couldn’t load"));
+  expect(notice.textContent).toBe("Couldn’t load this revision’s commits. Waiting for a successful refresh.");
+  expect(notice.hidden).toBe(false);
+  expect((await readCached(reviewCommitsAddress(identity))).value.commits).toBeUndefined();
+  expect(host.querySelector(".task-review-changes")).toBeNull();
+  expect(App.route.review.commit).toBe(commit.slice(0, 7));
+  host.querySelector("[data-review-refresh]").click();
+  await painted(() => host.querySelector("tr.task-review-anchor"));
+  expect(App.route.review.commit).toBe(commit);
+  expect(notice.hidden).toBe(true);
+  expect(notice.textContent).toBe("");
+  expect(shortCommitReads(callRpc)).toEqual([]);
+});
+
 it("lands a unique short commit link on the cached full-OID patch and canonicalizes in place", async () => {
   const { callRpc } = await mountPrefix(commit.slice(0, 7));
   await painted(() => host.querySelector("tr.task-review-anchor"));
@@ -194,6 +225,8 @@ it.each(["ambiguous", "missing"])("falls back to cached All changes when a short
   await painted(() => host.querySelector("[data-review-error]")?.textContent.includes("Showing all changes"));
   expect(App.route.review.mode).toBe("all");
   expect(host.querySelector("[data-review-error]").textContent).toContain(reason === "ambiguous" ? "ambiguous" : "not found");
+  expect(host.querySelector("[data-review-notice]").hidden).toBe(true);
+  expect(host.querySelector("[data-review-notice]").textContent).toBe("");
   expect(shortCommitReads(callRpc)).toEqual([]);
 });
 

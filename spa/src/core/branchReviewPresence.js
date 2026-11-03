@@ -1,31 +1,19 @@
 // Review ownership is a cached fact, including legacy reviews without a PR hint.
 import { cachedRecords, subscribeCache } from "./localCache.js";
 
-const REVIEW_PRESENCE_KINDS = new Set(["task-review", "tracker-summary", "tracker-task", "tracker-tasks", "tracker-tasks-query"]);
-
-const reviewWorkspaceIds = (review) => review?.workspace_id ? [review.workspace_id] : [];
-function taskWorkspaceIds(value) {
-  const tasks = value?.task ? [value.task] : value?.tasks || [];
-  return tasks.filter((task) => task.review_summary || task.legacy_review).flatMap((task) => task.links?.workspace_ids || []);
-}
-function workspaceIds(records) {
-  return new Set(records.flatMap(({ value }) => [...reviewWorkspaceIds(value?.review), ...taskWorkspaceIds(value)]));
-}
-
 export function watchBranchReviewPresence({ deviceId, projectId, onChange }) {
+  const address = { deviceId, entityId: projectId, kind: "task-review" };
   let ids = new Set();
   let disposed = false;
   let serial = 0;
   async function read() {
     const read = ++serial;
-    const records = (await Promise.all([...REVIEW_PRESENCE_KINDS].map((kind) => cachedRecords({ deviceId, entityId: projectId, kind })))).flat();
+    const records = await cachedRecords(address);
     if (disposed || read !== serial) return;
-    ids = workspaceIds(records);
+    ids = new Set(records.map(({ value }) => value?.review?.workspace_id).filter(Boolean));
     onChange();
   }
-  const unwatch = subscribeCache({ deviceId, entityId: projectId }, (address) => {
-    if (!address.kind || REVIEW_PRESENCE_KINDS.has(address.kind)) void read();
-  });
+  const unwatch = subscribeCache(address, () => void read());
   void read();
   return { has: (id) => ids.has(id), dispose() { disposed = true; unwatch(); } };
 }

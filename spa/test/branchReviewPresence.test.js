@@ -7,18 +7,33 @@ import { wipeCache, writeCached, readCached, cachedRecords } from "../src/core/l
 import { branchWorkspaceHasReview, watchBranchReviewPresence } from "../src/core/branchReviewPresence.js";
 
 beforeEach(wipeCache);
-it("recognizes PR hints and legacy saved reviews and updates when their compact marker arrives", async () => {
-  const scope = { deviceId: "branch-presence", projectId: "project" };
-  const onChange = vi.fn();
-  const presence = watchBranchReviewPresence({ ...scope, onChange });
-  const feed = { workspaces: [{ id: "workspace", project_id: scope.projectId, directories: [{ branch: "work" }] }] };
-  await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
-  expect(branchWorkspaceHasReview(feed, scope.projectId, "work", presence)).toBe(false);
-  await writeCached({ deviceId: scope.deviceId, entityId: scope.projectId, kind: "tracker-summary", sub: "task" }, { task: { legacy_review: true, links: { workspace_ids: ["workspace"] } } });
-  await vi.waitFor(() => expect(branchWorkspaceHasReview(feed, scope.projectId, "work", presence)).toBe(true));
-  expect(branchWorkspaceHasReview(feed, scope.projectId, "other", presence)).toBe(false);
-  presence.dispose();
-});
+it.each([{ legacy_review: true }, { review_summary: { mode: "pull_request", workspace_id: "workspace-1" } }])(
+  "keeps a merely linked workspace mergeable with cold and cached task records: %j", async (marker) => {
+    const scope = { deviceId: "branch-presence", projectId: "project" };
+    const onChange = vi.fn();
+    const presence = watchBranchReviewPresence({ ...scope, onChange });
+    const owner = legacyFixture.result.review.workspace_id;
+    const unrelated = "workspace-unrelated";
+    const feed = { workspaces: [
+      { id: owner, project_id: scope.projectId, legacy_review: true, directories: [{ branch: "owner" }] },
+      { id: unrelated, project_id: scope.projectId, directories: [{ branch: "unrelated" }] },
+    ] };
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
+    expect(branchWorkspaceHasReview(feed, scope.projectId, "owner", presence)).toBe(true);
+    expect(branchWorkspaceHasReview(feed, scope.projectId, "unrelated", presence)).toBe(false);
+    const task = { id: legacyFixture.result.review.task_id, ...marker, links: { workspace_ids: [owner, unrelated] } };
+    for (const kind of ["tracker-summary", "tracker-task", "tracker-tasks", "tracker-tasks-query"]) {
+      await writeCached({ deviceId: scope.deviceId, entityId: scope.projectId, kind, sub: task.id },
+        kind === "tracker-tasks" || kind === "tracker-tasks-query" ? { tasks: [task] } : { task });
+    }
+    await writeCached({ deviceId: scope.deviceId, entityId: scope.projectId, kind: "task-review", sub: task.id }, { review: legacyFixture.result.review });
+    await vi.waitFor(() => expect(presence.has(owner)).toBe(true));
+    expect(presence.has(unrelated)).toBe(false);
+    expect(branchWorkspaceHasReview(feed, scope.projectId, "unrelated", presence)).toBe(false);
+    expect(branchWorkspaceHasReview(feed, scope.projectId, "owner", presence)).toBe(true);
+    presence.dispose();
+  },
+);
 
 it("recognizes canonical retained legacy reviews and server PR hints", async () => {
   const scope = { deviceId: "branch-presence", projectId: "project" };

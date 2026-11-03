@@ -5,7 +5,7 @@ import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 let cache, summaries, content;
 const scope = { deviceId: "device-891", projectId: "proj-1" };
 const query = { states: ["open"] };
-const row = (id, extra = {}) => ({ id, number: Number(id.slice(-1)), title: id, ...(Object.hasOwn(extra, "unread_count") ? { watched: true, unread_mentions: 0, unread_agent_comments: 0 } : {}), updated_at: "2026-10-29T12:00:00Z", ...extra });
+const row = (id, extra = {}) => ({ id, number: Number(id.slice(-1)), title: id, watched: false, ...(Object.hasOwn(extra, "unread_count") ? { watched: true, unread_mentions: 0, unread_agent_comments: 0 } : {}), updated_at: "2026-10-29T12:00:00Z", ...extra });
 const page = (tasks = [], extra = {}) => ({ summary: true, tasks, ...extra });
 const open = (filters = query, read = 1) => summaries.beginSummaryQuery(scope, filters, read);
 const land = (ticket, answer, read = ticket.generation) => summaries.landSummaryPage(ticket, answer, { read });

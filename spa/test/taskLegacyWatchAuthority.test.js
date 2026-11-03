@@ -63,11 +63,11 @@ it("uses an exact successful watch acknowledgment to resolve its pending uncerta
     watch_uncertain: false, task: { watched: false } });
 });
 
-it("admits an omitted native false watch value from a covering summary page", async () => {
+it("admits an explicit native false watch value from a covering summary page", async () => {
   const read = await content.captureTaskContentRead(scope, { revalidate: "summary" });
   const ticket = await summaries.beginSummaryQuery(scope, {}, read.readOrder, { contentRead: read });
   await summaries.landSummaryPage(ticket, { summary: true, basis: "native-unwatched", tasks: [
-    { id: taskId, project_id: scope.projectId, number: 1, title: "Unwatched" },
+    { id: taskId, project_id: scope.projectId, number: 1, title: "Unwatched", watched: false },
   ], next_cursor: "next" }, { read: read.readOrder });
   expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ stale: false, next_cursor: "next",
     tasks: [{ watched: false }] });
@@ -83,4 +83,19 @@ it("keeps metadata initialization quiet while announcing real local watch change
     expect(changed).toHaveBeenCalled();
     await watch.settleTaskWatchMutation(owner, { rollback: true });
   } finally { stop(); }
+});
+
+it("keeps a cached watched Inbox task when a covering summary omits the watch field", async () => {
+  await publish(full());
+  const { fullTaskSummary } = await import("../src/core/taskSummaryProjection.js");
+  const compact = fullTaskSummary(full({ title: "Updated compact row", updated_at: "2026-12-01T00:00:00Z" }));
+  delete compact.watched;
+  const read = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+  const ticket = await summaries.beginSummaryQuery(scope, {}, read.readOrder, { contentRead: read });
+  await summaries.landSummaryPage(ticket, { summary: true, basis: "compact-watch-omission", tasks: [compact] }, { read: read.readOrder });
+  const held = await summaries.readSummaryQuery(scope, {});
+  expect(held.tasks[0].watched).toBe(true);
+  const { watchedTaskEntries } = await import("../src/core/watchedTaskRows.js");
+  const project = { id: scope.projectId, deviceId: scope.deviceId, projectKey: `${scope.deviceId}|${scope.projectId}` };
+  expect(watchedTaskEntries([{ project, tasks: held.tasks }]).map(({ taskId: id }) => id)).toContain(taskId);
 });

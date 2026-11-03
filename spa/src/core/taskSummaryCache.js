@@ -125,7 +125,7 @@ function entityFields(task) {
 }
 
 function pageRow(held, task, read, basis, options) {
-  const incoming = { watched: false, ...entityFields(task) }, older = olderRow(held, incoming, read);
+  const incoming = entityFields(task), older = olderRow(held, incoming, read);
   const row = observedSummaryValue(held, incoming, incoming, read, options);
   const value = summaryContent(held, row, incoming, options).row;
   if (!value.task) return value;

@@ -4,7 +4,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 let summaries, cache, readers;
 const scope = { deviceId: "basis-device", projectId: "proj-1" };
-const row = (extra = {}) => ({ id: "task-1", number: 1, title: "One", ...(Object.hasOwn(extra, "unread_count") ? { watched: true } : {}), ...extra });
+const row = (extra = {}) => ({ id: "task-1", number: 1, title: "One", watched: false, ...(Object.hasOwn(extra, "unread_count") ? { watched: true } : {}), ...extra });
 const page = (basis, tasks = [row()], next_cursor) => ({ summary: true, basis, tasks, next_cursor });
 const land = async (filters, generation, answer) => {
   const ticket = await summaries.beginSummaryQuery(scope, filters, generation);

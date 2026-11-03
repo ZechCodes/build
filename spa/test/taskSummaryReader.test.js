@@ -3,7 +3,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 let cache, readers;
 const scope = { deviceId: "reader-891", projectId: "proj-1" };
-const row = (id) => ({ id, number: Number(id.slice(-1)), title: id });
+const row = (id) => ({ id, number: Number(id.slice(-1)), title: id, watched: false });
 const page = (tasks, next_cursor) => ({ summary: true, tasks, ...(next_cursor ? { next_cursor } : {}) });
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 let session, capabilities;

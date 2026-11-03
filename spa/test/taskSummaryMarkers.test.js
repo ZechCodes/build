@@ -151,9 +151,9 @@ it("keeps current watch floor when a compact patch omits the watch header", asyn
   await expectNativeWatchCertain();
 });
 
-it("admits native omitted-false watch state as an authoritative unwatch", async () => {
+it("admits native explicit-false watch state as an authoritative unwatch", async () => {
   await landNative(nativeFloors("te-held", 3));
-  const unwatched = nativeSummary(); delete unwatched.watched;
+  const unwatched = nativeSummary({ watched: false });
   await landNative(unwatched);
   const held = await normalizedNative();
   expect(held.task.watched).toBe(false);

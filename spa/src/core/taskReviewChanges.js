@@ -198,13 +198,14 @@ function restoreFocusedControl(host, saved) {
   (matching || fallback)?.focus({ preventScroll: true });
 }
 
-async function seekAnchorPages(host, target, bodies) {
+async function seekAnchorPages(host, target, bodies, current) {
   for (let page = 0; page < MAX_REVEAL_PAGES; page++) {
+    if (!current()) return false;
     if (anchoredRow(host, target)) return true;
     const pages = bodies.bodyOf(target.path)?.pages;
     if (!pages || pages.complete || !(await bodies.more(target.path))) return false;
   }
-  return Boolean(anchoredRow(host, target));
+  return current() && Boolean(anchoredRow(host, target));
 }
 
 /** Mount one saved source's Changes tab. refresh() retries the listing. */
@@ -219,6 +220,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
   let initialSelection = true;
   let alive = true;
   let generation = 0;
+  let selectionGeneration = 0;
   const pendingPatches = new Map();
   const contentKeyOf = (path) => state.list?.files?.find((file) => file.path === path)?.content_key ?? `unlisted:${path}`;
   const bodies = createChangesetBodies({
@@ -333,27 +335,41 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     persistViewed();
     paint();
   };
-  const selectPath = async (name, notify = false) => {
+  const beginSelection = (name) => {
+    initialSelection = false;
     state.selected = name;
+    state.anchor = null;
+    state.anchorScrolled = false;
+    return ++selectionGeneration;
+  };
+  const currentSelection = (serial) => alive && serial === selectionGeneration;
+  const selectPath = async (name, notify = false) => {
+    const serial = beginSelection(name);
     if (notify) onSelectPath?.(name);
-    if (!name) return;
+    if (!name) { paint(); return; }
     state.open.add(name);
     paint();
     await fetchPatch(name);
+    if (!currentSelection(serial)) return;
     const section = [...host.querySelectorAll("[data-review-path]")].find((row) => row.dataset.reviewPath === name);
     section?.scrollIntoView?.({ block: "nearest" });
+  };
+  const clearMissingCommitPath = () => {
+    if (comparison.mode !== "commit") return;
+    state.selected = "";
+    onSelectPath?.("");
   };
   const openInitialPath = async () => {
     initialSelection = false;
     if (path && !listedPath(state.list, path)) {
-      if (comparison.mode === "commit") { onSelectPath?.(""); state.selected = ""; }
+      clearMissingCommitPath();
       return;
     }
     const selected = path || (autoOpen ? state.list.files[0]?.path : "");
     if (selected) await selectPath(selected);
   };
   const toggleOpen = (path) => {
-    state.selected = path;
+    beginSelection(path);
     onSelectPath?.(path);
     if (state.open.has(path)) state.open.delete(path);
     else {
@@ -390,18 +406,24 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
   const initialRead = readList();
   void initialRead.then((held) => { if (!successfulChanges(held?.value)) return refresh(); });
   const reveal = async (target) => {
+    if (!validAnchor(target)) return false;
+    const serial = beginSelection(target.path);
+    const current = () => currentSelection(serial);
     await initialRead;
-    if (!alive || !validAnchor(target)) return false;
+    if (!current()) return false;
     if (!state.list) await refresh();
-    if (!listedPath(state.list, target.path)) return false;
-    state.anchor = { path: target.path, side: target.side, line: Number(target.line) };
-    state.anchorScrolled = false;
+    if (!current()) return false;
+    if (!listedPath(state.list, target.path)) { clearMissingCommitPath(); return false; }
+    const selectedAnchor = { path: target.path, side: target.side, line: Number(target.line) };
+    state.anchor = selectedAnchor;
     state.open.add(target.path);
     paint();
     await fetchPatch(target.path);
-    await seekAnchorPages(host, state.anchor, bodies);
+    if (!current()) return false;
+    await seekAnchorPages(host, selectedAnchor, bodies, current);
+    if (!current()) return false;
     paint();
-    return Boolean(anchoredRow(host, state.anchor));
+    return Boolean(anchoredRow(host, selectedAnchor));
   };
   if (anchor) void reveal(anchor);
   void uiState.ready;
@@ -417,6 +439,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     dispose() {
       alive = false;
       generation += 1;
+      selectionGeneration += 1;
       host.removeEventListener("click", onClick);
       unwatchList();
       bodies.dispose();

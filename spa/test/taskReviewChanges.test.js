@@ -380,3 +380,78 @@ describe("kept review diff panes", () => {
     pane.dispose();
   });
 });
+
+describe("review selection races", () => {
+  const pathB = "src/b.js";
+  const patchB = patch.replaceAll("src/a.js", pathB);
+  const listing = { ...list, files: [...files, { ...files[0], path: pathB }] };
+  async function deferredPane() {
+    const host = document.createElement("div");
+    document.body.append(host);
+    let resolveA;
+    const delayedA = new Promise((resolve) => { resolveA = resolve; });
+    const callRpc = vi.fn(async (_method, params) => {
+      if (!params.paths) return listing;
+      return params.paths[0] === "src/a.js" ? delayedA : { ...listing, patch: patchB };
+    });
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc });
+    await waitForFile(host);
+    return { host, pane, callRpc, resolveA: () => resolveA({ ...listing, patch }) };
+  }
+  function observeScroll() {
+    const paths = [];
+    const previous = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function () { paths.push(this.closest("[data-review-path]")?.dataset.reviewPath); };
+    return { paths, restore() { Element.prototype.scrollIntoView = previous; } };
+  }
+
+  it("lets only the latest selected file scroll after an earlier patch completes", async () => {
+    const { host, pane, callRpc, resolveA } = await deferredPane();
+    const scroll = observeScroll();
+    try {
+      const first = pane.selectPath("src/a.js");
+      await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("tasks.review.diff", expect.objectContaining({ paths: ["src/a.js"] })));
+      const second = pane.selectPath(pathB);
+      resolveA();
+      await Promise.all([first, second]);
+      expect(scroll.paths).toEqual([pathB]);
+      expect(host.querySelector('[data-review-tree-path="src/b.js"]').getAttribute("aria-selected")).toBe("true");
+    } finally { pane.dispose(); scroll.restore(); }
+  });
+
+  it("does not restore an old anchor after another file is selected", async () => {
+    const { host, pane, callRpc, resolveA } = await deferredPane();
+    const scroll = observeScroll();
+    try {
+      const first = pane.reveal({ path: "src/a.js", side: "new", line: 1 });
+      await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("tasks.review.diff", expect.objectContaining({ paths: ["src/a.js"] })));
+      const second = pane.selectPath(pathB);
+      resolveA();
+      const [revealed] = await Promise.all([first, second]);
+      expect(revealed).toBe(false);
+      expect(scroll.paths).toEqual([pathB]);
+      expect(host.querySelector("tr.task-review-anchor")).toBeNull();
+    } finally { pane.dispose(); scroll.restore(); }
+  });
+});
+
+describe("anchored paths missing from a comparison", () => {
+  it.each([
+    ["commit", true],
+    ["changes", false],
+  ])("clears a missing initial anchored path only for %s selection", async (mode, clearsPath) => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const onSelectPath = vi.fn();
+    const anchor = { path: "src/missing.js", side: "new", line: 7 };
+    const comparison = { mode, ...(mode === "commit" ? { commit: "a".repeat(40) } : {}) };
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory,
+      path: anchor.path, anchor, comparison, onSelectPath, callRpc: async () => list });
+    try {
+      await waitForFile(host);
+      expect(await pane.reveal(anchor)).toBe(false);
+      if (clearsPath) expect(onSelectPath).toHaveBeenCalledWith("");
+      else expect(onSelectPath).not.toHaveBeenCalled();
+    } finally { pane.dispose(); }
+  });
+});

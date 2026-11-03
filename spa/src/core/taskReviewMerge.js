@@ -274,6 +274,7 @@ export function mountTaskReviewMerge(host, options) {
   let busy = false;
   let disposed = false;
   let error = "";
+  let rendered = null;
   const scope = { deviceId, projectId, taskId, snapshotId: snapshot.id };
   const support = () => reviewSupportFor(review, options.support);
   const preparedPlan = () => intentsOf(record).find((intent) => intent.request_id === draft.preparedRequestId && mayPrepareSnapshot(review, intent, snapshot.id));
@@ -401,11 +402,16 @@ export function mountTaskReviewMerge(host, options) {
 
   function paint() {
     if (disposed) return;
+    const html = `${formHtml()}${intentsOf(record).map((intent) => intentHtml(review, intent, support(), busy, snapshot.id)).join("")}
+        <p class="warn" data-pr-merge-error role="alert"${error ? "" : " hidden"}>${esc(error)}</p>`;
+    // Repeated cache replies can advance read order without changing the form.
+    // Keep its controls, disclosure state and caret when the rendered facts match.
+    if (rendered === html) return;
     const wasOpen = host.querySelector("[data-pr-merge-sheet]")?.open;
     const heldFocus = focusState(host);
     keepReadingPlace(() => {
-      host.innerHTML = `${formHtml()}${intentsOf(record).map((intent) => intentHtml(review, intent, support(), busy, snapshot.id)).join("")}
-        <p class="warn" data-pr-merge-error role="alert"${error ? "" : " hidden"}>${esc(error)}</p>`;
+      host.innerHTML = html;
+      rendered = html;
       const sheet = host.querySelector("[data-pr-merge-sheet]");
       if (sheet) sheet.open = Boolean(wasOpen);
       restoreFocus(host, heldFocus);

@@ -2,59 +2,12 @@ import "../styles/taskReview.css";
 import "../styles/workspaceReview.css";
 import { esc } from "./text.js";
 import { readCached, subscribeCache, deleteCached } from "./localCache.js";
-import { readTasksRecord } from "./trackerCache.js";
 import { hashFromRoute } from "./router.js";
 import { subscribeUiRecords } from "./localUiStore.js";
 import { reviewCreateDraftAddress } from "./taskReviewDrafts.js";
-import { createTaskReviewRepository, reviewAddress, reviewFailure } from "./taskReviewCache.js";
-import { modalDialogHtml, openModal } from "./modal.js";
+import { reviewFailure } from "./taskReviewCache.js";
 import { openReviewCreateForm, openReviewPushForm } from "./workspaceReviewForm.js";
 import { readWorkspaceReviewContext, boundSourceFacts, pendingReviewText, canPushSource, shortReviewRef, sourcePushDestination } from "./workspaceReviewState.js";
-
-const taskOptions = (tasks) => tasks.map((task) => `<option value="${esc(task.id)}">#${Number(task.number)} ${esc(task.title)}</option>`).join("");
-const taskForm = (tasks) => `<h3>Create or update review</h3><p class="sub">Save committed work from every directory on a task. Choosing another workspace replaces its previous review history.</p>
-  <label>Task<select data-review-task>${taskOptions(tasks)}</select></label>
-  ${tasks.length ? "" : '<p>No tasks yet. Create a task in the project first.</p>'}
-  <p class="warn" data-workspace-review-error role="alert" hidden></p>
-  <div class="row"><button class="btn" data-cancel-workspace-review>Cancel</button><button class="btn primary" data-save-workspace-review${tasks.length ? "" : " disabled"}>Save review</button></div>`;
-
-async function saveWorkspaceReview(scope, workspaceId, callRpc) {
-  const repository = createTaskReviewRepository({ ...scope, callRpc });
-  const refreshed = await repository.refresh();
-  const held = await readCached(reviewAddress(scope));
-  if (!refreshed) throw new Error(held?.value?.error || "Could not read the review. Try again.");
-  return repository.mutate("snapshot", { workspace_id: workspaceId, expected_version: held?.value?.review?.version || 0 });
-}
-
-async function openReviewTaskPicker(options) {
-  const { deviceId, projectId, workspaceId, callRpc, navigate } = options;
-  const record = await readTasksRecord(deviceId, projectId);
-  const tasks = (record?.tasks || []).filter((task) => task.review_summary?.mode !== "pull_request");
-  const modal = openModal({ dialogHtml: modalDialogHtml(taskForm(tasks), { className: "modal-create" }), onClose: options.onClosed });
-  const select = modal.body.querySelector('[data-review-task]');
-  const linked = tasks.find((task) => task.links?.workspace_ids?.includes(workspaceId));
-  if (linked) select.value = linked.id;
-  const button = modal.body.querySelector('[data-save-workspace-review]');
-  const error = modal.body.querySelector('[data-workspace-review-error]');
-  let busy = false;
-  modal.body.querySelector('[data-cancel-workspace-review]').onclick = modal.close;
-  button.onclick = async () => {
-    if (busy || !select.value) return;
-    busy = true;
-    button.disabled = true;
-    const taskId = select.value;
-    const scope = { deviceId, projectId, taskId };
-    try {
-      await saveWorkspaceReview(scope, workspaceId, callRpc);
-      modal.close();
-      navigate?.({ name: "trackerTask", deviceId, projectId, taskId });
-    } catch (failure) {
-      error.textContent = reviewFailure(failure);
-      error.hidden = false;
-    } finally { busy = false; button.disabled = false; }
-  };
-  return modal;
-}
 
 async function reviewOptions(options) {
   if (options.callRpc) return options;
@@ -82,13 +35,11 @@ async function openConfiguredReview(options) {
   const configured = await reviewOptions(options);
   const context = await readWorkspaceReviewContext(options);
   if (canOpenPullRequest(context)) return openReviewCreateForm(configured);
-  if (context.held?.review?.mode !== "pull_request" && context.support.get && context.support.snapshot) return openReviewTaskPicker(configured);
   return null;
 }
 
 export const openWorkspaceReview = (options) => sharedWorkspaceForm(options, openConfiguredReview);
-const canOpenPullRequest = (context) => context.support.open &&
-  (Boolean(context.createDraft?.submitted) || context.sources.some(({ directory }) => directory.is_git !== false));
+const canOpenPullRequest = (context) => context.support.open;
 
 const statusLabels = { open: "Open", approved: "Approved", changes_requested: "Changes requested", merged: "Merged", closed: "Closed" };
 const reviewRoute = (options, taskId) => ({ name: "trackerTask", deviceId: options.deviceId, projectId: options.projectId, taskId });
@@ -138,7 +89,7 @@ function linkedReviewHtml(context, options, taskId) {
   const title = task.title || summary.title || "Review";
   const terminal = ["closed", "merged"].includes(status);
   return `<div class="workspace-review-heading"><h2>Changes</h2><a data-review-link href="${esc(reviewHref(options, taskId))}">${number ? `#${Number(number)} ` : ""}${esc(title)}</a>
-      <span class="workspace-review-badge">${esc(statusLabels[status] || status)}</span>${snapshotHtml(review, summary)}${context.support.open ? resumeOpeningHtml(context.createDraft) : ""}</div>
+      <span class="workspace-review-badge">${esc(statusLabels[status] || status)}</span>${snapshotHtml(review, summary)}<a class="btn" data-review-view href="${esc(reviewHref(options, taskId))}">View review</a>${context.support.open ? resumeOpeningHtml(context.createDraft) : ""}</div>
       ${boundSourceFacts(context).map((fact) => sourceHtml(fact, context.support, terminal)).join("")}
       ${dispatchFailureHtml(context.held)}`;
 }
@@ -149,18 +100,12 @@ const resumeOpeningHtml = (draft) => draft?.submitted
 const dispatchFailureHtml = (held) => held?.reviewer_dispatch?.state === "failed"
   ? `<p class="warn">${esc(held.reviewer_dispatch.error)}</p>` : "";
 
-const availableEntryAction = (context) => {
-  if (canOpenPullRequest(context)) return "Open review";
-  return context.support.get && context.support.snapshot ? "Create snapshot review" : "";
-};
-
 function entryHtml(context, options) {
   const { review, summary } = entryIdentity(context);
   const taskId = review?.task_id || summary?.task_id;
   if (taskId && review?.mode === "pull_request") return linkedReviewHtml(context, options, taskId);
   if (summary.task_id) return linkedReviewHtml(context, options, taskId);
-  const action = availableEntryAction(context);
-  return `<div class="workspace-review-heading"><h2>Changes</h2>${action ? `<button type="button" class="btn" data-workspace-review>${action}</button>` : ""}</div>`;
+  return `<div class="workspace-review-heading"><h2>Changes</h2>${canOpenPullRequest(context) ? `<button type="button" class="btn" data-workspace-review>Request review</button>` : `<span>Update the bridge to request reviews</span>`}</div>`;
 }
 
 async function switchReviewBranch(options, fact) {
@@ -190,8 +135,9 @@ export function mountWorkspaceReviewEntry(host, options) {
       modal = await openWorkspaceReview(options);
       if (disposed) modal?.close();
     };
-    const link = host.querySelector("[data-review-link]");
-    if (link && options.navigate) link.onclick = (event) => { event.preventDefault(); options.navigate(reviewRoute(options, context.held?.review?.task_id || context.workspace.active_review.task_id)); };
+    if (options.navigate) host.querySelectorAll("[data-review-link], [data-review-view]").forEach((link) => {
+      link.onclick = (event) => { event.preventDefault(); options.navigate(reviewRoute(options, context.held?.review?.task_id || context.workspace.active_review.task_id)); };
+    });
     wirePublication(context);
   }
   function wirePublication(context) {

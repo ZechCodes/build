@@ -22,6 +22,7 @@ import { attachmentListHtml } from "./attachmentTiles.js";
 import { ICON_PAPERCLIP, ICON_REPLY } from "./icons.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { commentReplyIndex, commentReplyHtml, commentRepliesHtml } from "./taskCommentReplies.js";
+import { taskWorkReviewHtml } from "./taskWorkReview.js";
 import { taskReviewSummaryHtml } from "./taskReviewSummaryRender.js";
 
 /** The head: what the task is called, and the two facts that are independent
@@ -29,15 +30,16 @@ import { taskReviewSummaryHtml } from "./taskReviewSummaryRender.js";
  *
  *  `watch` comes from the cached task. A cold page offers the control before
  *  this device has greeted. */
-export const taskHeadHtml = (task, { watch = null } = {}) => `<header class="task-page-head">
+export const taskHeadHtml = (task, context = {}) => `<header class="task-page-head">
     <div class="task-page-marks">
       ${stateMarkHtml(task)}<span class="task-page-state">${esc(stateLabel(task.state))}</span>
       ${numberHtml(task)}
       ${taskReviewSummaryHtml(task.review_summary)}
       ${ageHtml(task.updated_at)}
-      ${watch ? watchButtonHtml(watch) : ""}
+      ${context.watch ? watchButtonHtml(context.watch) : ""}
     </div>
     <h1 class="task-page-title">${esc(task.title)}</h1>
+    ${taskWorkReviewHtml(task, context)}
     ${task.labels?.length ? `<div class="task-page-labels">${labelsHtml(task.labels)}</div>` : ""}
   </header>`;
 

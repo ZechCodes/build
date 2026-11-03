@@ -176,6 +176,9 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       commit: names.has("tasks.review.commit"),
       since: names.has("tasks.review.since"),
       anchorCommit: names.has("tasks.review.anchorCommit"),
+      forTask: names.has("tasks.review.forTask"),
+      taskChoices: names.has("tasks.listSummaries"),
+      linkedTaskChoices: names.has("tasks.listLinkedWorkspace"),
       pullRequests: names.has("tasks.review.pullRequests"),
     },
     tasks: {

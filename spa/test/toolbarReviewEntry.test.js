@@ -103,12 +103,13 @@ describe("workspace jump-menu review entry", () => {
   ])("does not offer PR creation without its exact cached capability pair (%j)", async (reviews) => {
     await mount(reviews);
     expect(reviewButton()).toBeNull();
+    if (!reviews.pullRequests) expect(menu().textContent).toContain("Update the bridge to request reviews");
     expect(state.rpc).not.toHaveBeenCalled();
   });
 
   it("opens the shared form from the workspace menu using cached support alone", async () => {
     await mount();
-    await vi.waitFor(() => expect(reviewButton()?.textContent).toContain("Open review"));
+    await vi.waitFor(() => expect(reviewButton()?.textContent).toContain("Request review"));
     expect(document.querySelector('#toolbar [data-workspace-review]')).toBeNull();
     expect(document.querySelector('#toolbar #tb-verb')).toBeNull();
     reviewButton().click();
@@ -122,7 +123,7 @@ describe("workspace jump-menu review entry", () => {
   it("links to the cached active PR's task without needing the open mutation capability", async () => {
     deliver([workspace({ active_review: activeReview() })]);
     await mount({ pullRequests: true, get: true });
-    await vi.waitFor(() => expect(reviewButton()?.textContent).toContain("View pull request"));
+    await vi.waitFor(() => expect(reviewButton()?.textContent).toContain("View review"));
     reviewButton().click();
     expect(state.go).toHaveBeenCalledExactlyOnceWith({ name: "trackerTask", deviceId: "device", projectId: "project", taskId: "task" });
     expect(state.openWorkspaceReview).not.toHaveBeenCalled();
@@ -147,10 +148,10 @@ describe("workspace jump-menu review entry", () => {
     filter.focus();
     filter.setSelectionRange(2, 4);
     await support({ pullRequests: true, get: true, open: true });
-    await vi.waitFor(() => expect(reviewButton()?.textContent).toContain("Open review"));
+    await vi.waitFor(() => expect(reviewButton()?.textContent).toContain("Request review"));
     const entry = reviewButton();
     deliver([workspace({ active_review: activeReview(), locked: true })]);
-    await vi.waitFor(() => expect(reviewButton()?.textContent).toContain("View pull request"));
+    await vi.waitFor(() => expect(reviewButton()?.textContent).toContain("View review"));
     expect(reviewButton()).toBe(entry);
     expect(menu()).toBe(heldMenu);
     expect(menu().querySelector(".tb-filter")).toBe(filter);
@@ -182,7 +183,7 @@ describe("workspace jump-menu review entry", () => {
   it("does not borrow another workspace's active review or another device's capability", async () => {
     deliver([workspace({ active_review: activeReview({ workspace_id: "different" }) })]);
     await mount();
-    await vi.waitFor(() => expect(reviewButton()?.textContent).toContain("Open review"));
+    await vi.waitFor(() => expect(reviewButton()?.textContent).toContain("Request review"));
     state.App.route = route({ deviceId: "other-device" });
     toolbarRouteChanged();
     await vi.waitFor(() => expect(menu()).toBeNull());

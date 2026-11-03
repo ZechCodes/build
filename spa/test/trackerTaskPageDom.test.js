@@ -1595,3 +1595,47 @@ describe("the comment box across what arrives while typing", () => {
     expect([...host.querySelectorAll(".task-entry")]).toEqual(rows.slice(0, 20));
   });
 });
+
+
+describe("work-task review entry", () => {
+  beforeEach(async () => {
+    const { rememberReviewSupport } = await import("../src/core/taskReviewSupport.js");
+    await rememberReviewSupport("dev-1", { reviews: { forTask: true } });
+  });
+  it("paints cached child reviews and reacts to saved review status without awaiting the bridge", async () => {
+    const work = answerFor({ links: { workspace_ids: ["ws-1"] } });
+    const child = task({ id: "child-review", number: 71, links: { parent_task_id: "task-1" },
+      review_summary: { task_id: "child-review", for_task_id: "task-1", version: 1, status: "open" } });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", work);
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [child], columns: columns() });
+    call = vi.fn(() => new Promise(() => {}));
+    await mount();
+    expect(host.querySelector('[data-work-task-review]')?.textContent).toBe("Review #71 · Open");
+    expect(host.querySelector('[data-work-task-review]').getAttribute("href")).toBe("#/device/dev-1/project/proj-1/tasks/child-review");
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "child-review", { task: {
+      ...child, review_summary: { ...child.review_summary, version: 2, status: "approved" },
+    }, timeline: [] });
+    await vi.waitFor(() => expect(host.querySelector('[data-work-task-review]')?.textContent).toBe("Review #71 · Approved"));
+  });
+
+  it("refreshes the parent projection when its linked review is invalidated", async () => {
+    const linked = { task_id: "child-review", number: 71, for_task_id: "task-1", version: 1, status: "open" };
+    const work = answerFor({ linked_reviews: [linked] });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", work);
+    call = vi.fn(async (method) => method === "tasks.get" ? work : {});
+    await mount();
+    expect(host.querySelector('[data-work-task-review]')?.textContent).toBe("Review #71 · Open");
+    call.mockImplementation(async (method) => method === "tasks.get" ? answerFor({ linked_reviews: [{ ...linked, version: 2, status: "merged" }] }) : {});
+    watchers[0].onChanges([{ entity_id: "proj-1", tasks: { task_ids: ["child-review"] } }]);
+    await vi.waitFor(() => expect(host.querySelector('[data-work-task-review]')?.textContent).toBe("Review #71 · Merged"));
+  });
+
+  it("points tasks without a review to the linked workspace Changes", async () => {
+    const work = answerFor({ links: { workspace_ids: ["ws-1"] } });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", work);
+    call = vi.fn(() => new Promise(() => {}));
+    await mount();
+    expect(host.querySelector('.task-work-review-hint')?.textContent).toBe("Request a review from @wire-facade");
+    expect(host.querySelector('.task-work-review-hint a').getAttribute("href")).toBe("#/device/dev-1/project/proj-1/workspace/ws-1/changes");
+  });
+});

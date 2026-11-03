@@ -26,8 +26,10 @@ import {
   writeTaskRecord,
 } from "./trackerCache.js";
 import { readCached, subscribeCache } from "./localCache.js";
+import { namesLinkedReview, watchWorkTaskReviews } from "./taskWorkReview.js";
 import { mountTaskReviewPage } from "./taskReviewPage.js";
 import { reviewAddress } from "./taskReviewCache.js";
+import { readReviewSupport, reviewSupportAddress } from "./taskReviewSupport.js";
 import { createReadRetry } from "./transientRead.js";
 import { deviceSession, deviceWatch } from "./deviceReconnect.js";
 import { trailingRead } from "./trailingRead.js";
@@ -108,6 +110,8 @@ export function mountTaskPage(host, options) {
     rows: [],
     reviewSnapshots: [],
     review: null,
+    childReviews: [],
+    reviewForTaskSupported: false,
     columns: [],
     draft: "",
     draftOperationId: null,
@@ -313,6 +317,8 @@ export function mountTaskPage(host, options) {
     rows: state.rows,
     reviewSnapshots: state.reviewSnapshots,
     review: state.review,
+    childReviews: state.childReviews,
+    forTask: state.reviewForTaskSupported,
     unreadFrom,
     links: taskLinkRows(state.task, place(), state.feed()),
     watch: watch.state(),
@@ -582,6 +588,18 @@ export function mountTaskPage(host, options) {
    *  could move an answer repaints — prose becomes a link while the reader
    *  looks. The paint is part-patched, so nothing that did not move is touched. */
   const referencesWatcher = subscribeReferenceIndex(() => paint());
+  const readReviewCreationSupport = async () => {
+    const support = await readReviewSupport(state.deviceId);
+    if (state.disposed) return;
+    state.reviewForTaskSupported = support.forTask;
+    paint();
+  };
+  const stopReviewCreationSupport = subscribeCache(reviewSupportAddress(state.deviceId), () => void readReviewCreationSupport());
+  void readReviewCreationSupport();
+  const stopChildReviews = watchWorkTaskReviews({
+    deviceId: state.deviceId, projectId: state.projectId, taskId: state.taskId,
+    onChange: (reviews) => { state.childReviews = reviews; paint(); },
+  });
 
   /** Detail writes are announcements, never payload delivery. Re-read the
    *  record they named and only then let it reach the renderer. */
@@ -1052,7 +1070,7 @@ export function mountTaskPage(host, options) {
     kinds: tasksPushKinds(state.deviceId),
     mode: "realtime",
     onChanges: (items) => {
-      if (namesTask(items, state.taskId)) { void refresh(); reviewPage?.refresh(); }
+      if (namesTask(items, state.taskId) || namesLinkedReview(items, state.task, state.childReviews)) { void refresh(); reviewPage?.refresh(); }
     },
   });
 
@@ -1078,6 +1096,8 @@ export function mountTaskPage(host, options) {
       checklistSupportWatcher();
       reviewWatcher();
       referencesWatcher();
+      stopChildReviews();
+      stopReviewCreationSupport();
       reads.dispose();
       unreadMarker.leave();
       unreadPill.dispose();

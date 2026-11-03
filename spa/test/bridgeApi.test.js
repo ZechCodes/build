@@ -110,7 +110,7 @@ describe("adapter selection", () => {
       errors: { codes: true },
       diffs: { perFile: true },
       bodies: { pages: false, mediaRawPages: false },
-      reviews: { commits: false, commit: false, since: false, anchorCommit: false, get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
+      reviews: { commits: false, commit: false, since: false, anchorCommit: false, forTask: false, taskChoices: false, linkedTaskChoices: false, get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
       tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
       compaction: { harnessThresholds: false },

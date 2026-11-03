@@ -8,37 +8,6 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-#[cfg(test)]
-pub(super) mod checkpoint_test {
-    use std::{cell::RefCell, sync::mpsc::{Receiver, Sender}, time::Duration};
-
-    struct Barrier {
-        reached: Sender<i64>,
-        release: Receiver<()>,
-        held: Sender<bool>,
-    }
-
-    thread_local! {
-        static NEXT: RefCell<Option<Barrier>> = const { RefCell::new(None) };
-    }
-
-    pub(in crate::store) fn arm(reached: Sender<i64>, release: Receiver<()>, held: Sender<bool>) {
-        NEXT.with(|next| *next.borrow_mut() = Some(Barrier { reached, release, held }));
-    }
-
-    pub(super) fn after_commit(key: &str, through: i64) {
-        if key != "task_summary_v1_tasks" {
-            return;
-        }
-        let barrier = NEXT.with(|next| next.borrow_mut().take());
-        if let Some(barrier) = barrier {
-            let _ = barrier.reached.send(through);
-            let held_until_release = barrier.release.recv_timeout(Duration::from_secs(10)).is_ok();
-            let _ = barrier.held.send(held_until_release);
-        }
-    }
-}
-
 mod maintenance;
 mod query_projection;
 mod query_sources;
@@ -373,10 +342,6 @@ fn projection_complete(conn: &Connection, fingerprint: &str) -> Result<bool, Sto
         [fingerprint],
         |row| row.get(0),
     )?)
-}
-
-pub(super) fn ready_for_backup(conn: &Connection) -> Result<bool, StoreError> {
-    projection_complete(conn, &projection_definition().fingerprint)
 }
 
 // An unrelated schema migration invalidates the cheap generation check, but
@@ -811,8 +776,6 @@ fn migrate_batches(
         #[cfg(test)]
         let commit_cpu_started = thread_cpu_us();
         tx.commit()?;
-        #[cfg(test)]
-        checkpoint_test::after_commit(key, through);
         #[cfg(test)]
         if counts.0 <= 5 || counts.0.is_multiple_of(10) || batch_rows < 128 {
             eprintln!("task_summary_migration_batch table={table} batch={} below={below} through={through} rows={batch_rows} setup_us={setup_us} apply_us={apply_us} apply_cpu_us={apply_cpu_us} commit_us={} commit_cpu_us={}",counts.0,commit_started.elapsed().as_micros(),thread_cpu_us().saturating_sub(commit_cpu_started));

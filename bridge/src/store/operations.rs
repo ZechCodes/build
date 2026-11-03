@@ -1,6 +1,4 @@
 mod delivery_status;
-#[cfg(test)]
-pub(super) mod backup_progress_test;
 
 use super::{
     is_json_record, now_rfc3339, write_run, write_task, PersistedPlan, PersistedRun, Store,
@@ -49,12 +47,6 @@ impl CommittedThreadItems {
 }
 
 impl Store {
-    /// Copy an existing store without running startup migrations.
-    pub fn backup_existing(dir: &Path, destination: &Path) -> Result<(), StoreError> {
-        backup_existing_observed(dir, destination, || {})
-    }
-
-
     /// Copy the database to `destination` as a consistent snapshot.
     ///
     /// The state dir holds a live `build.db` plus its `-wal` and `-shm`
@@ -67,9 +59,22 @@ impl Store {
     /// Refuses to overwrite: a backup that silently replaced the previous one
     /// is a backup that can be lost twice.
     pub fn backup_to(&self, destination: &Path) -> Result<(), StoreError> {
-        backup_connection(&self.connection(), destination)
+        if destination.exists() {
+            return Err(StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("{} already exists", destination.display()),
+            )));
+        }
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // A bound parameter is not accepted here (VACUUM INTO takes a literal),
+        // so the path is quoted the way SQLite quotes a string literal.
+        let quoted = destination.to_string_lossy().replace('\'', "''");
+        self.connection()
+            .execute_batch(&format!("VACUUM INTO '{quoted}'"))?;
+        Ok(())
     }
-
     /// Accept one reviewer post: its new transcript rows and immutable
     /// operation receipt land in the same transaction. A retry that presents
     /// the same operation and resolved request returns the original receipt
@@ -671,43 +676,4 @@ impl ReadTransaction<'_> {
     pub fn operation(&self, operation_id: &str) -> Result<Option<OperationReceipt>, StoreError> {
         read_operation(self.connection(), operation_id)
     }
-}
-
-fn backup_connection(conn: &Connection, destination: &Path) -> Result<(), StoreError> {
-    if destination.exists() {
-        return Err(StoreError::Io(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            format!("{} already exists", destination.display()),
-        )));
-    }
-    if let Some(parent) = destination.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    #[cfg(test)]
-    let _progress = backup_progress_test::install(conn);
-    let quoted = destination.to_string_lossy().replace('\'', "''");
-    conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))?;
-    Ok(())
-}
-
-pub(super) fn backup_existing_observed(
-    dir: &Path,
-    destination: &Path,
-    after_preflight: impl FnOnce(),
-) -> Result<(), StoreError> {
-    let source = super::backup_trust::open_source(dir)?;
-    let conn = Connection::open_with_flags(&source.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let version: Option<String> = conn
-        .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |row| row.get(0))
-        .optional()?;
-    if version.as_deref().and_then(|value| value.parse::<i64>().ok())
-        != Some(super::SCHEMA_VERSION)
-        || !super::task_summaries::ready_for_backup(&conn)?
-    {
-        return Err(StoreError::TaskSummaryInvalid(
-            "backup source needs startup maintenance; start the bridge first".into(),
-        ));
-    }
-    after_preflight();
-    backup_connection(&conn, destination)
 }

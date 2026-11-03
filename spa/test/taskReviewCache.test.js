@@ -22,7 +22,7 @@ import closeFixture from "../../fixtures/api/v1/tasks.review.close.json";
 vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: () => null }));
 
 const scope = { deviceId: "reviews-cache", projectId: "proj-1", taskId: "task-1" };
-const support = { reject: false, author: false, verdictDelivery: false, retryDelivery: false, get: true, snapshot: true, diff: true, complete: true, act: true, comments: true,
+const support = { snapshotRetired: false, reject: false, author: false, verdictDelivery: false, retryDelivery: false, get: true, snapshot: true, diff: true, complete: true, act: true, comments: true,
   commits: false, commit: false, since: false, anchorCommit: false, forTask: false, taskChoices: false, linkedTaskChoices: false,
   pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false };
 const review = fixture.result.review;

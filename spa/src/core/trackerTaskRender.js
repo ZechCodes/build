@@ -24,7 +24,7 @@ import { ICON_PAPERCLIP, ICON_REPLY } from "./icons.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { commentReplyIndex, commentReplyHtml, commentRepliesHtml } from "./taskCommentReplies.js";
 import { taskWorkReviewHtml } from "./taskWorkReview.js";
-import { taskReviewSummaryHtml } from "./taskReviewSummaryRender.js";
+import { taskReviewSummaryHtml, taskReviewSummaryFor } from "./taskReviewSummaryRender.js";
 
 /** The head: what the task is called, and the two facts that are independent
  *  of each other — is it still open, and where does it stand on the board.
@@ -35,7 +35,7 @@ export const taskHeadHtml = (task, context = {}) => `<header class="task-page-he
     <div class="task-page-marks">
       ${stateMarkHtml(task)}<span class="task-page-state">${esc(stateLabel(task.state))}</span>
       ${numberHtml(task)}
-      ${taskReviewSummaryHtml(task.review_summary || context.review, context.reviewSupport)}
+      ${taskReviewSummaryHtml(taskReviewSummaryFor(task, context.review), context.reviewSupport)}
       ${ageHtml(task.updated_at)}
       ${context.watch ? watchButtonHtml(context.watch) : ""}
     </div>
@@ -346,13 +346,14 @@ export const TASK_PAGE_FRAME = '<div class="task-page"><div class="task-page-mai
  * all updated in place by the page, so the textarea is one node per mount and
  * nothing stands up a new one under the reader (#153).
  */
-export const isReviewTask = (task, context = {}) => Boolean(task?.review_summary || context.review);
+export const isReviewTask = (task, context = {}) => Boolean(task?.review_summary || task?.legacy_review || context.review);
 export const taskPageFrame = (review) => review
   ? '<div class="task-page review-task-template"><div class="task-page-main"></div><aside class="task-rail" aria-label="About this task"></aside></div>' : TASK_PAGE_FRAME;
 export const REVIEW_COMMENTS_FRAME = '<aside class="task-review-comments" aria-label="Review comments"><h2>Comments</h2><div data-review-feedback-host></div><ul class="task-timeline"></ul><div data-review-task-composer></div></aside>';
 
 function reviewPageParts(task, context) {
-  const timeline = timelineParts(context.rows, context);
+  const readOnlyReview = Boolean(task.legacy_review || (context.review && context.review.mode !== "pull_request"));
+  const timeline = timelineParts(context.rows, { ...context, readOnlyReview });
   return {
     main: [
       { name: "review", html: '<section data-task-review></section>', key: "review" },

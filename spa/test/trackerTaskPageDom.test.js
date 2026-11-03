@@ -168,6 +168,30 @@ afterEach(() => {
   page?.dispose();
 });
 
+it("keeps plain task comments usable on a read-only legacy review", async () => {
+  const { rememberReviewSupport } = await import("../src/core/taskReviewSupport.js");
+  const { writeReviewRecord } = await import("../src/core/taskReviewCache.js");
+  const review = { version: 1, state: "open", snapshots: [{ id: "old", number: 1, directories: [] }] };
+  const answer = answerFor({ legacy_review: true }, [comment({ id: "anchored-legacy", body: "Saved context", anchor: { snapshot_id: "old", directory_id: "old-dir", path: "old.js", side: "new", line: 1 } })]);
+  await rememberReviewSupport("dev-1", { reviews: { get: true, comments: true, snapshotRetired: true } });
+  await writeReviewRecord({ deviceId: "dev-1", projectId: "proj-1", taskId: "task-1" }, review, 1);
+  await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answer);
+  call = vi.fn(async (method) => method === "tasks.review.get" ? { review } : method === "tasks.get" ? answer : {});
+  await mount({}, { waitForPaint: false });
+  await painted(() => host.querySelector('.review-task-template #task-comment'), host);
+  expect(host.querySelector('[data-review-pending]')).toBeNull();
+  expect(host.querySelector('[data-review-verdict]')).toBeNull();
+  expect(host.querySelector('[data-review-reply]')).toBeNull();
+  const field = host.querySelector('#task-comment');
+  field.value = "Keep this historical context";
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  host.querySelector('[data-task-composer]').dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  await vi.waitFor(() => expect(listed('tasks.comment')).toHaveLength(1));
+  expect(listed('tasks.comment')[0][1]).toMatchObject({ body: "Keep this historical context" });
+  expect(listed('tasks.comment')[0][1].anchor).toBeUndefined();
+  expect(listed('tasks.comment')[0][1].opinion).toBeUndefined();
+});
+
 describe("comment header reply", () => {
   it.each([
     { anchor: { snapshot_id: "snap-1", directory_id: "dir-1", path: "a.js", side: "new", line: 1 } },
@@ -197,8 +221,8 @@ describe("comment header reply", () => {
     const scope = { deviceId: "dev-1", projectId: "proj-1", taskId: "task-1" };
     const { rememberReviewSupport } = await import("../src/core/taskReviewSupport.js");
     const { writeReviewRecord } = await import("../src/core/taskReviewCache.js");
-    await rememberReviewSupport("dev-1", { reviews: { get: true, comments: true } });
-    const review = { version: 1, state: "open", snapshots: [{ id: "snap-1", number: 1, directories: [] }] };
+    await rememberReviewSupport("dev-1", { reviews: { get: true, comments: true, pullRequests: true } });
+    const review = { mode: "pull_request", version: 1, state: "open", snapshots: [{ id: "snap-1", number: 1, directories: [] }] };
     const answer = answerFor({}, [comment({ id: "tc-icon", opinion: { snapshot_id: "snap-1", verdict: "approve" } })]);
     await writeReviewRecord(scope, review, 1);
     call = vi.fn(async (method) => method === "tasks.review.get" ? { review } : answer);

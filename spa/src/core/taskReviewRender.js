@@ -8,7 +8,7 @@ export const reviewSnapshot = (review, id) => review?.snapshots.find((snapshot) 
 export const reviewDirectory = (snapshot, id) => snapshot?.directories.find((directory) => directory.id === id) || snapshot?.directories[0] || null;
 export const defaultReviewView = (directory) => directory?.status === "not_git" ? "files" : "changes";
 
-const legacyStatusHtml = (review, support) => support.reject ? '<span class="task-review-summary" data-review-mode="snapshot">Legacy review</span>' : `<span class="task-review-summary">${review?.state === "completed" ? "Completed" : "Open"}</span>`;
+const legacyStatusHtml = (review, support) => (support.snapshotRetired || support.reject) ? '<span class="task-review-summary" data-review-mode="snapshot">Legacy review</span>' : `<span class="task-review-summary">${review?.state === "completed" ? "Completed" : "Open"}</span>`;
 const reviewTitleHtml = (task) => `<div class="task-review-title"><span>Review${task.number ? ` #${Number(task.number)}` : ""}</span><h1>${esc(task.title || "Review")}</h1></div>`;
 const sinceCountHtml = (count) => Number.isSafeInteger(count) ? `<span>${count} commits since your review</span>` : "";
 function workTaskHtml(task, scope) {
@@ -16,7 +16,7 @@ function workTaskHtml(task, scope) {
   return id ? `<a href="${esc(hashFromRoute({ name: "trackerTask", ...scope, taskId: id }))}">Work task</a>` : "";
 }
 function headerActionsHtml(snapshot, support, isPr) {
-  const reviewer = snapshot ? '<button class="btn" data-review-reviewer>Choose reviewer</button>' : "";
+  const reviewer = snapshot && isPr ? '<button class="btn" data-review-reviewer>Choose reviewer</button>' : "";
   const refresh = support.get && !isPr ? '<button class="btn" data-review-refresh>Refresh</button>' : "";
   return `<div data-review-header-actions>${reviewer}${refresh}</div>`;
 }

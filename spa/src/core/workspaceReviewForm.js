@@ -187,6 +187,11 @@ export async function openReviewCreateForm(scope) {
   writer = watchReviewCreateDraft(scope, paint);
   await writer.ready;
   if (closed) return modal;
+  if (scope.forTaskId && context.support.forTask && !draft.submitted) {
+    draft = { ...draft, for_task_id: scope.forTaskId, for_task_touched: true };
+    paintCreateValues(modal.body, context, draft);
+    saveDraft();
+  }
   wire();
   modal.body.querySelector("[data-review-create-form]").onsubmit = async (event) => {
     event.preventDefault(); if (busy) return;
@@ -225,6 +230,8 @@ export async function openReviewCreateForm(scope) {
   return modal;
 }
 
+const selectedTaskLabel = (scope, draft) => scope.forTaskId === draft.for_task_id ? "Legacy review task" : "Selected task is unavailable";
+
 function mountReviewTaskChoices(body, scope, context, state) {
   const field = body.querySelector("[data-review-for-task]");
   if (!field) return { wire() {}, paint: async () => {}, refresh: async () => {} };
@@ -243,7 +250,7 @@ function mountReviewTaskChoices(body, scope, context, state) {
     if (!draft.submitted && !draft.for_task_id && !draft.for_task_touched) draft.for_task_id = preselectedReviewTask(context, tasks);
     field.innerHTML = workTaskOptions(tasks);
     if (draft.for_task_id && !tasks.some((task) => task.id === draft.for_task_id)) {
-      field.add(new Option("Selected task is unavailable", draft.for_task_id));
+      field.add(new Option(selectedTaskLabel(scope, draft), draft.for_task_id));
     }
     field.value = draft.for_task_id || "";
     next = page?.next_cursor;

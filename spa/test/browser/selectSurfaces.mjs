@@ -18,7 +18,6 @@ export const SELECT_SOURCES = {
   "core/isolation.js": "device settings / project settings",
   "core/projectAgentSetting.js": "device settings",
   "core/projectConsole.js": "project Terminal",
-  "core/taskReviewActions.js": "task review",
   "core/taskReviewMerge.js": "PR merge",
   "core/taskReviewRender.js": "task review",
   "core/taskWaitingOnRender.js": "task controls / Waiting on prerequisite",
@@ -40,7 +39,7 @@ export const SELECT_SURFACES = [
   { name: "project settings", selectors: ['[data-isolation="select"]'] },
   { name: "new project", selectors: ["#nrdevice"] },
   { name: "Request review", selectors: ["#review-create-assignee", "[data-review-for-task]"] },
-  { name: "task review", selectors: ["[data-review-snapshot]", "[data-review-merge-branch]", "[data-review-remote]"] },
+  { name: "task review", selectors: ["[data-review-snapshot]"] },
   { name: "PR merge", selectors: ["[data-pr-merge-remote]"] },
   { name: "new conversation", selectors: ["[data-new-agent-role]"] },
   { name: "clear conversation", selectors: ["[data-clear-detail]", "[data-clear-compact]"] },
@@ -146,6 +145,7 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
     m.newRepo.openNewRepo(() => {}, { devices: [device, { ...device, id: "desktop", name: "Desktop" }], defaultDeviceId: device.id, callRpcFor: () => callRpc });
   }
   if (name === "Request review") {
+    await m.cache.deleteCached(await m.cache.cachedAddresses({ deviceId: device.id, entityId: project.id, kind: "task-review" }));
     await m.cache.writeCached(m.tracker.tasksAddress(device.id, project.id), { tasks: [{
       id: "work-select", number: 367, title: "Style select menus", state: "open", links: { workspace_ids: ["workspace-1"] },
     }], columns: [] });

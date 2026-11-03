@@ -41,9 +41,9 @@ describe("what the box under the diff can do", () => {
 
   it("says how many comments the send carries", () => {
     const [comment] = changesComposerOptions({ commentable: true, pendingComments: 3 });
-    expect(comment.label).toBe("Send 3 comments");
-    expect(changesComposerOptions({ commentable: true, pendingComments: 1 })[0].label).toBe("Send 1 comment");
-    expect(changesComposerOptions({ commentable: true })[0].label).toBe("Comment");
+    expect(comment.label).toBe("Send 3 notes");
+    expect(changesComposerOptions({ commentable: true, pendingComments: 1 })[0].label).toBe("Send 1 note");
+    expect(changesComposerOptions({ commentable: true })[0].label).toBe("Notes to agent");
   });
 
   it("puts the caller's agent-commit options behind the plain one", () => {
@@ -62,7 +62,7 @@ describe("what the box under the diff can do", () => {
 
   it("names in the placeholder whatever the box can do", () => {
     expect(changesComposerPlaceholder({ commentable: true, uncommitted: true })).toContain("commit message");
-    expect(changesComposerPlaceholder({ commentable: true, uncommitted: true })).toContain("Comment");
+    expect(changesComposerPlaceholder({ commentable: true, uncommitted: true })).toContain("Notes to agent");
     expect(changesComposerPlaceholder({ commentable: true, uncommitted: false })).not.toContain("commit");
     expect(changesComposerPlaceholder({ commentable: false, uncommitted: true })).toBe("Commit message…");
   });

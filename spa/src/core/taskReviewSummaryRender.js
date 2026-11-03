@@ -15,8 +15,10 @@ export const taskReviewStatusLabel = (status) => STATUS_LABELS.get(status) || ""
 const isLegacyReview = (summary) => summary?.mode === "snapshot" ||
   (!summary?.mode && Array.isArray(summary?.snapshots));
 
+export const taskReviewSummaryFor = (task, fallback = null) => task.review_summary || (task.legacy_review ? { mode: "snapshot" } : fallback);
+
 export function taskReviewSummaryHtml(summary, support = {}) {
-  if (isLegacyReview(summary)) return support.reject
+  if (isLegacyReview(summary)) return (support.snapshotRetired || support.reject)
     ? '<span class="task-review-summary" data-review-mode="snapshot">Legacy review</span>' : "";
   if (summary?.status === "rejected" && !support.reject) return "";
   const label = taskReviewStatusLabel(summary?.status);

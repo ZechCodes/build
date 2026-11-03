@@ -30,6 +30,17 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
     vi.useRealTimers();
   });
 
+  it("hides merge controls once a workspace has a review", async () => {
+    const plug = createTaskReview({ taskId: "r1", callRpc: async () => ({ patch: PATCH, stat: {}, files: [] }),
+      getTask: () => TASK, hasReview: () => true, isOffline: () => false, onMerged() {} });
+    const host = document.createElement("div"), toolbar = document.createElement("div");
+    document.body.append(toolbar, host);
+    plug.mount(host, { gitActions: () => toolbar });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(toolbar.querySelector("button")).toBeNull();
+    plug.dispose?.(); plug.unmount();
+  });
+
   it("keeps the busy, disabled button across poll ticks while run.git_action is in flight", async () => {
     const rpcCalls = [];
     const callRpc = (method, params) => {

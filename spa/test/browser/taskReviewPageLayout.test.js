@@ -29,7 +29,7 @@ const detail = {
   ],
 };
 
-async function mountReviewTask(page, basePath) {
+async function mountReviewTask(page, basePath, legacy = false) {
   await mountLayout(page, '<div id="shell"><div id="view"><header id="toolbar">Build · Review</header><div id="view-body"><main id="root" class="surface"><div id="tabbody" class="flush"><div id="task-pane" class="task-surface"></div></div></main></div></div></div>', {
     basePath,
     styles: `@import url("${basePath}src/styles/tasks.css"); #shell{height:100vh;box-sizing:border-box} #view-body,#root,#tabbody,#task-pane{min-width:0} #task-pane{height:100%;overflow:auto}`,
@@ -43,7 +43,7 @@ async function mountReviewTask(page, basePath) {
     reads: "src/core/taskReviewReads.js", files: "src/core/taskReviewFiles.js",
     support: "src/core/taskReviewSupport.js", local: "src/core/localCache.js",
   }, basePath);
-  await page.evaluate(async ({ saved, detail, commit, path }) => {
+  await page.evaluate(async ({ saved, detail, commit, path, legacy }) => {
     const { page: taskPage, tasks, reviews, reads, files, support, local } = window.__layoutModules;
     const scope = { deviceId: "review-layout", projectId: "p1", taskId: "task-1" };
     const snapshot = saved.snapshots[1];
@@ -53,8 +53,8 @@ async function mountReviewTask(page, basePath) {
     const patch = `diff --git a/${path} b/${path}\nindex 111..222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1 +1,2 @@\n-export const review = null;\n+export const review = "ready";\n+export const selection = "preserved";\n`;
     const listing = { files: changed, stat: { files_changed: 1, insertions: 2, deletions: 1 }, diff_key: "base:head", files_truncated: false };
     await tasks.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, detail);
-    await reviews.writeReviewRecord(scope, saved, 1);
-    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, comments: true, commits: true, commit: true, since: true, anchorCommit: true } });
+    await reviews.writeReviewRecord(scope, { ...saved, mode: legacy ? "snapshot" : "pull_request" }, 1);
+    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, comments: true, pullRequests: true, complete: true, open: true, forTask: true, snapshotRetired: true, commits: true, commit: true, since: true, anchorCommit: true } });
     await local.writeCached(reads.reviewCommitsAddress(identity), { commits: [
       { oid: commit, parents: ["1".repeat(40)], subject: "Preserve review selection", author_name: "Ada", time: 1789012345, insertions: 2, deletions: 1, files_changed: 1 },
     ], commits_truncated: false });
@@ -78,7 +78,7 @@ async function mountReviewTask(page, basePath) {
       navigate: (route) => { window.__reviewNavigation.push(route); },
       markReviewRoute: (route) => { window.__reviewNavigation.push(route); },
     });
-  }, { saved, detail, commit, path });
+  }, { saved, detail, commit, path, legacy });
   await page.waitForSelector(".review-task-template");
   await page.waitForSelector(`[data-review-commit="${commit}"]`, { state: "attached" });
   await page.waitForSelector(`[data-review-path="${path}"]`);
@@ -153,3 +153,15 @@ for (const { label, width } of [{ label: "desktop", width: 1440 }, { label: "pho
     }, { width, height: 900, plugins: [deviceShim] });
   }, 90_000);
 }
+
+it("keeps legacy review history read-only and the plain task composer available", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountReviewTask(page, basePath, true);
+    expect(await page.locator('[data-review-legacy-read-only]').textContent()).toBe('Legacy review (read-only)');
+    expect(await page.locator('[data-review-comment-unavailable]').isVisible()).toBe(false);
+    expect(await page.locator('[data-review-request-legacy]').count()).toBe(1);
+    expect(await page.locator('[data-review-verdict], [data-review-pending], [data-review-comment], [data-review-file-comment], [data-review-reply]').count()).toBe(0);
+    expect(await page.locator('.task-review-comments [data-task-composer]').count()).toBe(1);
+    await captureLayout(page, 'legacy-review-read-only-desktop.png');
+  }, { width: 1440, height: 900 });
+});

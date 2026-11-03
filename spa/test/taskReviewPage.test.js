@@ -10,7 +10,8 @@ import fixture from "../../fixtures/api/v1/tasks.review.get.json";
 import prFixture from "../../fixtures/api/v1/tasks.review.open.json";
 import { painted } from "./waits.js";
 
-const panes = vi.hoisted(() => ({ changes: vi.fn(), files: vi.fn(), refresh: vi.fn() }));
+const panes = vi.hoisted(() => ({ changes: vi.fn(), files: vi.fn(), refresh: vi.fn(), request: vi.fn(async () => ({ close() {} })) }));
+vi.mock("../src/core/workspaceReviewEntry.js", () => ({ openWorkspaceReview: panes.request }));
 vi.mock("../src/core/taskReviewChanges.js", () => ({ mountTaskReviewChanges: (host, options) => {
   panes.changes(options); host.textContent = `Changes ${options.directory.id}`;
   return { dispose() {}, refresh: panes.refresh };
@@ -53,11 +54,14 @@ it("routes cached PRs to read-only controls and suppresses legacy git actions", 
   expect(document.querySelector('[data-review-act]')).toBeNull();
 });
 
-it("keeps legacy completion and git action controls without snapshot editing on PR-capable devices", async () => {
-  await mount(review, { ...support, act: true, pullRequests: true, open: true, push: true });
+it("renders legacy reviews read-only with an explicit close and a prefilled workspace request", async () => {
+  await mount(review, { ...support, act: true, pullRequests: true, open: true, forTask: true, push: true });
   expect(document.querySelector('[data-review-save]')).toBeNull();
-  expect(document.querySelector('[data-review-complete]')).not.toBeNull();
-  expect(document.querySelector('[data-review-act]')).not.toBeNull();
+  expect(document.querySelector('[data-review-more] [data-review-close-legacy]')).not.toBeNull();
+  expect(document.querySelector('[data-review-act]')).toBeNull();
+  expect(document.body.textContent).toContain('Legacy review (read-only)');
+  document.querySelector('[data-review-request-legacy]').click();
+  await vi.waitFor(() => expect(panes.request).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'workspace-1', forTaskId: 'task-1' })));
   expect(document.querySelector('[data-review-read-only]')).toBeNull();
 });
 
@@ -102,10 +106,10 @@ it("does not call review verbs or draw actions without cached support", async ()
 });
 
 it("shows the pending tray and verdict bar and places lifecycle controls in More", async () => {
-  await mount(review, { ...support, comments: true });
+  await mount({ ...review, mode: 'pull_request' }, { ...support, pullRequests: true, comments: true });
   expect(document.querySelector('[data-review-pending]')).not.toBeNull();
   expect(document.querySelector('[data-review-more] [data-review-save]')).toBeNull();
-  expect(document.querySelector('[data-review-more] [data-review-complete]')).not.toBeNull();
+  expect(document.querySelector('[data-review-verdict="approve"]')).not.toBeNull();
 });
 
 it("restores a URL selection offline and preserves path and line when changing revision", async () => {
@@ -152,7 +156,7 @@ it("keeps automatic refresh metadata-only while an explicit Refresh can retry th
 it("enables line composition in both panes and disables verdicts on older revisions", async () => {
   const first = { ...review.snapshots[0], id: 'first', number: 1 };
   const second = { ...first, id: 'second', number: 2 };
-  await mount({ ...review, snapshots: [first, second] }, { ...support, comments: true });
+  await mount({ ...review, mode: 'pull_request', snapshots: [first, second] }, { ...support, pullRequests: true, comments: true });
   expect(panes.changes.mock.calls.at(-1)[0].onComment).toBeTypeOf('function');
   expect([...document.querySelectorAll('[data-review-verdict]')].every((button) => !button.disabled)).toBe(true);
   const select = document.querySelector('[data-review-snapshot]');
@@ -167,11 +171,11 @@ it("enables line composition in both panes and disables verdicts on older revisi
 it("gates commit composing independently from commit reads, and still allows Files comments", async () => {
   const saved = review.snapshots[0];
   const capability = { ...support, comments: true, commits: true, commit: true, anchorCommit: false };
-  await mount(review, capability, { reviewRoute: { revision: saved.number, mode: 'commit', commit: 'a'.repeat(40), directoryId: 'dir-api' } });
+  await mount({ ...review, mode: 'pull_request' }, { ...capability, pullRequests: true }, { reviewRoute: { revision: saved.number, mode: 'commit', commit: 'a'.repeat(40), directoryId: 'dir-api' } });
   expect(panes.changes.mock.calls.at(-1)[0].comparison.mode).toBe('commit');
   expect(panes.changes.mock.calls.at(-1)[0].onComment).toBeUndefined();
   expect(document.querySelector('[data-review-comment-unavailable]').hidden).toBe(false);
-  await rememberReviewSupport(scope.deviceId, { reviews: { ...capability, anchorCommit: true } });
+  await rememberReviewSupport(scope.deviceId, { reviews: { ...capability, pullRequests: true, anchorCommit: true } });
   await vi.waitFor(() => expect(panes.changes.mock.calls.at(-1)[0].onComment).toBeTypeOf('function'));
   document.querySelector('[data-review-view="files"]').click();
   expect(panes.files.mock.calls.at(-1)[0].onComment).toBeTypeOf('function');
@@ -179,7 +183,7 @@ it("gates commit composing independently from commit reads, and still allows Fil
 
 it("jumps a Files draft back to its unchanged source line in Files", async () => {
   const markReviewRoute = vi.fn();
-  await mount(review, { ...support, comments: true }, { markReviewRoute });
+  await mount({ ...review, mode: 'pull_request' }, { ...support, pullRequests: true, comments: true }, { markReviewRoute });
   document.querySelector('[data-review-view="files"]').click();
   const anchor = { snapshot_id: review.snapshots[0].id, directory_id: 'dir-api', path: 'unchanged.js', side: 'new', line: 12 };
   panes.files.mock.calls.at(-1)[0].onComment(anchor);
@@ -191,13 +195,11 @@ it("jumps a Files draft back to its unchanged source line in Files", async () =>
   expect(markReviewRoute.mock.calls.at(-1)[0].review).toMatchObject({ view: 'files', path: 'unchanged.js', side: 'new', line: 12 });
 });
 
-it.each([undefined, "snapshot"])("keeps legacy review mode %s free of PR-only verdict controls and copy", async (mode) => {
+it.each([undefined, "snapshot"])("makes legacy review mode %s read-only even with comment support", async (mode) => {
   await mount({ ...review, mode }, { ...support, comments: true, reject: true, author: true, pullRequests: true });
-  expect(document.querySelector('[data-review-verdict="reject"]')).toBeNull();
-  document.querySelector('[data-review-verdict="approve"]').click();
-  await vi.waitFor(() => expect(document.querySelector('#confirm-scrim')).not.toBeNull());
-  const confirmation = document.querySelector('#confirm-scrim');
-  expect(confirmation.textContent).toContain("The author is told and continues.");
-  expect(confirmation.textContent).not.toContain("takes it forward");
-  confirmation.querySelector('[data-confirm-cancel]').click();
+  expect(document.querySelector('[data-review-verdict-host]').textContent).toBe("");
+  expect(document.querySelector('[data-review-inline-composer]')).toBeNull();
+  expect(panes.changes.mock.calls.at(-1)[0].onComment).toBeUndefined();
+  expect(document.querySelector('[data-review-reviewer]')).toBeNull();
+  expect(document.querySelector('[data-review-comment-unavailable]').hidden).toBe(true);
 });

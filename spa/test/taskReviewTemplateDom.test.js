@@ -29,7 +29,7 @@ vi.mock("../src/core/deviceReconnect.js", () => ({
 const scope = { deviceId: "review-device", projectId: "review-project", taskId: "task-1" };
 const commit = "2".repeat(40);
 const path = "src/a.js";
-const saved = { ...fixture.result.review, snapshots: [{ ...fixture.result.review.snapshots[0],
+const saved = { ...fixture.result.review, mode: "pull_request", snapshots: [{ ...fixture.result.review.snapshots[0],
   directories: [fixture.result.review.snapshots[0].directories[0]],
 }] };
 const anchor = { snapshot_id: saved.snapshots[0].id, directory_id: "dir-api", path, side: "new", line: 1, commit };
@@ -155,7 +155,7 @@ describe("cached review task template", () => {
 
   it("retains Description, attachments, pending review comments and inline replies", async () => {
     await seed({ summary: true });
-    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, comments: true } });
+    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, comments: true, pullRequests: true } });
     const detail = await tasks.readTaskRecord(scope.deviceId, scope.projectId, scope.taskId);
     detail.task.body = 'The review brief stays available.';
     detail.task.attachments = [{ filename: 'brief.txt', path: 'brief.txt', mime: 'text/plain', size: 4 }];
@@ -226,4 +226,13 @@ describe("cached review task template", () => {
     expect(scroll.scrollTop).toBe(37);
   });
 
+});
+
+it("selects the legacy template from a compact marker before the review record is cached", async () => {
+  const detail = { task: task({ id: scope.taskId, title: "Retained review", legacy_review: true }), timeline: [] };
+  await tasks.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, detail);
+  await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, snapshotRetired: true } });
+  mount();
+  await vi.waitFor(() => expect(host.querySelector('.review-task-template [data-task-review]')).not.toBeNull());
+  expect(host.querySelector('.task-review-comments [data-task-composer]')).not.toBeNull();
 });

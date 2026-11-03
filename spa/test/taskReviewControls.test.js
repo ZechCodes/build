@@ -35,17 +35,17 @@ it.each([null, { ...review, mode: "snapshot" }])("never offers task-side snapsho
   expect(document.querySelector('[data-review-save]')).toBeNull();
   expect(document.querySelector('[data-review-snapshot-form]')).toBeNull();
   expect(document.querySelector('[data-review-workspace]')).toBeNull();
-  expect(Boolean(document.querySelector('[data-review-complete]'))).toBe(Boolean(saved));
+  expect(Boolean(document.querySelector('[data-review-close-legacy]'))).toBe(Boolean(saved));
   expect(repository.mutate).not.toHaveBeenCalled();
 });
 
-it("completes with the user's description only and leaves completed review history readable", async () => {
+it("closes a legacy review explicitly without a completion form", async () => {
   const repository = { mutate: vi.fn(async () => {}) };
   mount(repository);
-  const field = document.querySelector('[data-review-description]');
-  field.value = "  merged API to dev  "; field.dispatchEvent(new Event("input"));
-  document.querySelector('[data-review-complete]').dispatchEvent(new Event("submit", { cancelable: true }));
-  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("complete", { expected_version: 1, description: "merged API to dev" }));
+  expect(document.querySelector("form, textarea")).toBeNull();
+  document.querySelector('[data-review-close-legacy]').click();
+  document.querySelector('[data-confirm-ok]').click();
+  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("complete", { expected_version: 1, description: "Closed legacy review" }));
   controls.dispose(); mount(repository, { review: { ...review, state: "completed" } });
-  expect(document.querySelector('[data-review-complete]')).toBeNull();
+  expect(document.querySelector('[data-review-close-legacy]')).toBeNull();
 });

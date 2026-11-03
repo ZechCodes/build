@@ -134,12 +134,12 @@ it("preselects a linked task outside the catalogue from bounded query pages and 
   expect(document.querySelector("[data-review-for-task]").value).toBe("linked-old");
 });
 
-it("excludes legacy snapshot tasks known through their cached review header", async () => {
+it("keeps legacy snapshot tasks available when requesting a replacement", async () => {
   await enable();
   await writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [{ id: "legacy", number: 1, title: "Snapshot task", state: "open" }] });
   await writeReviewRecord({ ...scope, taskId: "legacy" }, { task_id: "legacy", mode: "snapshot", version: 1, snapshots: [] }, 1);
   mount(); await openForm();
-  expect([...document.querySelector("[data-review-for-task]").options].map((option) => option.value)).not.toContain("legacy");
+  expect([...document.querySelector("[data-review-for-task]").options].map((option) => option.value)).toContain("legacy");
 });
 
 it("previews committed sources and restores the exact submitted opening after failure", async () => {
@@ -325,4 +325,15 @@ it("retains a submitted opening for explicit recovery after its PR arrives in th
   await enable({ open: false });
   await painted(() => document.querySelector("[data-workspace-review]") === null);
   expect(document.querySelector("[data-workspace-review]")).toBeNull();
+});
+
+it("prefills a legacy review task explicitly when requesting its replacement", async () => {
+  await enable();
+  await writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [{ id: "legacy-task", number: 3, title: "Retained legacy review", state: "open", legacy_review: true }] });
+  await writeReviewRecord({ ...scope, taskId: "legacy-task" }, { task_id: "legacy-task", mode: "snapshot", snapshots: [], version: 1 }, 1);
+  const { openWorkspaceReview } = await import("../src/core/workspaceReviewEntry.js");
+  const modal = await openWorkspaceReview({ ...scope, forTaskId: "legacy-task", callRpc: vi.fn() });
+  expect(document.querySelector('[data-review-for-task]').value).toBe("legacy-task");
+  expect(document.querySelector('[data-review-for-task]').selectedOptions[0].textContent).toContain("Retained legacy review");
+  await modal.close();
 });

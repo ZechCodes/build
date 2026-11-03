@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
-import { mountLayout, withLayoutPage } from "./layoutHarness.mjs";
+import { captureLayout, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
 import { mountInputSurface, INPUT_SURFACES, INPUT_SOURCES, INPUT_NONVISUAL_SOURCES, INPUT_TOGGLE_SOURCES, INPUT_RANGE_SOURCES, INPUT_FILE_SOURCES, INPUT_RADIO_SOURCES } from "./inputSurfaces.mjs";
 import { settled } from "./chatMenuSeed.mjs";
 
@@ -123,6 +123,7 @@ for (const width of [320, 1280]) {
           await page.waitForSelector(surface.selectors[0], { state: "visible" });
           try {
             await assertTextControls(page, surface.name);
+            if (surface.name === "Request review") await captureLayout(page, `input-request-review-${width}-${theme}.png`);
           } catch (error) { failures.push(`${surface.name}: ${error.message}`); }
           finally { await page.evaluate(() => window.__inputDispose?.()); }
         }

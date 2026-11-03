@@ -511,7 +511,7 @@ async fn sync_head_uses_read_pool_while_writer_is_held() {
 }
 
 #[test]
-fn normalization_is_bound_exactly_and_foreign_incarnation_cannot_mask_bad_structure() {
+fn normalization_preserves_exact_definition_and_opaque_actor_bytes() {
     let a = Scope::new(Stream::project("p"), json!({"a":1,"b":2}));
     let b = Scope::new(Stream::project("p"), json!({"b":2,"a":1}));
     assert_eq!(a.digest(), b.digest());

@@ -200,6 +200,8 @@ pub(super) fn now_ms() -> i64 {
 }
 
 #[cfg(test)]
+mod cursor_tests;
+#[cfg(test)]
 mod startup_tests;
 #[cfg(test)]
 mod tests;

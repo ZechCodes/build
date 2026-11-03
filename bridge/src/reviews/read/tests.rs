@@ -58,6 +58,10 @@ fn request(mode: ReviewReadMode, path: Option<&str>) -> ReviewReadRequest {
         paths: Vec::new(),
         range: None,
         patch: true,
+        commit: None,
+        from_snapshot_id: None,
+        limit: None,
+        cursor: None,
     }
 }
 
@@ -430,4 +434,322 @@ fn symlinks_and_gitlinks_are_labelled_and_not_opened() {
     );
     assert!(read(&directory, &request(ReviewReadMode::Blob, Some("link"))).is_err());
     assert!(read(&directory, &request(ReviewReadMode::Blob, Some("nested"))).is_err());
+}
+
+fn commit_file(repo: &Path, path: &str, subject: &str) -> String {
+    std::fs::write(repo.join(path), format!("{subject}\n")).unwrap();
+    git_in(repo, &["add", path]);
+    git_in(repo, &["commit", "-m", subject]);
+    git2::Repository::open(repo)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn revision_commits_are_topological_and_page_without_duplicates() {
+    let (_temp, repo) = init_repo();
+    let mut directory = saved_directory(&repo);
+    let first = directory.head.clone().unwrap();
+    let second = commit_file(&repo, "second.txt", "second");
+    let third = commit_file(&repo, "third.txt", "third");
+    directory.head = Some(third.clone());
+    let mut req = request(ReviewReadMode::Commits, None);
+    req.limit = Some(2);
+    let ReviewReadResult::Commits(page) = read(&directory, &req).unwrap() else {
+        panic!()
+    };
+    assert_eq!(
+        page.commits.iter().map(|c| &c.oid).collect::<Vec<_>>(),
+        [&third, &second]
+    );
+    assert!(page.commits_truncated);
+    assert_eq!(
+        page.commits[0].parents.as_slice(),
+        std::slice::from_ref(&second)
+    );
+    assert_eq!(page.commits[0].subject, "third");
+    assert!(!page.commits[0].author_name.is_empty());
+    assert!(page.commits[0].time > 0);
+    assert_eq!(
+        (
+            page.commits[0].files_changed,
+            page.commits[0].insertions,
+            page.commits[0].deletions
+        ),
+        (1, 1, 0)
+    );
+    req.cursor = page.next_cursor;
+    let ReviewReadResult::Commits(last) = read(&directory, &req).unwrap() else {
+        panic!()
+    };
+    assert_eq!(last.commits[0].oid, first);
+    assert!(!last.commits_truncated);
+}
+
+#[test]
+fn single_commit_diff_filters_paths_and_rejects_outside_range() {
+    let (_temp, repo) = init_repo();
+    let mut directory = saved_directory(&repo);
+    commit_file(&repo, "second.txt", "second");
+    directory.head = Some(commit_file(&repo, "third.txt", "third"));
+    let mut req = request(ReviewReadMode::Commit, None);
+    req.commit = directory.head.clone();
+    let ReviewReadResult::Changes(changes) = read(&directory, &req).unwrap() else {
+        panic!()
+    };
+    assert_eq!(changes.files.len(), 1);
+    assert_eq!(changes.files[0].path, "third.txt");
+    req.paths = vec!["second.txt".into()];
+    let ReviewReadResult::Changes(filtered) = read(&directory, &req).unwrap() else {
+        panic!()
+    };
+    assert!(filtered.files.is_empty());
+    req.commit = Some(directory.base.as_ref().unwrap().oid.clone());
+    assert!(read(&directory, &req)
+        .unwrap_err()
+        .contains("commit_outside_range"));
+}
+
+#[test]
+fn since_revision_compares_trees_after_push_and_rewrite() {
+    let (_temp, repo) = init_repo();
+    let earlier = saved_directory(&repo);
+    let mut directory = earlier.clone();
+    directory.head = Some(commit_file(&repo, "second.txt", "second"));
+    let mut req = request(ReviewReadMode::Since, None);
+    req.from_snapshot_id = Some("earlier".into());
+    let ReviewReadResult::Changes(changes) = read_since(&directory, &earlier, &req).unwrap() else {
+        panic!()
+    };
+    assert!(!changes.rewritten);
+    assert_eq!(changes.since_baseline, Some(SinceBaseline::PreviousHead));
+    assert_eq!(changes.files[0].path, "second.txt");
+    git_in(
+        &repo,
+        &["reset", "--hard", &directory.base.as_ref().unwrap().oid],
+    );
+    directory.head = Some(commit_file(&repo, "rewrite.txt", "rewrite"));
+    let ReviewReadResult::Changes(changes) = read_since(&directory, &earlier, &req).unwrap() else {
+        panic!()
+    };
+    assert!(changes.rewritten);
+    assert_eq!(changes.since_baseline, Some(SinceBaseline::PreviousHead));
+    assert_eq!(changes.files.len(), 2);
+    assert!(changes.patch.unwrap().contains("-saved content"));
+}
+
+#[test]
+fn commit_pages_reject_cursors_from_another_revision_and_invalid_limits() {
+    let (_temp, repo) = init_repo();
+    let mut directory = saved_directory(&repo);
+    directory.head = Some(commit_file(&repo, "second.txt", "second"));
+    let mut req = request(ReviewReadMode::Commits, None);
+    req.limit = Some(1);
+    let ReviewReadResult::Commits(first) = read(&directory, &req).unwrap() else {
+        panic!()
+    };
+    req.cursor = first.next_cursor;
+    directory.head = Some(commit_file(&repo, "third.txt", "third"));
+    assert!(read(&directory, &req).unwrap_err().contains("cursor"));
+    req.cursor = None;
+    req.limit = Some(0);
+    assert!(read(&directory, &req).is_err());
+    req.limit = Some(201);
+    assert!(read(&directory, &req).is_err());
+}
+
+#[test]
+fn since_missing_earlier_head_returns_rewritten_tree_diff() {
+    let (_temp, repo) = init_repo();
+    let directory = saved_directory(&repo);
+    let mut earlier = directory.clone();
+    earlier.head = Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into());
+    let mut req = request(ReviewReadMode::Since, None);
+    req.from_snapshot_id = Some("earlier".into());
+    let ReviewReadResult::Changes(changes) = read_since(&directory, &earlier, &req).unwrap() else {
+        panic!()
+    };
+    assert!(changes.rewritten);
+    assert_eq!(changes.since_baseline, Some(SinceBaseline::Base));
+    assert_eq!(changes.files.len(), 1);
+    assert_eq!(changes.files[0].path, "new.txt");
+}
+
+#[test]
+fn receiver_reads_survive_source_workspace_deletion() {
+    let (temp, repo) = init_repo();
+    let mut directory = saved_directory(&repo);
+    let earlier = directory.clone();
+    directory.head = Some(commit_file(&repo, "second.txt", "second"));
+    let receiver = temp.path().join("receiver.git");
+    git_in(
+        temp.path(),
+        &[
+            "clone",
+            "--bare",
+            repo.to_str().unwrap(),
+            receiver.to_str().unwrap(),
+        ],
+    );
+    directory.common_git_dir = Some(receiver);
+    std::fs::remove_dir_all(&repo).unwrap();
+    let req = request(ReviewReadMode::Commits, None);
+    let ReviewReadResult::Commits(commits) = read(&directory, &req).unwrap() else {
+        panic!()
+    };
+    assert_eq!(commits.commits.len(), 2);
+    let mut req = request(ReviewReadMode::Commit, None);
+    req.commit = directory.head.clone();
+    let ReviewReadResult::Changes(changes) = read(&directory, &req).unwrap() else {
+        panic!()
+    };
+    assert_eq!(changes.files[0].path, "second.txt");
+    req.mode = ReviewReadMode::Since;
+    req.commit = None;
+    req.from_snapshot_id = Some("earlier".into());
+    let ReviewReadResult::Changes(changes) = read_since(&directory, &earlier, &req).unwrap() else {
+        panic!()
+    };
+    assert_eq!(changes.files[0].path, "second.txt");
+    assert!(!changes.rewritten);
+}
+
+#[test]
+fn merge_commit_diff_uses_first_parent_and_commit_list_respects_topology() {
+    let (_temp, repo) = init_repo();
+    let mut directory = saved_directory(&repo);
+    git_in(&repo, &["checkout", "-b", "side"]);
+    let side = commit_file(&repo, "side.txt", "side");
+    git_in(&repo, &["checkout", "feature"]);
+    let main = commit_file(&repo, "main.txt", "main");
+    git_in(&repo, &["merge", "--no-ff", "side", "-m", "merge side"]);
+    directory.head = Some(
+        git2::Repository::open(&repo)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target()
+            .unwrap()
+            .to_string(),
+    );
+    let mut req = request(ReviewReadMode::Commit, None);
+    req.commit = directory.head.clone();
+    req.paths = vec!["side.txt".into()];
+    req.range = Some(FileRange {
+        offset: 0,
+        bytes: 4096,
+        raw: None,
+    });
+    let ReviewReadResult::Changes(changes) = read(&directory, &req).unwrap() else {
+        panic!()
+    };
+    assert_eq!(changes.files.len(), 1);
+    assert_eq!(changes.files[0].path, "side.txt");
+    assert!(changes.patch.unwrap().contains("+side"));
+    assert!(changes.range.unwrap().total > 0);
+    req.paths.clear();
+    req.range = None;
+    let ReviewReadResult::Changes(changes) = read(&directory, &req).unwrap() else {
+        panic!()
+    };
+    assert_eq!(changes.files.len(), 1);
+    assert_eq!(changes.files[0].path, "side.txt");
+    let ReviewReadResult::Commits(page) =
+        read(&directory, &request(ReviewReadMode::Commits, None)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(page.commits[0].oid, directory.head.unwrap());
+    assert_eq!(page.commits[0].parents, [main.clone(), side.clone()]);
+    let positions: std::collections::HashMap<_, _> = page
+        .commits
+        .iter()
+        .enumerate()
+        .map(|(index, commit)| (commit.oid.as_str(), index))
+        .collect();
+    for commit in &page.commits {
+        for parent in &commit.parents {
+            if let Some(parent_position) = positions.get(parent.as_str()) {
+                assert!(positions[commit.oid.as_str()] < *parent_position);
+            }
+        }
+    }
+}
+
+#[test]
+fn commit_list_display_fields_are_bounded_at_utf8_boundaries() {
+    let (_temp, repo) = init_repo();
+    let mut directory = saved_directory(&repo);
+    let oversized = "é".repeat(600);
+    std::fs::write(repo.join("large-subject.txt"), "large display fields\n").unwrap();
+    git_in(&repo, &["add", "large-subject.txt"]);
+    assert!(git_command(&repo, &["commit", "-m", &oversized])
+        .env("GIT_AUTHOR_NAME", &oversized)
+        .status()
+        .unwrap()
+        .success());
+    directory.head = git2::Repository::open(&repo)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .map(|oid| oid.to_string());
+    let ReviewReadResult::Commits(page) =
+        read(&directory, &request(ReviewReadMode::Commits, None)).unwrap()
+    else {
+        panic!()
+    };
+    let commit = &page.commits[0];
+    assert_eq!(commit.subject.len(), crate::gitgui::GIT_SUBJECT_MAX_BYTES);
+    assert_eq!(
+        commit.author_name.len(),
+        crate::gitgui::GIT_SUBJECT_MAX_BYTES
+    );
+    assert!(oversized.starts_with(&commit.subject));
+    assert!(oversized.starts_with(&commit.author_name));
+}
+
+#[test]
+fn since_unavailable_earlier_capture_uses_recorded_base() {
+    let (_temp, repo) = init_repo();
+    let directory = saved_directory(&repo);
+    let mut earlier = directory.clone();
+    earlier.status = ReviewDirectoryStatus::Unavailable;
+    earlier.head = None;
+    earlier.base = None;
+    earlier.common_git_dir = None;
+    let mut req = request(ReviewReadMode::Since, None);
+    req.from_snapshot_id = Some("unavailable-earlier".into());
+    let ReviewReadResult::Changes(changes) = read_since(&directory, &earlier, &req).unwrap() else {
+        panic!()
+    };
+    assert!(changes.rewritten);
+    assert_eq!(changes.since_baseline, Some(SinceBaseline::Base));
+    assert_eq!(changes.files.len(), 1);
+    assert_eq!(changes.files[0].path, "new.txt");
+    assert_eq!(changes.stat.files_changed, 1);
+    assert!(!changes.patch.unwrap().contains("README.md"));
+}
+
+#[test]
+fn since_genuinely_unborn_earlier_revision_uses_empty_previous_tree() {
+    let (_temp, repo) = init_repo();
+    let directory = saved_directory(&repo);
+    let mut earlier = directory.clone();
+    earlier.status = ReviewDirectoryStatus::NoCommits;
+    earlier.head = None;
+    earlier.base = None;
+    let mut req = request(ReviewReadMode::Since, None);
+    req.from_snapshot_id = Some("unborn-earlier".into());
+    let ReviewReadResult::Changes(changes) = read_since(&directory, &earlier, &req).unwrap() else {
+        panic!()
+    };
+    assert!(!changes.rewritten);
+    assert_eq!(changes.since_baseline, Some(SinceBaseline::PreviousHead));
+    assert_eq!(changes.files.len(), 2);
+    assert!(changes.files.iter().any(|file| file.path == "README.md"));
 }

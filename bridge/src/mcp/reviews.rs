@@ -59,17 +59,21 @@ pub(super) fn tools() -> Vec<Value> {
         }),
         json!({
             "name":"read_review",
-            "description":"Read a directory from a saved review snapshot. changes returns committed changed files and optional patch; tree lists the entire saved Git tree, including unchanged files; blob reads one file at the saved head. Use the IDs from get_review, not a live repository path. Non-Git directories are labelled live in get_review.",
+            "description":"Read a directory from a saved review snapshot. commits lists the revision’s commits with a bounded cursor; commit reads a first-parent diff; since compares an earlier revision’s head. changes returns committed changed files and optional patch; tree lists the entire saved Git tree, including unchanged files; blob reads one file at the saved head. Use the IDs from get_review, not a live repository path. Non-Git directories are labelled live in get_review.",
             "inputSchema":{
                 "type":"object",
                 "properties":{
                     "task_id":task_id,
                     "snapshot_id":{"type":"string", "description":"The saved snapshot ID from get_review."},
                     "directory_id":{"type":"string", "description":"A directory ID from that snapshot."},
-                    "mode":{"type":"string", "enum":["changes","tree","blob"], "description":"Defaults to changes. tree lists all committed files; blob reads one file's saved bytes."},
+                    "mode":{"type":"string", "enum":["changes","tree","blob","commits","commit","since"], "description":"Defaults to changes. commits lists the revision range; commit reads a first-parent diff; since compares revision heads. tree lists all committed files; blob reads one file's saved bytes."},
+                    "commit":{"type":"string", "description":"Full commit OID in this revision's base..head; required for commit mode."},
+                    "from_snapshot_id":{"type":"string", "description":"Earlier revision in this task; required for since mode."},
+                    "limit":{"type":"integer", "minimum":1, "maximum":200, "description":"Commit page size, default 100, capped at 200."},
+                    "cursor":{"type":"string", "description":"next_cursor from the previous commits page."},
                     "path":{"type":"string", "description":"Required for blob; an optional directory prefix for tree. Relative to the saved directory."},
-                    "paths":{"type":"array", "maxItems":MAX_PATHS, "items":{"type":"string", "minLength":1}, "description":"Optional paths to narrow changes. Relative to the saved directory."},
-                    "patch":{"type":"boolean", "description":"For changes, include the patch. Defaults to true; pass false for a cheap changed-file list."},
+                    "paths":{"type":"array", "maxItems":MAX_PATHS, "items":{"type":"string", "minLength":1}, "description":"Optional paths to narrow changes, commit, or since diffs. Relative to the saved directory."},
+                    "patch":{"type":"boolean", "description":"For changes, commit, or since, include the patch. Defaults to true; pass false for a changed-file list."},
                     "range":range
                 },
                 "required":["task_id","snapshot_id","directory_id"]
@@ -245,17 +249,46 @@ fn read_action(params: Option<&Value>) -> Result<BridgeAction, String> {
     let paths = paths(args)?;
     let patch = optional_bool(args, "patch")?.unwrap_or(true);
     let range = FileRange::from_params(args)?;
-    validate_read_options(mode, path.as_deref(), &paths, range)?;
+    let commit = read_optional(args, "commit")?;
+    let from_snapshot_id = read_optional(args, "from_snapshot_id")?;
+    let limit = read_optional(args, "limit")?;
+    let cursor = read_optional(args, "cursor")?;
+    crate::reviews::read::validate_request(&crate::reviews::read::ReviewReadRequest {
+        mode,
+        path: path.clone(),
+        paths: paths.clone(),
+        patch,
+        range,
+        commit: commit.clone(),
+        from_snapshot_id: from_snapshot_id.clone(),
+        limit,
+        cursor: cursor.clone(),
+    })?;
     Ok(BridgeAction::TrackerReadReview {
         task_id: task_id(params)?,
         snapshot_id: required_argument(params, "snapshot_id")?,
         directory_id: required_argument(params, "directory_id")?,
         mode,
+        commit,
+        from_snapshot_id,
+        limit,
+        cursor,
         path,
         paths,
         patch,
         range,
     })
+}
+
+fn read_optional<T: serde::de::DeserializeOwned>(
+    args: &Value,
+    field: &str,
+) -> Result<Option<T>, String> {
+    args.get(field)
+        .map(|value| {
+            serde_json::from_value(value.clone()).map_err(|error| format!("{field}: {error}"))
+        })
+        .transpose()
 }
 
 fn paths(args: &Value) -> Result<Vec<String>, String> {
@@ -280,30 +313,67 @@ fn optional_bool(args: &Value, field: &str) -> Result<Option<bool>, String> {
     }
 }
 
-fn validate_read_options(
-    mode: ReviewReadMode,
-    path: Option<&str>,
-    paths: &[String],
-    range: Option<FileRange>,
-) -> Result<(), String> {
-    match mode {
-        ReviewReadMode::Changes if path.is_some() => Err("path is for tree or blob".to_string()),
-        ReviewReadMode::Tree if !paths.is_empty() || range.is_some() => {
-            Err("tree accepts path but not paths or range".to_string())
-        }
-        ReviewReadMode::Blob if path.is_none() || !paths.is_empty() => {
-            Err("blob requires path and does not accept paths".to_string())
-        }
-        _ if mode != ReviewReadMode::Blob && range.is_some_and(|page| page.raw == Some(true)) => {
-            Err("range.raw is only for blob".to_string())
-        }
-        _ => Ok(()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_review_schema_exposes_commit_and_revision_reads() {
+        let tools = tools();
+        let schema = &tools
+            .iter()
+            .find(|tool| tool["name"] == "read_review")
+            .unwrap()["inputSchema"]["properties"];
+        for mode in ["commits", "commit", "since"] {
+            assert!(schema["mode"]["enum"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(mode)));
+        }
+        for field in ["commit", "from_snapshot_id", "limit", "cursor"] {
+            assert!(schema.get(field).is_some(), "missing {field}");
+        }
+    }
+
+    #[test]
+    fn read_review_new_modes_preserve_typed_options_and_refuse_invalid_combinations() {
+        use super::super::McpSurface;
+        for (mode, extra) in [
+            ("commits", json!({"limit":2,"cursor":"page"})),
+            (
+                "commit",
+                json!({"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","paths":["src/lib.rs"]}),
+            ),
+            ("since", json!({"from_snapshot_id":"snap-1"})),
+        ] {
+            let mut args = json!({"task_id":"task-1","snapshot_id":"snap-2","directory_id":"dir-1","mode":mode});
+            args.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let action = call(McpSurface::Coding, "read_review", args)
+                .action
+                .unwrap();
+            let encoded = serde_json::to_value(action).unwrap();
+            for (key, value) in extra.as_object().unwrap() {
+                assert_eq!(&encoded[key], value);
+            }
+        }
+        for extra in [
+            json!({"mode":"commit"}),
+            json!({"mode":"since"}),
+            json!({"mode":"commits","limit":0}),
+            json!({"mode":"changes","commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
+        ] {
+            let mut args =
+                json!({"task_id":"task-1","snapshot_id":"snap-2","directory_id":"dir-1"});
+            args.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            assert!(call(McpSurface::Coding, "read_review", args)
+                .action
+                .is_none());
+        }
+    }
 
     const PR_CALLS: &[(&str, &str)] = &[
         (

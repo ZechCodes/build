@@ -575,6 +575,8 @@ pub struct ReviewCommentAnchor {
     pub path: String,
     pub side: ReviewCommentSide,
     pub line: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 /// A comment request's strict shape. Stored comments use the corresponding
@@ -587,6 +589,8 @@ pub struct ReviewCommentAnchorInput {
     pub path: String,
     pub side: ReviewCommentSide,
     pub line: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 impl From<ReviewCommentAnchorInput> for ReviewCommentAnchor {
@@ -597,6 +601,7 @@ impl From<ReviewCommentAnchorInput> for ReviewCommentAnchor {
             path: input.path,
             side: input.side,
             line: input.line,
+            commit: input.commit,
         }
     }
 }

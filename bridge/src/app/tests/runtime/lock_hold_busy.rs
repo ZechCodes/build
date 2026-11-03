@@ -13,6 +13,7 @@ use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 mod activity;
+mod anchor_commits;
 mod mcp_lists;
 mod mcp_reads;
 

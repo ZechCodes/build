@@ -9,6 +9,9 @@ use std::path::{Component, Path};
 pub enum ReviewReadMode {
     #[default]
     Changes,
+    Commits,
+    Commit,
+    Since,
     Tree,
     Blob,
 }
@@ -25,6 +28,14 @@ pub struct ReviewReadRequest {
     pub range: Option<FileRange>,
     #[serde(default = "default_patch")]
     pub patch: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_snapshot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 fn default_patch() -> bool {
@@ -35,12 +46,45 @@ fn default_patch() -> bool {
 #[serde(untagged)]
 pub enum ReviewReadResult {
     Changes(ReviewChanges),
+    Commits(ReviewCommits),
     Tree(FsTreeResult),
     Blob(FsFileResult),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct ReviewCommits {
+    pub commits: Vec<ReviewCommit>,
+    pub commits_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ReviewCommit {
+    pub oid: String,
+    pub parents: Vec<String>,
+    pub subject: String,
+    pub author_name: String,
+    /// Author timestamp in Unix seconds.
+    pub time: i64,
+    pub insertions: u64,
+    pub deletions: u64,
+    pub files_changed: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SinceBaseline {
+    PreviousHead,
+    Base,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ReviewChanges {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_baseline: Option<SinceBaseline>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rewritten: bool,
     pub stat: DiffStat,
     pub files: Vec<DiffFileRow>,
     pub files_truncated: bool,
@@ -68,44 +112,78 @@ pub fn read(
         git2::Repository::open_bare(git_dir).map_err(|_| "Source unavailable".to_string())?;
     match request.mode {
         ReviewReadMode::Changes => read_changes(directory, request, git_dir),
+        ReviewReadMode::Commits => commits::read_commits(directory, request, &repo),
+        ReviewReadMode::Commit => commits::read_commit(directory, request, &repo, git_dir),
+        ReviewReadMode::Since => {
+            Err("invalid review read: since requires an earlier revision".into())
+        }
         ReviewReadMode::Tree => read_tree(directory, request, &repo),
         ReviewReadMode::Blob => read_blob(directory, request, &repo),
     }
 }
 
-fn validate_request(request: &ReviewReadRequest) -> Result<(), String> {
-    match request.mode {
-        ReviewReadMode::Changes => {
-            if request.path.is_some()
-                || (request.range.is_some() && !request.patch)
-                || request.range.is_some_and(|range| range.raw == Some(true))
-                || request.paths.len() > 100
-            {
-                return Err("invalid review read: invalid changes options".into());
-            }
-            for path in &request.paths {
-                safe_path(path)?;
-            }
-        }
-        ReviewReadMode::Tree => {
-            if request.range.is_some() || !request.paths.is_empty() {
-                return Err("invalid review read: invalid tree options".into());
-            }
-            if let Some(path) = request.path.as_deref().filter(|path| !path.is_empty()) {
-                safe_path(path)?;
-            }
-        }
-        ReviewReadMode::Blob => {
-            if !request.paths.is_empty() {
-                return Err("invalid review read: invalid blob options".into());
-            }
-            let path = request
-                .path
-                .as_deref()
-                .ok_or("invalid review read: missing path")?;
-            safe_path(path)?;
-        }
+pub(crate) fn validate_request(request: &ReviewReadRequest) -> Result<(), String> {
+    if (request.commit.is_some() != (request.mode == ReviewReadMode::Commit))
+        || (request.from_snapshot_id.is_some() != (request.mode == ReviewReadMode::Since))
+        || (request.mode != ReviewReadMode::Commits
+            && (request.limit.is_some() || request.cursor.is_some()))
+    {
+        return Err("invalid review read: options do not match mode".into());
     }
+    match request.mode {
+        ReviewReadMode::Commits => validate_commit_list_options(request),
+        ReviewReadMode::Changes | ReviewReadMode::Commit | ReviewReadMode::Since => {
+            validate_change_options(request)
+        }
+        ReviewReadMode::Tree => validate_tree_options(request),
+        ReviewReadMode::Blob => validate_blob_options(request),
+    }
+}
+
+fn validate_commit_list_options(request: &ReviewReadRequest) -> Result<(), String> {
+    if request.path.is_some()
+        || !request.paths.is_empty()
+        || request.range.is_some()
+        || request.limit.is_some_and(|limit| limit == 0 || limit > 200)
+    {
+        return Err("invalid review read: invalid commits options".into());
+    }
+    Ok(())
+}
+
+fn validate_change_options(request: &ReviewReadRequest) -> Result<(), String> {
+    if request.path.is_some()
+        || (request.range.is_some() && !request.patch)
+        || request.range.is_some_and(|range| range.raw == Some(true))
+        || request.paths.len() > 100
+    {
+        return Err("invalid review read: invalid changes options".into());
+    }
+    for path in &request.paths {
+        safe_path(path)?;
+    }
+    Ok(())
+}
+
+fn validate_tree_options(request: &ReviewReadRequest) -> Result<(), String> {
+    if request.range.is_some() || !request.paths.is_empty() {
+        return Err("invalid review read: invalid tree options".into());
+    }
+    if let Some(path) = request.path.as_deref().filter(|path| !path.is_empty()) {
+        safe_path(path)?;
+    }
+    Ok(())
+}
+
+fn validate_blob_options(request: &ReviewReadRequest) -> Result<(), String> {
+    if !request.paths.is_empty() {
+        return Err("invalid review read: invalid blob options".into());
+    }
+    let path = request
+        .path
+        .as_deref()
+        .ok_or("invalid review read: missing path")?;
+    safe_path(path)?;
     Ok(())
 }
 
@@ -123,6 +201,8 @@ fn read_changes(
     let base = directory.base.as_ref().ok_or("Source unavailable")?;
     let Some(head) = directory.head.as_deref() else {
         return Ok(ReviewReadResult::Changes(ReviewChanges {
+            rewritten: false,
+            since_baseline: None,
             stat: DiffStat {
                 files_changed: 0,
                 insertions: 0,
@@ -165,6 +245,8 @@ fn read_changes(
         })
         .collect();
     Ok(ReviewReadResult::Changes(ReviewChanges {
+        rewritten: false,
+        since_baseline: None,
         stat: DiffStat {
             files_changed: stat.files_changed as u64,
             insertions: stat.insertions as u64,
@@ -366,6 +448,12 @@ fn is_blob_media(mime: &str) -> bool {
         || mime.starts_with("audio/")
         || mime.starts_with("video/")
 }
+
+mod commits;
+#[cfg(test)]
+pub(crate) use commits::install_commit_validation_gate;
+pub use commits::read_since;
+pub use commits::validate_commit;
 
 #[cfg(test)]
 mod tests;

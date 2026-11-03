@@ -265,11 +265,20 @@ impl GitScope {
 
     fn read_show(&self, params: &Value) -> Result<Value, String> {
         let hash = require_str(params, "hash")?;
+        let paths = params
+            .get("paths")
+            .filter(|paths| !paths.is_null())
+            .map(|paths| {
+                serde_json::from_value::<Vec<String>>(paths.clone())
+                    .map_err(|_| "paths must be an array of strings".to_string())
+            })
+            .transpose()?
+            .unwrap_or_default();
         if let Some(range) = crate::body_page::BodyRange::from_params(params)? {
             if params.get("max_bytes").is_some_and(|cap| !cap.is_null()) {
                 return Err("git.show takes range or max_bytes, not both".to_string());
             }
-            return crate::gitgui::show_commit_page(&self.repo_path, &hash, range);
+            return crate::gitgui::show_commit_page_filtered(&self.repo_path, &hash, &paths, range);
         }
         // Clamped, never refused: a caller that asked for a byte wants a
         // small answer, and one that asked for the moon wants the most
@@ -278,7 +287,7 @@ impl GitScope {
             .get("max_bytes")
             .and_then(Value::as_u64)
             .map(|cap| cap.clamp(1024, crate::api::v1::git::COMMIT_PATCH_MAX_BYTES) as usize);
-        crate::gitgui::show_commit(&self.repo_path, &hash, max_bytes)
+        crate::gitgui::show_commit_filtered(&self.repo_path, &hash, &paths, max_bytes)
     }
 
     fn read_status(&self, params: &Value) -> Result<Value, String> {

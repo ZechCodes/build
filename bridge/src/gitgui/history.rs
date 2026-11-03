@@ -354,8 +354,13 @@ fn tree_diff_patch(
     repo: &git2::Repository,
     old_tree: Option<&git2::Tree>,
     new_tree: &git2::Tree,
+    paths: &[String],
 ) -> Result<CommitPatch, String> {
     let mut options = crate::diff::canonical_patch_options();
+    options.disable_pathspec_match(true);
+    for path in paths {
+        options.pathspec(path);
+    }
     let diff = repo
         .diff_tree_to_tree(old_tree, Some(new_tree), Some(&mut options))
         .map_err(|e| e.to_string())?;
@@ -437,13 +442,34 @@ pub fn show_commit(
     hash: &str,
     max_bytes: Option<usize>,
 ) -> Result<Value, String> {
-    show_commit_as(repo_path, hash, PatchCut::Capped(max_bytes))
+    show_commit_filtered(repo_path, hash, &[], max_bytes)
+}
+
+/// Read a commit diff restricted to literal repository-relative paths before
+/// computing its counts and applying the caller's byte cap.
+pub fn show_commit_filtered(
+    repo_path: &Path,
+    hash: &str,
+    paths: &[String],
+    max_bytes: Option<usize>,
+) -> Result<Value, String> {
+    show_commit_as(repo_path, hash, paths, PatchCut::Capped(max_bytes))
 }
 
 /// `git.show` with a `range` (#95): the commit, its exact stat, and one page
 /// of its whole patch — never cut at a cap, never truncated.
 pub fn show_commit_page(repo_path: &Path, hash: &str, range: BodyRange) -> Result<Value, String> {
-    show_commit_as(repo_path, hash, PatchCut::Page(range))
+    show_commit_page_filtered(repo_path, hash, &[], range)
+}
+
+/// Page the patch after applying the same literal path filter as capped reads.
+pub fn show_commit_page_filtered(
+    repo_path: &Path,
+    hash: &str,
+    paths: &[String],
+    range: BodyRange,
+) -> Result<Value, String> {
+    show_commit_as(repo_path, hash, paths, PatchCut::Page(range))
 }
 
 /// How much of a commit's patch `git.show` carries.
@@ -473,7 +499,13 @@ impl PatchCut {
     }
 }
 
-fn show_commit_as(repo_path: &Path, hash: &str, cut: PatchCut) -> Result<Value, String> {
+fn show_commit_as(
+    repo_path: &Path,
+    hash: &str,
+    paths: &[String],
+    cut: PatchCut,
+) -> Result<Value, String> {
+    validate_show_paths(paths)?;
     if !is_valid_hash_prefix(hash) {
         return Err("invalid hash: expected 4-40 lowercase hex characters".to_string());
     }
@@ -495,7 +527,7 @@ fn show_commit_as(repo_path: &Path, hash: &str, cut: PatchCut) -> Result<Value, 
         stat,
         patch,
         headers,
-    } = tree_diff_patch(&repo, parent_tree.as_ref(), &commit_tree)?;
+    } = tree_diff_patch(&repo, parent_tree.as_ref(), &commit_tree, paths)?;
     let mut result = commit_summary_json(&commit);
     let (body, _) =
         truncate_at_utf8_boundary(commit.body().unwrap_or("").to_string(), GIT_BODY_MAX_BYTES);
@@ -504,4 +536,21 @@ fn show_commit_as(repo_path: &Path, hash: &str, cut: PatchCut) -> Result<Value, 
     result["patch_bytes"] = json!(patch.len());
     cut.apply(patch, headers, &mut result)?;
     Ok(result)
+}
+
+fn validate_show_paths(paths: &[String]) -> Result<(), String> {
+    if paths.len() > super::GIT_DIFF_MAX_PATHS {
+        return Err(format!(
+            "git.show paths must contain at most {} entries",
+            super::GIT_DIFF_MAX_PATHS
+        ));
+    }
+    for path in paths {
+        if !crate::fs_scope::is_worktree_contained_path(path) || path.contains('\0') {
+            return Err(format!(
+                "git.show paths must be valid repository-relative paths: {path}"
+            ));
+        }
+    }
+    Ok(())
 }

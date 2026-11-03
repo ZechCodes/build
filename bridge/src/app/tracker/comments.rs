@@ -9,11 +9,21 @@ use std::path::{Component, Path};
 // The same four-KiB path bound used for a thread's viewing context.
 const MAX_ANCHOR_PATH_BYTES: usize = 4 * 1024;
 
+mod deferred;
+pub(super) use deferred::DeferredCommentWrite;
+
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct AnchorCommitCheck {
+    directory: crate::reviews::model::ReviewDirectory,
+    commit: String,
+}
+
 pub(super) struct CommentMetadata {
     pub anchor: Option<ReviewCommentAnchor>,
     pub reply_to: Option<String>,
     pub opinion: Option<ReviewOpinion>,
     pub expected_review_version: Option<u64>,
+    pub commit_check: Option<AnchorCommitCheck>,
 }
 
 impl CommentMetadata {
@@ -22,6 +32,7 @@ impl CommentMetadata {
         let reply_to: Option<String> = parse_optional(params, "reply_to")?;
         let opinion: Option<ReviewOpinion> = parse_optional(params, "opinion")?;
         let mut expected_review_version = None;
+        let mut commit_check = None;
         if let Some(comment_id) = reply_to.as_deref() {
             if comment_id.trim().is_empty() {
                 return Err("invalid review reply_to: comment id is empty".into());
@@ -44,27 +55,7 @@ impl CommentMetadata {
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| format!("unknown review for task_id: {task_id}"))?;
             if let Some(anchor) = &anchor {
-                let snapshot = review
-                    .snapshots
-                    .iter()
-                    .find(|snapshot| snapshot.id == anchor.snapshot_id)
-                    .ok_or_else(|| format!("unknown snapshot_id: {}", anchor.snapshot_id))?;
-                if !snapshot
-                    .directories
-                    .iter()
-                    .any(|directory| directory.id == anchor.directory_id)
-                {
-                    return Err(format!(
-                        "invalid review anchor: directory_id is not in snapshot: {}",
-                        anchor.directory_id
-                    ));
-                }
-                if anchor.line == 0
-                    || anchor.path.len() > MAX_ANCHOR_PATH_BYTES
-                    || !safe_relative_path(&anchor.path)
-                {
-                    return Err(format!("invalid review anchor: path must be relative and at most {MAX_ANCHOR_PATH_BYTES} bytes; line must be positive"));
-                }
+                commit_check = validate_anchor(anchor, &review)?;
             }
             if let Some(opinion) = &opinion {
                 expected_review_version = Some(review.version);
@@ -91,8 +82,40 @@ impl CommentMetadata {
             reply_to,
             opinion,
             expected_review_version,
+            commit_check,
         })
     }
+}
+
+fn validate_anchor(
+    anchor: &ReviewCommentAnchor,
+    review: &crate::reviews::records::Review,
+) -> Result<Option<AnchorCommitCheck>, String> {
+    let snapshot = review
+        .snapshots
+        .iter()
+        .find(|snapshot| snapshot.id == anchor.snapshot_id)
+        .ok_or_else(|| format!("unknown snapshot_id: {}", anchor.snapshot_id))?;
+    let directory = snapshot
+        .directories
+        .iter()
+        .find(|directory| directory.id == anchor.directory_id)
+        .ok_or_else(|| {
+            format!(
+                "invalid review anchor: directory_id is not in snapshot: {}",
+                anchor.directory_id
+            )
+        })?;
+    if anchor.line == 0
+        || anchor.path.len() > MAX_ANCHOR_PATH_BYTES
+        || !safe_relative_path(&anchor.path)
+    {
+        return Err(format!("invalid review anchor: path must be relative and at most {MAX_ANCHOR_PATH_BYTES} bytes; line must be positive"));
+    }
+    Ok(anchor.commit.as_ref().map(|commit| AnchorCommitCheck {
+        directory: directory.clone(),
+        commit: commit.clone(),
+    }))
 }
 
 fn parse_optional<T: serde::de::DeserializeOwned>(

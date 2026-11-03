@@ -148,6 +148,19 @@ describe("task review feedback", () => {
     feedback.dispose();
   });
 
+  it("posts a summary-only Comment without a verdict", async () => {
+    const host = document.createElement('div'); document.body.append(host);
+    const callRpc = vi.fn(async () => ({})); const feedback = mount(host, callRpc, { taskId: 'summary-only' });
+    await feedback.ready;
+    const field = host.querySelector('[data-review-summary]');
+    field.value = 'A general review note'; field.dispatchEvent(new Event('input'));
+    await until(() => !host.querySelector('[data-review-comment-batch]').disabled);
+    host.querySelector('[data-review-comment-batch]').click();
+    await until(() => callRpc.mock.calls.length === 1);
+    expect(callRpc.mock.calls[0][1]).toEqual({ task_id: 'summary-only', body: 'A general review note' });
+    feedback.dispose();
+  });
+
   it.each(['approve', 'request_changes'])("confirms %s with what happens next and submits pending comments", async (verdict) => {
     const host = document.createElement('div');
     const bar = document.createElement('div');

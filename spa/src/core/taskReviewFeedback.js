@@ -20,6 +20,8 @@ function draftHtml(draft, locked) {
     <p>${esc(draft.body)}</p><div class="row"><button class="btn" type="button" data-review-draft-edit${locked ? " disabled" : ""}>Edit</button><button class="btn" type="button" data-review-draft-remove${locked ? " disabled" : ""}>Remove</button></div></li>`;
 }
 
+const hasComments = (drafts, summary) => drafts.length > 0 || Boolean(summary.trim());
+
 function submissionMessage(state, sending) {
   if (state.submission?.enqueueError) return `${state.error} Your review is saved here. Retry the saved review to send it.`;
   if (state.error) return `${state.error} The review could not finish. Pending comments are kept here; edit them to try again.`;
@@ -61,6 +63,11 @@ export function mountTaskReviewFeedback(host, options) {
 
   function paint() {
     if (disposed) return;
+    if (options.keepReadingPlace) options.keepReadingPlace(paintContent);
+    else paintContent();
+  }
+
+  function paintContent() {
     const drafts = state.drafts.filter((draft) => draft.body.trim());
     host.querySelector('[data-review-count]').textContent = String(drafts.length);
     host.querySelector('[data-review-drafts]').innerHTML = drafts.map((draft) => draftHtml(draft, Boolean(state.submission))).join("");
@@ -73,7 +80,7 @@ export function mountTaskReviewFeedback(host, options) {
       button.disabled = !opinionAllowed() || busy() || confirming;
       button.title = historical() ? "Choose the latest revision to submit a verdict." : "";
     });
-    commentButton.disabled = busy() || !drafts.length;
+    commentButton.disabled = busy() || !hasComments(drafts, state.summary);
     summary.disabled = busy();
     paintSubmission();
     onCount(drafts.length);

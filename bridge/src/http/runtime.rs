@@ -228,6 +228,10 @@ pub fn mount(execution: Arc<ExecutionService>, verifier: HttpAuthVerifier) -> Ht
 }
 
 impl HttpRuntime {
+    pub fn with_discovery(self, _signer: Arc<super::discovery::DeviceProofSigner>) -> Self {
+        self
+    }
+
     pub fn router(&self) -> Router {
         let router = Router::new()
             .route("/v1/sessions", post(open_session))
@@ -995,6 +999,7 @@ fn refusal(status: StatusCode, code: &'static str) -> Response {
 #[cfg(test)]
 mod tests {
     mod subscriptions;
+    mod discovery;
 
     use super::*;
     use crate::{execution::FrameHandler, timing::FrameClock};

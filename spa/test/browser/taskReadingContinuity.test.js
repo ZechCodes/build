@@ -86,7 +86,7 @@ async function mountReadingPage(page, basePath, commentId = null, omitTarget = f
     window.__reading.reviewGeometry = () => {
       const height = (selector) => host.querySelector(selector)?.getBoundingClientRect().height || 0;
       return { content: height("[data-review-content]"), header: height(".task-review-header"),
-        feedback: height("[data-review-target]"), failure: height("[data-review-action-error]") };
+        feedback: height("[data-review-pending]"), failure: height("[data-review-action-error]") };
     };
   }, { record: longRecord(savedReview), commentId, omitTarget, savedReview });
   await page.waitForFunction(() => {
@@ -177,7 +177,7 @@ async function measure(page, before, label) {
       expect.soft(Math.abs(result.reviewGeometry.content - result.previousReviewGeometry.content), `${label}: visible cache arrival must change real review content height`).toBeGreaterThan(1);
     }
   }
-  if (label.endsWith("feedback-draft")) expect.soft(result.reviewGeometry.feedback - result.previousReviewGeometry.feedback, `${label}: real feedback target grew`).toBeGreaterThan(1);
+  if (label.endsWith("feedback-draft")) expect.soft(result.reviewGeometry.feedback - result.previousReviewGeometry.feedback, `${label}: real pending tray grew`).toBeGreaterThan(1);
   if (label.endsWith("controls-failure")) expect.soft(result.reviewGeometry.failure - result.previousReviewGeometry.failure, `${label}: real control error grew`).toBeGreaterThan(1);
   if (!label.includes("metadata-")) expect.soft(Math.abs(result.rootTopDelta), `${label}: row geometry moved`).toBeLessThanOrEqual(1);
   if (label.endsWith("review-label")) {
@@ -673,12 +673,13 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
         const { ui, uiStore } = window.__layoutModules;
         const { scope } = window.__reading;
         await uiStore.writeUiRecord(ui.uiAddress({ deviceId: scope.deviceId, entityId: scope.projectId,
-          view: "task-review-feedback", kind: "draft", sub: `${scope.taskId}:snapshot-async` }), {
-          body: "Restored feedback text", verdict: "request_changes", replyTo: null,
-          anchor: { snapshot_id: "snapshot-async", directory_id: "dir-async", path: "saved/review-file.js", side: "new", line: 12 },
+          view: "task-review-batch", kind: "draft", sub: JSON.stringify([scope.taskId, "snapshot-async"]) }), {
+          summary: "", submission: null,
+          drafts: [{ id: "restored-draft", body: "Restored feedback text", replyTo: null,
+            anchor: { snapshot_id: "snapshot-async", directory_id: "dir-async", path: "saved/review-file.js", side: "new", line: 12 } }],
         });
       });
-      await page.waitForFunction(() => !document.querySelector("[data-review-target]").hidden);
+      await page.waitForFunction(() => document.querySelector("[data-review-draft]")?.textContent.includes("Restored feedback text"));
       await measure(page, before, `${label}/feedback-draft`);
       expect(await page.evaluate(() => document.activeElement.id)).toBe("task-comment");
       before = await parkReader(page);
@@ -694,12 +695,15 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
       await page.locator(`#${READING_ROW} [data-review-reply]`).evaluate((button) => button.click());
       await page.waitForFunction(() => {
         const host = document.querySelector("#task-pane");
-        const field = document.querySelector("#task-review-feedback-body");
+        const field = document.querySelector("[data-review-reply-composer] textarea");
+        if (!field) return false;
         const box = field.getBoundingClientRect();
         return document.activeElement === field && box.top >= Math.max(host.getBoundingClientRect().top, host.querySelector(".task-page-head, .task-review-header").getBoundingClientRect().bottom) &&
           box.bottom <= host.getBoundingClientRect().bottom;
       });
-      expect(await page.locator("#task-pane").evaluate((host) => host.scrollTop)).toBeGreaterThan(before + 1000);
+      // The pending tray now precedes history, so intentional Reply travels
+      // upward from the long comment to its visible composer.
+      expect(await page.locator("#task-pane").evaluate((host) => host.scrollTop)).toBeLessThan(before - 1000);
       console.log(`${label}/intentional-reply: feedback composer focused and visible`);
       expect(await page.evaluate(() => window.__reading.errors)).toEqual([]);
       await page.evaluate(() => { window.__reading.mounted.dispose(); window.__reading.stopIndex(); });

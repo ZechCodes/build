@@ -1000,7 +1000,7 @@ const rowStatusDotHtml = (entry) => statusDotHtml({
   descendantUnread: entry.descendantUnread,
 });
 
-const rowReviewSummaryHtml = (entry) => entry.kind === TRACKER_TASK ? taskReviewSummaryHtml(entry.reviewSummary) : "";
+const rowReviewSummaryHtml = (entry) => entry.kind === TRACKER_TASK ? taskReviewSummaryHtml(entry.reviewSummary, entry.reviewSupport) : "";
 
 /** Name and activity, with a project line above them on the Inbox face.
  * Recent keeps its compact workspace and project rows. The status dot overlays

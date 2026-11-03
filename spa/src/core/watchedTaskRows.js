@@ -83,7 +83,9 @@ function inboxTaskRoute(project, task, detail, workspaces) {
     deviceId: project.deviceId, project_id: project.id, identities, workspaces });
 }
 
-function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces, unreadOf) {
+const summaryFor = (task, reviewFacts) => task.review_summary || reviewFacts.get(task.id) || null;
+
+function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces, unreadOf, reviewSupport, reviewFacts) {
   const group = taskIsHeld(task) ? taskActivityGroup(task, taskAgentIsRunning(task, runningAgentIds, projectAgentId)) : "backlog";
   const activity = taskHasReadiness(task) ? { working: "Working", assigned: "Assigned", blocked: "Blocked" }[group] : "";
   const facts = [activity, taskWaitingText(task), ...reasons.map((reason) => reasonWord(reason, askedOnly))].filter(Boolean).join(" · ");
@@ -104,7 +106,8 @@ function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, pro
     project: project.name || project.id,
     name: task.number ? `#${task.number} ${titleOf(task)}` : titleOf(task),
     title: titleOf(task),
-    reviewSummary: task.review_summary || null,
+    reviewSummary: summaryFor(task, reviewFacts),
+    reviewSupport,
     // Attention, running, and unread are independent facts about a watched task.
     state: working ? "working" : unreadCount > 0 ? "unread" : "inactive",
     working,
@@ -121,15 +124,19 @@ function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, pro
   };
 }
 
-const activeWatchedTask = (task) => task.watched === true && !isFinished(task);
+const SOURCE_DEFAULTS = { tasks: [], details: new Map(), askedOnly: false, runningAgentIds: new Set(),
+  projectAgentId: null, unreadOf: taskUnreadCount, reviewSupport: {}, reviewFacts: new Map() };
 
-function entriesFromSource({ project, tasks = [], details = new Map(), askedOnly = false, runningAgentIds = new Set(), projectAgentId = null, workspaces, unreadOf = taskUnreadCount }) {
+function entriesFromSource(source) {
+  const { project, tasks, details, askedOnly, runningAgentIds, projectAgentId, workspaces,
+    unreadOf, reviewSupport, reviewFacts } = { ...SOURCE_DEFAULTS, ...source };
   const entries = [];
   for (const task of tasks) {
-    if (!activeWatchedTask(task)) continue;
+    if (task.watched !== true) continue;
     const detail = details.get(task.id) || null;
-    const reasons = watchedTaskReasons(task, detail, askedOnly);
-    entries.push(toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces, unreadOf));
+    const reasons = watchedTaskReasons(task, detail, askedOnly, reviewSupport);
+    if (isFinished(task) && reasons.length === 0) continue;
+    entries.push(toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces, unreadOf, reviewSupport, reviewFacts));
   }
   return entries;
 }

@@ -2048,8 +2048,9 @@ contains the optional summary followed by deduplicated links to the batch's
 anchors, including earlier plain Comment submissions. Links use #961's
 `[[#<task>:r<N>:all:<directory>:<path>#L<line>]]` form; commit anchors use
 `commit/<sha>` in place of `all`, and old-side anchors use `#old-L<line>`.
-Both verdicts share a confirmation stating "The author is told and continues";
-the actual agent continuation belongs to the later bridge slice.
+Verdict confirmation explains the author’s next step: approval hands the work
+forward (merge, deploy, …), while rejection asks the author to stop and requires
+a nonempty reason. Neither action merges automatically.
 
 `taskReviewBatch.js` stores drafts and a prepared submission in the durable
 local UI store, keyed by device, project, task and `snapshot_id`. Revision
@@ -2131,6 +2132,25 @@ Permanent or exhausted failures settle as Failed and post one reserved-identity
 independently: a failed write cannot hold later notices, and removed projects
 retire their notices. Comments show plain error text; the journal keeps the
 classification prefix.
+
+**SPA verdict loop (#973).** Cached `tasks.review.reject`, `tasks.review.author`
+and `tasks.review.verdictDelivery` flags independently gate the new surfaces.
+Rejected and Legacy review chips share the board/list/task/inbox renderers;
+legacy rows use cached review metadata when no compact summary exists. The
+header names the author and deciding reviewer (plus the user), reusing the
+ordinary assignee picker. It shows the last journaled verdict’s delivery state;
+failed delivery offers the independently negotiated `tasks.review.retryDelivery`
+operation with only that verdict’s comment identity. Cache publication updates
+the state; rendering does not wait for transport or infer it from connectivity.
+
+Non-deciding agent opinions are marked Advisory in the timeline and inline
+threads. Timeline revision dividers follow chronological events, including late
+replies to an earlier revision. Marked Build delivery failures have plain labels.
+A newer revision leaves the reading place and drafts pinned; View what changed
+selects the latest revision and Since my review from the user’s latest retained
+verdict, falling back to All changes without a baseline or since capability.
+The banner adds a commit count when a matching cached observation supplies it.
+Manual merge, lifecycle and reclaim actions remain under More.
 
 **Workspace creation (#971).** The Changes header, workspace menu and toolbar
 all offer Request review and open the same form. It retains title, description,
@@ -4920,7 +4940,8 @@ visible even on a Done review and clear when read. For PRs in Changes requested
 or Approved, the user assignment alone stops raising attention because action
 is with the author. Explicit unread asks still count; publishing a new Open
 revision restores user review attention. Ordinary task assignment keeps its
-existing behavior. The cached SPA mirror follows in #973.
+existing behavior. The cached SPA mirror in `trackerAttentionModel.js` applies the same marked-notice
+and assignment rules, including compact summary `unread_service_mentions`.
 
 Inbox rows, including Recent and the project Workspaces tab, use
 `spa/src/core/inboxStatusDot.js` for one right-edge status dot. Unread activity

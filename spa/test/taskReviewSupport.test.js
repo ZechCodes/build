@@ -14,7 +14,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
 const fixture = (verb) => JSON.parse(readFileSync(new URL(`../../fixtures/api/v1/tasks.review.${verb}.json`, import.meta.url), "utf8"));
 const prVerbs = ["open", "push", "update", "merge", "close", "reopen", "refresh"];
 const legacyVerbs = ["get", "snapshot", "diff", "complete", "act"];
-const allSupport = Object.fromEntries([...legacyVerbs, "comments", "pullRequests", "commits", "commit", "since", "anchorCommit", "forTask", "taskChoices", "linkedTaskChoices", ...prVerbs].map((verb) => [verb, true]));
+const allSupport = Object.fromEntries([...legacyVerbs, "comments", "reject", "author", "verdictDelivery", "retryDelivery", "pullRequests", "commits", "commit", "since", "anchorCommit", "forTask", "taskChoices", "linkedTaskChoices", ...prVerbs].map((verb) => [verb, true]));
 const prReview = { mode: "pull_request", pull_request: { status: "open" } };
 const context = (support = allSupport) => ({
   adapter: { capabilities: { reviews: support } },
@@ -53,7 +53,7 @@ describe("cached review support", () => {
 
 describe("review operation support", () => {
   it("exports only the fixture-backed exact review method names", () => {
-    expect(adapter.REVIEW_METHODS).toEqual(Object.fromEntries([...legacyVerbs, ...prVerbs]
+    expect(adapter.REVIEW_METHODS).toEqual(Object.fromEntries([...legacyVerbs, ...prVerbs, "retryDelivery"]
       .map((verb) => [verb, fixture(verb).method])));
     expect(reviewSupport.PR_REVIEW_VERBS).toEqual(prVerbs);
   });
@@ -86,7 +86,7 @@ describe("review operation support", () => {
   });
 
   it("claims no unknown, feature-only, malformed or unannounced operations", () => {
-    for (const verb of ["unknown", "comments", "pullRequests", "tasks.review.open", "open.more", "__proto__", "constructor"]) {
+    for (const verb of ["unknown", "comments", "reject", "author", "verdictDelivery", "pullRequests", "tasks.review.open", "open.more", "__proto__", "constructor"]) {
       expect(reviewSupport.canReviewOperation({ ...allSupport, [verb]: true }, verb)).toBe(false);
     }
     expect(reviewSupport.canReviewOperation({ pullRequests: true, open: "true" }, "open")).toBe(false);

@@ -7,6 +7,8 @@ export const commit = "2".repeat(40);
 export const path = "src/review.js";
 const saved = {
   ...fixture.result.review,
+  mode: "pull_request",
+  pull_request: { status: "open", author: "agent-author", latest_published_snapshot_id: "revision-2" },
   snapshots: [1, 2].map((number) => ({
     ...fixture.result.review.snapshots[0], id: `revision-${number}`, number,
     directories: [fixture.result.review.snapshots[0].directories[0]],
@@ -14,7 +16,7 @@ const saved = {
 };
 const detail = {
   task: task({
-    id: "task-1", number: 970, title: "Review inline comments and verdicts", status: "in_review",
+    id: "task-1", number: 970, identities: { "agent-author": { name: "Builder" } }, title: "Review inline comments and verdicts", status: "in_review",
     review_summary: { task_id: "task-1", version: 1, status: "open" },
     links: { workspace_ids: [], branches: [], commits: [], conversation_ids: [], parent_task_id: "task-parent" },
   }),
@@ -53,7 +55,7 @@ export async function mountVerdictReviewTask(page, basePath) {
     const listing = { files: changed, stat: { files_changed: 1, insertions: 2, deletions: 1 }, diff_key: "base:head", files_truncated: false };
     await tasks.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, detail);
     await reviews.writeReviewRecord(scope, saved, 1);
-    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, comments: true, commits: true, commit: true, since: true, anchorCommit: true } });
+    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, comments: true, pullRequests: true, reject: true, author: true, commits: true, commit: true, since: true, anchorCommit: true } });
     await local.writeCached(reads.reviewCommitsAddress(identity), { commits: [
       { oid: commit, parents: ["1".repeat(40)], subject: "Preserve review selection", author_name: "Ada", time: 1789012345, insertions: 2, deletions: 1, files_changed: 1 },
     ], commits_truncated: false });
@@ -81,6 +83,8 @@ export async function mountVerdictReviewTask(page, basePath) {
     window.__reviewTaskPage = taskPage.mountTaskPage(document.querySelector("#task-pane"), {
       ...scope, projectKey: `${scope.deviceId}|${scope.projectId}`,
       callRpc: async (method, params) => {
+        const intercepted = window.__reviewFixtureRpc?.(method, params);
+        if (intercepted !== undefined) return intercepted;
         if (method === "tasks.get") return detail;
         if (method === "tasks.review.get") return { review: saved };
         if (method === "tasks.comment") {

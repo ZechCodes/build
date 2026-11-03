@@ -245,9 +245,10 @@ export function dashboardSections(tasks, {
   doneCutoffMs = null,
   sessionStartedMs = null,
   askedOnly,
+  reviewSupport,
   columns,
 } = {}) {
-  const grouped = attentionGroups(tasks, { feed, projectKey, detailById, askedOnly });
+  const grouped = attentionGroups(tasks, { feed, projectKey, detailById, askedOnly, reviewSupport });
   const reading = {
     agentLabels: agentLabels(workspaceAgents(feed, projectKey)),
     projectName: projectName(feed, projectKey),

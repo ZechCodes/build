@@ -57,3 +57,10 @@ describe("read-only review inline comments", () => {
     expect(line.nextElementSibling.querySelector("td").colSpan).toBe(2);
   });
 });
+
+it("marks non-deciding inline opinions as Advisory from cached support and assignment", () => {
+  const rows = [comment("other", { author: { kind: "agent", agent_id: "other" }, opinion: { snapshot_id: "revision", verdict: "approve" } }), comment("assigned", { author: { kind: "agent", agent_id: "assigned" }, opinion: { snapshot_id: "revision", verdict: "approve" } })];
+  const reading = { ...context, reviewSupport: { reject: true }, reviewAssignee: { kind: "agent", agent_id: "assigned" } };
+  expect(inlineReviewRowsHtml(rows, reading).match(/Advisory/g)).toHaveLength(1);
+  expect(inlineReviewRowsHtml(rows, context)).not.toContain("Advisory");
+});

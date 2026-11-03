@@ -3,6 +3,7 @@
 import { subscribeCache } from "./localCache.js";
 import { contextFor } from "./deviceContexts.js";
 import { createFeedCacheReader } from "./feedCacheReader.js";
+import { readReviewSupport, reviewSupportAddress } from "./taskReviewSupport.js";
 import { needsYouRuleAddress, readNeedsYouRule } from "./needsYouRule.js";
 import { agentLineage, lineageMembers } from "./agentLineageModel.js";
 import { projectCoordinatorAgent, projectRosterRows } from "./projectRosterFeed.js";
@@ -33,6 +34,7 @@ export function createWatchedTaskDependencies(deviceId) {
   let ruleInvalidation = 0;
   let ruleVersion = 0;
   let askedOnly = false;
+  let reviewSupport = {};
   let workspaceSignature = "[]";
   let workspaceVersion = 0;
   let workspaces = [];
@@ -40,10 +42,10 @@ export function createWatchedTaskDependencies(deviceId) {
   function publish(listener) {
     if (!listener.ruleReady || !listener.agentsReady) return;
     const { runningAgentIds, projectAgentId } = listener.running;
-    const signature = JSON.stringify([askedOnly, [...runningAgentIds].sort(), projectAgentId, workspaceVersion]);
+    const signature = JSON.stringify([askedOnly, reviewSupport, [...runningAgentIds].sort(), projectAgentId, workspaceVersion]);
     if (listener.signature === signature) return;
     listener.signature = signature;
-    listener.onChange({ askedOnly, runningAgentIds, projectAgentId, workspaces });
+    listener.onChange({ askedOnly, reviewSupport, runningAgentIds, projectAgentId, workspaces });
   }
 
   function acceptWorkspaces(next) {
@@ -79,9 +81,10 @@ export function createWatchedTaskDependencies(deviceId) {
     const session = sessionOf(deviceId);
     const before = ruleInvalidation;
     const version = ruleVersion;
-    const next = await readNeedsYouRule(deviceId);
-    if (disposed || before !== ruleInvalidation || session !== sessionOf(deviceId)) return;
+    const [next, support] = await Promise.all([readNeedsYouRule(deviceId), readReviewSupport(deviceId)]);
+    if (disposed || before !== ruleInvalidation || version !== ruleVersion || session !== sessionOf(deviceId)) return;
     askedOnly = next;
+    reviewSupport = support;
     for (const listener of listeners) {
       if (version >= listener.ruleVersion) listener.ruleReady = true;
       publish(listener);
@@ -103,6 +106,11 @@ export function createWatchedTaskDependencies(deviceId) {
     if (!address.kind) ruleInvalidation += 1;
     void refreshRule();
   });
+  const unsubscribeReviewSupport = subscribeCache(reviewSupportAddress(deviceId), (address) => {
+    ruleVersion += 1;
+    if (!address.kind) ruleInvalidation += 1;
+    void refreshRule();
+  });
 
   return {
     subscribe(project, onChange) {
@@ -117,6 +125,7 @@ export function createWatchedTaskDependencies(deviceId) {
       listeners.clear();
       unsubscribeAgents();
       unsubscribeRule();
+      unsubscribeReviewSupport();
     },
   };
 }

@@ -39,6 +39,7 @@ const commentRow = (entry, base) => ({
   anchor: entry.anchor || null,
   replyTo: entry.reply_to || null,
   opinion: entry.opinion || null,
+  reviewNotice: entry.review_notice || null,
 });
 
 const eventRow = (entry, base) => ({

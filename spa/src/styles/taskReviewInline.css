@@ -7,3 +7,8 @@
 .task-review-inline-comment time { font-size: .75rem; }
 .task-review-inline-comment .markdown > :first-child { margin-top: .3rem; }
 .task-review-inline-comment .markdown > :last-child { margin-bottom: 0; }
+
+.task-review-advisory { padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink2); font-size: .75rem; }
+.task-review-revision-divider { display: flex; align-items: center; gap: 8px; color: var(--ink2); font-size: .8rem; margin: 12px 0 4px; }
+.task-review-revision-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.task-review-service-notice { color: var(--ink2); margin: 4px 0; }

@@ -12,6 +12,18 @@ const settle = async () => { for (let n = 0; n < 40; n++) await new Promise(reso
 beforeEach(() => { globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange; });
 
 describe("review batch drafts", () => {
+  it("rejects an empty Reject reason even with anchored pending comments", async () => {
+    const callRpc = vi.fn(async () => ({})); const model = create({ callRpc }); await model.ready;
+    await model.add({ body: "An anchored issue", anchor });
+    await expect(model.submit("reject")).rejects.toThrow("A reason is required to reject this review.");
+    expect(callRpc).not.toHaveBeenCalled();
+    expect(model.read().drafts).toHaveLength(1);
+    await model.summary("Stop this direction.");
+    await model.submit("reject");
+    expect(callRpc.mock.calls.at(-1)[1]).toMatchObject({ body: expect.stringContaining("Stop this direction."), opinion: { snapshot_id: "snapshot", verdict: "reject" } });
+    model.dispose();
+  });
+
   it("imports an old anchored feedback draft once without overwriting it or submitting its verdict", async () => {
     const taskId = "legacy-anchored";
     const oldAddress = uiAddress({ deviceId: "D", entityId: "P", kind: "draft", view: "task-review-feedback", sub: `${taskId}:snapshot` });

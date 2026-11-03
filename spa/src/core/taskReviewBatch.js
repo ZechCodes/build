@@ -134,8 +134,12 @@ export function createTaskReviewBatch(options) {
   const stopOperations = writeOperations?.subscribe(() => { void reconcile(); }) || (() => {});
 
   async function prepare(verdict) {
+    await ready;
+    await edits;
+    if (verdict === "reject" && !value.summary.trim()) throw new Error("A reason is required to reject this review.");
     await change((state) => {
       if (state.submission) return state;
+      if (verdict === "reject" && !state.summary.trim()) return state;
       const drafts = state.drafts.filter(nonempty);
       const priorAnchors = verdict ? (options.priorAnchors?.() || []).filter((anchor) => anchor.snapshot_id === snapshot.id) : [];
       const operations = submissionOperations(options, drafts, state.summary, verdict, uuid, priorAnchors);
@@ -224,7 +228,7 @@ export function createTaskReviewBatch(options) {
     summary: (summary) => change((state) => ({ ...state, summary })),
     flush: () => edits,
     submit(verdict = "") {
-      if (!["", "approve", "request_changes"].includes(verdict)) return Promise.reject(new Error("Invalid review verdict"));
+      if (!["", "approve", "request_changes", "reject"].includes(verdict)) return Promise.reject(new Error("Invalid review verdict"));
       return startSubmission(() => send(verdict));
     },
     retry: () => startSubmission(retry),

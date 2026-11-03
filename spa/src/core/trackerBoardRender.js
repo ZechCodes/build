@@ -33,7 +33,7 @@ export const MOVE_HINT = "Use the left and right arrow keys to move this task be
 const cardStatusHtml = (task, columns, reading) => {
   // The column says where the task stands; PR status stays a separate fact.
   const withWhom = reviewerWords(task, reading);
-  const summary = taskReviewSummaryHtml(task.review_summary);
+  const summary = taskReviewSummaryHtml(task.review_summary || reading.reviewFacts?.get(task.id), reading.reviewSupport);
   if (!withWhom && !summary) return "";
   return `<div class="task-card-status">${withWhom ? statusChipHtml(columns, task.status, withWhom) : ""}${summary}</div>`;
 };

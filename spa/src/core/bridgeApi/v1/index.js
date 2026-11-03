@@ -26,7 +26,7 @@ export const REVIEW_METHODS = Object.freeze({
   complete: "tasks.review.complete", act: "tasks.review.act",
   open: "tasks.review.open", push: "tasks.review.push", update: "tasks.review.update",
   merge: "tasks.review.merge", close: "tasks.review.close", reopen: "tasks.review.reopen",
-  refresh: "tasks.review.refresh",
+  refresh: "tasks.review.refresh", retryDelivery: "tasks.review.retryDelivery",
 });
 
 /** `ApiError.code` for a refusal that named none. */
@@ -171,6 +171,9 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     bodies: { pages: names.has("bodies.pages"), mediaRawPages: names.has("fs.mediaRawPages") },
     reviews: {
       ...Object.fromEntries(Object.entries(REVIEW_METHODS).map(([verb, method]) => [verb, names.has(method)])),
+      reject: names.has("tasks.review.reject"),
+      author: names.has("tasks.review.author"),
+      verdictDelivery: names.has("tasks.review.verdictDelivery"),
       comments: names.has("tasks.reviewComments"),
       commits: names.has("tasks.review.commits"),
       commit: names.has("tasks.review.commit"),

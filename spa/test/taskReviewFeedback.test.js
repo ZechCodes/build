@@ -24,6 +24,42 @@ const mount = (host, callRpc = vi.fn(async () => ({})), over = {}) => mountTaskR
 beforeEach(() => { document.body.innerHTML = ""; });
 
 describe("task review feedback", () => {
+  it.each([
+    [{ kind: "user" }, { kind: "agent", agent_id: "assigned" }, true, true],
+    [{ kind: "agent", agent_id: "assigned" }, { kind: "agent", agent_id: "assigned" }, true, true],
+    [{ kind: "agent", agent_id: "other" }, { kind: "agent", agent_id: "assigned" }, true, false],
+    [{ kind: "user" }, null, false, null],
+  ])("gates Reject by capability and deciding reviewer %j", async (reviewer, assignee, reject, enabled) => {
+    const host = document.createElement("div"); document.body.append(host);
+    const feedback = mount(host, vi.fn(), { taskId: `reject-${reviewer.kind}-${reviewer.agent_id}-${reject}`, support: { reject }, reviewer, task: { assignee } });
+    await feedback.ready;
+    const button = host.querySelector('[data-review-verdict="reject"]');
+    if (enabled === null) expect(button).toBeNull();
+    else expect(button.disabled).toBe(!enabled);
+    feedback.dispose();
+  });
+
+  it("requires a reason in the Reject confirmation and tells the author to stop", async () => {
+    const host = document.createElement("div"); document.body.append(host);
+    const callRpc = vi.fn(async () => ({}));
+    const feedback = mount(host, callRpc, { taskId: "reject-reason", support: { reject: true, author: true }, authorLabel: "@Builder" });
+    await feedback.ready;
+    host.querySelector('[data-review-verdict="reject"]').click();
+    await until(() => Boolean(document.querySelector('#confirm-scrim')));
+    const modal = document.querySelector('#confirm-scrim');
+    expect(modal.textContent).toContain("Nothing is merged. @Builder is told to stop. You can reopen later.");
+    const reason = modal.querySelector('[data-review-reject-reason]');
+    expect(reason.required).toBe(true);
+    expect(modal.querySelector('[data-confirm-ok]').disabled).toBe(true);
+    reason.value = '  '; reason.dispatchEvent(new Event('input'));
+    expect(modal.querySelector('[data-confirm-ok]').disabled).toBe(true);
+    reason.value = 'This direction no longer fits the product.'; reason.dispatchEvent(new Event('input'));
+    modal.querySelector('[data-confirm-ok]').click();
+    await until(() => callRpc.mock.calls.length === 1);
+    expect(callRpc.mock.calls[0][1]).toMatchObject({ body: 'This direction no longer fits the product.', opinion: { snapshot_id: 'snap-1', verdict: 'reject' } });
+    feedback.dispose();
+  });
+
   it("renders old anchor metadata and a reply action after a review is replaced", () => {
     const rows = timelineRows([{ type: "comment", id: "tc-2", body: "old", author: { kind: "user" },
       anchor, opinion: { snapshot_id: "snap-1", verdict: "approve" }, reply_to: "tc-1" }]);
@@ -166,11 +202,11 @@ describe("task review feedback", () => {
     const bar = document.createElement('div');
     document.body.append(host, bar);
     const callRpc = vi.fn(async () => ({}));
-    const feedback = mount(host, callRpc, { taskId: verdict, verdictHost: bar });
+    const feedback = mount(host, callRpc, { taskId: verdict, verdictHost: bar, support: { reject: true } });
     await feedback.ready;
     bar.querySelector(`[data-review-verdict="${verdict}"]`).click();
     await until(() => Boolean(document.querySelector('#confirm-scrim')));
-    expect(document.querySelector('#confirm-scrim').textContent).toContain('The author is told and continues');
+    expect(document.querySelector('#confirm-scrim').textContent).toContain(verdict === 'approve' ? "The author is told it's approved and takes it forward (merge, deploy, …)" : 'The author is told and continues');
     document.querySelector('[data-confirm-ok]').click();
     await until(() => callRpc.mock.calls.length === 1);
     expect(callRpc.mock.calls[0][1]).toMatchObject({ opinion: { snapshot_id: 'snap-1', verdict } });

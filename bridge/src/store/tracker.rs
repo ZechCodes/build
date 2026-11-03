@@ -502,6 +502,7 @@ pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), St
         tx.prepare_cached(INSERT_TASK)?.execute(fields)?;
     }
     if updated != 0 || before.is_none() {
+        super::sync::touch_task(tx, &task.id, true)?;
         super::task_summaries::task_written(tx, task)?;
         let after = (task.state.as_str(), task.status.as_str());
         if before

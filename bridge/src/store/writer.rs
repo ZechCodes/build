@@ -32,6 +32,13 @@ impl StoreWriter {
         &self,
         work: impl FnOnce(&Transaction<'_>) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
+        self.transaction_with_publications(|tx, _| work(tx))
+    }
+
+    pub(super) fn transaction_with_publications<T>(
+        &self,
+        work: impl FnOnce(&Transaction<'_>, &mut super::sync::PublicationBatch) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("sql.write");
         #[cfg(test)]
@@ -45,7 +52,10 @@ impl StoreWriter {
         }
         let mut connection = self.connection();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let result = work(&transaction)?;
+        let mut batch = super::sync::PublicationBatch::default();
+        let result = work(&transaction, &mut batch)?;
+        super::sync::collect_tasks(&transaction, &mut batch)?;
+        batch.publish(&transaction, super::sync::now_ms())?;
         transaction.commit()?;
         Ok(result)
     }

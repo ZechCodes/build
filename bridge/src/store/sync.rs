@@ -8,6 +8,8 @@ mod journal;
 mod reads;
 mod retention;
 mod schema;
+mod task_publication;
+pub(super) use task_publication::{collect as collect_tasks, touch as touch_task};
 
 pub use journal::PublicationBatch;
 pub use reads::{Head, HeadResult, SyncReadConnection};
@@ -203,5 +205,7 @@ pub(super) fn now_ms() -> i64 {
 mod cursor_tests;
 #[cfg(test)]
 mod startup_tests;
+#[cfg(test)]
+mod task_producer_tests;
 #[cfg(test)]
 mod tests;

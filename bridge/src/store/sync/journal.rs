@@ -1,7 +1,7 @@
 //! Collect only final committed summary facts; no partial/streaming item input.
 use super::{invalid, retention, Entity, Event, Operation, Sequence, Stream, StreamKind};
 use crate::store::{StoreError, StoreWriter};
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,6 +11,7 @@ pub(super) const MAX_ROUTES: usize = 4;
 struct Publication {
     record: Option<Value>,
     streams: BTreeSet<Stream>,
+    force: bool,
 }
 
 /// One accumulator per canonical transaction. Repeated changes replace the
@@ -26,6 +27,7 @@ impl PublicationBatch {
             Publication {
                 record: Some(visible),
                 streams: streams.iter().cloned().collect(),
+                force: false,
             },
         );
     }
@@ -35,8 +37,15 @@ impl PublicationBatch {
             Publication {
                 record: None,
                 streams: streams.iter().cloned().collect(),
+                force: false,
             },
         );
+    }
+
+    pub(super) fn force(&mut self, entity: &Entity) {
+        if let Some(publication) = self.0.get_mut(entity) {
+            publication.force = true;
+        }
     }
 
     /// Low-level store hook. Production owners use sync_transaction to flush
@@ -83,12 +92,7 @@ impl StoreWriter {
         &self,
         work: impl FnOnce(&Transaction<'_>, &mut PublicationBatch) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
-        self.transaction(|tx| {
-            let mut publications = PublicationBatch::default();
-            let result = work(tx, &mut publications)?;
-            publications.publish(tx, super::now_ms())?;
-            Ok(result)
-        })
+        self.transaction_with_publications(work)
     }
 }
 
@@ -100,17 +104,7 @@ fn publish_one(
     cumulative: i64,
 ) -> Result<Option<(Event, i64)>, StoreError> {
     validate(entity, &publication.streams)?;
-    let fingerprint = format!(
-        "{:x}",
-        Sha256::digest(
-            publication
-                .record
-                .as_ref()
-                .map(Value::to_string)
-                .unwrap_or_default()
-                .as_bytes()
-        )
-    );
+    let fingerprint = fingerprint(publication.record.as_ref());
     let deleted = publication.record.is_none();
     let previous: Option<(bool,String,String)> = tx.prepare_cached("SELECT deleted,fingerprint,streams FROM sync_revisions WHERE entity_kind=?1 AND entity_key=?2")?.query_row(params![entity.kind,entity.key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
     let old_streams: BTreeSet<Stream> = previous
@@ -125,13 +119,14 @@ fn publish_one(
     } else {
         &publication.streams
     };
-    if previous
-        .as_ref()
-        .is_some_and(|(old_deleted, old_fingerprint, _)| {
-            *old_deleted == deleted
-                && *old_fingerprint == fingerprint
-                && old_streams == *current_streams
-        })
+    if !publication.force
+        && previous
+            .as_ref()
+            .is_some_and(|(old_deleted, old_fingerprint, _)| {
+                *old_deleted == deleted
+                    && *old_fingerprint == fingerprint
+                    && old_streams == *current_streams
+            })
     {
         return Ok(None);
     }
@@ -161,6 +156,28 @@ fn publish_one(
         },
         bytes,
     )))
+}
+
+fn fingerprint(record: Option<&Value>) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(record.map(Value::to_string).unwrap_or_default().as_bytes())
+    )
+}
+
+/// First pre-change observation of a pre-journal task. It establishes a
+/// comparison baseline without claiming that a state change occurred.
+pub(super) fn seed(
+    conn: &Connection,
+    entity: &Entity,
+    value: &Value,
+    streams: &[Stream],
+) -> Result<(), StoreError> {
+    let streams: BTreeSet<_> = streams.iter().cloned().collect();
+    let raw = serde_json::to_string(&streams).expect("routes serialize");
+    conn.prepare_cached("INSERT OR IGNORE INTO sync_revisions(entity_kind,entity_key,seq,deleted,fingerprint,streams) VALUES(?1,?2,0,0,?3,?4)")?
+        .execute(params![entity.kind,entity.key,fingerprint(Some(value)),raw])?;
+    Ok(())
 }
 
 fn validate(entity: &Entity, streams: &BTreeSet<Stream>) -> Result<(), StoreError> {

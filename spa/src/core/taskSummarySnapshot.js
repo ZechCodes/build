@@ -77,3 +77,10 @@ export function snapshotContinuationEligible(query, { scope, filters, context, o
   return !query.refreshing && !query.complete && nonempty(query.next_cursor)
     && applicableSnapshot(query, scope, filters, context);
 }
+
+/** Membership belongs to the admitted raw snapshot, including a completed
+ * one. Independent row, watch and counter uncertainty stays separate. */
+export function snapshotMembershipCurrent(query, { scope, filters, context, overtaken }) {
+  return !overtaken && !query.refreshing && summarySnapshotFiltersIndependent(filters)
+    && applicableSnapshot(query, scope, filters, context);
+}

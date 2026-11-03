@@ -31,9 +31,9 @@ function selectChoice(tasks, task, normalized) {
 }
 
 function linkedChoice(source, linked) {
-  const row = linked?.tasks.find((task) => task.id === source.task.id);
-  return row && linked.row_reads?.[row.id] === source.read
-    ? { ...source.task, matched_memberships: row.matched_memberships } : source.task;
+  const { matched_memberships: _memberships, ...task } = source.task;
+  return linked?.snapshot_membership_current === true && linked.ids.includes(task.id)
+    ? { ...task, matched_memberships: linked.row_fields?.[task.id]?.matched_memberships } : task;
 }
 
 /** Prefer admitted header read orders, then filter eligibility. Legacy-only
@@ -78,7 +78,8 @@ async function pullChoicePage(scope, params, cursor, active) {
     if (!support?.taskChoices || params.linked_workspace_id && !support.linkedTaskChoices) throw new Error("Update the bridge to choose review tasks.");
     return publishChoicePage(scope, params, cursor, () => accept() && context.active() && stands());
   });
-  return request ? request.sent : incomplete();
+  if (!request) throw new Error("This machine is unavailable.");
+  return request.sent;
 }
 
 async function choiceTicket(scope, filters, cursor, contentRead, accept) {
@@ -123,7 +124,8 @@ async function refreshLinkedChoices(scope, active, changed) {
 
 /** Linked pages retain automatic continuation; ordinary pages remain demand
  * driven. complete reports admitted publication, not exhausted membership.
- * Refused owners return incomplete; RPC/protocol failures still reject. */
+ * Refused publications return incomplete; unavailable greetings and
+ * RPC/protocol failures reject. */
 export async function refreshReviewTaskChoices(scope, support, active, changed, cursor = null) {
   if (!support.taskChoices) return incomplete();
   if (!cursor && support.linkedTaskChoices) {

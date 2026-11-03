@@ -59,7 +59,7 @@ impl Drop for Gate {
 
 /// Pass: cancellation on both adapters fences replies immediately, retains
 /// running HTTP work's allowance until it actually settles, then restores all
-/// 32 request slots and every buffer byte without disturbing other streams.
+/// request admission and every buffer byte without disturbing other streams.
 #[tokio::test]
 async fn cross_transport_cancel_calls_retains_running_work_then_releases() {
     let mut gate = Gate::new();

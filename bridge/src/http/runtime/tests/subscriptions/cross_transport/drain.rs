@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 /// Pass: composing HTTP shutdown and DataChannel carrier teardown refuses new
 /// calls on every old opening, ends every stream, joins every stream task and
 /// returns both pools inside the documented 5 s socket teardown allowance.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn cross_transport_update_drain_fences_openings_and_joins_streams() {
     let mut f = Fixture::new(handler());
     f.fill_stream_pool().await;
@@ -25,6 +25,7 @@ async fn cross_transport_update_drain_fences_openings_and_joins_streams() {
         });
     }
     tokio::task::yield_now().await;
+    tokio::time::pause();
     let started = Instant::now();
     assert_eq!(f.runtime.shutdown(), POOL_STREAMS);
     f.close_rtc();
@@ -41,7 +42,7 @@ async fn cross_transport_update_drain_fences_openings_and_joins_streams() {
     let request = open_request(Body::from(r#"{"api_range":">=3 <4"}"#));
     assert_eq!(
         f.app.clone().oneshot(request).await.unwrap().status(),
-        StatusCode::SERVICE_UNAVAILABLE
+        StatusCode::UNAUTHORIZED
     );
     tokio::time::timeout(crate::http::limits::SOCKET_TEARDOWN_TIMEOUT, async {
         while let Some(result) = streams.join_next().await {

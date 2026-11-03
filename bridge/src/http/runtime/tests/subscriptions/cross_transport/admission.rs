@@ -28,6 +28,7 @@ async fn cross_transport_rtc_admission_is_bounded_without_starving_rest() {
     }
     let key = f.rtc[0].key.clone();
     let refused = std::iter::from_fn(|| f.rtc[0].outbound.try_recv().ok())
+        .filter(|frame| matches!(frame, crate::carrier::OutboundEnvelope::Frame(_)))
         .map(|frame| SessionSender::decrypt_push(&key, &frame))
         .any(|value| value["error_code"] == "busy" && value["retryable"] == true);
     assert!(

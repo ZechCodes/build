@@ -8,6 +8,12 @@ use crate::http::{limits::TOTAL_BUFFER_BYTES, listener::OutputAuthority, sse::MA
 #[tokio::test]
 async fn cross_transport_full_stream_pool_preserves_progress_and_bounds() {
     let mut f = Fixture::new(handler());
+    assert_eq!(STREAM_BUFFER_BYTES, 32 * 1024 * 1024);
+    assert_eq!(MAX_FAMILY_STREAMS, 8);
+    for _ in 0..MAX_FAMILY_STREAMS {
+        f.http.push(f.http_client("family-0").await);
+    }
+    f.refused_stream("family-0").await;
     f.fill_stream_pool().await;
     f.refused_stream("family-0").await;
     f.refused_stream("another-family").await;

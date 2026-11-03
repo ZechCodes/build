@@ -62,6 +62,9 @@ impl RtcClient {
                     .recv()
                     .await
                     .expect("the channel remains open");
+                if matches!(output, OutboundEnvelope::SessionAccept { .. }) {
+                    continue;
+                }
                 let value = SessionSender::decrypt_push(&self.key, &output);
                 if value["id"] == id && value.get("ok").is_some() {
                     assert_eq!(value["ok"], true, "{value}");
@@ -114,7 +117,7 @@ impl Fixture {
     }
 
     pub async fn fill_stream_pool(&mut self) {
-        for i in 0..POOL_STREAMS {
+        for i in self.http.len()..POOL_STREAMS {
             let family = format!("family-{}", i / MAX_FAMILY_STREAMS);
             self.http.push(self.http_client(&family).await);
         }
@@ -199,7 +202,9 @@ impl Fixture {
             session,
             None,
         );
-        let (status, error) = json_response(self.app.clone().oneshot(request).await.unwrap()).await;
+        let response = self.app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let (status, error) = json_response(response).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{error}");
         assert_eq!(error["error_code"], "overloaded");
         assert_eq!(error["retryable"], true);

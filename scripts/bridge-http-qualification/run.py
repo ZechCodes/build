@@ -18,6 +18,12 @@ import urllib.request
 SCRATCH = Path("/home/zech/Projects/.agent-scratch/976")
 
 
+def scratch_for(task):
+    if task not in (976, 977):
+        raise ValueError("qualification only supports task 976 or 977 scratch")
+    return Path("/home/zech/Projects/.agent-scratch") / str(task)
+
+
 def install_shutdown_handlers():
     def shutdown(number, _frame):
         raise SystemExit(128 + number)
@@ -48,7 +54,7 @@ def base_environment(run_dir):
         "XDG_CACHE_HOME": str(run_dir / "home/.cache"),
         "XDG_DATA_HOME": str(run_dir / "home/.local/share"),
         "XDG_STATE_HOME": str(run_dir / "home/.local/state"),
-        "TMPDIR": str(run_dir / "tmp"), "CARGO_BUILD_JOBS": "4",
+        "TMPDIR": str(run_dir / "tmp"), "CARGO_BUILD_JOBS": "8",
         "CARGO_TARGET_DIR": str(SCRATCH / "target"),
         "CHROMIUM_PATH": os.environ.get("CHROMIUM_PATH", "/usr/bin/chromium"),
     }
@@ -70,6 +76,15 @@ def bridge_environment(env, fixture, port):
         "BRIDGE_HTTP_TLS_CERT": str(run_dir / "cert.pem"), "BRIDGE_HTTP_TLS_KEY": str(run_dir / "key.pem"),
         "BRIDGE_HTTP_ALLOWED_ORIGINS": fixture["hostedOrigin"],
     }
+
+
+def bridge_launch(task, binary, fixture_path, env, fixture, port):
+    if task == 977:
+        if binary.name != "bridge-http-qualification":
+            raise ValueError("task 977 requires the typed bridge-http-qualification example")
+        return [binary, fixture_path], {**env, "SSL_CERT_FILE": fixture["caFile"],
+            "SSL_CERT_DIR": str(Path(fixture["runDir"]) / "empty-ca-dir")}
+    return [binary, "serve"], bridge_environment(env, fixture, port)
 
 
 def stop_process(process):
@@ -137,12 +152,15 @@ def run_logged(command, *, env, cwd, log, timeout=300):
 
 
 def main():
+    global SCRATCH
     install_shutdown_handlers()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--issuer-port", type=int, default=18476)
     parser.add_argument("--bridge-port", type=int, default=19476)
+    parser.add_argument("--scratch-task", type=int, choices=[976, 977], default=976)
     args = parser.parse_args()
+    SCRATCH = scratch_for(args.scratch_task)
     if not all(1024 <= port <= 65535 for port in [args.issuer_port, args.bridge_port]):
         parser.error("ports must be unprivileged loopback ports")
     try:
@@ -158,6 +176,7 @@ def main():
         (run_dir / name).mkdir()
     env = base_environment(run_dir)
     fixture_args = [sys.executable, script_dir / "fixture.py", "--repo", repo, "--run-dir", run_dir,
+        "--scratch-task", args.scratch_task,
         "--issuer-port", args.issuer_port, "--bridge-port", args.bridge_port]
     run_logged([*fixture_args, "prepare"], env=env, cwd=repo, log=run_dir / "prepare.log")
     fixture_path = run_dir / "runtime.json"
@@ -166,7 +185,8 @@ def main():
     with ExitStack() as stack:
         issuer = launch(stack, [*fixture_args, "serve"], env=env, cwd=repo, log=run_dir / "issuer.log")
         wait_ready(issuer, fixture["hostedOrigin"] + "/auth/dummy/login", run_dir / "ca.pem", run_dir / "issuer.log")
-        bridge = launch(stack, [binary, "serve"], env=bridge_environment(env, fixture, args.bridge_port),
+        command, bridge_env = bridge_launch(args.scratch_task, binary, fixture_path, env, fixture, args.bridge_port)
+        bridge = launch(stack, command, env=bridge_env,
             cwd=run_dir, log=run_dir / "bridge.log")
         wait_ready(bridge, fixture["bridgeOrigin"] + "/.well-known/build-bridge", run_dir / "ca.pem", run_dir / "bridge.log")
         client_env = {**env, "BUILD_HTTP_QUALIFICATION_FIXTURE": str(fixture_path),

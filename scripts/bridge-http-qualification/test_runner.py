@@ -14,6 +14,22 @@ SPEC.loader.exec_module(runner)
 
 
 class RunnerBoundaries(unittest.TestCase):
+    def test_task977_launches_typed_fixture_without_bridge_environment(self):
+        run_dir = runner.scratch_for(977) / "run-typed-test"
+        fixture = {"caFile": str(run_dir / "ca.pem"), "runDir": str(run_dir)}
+        binary = runner.scratch_for(977) / "target/debug/examples/bridge-http-qualification"
+        command, env = runner.bridge_launch(977, binary, run_dir / "runtime.json", runner.base_environment(run_dir), fixture, 19476)
+        self.assertEqual(command, [binary, run_dir / "runtime.json"])
+        self.assertFalse(any(key.startswith("BRIDGE_") for key in env))
+        self.assertEqual(env["SSL_CERT_FILE"], fixture["caFile"])
+
+    def test_task977_uses_its_own_target_and_rejects_other_task_roots(self):
+        self.assertEqual(runner.scratch_for(977), Path("/home/zech/Projects/.agent-scratch/977"))
+        self.assertEqual(runner.scratch_for(976), Path("/home/zech/Projects/.agent-scratch/976"))
+        for task in [0, 978, "../976", "/tmp"]:
+            with self.subTest(task=task), self.assertRaises(ValueError):
+                runner.scratch_for(task)
+
     def test_only_explicit_executable_inside_scratch_target_is_accepted(self):
         with tempfile.TemporaryDirectory() as directory:
             scratch = Path(directory)

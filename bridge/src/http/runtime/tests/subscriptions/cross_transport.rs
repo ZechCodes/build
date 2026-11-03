@@ -11,6 +11,7 @@ mod drain;
 mod fixture;
 mod load;
 mod revocation;
+mod timing;
 
 struct Families {
     live: Arc<AtomicBool>,

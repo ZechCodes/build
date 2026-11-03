@@ -3,7 +3,6 @@
 import assert from "node:assert/strict";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -111,16 +110,18 @@ try {
   const discovered = await writer.discover(owner, bridgeOrigin);
   writerHandle = discovered.handle;
   await writer.open(owner, writerHandle, "^3.0.0");
-  const name = `Browser live SSE ${Date.now()}`;
-  await writer.request(owner, writerHandle, "project_create", { name, parent: fixture.projectsDir }, { write: { operation_id: randomUUID() } });
-  await page.waitForFunction((expected) => document.querySelector("#projlist")?.textContent.includes(expected), name, { timeout: 20000 });
-  await page.waitForFunction(() => window.__qualification.types.includes("changes"), { timeout: 20000 });
+  const name = `browser-live-sse-${Date.now()}`;
+  // No durable-write method is advertised by this bridge generation.
+  const created = await writer.request(owner, writerHandle, "project_create", { name, parent: fixture.projectsDir });
+  assert.equal(created.ok, true, JSON.stringify(created));
+  await page.getByText(name, { exact: true }).first().waitFor({ timeout: 20000 });
+  await page.waitForFunction(() => window.__qualification.types.includes("changes"), undefined, { timeout: 20000 });
   console.log("PASS independent project write delivered through SSE and rendered from the SPA cache");
-  await page.waitForFunction(() => window.__qualification.requests.some((request) => request.method === "PATCH" && request.path.startsWith("/v1/sessions/") && request.status === 200), { timeout: 35000 });
+  await page.waitForFunction(() => window.__qualification.requests.some((request) => request.method === "PATCH" && request.path.startsWith("/v1/sessions/") && request.status === 200), undefined, { timeout: 35000 });
   console.log("PASS automatic PATCH session renewal against the real bridge");
   await page.screenshot({ path: resolve(output, "spa-live-rest-events.png"), fullPage: true });
   await page.selectOption("#device-transport", "webrtc");
-  await page.waitForFunction(() => window.__qualification.requests.some((request) => request.method === "DELETE" && request.path.startsWith("/v1/sessions/") && request.status < 300), { timeout: 10000 });
+  await page.waitForFunction(() => window.__qualification.requests.some((request) => request.method === "DELETE" && request.path.startsWith("/v1/sessions/") && request.status < 300), undefined, { timeout: 10000 });
   const evidence = await page.evaluate(() => window.__qualification);
   assert.ok(evidence.events.includes("hello"));
   assert.ok(evidence.types.includes("changes"));

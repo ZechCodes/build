@@ -81,7 +81,7 @@ function harness(t, fixture, { badProof = false } = {}) {
   t.after(() => bridge.clear());
   return { bridge, owner, output, trace, heartbeat: () => heartbeat };
 }
-// The fixture is seeded by scripts/qualify-http-clients.py using a disposable
+// The fixture is seeded by scripts/bridge-http-qualification/run.py using a disposable
 // local Skrift account, paired identity and cargo-built loopback bridge.
 test("desktop real REST lifecycle: signed discovery, credential, SSE, renewal and close", qualification, async (t) => {
   const fixture = await loadFixture();
@@ -100,7 +100,7 @@ test("desktop real REST lifecycle: signed discovery, credential, SSE, renewal an
   assert.equal(changed.ok, true, JSON.stringify(changed));
   const project = await h.bridge.request(h.owner, metadata.handle, "project_create", {
     name: `desktop-qualification-${randomUUID()}`, parent: fixture.projectsDir,
-  }, { write: { operation_id: randomUUID() } });
+  });
   assert.equal(project.ok, true, JSON.stringify(project));
   await eventually(() => h.output.some((event) => event.event === "event" &&
     event.data.type === "changes" &&

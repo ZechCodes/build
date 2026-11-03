@@ -19,6 +19,8 @@ pub use reads::{Head, HeadResult, SyncReadConnection};
 pub use retention::{
     GcProgress, GC_ROWS, MAX_JOURNAL_AGE_MS, MAX_JOURNAL_BYTES, MAX_JOURNAL_ENTRIES,
 };
+pub const MAX_RECOVERY_EVENTS: usize = 500;
+pub const MAX_RECOVERY_BYTES: usize = 1024 * 1024;
 pub(super) use schema::{initialize, validate_startup};
 
 use super::StoreError;

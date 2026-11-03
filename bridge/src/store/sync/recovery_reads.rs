@@ -1,5 +1,7 @@
 //! Indexed recovery primitives. Call only inside the request's read snapshot.
-use super::{cursor, schema, Entity, Event, Operation, Scope, Sequence, SyncError};
+use super::{
+    cursor, schema, Entity, Event, Operation, Scope, Sequence, SyncError, MAX_RECOVERY_EVENTS,
+};
 use crate::store::{ReadTransaction, TaskSummaryCandidate};
 use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
@@ -27,7 +29,7 @@ impl ReadTransaction<'_> {
     ) -> Result<Vec<Event>, SyncError> {
         let stream = scope.stream();
         let rows=self.connection().prepare("SELECT j.seq,j.entity_kind,j.entity_key,j.operation FROM sync_routes r JOIN sync_journal j ON j.seq=r.seq WHERE r.stream_kind=?1 AND r.stream_key=?2 AND r.seq>?3 AND r.seq<=?4 ORDER BY r.seq LIMIT ?5")?
-            .query_map(params![stream.kind.as_str(),stream.key,after.get(),head.get(),limit.min(501) as i64],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<Result<Vec<_>,_>>()?;
+            .query_map(params![stream.kind.as_str(),stream.key,after.get(),head.get(),limit.min(MAX_RECOVERY_EVENTS+1) as i64],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<Result<Vec<_>,_>>()?;
         rows.into_iter()
             .map(|(seq, kind, key, operation)| {
                 Ok(Event {

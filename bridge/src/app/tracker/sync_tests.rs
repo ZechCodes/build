@@ -173,7 +173,7 @@ async fn changes_continuation_keeps_fixed_head_and_refuses_retention_gap() {
     );
     assert_eq!(second["head"], first["head"]);
     assert!(second["continuation"].is_null());
-    assert_eq!(second["cursor"].as_str().is_some(), true);
+    assert!(second["cursor"].as_str().is_some());
     store
         .writer_for_test()
         .execute(
@@ -206,7 +206,7 @@ async fn nul_pending_presence_and_exact_actor_bytes_survive_every_summary_surfac
         Some(Value::Null),
         Some(json!({})),
         Some(json!({"kind":""})),
-        Some(json!({"kind":"\0hidden"})),
+        Some(json!({"kind":"\0hidden","agent_id":"Actual\0suffix"})),
     ]
     .into_iter()
     .enumerate()
@@ -274,6 +274,10 @@ async fn nul_pending_presence_and_exact_actor_bytes_survive_every_summary_surfac
             assert_eq!(row["created_by"]["agent_id"], "Actual\0suffix");
             if n == 4 {
                 assert_eq!(row["deferred_assignment"]["target"]["kind"], "");
+                assert_eq!(
+                    row["deferred_assignment"]["target"]["agent_id"],
+                    "Actual\0suffix"
+                );
             }
         }
     }

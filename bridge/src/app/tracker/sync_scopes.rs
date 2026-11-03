@@ -2,7 +2,10 @@
 //! then runs these methods on ReadPool SyncRecovery without the application.
 use super::{query_selections::QuerySelections, selections::TaskSelections};
 use crate::store::{
-    sync::{Entity, Head, HeadResult, ResyncReason, Scope, Stream, SyncError},
+    sync::{
+        Entity, Head, HeadResult, ResyncReason, Scope, Stream, SyncError, MAX_RECOVERY_BYTES,
+        MAX_RECOVERY_EVENTS,
+    },
     ReadTransaction,
 };
 use serde_json::{json, Value};
@@ -11,8 +14,6 @@ use std::collections::BTreeMap;
 mod changes;
 mod snapshot;
 
-pub const MAX_RECOVERY_EVENTS: usize = 500;
-pub const MAX_RECOVERY_BYTES: usize = 1024 * 1024;
 const MAX_TASK_ROW_BYTES: usize = 65536;
 
 /// Project keys and project-id mappings come from the server's published

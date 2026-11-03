@@ -107,13 +107,21 @@ fn snapshot_review_header_change_invalidates_task_even_without_a_card_delta() {
         directories: vec![],
     };
     store
-        .save_review_snapshot(&task.id, "synthetic-workspace", 0, snapshot)
+        .save_review_snapshot(&task.id, "synthetic-workspace", 0, snapshot.clone())
         .unwrap();
     assert_eq!(
         events(&store).len(),
         2,
         "review headers also invalidate the opened task"
     );
+    // Dev's new legacy marker is already true: a second retained snapshot
+    // changes the review header while leaving that card marker unchanged.
+    let mut second = snapshot;
+    second.id = "synthetic-review-snapshot-two".into();
+    store
+        .save_review_snapshot(&task.id, "synthetic-workspace", 1, second)
+        .unwrap();
+    assert_eq!(events(&store).len(), 3);
 }
 
 #[test]

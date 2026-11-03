@@ -83,6 +83,7 @@ def ensure_free_ports(ports):
     with ExitStack() as stack:
         for port in ports:
             listener = stack.enter_context(socket.socket())
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(("127.0.0.1", port))
 
 

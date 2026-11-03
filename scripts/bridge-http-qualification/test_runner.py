@@ -44,6 +44,20 @@ class RunnerBoundaries(unittest.TestCase):
             with self.assertRaises(OSError):
                 runner.ensure_free_ports([port])
 
+    def test_service_restart_accepts_a_closed_listener_with_time_wait_connections(self):
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
+                accepted, _ = listener.accept()
+                # The server actively closes first, so its local port retains
+                # TIME_WAIT after the client acknowledges and closes its end.
+                accepted.close()
+                self.assertEqual(client.recv(1), b"")
+        runner.ensure_free_ports([port])
+
     def test_bridge_environment_excludes_inherited_authority_and_real_home(self):
         with patch.dict(os.environ, {"BRIDGE_API_URL": "https://live.invalid", "CODEX_HOME": "/private",
                 "CLAUDE_CONFIG_DIR": "/private", "PI_CODING_AGENT_DIR": "/private", "DBUS_SESSION_BUS_ADDRESS": "private"}):

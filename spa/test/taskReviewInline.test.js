@@ -64,3 +64,11 @@ it("marks non-deciding inline opinions as Advisory from cached support and assig
   expect(inlineReviewRowsHtml(rows, reading).match(/Advisory/g)).toHaveLength(1);
   expect(inlineReviewRowsHtml(rows, context)).not.toContain("Advisory");
 });
+
+it("reweights a saved inline opinion after reviewer reassignment", () => {
+  const rows = [comment("prior", { author: { kind: "agent", agent_id: "a" }, opinion: { snapshot_id: "revision", verdict: "request_changes" } })];
+  const rendered = (agent_id) => inlineReviewRowsHtml(rows, { ...context, reviewSupport: { reject: true }, reviewAssignee: { kind: "agent", agent_id } });
+  expect(rendered("a")).not.toContain("Advisory");
+  expect(rendered("b")).toContain("Advisory");
+  expect(rendered("a")).not.toContain("Advisory");
+});

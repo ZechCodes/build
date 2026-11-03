@@ -46,3 +46,10 @@ it("ignores stale child cache rows after the authoritative parent projection rem
   const childReviews = [{ id: "review", number: 72, review_summary: linked }];
   expect(taskWorkReviewHtml({ ...work, linked_reviews: [] }, { ...context, childReviews })).toBe("");
 });
+
+it("gates a linked review’s Rejected label on cached reject support", () => {
+  const task = { ...work, linked_reviews: [{ ...linked, status: "rejected" }] };
+  expect(parse(taskWorkReviewHtml(task, context)).body.textContent).toBe("Review #72");
+  expect(parse(taskWorkReviewHtml(task, { ...context, reviewSupport: { reject: true } })).body.textContent)
+    .toBe("Review #72 · Rejected");
+});

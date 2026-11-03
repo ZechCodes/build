@@ -2136,7 +2136,11 @@ classification prefix.
 **SPA verdict loop (#973).** Cached `tasks.review.reject`, `tasks.review.author`
 and `tasks.review.verdictDelivery` flags independently gate the new surfaces.
 Rejected and Legacy review chips share the board/list/task/inbox renderers;
-legacy rows use cached review metadata when no compact summary exists. The
+legacy rows use cached review metadata when no compact summary exists. Compact
+summaries currently identify only PRs, so a cold legacy row remains an ordinary
+task until its review metadata is cached. The SPA never probes ordinary tasks
+with review-get to discover that identity; a compact legacy marker is deferred
+to #974. The
 header names the author and deciding reviewer (plus the user), reusing the
 ordinary assignee picker. It shows the last journaled verdict’s delivery state;
 failed delivery offers the independently negotiated `tasks.review.retryDelivery`

@@ -50,3 +50,13 @@ describe("review loop timeline", () => {
     expect(timelineHtml([{ ...rows[1], actor: { kind: "agent", agent_id: "other" } }], context)).not.toContain("could not be delivered");
   });
 });
+
+// Reassignment recomputes deciding authority over saved opinions in #972.
+it("reweights saved timeline opinions when the deciding reviewer changes", () => {
+  const rows = [opinion("a", { kind: "agent", agent_id: "a" }), opinion("b", { kind: "agent", agent_id: "b" })];
+  const rendered = (agent_id) => timelineParts(rows, { ...context, reviewAssignee: { kind: "agent", agent_id } }).rows;
+  expect(rendered("a").find((row) => row.name === "a").html).not.toContain("Advisory");
+  expect(rendered("a").find((row) => row.name === "b").html).toContain("Advisory");
+  expect(rendered("b").find((row) => row.name === "a").html).toContain("Advisory");
+  expect(rendered("b").find((row) => row.name === "b").html).not.toContain("Advisory");
+});

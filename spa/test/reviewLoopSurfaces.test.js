@@ -7,6 +7,7 @@ import { taskReviewSummaryHtml } from "../src/core/taskReviewSummaryRender.js";
 import { inboxRowHtml } from "../src/core/inbox.js";
 import { watchedTaskEntries } from "../src/core/watchedTaskRows.js";
 import { taskAttention, watchedTaskReasons } from "../src/core/trackerAttentionModel.js";
+import { reviewServiceAttentionCases } from "./reviewServiceAttentionFixture.js";
 import { columns, task } from "./trackerWireFixture.js";
 
 const support = { reject: true, verdictDelivery: true };
@@ -77,4 +78,12 @@ describe("bridge review-service attention mirror", () => {
     const value = one("rejected", { status: "done", unread_service_mentions: 1 });
     expect(taskAttention(value, { askedOnly: true }).reasons).toEqual([]);
   });
+});
+
+
+it.each(reviewServiceAttentionCases)("matches bridge attention fixture: $name", ({ status, reviewStatus, serviceMentions = 0, expectedAsked }) => {
+  const value = one(reviewStatus, { status, unread_service_mentions: serviceMentions,
+    review_summary: reviewStatus ? { status: reviewStatus } : undefined });
+  expect(attention(value, null).needsYou).toBe(expectedAsked);
+  expect(watchedTaskReasons(value, null, true, support).length > 0).toBe(expectedAsked);
 });

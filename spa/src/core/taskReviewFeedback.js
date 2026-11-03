@@ -143,6 +143,7 @@ export function mountTaskReviewFeedback(host, options) {
     ready: batch.ready,
     update: paint,
     placeComposer: composer.place,
+    captureComposerFocus: composer.captureFocus,
     comment(anchor = null, replyTo = null, view = "changes") {
       if (disposed || !validAnchor(anchor, snapshotIdOf(snapshot))) return;
       return composer.comment(anchor, replyTo, view);

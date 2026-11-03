@@ -8,6 +8,33 @@ async function assertNoOverflow(page) {
   expect(size.page, JSON.stringify(size)).toBeLessThanOrEqual(size.viewport + 1);
 }
 
+async function repaintWhileTyping(page) {
+  await page.locator('[data-review-inline-composer] textarea').evaluate((field) => field.setSelectionRange(12, 12));
+  await page.evaluate(async () => {
+    const { reviews, reads, local } = window.__layoutModules;
+    const scope = { deviceId: 'review-layout', projectId: 'p1', taskId: 'task-1' };
+    const review = (await local.readCached(reviews.reviewAddress(scope))).value.review;
+    const snapshot = review.snapshots.at(-1);
+    const identity = { ...scope, snapshot, directory: snapshot.directories[0] };
+    const address = reads.reviewDiffAddress(identity, {});
+    const held = (await local.readCached(address)).value;
+    await local.writeCached(address, { ...held, files: held.files.map((file) => ({ ...file, additions: 3 })) });
+  });
+  await page.waitForFunction(() => document.querySelector('.task-review-file-head .task-review-count')?.textContent.includes('+3'));
+  const focus = await page.locator('[data-review-inline-composer] textarea').evaluate((field) => ({ focused: field === document.activeElement, caret: field.selectionStart }));
+  expect(focus).toEqual({ focused: true, caret: 12 });
+  await page.evaluate(async () => {
+    const { tasks } = window.__layoutModules;
+    const held = await tasks.readTaskRecord('review-layout', 'p1', 'task-1');
+    held.timeline.push({ type: 'comment', id: 'concurrent-comment', body: 'A concurrent comment', author: { kind: 'user' },
+      anchor: { snapshot_id: 'revision-2', directory_id: 'dir-api', path: 'src/review.js', side: 'new', line: 1 } });
+    await tasks.writeTaskRecord('review-layout', 'p1', 'task-1', held);
+  });
+  await page.waitForSelector('[data-review-inline-comment="concurrent-comment"]');
+  const refreshed = await page.locator('[data-review-inline-composer] textarea').evaluate((field) => ({ focused: field === document.activeElement, caret: field.selectionStart }));
+  expect(refreshed).toEqual({ focused: true, caret: 12 });
+}
+
 async function addDraft(page, side, line, body) {
   const previous = await page.locator("[data-review-draft]").count();
   await page.locator(`[data-review-path="${path}"] [data-review-comment][data-side="${side}"][data-line="${line}"]`).click();
@@ -29,6 +56,7 @@ for (const { label, width } of [{ label: "desktop", width: 1440 }, { label: "pho
       const composer = page.locator("form[data-review-inline-composer]");
       await composer.locator("textarea").fill("Explain how this state survives a reload.");
       expect(await composer.isVisible()).toBe(true);
+      await repaintWhileTyping(page);
       const composerBox = await composer.boundingBox();
       expect(composerBox.width).toBeLessThanOrEqual(width);
       await assertNoOverflow(page);
@@ -74,11 +102,11 @@ for (const { label, width } of [{ label: "desktop", width: 1440 }, { label: "pho
       expect(calls[3].body).toContain("[[#970:r2:");
       if (phone) await page.locator('button[data-review-view="comments"]').click();
       await page.locator("#comment-posted-4").scrollIntoViewIfNeeded();
-      expect(await page.locator("#comment-posted-4 a.md-ref").count()).toBe(3);
+      expect(await page.locator("#comment-posted-4 a.md-ref").count()).toBe(4);
       await assertNoOverflow(page);
       await captureLayout(page, `review-verdict-timeline-${label}.png`);
       await page.evaluate(() => { window.__reviewHeader = document.querySelector(".task-review-header"); });
-      await page.locator("#comment-posted-4 a.md-ref").nth(1).click();
+      await page.locator('#comment-posted-4 a.md-ref[href*="side=old"]').click();
       await page.waitForSelector('tr.task-review-anchor[data-old-line="1"]');
       expect(await page.evaluate(() => window.__reviewNavigation.at(-1).review)).toMatchObject({ revision: 2, mode: "all", path, side: "old", line: 1 });
       expect(await page.evaluate(() => document.querySelector(".task-review-header") === window.__reviewHeader)).toBe(true);

@@ -258,7 +258,8 @@ export function mountTaskReviewPage(host, options) {
       path: selection.path || "", anchor: selection.anchor, comparison: comparison(), comments: rows, identities: taskIdentities(), autoOpen: true,
       onOpenFile: openFiles,
       ...commentCallbacks(), priorRevision: baseline()?.number,
-      onPaint: () => queueMicrotask(() => feedback?.placeComposer()),
+      onBeforePaint: () => feedback?.captureComposerFocus(),
+      onPaint: placeInlineComposer,
       onSelectPath: (path) => {
         if (path !== selection.path) {
           panePlace = JSON.stringify([path, null]);
@@ -268,6 +269,11 @@ export function mountTaskReviewPage(host, options) {
       onUnreadableCommit: () => { notice = "This commit is unavailable. Showing all changes for this revision."; choose({ mode: "all" }); },
     };
     pane = view === "files" ? mountTaskReviewFiles(content, params) : mountTaskReviewChanges(content, params);
+  }
+
+  function placeInlineComposer() {
+    if (pane) feedback?.placeComposer();
+    else queueMicrotask(() => feedback?.placeComposer());
   }
 
   function paintPane(saved, dir, view) {

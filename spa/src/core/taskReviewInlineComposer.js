@@ -9,7 +9,11 @@ export function createReviewInlineComposer({ batch, placeComposer, snapshotNumbe
   function place() {
     if (!active) return;
     placeComposer?.(active.row, active.draft.anchor);
-    if (active.focused && document.activeElement === document.body) active.field.focus({ preventScroll: true });
+    const focus = active.restoreFocus;
+    active.restoreFocus = null;
+    if (!focus) return;
+    active.field.focus({ preventScroll: true });
+    active.field.setSelectionRange(focus.start, focus.end, focus.direction);
   }
   function open(draft) {
     close();
@@ -24,9 +28,7 @@ export function createReviewInlineComposer({ batch, placeComposer, snapshotNumbe
     const form = row.querySelector("form");
     const field = form.querySelector("textarea");
     field.value = draft.body;
-    active = { row, draft, field, focused: false };
-    field.onfocus = () => { if (active?.row === row) active.focused = true; };
-    field.onblur = () => { if (active?.row === row) active.focused = false; };
+    active = { row, draft, field, restoreFocus: null };
     field.oninput = () => { void batch.edit(draft.id, { body: field.value }); };
     form.onsubmit = (event) => { event.preventDefault(); close(); };
     form.querySelector('[data-review-composer-close]').onclick = close;
@@ -36,6 +38,12 @@ export function createReviewInlineComposer({ batch, placeComposer, snapshotNumbe
   }
   return {
     place, close,
+    captureFocus() {
+      if (!active) return;
+      const { field } = active;
+      active.restoreFocus = field === document.activeElement
+        ? { start: field.selectionStart, end: field.selectionEnd, direction: field.selectionDirection } : null;
+    },
     async comment(anchor, replyTo = null, view = "changes") {
       const generation = ++serial;
       await batch.ready;

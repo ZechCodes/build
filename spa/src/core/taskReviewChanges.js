@@ -222,7 +222,7 @@ async function seekAnchorPages(host, target, bodies, current) {
 }
 
 /** Mount one saved source's Changes tab. refresh() retries the listing. */
-export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, onReply, onPaint, priorRevision, anchor = null, comparison = {}, path = "", onSelectPath = null, onUnreadableCommit = null, comments = [], identities, autoOpen = false, keepReadingPlace = (paint) => paint() }) {
+export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, onReply, onPaint, onBeforePaint, priorRevision, anchor = null, comparison = {}, path = "", onSelectPath = null, onUnreadableCommit = null, comments = [], identities, autoOpen = false, keepReadingPlace = (paint) => paint() }) {
   const scope = { deviceId, projectId, taskId, snapshot, directory };
   const params = reviewDiffParams(scope, comparison);
   const rpc = reviewMutationRpc(deviceId, callRpc);
@@ -252,10 +252,11 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     if (!alive) return;
     keepReadingPlace(() => {
       const focus = focusedControl(host);
+      onBeforePaint?.();
       host.innerHTML = changesHtml(state, Boolean(onComment), (path) => ({ ...bodies.bodyOf(path), loading: state.loading.has(path) }));
       restoreFocusedControl(host, focus);
+      onPaint?.();
     });
-    onPaint?.();
     const row = state.anchor && anchoredRow(host, state.anchor);
     if (!row) return;
     row.classList.add("task-review-anchor");
@@ -450,8 +451,11 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     updateComments(rows) {
       if (!alive) return;
       state.context.comments = rows;
-      keepReadingPlace(() => updateInlineThreads(host, state.context));
-      onPaint?.();
+      keepReadingPlace(() => {
+        onBeforePaint?.();
+        updateInlineThreads(host, state.context);
+        onPaint?.();
+      });
     },
     dispose() {
       alive = false;

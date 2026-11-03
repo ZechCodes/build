@@ -87,7 +87,7 @@ const pagedPainter = (path, file, showSource) => {
  */
 export function mountTaskReviewFiles(host, options) {
   let { comments = [] } = options;
-  const { deviceId, projectId, taskId, workspaceId, snapshot, directory, callRpc, path, onComment, onReply, onPaint = () => {},
+  const { deviceId, projectId, taskId, workspaceId, snapshot, directory, callRpc, path, onComment, onReply, onBeforePaint, onPaint = () => {},
     anchor, onSelectPath, identities, keepReadingPlace = (paint) => paint() } = {
     path: "", onComment: null, anchor: null, onSelectPath: null, identities: {}, keepReadingPlace: (paint) => paint(), ...options,
   };
@@ -204,6 +204,7 @@ export function mountTaskReviewFiles(host, options) {
     const showSource = showSourceFor(name, file);
     shownFile = file;
     shownSource = showSource;
+    onBeforePaint?.();
     preview.innerHTML = previewHtml(name, file, showSource);
     paintLineMetadata();
     if (!file.paged) {
@@ -217,7 +218,8 @@ export function mountTaskReviewFiles(host, options) {
       readPage: pageReader(name, file.mime),
       restart: () => void refreshFile(name),
       painter: pagedPainter(name, file, showSource),
-      onPaint: paintLineMetadata, keepReadingPlace,
+      onPaint: paintLineMetadata,
+      keepReadingPlace: (paint) => keepReadingPlace(() => { onBeforePaint?.(); paint(); }),
     });
   });
 
@@ -383,7 +385,7 @@ export function mountTaskReviewFiles(host, options) {
       comments = next || [];
       if (disposed) return;
       if (shownFile && !shownSource && showSourceFor(selected, shownFile)) paintFile(selected, shownFile);
-      else keepReadingPlace(paintLineMetadata);
+      else keepReadingPlace(() => { onBeforePaint?.(); paintLineMetadata(); });
     },
     open,
     refresh() {

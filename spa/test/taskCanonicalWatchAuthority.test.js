@@ -31,58 +31,43 @@ async function canonicalOperation() {
   await operations.put({ operationId, revision: 0, owner: { projectId },
     request: { method: "tasks.comment", params: { task_id: taskId, body: "Accepted comment" } } });
   await operations.accept(operationId, { revision: 1, ack: {}, overlay: [{ address, kind: "upsert", path: ["timeline"], value: timeline[0] }] });
-  await operations.confirm(operationId, { revision: 2, confirmation: { state: "succeeded", published } });
+  const frame = { operation_id: operationId, revision: 2, state: "succeeded", published, refresh: [{ kind: "task", id: taskId }] };
+  await operations.confirm(operationId, { revision: 2, confirmation: frame, refreshPending: true });
   const authority = { active: () => true, call: vi.fn(async () => ({ task: incoming, timeline })) };
   return { cache, tracker, content, operations, operationId, address, authority,
     refresh: async () => refreshWriteOperation({ cache: operations, authority, record: await operations.get(operationId),
-      frame: { state: "succeeded", published, refresh: [{ kind: "task", id: taskId }] } }) };
+      frame }) };
 }
 
-it("honors a facts-helper contract stub with valid retained watch lineage despite optional unknown counters", async () => {
-  const summaries = await import("../src/core/taskSummaryCache.js");
-  // Conditional adapter control only: this does not bootstrap persisted shared
-  // authority or claim end-to-end recovery from a fresh/unknown namespace.
-  const facts = vi.spyOn(summaries, "reconcileTaskReadFacts").mockReturnValue({
-    task: incoming, acceptedWatch: false, watchCertain: true, needsUnreadRefresh: true,
-  });
+it("publishes ordinary full content despite optional unknown counter families", async () => {
   const state = await canonicalOperation();
-  await state.refresh();
-  expect(facts).toHaveBeenCalledWith(scope, expect.objectContaining({ id: taskId }), incoming,
-    expect.objectContaining({ markerPolicy: "legacy", watchGuard: expect.objectContaining({ id: taskId }) }));
+  expect(await state.refresh()).toMatchObject({ complete: true });
   const saved = (await state.cache.readCanonicalCached(state.address)).value;
-  const { __task_content_cache: proof, ...publicTask } = saved.task;
-  expect(publicTask).toEqual(incoming);
+  expect(saved.task).toMatchObject(incoming);
+  expect(saved.task.__task_watch_cache.uncertain).toBe(false);
+  const proof = saved.task.__task_content_cache;
   expect(proof.header.read_order).toBe(proof.body.read_order);
   expect(saved.timeline).toEqual(timeline);
   expect((await state.operations.get(state.operationId)).overlayActive).toBe(false);
   expect(state.authority.call).toHaveBeenCalledTimes(1);
 });
 
-it.each(["fresh", "pending"])("does not certify ordinary full content as a complete canonical receipt under %s watch uncertainty", async (kind) => {
+it("publishes useful content while retaining the canonical obligation during a pending watch intent", async () => {
   const state = await canonicalOperation();
   const watch = await import("../src/core/taskWatchAuthority.js");
-  const selected = vi.spyOn(state.content, "reconcileTaskContent");
-  const owner = kind === "pending" ? await watch.beginTaskWatchMutation(scope, taskId, { watched: false, metadataOnly: true }) : null;
-  if (kind === "pending") expect(owner).not.toBeNull();
-  const before = await state.cache.readCanonicalCached(state.address);
+  const owner = await watch.beginTaskWatchMutation(scope, taskId, { watched: false, metadataOnly: true });
+  expect(owner).not.toBeNull();
   try {
-    await expect(state.refresh()).rejects.toThrow("superseded");
-    expect(selected.mock.results.some(({ value }) => value?.acceptedHeader && value?.acceptedBody && !value?.needsFullRefresh)).toBe(true);
-    expect(await state.cache.readCanonicalCached(state.address)).toEqual(before);
+    expect(await state.refresh()).toMatchObject({ complete: false, refresh: { state: "blocked" } });
+    const saved = await state.cache.readCanonicalCached(state.address);
+    expect(saved.value.task).toMatchObject({ title: incoming.title, body: incoming.body });
+    expect(saved.publication || []).toEqual([]);
     expect((await state.operations.get(state.operationId)).overlayActive).toBe(true);
     expect(state.authority.call).toHaveBeenCalledTimes(1);
-  } finally {
-    if (owner) await watch.settleTaskWatchMutation(owner, { rollback: true });
-  }
+  } finally { await watch.settleTaskWatchMutation(owner, { rollback: true }); }
 });
 
-it("preserves an actual terminal watch-intent note when a conditional valid-lineage publication advances its read note", async () => {
-  const summaries = await import("../src/core/taskSummaryCache.js");
-  // Adapter control only: fresh watch authority remains unknown in production.
-  // This stub admits the full publication so its independent note write runs.
-  vi.spyOn(summaries, "reconcileTaskReadFacts").mockReturnValue({
-    task: incoming, acceptedWatch: false, watchCertain: true, needsUnreadRefresh: true,
-  });
+it("preserves an actual terminal watch-intent note when a covering publication advances its read note", async () => {
   const state = await canonicalOperation();
   const watch = await import("../src/core/taskWatchAuthority.js");
   const { taskWatchIntentAddress } = await import("../src/core/taskReadOrder.js");

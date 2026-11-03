@@ -125,7 +125,7 @@ export function createTaskUnreadDisplayOwner({ scope, consumer, active = () => t
     if (!usable() || !scopedTask(scope, task)) return;
     const previous = previousOf(task);
     if (endedAssociation(states.get(task.id), task, context, scope)) states.set(task.id, { retired: true });
-    if (!canRecord(task, detail, total, previous)) return;
+    if (!canRecord(task, detail, total, previous) || total !== taskUnreadCount(task, detail)) return;
     const next = selectedState(task, detail, total, previous, context, scope);
     const selected = same(previous, next) ? previous : next;
     states.set(task.id, selected);

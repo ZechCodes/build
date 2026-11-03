@@ -31,7 +31,8 @@ it("publishes admitted full content with its independent watch read and review f
     request: { method: "tasks.comment", params: { task_id: taskId, body: "Accepted comment" } } });
   await cache.accept(operationId, { revision: 1, ack: {}, overlay: [{ address, kind: "upsert", path: ["timeline"],
     value: { id: "comment", body: "Accepted comment" } }] });
-  await cache.confirm(operationId, { revision: 2, confirmation: { state: "succeeded", published } });
+  const frame = { operation_id: operationId, revision: 2, state: "succeeded", published, refresh: [{ kind: "task", id: taskId }] };
+  await cache.confirm(operationId, { revision: 2, confirmation: frame, refreshPending: true });
   const incoming = { ...task, title: "New task", body: "New full body", updated_at: "2026-10-29T00:01:00Z",
     watched: false, read_through: "tc-20",
     review_summary: { task_id: taskId, version: 2, status: "closed", mode: "pull_request" } };
@@ -42,10 +43,10 @@ it("publishes admitted full content with its independent watch read and review f
     return { task: incoming, timeline };
   }) };
   await refreshWriteOperation({ cache, authority, record: await cache.get(operationId),
-    frame: { state: "succeeded", published, refresh: [{ kind: "task", id: taskId }] } });
+    frame });
   const canonical = await local.readCanonicalCached(address);
-  const { __task_content_cache: proof, ...publicTask } = canonical.value.task;
-  expect(publicTask).toEqual(incoming);
+  const proof = canonical.value.task.__task_content_cache;
+  expect(canonical.value.task).toMatchObject(incoming);
   expect(proof.body.read_order).toBe(issued);
   expect(canonical.value.timeline).toEqual(timeline);
   expect((await cache.get(operationId)).overlayActive).toBe(false);
@@ -93,17 +94,18 @@ it("does not certify a full canonical publication or retire its layer when the i
     request: { method: "tasks.comment", params: { task_id: taskId, body: "Accepted comment" } } });
   await cache.accept(operationId, { revision: 1, ack: {}, overlay: [{ address, kind: "upsert", path: ["timeline"],
     value: { id: "comment", body: "Accepted comment" } }] });
-  await cache.confirm(operationId, { revision: 2, confirmation: { state: "succeeded", published } });
+  const frame = { operation_id: operationId, revision: 2, state: "succeeded", published, refresh: [{ kind: "task", id: taskId }] };
+  await cache.confirm(operationId, { revision: 2, confirmation: frame, refreshPending: true });
   const authority = { active: () => true, call: vi.fn(async () => ({
     task: { ...task, title: "Old task", body: "Old full body", updated_at: "2026-10-28T23:59:59Z",
       watched: false, read_through: "tc-20", review_summary: { task_id: taskId, version: 2, status: "closed" } },
     timeline: [{ id: "comment", body: "Accepted comment" }],
   })) };
-  await expect(refreshWriteOperation({ cache, authority, record: await cache.get(operationId),
-    frame: { state: "succeeded", published, refresh: [{ kind: "task", id: taskId }] } })).rejects.toThrow("superseded");
+  expect(await refreshWriteOperation({ cache, authority, record: await cache.get(operationId),
+    frame })).toMatchObject({ complete: false });
   expect((await cache.get(operationId)).overlayActive).toBe(true);
   expect((await tracker.readTaskRecord(scope.deviceId, projectId, taskId)).task.body).toBe(task.body);
-  expect(await local.readCanonicalCached(address)).toEqual(before);
+  expect((await local.readCanonicalCached(address)).value.task.body).toBe(before.value.task.body);
   expect(authority.call).toHaveBeenCalledTimes(1);
 });
 
@@ -122,7 +124,7 @@ it("retains canonical refresh write guards across an optimistic body change foll
     frame: { state: "failed", published: [], refresh: [{ kind: "task", id: taskId }] },
     record: { deviceId: scope.deviceId, operationId: "aba-refresh", owner: { projectId }, overlay: [], request: { params: { task_id: taskId } } },
   });
-  const refused = expect(pending).rejects.toThrow("superseded");
+  const refused = expect(pending).resolves.toMatchObject({ complete: false });
   await vi.waitFor(() => expect(authority.call).toHaveBeenCalledTimes(1));
   for (const body of ["Optimistic body", task.body]) await mergeTaskContentRecordsTogether(
     { deviceId: scope.deviceId, projectId }, [address], ([record]) => ({

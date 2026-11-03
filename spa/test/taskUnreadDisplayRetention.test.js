@@ -124,7 +124,7 @@ async function mountInboxComponent() {
   }
   const { followWatchedTasks } = await import("../src/core/watchedTaskFollower.js");
   const { inboxRowHtml } = await import("../src/core/inbox.js");
-  follower = followWatchedTasks({ onChange: () => { inboxHost.innerHTML = follower.entries().map((entry) => inboxRowHtml(entry)).join(""); } });
+  follower = followWatchedTasks({ onChange: () => { inboxHost.innerHTML = follower.entries().map((entry) => follower.renderEntry(entry, () => inboxRowHtml(entry))).join(""); } });
   follower.follow([project]);
   await vi.waitFor(() => expect(follower.entries()[0]?.unreadCount).toBe(3), WAIT);
   await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).not.toBeNull(), WAIT);

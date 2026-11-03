@@ -99,8 +99,8 @@ it("captures both whole-list replica baselines before one unnarrowed pane RPC", 
 it("rejects a whole-list publication when its captured session changes before the cache transaction", async () => {
   await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([], columns()));
   const entered = gate(), publication = gate(), finished = gate();
-  const publish = tracker.writeTasksQueryRecord;
-  vi.spyOn(tracker, "writeTasksQueryRecord").mockImplementation(async (...args) => {
+  const publish = tracker.writeTaskListRecords;
+  vi.spyOn(tracker, "writeTaskListRecords").mockImplementation(async (...args) => {
     entered.resolve(); await publication.promise;
     const result = await publish(...args); finished.resolve(); return result;
   });

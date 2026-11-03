@@ -262,7 +262,7 @@ it.each([
   await sync.syncDevice(deviceId);
   const tracker = await import("../src/core/trackerCache.js");
   const { nextTaskRead } = await import("../src/core/taskReadOrder.js");
-  const visible = { kind: "tracker_task", task_id: taskId, project_id: projectId, title: "held fields",
+  const visible = { id: taskId, kind: "tracker_task", task_id: taskId, project_id: projectId, title: "held fields",
     updated_at: "2026-10-08T20:00:20Z", review_summary: { ...summary, version: 7 } };
   const oldRow = {
     ...visible, updated_at: "2026-10-08T20:00:10Z", review_summary: { ...summary, version },
@@ -306,7 +306,7 @@ it.each([
 it("admits a fresh higher board version after merging two cached authorities with unknown read order", async () => {
   await sync.syncDevice(deviceId);
   const tracker = await import("../src/core/trackerCache.js");
-  const visible = { kind: "tracker_task", task_id: taskId, project_id: projectId,
+  const visible = { id: taskId, kind: "tracker_task", task_id: taskId, project_id: projectId,
     updated_at: "2026-10-08T20:00:20Z", review_summary: { ...summary, version: 7 } };
   const { review_summary: _summary, ...absent } = visible;
   const cleared = tracker.preserveTaskReviewSummary(visible, { ...absent, updated_at: "2026-10-08T20:00:30Z" });

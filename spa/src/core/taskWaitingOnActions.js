@@ -19,12 +19,17 @@ function requireSupport(capable, createsWorkspace, seen, requiresWaitingOn) {
 
 export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }) {
   const hasCacheScope = [deviceId, projectId].every((id) => typeof id === "string" && id.length > 0);
+  function captureActionRead(method) {
+    if (!hasCacheScope || method === "tasks.waiting_on.blocks") return;
+    const address = taskId ? taskAddress(deviceId, projectId, taskId) : { deviceId, projectId };
+    return captureTaskContentRead(address, taskId ? { revalidate: "full" } : {});
+  }
+
   async function send(method, params, options, stands) {
     const assignment = isOrdinaryAssignment(method, params);
     const createsWorkspace = assignment && params.assignee?.kind === "new_workspace";
     const seen = createsWorkspace && await readTaskWaitingOnEverSupported(deviceId);
-    const contentRead = !hasCacheScope || method === "tasks.waiting_on.blocks" ? undefined : await captureTaskContentRead(taskId ? taskAddress(deviceId, projectId, taskId) : { deviceId, projectId },
-      taskId ? { revalidate: "full" } : {});
+    const contentRead = await captureActionRead(method);
     const issuedRead = contentRead?.readOrder;
     // The greeting may change during the cache read. Recheck its authority,
     // then validate and send without another asynchronous gap.

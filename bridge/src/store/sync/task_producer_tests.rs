@@ -4,6 +4,8 @@ use crate::store::Store;
 use crate::tracker::{Actor, Task, TaskComment};
 
 const NOW: &str = "2026-01-01T00:00:00Z";
+#[path = "producer_guard.rs"]
+mod guard;
 fn events(store: &Store) -> Vec<(i64, String, String)> {
     store
         .connection()
@@ -89,4 +91,187 @@ fn canonical_task_and_journal_both_rollback_on_append_failure() {
         "one"
     );
     assert_eq!(events(&store).len(), 1);
+}
+
+#[test]
+fn snapshot_review_header_change_invalidates_task_even_without_a_card_delta() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let task = create(&store);
+    let snapshot = crate::reviews::model::ReviewSnapshot {
+        publication: None,
+        id: "synthetic-review-snapshot".into(),
+        number: 0,
+        author: Actor::User,
+        created_at: NOW.into(),
+        directories: vec![],
+    };
+    store
+        .save_review_snapshot(&task.id, "synthetic-workspace", 0, snapshot)
+        .unwrap();
+    assert_eq!(
+        events(&store).len(),
+        2,
+        "review headers also invalidate the opened task"
+    );
+}
+
+#[test]
+fn task_state_status_assignment_labels_and_read_watch_dismiss_writers_publish() {
+    use crate::tracker::{Assignee, TaskState};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = create(&store);
+    let mutations: [fn(&mut Task); 9] = [
+        |t| t.state = TaskState::Closed,
+        |t| {
+            t.state = TaskState::Open;
+            t.status = "ready".into();
+        },
+        |t| {
+            t.assignee = Some(Assignee::Agent {
+                agent_id: "Actual\0suffix".into(),
+            })
+        },
+        |t| t.labels = vec!["API".into()],
+        |t| t.watched = true,
+        |t| t.read_through = Some("synthetic-read-marker".into()),
+        |t| t.watched = false,
+        |t| t.dismissed_through = Some("synthetic-dismiss-marker".into()),
+        |t| t.trackers = vec!["synthetic-tracker".into()],
+    ];
+    for (n, mutate) in mutations.into_iter().enumerate() {
+        mutate(&mut task);
+        store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+        assert_eq!(events(&store).len(), n + 2, "producer case {n}");
+    }
+}
+
+#[test]
+fn committed_delivery_summary_changes_publish_but_private_checkpoints_do_not() {
+    use crate::store::DeliveryIntent;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let task = create(&store);
+    let intent = DeliveryIntent {
+        id: String::new(),
+        task_id: task.id.clone(),
+        project_path: task.project_path.clone(),
+        generation: 0,
+        target: json!({"kind":"agent","agent_id":"synthetic-agent"}),
+        actor: Actor::User,
+        sender: None,
+        note: None,
+        operation_id: String::new(),
+        state: "queued".into(),
+        reservation: json!(null),
+        admitted: None,
+        error: None,
+    };
+    let intent = store.accept_delivery_intent(&task, &[], intent).unwrap();
+    assert_eq!(events(&store).len(), 2);
+    store
+        .claim_delivery_intent(&intent.id, intent.generation)
+        .unwrap();
+    assert_eq!(
+        events(&store).len(),
+        2,
+        "provisioning retains the same displayed queued summary"
+    );
+    store
+        .checkpoint_delivery_intent(&intent.id, intent.generation, json!({}), None)
+        .unwrap();
+    assert_eq!(
+        events(&store).len(),
+        2,
+        "private reservation checkpoints do not change the summary"
+    );
+    store
+        .fail_delivery_intent(&intent.id, intent.generation, "synthetic failure")
+        .unwrap();
+    assert_eq!(events(&store).len(), 3);
+}
+
+#[test]
+fn task_project_is_immutable_and_project_delete_keeps_its_tombstone() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = create(&store);
+    task.project_path = "/synthetic-new-project".into();
+    assert!(matches!(
+        store.save_tracker_task_activity(&task, &[], &[]),
+        Err(crate::store::StoreError::WaitingOnInvalid(_))
+    ));
+    assert_eq!(events(&store).len(), 1, "a refused reparent cannot publish");
+    store
+        .delete_tracker_tasks_of_project("/synthetic-project", |_| Ok(()))
+        .unwrap();
+    assert_eq!(events(&store).last().unwrap().2, "delete");
+    let revision: (i64, bool) = store
+        .connection()
+        .query_row(
+            "SELECT seq,deleted FROM sync_revisions WHERE entity_kind='task' AND entity_key=?1",
+            [&task.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(revision, (2, true));
+}
+
+#[test]
+fn dependencies_publish_both_endpoints_and_readiness_reconciliation() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let dependent = create(&store);
+    let mut blocker = create(&store);
+    store
+        .edit_waiting_on(
+            &dependent.project_path,
+            &dependent.id,
+            std::slice::from_ref(&blocker.id),
+            &[],
+            &Actor::User,
+            NOW,
+        )
+        .unwrap();
+    while store.reconcile_waiting_on(2).unwrap().pending {}
+    let before = events(&store).last().unwrap().0;
+    let summary = store
+        .list_task_summary_candidates(&dependent.project_path, None, 10)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.row["id"] == dependent.id)
+        .unwrap();
+    assert_eq!(summary.row["dependencies"]["blocked"], true);
+    blocker.status = "done".into();
+    store
+        .save_tracker_task_activity(&blocker, &[], &[])
+        .unwrap();
+    while store.reconcile_waiting_on(2).unwrap().pending {}
+    let after = events(&store);
+    for id in [&dependent.id, &blocker.id] {
+        assert!(
+            after.iter().any(|(seq, key, _)| seq > &before && key == id),
+            "missing readiness/endpoint revision for {id}"
+        );
+    }
+    let summary = store
+        .list_task_summary_candidates(&dependent.project_path, None, 10)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.row["id"] == dependent.id)
+        .unwrap();
+    assert_eq!(summary.row["dependencies"]["blocked"], false);
+    store
+        .edit_waiting_on(
+            &dependent.project_path,
+            &dependent.id,
+            &[],
+            std::slice::from_ref(&blocker.id),
+            &Actor::User,
+            NOW,
+        )
+        .unwrap();
+    let after_remove = events(&store);
+    assert!(after_remove.last().unwrap().0 > after.last().unwrap().0);
 }

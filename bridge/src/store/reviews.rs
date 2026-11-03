@@ -378,6 +378,7 @@ fn load_header(conn: &Connection, task_id: &str) -> Result<Option<ReviewHeader>,
 }
 
 fn write_header(tx: &Transaction, header: &ReviewHeader) -> Result<(), StoreError> {
+    super::sync::touch_task(tx, &header.task_id, true)?;
     pull_requests::sync_workspace_claim(tx, header)?;
     tx.execute(
         "INSERT INTO reviews (task_id, workspace_id, version, record) VALUES (?1, ?2, ?3, ?4) \

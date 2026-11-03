@@ -364,7 +364,9 @@ export function mountTaskPage(host, options) {
   };
 
   function keepReadingPlace(repaint) {
-    if (!framed || composerOwnsPlace()) repaint();
+    // A late review header must not turn an untouched start-of-page into a
+    // timeline reading position by anchoring the first comment below it.
+    if (!framed || host.scrollTop === 0 || composerOwnsPlace()) repaint();
     else paintKeepingPlace(host, repaint, { opening: () => false, policy: readingPolicy });
   }
 

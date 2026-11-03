@@ -31,6 +31,8 @@ export function mountTaskReviewPage(host, options) {
   let record = null;
   let support = NO_REVIEW_SUPPORT;
   let selection = options.reviewRoute || {};
+  // Phone Comments hides the current centre pane while keeping its reader mounted.
+  let contentView = options.reviewRoute?.view === "files" ? "files" : "changes";
   let rows = [];
   let commits = null;
   let commitsReader = null;
@@ -296,6 +298,7 @@ export function mountTaskReviewPage(host, options) {
     const saved = snapshot();
     const dir = directory();
     const view = selection.view || "changes";
+    if (view !== "comments") contentView = view;
     layout().dataset.reviewView = view;
     paintHead(saved);
     paintControls(saved);
@@ -309,7 +312,7 @@ export function mountTaskReviewPage(host, options) {
       button.setAttribute("aria-pressed", String(button.dataset.reviewView === view));
       button.onclick = () => choose({ view: button.dataset.reviewView });
     });
-    paintPane(saved, dir, view === "comments" ? "changes" : view);
+    paintPane(saved, dir, contentView);
     paintNotices(saved);
   }
 

@@ -28,7 +28,7 @@ export const INPUT_SOURCES = {
   "core/taskReviewFeedback.js": "review feedback",
   "core/taskReviewLifecycle.js": "PR merge",
   "core/taskReviewMerge.js": "PR merge",
-  "core/taskReviewFiles.js": "review file",
+  "core/taskReviewInlineComposer.js": "review feedback",
   "core/taskWaitingOnRender.js": "task controls / Waiting on prerequisite search",
   "core/toolbar.js": "toolbar projects / toolbar workspaces",
   "core/trackerAssigneeControl.js": "task controls / assignee note",
@@ -90,7 +90,7 @@ export const INPUT_SURFACES = [
   { name: "project remote", selectSurface: "project settings", selectors: ["#psremoteurl", "#pssourcelabel"] },
   { name: "new project remote", selectSurface: "new project", selectors: ["#nrproject", "[data-source-value]", "[data-source-name]", "[data-source-branch]"] },
   { name: "task review", selectSurface: "task review", selectors: ["[data-review-base]", "[data-review-push-branch]", "[data-review-description]"] },
-  { name: "review feedback", selectSurface: "review feedback", selectors: ["#task-review-feedback-body"] },
+  { name: "review feedback", selectors: ["[data-review-summary]", "[data-review-inline-composer] textarea"] },
   { name: "PR merge", selectSurface: "PR merge", selectors: ["[data-pr-merge-branch]", "[data-review-close-description]"] },
   { name: "open workspace review", selectors: ["[data-review-title]", "[data-review-description]", "[data-review-base]", "#review-create-assignee"] },
   { name: "new conversation", selectSurface: "new conversation", selectors: ["[data-new-agent-name]", ".rail-composer textarea"] },
@@ -111,7 +111,6 @@ export const INPUT_SURFACES = [
   { name: "saved source draft", selectors: ["[data-recovered-draft] textarea"] },
   { name: "file editor", selectors: [".file-editor"] },
   { name: "New folder", selectors: ['input[aria-label="New folder name"]'] },
-  { name: "review file", selectors: ["[data-review-line-input]"] },
 ];
 
 const modules = {
@@ -122,7 +121,7 @@ const modules = {
   feed: "src/core/taskFeed.js", inbox: "src/core/inbox.js", taskComposer: "src/core/taskComposer.js",
   task: "src/core/trackerTaskRender.js", assignee: "src/core/trackerAssigneePicker.js", pop: "src/commentPop.js",
   fileUploads: "src/core/filesUploadActions.js",
-  changes: "src/core/changesComposer.js", editor: "src/core/fileEditor.js", reviewFiles: "src/core/taskReviewFiles.js",
+  changes: "src/core/changesComposer.js", editor: "src/core/fileEditor.js", reviewFeedback: "src/core/taskReviewFeedback.js",
   sourceDrafts: "src/core/projectChangesDrafts.js", uiStore: "src/core/localUiStore.js", directoryScope: "src/core/directoryScope.js",
   reviewEntry: "src/core/workspaceReviewEntry.js", reviewSupport: "src/core/taskReviewSupport.js",
 };
@@ -236,10 +235,17 @@ async function seedInputSurface({ name, theme }) {
       dispose(m.sourceDrafts.mountProjectChangesDrafts(root, { deviceId: device.id, project }));
     },
     "file editor"() { dispose(m.editor.mountFileEditor(root, { value: "// The editor preserves its own layout.\nconst styled = true;\n" })); },
-    "review file"() {
-      const file = { path: "example.js", size: 20, mime: "text/javascript", content_b64: btoa("const styled = true;\n") };
-      const readReview = async (_method, params) => params.mode === "tree" ? { entries: [{ name: file.path, path: file.path, kind: "file" }] } : file;
-      dispose(m.reviewFiles.mountTaskReviewFiles(root, { ...scope, snapshot: { id: "input-snapshot" }, directory: { id: "input-directory", name: "Build", is_git: true }, path: file.path, callRpc: readReview, onComment: () => {} }));
+    "review feedback": async () => {
+      root.innerHTML = '<section id="review-feedback"></section><table><tbody data-review-editor-host></tbody></table>';
+      const snapshot = { id: "input-snapshot", number: 1 };
+      const anchor = { snapshot_id: snapshot.id, directory_id: "input-directory", path: "example.js", side: "new", line: 1 };
+      const feedback = m.reviewFeedback.mountTaskReviewFeedback(root.querySelector("#review-feedback"), {
+        ...scope, snapshot, taskNumber: task.number, callRpc,
+        placeComposer: (row) => root.querySelector("[data-review-editor-host]").append(row),
+      });
+      dispose(feedback);
+      await feedback.ready;
+      await feedback.comment(anchor);
     },
   };
   await mounts[name]();

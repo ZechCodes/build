@@ -20,7 +20,6 @@ export const SELECT_SOURCES = {
   "core/projectConsole.js": "project Terminal",
   "core/taskReviewActions.js": "task review",
   "core/taskReviewControls.js": "task review",
-  "core/taskReviewFeedback.js": "review feedback",
   "core/taskReviewMerge.js": "PR merge",
   "core/taskReviewRender.js": "task review",
   "core/taskWaitingOnRender.js": "task controls / Waiting on prerequisite",
@@ -43,7 +42,6 @@ export const SELECT_SURFACES = [
   { name: "new project", selectors: ["#nrdevice"] },
   { name: "workspace review", selectors: ["[data-review-task]"] },
   { name: "task review", selectors: ["[data-review-snapshot]", "[data-review-workspace]", "[data-review-merge-branch]", "[data-review-remote]"] },
-  { name: "review feedback", selectors: ["[data-review-opinion]"] },
   { name: "PR merge", selectors: ["[data-pr-merge-remote]"] },
   { name: "new conversation", selectors: ["[data-new-agent-role]"] },
   { name: "clear conversation", selectors: ["[data-clear-detail]", "[data-clear-compact]"] },
@@ -68,7 +66,6 @@ const modules = {
   review: "src/core/taskReviewPage.js", reviewSupport: "src/core/taskReviewSupport.js", reviewCache: "src/core/taskReviewCache.js",
   reviewMerge: "src/core/taskReviewMerge.js",
   reviewLifecycle: "src/core/taskReviewLifecycle.js",
-  reviewFeedback: "src/core/taskReviewFeedback.js",
   waiting: "src/core/taskWaitingOnRender.js",
   httpControls: "src/core/httpTransportControls.js",
 };
@@ -160,14 +157,6 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
     await m.reviewCache.writeReviewRecord(scope, savedReview, 1);
     const review = m.review.mountTaskReviewPage(root, { ...scope, callRpc, workspaces: () => [{ id: "workspace-1", name: "Select styling" }], task: () => ({ id: "task-1" }) });
     disposers.push(review.dispose);
-  }
-  // Measure the retained feedback fields independently of their placement in
-  // the review page until the commenting slice replaces the component.
-  if (name === "review feedback") {
-    const feedback = m.reviewFeedback.mountTaskReviewFeedback(root, {
-      ...scope, snapshot: savedReview.snapshots[0], callRpc,
-    });
-    disposers.push(feedback.dispose);
   }
   if (name === "PR merge") {
     const prScope = { ...scope, taskId: "task-pr-select" };

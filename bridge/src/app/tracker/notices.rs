@@ -195,6 +195,19 @@ impl AppState {
         phase: &'static str,
         write: impl FnOnce(&mut crate::thread::Thread, &str),
     ) -> Result<(), String> {
+        self.post_from_build_and_wake_as(entity_id, agent_id, (phase, None), write)
+    }
+
+    /// [`Self::post_from_build_and_wake`], the turn sent as `kind` rather
+    /// than as a delivery of the thread it reads. A turn already waiting to
+    /// go to the agent keeps its own kind.
+    pub(in crate::app) fn post_from_build_and_wake_as(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        (phase, kind): (&'static str, Option<crate::agent_message::MessageKind>),
+        write: impl FnOnce(&mut crate::thread::Thread, &str),
+    ) -> Result<(), String> {
         let addressed = self.current_service_agent(entity_id, agent_id)?;
         let now = crate::store::now_rfc3339();
         self.edit_agent_conversation(entity_id, agent_id, |thread, _| {
@@ -213,7 +226,10 @@ impl AppState {
                 interrupt: false,
                 // The message is already on the thread, so the turn says what
                 // every other unread message says: go and read it.
-                say: Some(TurnText::reading_unread(addressed.model_choice.provider)),
+                say: Some(TurnText {
+                    kind,
+                    ..TurnText::reading_unread(addressed.model_choice.provider)
+                }),
                 phase,
                 wants_catch_up: true,
                 survives_refusal: false,

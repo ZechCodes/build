@@ -476,6 +476,14 @@ pub struct SettingsSetParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub workspace_prune: Named<bool>,
+    /// The time of day, `HH:MM` on the device's clock, each project agent
+    /// gets its daily list of quiet workspaces (#958). `09:00` until chosen.
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub workspace_idle_digest_at: Named<String>,
 }
 
 /// The three words a device says about its project agents, each of them
@@ -1004,6 +1012,10 @@ pub struct SettingsResult {
     /// Whether the reclaim service drops quiet workspaces' build output now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_prune: Option<bool>,
+    /// The time of day the reclaim service sends its daily digest of quiet
+    /// workspaces (#958). Absent from older bridges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_idle_digest_at: Option<String>,
     /// Which of those two an environment variable sets on this machine, by
     /// their names here: a set changes the device's choice, not what it does.
     #[serde(default)]

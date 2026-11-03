@@ -1,7 +1,8 @@
 //! Exercise supported canonical writers, rather than manually staging a batch.
 use super::*;
 use crate::store::Store;
-use crate::tracker::{Actor, Task, TaskComment};
+use crate::tracker::{Actor, Task, TaskComment, TaskEvent, TaskEventKind};
+use rusqlite::params;
 
 const NOW: &str = "2026-01-01T00:00:00Z";
 #[path = "producer_guard.rs"]
@@ -85,6 +86,76 @@ fn ephemeral_identity_availability_does_not_publish_a_task_change() {
         events(&store).len(),
         durable,
         "process-lifetime availability must not enter the journal"
+    );
+}
+
+#[test]
+fn summary_repair_is_quiet_when_identical_and_publishes_history_only_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let task = create(&store);
+
+    store
+        .repair_task_summaries(std::slice::from_ref(&task.id))
+        .unwrap();
+    let after_first_repair = events(&store).len();
+    store
+        .repair_task_summaries(std::slice::from_ref(&task.id))
+        .unwrap();
+    assert_eq!(
+        events(&store).len(),
+        after_first_repair,
+        "a second identical repair must not publish"
+    );
+    let card_before: String = store
+        .writer_for_test()
+        .query_row(
+            "SELECT record FROM tracker_task_summaries WHERE task_id=?1",
+            [&task.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let mut imported = TaskEvent::new(
+        &task.id,
+        Actor::Build,
+        TaskEventKind::DispatchDeferred,
+        json!({"reason":"history-only import"}),
+        "2026-01-02T00:00:00Z",
+    );
+    imported.id = "te-99999999999999999999999999".into();
+    {
+        let conn = store.writer_for_test();
+        conn.execute(
+            "INSERT INTO tracker_events(id,task_id,at,record) VALUES(?1,?2,?3,?4)",
+            params![
+                imported.id,
+                imported.task_id,
+                imported.at,
+                serde_json::to_string(&imported).unwrap()
+            ],
+        )
+        .unwrap();
+    }
+    store
+        .repair_task_summaries(std::slice::from_ref(&task.id))
+        .unwrap();
+    assert_eq!(
+        events(&store).len(),
+        after_first_repair + 1,
+        "a changed timeline head must publish even when its summary is unchanged"
+    );
+    let card_after: String = store
+        .writer_for_test()
+        .query_row(
+            "SELECT record FROM tracker_task_summaries WHERE task_id=?1",
+            [&task.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        card_after, card_before,
+        "the imported event is history-only"
     );
 }
 

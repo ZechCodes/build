@@ -6,6 +6,7 @@ use super::{journal, Entity, PublicationBatch, Stream};
 use crate::store::StoreError;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 pub(in crate::store) fn install(conn: &Connection) -> Result<(), StoreError> {
     conn.execute_batch("CREATE TEMP TABLE sync_task_touches(task_id TEXT PRIMARY KEY,force INTEGER NOT NULL) WITHOUT ROWID;")?;
@@ -91,7 +92,56 @@ fn projection(conn: &Connection, id: &str) -> Result<Option<(String, Value)>, St
                 }
             }
         }
-        Ok((project, json!([row, target, source])))
+        Ok((
+            project,
+            json!([row, target, source, history_head(conn, id)?]),
+        ))
     })
     .transpose()
+}
+
+/// Fingerprint the same bounded newest timeline window recovery can expose.
+/// Each seek is index-backed and capped before records are loaded.
+fn history_head(conn: &Connection, id: &str) -> Result<Value, StoreError> {
+    let mut entries = Vec::with_capacity(102);
+    for (table, at, kind) in [
+        ("tracker_comments", "created_at", "comment"),
+        ("tracker_events", "at", "event"),
+    ] {
+        let sql = format!(
+            "SELECT {at},id,CASE WHEN length(CAST(record AS BLOB))<=65536 THEN record END \
+             FROM {table} WHERE task_id=?1 ORDER BY {at} DESC,id DESC LIMIT 51"
+        );
+        let rows = conn
+            .prepare(&sql)?
+            .query_map([id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    kind,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.extend(rows);
+    }
+    entries.sort_by(|a, b| (&b.0, &b.1).cmp(&(&a.0, &a.1)));
+    let more = entries.len() > 50;
+    entries.truncate(50);
+    let mut digest = Sha256::new();
+    for (at, id, kind, raw) in entries {
+        for field in [at.as_bytes(), id.as_bytes(), kind.as_bytes()] {
+            digest.update((field.len() as u64).to_be_bytes());
+            digest.update(field);
+        }
+        match raw {
+            Some(raw) => {
+                digest.update([1]);
+                digest.update((raw.len() as u64).to_be_bytes());
+                digest.update(raw.as_bytes());
+            }
+            None => digest.update([0]),
+        }
+    }
+    Ok(json!({"digest": digest.finalize().to_vec(), "more": more}))
 }

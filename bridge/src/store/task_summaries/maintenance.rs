@@ -229,7 +229,7 @@ pub(crate) fn history_repair(conn: &Connection, task_id: &str) -> Result<(), Sto
     if !ready(conn)? {
         return Ok(());
     }
-    super::super::sync::touch_task(conn, task_id, true)?;
+    super::super::sync::touch_task(conn, task_id, false)?;
     keyed(
         conn,
         "DELETE FROM tracker_task_summary_facts WHERE task_id=?1",

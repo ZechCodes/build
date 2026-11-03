@@ -1,10 +1,19 @@
 // @vitest-environment jsdom
 import { expect, it } from 'vitest';
 import { taskPageParts, isReviewTask, taskPageFrame } from '../src/core/trackerTaskRender.js';
-import { reviewRailHtml, reviewBaseline } from '../src/core/taskReviewRender.js';
+import { reviewHeadHtml, reviewRailHtml, reviewBaseline } from '../src/core/taskReviewRender.js';
 
 const task = { id: 't', title: 'Review caching', state: 'open', status: 'in_review', labels: [], attachments: [] };
 const context = { rows: [], links: [], columns: [], draft: '', labelsDraft: '', busy: false, sending: false, reviewSnapshots: [] };
+it('keeps the task title heading in the review template before review metadata arrives', () => {
+  const host = document.createElement('div');
+  host.innerHTML = reviewHeadHtml(null, null, {}, { task });
+  const title = host.querySelector('.task-page-title');
+  expect(title?.tagName).toBe('H1');
+  expect(title?.textContent).toBe(task.title);
+  expect(host.querySelector('.task-review-title h1')).toBe(title);
+});
+
 it('chooses the review template from a task summary or a cached review', () => {
   expect(isReviewTask(task, {})).toBe(false);
   expect(isReviewTask({ ...task, review_summary: { status: 'open' } }, {})).toBe(true);

@@ -9,7 +9,7 @@ export const reviewDirectory = (snapshot, id) => snapshot?.directories.find((dir
 export const defaultReviewView = (directory) => directory?.status === "not_git" ? "files" : "changes";
 
 const legacyStatusHtml = (review) => `<span class="task-review-summary">${review?.state === "completed" ? "Completed" : "Open"}</span>`;
-const reviewTitleHtml = (task) => `<div class="task-review-title"><span>Review${task.number ? ` #${Number(task.number)}` : ""}</span><h1>${esc(task.title || "Review")}</h1></div>`;
+const reviewTitleHtml = (task) => `<div class="task-review-title"><span>Review${task.number ? ` #${Number(task.number)}` : ""}</span><h1 class="task-page-title">${esc(task.title || "Review")}</h1></div>`;
 const sinceCountHtml = (count) => Number.isSafeInteger(count) ? `<span>${count} commits since your review</span>` : "";
 function workTaskHtml(review, task, scope) {
   const id = task.links?.parent_task_id || review?.for_task_id;

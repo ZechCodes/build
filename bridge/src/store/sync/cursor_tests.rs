@@ -106,3 +106,16 @@ fn f2_signature_tampering_including_all_spare_bit_variants_is_rejected() {
         );
     }
 }
+
+#[test]
+fn f3_bad_same_incarnation_tag_cannot_reveal_scope_mismatch() {
+    let scope = scope();
+    let other = Scope::new(Stream::project("synthetic-other"), json!({}));
+    let mut payload = foreign(&other);
+    payload["incarnation"] = json!(LOCAL);
+    let forged = raw(&payload, &[0; 32]);
+    assert!(matches!(
+        cursor::decode(&forged, LOCAL, &KEY, &scope),
+        Err(SyncError::MalformedCursor)
+    ));
+}

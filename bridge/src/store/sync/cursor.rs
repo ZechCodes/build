@@ -61,17 +61,23 @@ pub(super) fn decode(
     let payload: Payload =
         serde_json::from_slice(&bytes).map_err(|_| SyncError::MalformedCursor)?;
     validate_structure(&payload, &signature)?;
-    if payload.scope != scope.digest() {
-        return Err(SyncError::ScopeMismatch);
-    }
     // A foreign store has a different secret. Recognizing its well-formed
     // incarnation can only request a reset; it never grants cursor progress.
     if payload.incarnation != incarnation {
+        validate_scope(&payload.scope, scope)?;
         return Ok(Position::Foreign);
     }
     let key = hmac::Key::new(hmac::HMAC_SHA256, key);
     hmac::verify(&key, &bytes, &signature).map_err(|_| SyncError::MalformedCursor)?;
+    validate_scope(&payload.scope, scope)?;
     Ok(Position::Retained(payload.sequence))
+}
+
+fn validate_scope(digest: &str, scope: &Scope) -> Result<(), SyncError> {
+    if digest != scope.digest() {
+        return Err(SyncError::ScopeMismatch);
+    }
+    Ok(())
 }
 
 fn validate_structure(payload: &Payload, signature: &[u8]) -> Result<(), SyncError> {

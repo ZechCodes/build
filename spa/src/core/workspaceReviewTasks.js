@@ -48,7 +48,7 @@ export async function readReviewTaskChoices(scope) {
     const rows = record.value?.task ? [record.value.task] : record.value?.tasks || [];
     for (const task of rows) selectChoice(tasks, task, record.address.kind === TASK_SUMMARY_KIND);
   }
-  const reviews = new Set(records.filter((record) => record?.value?.review).map((record) => record.value.review.task_id));
+  const reviews = new Set(records.filter((record) => record?.value?.review?.mode === "pull_request").map((record) => record.value.review.task_id));
   return [...tasks.values()].map((source) => linkedChoice(source, linked))
     .filter((task) => !reviews.has(task.id) && eligible(task, scope.projectId)).sort((a, b) => b.number - a.number);
 }

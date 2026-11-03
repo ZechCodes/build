@@ -70,6 +70,7 @@ export function createTaskReview({
   // The cache and the read-coordination identity of the machine the run is on.
   cacheScope = null,
   getTask,
+  hasReview = () => Boolean(getTask()?.review_summary || getTask()?.legacy_review || getTask()?.active_review),
   isOffline,
   agentSelection = createAgentSelection(),
   onMerged,
@@ -168,7 +169,7 @@ export function createTaskReview({
       // RPC (or pop a second modal).
       if (gitFlight.active()) return true;
       const task = getTask();
-      if (!task || task.state !== "review") return false;
+      if (!task || task.state !== "review" || hasReview()) { actions.innerHTML = ""; return false; }
       mountSplitButton(actions, {
         options: reviewMergeOptions(task.adopted, task.base_branch || "main"),
         run: (optionId) => runGitAction(optionId, task),

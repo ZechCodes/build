@@ -35,10 +35,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("keeps cold ordinary rows unmarked without review probes, then paints published cached Legacy facts everywhere", async () => {
-  await cache.writeCached(address("task-review-support"), { reject: true, get: true, verdictDelivery: true });
+it("paints Legacy chips from compact summaries on a cold cache without review probes", async () => {
+  await cache.writeCached(address("task-review-support"), { reject: true, snapshotRetired: true, get: true, verdictDelivery: true });
   await cache.writeCached(address("needs-you-rule"), { askedOnly: true });
-  const ordinary = task({ id: "ordinary", project_id: project.id, watched: true, assignee: { kind: "user" } });
+  const ordinary = task({ id: "ordinary", project_id: project.id, legacy_review: true, watched: true, assignee: { kind: "user" } });
   await tracker.writeTasksRecord(deviceId, project.id, tracker.tasksRecord([ordinary], columns()));
   const repository = await import("../src/core/taskReviewCache.js");
   const createReviewRepository = vi.spyOn(repository, "createTaskReviewRepository");
@@ -60,8 +60,8 @@ it("keeps cold ordinary rows unmarked without review probes, then paints publish
     expect(document.querySelector('#board .task-card[data-task="ordinary"]')).not.toBeNull();
     expect(follower.entries()).toHaveLength(1);
   });
-  expect(document.querySelectorAll(".task-review-summary")).toHaveLength(0);
-  expect(inboxRowHtml(follower.entries()[0])).not.toContain("Legacy review");
+  expect(document.querySelectorAll(".task-review-summary")).toHaveLength(2);
+  expect(inboxRowHtml(follower.entries()[0])).toContain("Legacy review");
   expect(rpc.mock.calls.filter(([method]) => method === "tasks.review.get")).toEqual([]);
   expect(createReviewRepository).not.toHaveBeenCalled();
   expect(contexts.contextFor(deviceId)).toBeNull();

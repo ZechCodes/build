@@ -80,7 +80,7 @@ fn waiting_on_manual_review_completion_and_workspace_finish_share_transitions() 
     wait(&app, &project, &dependent, &reviewed);
     app.tracker_store()
         .unwrap()
-        .complete_review(&reviewed.id, 1, &Actor::User, "accepted review")
+        .finish_review(&reviewed.id, 1, &Actor::User, "accepted review")
         .unwrap();
     drain(&app);
     let summary = app

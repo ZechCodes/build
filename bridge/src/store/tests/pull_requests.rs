@@ -291,7 +291,7 @@ fn legacy_completion_preserves_pr_mode_and_releases_claim_as_closed() {
         Err(StoreError::ReviewPullRequestInvalid(_))
     ));
     let completed = store
-        .complete_review(&review.task_id, review.version, &Actor::User, "Marked done")
+        .finish_review(&review.task_id, review.version, &Actor::User, "Marked done")
         .unwrap();
     assert_eq!(completed.state, ReviewState::Completed);
     assert_eq!(
@@ -349,7 +349,7 @@ fn merge_intents_survive_restart_and_match_requests_before_version_checks() {
         Err(StoreError::ReviewOperationVersionConflict { .. })
     ));
     store
-        .complete_review(&review.task_id, review.version, &Actor::User, "Closed")
+        .finish_review(&review.task_id, review.version, &Actor::User, "Closed")
         .unwrap();
     drop(store);
     let store = Store::new(dir.path()).unwrap();
@@ -486,7 +486,7 @@ fn upgrading_real_v14_shape_preserves_legacy_header_and_snapshot_bytes() {
     assert_eq!(raw, old_snapshot);
     drop(conn);
     let complete = store
-        .complete_review(&task.id, 1, &Actor::User, "legacy complete")
+        .finish_review(&task.id, 1, &Actor::User, "legacy complete")
         .unwrap();
     let raw = serde_json::to_value(complete).unwrap();
     assert!(raw.get("mode").is_none());
@@ -881,7 +881,7 @@ fn received_snapshot_rejects_changed_binding_membership_and_terminal_reviews() {
         .is_err());
     assert_eq!(store.load_review(&review.task_id).unwrap().unwrap(), review);
     let closed = store
-        .complete_review(&review.task_id, 1, &Actor::User, "closed")
+        .finish_review(&review.task_id, 1, &Actor::User, "closed")
         .unwrap();
     assert!(store
         .save_review_received_snapshot(&review.task_id, closed.version, next, &bindings)
@@ -946,7 +946,7 @@ fn active_sync_tasks_use_bounded_sorted_database_pages() {
         sorted
     );
     store
-        .complete_review(&review.task_id, 1, &Actor::User, "closed")
+        .finish_review(&review.task_id, 1, &Actor::User, "closed")
         .unwrap();
     assert_eq!(
         store.list_active_review_sync_tasks(None, 100).unwrap(),

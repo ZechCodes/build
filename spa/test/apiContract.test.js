@@ -508,3 +508,14 @@ describe("the arrival checks, on a synthetic violation each", () => {
     expect(check(["a.old", "a.feature", "b.feature"], [section])).toEqual([]);
   });
 });
+
+it("preserves cold workspace legacy-review ownership from get and list", () => {
+  for (const method of ["workspace.get", "workspace.list"]) {
+    const fixture = methodFixtures.find(({ body }) => body.method === method).body;
+    expect(fixture.legacy_reviews.since).toBe("3.31.0");
+    expect(fixture.legacy_reviews.capability).toBe("tasks.review.snapshotRetired");
+    const result = v1.parseResult(method, fixture.legacy_reviews.result);
+    expect(result).toEqual(fixture.legacy_reviews.result);
+    expect((method === "workspace.get" ? result : result.workspaces[0]).legacy_review).toBe(true);
+  }
+});

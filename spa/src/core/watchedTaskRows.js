@@ -1,3 +1,4 @@
+import { taskReviewSummaryFor } from "./taskReviewSummaryRender.js";
 // Every watched open task stays in Inbox until Done, closed, or unwatched.
 // Attention reasons explain the rows that need the user; every row keeps the
 // same anchor order and Recent rule as workspaces, regardless of attention.
@@ -83,7 +84,7 @@ function inboxTaskRoute(project, task, detail, workspaces) {
     deviceId: project.deviceId, project_id: project.id, identities, workspaces });
 }
 
-const summaryFor = (task, reviewFacts) => task.review_summary || reviewFacts.get(task.id) || null;
+const summaryFor = (task, reviewFacts) => taskReviewSummaryFor(task, reviewFacts.get(task.id));
 
 function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces, unreadOf, reviewSupport, reviewFacts) {
   const group = taskIsHeld(task) ? taskActivityGroup(task, taskAgentIsRunning(task, runningAgentIds, projectAgentId)) : "backlog";

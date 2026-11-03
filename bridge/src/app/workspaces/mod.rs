@@ -516,6 +516,12 @@ impl AppState {
         {
             row["active_review"] = json!(summary);
         }
+        if store
+            .workspace_has_legacy_review(workspace_id)
+            .map_err(|error| error.to_string())?
+        {
+            row["legacy_review"] = json!(true);
+        }
         Ok(())
     }
 

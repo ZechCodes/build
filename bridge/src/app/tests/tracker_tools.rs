@@ -953,10 +953,10 @@ fn the_task_note_is_on_every_template_that_carries_the_tools() {
         "{note}"
     );
     assert!(
-        note.contains("records the review as “Marked done”"),
+        note.contains("closes an open review as") && note.contains("“Marked done”"),
         "{note}"
     );
-    assert!(note.contains("`complete_review`"), "{note}");
+    assert!(note.contains("`open_review`"), "{note}");
     assert!(
         note.contains("not that it is accepted"),
         "In review is not Done"

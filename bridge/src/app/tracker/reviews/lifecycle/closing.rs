@@ -22,7 +22,7 @@ struct CloseJob {
 
 impl CloseJob {
     fn complete(&self) -> Result<Review, String> {
-        let (review, task, events) = self.store.complete_review_with_task(
+        let (review, task, events) = self.store.finish_review_with_task(
             &self.params.task_id, self.params.expected_version, &self.actor, &self.params.description,
         ).stored().map_err(|message| errors::service(message, json!({
             "task_id":self.params.task_id,"recovery":"Read tasks.review.get before retrying."

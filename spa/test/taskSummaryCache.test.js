@@ -247,3 +247,19 @@ it("keeps full action content out of summary records and retains omitted compact
   expect(held.dependencies).toEqual({ blocked: false, waiting_on_count: 2, blocks_count: 1 });
   expect(held.links).toEqual({ workspace_ids: ["ws-1"], parent_task_id: null });
 });
+
+it("keeps the compact legacy marker through action projections and clears it on a newer summary", async () => {
+  await land(await open(), page([row("task-1", { legacy_review: true })]));
+  expect((await summaries.readSummaryQuery(scope, query)).tasks[0].legacy_review).toBe(true);
+  await summaries.writeSummaryTask(scope, { id: "task-1", title: "Changed title" }, 2);
+  expect((await summaries.readSummaryQuery(scope, query)).tasks[0].legacy_review).toBe(true);
+  await land(await open(query, 3), page([row("task-1")]));
+  expect((await summaries.readSummaryQuery(scope, query)).tasks[0].legacy_review).not.toBe(true);
+});
+
+it("retains the compact legacy marker across a full task header without that compact field", async () => {
+  await land(await open(), page([row("task-1", { legacy_review: true })]));
+  const contentRead = await content.captureTaskContentRead(scope);
+  await summaries.writeSummaryTask(scope, row("task-1", { body: "Historical task" }), contentRead.readOrder, { fullTask: true, contentRead });
+  expect((await summaries.readSummaryQuery(scope, query)).tasks[0].legacy_review).toBe(true);
+});

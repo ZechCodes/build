@@ -113,7 +113,7 @@ describe("the Changes surface, opened on its review aggregate", () => {
     const input = container.querySelector(".gp-commit .csinput");
     expect(input).toBeTruthy();
     expect(input.rows).toBe(1);
-    expect(container.querySelector(".csbox-actions .btn:not(.caret)").textContent.trim()).toBe("Comment");
+    expect(container.querySelector(".csbox-actions .btn:not(.caret)").textContent.trim()).toBe("Notes to agent");
     pane.dispose();
   });
 

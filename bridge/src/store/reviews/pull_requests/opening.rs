@@ -1,8 +1,9 @@
 use super::*;
+use crate::reviews::records::{ReviewCompletion, ReviewState};
 use crate::store::now_rfc3339;
-use crate::store::reviews::{load_review, snapshot_exists, write_header};
+use crate::store::reviews::{latest_snapshot_id, load_review, snapshot_exists, write_header};
 use crate::store::tracker::{append_activity, next_task_number, write_tracker_task};
-use crate::tracker::{Task, TaskEvent, IN_REVIEW_STATUS};
+use crate::tracker::{Task, TaskEvent, TaskEventKind, IN_REVIEW_STATUS};
 use std::collections::{BTreeMap, BTreeSet};
 
 impl Store {
@@ -177,6 +178,7 @@ impl Store {
                 ],
             )?;
             append_activity(tx, &[], events)?;
+            supersede_legacy_review(tx, &opening)?;
             opening.version += 1;
             opening.state = ReviewOpeningState::Published;
             opening.updated_at = now_rfc3339();
@@ -500,8 +502,39 @@ fn validate_for_task(
     if task.state != crate::tracker::TaskState::Open {
         return Err(refusal("for_task_closed"));
     }
-    if load_header(conn, task_id)?.is_some() {
+    if load_header(conn, task_id)?.is_some_and(|review| review.mode == ReviewMode::PullRequest) {
         return Err(refusal("for_task_review"));
     }
     Ok(())
+}
+
+/// Replacing legacy review history does not finish the linked work task.
+fn supersede_legacy_review(tx: &Transaction, opening: &ReviewOpening) -> Result<(), StoreError> {
+    let Some(task_id) = opening.request.for_task_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(mut legacy) = load_header(tx, task_id)? else {
+        return Ok(());
+    };
+    if legacy.mode != ReviewMode::Snapshot || legacy.state != ReviewState::Open {
+        return Ok(());
+    }
+    let now = now_rfc3339();
+    let description = format!("Superseded by #{}", opening.task.number);
+    legacy.version += 1;
+    legacy.state = ReviewState::Completed;
+    legacy.completion = Some(ReviewCompletion {
+        actor: opening.request.creator.clone(),
+        description: description.clone(),
+        completed_at: now.clone(),
+    });
+    let event = TaskEvent::new(
+        task_id,
+        opening.request.creator.clone(),
+        TaskEventKind::ReviewCompleted,
+        serde_json::json!({"workspace_id":legacy.workspace_id,"snapshot_id":latest_snapshot_id(tx,task_id)?,"description":description}),
+        &now,
+    );
+    write_header(tx, &legacy)?;
+    append_activity(tx, &[], &[event])
 }

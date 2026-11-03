@@ -20,7 +20,7 @@ import { fieldTraits } from "./fieldTraits.js";
 /** The comment verb's name: what it will do with what is in the box, counting
  *  the anchored comments riding along with it. */
 const commentLabel = (pendingComments) =>
-  pendingComments ? `Send ${pendingComments} comment${pendingComments === 1 ? "" : "s"}` : "Comment";
+  pendingComments ? `Send ${pendingComments} note${pendingComments === 1 ? "" : "s"}` : "Notes to agent";
 
 /**
  * What the box can do with what is typed in it, primary first.
@@ -41,7 +41,7 @@ export function changesComposerOptions({
     options.push({
       id: "comment",
       label: commentLabel(pendingComments),
-      menuLabel: "Comment",
+      menuLabel: "Notes to agent",
       description: "send this to the coding agent",
       busyLabel: "sending…",
     });
@@ -60,8 +60,8 @@ export function changesComposerOptions({
 /** What the empty box says it is for — whichever of the two it can actually
  *  do, named rather than implied. */
 export function changesComposerPlaceholder({ commentable = false, uncommitted = false } = {}) {
-  if (commentable && uncommitted) return "Comment on these changes, or write a commit message…";
-  if (commentable) return "Comment on these changes…";
+  if (commentable && uncommitted) return "Notes to agent, or write a commit message…";
+  if (commentable) return "Notes to agent…";
   return "Commit message…";
 }
 

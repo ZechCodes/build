@@ -179,15 +179,16 @@ describe("serialized canonical producer facts", () => {
     const sql = source("store/task_summaries/sql.rs");
     const patch = /fn enrich_patch\(\) -> &'static str \{\s*r#"([\s\S]*?)"#/u.exec(sql)?.[1];
     expect(patch, "execute the source producer, not a JS rewrite").toBeTypeOf("string");
-    expect(sql).toContain("json_patch(json_remove(tracker_task_summaries.record,'$.review_summary','$.deferred_assignment'),m.patch)");
+    expect(sql).toContain("json_patch(json_remove(tracker_task_summaries.record,'$.review_summary','$.legacy_review','$.deferred_assignment'),m.patch)");
     expect(sql).toContain("patch=enrich_patch()");
+    expect(patch).toContain("json_object('legacy_review',json('true'))");
     const db = new DatabaseSync(":memory:");
     try {
       db.exec("CREATE TABLE reviews(task_id TEXT,record TEXT,version INTEGER); CREATE TABLE tracker_delivery_intents(id TEXT,task_id TEXT,generation INTEGER,state TEXT,record TEXT)");
       // This outer merge is the exact refresh_metadata producer expression,
       // pinned above. Inputs are saved intent records; outputs are serialized
       // summary rows, so a lost pending-state fact fails before filter checks.
-      const produce = db.prepare(`SELECT json_patch(json_remove(?,'$.review_summary','$.deferred_assignment'),${patch}) AS record FROM (SELECT 'fixture' AS id) t`);
+      const produce = db.prepare(`SELECT json_patch(json_remove(?,'$.review_summary','$.legacy_review','$.deferred_assignment'),${patch}) AS record FROM (SELECT 'fixture' AS id) t`);
       const insert = db.prepare("INSERT INTO tracker_delivery_intents VALUES('intent','fixture',1,?,?)");
       for (const state of [null, "waiting", "queued", "provisioning", "failed", "consumed", "cancelled"]) {
         for (const target of [null, {}, { kind: "" }, { kind: "\0" }, { kind: "用户\u{10000}" }]) {
@@ -200,9 +201,10 @@ describe("serialized canonical producer facts", () => {
                 operation_id: "operation", state, reservation: {}, admitted: null, error: null,
               }));
             }
-            const row = JSON.parse(produce.get(JSON.stringify({ id: "fixture", assignee })).record);
+            const row = JSON.parse(produce.get(JSON.stringify({ id: "fixture", assignee, legacy_review: true })).record);
             const active = ["waiting", "queued", "provisioning", "failed"].includes(state);
             expect(row.assignee).toEqual(assignee);
+            expect(row).not.toHaveProperty("legacy_review");
             if (active) {
               expect(row.deferred_assignment).toBeTypeOf("object");
               expect(row.deferred_assignment.state).toBe(state === "provisioning" ? "queued" : state);
@@ -229,6 +231,19 @@ describe("serialized canonical producer facts", () => {
           }
         }
       }
+      db.exec("DELETE FROM tracker_delivery_intents");
+      const writeReview = db.prepare("INSERT INTO reviews VALUES('fixture',?,1)");
+      writeReview.run(JSON.stringify({})); // Historical rows omit mode.
+      const legacy = JSON.parse(produce.get(JSON.stringify({ id: "fixture" })).record);
+      expect(legacy.legacy_review).toBe(true);
+      expect(legacy).not.toHaveProperty("review_summary");
+      db.exec("DELETE FROM reviews");
+      writeReview.run(JSON.stringify({ mode: "pull_request", pull_request: {
+        originating_workspace_id: "workspace", status: "open", latest_published_snapshot_id: "revision",
+      } }));
+      const replacement = JSON.parse(produce.get(JSON.stringify({ id: "fixture", legacy_review: true })).record);
+      expect(replacement).not.toHaveProperty("legacy_review");
+      expect(replacement.review_summary).toMatchObject({ mode: "pull_request", status: "open" });
     } finally {
       db.close();
     }

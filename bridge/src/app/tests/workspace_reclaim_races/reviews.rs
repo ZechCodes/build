@@ -111,7 +111,7 @@ impl Fixture {
 
     fn close(&self) {
         self.store
-            .complete_review(
+            .finish_review(
                 &self.review.task_id,
                 self.review.version,
                 &Actor::User,

@@ -192,12 +192,15 @@ fn identities() -> &'static str {
 
 fn enrich_patch() -> &'static str {
     r#"json_patch(
-        COALESCE((SELECT json_object('review_summary',json_object('task_id',task_id,'mode','pull_request',
+        COALESCE((SELECT CASE WHEN COALESCE(json_extract(record,'$.mode'),'snapshot')='snapshot'
+            THEN json_object('legacy_review',json('true'))
+            ELSE json_object('review_summary',json_object('task_id',task_id,'mode','pull_request',
             'workspace_id',substr(json_extract(record,'$.pull_request.originating_workspace_id'),1,128),
             'version',version,'status',substr(json_extract(record,'$.pull_request.status'),1,64),
             'latest_published_snapshot_id',substr(json_extract(record,'$.pull_request.latest_published_snapshot_id'),1,128)))
-            FROM reviews WHERE task_id=t.id AND json_extract(record,'$.mode')='pull_request'
-                AND json_type(record,'$.pull_request')='object'),'{}'),
+            END FROM reviews WHERE task_id=t.id
+                AND (COALESCE(json_extract(record,'$.mode'),'snapshot')='snapshot'
+                    OR (json_extract(record,'$.mode')='pull_request' AND json_type(record,'$.pull_request')='object'))),'{}'),
         COALESCE((SELECT CASE WHEN state IN ('waiting','queued','provisioning','failed') THEN
             json_object('deferred_assignment',json_object('id',substr(id,1,128),
                 'target',json_object('kind',substr(json_extract(record,'$.target.kind'),1,32),'agent_id',CASE WHEN json_type(record,'$.target.agent_id')='text' AND length(CAST(json_extract(record,'$.target.agent_id') AS BLOB))<=128 THEN json_extract(record,'$.target.agent_id') ELSE substr(json_extract(record,'$.target.agent_id'),1,128) END),'state',CASE state WHEN 'provisioning' THEN 'queued' ELSE state END,
@@ -279,7 +282,7 @@ pub(super) fn refresh_context(id: &str) -> String {
 
 pub(super) fn refresh_metadata(id: &str) -> String {
     format!("UPDATE tracker_task_summaries SET (record,assignment_target)=(SELECT
-        json_set(json_patch(json_remove(tracker_task_summaries.record,'$.review_summary','$.deferred_assignment'),m.patch),
+        json_set(json_patch(json_remove(tracker_task_summaries.record,'$.review_summary','$.legacy_review','$.deferred_assignment'),m.patch),
             '$._summary_invalid_metadata_refs',json(CASE WHEN m.invalid_refs THEN 'true' ELSE 'false' END)),m.assignment_target
         FROM (SELECT t.task_id,{patch} patch,({invalid}) invalid_refs,
             (SELECT CASE WHEN state IN ('waiting','queued','provisioning','failed') THEN

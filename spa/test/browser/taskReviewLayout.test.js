@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import pullRequestFixture from "../../../fixtures/api/v1/tasks.review.open.json";
 import fixture from "../../../fixtures/api/v1/tasks.review.get.json";
 import { captureLayout, loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
 
@@ -76,24 +77,27 @@ for (const { label, width } of [{ label: "mobile", width: 390 }, { label: "deskt
   }, 60_000);
 }
 
-it("keeps Merge and Push choices within a mobile viewport", async () => {
+it("keeps replacement PR Merge and Push choices within a mobile viewport", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await mountReview(page, basePath);
-    await page.evaluate(async () => {
-      const { support, cache, local } = window.__layoutModules;
+    await page.evaluate(async (sample) => {
+      const { support, cache } = window.__layoutModules;
       const scope = { deviceId: "layout-device", projectId: "layout-project", taskId: "task-1" };
-      const held = (await local.readCached(cache.reviewAddress(scope))).value.review;
-      const destination = { snapshot_id: held.snapshots[0].id, directory_id: "dir-api", source_path: "/sources/a/long/repository/path",
-        branches: ["main", "release"], remotes: [{ name: "origin", branches: ["main"] }], live_head: "3".repeat(40) };
-      await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, snapshot: true, diff: true, complete: true, act: true } });
-      await cache.writeReviewRecord(scope, { ...held, version: held.version + 1, destinations: [destination], actions: [] }, 2);
-    });
+      const review = { ...sample, version: 2 };
+      review.bindings[0].source_repository = "/sources/a/long/repository/path";
+      review.destinations = review.bindings.map((binding) => ({ snapshot_id: review.snapshots[0].id,
+        directory_id: binding.directory_id, branches: ["main", "release"],
+        remotes: [{ name: "origin", branches: ["main"] }], live_head: "3".repeat(40) }));
+      await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, pullRequests: true, merge: true } });
+      await cache.writeReviewReply(scope, { review, sync: review.bindings.map((binding) => ({ directory_id: binding.directory_id,
+        health: "current", received_head: binding.last_received_head, target_head: "3".repeat(40) })) }, 2);
+    }, pullRequestFixture.result.review);
     await page.locator("details[data-review-more] > summary").click();
-    await page.locator('[data-review-act-sheet] summary').click();
-    await page.locator('[data-review-merge="dir-api"]').check();
+    await page.locator('[data-pr-merge-sheet] summary').click();
+    await page.locator('[data-pr-merge-push="dir-api"]').check();
     const size = await page.evaluate(() => ({ viewport: innerWidth, page: document.documentElement.scrollWidth }));
     expect(size.page, JSON.stringify(size)).toBeLessThanOrEqual(size.viewport + 1);
-    expect(await page.locator('[data-review-source="dir-api"]').textContent()).toContain("differs from saved head");
+    expect(await page.locator('[data-pr-merge-source="dir-api"]').textContent()).toContain("Expected target:");
     await page.evaluate(() => window.__reviewLayout.dispose());
   }, { width: 390, height: 800 });
 }, 60_000);

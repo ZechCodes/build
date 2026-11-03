@@ -82,3 +82,23 @@ fn generated_examples_are_accepted_by_the_existing_typed_registry() {
         );
     }
 }
+
+#[test]
+fn retired_legacy_writes_keep_http_routes_for_structured_refusals() {
+    let manifest = json(root().join("fixtures/api/http/resource-manifest.json"));
+    for method in [
+        "tasks.review.snapshot",
+        "tasks.review.act",
+        "tasks.review.complete",
+    ] {
+        assert!(
+            manifest["operations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|operation| operation["method"] == method),
+            "missing compatibility route {method}"
+        );
+    }
+    assert_eq!(manifest["operations"].as_array().unwrap().len(), 150);
+}

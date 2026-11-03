@@ -793,7 +793,10 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.30.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.31.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.31.0 retires snapshot-mode creation and actions, removes legacy agent
+  mutation tools and adds the compact `legacy_review` summary marker,
+  independently announced by `tasks.review.snapshotRetired` (#974).
   3.30.0 adds the author and deciding-reviewer verdict loop, rejection and durable
   delivery, independently announced by `tasks.review.author`,
   `tasks.review.reject` and `tasks.review.verdictDelivery` (#972).
@@ -942,8 +945,8 @@ runtime that starts them.
   3.15.0 publishes `tasks.review.open`, `push`, `update`, `merge`, `close`,
   `reopen` and `refresh`, under the `tasks.review.` namespace (#405). Each is
   announced by its verb name; `tasks.review.pullRequests` separately announces PR
-  mode, lifecycle, summaries and sync observations. Legacy Snapshot review
-  verbs retain their contracts and individual capabilities. See Task reviews.
+  mode, lifecycle, summaries and sync observations. Shared legacy reads remain;
+  3.31.0 adds explicit retirement refusals for snapshot mutations. See Task reviews.
   3.16.0 adds `fs.createFile` (#433), announced by its verb name: one empty
   regular file in a resolved file scope, with `fs.createDirectory`'s fence and
   `already_exists` refusal. `fs.write` still only replaces a file it has read.
@@ -1933,6 +1936,23 @@ dim dash there rather than a spinner.
 
 ### Task reviews
 
+Reviews have one creation flow: Request review in a managed workspace publishes
+an ordinary review task in `pull_request` mode. Its immutable revisions retain
+committed Git heads and comparison bases; working files are counted and excluded.
+Reviewers read Changes and Files, leave anchored feedback and decide a verdict;
+the author publishes another revision or takes approved work forward. Approval
+never merges automatically. Legacy `snapshot` reviews retain their saved history
+and are read-only, with an explicit close-out action rather than conversion.
+
+Wire 3.31.0 announces `tasks.review.snapshotRetired`. Compact task summaries carry
+optional `legacy_review: true`, so the SPA paints Legacy review chips from the
+summary even before review metadata is cached. PR summaries keep `review_summary`.
+Workspace get/list and feed rows also carry optional `legacy_review: true`,
+derived from retained review ownership even when its task has no workspace link.
+A cold branch view uses that fact to hide old merge/abandon controls without
+waiting for a task or review record. The flag also identifies the snapshot
+retirement behavior described below.
+
 Task prerequisite storage (#560) lives in `store/waiting_on/`, separate from
 parent links. Schema 16 adds the normalized directed graph, readiness state,
 durable reconciliation cursors, transition receipts and task invalidations.
@@ -1990,17 +2010,18 @@ range off-lock, then recheck metadata and write against the current task. An
 opinion retains the review version captured before validation, so a newly
 published revision still refuses the stale opinion.
 
-The SPA gives every task with a `review_summary` or a cached `task-review`
-record a review template (#969), including legacy snapshot-mode reviews.
+The SPA gives every task with a `review_summary`, `legacy_review` marker or a
+cached `task-review` record a review template, including legacy snapshot reviews.
 `taskReviewPage.js` owns its header, revision picker, directory switcher and
 commit rail; `trackerTaskPage.js` places the existing task timeline beside it.
 Desktop has commits, Changes/Files and comments in three columns. At widths up
 to 640px, Changes, Files and Comments become tabs and the header opens the
-commit rail as a sheet. Existing lifecycle, merge and reclaim controls remain
-under More. Clicking a Changes or Files line opens an inline comment composer;
+commit rail as a sheet. PR lifecycle, merge and reclaim controls remain
+under More; legacy reviews offer only Close legacy review there. In PR reviews,
+clicking a Changes or Files line opens an inline comment composer;
 inline threads offer Reply. The Comments column starts with the pending tray,
 whose drafts can be edited, removed or opened at their original line. The
-header offers Request changes and Approve, pinned to the phone's bottom edge;
+PR header offers Request changes and Approve, pinned to the phone's bottom edge;
 the Comments tab carries the pending count. Task description and body remain accessible in the header's
 Description disclosure.
 
@@ -2135,14 +2156,11 @@ classification prefix.
 
 **SPA verdict loop (#973).** Cached `tasks.review.reject`, `tasks.review.author`
 and `tasks.review.verdictDelivery` flags independently gate the new surfaces.
-Rejected and Legacy review chips share the board/list/task/inbox renderers;
-legacy rows use cached review metadata when no compact summary exists. Compact
-summaries currently identify only PRs, so a cold legacy row remains an ordinary
-task until its review metadata is cached. The SPA never probes ordinary tasks
-with review-get to discover that identity; a compact legacy marker is deferred
-to #974. The
-header names the author and deciding reviewer (plus the user), reusing the
-ordinary assignee picker. It shows the last journaled verdict’s delivery state;
+Rejected and Legacy review chips share the board/list/task/inbox renderers.
+Legacy chips use the compact `legacy_review` marker, with cached review metadata
+as a fallback for older bridges; ordinary tasks are never probed with review-get
+to discover their identity. The PR header names the author and deciding reviewer
+(plus the user), reusing the ordinary assignee picker. It shows the last journaled verdict’s delivery state;
 failed delivery offers the independently negotiated `tasks.review.retryDelivery`
 operation with only that verdict’s comment identity. Cache publication updates
 the state; rendering does not wait for transport or infer it from connectivity.
@@ -2164,14 +2182,19 @@ an eligible task linked to the workspace. Its independent
 `tasks.review.forTask` capability gates that field. Bridges without
 `tasks.review.pullRequests` show “Update the bridge to request reviews”.
 Published reviews offer View review. Task-side snapshot creation/update and the
-workspace snapshot dialog are removed; legacy review reading and Mark complete
-remain available.
+workspace snapshot dialog are removed. Legacy reviews retain read-only saved
+Changes/Files and the explicit Close legacy review action under More.
 
 `tasks.review.open` and MCP `open_review` accept optional `for_task_id`, naming
-a same-project, open task without a review. The opening journal retains it;
-publication rechecks the target and sets the new review task's `parent_task_id`
-in the same transaction as its first revision. Retrying the original request
-keeps the reserved identity and original request. The current task's
+a same-project, open work task, including one with a legacy snapshot review.
+The opening journal retains it; publication rechecks the target and sets the new
+review task's `parent_task_id` in the same transaction as its first revision.
+If that task has an open legacy review, the same transaction completes it with
+“Superseded by #N”, naming the newly published review task, and records one
+ReviewCompleted event. Supersession leaves the work task’s status, done_at and
+trackers unchanged; explicit Close legacy review retains its Done behavior. Retrying the opening
+uses the reserved identity and original request without duplicating completion
+or publication. The current task's
 `links.parent_task_id` is the relationship's source of truth; the original
 `for_task_id` remains only in the opening request journal. Review summaries and
 workspace `active_review` expose the derived current `parent_task_id`. Reparenting
@@ -2495,110 +2518,61 @@ intent do not inherit the settled interruption. Running or unknown Git results
 and missing action records still prevent Reclaim; cached workspace locks continue
 to control the enabled state after publication settles.
 
-`bridge/src/reviews/` saves one task's workspace review as numbered snapshots.
-`capture.rs` reads every manifest directory, resolves each Git directory's
-committed HEAD and base (explicit override, configured base, upstream, empty
-tree), and pins its nonempty base and head under private refs. Ref components
-percent-encode bytes outside ASCII letters, digits, `_` and `-`: directory IDs
-contain `:`, which Git cannot use in ref names. Metadata keeps the original IDs.
-The snapshot ID is unique before any pins are written; `service.rs` saves the
-metadata with a review version check and removes only the losing call's pins
-at their expected OIDs. For Snapshot-mode reviews, a snapshot from another
-workspace replaces the previous snapshot history; its old pins are released
-after the metadata commits. Git
-work runs through the deferred drain off the app
-lock (`app/tracker/reviews.rs`).
+**Legacy snapshot history (#974).** The `reviews` row retains `snapshot` or
+`pull_request` mode. `tasks.review.get` / MCP `get_review` and
+`tasks.review.diff` / MCP `read_review` continue to read both modes, including
+saved action results. Legacy snapshots retain the recorded manifest, common Git
+directory and saved OIDs; no bulk conversion or new capture is performed.
+Git Changes and Files use the saved commits, with unchanged files available.
+Non-Git directories retain their explicit Live label and exact saved identity.
+Missing repositories show Source unavailable rather than falling back to live Git.
+Private legacy head/base pins remain until explicit task-history deletion.
 
-Schema 13 stores review headers and snapshot metadata in `reviews` and
-`review_snapshots` (`store/reviews.rs`), without patches or file bodies.
-It adds `review_actions`, one row per selected source with its ordered step
-results. Admission checks the review version and records running sources in
-one transaction. Each step records its input and result before the next starts;
-running rows prevent another action on that source until the operation ends.
-Daemon recovery reclaims registered, owned temporary review checkouts for
-unfinished sources, then marks their rows interrupted without replaying Git.
-Ownership and child-process markers protect live or uncertain merge children;
-temporary review checkouts are never reused as user target checkouts. Ordinary
-database opens do not perform this recovery.
-`read.rs` uses the recorded common Git directory and saved OIDs for commit
-diffs, full tree listings and read-only, paged blobs, including unchanged files.
-Diff listings cap file rows at 1,000 with `files_truncated`; patch reads retain
-only the requested byte window, with path filters applied before rendering.
-A removed linked worktree can still be read while its common repository exists;
-a deleted repository is unavailable. Non-Git directories stay in the manifest
-as live folders; existing scoped filesystem reads remain their reader.
+`tasks.review.snapshot` refuses creation and updates for absent or legacy reviews
+with nonretryable `invalid_params`, naming the replacement:
+“Request a review from the workspace (tasks.review.open)”. On an existing PR,
+the compatibility call still refreshes registered receivers.
+`tasks.review.act` refuses legacy actions as well as PR mode; new Git integration
+uses the dedicated PR merge service. Existing legacy action facts remain readable,
+and daemon recovery can still settle interrupted rows without replaying Git.
+`tasks.review.complete` remains a legacy-only close-out RPC: it records the actor,
+a brief action description, review completion and task Done in one transaction.
+A changed column also gets a Moved event and ordinary follow-on behavior.
+The trimmed UTF-8 description limit is 2,000 bytes. Ordinary moves to Done use
+the same completion writer with “Marked done”. Review completion and workspace
+Finish/deletion remain separate; removing a workspace retains review metadata.
 
-Completion records the actor, description, review event and task Done in one
-transaction. A changed column also gets a Moved event and the same post-write
-behavior as an ordinary move. RPC and MCP share a 2,000-byte trimmed UTF-8
-description limit. Snapshot-mode task closure and workspace Finish remain
-separate. Ordinary moves to Done complete an open review through the same writer
-with “Marked done”; for PR mode this records Closed. Snapshot-mode captures
-change only review metadata. Agent Complete reports and merged
-workspace Finish skip their old task-movement/closure hooks for review tasks.
-Closing/completing and removing workspaces or projects retain review metadata.
-Snapshot-mode refs remain until workspace replacement or explicit task history
-deletion; PR receiver refs follow the maintenance retention rules above. MCP exposes
-`snapshot_review`, `get_review`, `read_review`, `act_review`, `complete_review` to coding and
-project agents, authenticated and restricted to their own project.
+The legacy review template shows “Legacy review (read-only)” without a verdict
+bar, Merge & Push panel or Mark complete form. “Request a review from @workspace”
+opens the workspace review form with this legacy task selected as `for_task_id`.
+More offers the explicit Close legacy review action through the retained RPC.
+Anchored/inline review comments, the pending tray and verdicts are read-only; the
+ordinary task timeline's plain comment composer remains available.
+MCP agents create reviews with `open_review` and retain the shared reading tools;
+legacy capture, selected-action and completion tools are no longer exposed.
 
-`reviews/actions.rs` executes Snapshot-mode selected source steps off the app
-mutex and publishes task invalidations after each persisted result. Targets resolve from
-the source ID to the configured source repository. The service holds the same
-configured-path `source_sync::SyncLock` as base sync while Git re-reads target
-placement. `reviews/git_actions.rs` merges the saved head into a clean existing
-target checkout or an owned temporary checkout on the target branch. Separate
-repositories import only the saved OID under a private ref. Push is non-forced
-to a configured remote and explicit branch, using the saved head or a recorded
-merge tip. A Push retry can name the successful merge action; it never reruns
-Merge. Merge disables commit signing and has a five-minute deadline; Push has
-ten minutes, while reads retain thirty seconds. A merge timeout restores the
-previously clean checkout only after verifying its state and any leftover lock.
-A Push timeout is interrupted with an unknown outcome and a prompt to check the
-remote. Destination reads cover only the latest snapshot's directories, so
-retained history adds no Git reads to `tasks.review.get`. Results survive
-completion and workspace replacement; an old result
-still names its original snapshot. None of these operations finishes or removes
-a workspace, stages source files, or requires a review opinion.
-Legacy `tasks.review.act` and `act_review` refuse PR-mode reviews before action
-admission; the RPC returns nonretryable `invalid_params`. PR actions use the
-dedicated merge lifecycle service. Existing Snapshot-mode Merge and Push
-behavior is preserved.
+The workspace Changes header, workspace-name menu and toolbar open the shared
+PR creation form (`workspaceReviewEntry.js`, `workspaceReviewForm.js`). It selects
+a reviewer and per-directory bases, previews dedicated branches and retains the
+exact submitted opening in its durable create draft for explicit recovery.
+Definitive rejection returns to an editable draft; uncertain outcomes retain the
+submitted request. Titles use the bridge's 200-byte UTF-8 limit. Draft cleanup
+changes only the matching submitted value and write stamp, preserving a newer
+other-tab draft. The header paints the bound PR, revisions and observations from
+cache. Push confirms the destination, review version, working head and received
+head; stale requests stay pinned until the user explicitly selects newer cached
+changes. Another branch or detached checkout offers switching back first.
+Reviewed-snapshot notes say changed or rewritten, or remain absent when unchanged.
+An exact count such as “2 commits since your last review” paints only from a
+cached observation whose `reviewed_snapshot_id` matches the cached timeline's
+last user opinion and whose `snapshot_head` matches the displayed snapshot.
+Older observations without the count retain the qualitative note.
 
-Tasks with saved reviews use the dedicated review template
-(`spa/src/core/taskReviewPage.js`), with every saved directory and Changes/Files
-views beside the existing timeline. The Workspace Changes header
-and workspace-name menu open one shared PR creation form
-(`workspaceReviewEntry.js`, `workspaceReviewForm.js`). It selects a reviewer
-and per-directory bases, previews dedicated branches, and retains the exact
-submitted opening in F's durable create draft for explicit recovery. The form
-returns a definitively rejected opening to an editable durable draft; uncertain
-outcomes retain the submitted request. Titles are checked against the bridge's
-200-byte UTF-8 limit before submission. Draft cleanup only changes the matching
-submitted value and write stamp, preserving a newer draft from another tab.
-The header paints the bound PR, snapshots and publication observations from
-cache. Push
-confirms the destination and saved review version, working head and received
-head through F's action draft; a stale request stays pinned until the user
-explicitly selects the latest cached changes. Another branch or a detached
-checkout offers switching back rather than publishing that checkout.
-Reviewed-snapshot notes say changed or rewritten, or remain absent when
-unchanged; an exact commits-since-review count ("2 commits since your last
-review") paints only from a cached observation whose `reviewed_snapshot_id`
-names the same snapshot as the cached timeline's last user opinion and whose
-`snapshot_head` is the displayed snapshot's head, and an older
-bridge's observation leaves the qualitative note. PR task controls show read-only status while lifecycle UI is
-pending. Older bridges and pure-folder workspaces retain the legacy snapshot
-form. Legacy snapshot/base changes and explicit completion live in
-`taskReviewControls.js`; assigning a reviewer uses the
-ordinary assignee picker and a note naming the snapshot. Opinions and line
-comments use `taskReviewFeedback.js` and stay in the task timeline, with no
-reviewer or model restrictions. For legacy reviews, `taskReviewActions.js` offers
-separate Merge and Push selections for each source, displays destinations and saved/live heads,
-and keeps per-source results visible. Choices and submitted intent live in
-`build-ui`; Git is sent only on an explicit action. Recorded success can finish
-the selected steps' review after reconnect, while a failure or interruption
-requires an explicit retry or an ordinary completion description.
+Run/worktree branch views hide their legacy Merge split button and merge/abandon
+controls whenever the workspace has a review. They retain those controls for a
+run with no review, so ordinary run completion remains available. Review-backed
+work uses the review's lifecycle controls. The live workspace Changes tray is
+labelled Notes to agent; those notes stay distinct from saved review comments.
 
 `taskReviewSupport.js` holds the individually announced review verbs and the
 comment feature in the device cache. `taskReviewCache.js` stores metadata under
@@ -2954,6 +2928,13 @@ settings are retained, and the empty conversation opens in the same place.
 
 ### MCP tools
 
+Review tools expose one workspace flow: `open_review`, `push_review`,
+`update_review_base`, `merge_review`, `close_review`, `reopen_review`,
+`refresh_review` and `retry_review_delivery`. Shared `get_review` and `read_review`
+read both current and legacy reviews. Legacy snapshot creation, selected Git
+actions and legacy completion have no agent tool; the user retains the explicit
+Close legacy review UI backed by its compatibility RPC.
+
 Each agent gets Build's MCP server as `build-bridge mcp --task <owner>`.
 `DoneServer` in `bridge/src/mcp.rs` speaks newline-delimited JSON-RPC over stdio
 and forwards each call to the daemon's Unix socket (`BRIDGE_MCP_SOCKET`, default
@@ -3139,7 +3120,7 @@ other write tracks with `track: true` (`also_track` in
 `bridge/src/app/tracker/tools.rs`). Tracking ends with the work (#444): the
 store write that takes a task from live to Done or closed
 (`Task::end_tracking_on_finish`, called from `save_activity_in_tx` and
-`complete_review_in_tx`) removes every tracker and records one `untracked`
+`finish_review_in_tx`) removes every tracker and records one `untracked`
 event each, by Build, with `by: "finished"`. The notice for that move or close still
 reaches them, read from those events, and it names the move or close even when
 the same write changed other things. Writes never put back a tracker list they

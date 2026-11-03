@@ -190,7 +190,7 @@ pub(in crate::store) fn save_activity_in_tx(
             } else {
                 "Marked done"
             };
-            let (_, additional) = complete_review_in_tx(
+            let (_, additional) = finish_review_in_tx(
                 tx,
                 CompletionWrite {
                     task: &task,
@@ -422,7 +422,7 @@ fn reject_review(
             })
         })
         .ok_or_else(|| invalid("rejection requires a new deciding verdict comment"))?;
-    let (_, events) = complete_review_in_tx(
+    let (_, events) = finish_review_in_tx(
         tx,
         CompletionWrite {
             task,
@@ -526,7 +526,7 @@ pub(crate) fn transition_in_tx(
     pull_requests::require_pull_request(tx, task_id)?;
     let task = require_task(tx, task_id)?;
     let now = now_rfc3339();
-    complete_review_in_tx(
+    finish_review_in_tx(
         tx,
         CompletionWrite {
             task: &task,

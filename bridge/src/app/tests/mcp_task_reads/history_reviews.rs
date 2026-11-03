@@ -256,12 +256,12 @@ pub(super) async fn legacy_review(fixture: &Fixture, action: BridgeAction) -> Va
 }
 
 pub(super) fn review_actions(fixture: &Fixture) -> Vec<BridgeAction> {
-    let reply = fixture.state.lock().unwrap().handle(req(
-        "tasks.review.snapshot",
+    let reply = crate::app::tests::reviews::legacy_review_reply(
+        &mut fixture.state.lock().unwrap(),
         json!({
             "task_id":fixture.task,"workspace_id":fixture.workspace,"expected_version":0
         }),
-    ));
+    );
     assert_eq!(reply["ok"], true, "{reply}");
     let snapshot = &reply["result"]["review"]["snapshots"][0];
     vec![

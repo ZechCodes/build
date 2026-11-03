@@ -19,7 +19,7 @@ import { ICON_MESSAGE_SQUARE } from "./icons.js";
 
 /** The gutter's comment button. The same icon the file header wears, because it
  *  is the same verb aimed at one line instead of the whole file. */
-const GUTTER_COMMENT_HTML = `<button class="dcmt" type="button" title="Comment on this line" aria-label="Comment on this line">${ICON_MESSAGE_SQUARE}</button>`;
+const GUTTER_COMMENT_HTML = `<button class="dcmt" type="button" title="Note to agent on this line" aria-label="Note to agent on this line">${ICON_MESSAGE_SQUARE}</button>`;
 import { pathOf } from "./diff.js";
 import { commentLayerBusy } from "./changesModel.js";
 import { diffThreadMessages } from "./notes.js";

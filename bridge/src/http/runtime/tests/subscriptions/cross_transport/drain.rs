@@ -9,9 +9,22 @@ use futures_util::StreamExt;
 #[tokio::test]
 async fn cross_transport_update_drain_fences_openings_and_joins_streams() {
     let mut f = Fixture::new(handler());
+    let liveness = crate::liveness::DedicatedRuntime::liveness().unwrap();
     f.fill_stream_pool().await;
     for client in &f.rtc {
-        client.send(&f.intake, 1).await.unwrap();
+        let intake = f.intake.clone();
+        let carrier = client.carrier.clone();
+        let request = crate::carrier::testing::client_request(
+            &client.key,
+            &client.id,
+            "data",
+            json!({"id": 1, "method": "session.hello", "params": {}}),
+        );
+        liveness
+            .spawn(async move { intake.accept(request, &carrier).await })
+            .await
+            .unwrap()
+            .unwrap();
     }
     for client in &mut f.rtc {
         client.reply(1).await;
@@ -29,7 +42,21 @@ async fn cross_transport_update_drain_fences_openings_and_joins_streams() {
     let started = Instant::now();
     assert_eq!(f.runtime.shutdown(), POOL_STREAMS);
     f.close_rtc();
+    liveness.stop();
     assert_eq!(f.intake.retained_admitters(), 0);
+    let attempted = Arc::new(AtomicBool::new(false));
+    let entered = attempted.clone();
+    let intake = f.intake.clone();
+    let new_admission = liveness.spawn(async move {
+        entered.store(true, Ordering::SeqCst);
+        let client = RtcClient::open(&intake, RTC_SESSIONS);
+        client.send(&intake, 3).await.unwrap();
+    });
+    assert!(
+        new_admission.await.unwrap_err().is_cancelled(),
+        "the stopped WebRTC driver cannot create another authenticated carrier"
+    );
+    assert!(!attempted.load(Ordering::SeqCst));
     for client in &f.rtc {
         assert!(
             client.send(&f.intake, 2).await.is_err(),

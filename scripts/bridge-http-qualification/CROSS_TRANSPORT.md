@@ -20,7 +20,7 @@ Each test states its pass criterion in its doc comment:
 | Reservation drop order | A synchronized blocked family cleanup cannot expose returned pool permits first; no sleep or scheduling race decides this assertion |
 | Stalled revocation | All 32 pending writers end within 25 ms of local authority invalidation, alongside teardown of all four RTC carriers |
 | Idle revocation | An already waiting stream must end within the same 25 ms without another event or heartbeat |
-| Composed drain | HTTP shutdown plus RTC carrier close refuses old/new HTTP openings and old carrier traffic, joins every stream task within 5 s, fences in-flight output and returns both pools |
+| Composed drain | HTTP shutdown plus RTC carrier close and the production dedicated-runtime stop refuses old/new HTTP openings and old carrier traffic, cancels fresh RTC admission on the stopped driver, joins every stream task within 5 s, fences in-flight output and returns both pools |
 
 The idle-revocation assertion intentionally retains the task's 25 ms requirement
 and runs the mounted production reaper. Its one-second interval cannot establish
@@ -41,9 +41,10 @@ nice -n 10 cargo test --manifest-path bridge/Cargo.toml --lib cross_transport --
 nice -n 10 cargo test --manifest-path bridge/Cargo.toml --lib buffer_reservation_releases_family
 ```
 
-`scripts/bridge-cross-transport-controls.sh` serially runs seven negative controls:
+`scripts/bridge-cross-transport-controls.sh` serially runs eight negative controls:
 carrier admission, family admission, byte-pool charging, call cancellation,
-reservation field drop order, authority recheck and shutdown retirement. Each
+reservation field drop order, authority recheck, HTTP shutdown retirement and
+WebRTC driver shutdown. Each
 copies exactly one source file, changes the mechanism, requires an executed
 test failure (exit 101, not a compile error), restores the copy under an EXIT
 trap and verifies it with `cmp`. Each control has an independent `timeout 900`.

@@ -261,11 +261,14 @@ Session expiry/revocation retires the exact opening; the daemon's coalesced
 cleanup pass releases dead producer resources without per-close task spawning.
 
 The HTTP adapter reserves buffers from two pools in `bridge/src/http/limits.rs`.
-RPCs reserve their request and response maxima from the 32 MiB
-`TOTAL_BUFFER_BYTES` budget. Each SSE stream reserves its 1 MiB queue
+RPCs reserve their full request and response maxima before execution from the 288 MiB
+`TOTAL_BUFFER_BYTES` budget. Each authenticated credential family and each opening
+is capped at 144 MiB: sixteen default 1 MiB-in/8 MiB-out calls, leaving half the
+pool for other clients. The higher worst-case allowance guarantees reply capacity
+after execution, including mutations. Desktop mirrors these limits. Each SSE stream reserves its 1 MiB queue
 (`MAX_QUEUED_BYTES`) from the separate 32 MiB `STREAM_BUFFER_BYTES` pool, so at
 most thirty-two streams are open at once. Queued adapter bytes are therefore
-bounded by 32 MiB of RPC plus 32 MiB of stream buffers, before parse and encode
+bounded by 288 MiB of RPC plus 32 MiB of stream buffers, before parse and encode
 copies. One credential family holds at most eight live streams
 (`MAX_FAMILY_STREAMS`), so no family can fill more than a quarter of the pool. The
 stream reservation, and the family's count, are held until the stream's body
@@ -790,7 +793,9 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.28.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.29.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.29.0 adds optional work-task links to workspace review opening, independently
+  announced by `tasks.review.forTask` (#971).
   3.28.0 adds independently negotiated revision commit lists, single-commit
   diffs, diffs since a previous revision, path filters on `git.show` and commit
   anchors on review comments (#968).
@@ -2075,6 +2080,32 @@ Clients name stable IDs and branches, never repository paths or actors. The
 bridge attributes RPC calls to the user and MCP calls to the authenticated
 agent in that project.
 
+**Workspace creation (#971).** The Changes header, workspace menu and toolbar
+all offer Request review and open the same form. It retains title, description,
+per-directory bases and exclusions, with Reviewer defaulting to You and allowing
+an existing agent anywhere in the project. For task is optional and preselects
+an eligible task linked to the workspace. Its independent
+`tasks.review.forTask` capability gates that field. Bridges without
+`tasks.review.pullRequests` show “Update the bridge to request reviews”.
+Published reviews offer View review. Task-side snapshot creation/update and the
+workspace snapshot dialog are removed; legacy review reading and Mark complete
+remain available.
+
+`tasks.review.open` and MCP `open_review` accept optional `for_task_id`, naming
+a same-project, open task without a review. The opening journal retains it;
+publication rechecks the target and sets the new review task's `parent_task_id`
+in the same transaction as its first revision. Retrying the original request
+keeps the reserved identity and original request. The current task's
+`links.parent_task_id` is the relationship's source of truth; the original
+`for_task_id` remains only in the opening request journal. Review summaries and
+workspace `active_review` expose the derived current `parent_task_id`. Reparenting
+invalidates both the old and new parents. Task detail adds `linked_reviews`, the newest 20 child review
+summaries, and an explicit truncation flag. Child review status changes invalidate
+the parent task detail so its cached projection refreshes. The ordinary task page
+uses only its own cached detail projection for “Review #N · <status>” links, independently gated
+by `tasks.review.forTask`. Without a child review, a linked workspace instead
+offers “Request a review from @workspace”, leading to its Changes view.
+
 Review opening and the explicit lifecycle jobs load their workspace review
 observations from SQLite off the app mutex, after durable publication.
 Invalidation installs the owned observation before publishing its workspace
@@ -2093,6 +2124,10 @@ reader in its existing capture section, loads review summaries alongside the
 off-lock project refresh, and installs them through the same generation fence
 in its existing apply section. Physical workspace refreshes do not query review
 SQL; startup warms review summaries before shared admission.
+Parent-only relinks have an independent observation generation and do not
+advance the status generation. A deferred status observation preserves a newer
+parent for the same review; a different review taking over the workspace never
+inherits that parent overlay.
 Once opening has published durably, an observation failure does not turn it
 into an error or skip settlement. Close likewise returns its captured completed
 review if the subsequent optional sync/merge-intent projection fails, and still
@@ -2100,7 +2135,7 @@ settles its captured task and completion notices once.
 
 | RPC verb | MCP tool | Contract |
 | --- | --- | --- |
-| `tasks.review.open` | `open_review` | Workspace, request ID, title/description, optional reviewer, per-directory bases and excluded Git IDs. Returns the published task/review, reviewer delivery state and explicit local push instructions. |
+| `tasks.review.open` | `open_review` | Workspace, request ID, title/description, optional user/agent reviewer and `for_task_id`, per-directory bases and excluded Git IDs. Returns the published task/review, reviewer delivery state and explicit local push instructions. |
 | `tasks.review.push` | `push_review` | Review version and selected directory/head OIDs; explicit force-with-lease also names the expected received head. Returns independent per-directory publication outcomes. |
 | `tasks.review.update` | `update_review_base` | Review version and per-directory base branches. Publishes a fresh snapshot against the updated targets. |
 | `tasks.review.merge` | `merge_review` | Review version, latest snapshot, every included directory's expected target head and optional remote/branch publication. Uses the durable merge service. |

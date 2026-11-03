@@ -7,11 +7,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-pub const TOTAL_BUFFER_BYTES: usize = 32 * 1024 * 1024;
+// Full pre-execution reservations trade a higher worst-case wire allowance
+// for never dropping a reply after execution (especially a mutation). A family
+// or opening can hold sixteen default calls, leaving half for other clients.
+pub const TOTAL_BUFFER_BYTES: usize = 288 * 1024 * 1024;
+pub const FAMILY_BUFFER_BYTES: usize = 144 * 1024 * 1024;
+pub const OPENING_BUFFER_BYTES: usize = 144 * 1024 * 1024;
+pub const DEFAULT_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const _: () = assert!(TOTAL_BUFFER_BYTES >= 32 * (DEFAULT_BODY_BYTES + DEFAULT_RESPONSE_BYTES));
+const _: () = assert!(FAMILY_BUFFER_BYTES < TOTAL_BUFFER_BYTES);
+const _: () = assert!(OPENING_BUFFER_BYTES < TOTAL_BUFFER_BYTES);
 /// Event streams draw only on this pool, never on `TOTAL_BUFFER_BYTES`: one
 /// `MAX_QUEUED_BYTES` queue each, so thirty-two streams at once, and a full
 /// pool refuses the next stream without costing an RPC its buffers. Queued
-/// adapter bytes are therefore bounded by 32 MiB of RPC plus 32 MiB of stream
+/// adapter bytes are therefore bounded by 288 MiB of RPC plus 32 MiB of stream
 /// buffers, before parse and encode copies.
 pub const STREAM_BUFFER_BYTES: usize = 32 * 1024 * 1024;
 const BULK_BUFFER_BYTES: usize = 22 * 1024 * 1024;
@@ -37,30 +46,35 @@ pub struct BufferBudget {
     bytes: Arc<Semaphore>,
     bulk_bytes: Arc<Semaphore>,
     stream_bytes: Arc<Semaphore>,
+    family_rpc_bytes: Arc<Mutex<HashMap<String, usize>>>,
     family_streams: Arc<Mutex<HashMap<String, usize>>>,
     large_calls: Arc<Semaphore>,
 }
 
-pub struct OpeningBudget(Arc<Semaphore>);
+pub struct OpeningBudget {
+    large_calls: Arc<Semaphore>,
+    bytes: Arc<Semaphore>,
+}
 
 /// The reply target owns this guard, so closing HTTP interest cannot release
 /// bulk concurrency while the shared execution worker still owns body copies.
 pub struct BufferReservation {
     // Fields drop in order: the family count is released before the pool
     // permit, on purpose, so a returned permit never meets a stale count.
-    _family: Option<FamilyStream>,
+    _family: Option<FamilyReservation>,
     _permits: Vec<OwnedSemaphorePermit>,
 }
 
-/// One of a family's live streams, counted until its reservation drops.
-struct FamilyStream {
+/// A family's live stream count or RPC bytes, held until the reservation drops.
+struct FamilyReservation {
     families: Arc<Mutex<HashMap<String, usize>>>,
     family: String,
+    amount: usize,
     #[cfg(test)]
     drop_started: Option<std::sync::mpsc::Sender<()>>,
 }
 
-impl Drop for FamilyStream {
+impl Drop for FamilyReservation {
     fn drop(&mut self) {
         #[cfg(test)]
         if let Some(started) = self.drop_started.take() {
@@ -68,7 +82,7 @@ impl Drop for FamilyStream {
         }
         let mut families = self.families.lock().unwrap();
         if let Some(count) = families.get_mut(&self.family) {
-            *count -= 1;
+            *count -= self.amount;
             if *count == 0 {
                 families.remove(&self.family);
             }
@@ -83,6 +97,7 @@ impl Default for BufferBudget {
             bulk_bytes: Arc::new(Semaphore::new(BULK_BUFFER_BYTES)),
             stream_bytes: Arc::new(Semaphore::new(STREAM_BUFFER_BYTES)),
             family_streams: Arc::default(),
+            family_rpc_bytes: Arc::default(),
             large_calls: Arc::new(Semaphore::new(2)),
         }
     }
@@ -90,7 +105,10 @@ impl Default for BufferBudget {
 
 impl Default for OpeningBudget {
     fn default() -> Self {
-        Self(Arc::new(Semaphore::new(1)))
+        Self {
+            large_calls: Arc::new(Semaphore::new(1)),
+            bytes: Arc::new(Semaphore::new(OPENING_BUFFER_BYTES)),
+        }
     }
 }
 
@@ -101,22 +119,45 @@ impl BufferBudget {
         output: usize,
         opening: &OpeningBudget,
     ) -> Result<BufferReservation, QuotaExceeded> {
+        self.reserve_for_family(input, output, opening, "")
+    }
+
+    pub fn reserve_for_family(
+        &self,
+        input: usize,
+        output: usize,
+        opening: &OpeningBudget,
+        family: &str,
+    ) -> Result<BufferReservation, QuotaExceeded> {
         let total = input
             .checked_add(output)
             .filter(|value| *value <= TOTAL_BUFFER_BYTES)
             .ok_or(QuotaExceeded)?;
-        let mut permits = Vec::with_capacity(4);
+        let mut families = self.family_rpc_bytes.lock().unwrap();
+        let used = families.get(family).copied().unwrap_or(0);
+        if total > FAMILY_BUFFER_BYTES.saturating_sub(used) {
+            return Err(QuotaExceeded);
+        }
+        let mut permits = Vec::with_capacity(5);
+        permits.push(acquire(&opening.bytes, total)?);
         if input > DEFAULT_BODY_BYTES {
             permits.push(acquire(&self.large_calls, 1)?);
-            permits.push(acquire(&opening.0, 1)?);
+            permits.push(acquire(&opening.large_calls, 1)?);
             permits.push(acquire(&self.bulk_bytes, total)?);
         }
         // Full input+output reservation means no wait for output capacity while
-        // retaining input. Bulk cannot consume small-RPC's 10MiB headroom.
+        // retaining input. Bulk cannot consume the small-RPC headroom.
         permits.push(acquire(&self.bytes, total)?);
+        families.insert(family.to_owned(), used + total);
         Ok(BufferReservation {
             _permits: permits,
-            _family: None,
+            _family: Some(FamilyReservation {
+                families: self.family_rpc_bytes.clone(),
+                family: family.to_owned(),
+                amount: total,
+                #[cfg(test)]
+                drop_started: None,
+            }),
         })
     }
 
@@ -132,9 +173,10 @@ impl BufferBudget {
         families.insert(family.to_owned(), count + 1);
         Ok(BufferReservation {
             _permits: vec![permit],
-            _family: Some(FamilyStream {
+            _family: Some(FamilyReservation {
                 families: self.family_streams.clone(),
                 family: family.to_owned(),
+                amount: 1,
                 #[cfg(test)]
                 drop_started: None,
             }),
@@ -164,6 +206,55 @@ fn acquire(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sixteen_default_calls_keep_full_replies_and_leave_room_for_another_family() {
+        let budget = BufferBudget::default();
+        let opening = OpeningBudget::default();
+        let held: Vec<_> = (0..16)
+            .map(|_| {
+                budget
+                    .reserve_for_family(DEFAULT_BODY_BYTES, 8 * DEFAULT_BODY_BYTES, &opening, "a")
+                    .expect("sixteen full default reservations")
+            })
+            .collect();
+        assert!(
+            budget
+                .reserve_for_family(
+                    DEFAULT_BODY_BYTES,
+                    8 * DEFAULT_BODY_BYTES,
+                    &OpeningBudget::default(),
+                    "a"
+                )
+                .is_err(),
+            "family cap crosses openings"
+        );
+        assert!(
+            budget
+                .reserve_for_family(DEFAULT_BODY_BYTES, 8 * DEFAULT_BODY_BYTES, &opening, "b")
+                .is_err(),
+            "opening cap crosses families"
+        );
+        let second = OpeningBudget::default();
+        let others: Vec<_> = (0..16)
+            .map(|_| {
+                budget
+                    .reserve_for_family(DEFAULT_BODY_BYTES, 8 * DEFAULT_BODY_BYTES, &second, "b")
+                    .expect("another family still gets sixteen calls")
+            })
+            .collect();
+        assert_eq!(budget.available(), 0);
+        assert!(budget
+            .reserve_for_family(1, 1, &OpeningBudget::default(), "c")
+            .is_err());
+        drop(held);
+        drop(others);
+        assert_eq!(budget.available(), TOTAL_BUFFER_BYTES);
+        assert!(budget.family_rpc_bytes.lock().unwrap().is_empty());
+        assert!(budget
+            .reserve_for_family(DEFAULT_BODY_BYTES, 8 * DEFAULT_BODY_BYTES, &opening, "a")
+            .is_ok());
+    }
 
     /// Pass: even if family cleanup is blocked by another admission, a stream
     /// cannot advertise returned pool bytes while its family count is stale.

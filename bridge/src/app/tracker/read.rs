@@ -261,6 +261,16 @@ impl TaskReadContext {
         let task = self.read_task(source, task, &timeline, &Default::default());
         let mut answer = views::task_with_timeline_json(&project, &task, &timeline);
         extend_task_summary(source, &task, &mut answer["task"])?;
+        let (linked_reviews, truncated) = source
+            .load_linked_review_summaries(&task.project_path, &task.id)
+            .stored()?;
+        if !linked_reviews.is_empty() {
+            answer["task"]["linked_reviews"] = json!(linked_reviews);
+        }
+        if truncated {
+            answer["task"]["linked_reviews_truncated"] = json!(true);
+        }
+
         Ok(answer)
     }
 

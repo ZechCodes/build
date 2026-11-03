@@ -152,7 +152,7 @@ fn metadata_lookup_precedes_body_read_and_has_exact_scoped_limits() {
     ] {
         let metadata = operation(verb, path, None).unwrap();
         assert_eq!(metadata.request_max_bytes, expected);
-        assert_eq!(metadata.response_max_bytes, 8_388_608);
+        assert_eq!(metadata.response_max_bytes, crate::http::limits::DEFAULT_RESPONSE_BYTES);
         let decoded = resolve(verb, path, None, json!({})).unwrap();
         assert!(std::ptr::eq(metadata, decoded.operation));
     }

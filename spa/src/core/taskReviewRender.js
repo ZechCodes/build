@@ -11,8 +11,8 @@ export const defaultReviewView = (directory) => directory?.status === "not_git" 
 const legacyStatusHtml = (review) => `<span class="task-review-summary">${review?.state === "completed" ? "Completed" : "Open"}</span>`;
 const reviewTitleHtml = (task) => `<div class="task-review-title"><span>Review${task.number ? ` #${Number(task.number)}` : ""}</span><h1>${esc(task.title || "Review")}</h1></div>`;
 const sinceCountHtml = (count) => Number.isSafeInteger(count) ? `<span>${count} commits since your review</span>` : "";
-function workTaskHtml(review, task, scope) {
-  const id = task.links?.parent_task_id || review?.for_task_id;
+function workTaskHtml(task, scope) {
+  const id = task.links?.parent_task_id;
   return id ? `<a href="${esc(hashFromRoute({ name: "trackerTask", ...scope, taskId: id }))}">Work task</a>` : "";
 }
 function headerActionsHtml(snapshot, support, isPr) {
@@ -25,7 +25,7 @@ export function reviewHeadHtml(review, snapshot, support, { task = {}, scope = {
   const isPr = review?.mode === "pull_request";
   const status = isPr ? reviewStatusHtml(review) : legacyStatusHtml(review);
   const facts = isPr ? reviewBranchesHtml(review, snapshot) : completionHtml(review);
-  return `${reviewTitleHtml(task)}<div class="task-review-head">${status}${picker}${sinceCountHtml(sinceCount)}${workTaskHtml(review, task, scope)}<button class="btn task-review-phone-commits" data-review-commits-open type="button" aria-expanded="false">Commits</button></div><div class="task-review-header-facts">${facts}</div>${headerActionsHtml(snapshot, support, isPr)}`;
+  return `${reviewTitleHtml(task)}<div class="task-review-head">${status}${picker}${sinceCountHtml(sinceCount)}${workTaskHtml(task, scope)}<button class="btn task-review-phone-commits" data-review-commits-open type="button" aria-expanded="false">Commits</button></div><div class="task-review-header-facts">${facts}</div>${headerActionsHtml(snapshot, support, isPr)}`;
 }
 
 const completionHtml = (review) => review?.completion ? `<p class="task-review-completion">Completed: ${esc(review.completion.description)}</p>` : "";

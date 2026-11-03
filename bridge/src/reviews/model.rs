@@ -144,6 +144,10 @@ pub enum ReviewMembershipKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u64>,
     pub task_id: String,
     pub workspace_id: String,
     pub version: u64,
@@ -242,6 +246,8 @@ pub enum ReviewSyncHealth {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewOpeningRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub for_task_id: Option<String>,
     pub workspace_id: String,
     pub title: String,
     pub description: String,

@@ -36,6 +36,7 @@ impl Fixture {
             request_id: "open-reclaim-review".into(),
             receiver_root: home.path().join("receivers"),
             request: ReviewOpeningRequest {
+                for_task_id: None,
                 workspace_id: workspace_id.clone(),
                 title: "Review reclaim race".into(),
                 description: "Committed work".into(),

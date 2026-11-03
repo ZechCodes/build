@@ -1,5 +1,35 @@
 # Workspace reviews
 
+## Workspace-only creation (#971)
+
+Request review in the workspace Changes header, workspace menu and toolbar opens
+one form. The form retains title, description, per-directory bases and exclusions.
+Reviewer defaults to You and can select an existing project or workspace agent.
+For task is optional, lists open non-review tasks in the project and preselects
+an eligible task linked to the workspace. It is gated independently by
+`tasks.review.forTask`; a bridge without `tasks.review.pullRequests` shows
+“Update the bridge to request reviews”. Once published, the entry reads View review.
+
+`tasks.review.open` / `open_review` accept `for_task_id`. The journal retains the
+selection and publication validates that the target is still open, in the same
+project and not itself a review, before atomically publishing the review task
+with `parent_task_id` set to that target. The original request remains in the
+opening journal for retries. The current task's `links.parent_task_id` is the
+relationship's source of truth, and review summaries and workspace `active_review`
+expose its derived current `parent_task_id`. Reparenting invalidates old and new
+parents; it does not change the journaled opening request.
+Existing user and agent reviewer assignment and durable agent dispatch remain.
+
+Task detail carries the newest 20 `linked_reviews` with an explicit truncation
+flag; child review changes invalidate its parent's detail for fresh status.
+Ordinary work tasks render child review links only from their own cached detail
+projection as “Review #N · <status>”,
+gated by `tasks.review.forTask` so older bridges keep their ordinary task UI.
+When there is no child review, linked workspaces offer “Request a review from
+@workspace” leading to Changes. Task-side create/update snapshot forms and the
+workspace snapshot dialog are removed. Mark complete and legacy reads remain
+until the snapshot retirement slice; the older creation UI plan below is historical.
+
 ## Published PR contracts (#405)
 
 Wire **3.15.0** publishes the PR services landed in #401–#404. This section
@@ -15,7 +45,7 @@ outside the saved commit tree. Dirty state is counted, never staged by review.
 
 | RPC | MCP | Inputs beyond task/review version |
 | --- | --- | --- |
-| `tasks.review.open` | `open_review` | Workspace ID, request ID, title, description, optional existing reviewer, per-directory bases and excluded Git directory IDs. |
+| `tasks.review.open` | `open_review` | Workspace ID, request ID, title, description, optional user/agent reviewer and `for_task_id`, per-directory bases and excluded Git directory IDs. |
 | `tasks.review.push` | `push_review` | Selected directory IDs and expected working heads; an explicit force-with-lease names the expected received head. |
 | `tasks.review.update` | `update_review_base` | Per-directory base branch selections. |
 | `tasks.review.merge` | `merge_review` | Latest snapshot ID and all included directories' expected base heads, with optional external push destinations. |

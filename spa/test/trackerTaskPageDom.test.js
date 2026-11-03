@@ -1706,3 +1706,102 @@ describe("the comment box across what arrives while typing", () => {
     expect([...host.querySelectorAll(".task-entry")]).toEqual(rows.slice(0, 20));
   });
 });
+
+
+describe("work-task review entry", () => {
+  beforeEach(async () => {
+    const { rememberReviewSupport } = await import("../src/core/taskReviewSupport.js");
+    await rememberReviewSupport("dev-1", { reviews: { forTask: true } });
+  });
+  it("paints only its exact cached parent projection and reacts to its status updates", async () => {
+    const linked = { task_id: "child-review", number: 71, parent_task_id: "task-1", version: 1, status: "open" };
+    const work = answerFor({ links: { workspace_ids: ["ws-1"] }, linked_reviews: [linked] });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", work);
+    const cache = await import("../src/core/localCache.js");
+    const scan = vi.spyOn(cache, "cachedRecords");
+    call = vi.fn(() => new Promise(() => {}));
+    await mount();
+    expect(host.querySelector('[data-work-task-review]')?.textContent).toBe("Review #71 · Open");
+    expect(host.querySelector('[data-work-task-review]').getAttribute("href")).toBe("#/device/dev-1/project/proj-1/tasks/child-review");
+    const chip = host.querySelector('[data-work-task-review]');
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "unrelated", answerFor({ id: "unrelated" }));
+    await flush();
+    expect(host.querySelector('[data-work-task-review]')).toBe(chip);
+    expect(scan.mock.calls.filter(([address]) => ["tracker-task", "tracker-tasks"].includes(address.kind))).toHaveLength(0);
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", { ...work, task: {
+      ...work.task, linked_reviews: [{ ...linked, version: 2, status: "approved" }],
+    } });
+    await vi.waitFor(() => expect(host.querySelector('[data-work-task-review]')?.textContent).toBe("Review #71 · Approved"));
+    scan.mockRestore();
+  });
+
+  it("moves a review from mounted parent A to mounted parent B through their own cached projections", async () => {
+    const linked = { task_id: "child-review", number: 71, parent_task_id: "task-1", version: 1, status: "open" };
+    const work = answerFor({ links: { workspace_ids: ["ws-1"] }, linked_reviews: [linked] });
+    const otherWork = answerFor({ id: "task-2", linked_reviews: [] });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", work);
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-2", otherWork);
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "child-review", answerFor({ id: "child-review", number: 71,
+      links: { parent_task_id: "task-1" }, review_summary: linked }));
+    call = vi.fn(() => new Promise(() => {}));
+    await mount();
+    const otherFrame = document.createElement("iframe");
+    document.body.append(otherFrame);
+    const otherHost = otherFrame.contentDocument.createElement("div");
+    otherFrame.contentDocument.body.append(otherHost);
+    const otherPage = mountTaskPage(otherHost, {
+      projectId: "proj-1", deviceId: "dev-1", projectKey: PROJECT_KEY, taskId: "task-2", callRpc: call,
+      catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), feed: () => feed, navigate: vi.fn(),
+    });
+    try {
+      await vi.waitFor(() => expect(otherHost.querySelector('.task-page-title')).not.toBeNull());
+      expect(host.querySelector('[data-work-task-review]')).not.toBeNull();
+      expect(otherHost.querySelector('[data-work-task-review]')).toBeNull();
+      const { linked_reviews: _removed, ...unlinkedTask } = work.task;
+      await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", { ...work, task: unlinkedTask });
+      await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-2", { ...otherWork, task: {
+        ...otherWork.task, linked_reviews: [{ ...linked, parent_task_id: "task-2" }],
+      } });
+      await vi.waitFor(() => expect(host.querySelector('[data-work-task-review]')).toBeNull());
+      await vi.waitFor(() => expect(otherHost.querySelector('[data-work-task-review]')?.textContent).toBe("Review #71 · Open"));
+      expect(host.querySelector('.task-work-review-hint')).not.toBeNull();
+    } finally { otherPage.dispose(); otherFrame.remove(); }
+  });
+
+  it.each([false, true])("does not scan project task history or observe unrelated details on an older bridge or review task: %j", async (reviewTask) => {
+    const { rememberReviewSupport } = await import("../src/core/taskReviewSupport.js");
+    await rememberReviewSupport("dev-1", { reviews: { forTask: reviewTask } });
+    const own = answerFor(reviewTask ? { review_summary: { task_id: "task-1", status: "open", version: 1 } } : {});
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", own);
+    const cache = await import("../src/core/localCache.js");
+    const observe = vi.spyOn(cache, "subscribeCache");
+    const scan = vi.spyOn(cache, "cachedRecords");
+    call = vi.fn(() => new Promise(() => {}));
+    await mount();
+    expect(host.querySelector('[data-work-task-review]')).toBeNull();
+    expect(observe.mock.calls.filter(([address]) => ["tracker-task", "tracker-tasks"].includes(address.kind) && !address.sub)).toHaveLength(0);
+    expect(scan.mock.calls.filter(([address]) => ["tracker-task", "tracker-tasks"].includes(address.kind))).toHaveLength(0);
+    observe.mockRestore(); scan.mockRestore();
+  });
+
+  it("refreshes the parent projection when the parent task is invalidated", async () => {
+    const linked = { task_id: "child-review", number: 71, parent_task_id: "task-1", version: 1, status: "open" };
+    const work = answerFor({ linked_reviews: [linked] });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", work);
+    call = vi.fn(async (method) => method === "tasks.get" ? work : {});
+    await mount();
+    expect(host.querySelector('[data-work-task-review]')?.textContent).toBe("Review #71 · Open");
+    call.mockImplementation(async (method) => method === "tasks.get" ? answerFor({ linked_reviews: [{ ...linked, version: 2, status: "merged" }] }) : {});
+    watchers[0].onChanges([{ entity_id: "proj-1", tasks: { task_ids: ["task-1"] } }]);
+    await vi.waitFor(() => expect(host.querySelector('[data-work-task-review]')?.textContent).toBe("Review #71 · Merged"));
+  });
+
+  it("points tasks without a review to the linked workspace Changes", async () => {
+    const work = answerFor({ links: { workspace_ids: ["ws-1"] } });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", work);
+    call = vi.fn(() => new Promise(() => {}));
+    await mount();
+    expect(host.querySelector('.task-work-review-hint')?.textContent).toBe("Request a review from @wire-facade");
+    expect(host.querySelector('.task-work-review-hint a').getAttribute("href")).toBe("#/device/dev-1/project/proj-1/workspace/ws-1/changes");
+  });
+});

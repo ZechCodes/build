@@ -61,7 +61,18 @@
       "watched": true,
       "unread_count": 1,
       "session_started_ms": 1789808400000,
-      "last_activity_ms": 1789812720000
+      "last_activity_ms": 1789812720000,
+      "linked_reviews": [
+        {
+          "task_id": "task-review-13",
+          "number": 13,
+          "workspace_id": "ws-3f2a91c4",
+          "version": 1,
+          "status": "open",
+          "latest_published_snapshot_id": "snapshot-1",
+          "parent_task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+        }
+      ]
     },
     "timeline": [
       {
@@ -787,5 +798,10 @@
       "session_started_ms",
       "last_activity_ms"
     ]
+  },
+  "work_task_reviews": {
+    "since": "3.29.0",
+    "capability": "tasks.review.forTask",
+    "note": "Detail reads include at most the newest 20 child PR reviews, ordered by task number descending; linked_reviews_truncated is true when more remain. Both fields are absent when empty."
   }
 }

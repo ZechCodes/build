@@ -78,7 +78,7 @@ impl AppState {
         actor: Actor,
     ) -> Result<Value, String> {
         params.validate()?;
-        let (project_id, _, review) = self.pull_request(&params.task_id)?;
+        let (project_id, task, review) = self.pull_request(&params.task_id)?;
         version(&review, params.expected_version)?;
         if !review
             .pull_request
@@ -99,7 +99,7 @@ impl AppState {
             params,
             actor,
             completion: RefCell::default(),
-            observation: ReviewInvalidation::new(self, &review.workspace_id),
+            observation: ReviewInvalidation::new(self, &review, &task),
         };
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(job),

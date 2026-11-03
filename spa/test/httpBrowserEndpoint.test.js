@@ -89,6 +89,20 @@ describe("browser HTTP endpoint", () => {
     expect(lost).not.toHaveBeenCalled(); endpoint.close();
   });
 
+  it("preserves retryable HTTP 429 without closing the opening", async () => {
+    const denied = { error: "Overloaded", error_code: "overloaded", retryable: true };
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json(opening))
+      .mockResolvedValueOnce(json(denied, 429)).mockResolvedValueOnce(json({ ok: true, result: {} }))
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const endpoint = createBrowserHttpEndpoint({ grant: grant(), fetchImpl });
+    const lost = vi.fn(); endpoint.onLost(lost);
+    const held = await endpoint.open("range");
+    const route = { path: "/v1/health", method: "GET" };
+    expect(await endpoint.request(held, route, {})).toEqual(denied);
+    expect(await endpoint.request(held, route, {})).toMatchObject({ ok: true });
+    expect(lost).not.toHaveBeenCalled(); endpoint.close();
+  });
+
   it("reports an incompatible lifecycle refusal without relabeling it as failed account authority", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(json({ error: "Unsupported API range", error_code: "unsupported_version", retryable: false }, 426));
     const endpoint = createBrowserHttpEndpoint({ grant: grant(), fetchImpl });

@@ -19,13 +19,12 @@ export const SELECT_SOURCES = {
   "core/projectAgentSetting.js": "device settings",
   "core/projectConsole.js": "project Terminal",
   "core/taskReviewActions.js": "task review",
-  "core/taskReviewControls.js": "task review",
   "core/taskReviewMerge.js": "PR merge",
   "core/taskReviewRender.js": "task review",
   "core/taskWaitingOnRender.js": "task controls / Waiting on prerequisite",
   "core/trackerAssigneeControl.js": "task controls",
   "core/trackerTaskRender.js": "task controls",
-  "core/workspaceReviewEntry.js": "workspace review",
+  "core/workspaceReviewForm.js": "Request review",
   "sheets/newRepo.js": "new project",
   "sheets/workspaceSettings.js": "workspace settings",
   "views/settings.js": "local settings",
@@ -40,8 +39,8 @@ export const SELECT_SURFACES = [
   { name: "workspace settings", selectors: ["#wsdiradd", "#wsdefprovider", "[data-harness-model]", "[data-harness-effort]"] },
   { name: "project settings", selectors: ['[data-isolation="select"]'] },
   { name: "new project", selectors: ["#nrdevice"] },
-  { name: "workspace review", selectors: ["[data-review-task]"] },
-  { name: "task review", selectors: ["[data-review-snapshot]", "[data-review-workspace]", "[data-review-merge-branch]", "[data-review-remote]"] },
+  { name: "Request review", selectors: ["#review-create-assignee", "[data-review-for-task]"] },
+  { name: "task review", selectors: ["[data-review-snapshot]", "[data-review-merge-branch]", "[data-review-remote]"] },
   { name: "PR merge", selectors: ["[data-pr-merge-remote]"] },
   { name: "new conversation", selectors: ["[data-new-agent-role]"] },
   { name: "clear conversation", selectors: ["[data-clear-detail]", "[data-clear-compact]"] },
@@ -146,8 +145,16 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
   if (name === "new project") {
     m.newRepo.openNewRepo(() => {}, { devices: [device, { ...device, id: "desktop", name: "Desktop" }], defaultDeviceId: device.id, callRpcFor: () => callRpc });
   }
-  if (name === "workspace review") {
-    await m.cache.writeCached(m.tracker.tasksAddress(device.id, project.id), { tasks: [{ id: "task-1", number: 367, title: "Style select menus" }], columns: [] });
+  if (name === "Request review") {
+    await m.cache.writeCached(m.tracker.tasksAddress(device.id, project.id), { tasks: [{
+      id: "work-select", number: 367, title: "Style select menus", state: "open", links: { workspace_ids: ["workspace-1"] },
+    }], columns: [] });
+    await m.cache.writeCached({ deviceId: device.id, entityId: "", kind: "workspaces" }, [{
+      id: "workspace-1", project_id: project.id, name: "Select styling", directories: [{
+        id: "dir-api", source_id: "source-web", name: "Website", is_git: true, branch: "main", base_branch: "main",
+      }],
+    }]);
+    await m.reviewSupport.rememberReviewSupport(device.id, { reviews: { ...support, pullRequests: true, open: true, forTask: true } });
     const entry = m.reviewEntry.mountWorkspaceReviewEntry(root, { ...scope, workspaceId: "workspace-1", callRpc });
     disposers.push(entry.dispose);
   }
@@ -240,7 +247,11 @@ export async function mountSelectSurface(page, basePath, name, theme, { preserve
     await page.locator("#compose-advanced").click();
     await page.locator('[data-agent-choice-toggle="compose-choice"]').click();
   }
-  if (name === "workspace review") await page.locator("[data-workspace-review]").click();
+  if (name === "Request review") {
+    await page.locator("[data-workspace-review]").click();
+    await page.waitForFunction(() => document.querySelector("[data-review-create-form]")?.onsubmit && !document.querySelector("#review-create-assignee")?.disabled
+      && document.querySelector("[data-review-for-task]")?.value === "work-select");
+  }
   if (name === "PR merge") {
     await page.locator("[data-pr-merge-sheet] summary").click();
     await page.locator('[data-pr-merge-push="dir-api"]').check();

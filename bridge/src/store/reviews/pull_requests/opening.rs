@@ -24,6 +24,7 @@ impl Store {
                 return Ok(existing);
             }
             validate_request(request_id, &request)?;
+            validate_for_task(tx, project_path, request.for_task_id.as_deref())?;
             let now = now_rfc3339();
             let mut task =
                 Task::drafted(project_path, &request.title, request.creator.clone(), &now);
@@ -31,6 +32,7 @@ impl Store {
             task.body = request.description.clone();
             task.status = IN_REVIEW_STATUS.into();
             task.assignee = request.reviewer.clone();
+            task.links.parent_task_id = request.for_task_id.clone();
             task.links.workspace_ids.push(request.workspace_id.clone());
             claim_workspace(tx, project_path, &request.workspace_id, &task.id)?;
             let opening = ReviewOpening {
@@ -352,6 +354,11 @@ fn validate_publication(
     if events.iter().any(|event| event.task_id != opening.task.id) {
         return Err(invalid("opening activity must belong to the reserved task"));
     }
+    validate_for_task(
+        tx,
+        &opening.project_path,
+        opening.request.for_task_id.as_deref(),
+    )?;
     validate_planned_bindings(&opening.request, &opening.bindings)?;
     validate_snapshot(opening, snapshot)
 }
@@ -453,5 +460,41 @@ fn write_opening(tx: &Transaction, opening: &ReviewOpening) -> Result<(), StoreE
         ReviewOpeningState::Cancelled => "cancelled",
     };
     tx.execute("INSERT INTO review_openings (project_key, request_id, task_id, number, version, state, record) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(project_key, request_id) DO UPDATE SET version = ?5, state = ?6, record = ?7", params![opening.project_path, opening.request_id, opening.task.id, opening.task.number as i64, opening.version as i64, state, serde_json::to_string(opening).expect("opening serializes")])?;
+    Ok(())
+}
+
+impl Store {
+    /// Preflight only: publication repeats this check inside its write transaction.
+    pub fn validate_review_for_task(
+        &self,
+        project: &str,
+        task_id: Option<&str>,
+    ) -> Result<(), StoreError> {
+        validate_for_task(&self.connection(), project, task_id)
+    }
+}
+
+fn validate_for_task(
+    conn: &Connection,
+    project: &str,
+    task_id: Option<&str>,
+) -> Result<(), StoreError> {
+    let Some(task_id) = task_id else {
+        return Ok(());
+    };
+    let refusal = |reason| StoreError::ReviewForTaskInvalid {
+        task_id: task_id.into(),
+        reason,
+    };
+    let task = ReadTransaction::new(conn)
+        .load_tracker_task(task_id)?
+        .filter(|task| task.project_path == project)
+        .ok_or_else(|| refusal("for_task_scope"))?;
+    if task.state != crate::tracker::TaskState::Open {
+        return Err(refusal("for_task_closed"));
+    }
+    if load_header(conn, task_id)?.is_some() {
+        return Err(refusal("for_task_review"));
+    }
     Ok(())
 }

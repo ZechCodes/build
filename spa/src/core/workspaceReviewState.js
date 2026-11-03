@@ -7,10 +7,11 @@ import { cachedFeedView } from "./cachedRows.js";
 import { directoryCacheId } from "./directoryScope.js";
 import { workspaceScope } from "./workspaceModel.js";
 import { deviceKey } from "./deviceKey.js";
-import { assigneeOptions, workspaceAgents } from "./trackerAssignee.js";
+import { assigneeOptions, assignableAgents } from "./trackerAssignee.js";
 import { readTaskRecord } from "./trackerCache.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { readUiRecord } from "./localUiStore.js";
+import { readReviewTaskChoices } from "./workspaceReviewTasks.js";
 import { reviewCreateDraftAddress } from "./taskReviewDrafts.js";
 
 export const workspaceReviewListAddress = ({ deviceId }) => ({ deviceId, entityId: "", kind: "workspaces" });
@@ -35,14 +36,17 @@ export async function readWorkspaceReviewContext(scope) {
   const project = feed.projects.find((row) => row.id === scope.projectId);
   const projectKey = deviceKey(scope.deviceId, scope.projectId);
   const keyed = { ...feed,
+    projects: feed.projects.map((row) => ({ ...row, projectKey: deviceKey(scope.deviceId, row.id) })),
     workspaces: feed.workspaces.map((row) => ({ ...row, projectKey: deviceKey(scope.deviceId, row.project_id) })),
     items: feed.items.map((row) => ({ ...row, projectKey: deviceKey(scope.deviceId, row.project_id) })),
   };
   const catalog = (await readCached({ deviceId: scope.deviceId, entityId: "", kind: "models" }))?.value;
   const task = held?.review?.task_id ? await readTaskRecord(scope.deviceId, scope.projectId, held.review.task_id) : null;
   const createDraft = (await readUiRecord(reviewCreateDraftAddress(scope)))?.value;
+  const tasks = await readReviewTaskChoices(scope);
   return { workspace, project, held, createDraft, reviewedSnapshot: lastReviewedSnapshot(held?.review, task?.timeline), sources: await sourceRecords(scope, workspace), catalog,
-    reviewerOptions: assigneeOptions(workspaceAgents(keyed, projectKey)).filter((option) => ["unassign", "user", "project_agent", "agent"].includes(option.kind)),
+    tasks,
+    reviewerOptions: assigneeOptions(assignableAgents(keyed, projectKey)).filter((option) => ["user", "project_agent", "agent"].includes(option.kind)),
     support: reviewSupportFor(held?.review, support) };
 }
 

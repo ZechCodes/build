@@ -14,7 +14,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
 const fixture = (verb) => JSON.parse(readFileSync(new URL(`../../fixtures/api/v1/tasks.review.${verb}.json`, import.meta.url), "utf8"));
 const prVerbs = ["open", "push", "update", "merge", "close", "reopen", "refresh"];
 const legacyVerbs = ["get", "snapshot", "diff", "complete", "act"];
-const allSupport = Object.fromEntries([...legacyVerbs, "comments", "pullRequests", "commits", "commit", "since", "anchorCommit", ...prVerbs].map((verb) => [verb, true]));
+const allSupport = Object.fromEntries([...legacyVerbs, "comments", "pullRequests", "commits", "commit", "since", "anchorCommit", "forTask", "taskChoices", "linkedTaskChoices", ...prVerbs].map((verb) => [verb, true]));
 const prReview = { mode: "pull_request", pull_request: { status: "open" } };
 const context = (support = allSupport) => ({
   adapter: { capabilities: { reviews: support } },
@@ -120,6 +120,21 @@ describe("thin review RPC", () => {
         .rejects.toMatchObject({ code: "unknown_method" });
       expect(machine.rpc).not.toHaveBeenCalled();
     }
+  });
+
+  it("negotiates the optional work-task link independently and checks it at dispatch", async () => {
+    const flags = adapter.capabilitiesOf({ api_version: "3.99.0", capabilities: ["tasks.review.forTask"] }).reviews;
+    expect(flags.forTask).toBe(true);
+    expect(flags.open).toBe(false);
+    await reviewSupport.rememberReviewSupport("device", { reviews: flags });
+    expect((await reviewSupport.readReviewSupport("device")).forTask).toBe(true);
+    const machine = context({ ...allSupport, forTask: false });
+    const call = reviewSupport.reviewRpc(machine);
+    await expect(call("tasks.review.open", { ...fixture("open").params, for_task_id: "work" })).rejects.toMatchObject({ code: "unknown_method" });
+    expect(machine.rpc).not.toHaveBeenCalled();
+    const { for_task_id: _link, ...legacyParams } = fixture("open").params;
+    await call("tasks.review.open", legacyParams);
+    expect(machine.rpc).toHaveBeenCalledOnce();
   });
 
   it("checks the current greeting at dispatch instead of trusting cached support", async () => {

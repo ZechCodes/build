@@ -28,6 +28,7 @@ import {
 import { readCached, readCachedMany, subscribeCache } from "./localCache.js";
 import { mountTaskReviewPage } from "./taskReviewPage.js";
 import { reviewAddress } from "./taskReviewCache.js";
+import { readReviewSupport, reviewSupportAddress } from "./taskReviewSupport.js";
 import { createReadRetry } from "./transientRead.js";
 import { deviceSession, deviceWatch } from "./deviceReconnect.js";
 import { trailingRead } from "./trailingRead.js";
@@ -182,6 +183,7 @@ export function mountTaskPage(host, options) {
     rows: [],
     reviewSnapshots: [],
     review: null,
+    reviewForTaskSupported: false,
     columns: [],
     draft: "",
     draftOperationId: null,
@@ -389,6 +391,7 @@ export function mountTaskPage(host, options) {
     rows: state.rows,
     reviewSnapshots: state.reviewSnapshots,
     review: state.review,
+    forTask: state.reviewForTaskSupported,
     unreadFrom,
     links: taskLinkRows(state.task, place(), state.feed()),
     watch: watch.state(),
@@ -706,6 +709,14 @@ export function mountTaskPage(host, options) {
    *  could move an answer repaints — prose becomes a link while the reader
    *  looks. The paint is part-patched, so nothing that did not move is touched. */
   const referencesWatcher = subscribeReferenceIndex(() => paint());
+  const readReviewCreationSupport = async () => {
+    const support = await readReviewSupport(state.deviceId);
+    if (state.disposed) return;
+    state.reviewForTaskSupported = support.forTask;
+    paint();
+  };
+  const stopReviewCreationSupport = subscribeCache(reviewSupportAddress(state.deviceId), () => void readReviewCreationSupport());
+  void readReviewCreationSupport();
 
   /** Detail writes are announcements, never payload delivery. Re-read the
    *  record they named and only then let it reach the renderer. */
@@ -1305,6 +1316,7 @@ export function mountTaskPage(host, options) {
       reviewWatcher();
       referencesWatcher();
       referenceLookups.dispose();
+      stopReviewCreationSupport();
       reads.dispose();
       unreadMarker.leave();
       unreadPill.dispose();

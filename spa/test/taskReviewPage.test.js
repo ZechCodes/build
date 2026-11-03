@@ -53,9 +53,9 @@ it("routes cached PRs to read-only controls and suppresses legacy git actions", 
   expect(document.querySelector('[data-review-act]')).toBeNull();
 });
 
-it("keeps legacy snapshot, completion and git action controls on PR-capable devices", async () => {
+it("keeps legacy completion and git action controls without snapshot editing on PR-capable devices", async () => {
   await mount(review, { ...support, act: true, pullRequests: true, open: true, push: true });
-  expect(document.querySelector('[data-review-save]')).not.toBeNull();
+  expect(document.querySelector('[data-review-save]')).toBeNull();
   expect(document.querySelector('[data-review-complete]')).not.toBeNull();
   expect(document.querySelector('[data-review-act]')).not.toBeNull();
   expect(document.querySelector('[data-review-read-only]')).toBeNull();
@@ -104,7 +104,7 @@ it("does not call review verbs or draw actions without cached support", async ()
 it("shows the pending tray and verdict bar and places lifecycle controls in More", async () => {
   await mount(review, { ...support, comments: true });
   expect(document.querySelector('[data-review-pending]')).not.toBeNull();
-  expect(document.querySelector('[data-review-more] [data-review-save]')).not.toBeNull();
+  expect(document.querySelector('[data-review-more] [data-review-save]')).toBeNull();
   expect(document.querySelector('[data-review-more] [data-review-complete]')).not.toBeNull();
 });
 
@@ -125,28 +125,6 @@ it("restores a URL selection offline and preserves path and line when changing r
   select.value = 'newer'; select.dispatchEvent(new Event('change'));
   expect(navigate.mock.calls.at(-1)[0].review).toMatchObject({ revision: 2, path: 'cached.js', side: 'new', line: 42 });
   expect(panes.changes.mock.calls.at(-1)[0].snapshot.id).toBe('newer');
-});
-
-it("refreshes destinations after saving a snapshot whose mutation omits them", async () => {
-  await rememberReviewSupport(scope.deviceId, { reviews: { ...support, act: true } });
-  await writeReviewRecord(scope, review, 1);
-  const next = { ...review, version: 2, snapshots: [...review.snapshots, { ...review.snapshots[0], id: "new-snapshot", number: 2 }] };
-  const callRpc = vi.fn(async (method) => ({ review: method === "tasks.review.snapshot" ? { ...next, destinations: [] } : {
-    ...next, destinations: [{ snapshot_id: "new-snapshot", directory_id: "dir-api", source_path: "/sources/api",
-      branches: ["main"], remotes: [{ name: "origin", branches: ["main"] }], live_head: review.snapshots[0].directories[0].head }],
-  } }));
-  // The page tells the task once the save, its re-read and the move to the new snapshot are all done.
-  let saved;
-  const settled = new Promise((resolve) => { saved = resolve; });
-  page = mountTaskReviewPage(document.querySelector("#review"), {
-    ...scope, callRpc, workspaces: () => [], task: () => ({ id: scope.taskId }), onTaskChanged: () => saved(),
-  });
-  await painted(() => document.querySelector('[data-review-save]'));
-  document.querySelector('[data-review-save]').dispatchEvent(new Event("submit", { cancelable: true }));
-  await settled;
-  await painted(() => document.querySelector('[data-review-source="dir-api"]'));
-  const methods = callRpc.mock.calls.map(([method]) => method);
-  expect(methods.lastIndexOf("tasks.review.get")).toBeGreaterThan(methods.indexOf("tasks.review.snapshot"));
 });
 
 it('falls back to an all-changes URL when a linked comparison is unsupported', async () => {

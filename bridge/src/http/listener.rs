@@ -261,6 +261,76 @@ impl OutputTicket {
     }
 }
 
+/// One log window per listener, preserved across successful accepts as well as
+/// retry backoffs so intermittent resource pressure cannot flood stderr.
+#[derive(Default)]
+struct AcceptRetryLog(Mutex<Option<tokio::time::Instant>>);
+
+impl AcceptRetryLog {
+    fn report(&self, error: &io::Error, write: impl FnOnce(&io::Error)) {
+        let mut next = self.0.lock().unwrap();
+        let now = tokio::time::Instant::now();
+        if next.is_some_and(|next| now < next) {
+            return;
+        }
+        *next = Some(now + std::time::Duration::from_secs(1));
+        drop(next);
+        write(error);
+    }
+}
+
+/// Retry resource pressure and per-connection failures without terminating the
+/// daemon. The enclosing select keeps shutdown and connection reaping live
+/// during this backoff; fatal listener errors still reach daemon supervision.
+async fn accept_with_retry<T, F, A>(mut accept: F, retry_log: &AcceptRetryLog) -> io::Result<T>
+where
+    F: FnMut() -> A,
+    A: Future<Output = io::Result<T>>,
+{
+    loop {
+        match accept().await {
+            Err(error) if transient_accept_error(&error) => {
+                retry_log.report(&error, |error| {
+                    eprintln!("bridge HTTPS accept: {error}; retrying in 75ms");
+                });
+                tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
+fn transient_accept_error(error: &io::Error) -> bool {
+    // Linux accept(2) also propagates ENONET; macOS has no such constant.
+    #[cfg(target_os = "linux")]
+    if error.raw_os_error() == Some(libc::ENONET) {
+        return true;
+    }
+    matches!(
+        error.kind(),
+        io::ErrorKind::Interrupted
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::TimedOut
+    ) || matches!(
+        error.raw_os_error(),
+        Some(
+            libc::EMFILE
+                | libc::ENFILE
+                | libc::ENOBUFS
+                | libc::ENOMEM
+                | libc::EPROTO
+                | libc::ENOPROTOOPT
+                | libc::EHOSTDOWN
+                | libc::EOPNOTSUPP
+                | libc::ENETDOWN
+                | libc::ENETUNREACH
+                | libc::EHOSTUNREACH
+        )
+    )
+}
+
 pub async fn serve(
     listener: TcpListener,
     tls: Arc<rustls::ServerConfig>,
@@ -271,13 +341,19 @@ pub async fn serve(
     let (stop, stopped) = watch::channel(false);
     let acceptor = TlsAcceptor::from(tls);
     let mut connections = JoinSet::new();
+    // Retain the retry future across completed connections so reaping cannot
+    // cancel the backoff and turn resource exhaustion into a busy loop.
+    let retry_log = AcceptRetryLog::default();
+    let next_connection = || accept_with_retry(|| listener.accept(), &retry_log);
+    let mut accepting = Box::pin(next_connection());
     let result = loop {
         if *shutdown.borrow() {
             break Ok(());
         }
         tokio::select! {
             _ = shutdown.changed() => break Ok(()),
-            accepted = listener.accept() => {
+            accepted = &mut accepting => {
+                accepting.set(next_connection());
                 let (socket, peer) = match accepted { Ok(value) => value, Err(error) => break Err(error) };
                 let Ok(permit) = sockets.clone().try_acquire_owned() else { continue; };
                 let service = router.clone();
@@ -292,6 +368,7 @@ pub async fn serve(
         }
     };
     // Stop accepting and fence each HTTP socket before bounded teardown.
+    drop(accepting);
     drop(listener);
     let _ = stop.send(true);
     if timeout(limits::SOCKET_TEARDOWN_TIMEOUT, async {
@@ -560,5 +637,85 @@ mod tests {
             retired.elapsed()
         );
         assert!(!authority.has_pending_write());
+    }
+}
+
+#[cfg(test)]
+mod accept_tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn transient_accept_errors_back_off_then_accept_again() {
+        let retry_log = AcceptRetryLog::default();
+        for code in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOBUFS,
+            libc::ENOMEM,
+            libc::ECONNABORTED,
+            libc::EINTR,
+            libc::ENOPROTOOPT,
+            libc::EHOSTDOWN,
+            #[cfg(target_os = "linux")]
+            libc::ENONET,
+            libc::EOPNOTSUPP,
+        ] {
+            let mut calls = 0;
+            let started = tokio::time::Instant::now();
+            let result = accept_with_retry(
+                || {
+                    calls += 1;
+                    std::future::ready(if calls == 1 {
+                        Err(io::Error::from_raw_os_error(code))
+                    } else {
+                        Ok(42)
+                    })
+                },
+                &retry_log,
+            )
+            .await
+            .unwrap();
+            assert_eq!(result, 42);
+            assert_eq!(calls, 2);
+            assert!(started.elapsed() >= std::time::Duration::from_millis(75));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_logs_are_limited_to_one_per_second() {
+        let retry_log = AcceptRetryLog::default();
+        let error = io::Error::from_raw_os_error(libc::EMFILE);
+        let mut lines = Vec::new();
+        let started = tokio::time::Instant::now();
+        for _ in 0..30 {
+            retry_log.report(&error, |_| lines.push(tokio::time::Instant::now()));
+            tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        }
+        assert_eq!(
+            lines.len(),
+            3,
+            "one immediate log, then about one per second"
+        );
+        assert_eq!(lines[0], started);
+        for pair in lines.windows(2) {
+            assert!(pair[1] - pair[0] >= std::time::Duration::from_secs(1));
+            assert!(pair[1] - pair[0] < std::time::Duration::from_millis(1075));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fatal_accept_errors_propagate_without_retry() {
+        let retry_log = AcceptRetryLog::default();
+        let mut calls = 0;
+        let result: io::Result<()> = accept_with_retry(
+            || {
+                calls += 1;
+                std::future::ready(Err(io::Error::from_raw_os_error(libc::EBADF)))
+            },
+            &retry_log,
+        )
+        .await;
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EBADF));
+        assert_eq!(calls, 1);
     }
 }

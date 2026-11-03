@@ -6,7 +6,7 @@ const M = 1024 * 1024;
 test("complete route reservations bound combined wire bytes before any input/output buffering", () => {
   const budget = createWireBudget();
   const release = [];
-  for (let i = 0; i < 3; i++)
+  for (let i = 0; i < 16; i++)
     release.push(budget.reserve({ requestMax: M, responseMax: 8 * M }));
   assert.throws(() => budget.reserve({ requestMax: M, responseMax: 8 * M }), {
     code: "busy",
@@ -58,4 +58,22 @@ test("bulk subbudget and opening/global limits preserve small request headroom",
   const small = budget.reserve({ requestMax: M, responseMax: 8 * M });
   small();
   bulk();
+});
+
+
+test("family and opening caps leave half the full reply pool for another client", () => {
+  const budget = createWireBudget();
+  const opening = {};
+  const reserve = (family, heldOpening = opening) => budget.reserve({
+    requestMax: M, responseMax: 8 * M, opening: heldOpening, family,
+  });
+  const held = Array.from({length: 16}, () => reserve("a"));
+  assert.throws(() => reserve("a", {}), { code: "busy" });
+  assert.throws(() => reserve("b"), { code: "busy" });
+  const second = {};
+  const others = Array.from({length: 16}, () => reserve("b", second));
+  assert.throws(() => reserve("c", {}), { code: "busy" });
+  held.forEach(done => done());
+  others.forEach(done => done());
+  assert.doesNotThrow(() => reserve("a"));
 });

@@ -343,10 +343,11 @@ async fn resource_response(state: &HttpState, request: Request<Body>) -> HttpRes
     let reservation = Arc::new(
         state
             .buffers
-            .reserve(
+            .reserve_for_family(
                 operation.request_max_bytes,
                 operation.response_max_bytes,
                 &opening_budget,
+                &authority.identity.family_id,
             )
             .map_err(|_| refusal(StatusCode::TOO_MANY_REQUESTS, "overloaded"))?,
     );
@@ -1768,6 +1769,68 @@ mod tests {
         assert_eq!(
             app.oneshot(request).await.unwrap().status(),
             StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn sixteen_concurrent_default_http_calls_retain_replies_and_family_headroom() {
+        struct FamilyVerifier;
+        #[async_trait]
+        impl GrantVerifier for FamilyVerifier {
+            async fn verify(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
+                let mut verified = authority();
+                verified.identity.family_id = bearer.to_owned();
+                Ok(verified)
+            }
+            async fn revalidate(&self, bearer: &str) -> Result<VerifiedAuthority, AuthError> {
+                self.verify(bearer).await
+            }
+        }
+        let runtime = runtime_with(execution(), Arc::new(FamilyVerifier));
+        let app = runtime.router();
+        let mut sessions = Vec::new();
+        for token in ["a", "b"] {
+            let response = app
+                .clone()
+                .oneshot(open_request_with_token(
+                    Body::from(r#"{"api_range":">=3 <4"}"#),
+                    token,
+                ))
+                .await
+                .unwrap();
+            sessions.push(opening_id(response).await);
+        }
+        let requests = (0..16).map(|_| {
+            app.clone().oneshot(health_request(
+                &sessions[0],
+                "a",
+                super::super::listener::OutputAuthority::default(),
+            ))
+        });
+        // Keep every response body unconsumed, so all sixteen complete input and
+        // output reservations remain live together, including executed replies.
+        let responses = futures_util::future::join_all(requests).await;
+        for response in &responses {
+            assert_eq!(response.as_ref().unwrap().status(), StatusCode::OK);
+        }
+        let (status, refusal) =
+            resource_json_with_token(&app, "GET", "/v1/health", &sessions[0], None, "a").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(refusal["retryable"], true);
+        assert_eq!(refusal["error_code"], "overloaded");
+        let (status, _) =
+            resource_json_with_token(&app, "GET", "/v1/health", &sessions[1], None, "b").await;
+        assert_eq!(status, StatusCode::OK, "another family retains admission");
+        for response in responses {
+            let bytes = axum::body::to_bytes(response.unwrap().into_body(), 8 * 1024 * 1024)
+                .await
+                .unwrap();
+            let frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(frame["ok"], true, "every executed reply survives");
+        }
+        assert_eq!(
+            runtime.state.buffers.available(),
+            super::super::limits::TOTAL_BUFFER_BYTES
         );
     }
 
@@ -3533,7 +3596,7 @@ mod tests {
             .buffers
             .reserve(
                 1,
-                super::super::limits::TOTAL_BUFFER_BYTES - 1,
+                super::super::limits::OPENING_BUFFER_BYTES - 1,
                 &opening_budget,
             )
             .unwrap();

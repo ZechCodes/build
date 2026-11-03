@@ -11,7 +11,7 @@ export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
 mkdir -p "$scratch/evidence/controls"
 
 if [[ ${1:-} != --one ]]; then
-  for mechanism in rtc_admission family_admission memory_pool cancellation drop_order revocation drain rtc_drain idle_wake; do
+  for mechanism in rtc_admission family_admission memory_pool cancellation drop_order revocation drain rtc_drain idle_wake reap_lock; do
     nice -n 10 timeout --signal=TERM --kill-after=15 900 bash "$0" --one "$mechanism"
   done
   exit 0
@@ -43,6 +43,9 @@ case "$mechanism" in
   idle_wake)
     source_file=bridge/src/http/sse_stream.rs
     test_name=cross_transport_idle_revocation_within_one_authority_recheck ;;
+  reap_lock)
+    source_file=bridge/src/http/runtime.rs
+    test_name=cross_transport_reaper_notification_can_reenter_cleanup ;;
   *) exit 2 ;;
 esac
 cd "$repo"
@@ -73,6 +76,9 @@ mutations = {
     "drain": ("        self.state.retire_all()", "        0 // negative control: leave openings alive"),
     "rtc_drain": ("runtime.shutdown_background();", "std::mem::forget(runtime); // negative control: keep the driver alive"),
     "idle_wake": ("                _ = self.recheck.tick() => {}\n", ""),
+    "reap_lock": (
+        "        // Never retain the openings registry lock across that handoff.\n",
+        "        // Never retain the openings registry lock across that handoff.\n        let _registry = self.openings.lock().unwrap();\n"),
 }
 before, after = mutations[sys.argv[2]]
 text = path.read_text()

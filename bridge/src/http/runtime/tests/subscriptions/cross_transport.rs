@@ -10,6 +10,7 @@ mod cancellation;
 mod drain;
 mod fixture;
 mod load;
+mod reaping;
 mod revocation;
 mod timing;
 

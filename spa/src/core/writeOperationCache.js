@@ -178,6 +178,34 @@ export function createWriteOperationCache(scope) {
     if (intentIdentity(previous) !== intentIdentity(record)) throw new Error("operation_conflict: the saved intent differs");
     return null;
   }, { migrateProvisional: true });
+  /** One transaction makes a review batch durable before any of it dispatches. */
+  async function putMany(records) {
+    const changed = [];
+    await strictTransaction("readwrite", ({ operations }) => {
+      changed.length = 0;
+      readRecords(operations, records.map((row) => operationKey(scope, row.operationId)), (held) => {
+        try {
+          for (const record of records) putBatchRecord(operations, record, held, changed);
+        } catch (error) { abortForError(operations, error); }
+      });
+      return null;
+    });
+    for (const record of changed) announce(record.operationId, effectsAddresses(record));
+  }
+
+  function putBatchRecord(store, record, held, changed) {
+    const key = operationKey(scope, record.operationId);
+    const previous = held.get(key);
+    if (previous) {
+      if (intentIdentity(previous) !== intentIdentity(record)) throw new Error("operation_conflict: the saved intent differs");
+      return;
+    }
+    const next = normalizeRecord(record);
+    indexOverlay(next);
+    if (putOrAbort(store, next, key)) changed.push(next);
+    held.set(key, next);
+  }
+
   function accept(operationId, input) {
     const { accept: authority = () => true, ...evidence } = input;
     return update(operationId, (previous) => {
@@ -252,7 +280,7 @@ export function createWriteOperationCache(scope) {
   }
 
   return {
-    get, list, put, update, accept, confirm, observePublication,
+    get, list, put, putMany, update, accept, confirm, observePublication,
     acquireLease: (tabId, ttlMs = 15000) => changeLease(tabId, ttlMs, "acquire"),
     renewLease: (tabId, ttlMs = 15000) => changeLease(tabId, ttlMs, "renew"),
     releaseLease: (tabId) => changeLease(tabId, 1, "release"),

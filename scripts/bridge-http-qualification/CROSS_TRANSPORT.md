@@ -13,7 +13,8 @@ Each test states its pass criterion in its doc comment:
 
 | Mechanism | Required observation |
 | --- | --- |
-| Concurrent load | Four RTC sessions, 32 SSE streams, four families with eight streams each; 32 RTC and 32 REST calls complete; ninth family and 33rd global streams refuse with retryable `overloaded` |
+| Concurrent load | Four RTC sessions, 32 SSE streams, four families with eight streams each; all four RTC handlers enter a gate and remain pending throughout each batch's four successful REST calls; release them only after every REST response, completing 32 calls per transport; ninth family and 33rd global streams refuse with retryable `overloaded` |
+| Ordered SSE pushes | Each of the 32 SSE streams delivers exactly `0, 1, 2`, with no trailing event queued; no RTC push-order claim is made |
 | Separate admission | Saturating the production 1024-frame carrier queue returns `busy`; REST snapshot reads still finish with all streams admitted |
 | Bounded buffering | Separate 32 MiB RPC and 32 MiB SSE allowances; at most 1 MiB/128 queued items per stream; all allowances returned after settlement |
 | Cancellation | Carrier close and HTTP future cancellation fence output; running work retains its allowance until settlement; stream cancellation admits a same-family replacement |
@@ -44,10 +45,11 @@ nice -n 10 cargo test --manifest-path bridge/Cargo.toml --lib cross_transport --
 nice -n 10 cargo test --manifest-path bridge/Cargo.toml --lib buffer_reservation_releases_family
 ```
 
-`scripts/bridge-cross-transport-controls.sh` serially runs ten negative controls:
+`scripts/bridge-cross-transport-controls.sh` serially runs thirteen negative controls:
 carrier admission, family admission, byte-pool charging, call cancellation,
 reservation field drop order, authority recheck, HTTP shutdown retirement and
-WebRTC driver shutdown, the idle wake and reentrant registry locking. Each
+WebRTC driver shutdown, the idle wake, reentrant registry locking, completing
+RTC before REST, swapping SSE pushes and adding a trailing duplicate. Each
 copies exactly one source file, changes the mechanism, requires an executed
 test failure (exit 101, not a compile error), restores the copy under an EXIT
 trap and verifies it with `cmp`. Each control has an independent `timeout 900`.

@@ -11,14 +11,23 @@ export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
 mkdir -p "$scratch/evidence/controls"
 
 if [[ ${1:-} != --one ]]; then
-  for mechanism in rtc_admission family_admission memory_pool cancellation drop_order revocation drain rtc_drain idle_wake reap_lock; do
+  for mechanism in rtc_admission family_admission memory_pool cancellation drop_order revocation drain rtc_drain idle_wake reap_lock transport_overlap push_order push_duplicate; do
     nice -n 10 timeout --signal=TERM --kill-after=15 900 bash "$0" --one "$mechanism"
   done
   exit 0
 fi
 
 mechanism=$2
+expected_failure=
 case "$mechanism" in
+  transport_overlap|push_order|push_duplicate)
+    source_file=bridge/src/http/runtime/tests/subscriptions/cross_transport/load.rs
+    test_name=cross_transport_full_stream_pool_preserves_progress_and_bounds
+    case "$mechanism" in
+      transport_overlap) expected_failure='REST must return 200 while all four RTC handlers remain pending' ;;
+      push_order) expected_failure='SSE pushes preserve exact sequence without duplicates' ;;
+      push_duplicate) expected_failure='exactly three pushes: no trailing duplicate remains queued' ;;
+    esac ;;
   rtc_admission)
     source_file=bridge/src/carrier.rs
     test_name=cross_transport_rtc_admission_is_bounded_without_starving_rest ;;
@@ -65,6 +74,19 @@ import sys
 
 path = Path(sys.argv[1])
 mutations = {
+    "transport_overlap": (
+        "        // Only release RTC work after every REST response in this batch.\n",
+        "        // Negative control: finish every RTC call before REST starts.\n"
+        "        gate.release();\n"
+        "        for (index, client) in f.rtc.iter_mut().enumerate() {\n"
+        "            client.reply(batch * RTC_SESSIONS + index).await;\n"
+        "        }\n"),
+    "push_order": (
+        "        for sequence in 0..3 {\n            sender.push",
+        "        for sequence in [1, 0, 2] {\n            sender.push"),
+    "push_duplicate": (
+        "        for sequence in 0..3 {\n            sender.push",
+        "        for sequence in [0, 1, 2, 2] {\n            sender.push"),
     "rtc_admission": ("const ADMISSION_DEPTH: usize = 1024;", "const ADMISSION_DEPTH: usize = 2048;"),
     "family_admission": ("if count >= MAX_FAMILY_STREAMS {", "if count > MAX_FAMILY_STREAMS {"),
     "memory_pool": ("acquire(&self.stream_bytes, super::sse::MAX_QUEUED_BYTES)?", "acquire(&self.stream_bytes, 0)?"),
@@ -94,6 +116,9 @@ printf '%s: mutated test exit=%s\n' "$mechanism" "$code"
 [[ $code == 101 ]]
 # A compile error is not an observed mechanism failure.
 rg -q "$test_name .*FAILED" "$log"
+if [[ -n $expected_failure ]]; then
+  rg -Fq "$expected_failure" "$log"
+fi
 cmp --silent -- "$backup" "$source_file" && exit 3
 restore
 trap - EXIT

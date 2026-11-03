@@ -6,8 +6,8 @@ use serde_json::{json, Value};
 
 use super::super::{BridgeAction, Handled};
 use crate::api::v1::reviews::{
-    ReviewCloseParams, ReviewMergeParams, ReviewOpenParams, ReviewPushParams, ReviewUpdateParams,
-    ReviewVersionParams,
+    ReviewCloseParams, ReviewMergeParams, ReviewOpenParams, ReviewPushParams,
+    ReviewRetryDeliveryParams, ReviewUpdateParams, ReviewVersionParams,
 };
 use crate::renamed_ids::current_id;
 
@@ -63,7 +63,7 @@ pub(super) fn tools() -> Vec<Value> {
                 "required":["directory_id","expected_head"]
             }}
         }), &["task_id","expected_version","sources"]),
-        tool("merge_review", "Merge the selected published PR snapshot into its recorded source base branches. Read get_review first and supply each exact expected_base_head. Optional publication to a named remote and branch follows integration; a failed push keeps the completed integration recorded. Successful integration marks the PR merged and moves its task to Done. Inspect recorded outcomes before retrying partial or interrupted work.", json!({
+        tool("merge_review", "Merge the selected published PR snapshot into its recorded source base branches. Agent calls require the current review status to be Approved. Read get_review first and supply each exact expected_base_head. Optional publication to a named remote and branch follows integration; a failed push keeps the completed integration recorded. Successful integration marks the PR merged and moves its task to Done. Inspect recorded outcomes before retrying partial or interrupted work.", json!({
             "task_id":string(),"expected_version":version(),"snapshot_id":string(),
             "sources":{"type":"array","minItems":1,"maxItems":100,"items":{
                 "type":"object","additionalProperties":false,
@@ -77,7 +77,8 @@ pub(super) fn tools() -> Vec<Value> {
             "task_id":string(),"expected_version":version(),
             "description":{"type":"string","minLength":1,"description":"A factual description, at most 2000 UTF-8 bytes after trimming."}
         }), &["task_id","expected_version","description"]),
-        tool("reopen_review", "Reopen a closed, unmerged PR whose managed workspace is retained. Build verifies its recorded placement and receiver health before moving it to In review. This preserves the review history; it does not unlock branch bindings.", json!({"task_id":string(),"expected_version":version()}), &["task_id","expected_version"]),
+        tool("reopen_review", "Reopen a Closed or Rejected, unmerged PR whose managed workspace is retained. Build verifies its recorded placement and receiver health before moving it to In review. This preserves the review history; it does not unlock branch bindings.", json!({"task_id":string(),"expected_version":version()}), &["task_id","expected_version"]),
+        tool("retry_review_delivery", "Retry a failed verdict delivery to the review author. Read get_review for the frozen verdict comment and delivery state first. This preserves the batch and operation identity and never repeats a delivered verdict.", json!({"task_id":string(),"comment_id":string()}), &["task_id","comment_id"]),
         tool("refresh_review", "Refresh a PR's received refs and health, including a terminal PR with a retained workspace. Build records a new immutable snapshot when published work changes and the PR is active. Terminal review history stays saved; get_review returns the resulting state.", json!({"task_id":string(),"expected_version":version()}), &["task_id","expected_version"]),
         tool("update_review_base", "Change selected comparison base branches for an active PR. Build resolves local branches from the recorded source and saves a new immutable snapshot; opinions on older snapshots remain historical. Read get_review for the latest version and directory IDs first.", json!({"task_id":string(),"expected_version":version(),"bases":bases(1)}), &["task_id","expected_version","bases"]),
     ]
@@ -112,6 +113,14 @@ pub(super) fn handle_call(id: &Value, name: &str, arguments: Option<&Value>) -> 
         }),
         "reopen_review" => {
             version_params(arguments).map(|params| BridgeAction::TrackerReopenReview { params })
+        }
+        "retry_review_delivery" => {
+            params::<ReviewRetryDeliveryParams>(arguments).and_then(|mut params| {
+                params.task_id = current_id(&params.task_id);
+                params.comment_id = current_id(&params.comment_id);
+                params.validate()?;
+                Ok(BridgeAction::TrackerRetryReviewDelivery { params })
+            })
         }
         "refresh_review" => {
             version_params(arguments).map(|params| BridgeAction::TrackerRefreshReview { params })

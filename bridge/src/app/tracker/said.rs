@@ -180,6 +180,7 @@ mod tests {
         }
         if comment {
             write.comments.push(TaskComment {
+                review_notice: None,
                 id: "tc-9".into(),
                 task_id: write.task.id.clone(),
                 author: write.actor.clone(),

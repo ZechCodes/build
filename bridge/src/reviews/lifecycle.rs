@@ -2,7 +2,7 @@
 
 use super::model::PullRequestStatus;
 use crate::tracker::{
-    Actor, ReviewVerdict, TaskComment, DONE_STATUS, IN_PROGRESS_STATUS, IN_REVIEW_STATUS,
+    Actor, Assignee, ReviewVerdict, TaskComment, DONE_STATUS, IN_PROGRESS_STATUS, IN_REVIEW_STATUS,
 };
 mod reopen;
 pub use reopen::{reopen, ReopenHooks, ReopenRequest};
@@ -11,21 +11,42 @@ pub fn column(status: PullRequestStatus) -> &'static str {
     match status {
         PullRequestStatus::Open | PullRequestStatus::Approved => IN_REVIEW_STATUS,
         PullRequestStatus::ChangesRequested => IN_PROGRESS_STATUS,
-        PullRequestStatus::Merged | PullRequestStatus::Closed => DONE_STATUS,
+        PullRequestStatus::Merged | PullRequestStatus::Closed | PullRequestStatus::Rejected => {
+            DONE_STATUS
+        }
     }
 }
 
 #[cfg(test)]
 mod tests;
 
-/// Historical opinions remain readable; only each actor's latest opinion on
-/// the current immutable snapshot contributes to its status.
-pub fn opinion_status(snapshot_id: &str, comments: &[TaskComment]) -> PullRequestStatus {
+/// The user always decides; an agent decides only while assigned the review.
+/// Other agents' saved opinions remain advisory.
+pub fn is_deciding_reviewer(actor: &Actor, assignee: Option<&Assignee>) -> bool {
+    match actor {
+        Actor::User => true,
+        Actor::Agent { agent_id } => {
+            assignee.and_then(Assignee::agent_id) == Some(agent_id.as_str())
+        }
+        Actor::Build => false,
+    }
+}
+
+/// Only each deciding reviewer's latest opinion on the current immutable
+/// snapshot contributes. Historical and advisory opinions remain readable.
+pub fn opinion_status(
+    snapshot_id: &str,
+    comments: &[TaskComment],
+    assignee: Option<&Assignee>,
+) -> PullRequestStatus {
     let mut ordered: Vec<_> = comments.iter().collect();
     ordered
         .sort_by(|left, right| (&left.created_at, &left.id).cmp(&(&right.created_at, &right.id)));
     let mut latest: Vec<(&Actor, ReviewVerdict)> = Vec::new();
-    for comment in ordered {
+    for comment in ordered
+        .into_iter()
+        .filter(|comment| is_deciding_reviewer(&comment.author, assignee))
+    {
         let Some(opinion) = comment
             .opinion
             .as_ref()
@@ -43,6 +64,11 @@ pub fn opinion_status(snapshot_id: &str, comments: &[TaskComment]) -> PullReques
         }
     }
     if latest
+        .iter()
+        .any(|(_, verdict)| *verdict == ReviewVerdict::Reject)
+    {
+        PullRequestStatus::Rejected
+    } else if latest
         .iter()
         .any(|(_, verdict)| *verdict == ReviewVerdict::RequestChanges)
     {

@@ -49,6 +49,12 @@ pub fn methods() -> &'static [(&'static str, super::Handler)] {
             ReviewResult
         ),
         v1_method!(
+            "tasks.review.retryDelivery",
+            retry_delivery,
+            ReviewRetryDeliveryParams,
+            ReviewResult
+        ),
+        v1_method!(
             "tasks.review.snapshot",
             snapshot,
             ReviewSnapshotParams,
@@ -330,6 +336,21 @@ fn reopen(
     params: ReviewVersionParams,
 ) -> Result<Answer<ReviewResult>, ApiError> {
     answer(app.review_reopen(params, Actor::User))
+}
+
+/// Retry one failed verdict delivery without changing its frozen batch.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewRetryDeliveryParams {
+    pub task_id: String,
+    pub comment_id: String,
+}
+
+fn retry_delivery(
+    app: &mut AppState,
+    params: ReviewRetryDeliveryParams,
+) -> Result<Answer<ReviewResult>, ApiError> {
+    answer(app.review_retry_verdict_delivery(params, Actor::User))
 }
 
 fn refresh(

@@ -15,9 +15,19 @@ fn assert_attention(store: &Store, id: &str, expected: (bool, bool), why: &str) 
         .waiting_on_summary(&task.project_path, id)
         .unwrap()
         .blocked;
-    let (comments, asks) = counts_after_read(&task, &timeline);
+    let (comments, asks, service_asks) = counts_after_read(&task, &timeline);
     let unfinished = task.state != TaskState::Closed && task.status != "done";
-    let user = task.assignee == Some(Assignee::User) && !blocked;
+    let author_turn = store
+        .load_review_summary(id)
+        .unwrap()
+        .is_some_and(|review| {
+            matches!(
+                review.status,
+                crate::reviews::model::PullRequestStatus::ChangesRequested
+                    | crate::reviews::model::PullRequestStatus::Approved
+            )
+        });
+    let user = task.assignee == Some(Assignee::User) && !blocked && !author_turn;
     let unread = unread_since_mark(&task, &timeline);
     let meaningful: Vec<_> = timeline
         .iter()
@@ -29,7 +39,7 @@ fn assert_attention(store: &Store, id: &str, expected: (bool, bool), why: &str) 
             .any(|entry| after(task.dismissed_through.as_deref(), entry_id(entry)));
     let inbox = task.watched && !meaningful.is_empty() && !cleared && unread > 0;
     let canonical = (
-        unfinished && (user || (task.watched && asks > 0)),
+        (unfinished && (user || (task.watched && asks > 0))) || (task.watched && service_asks > 0),
         unfinished && (task.status == "in_review" || user || (inbox && comments > 0)),
     );
     assert_eq!(canonical, expected, "canonical source: {why}");
@@ -46,9 +56,10 @@ fn assert_attention(store: &Store, id: &str, expected: (bool, bool), why: &str) 
         assert_eq!(actual, want, "{rule}: {why}");
     }
 }
-fn counts_after_read(task: &Task, timeline: &[TimelineEntry]) -> (usize, usize) {
+fn counts_after_read(task: &Task, timeline: &[TimelineEntry]) -> (usize, usize, usize) {
     let mut comments = 0;
     let mut asks = 0;
+    let mut service_asks = 0;
     for entry in timeline
         .iter()
         .filter(|entry| after(task.read_through.as_deref(), entry_id(entry)))
@@ -57,6 +68,12 @@ fn counts_after_read(task: &Task, timeline: &[TimelineEntry]) -> (usize, usize) 
             TimelineEntry::Comment(comment) if matches!(comment.author, Actor::Agent { .. }) => {
                 comments += 1;
                 asks += usize::from(comment.mentions_user || comment.notifies_user);
+            }
+            TimelineEntry::Comment(comment)
+                if matches!(comment.author, Actor::Build) && comment.review_notice.is_some() =>
+            {
+                service_asks += usize::from(comment.mentions_user);
+                asks += usize::from(comment.mentions_user);
             }
             TimelineEntry::Event(event)
                 if event.kind == TaskEventKind::Created
@@ -67,7 +84,7 @@ fn counts_after_read(task: &Task, timeline: &[TimelineEntry]) -> (usize, usize) 
             _ => {}
         }
     }
-    (comments, asks)
+    (comments, asks, service_asks)
 }
 fn event(task: &Task, n: usize, kind: TaskEventKind, payload: serde_json::Value) -> TaskEvent {
     let mut event = TaskEvent::new(
@@ -450,4 +467,122 @@ fn old_event_ask_projection_rebuilds_all_derived_layers_without_editing_canonica
         .unwrap();
     assert_eq!(after_task, canonical_task);
     assert_eq!(after_event, canonical_event);
+}
+
+#[test]
+fn service_mentions_count_for_user_attention_without_claiming_agent_traffic() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = Task::drafted("/attention", "service reminder", Actor::User, support::NOW);
+    task.watched = true;
+    let task = store.create_tracker_task(task, &[]).unwrap();
+    let mut note = comment(&task, 42, true, false);
+    note.author = Actor::Build;
+    note.review_notice = Some(crate::tracker::ReviewNoticeKind::VerdictUndelivered);
+    store
+        .save_tracker_task_activity(&task, &[note], &[])
+        .unwrap();
+    assert_attention(
+        &store,
+        &task.id,
+        (true, false),
+        "Build service explicitly mentions user",
+    );
+    assert_matches_history(&store, &task.id);
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    assert_attention(
+        &store,
+        &task.id,
+        (true, false),
+        "service mention survives projection reopen",
+    );
+}
+
+#[test]
+fn ordinary_build_mentions_do_not_acquire_review_service_attention() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = Task::drafted(
+        "/attention",
+        "ordinary service notice",
+        Actor::User,
+        support::NOW,
+    );
+    task.watched = true;
+    let task = store.create_tracker_task(task, &[]).unwrap();
+    let mut note = comment(&task, 42, true, false);
+    note.author = Actor::Build;
+    store
+        .save_tracker_task_activity(&task, &[note], &[])
+        .unwrap();
+    assert_attention(
+        &store,
+        &task.id,
+        (false, false),
+        "ordinary Build mention has no review marker",
+    );
+    assert_matches_history(&store, &task.id);
+}
+
+#[test]
+fn marked_review_service_mention_still_calls_user_on_done_until_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = Task::drafted("/attention", "Rejected review", Actor::User, support::NOW);
+    task.status = "done".into();
+    task.watched = true;
+    let mut task = store.create_tracker_task(task, &[]).unwrap();
+    let mut note = comment(&task, 42, true, false);
+    note.author = Actor::Build;
+    note.review_notice = Some(crate::tracker::ReviewNoticeKind::VerdictUndelivered);
+    store
+        .save_tracker_task_activity(&task, &[note.clone()], &[])
+        .unwrap();
+    assert_attention(
+        &store,
+        &task.id,
+        (true, false),
+        "undelivered rejection asks despite Done",
+    );
+    assert_matches_history(&store, &task.id);
+    task.read_through = Some(note.id);
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    assert_attention(
+        &store,
+        &task.id,
+        (false, false),
+        "reading clears Done service request",
+    );
+}
+
+#[test]
+fn previous_projection_shape_rebuilds_marked_service_mentions_before_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = Task::drafted(
+        "/attention",
+        "Unread review notice",
+        Actor::User,
+        support::NOW,
+    );
+    task.status = "done".into();
+    task.watched = true;
+    let task = store.create_tracker_task(task, &[]).unwrap();
+    let mut note = comment(&task, 42, true, false);
+    note.author = Actor::Build;
+    note.review_notice = Some(crate::tracker::ReviewNoticeKind::VerdictUndelivered);
+    store
+        .save_tracker_task_activity(&task, &[note], &[])
+        .unwrap();
+    store.connection().execute_batch("ALTER TABLE tracker_task_summary_facts DROP COLUMN service_mention; ALTER TABLE tracker_task_summary_context DROP COLUMN unread_service_mentions; UPDATE meta SET value='20' WHERE key='schema_version';").unwrap();
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    assert_attention(
+        &store,
+        &task.id,
+        (true, false),
+        "legacy projection rebuilt from marked comment",
+    );
+    assert_matches_history(&store, &task.id);
 }

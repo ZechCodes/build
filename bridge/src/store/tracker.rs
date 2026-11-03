@@ -390,6 +390,8 @@ impl Store {
                 "tracker_comments",
                 "tracker_events",
                 "review_snapshots",
+                "review_revision_dispatches",
+                "review_verdict_deliveries",
                 "review_actions",
                 "review_branch_bindings",
                 "review_sync_observations",

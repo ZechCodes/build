@@ -208,3 +208,53 @@ fn recovery_repairs_a_delivered_span_without_a_payload_and_keeps_other_messages(
         ]
     );
 }
+
+#[test]
+fn failed_review_verdict_keeps_same_operation_payload_until_successful_delivery() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let record = plan_record("task-1");
+    let receipt = queued_operation("review-verdict-operation", 1);
+    store
+        .accept_thread_post("task-1", &record.agents, &receipt)
+        .unwrap();
+    store.connection().execute("INSERT INTO review_verdict_deliveries(comment_id,operation_id,task_id,state,created_at,updated_at,record) VALUES('verdict','review-verdict-operation','task-1','pending','now','now','{}')",[]).unwrap();
+    assert!(store
+        .transition_operation(
+            &receipt.operation_id,
+            OperationStatus::Queued,
+            OperationStatus::Delivered,
+            Some("author cannot receive yet")
+        )
+        .unwrap());
+    assert_eq!(
+        store
+            .operation(&receipt.operation_id)
+            .unwrap()
+            .unwrap()
+            .delivery,
+        receipt.delivery
+    );
+    assert!(store
+        .transition_operation(
+            &receipt.operation_id,
+            OperationStatus::Delivered,
+            OperationStatus::Queued,
+            None
+        )
+        .unwrap());
+    assert!(store
+        .transition_operation(
+            &receipt.operation_id,
+            OperationStatus::Queued,
+            OperationStatus::Delivered,
+            None
+        )
+        .unwrap());
+    assert!(store
+        .operation(&receipt.operation_id)
+        .unwrap()
+        .unwrap()
+        .delivery
+        .is_none());
+}

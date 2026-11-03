@@ -66,8 +66,11 @@ fn assert_matches_history(store: &Store, task_id: &str) {
         .filter(after_mark)
         .filter(|entry| match entry {
             crate::tracker::TimelineEntry::Comment(comment) => {
-                matches!(comment.author, Actor::Agent { .. })
-                    && (comment.mentions_user || comment.notifies_user)
+                (matches!(comment.author, Actor::Agent { .. })
+                    && (comment.mentions_user || comment.notifies_user))
+                    || (matches!(comment.author, Actor::Build)
+                        && comment.review_notice.is_some()
+                        && comment.mentions_user)
             }
             crate::tracker::TimelineEntry::Event(event) => {
                 event.kind == crate::tracker::TaskEventKind::Created

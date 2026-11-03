@@ -105,6 +105,7 @@ pub enum PullRequestStatus {
     Open,
     ChangesRequested,
     Approved,
+    Rejected,
     Merged,
     Closed,
 }
@@ -117,6 +118,9 @@ impl PullRequestStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequestMetadata {
+    /// Agent responsible for taking deciding verdicts forward. Legacy PRs omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     pub status: PullRequestStatus,
     pub creator: Actor,
     pub originating_workspace_id: String,
@@ -246,6 +250,8 @@ pub enum ReviewSyncHealth {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewOpeningRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub for_task_id: Option<String>,
     pub workspace_id: String,

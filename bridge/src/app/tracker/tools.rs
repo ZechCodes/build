@@ -442,6 +442,9 @@ impl AppState {
         if comment.mentions_user {
             read["mentions_user"] = json!(true);
         }
+        if let Some(notice) = comment.review_notice {
+            read["review_notice"] = json!(notice);
+        }
         if comment.notifies_user {
             read["notifies_user"] = json!(true);
         }
@@ -572,6 +575,7 @@ impl AppState {
             super::comments::CommentMetadata::from_params(self, &task.id, &asks.metadata)?;
         let now = crate::store::now_rfc3339();
         let comment = crate::tracker::TaskComment {
+            review_notice: None,
             id: crate::tracker::new_comment_id(),
             task_id: task.id.clone(),
             author: scope.actor.clone(),

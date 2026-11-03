@@ -44,6 +44,8 @@ fn delivery_step(weak: &Weak<Mutex<AppState>>) -> Option<Result<bool, String>> {
     let result = (|| {
         let (work, notices) = {
             let mut app = state.lock().unwrap();
+            app.drain_review_verdict_deliveries()?;
+            app.drain_review_revision_dispatches()?;
             let notices = app.pump_task_delivery_notices()?;
             (app.prepare_task_delivery()?, notices)
         };

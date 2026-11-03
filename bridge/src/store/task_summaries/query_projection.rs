@@ -165,7 +165,8 @@ const QUERY_FACT_REFRESH: &str = r#"INSERT INTO tracker_task_query_facts
  ?4,
  CASE json_extract(record,'$.priority') WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END,
  ?5,unfinished,watched,
- unfinished AND (user_ready OR (watched AND COALESCE(json_extract(record,'$.unread_mentions'),0)>0)),
+ (unfinished AND (user_ready OR (watched AND COALESCE(json_extract(record,'$.unread_mentions'),0)>0)))
+ OR (watched AND COALESCE(json_extract(record,'$.unread_service_mentions'),0)>0),
  unfinished AND (?11 OR user_ready OR
  (watched AND COALESCE(json_extract(record,'$.unread_count'),0)>0 AND COALESCE(json_extract(record,'$.unread_agent_comments'),0)>0
  AND CASE WHEN ?9 IS NULL THEN
@@ -178,7 +179,8 @@ const QUERY_FACT_REFRESH: &str = r#"INSERT INTO tracker_task_query_facts
  CASE WHEN ?12='agent' AND length(CAST(?13 AS BLOB))>0 THEN ?13 END,?6,?7,?8,?12,?16
  FROM (SELECT *,?10 unfinished,
  COALESCE(json_extract(record,'$.watched'),0) watched,COALESCE(json_extract(record,'$.dependencies.blocked'),0) blocked,
- COALESCE(?12='user',0) AND NOT COALESCE(json_extract(record,'$.dependencies.blocked'),0) user_ready,
+ COALESCE(?12='user',0) AND NOT COALESCE(json_extract(record,'$.dependencies.blocked'),0)
+ AND COALESCE(json_extract(record,'$.review_summary.status'),'') NOT IN ('changes_requested','approved') user_ready,
  ?14 undelivered
  FROM tracker_task_summaries WHERE task_id=?1) s"#;
 

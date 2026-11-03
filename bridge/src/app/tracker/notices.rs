@@ -49,6 +49,7 @@ impl AppState {
     /// Tell everyone watching, except whoever did it.
     pub(in crate::app) fn notify_trackers(&mut self, write: &TaskWrite) {
         let mut told = trackers_to_tell(write);
+        self.suppress_author_verdict_notice(write, &mut told);
         if write.comments.is_empty() {
             match self.pending_task_delivery_holder(&write.task) {
                 Ok(Some(holder)) => told.retain(|tracker| tracker != &holder),
@@ -101,6 +102,59 @@ impl AppState {
             );
             if let Err(why) = self.deliver_notice(&agent_id, &envelope, &notice, &body) {
                 eprintln!("notify {agent_id} about task #{}: {why}", write.task.number);
+            }
+        }
+    }
+
+    fn suppress_author_verdict_notice(&self, write: &TaskWrite, told: &mut Vec<String>) {
+        // The durable handoff carries the whole batch. A generic notice must
+        // not start the author before that handoff arrives.
+        for comment in write
+            .comments
+            .iter()
+            .filter(|comment| comment.opinion.is_some())
+        {
+            let delivery = self.tracker_store().ok().and_then(|store| {
+                store
+                    .load_review_verdict_delivery(&comment.id)
+                    .ok()
+                    .flatten()
+            });
+            if let Some(delivery) = delivery {
+                if let Ok(Some((_, author))) = self.review_verdict_recipient(&delivery) {
+                    told.retain(|agent| agent != &author);
+                }
+            }
+        }
+        if write
+            .events
+            .iter()
+            .any(|event| event.kind == TaskEventKind::Assigned)
+        {
+            self.suppress_pending_verdict_authors(&write.task, told);
+        }
+    }
+
+    fn suppress_pending_verdict_authors(&self, task: &Task, told: &mut Vec<String>) {
+        let review = self
+            .tracker_store()
+            .ok()
+            .and_then(|store| store.load_review(&task.id).ok().flatten());
+        let Some(review) = review else {
+            return;
+        };
+        for delivery in review
+            .verdict_deliveries
+            .into_iter()
+            .filter(|delivery| delivery.state == crate::store::ReviewVerdictDeliveryState::Pending)
+        {
+            if let Ok(Some((_, author))) = self.review_verdict_recipient_for_task(
+                &task.id,
+                &review.workspace_id,
+                &task.project_path,
+                delivery.recipient_agent_id.as_deref(),
+            ) {
+                told.retain(|agent| agent != &author);
             }
         }
     }
@@ -686,6 +740,7 @@ mod tests {
             agent_id: "agent-1".into(),
         });
         write.comments.push(crate::tracker::TaskComment {
+            review_notice: None,
             id: "tc-1".into(),
             task_id: write.task.id.clone(),
             author: Actor::Agent {
@@ -735,6 +790,7 @@ mod tests {
             agent_id: "agent-1".into(),
         });
         write.comments.push(crate::tracker::TaskComment {
+            review_notice: None,
             id: "tc-1".into(),
             task_id: write.task.id.clone(),
             author: Actor::Agent {

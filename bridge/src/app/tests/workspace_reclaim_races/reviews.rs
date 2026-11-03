@@ -36,6 +36,7 @@ impl Fixture {
             request_id: "open-reclaim-review".into(),
             receiver_root: home.path().join("receivers"),
             request: ReviewOpeningRequest {
+                author: None,
                 for_task_id: None,
                 workspace_id: workspace_id.clone(),
                 title: "Review reclaim race".into(),
@@ -68,6 +69,7 @@ impl Fixture {
     fn job(&self, push: bool) -> MergeJob {
         let binding = &self.review.bindings[0];
         MergeJob {
+            caller: crate::tracker::Actor::User,
             project_path: binding.source_repository.to_str().unwrap().into(),
             request_id: "merge-reclaim-review".into(),
             request: ReviewMergeRequest {

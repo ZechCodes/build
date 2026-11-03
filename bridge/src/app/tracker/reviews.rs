@@ -7,7 +7,9 @@ mod observation;
 mod opening;
 mod projection;
 mod publication;
+mod revision_dispatch;
 mod tools;
+mod verdict_delivery;
 
 use super::{StoredAnswer, TaskWrite};
 use crate::api::v1::reviews::{ReviewCompleteParams, ReviewDiffParams, ReviewSnapshotParams};

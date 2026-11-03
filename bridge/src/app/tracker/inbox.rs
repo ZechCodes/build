@@ -79,7 +79,15 @@ impl AppState {
         let at = entry_at(last).to_string();
         let session = task_activity_session(task, timeline);
         let blocked = observation.dependencies.blocked;
-        let assigned_to_user = matches!(task.assignee, Some(Assignee::User)) && !blocked;
+        let author_turn = observation.review.as_ref().is_some_and(|review| {
+            matches!(
+                review.status,
+                crate::reviews::model::PullRequestStatus::ChangesRequested
+                    | crate::reviews::model::PullRequestStatus::Approved
+            )
+        });
+        let assigned_to_user =
+            matches!(task.assignee, Some(Assignee::User)) && !blocked && !author_turn;
         let mut row = json!({
             "kind": "tracker_task",
             "task_id": task.id,

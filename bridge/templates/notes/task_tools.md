@@ -18,7 +18,7 @@ Every listed row remains a full task record. Use `get_task` for its full
 detail and timeline.
 
 PR reviews also have `open_review`, `push_review`, `merge_review`, `close_review`,
-`reopen_review`, `refresh_review` and `update_review_base`. Use `open_review`
+`reopen_review`, `refresh_review`, `retry_review_delivery` and `update_review_base`. Use `open_review`
 from a managed workspace to create its PR task: give it a request ID, a title
 and a description. Included Git directories use their configured base unless
 you select another local source branch. Explicitly exclude any Git directory
@@ -93,7 +93,9 @@ branch. A non-Git directory is live, not saved; unavailable sources remain
 visible in the review. Use `comment_task` to leave feedback: `anchor` names a saved `snapshot_id`,
 `directory_id`, relative `path`, `side` (`old` or `new`) and positive `line`;
 `reply_to` names a comment on the same task; `opinion` names the snapshot ID
-and a `verdict` of `approve` or `request_changes`. An opinion can stand alone
+and a `verdict` of `approve`, `request_changes` or `reject`. Only the assigned
+reviewer and the user decide status; other agents’ opinions are advisory. Only a
+deciding reviewer may reject, with a nonempty reason in the body. An opinion can stand alone
 without a line anchor. Comments keep their original snapshot context after a
 new snapshot, and any agent in the project may give an opinion. Use
 `act_review` if selected Git work is needed: choose one or more saved directory
@@ -170,3 +172,14 @@ even when it is about a task. When the result is on a task the user is on, the
 Complete in your thread is one line that points to it. When you answer what
 the user wrote, move it forward: settle the question, make the call, or add
 the detail that was missing. Do not quote it or say it back.
+
+The review records its author and tracks that agent at publication. Deciding
+verdicts are durably handed to the author with the revision and anchored comment
+batch, including while the author is stopped or usage limited. Fix each requested
+comment, commit and `push_review`, replying on comments you disagree with. After
+approval, take the work forward as its context requires and comment what you did.
+An agent's `merge_review` requires the current status Approved. Rejection ends
+the review without merging or deleting its workspace; stop work and do not merge.
+A Rejected review can reopen like a Closed review. Read `get_review` for delivery
+state and use `retry_review_delivery` only for a failed handoff. New revisions
+send the assigned reviewer back to the saved previous revision with `since`.

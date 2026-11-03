@@ -35,6 +35,7 @@ fn filed(store: &Store, title: &str) -> Task {
 
 fn comment(task: &Task, body: &str, at: &str) -> TaskComment {
     TaskComment {
+        review_notice: None,
         id: crate::tracker::new_comment_id(),
         task_id: task.id.clone(),
         author: Actor::Agent {

@@ -364,6 +364,7 @@ fn activity(cast: &Cast, task_id: &str, index: usize) -> (Vec<TaskComment>, Vec<
     let comments = (0..1 + index % 3)
         .rev()
         .map(|n| TaskComment {
+            review_notice: None,
             id: crate::tracker::new_comment_id(),
             task_id: task_id.to_string(),
             author: cast.author(index + n),

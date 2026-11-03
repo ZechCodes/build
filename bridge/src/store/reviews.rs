@@ -17,7 +17,9 @@ mod actions;
 pub(crate) mod lifecycle;
 mod maintenance;
 mod pull_requests;
+pub(crate) mod verdict_delivery;
 pub(super) use pull_requests::clear_tracking_expectations;
+pub(crate) use pull_requests::revision_dispatch::RevisionDispatch;
 pub(crate) use pull_requests::TrackingExpectation;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -360,6 +362,7 @@ fn load_review(conn: &Connection, task_id: &str) -> Result<Option<Review>, Store
         mode: header.mode,
         pull_request: header.pull_request,
         bindings: pull_requests::load_bindings(conn, task_id)?,
+        verdict_deliveries: verdict_delivery::load_deliveries(conn, task_id)?,
     }))
 }
 

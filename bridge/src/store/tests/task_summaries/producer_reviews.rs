@@ -8,6 +8,7 @@ const NOW: &str = "2026-10-08T00:00:00Z";
 // Copied bounded Store-level PR fixtures; no git process or live receiver is used.
 fn request(workspace: &str) -> ReviewOpeningRequest {
     ReviewOpeningRequest {
+        author: None,
         for_task_id: None,
         workspace_id: workspace.into(),
         title: "Review feature".into(),
@@ -156,4 +157,77 @@ fn native_pr_publication_opinion_and_projection_failure_are_atomic() {
         summary(&store, "/repo")["review_summary"]["status"],
         "approved"
     );
+}
+
+#[test]
+fn deciding_user_assignment_yields_to_author_until_the_next_revision() {
+    use crate::tracker::{Assignee, ReviewOpinion, ReviewVerdict};
+    for verdict in [ReviewVerdict::RequestChanges, ReviewVerdict::Approve] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let review = publish(&store);
+        let mut task = store.load_tracker_task(&review.task_id).unwrap().unwrap();
+        task.assignee = Some(Assignee::User);
+        task.watched = true;
+        store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+        let task_id = task.id.clone();
+        let asked = || {
+            store
+                .task_query_matches(
+                    &task_id,
+                    &crate::store::TaskQueryFilter {
+                        attention_rule: Some("asked".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        };
+        assert!(asked(), "an open user-assigned review awaits the reviewer");
+        let mut opinion = said(&task, "tc-00000000000000000000000990", NOW);
+        opinion.author = Actor::User;
+        opinion.opinion = Some(Box::new(ReviewOpinion {
+            snapshot_id: "snapshot-1".into(),
+            verdict,
+        }));
+        let current = store.load_review(&task.id).unwrap().unwrap();
+        store
+            .record_review_opinion(&task.id, current.version, &opinion)
+            .unwrap();
+        assert!(!asked(), "{verdict:?} hands the next action to the author");
+        let mut explicit = said(&task, "tc-00000000000000000000000999", NOW);
+        explicit.mentions_user = true;
+        store
+            .save_tracker_task_activity(
+                &store.load_tracker_task(&task.id).unwrap().unwrap(),
+                &[explicit.clone()],
+                &[],
+            )
+            .unwrap();
+        assert!(asked(), "an unread explicit ask still needs the user");
+        task = store.load_tracker_task(&task.id).unwrap().unwrap();
+        task.read_through = Some(explicit.id);
+        store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+        assert!(!asked(), "reading the ask leaves the author in charge");
+        let current = store.load_review(&task.id).unwrap().unwrap();
+        let mut next = snapshot();
+        next.id = "snapshot-2".into();
+        store
+            .save_review_received_snapshot(&task.id, current.version, next, &[binding()])
+            .unwrap();
+        let timeline = store.load_tracker_timeline(&task.id).unwrap();
+        let last_id = timeline
+            .iter()
+            .map(crate::tracker::summary::entry_id)
+            .max_by_key(|id| crate::tracker::summary::when(id))
+            .unwrap()
+            .to_string();
+        task = store.load_tracker_task(&task.id).unwrap().unwrap();
+        task.read_through = Some(last_id);
+        store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+        assert!(
+            asked(),
+            "Open revision restores the user assignment even after the reminder is read"
+        );
+        assert_review_card(&store, &task.id);
+    }
 }

@@ -305,6 +305,7 @@ impl AppState {
                 agent_id: delivered.agent_id.clone(),
             }),
         };
+        let settled = self.resolved_review_assignee(&write.task, settled, delivery.as_ref())?;
         write.task.assignee = settled.clone();
         // A task handed TO the user is one they are being asked about, so it
         // goes in their inbox whoever handed it over.
@@ -372,6 +373,29 @@ impl AppState {
             );
         }
         Ok(())
+    }
+
+    /// PR verdicts belong to a concrete deciding reviewer. Keep the original
+    /// ProjectAgent selection in the opening/delivery journal for retry identity,
+    /// then pin the coordinator actually resolved by dispatch on the review task.
+    fn resolved_review_assignee(
+        &self,
+        task: &Task,
+        settled: Option<Assignee>,
+        delivered: Option<&Delivered>,
+    ) -> Result<Option<Assignee>, String> {
+        let Some(delivered) = delivered.filter(|_| settled == Some(Assignee::ProjectAgent)) else {
+            return Ok(settled);
+        };
+        let review = self.tracker_store()?.load_review(&task.id).stored()?;
+        if review
+            .is_some_and(|review| review.mode == crate::reviews::model::ReviewMode::PullRequest)
+        {
+            return Ok(Some(Assignee::Agent {
+                agent_id: delivered.agent_id.clone(),
+            }));
+        }
+        Ok(settled)
     }
 
     /// One agent of THIS project, or why it is none of this task's business.

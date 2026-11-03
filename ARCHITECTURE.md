@@ -793,7 +793,10 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.29.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.30.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.30.0 adds the author and deciding-reviewer verdict loop, rejection and durable
+  delivery, independently announced by `tasks.review.author`,
+  `tasks.review.reject` and `tasks.review.verdictDelivery` (#972).
   3.29.0 adds optional work-task links to workspace review opening, independently
   announced by `tasks.review.forTask` (#971).
   3.28.0 adds independently negotiated revision commit lists, single-commit
@@ -2075,6 +2078,40 @@ source and caller identities under the app mutex and drains Git work off it.
 Clients name stable IDs and branches, never repository paths or actors. The
 bridge attributes RPC calls to the user and MCP calls to the authenticated
 agent in that project.
+
+**Verdict loop (#972).** PR metadata records an optional `author` agent ID at
+opening. MCP openings use the caller; user openings use the workspace's bound
+agent at that moment. Publication tracks the author atomically. Legacy reviews
+have no recorded author and resolve the workspace agent when delivering.
+
+Only the assigned reviewer and the user decide status. Each one's latest
+verdict on the latest revision counts; other agents' opinions remain advisory.
+Request changes takes precedence over approval. A deciding `reject` requires a
+nonempty reason and ends the review as Rejected, with its task Done, retaining
+the workspace and saved history. Rejected reviews can reopen under the same
+conditions as Closed reviews. Agent `merge_review` requires Approved; the user's
+RPC merge keeps its existing authority. Approval hands the next action to the
+author and never merges automatically. Reassignment recomputes deciding status;
+when that changes status, the new assignee’s existing current-revision verdict
+is journaled with its original batch, deduplicated by verdict comment identity.
+
+A deciding verdict journals an immutable batch in the same transaction as its
+comment. The batch includes that reviewer's anchored comments on the revision
+since their prior verdict, ending with the verdict comment. The bridge service
+delivers task/revision/verdict identity, comment IDs and anchors, and the verdict
+instruction without requiring a connected client. Pending work survives restart,
+a stopped author and usage limits. A deleted author falls back to the workspace's
+current agent; no recipient produces a task comment mentioning the user.
+The latest 100 delivery summaries (state, comment IDs and anchors, without
+repeated comment bodies) are exposed on the review, with failures offering an explicit
+`tasks.review.retryDelivery` / `retry_review_delivery` action. Review-service
+mentions use the typed comment `review_notice` marker (`revision_ready` or
+`verdict_undelivered`). Only marked Build mentions raise review-service attention,
+including on a finished review; ordinary Build mentions remain ignored. A new revision
+returns a user reviewer to Needs you or dispatches an agent reviewer with the
+revision number and the previous revision to read with `since`. If several
+revisions publish before dispatch, only the latest active revision wakes the
+agent reviewer; superseded pending revision handoffs are settled.
 
 **Workspace creation (#971).** The Changes header, workspace menu and toolbar
 all offer Request review and open the same form. It retains title, description,
@@ -4854,6 +4891,17 @@ The project Tasks badge follows both cached list and detail records, using the
 same unread calculation as Inbox, so an accepted task-page read clears both
 before the next list refresh. The task page's New divider also starts after
 the watch baseline (`watch_started_after`, or the legacy watch event).
+
+Review service attention (wire 3.30.0, `tasks.review.verdictDelivery`) uses a
+bridge-only `review_notice` field on task comments. `revision_ready` and
+`verdict_undelivered` are the only marked Build notices that can raise Needs you
+when `mentions_user` is true. Ordinary Build-authored mentions stay ignored.
+Summary rows carry `unread_service_mentions`; those unread marked asks remain
+visible even on a Done review and clear when read. For PRs in Changes requested
+or Approved, the user assignment alone stops raising attention because action
+is with the author. Explicit unread asks still count; publishing a new Open
+revision restores user review attention. Ordinary task assignment keeps its
+existing behavior. The cached SPA mirror follows in #973.
 
 Inbox rows, including Recent and the project Workspaces tab, use
 `spa/src/core/inboxStatusDot.js` for one right-edge status dot. Unread activity

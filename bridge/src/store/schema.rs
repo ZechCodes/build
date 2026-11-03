@@ -373,6 +373,22 @@ CREATE TABLE IF NOT EXISTS review_snapshots (
 CREATE INDEX IF NOT EXISTS review_snapshots_by_task
     ON review_snapshots(task_id, number);
 
+-- A deciding verdict and its immutable comment batch are accepted atomically.
+-- Pending rows survive offline clients, process restarts and stopped authors.
+CREATE TABLE IF NOT EXISTS review_verdict_deliveries (
+    comment_id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL UNIQUE,
+    task_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('pending','delivered','failed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    record TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS review_verdict_deliveries_pending
+    ON review_verdict_deliveries(state, updated_at, created_at, comment_id);
+CREATE INDEX IF NOT EXISTS review_verdict_deliveries_by_task
+    ON review_verdict_deliveries(task_id, created_at DESC, comment_id DESC);
+
 CREATE TABLE IF NOT EXISTS review_actions (
     id       TEXT PRIMARY KEY,
     task_id  TEXT NOT NULL,
@@ -415,6 +431,20 @@ CREATE TABLE IF NOT EXISTS review_branch_bindings (
     UNIQUE (receiving_repository, receiving_ref)
 );
 -- One outstanding sync capture; retained after task closure for bounded recovery.
+-- Revision hand-offs are enqueued with the saved revision, then retried by
+-- the daemon independently of connected clients.
+CREATE TABLE IF NOT EXISTS review_revision_dispatches (
+    task_id TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL PRIMARY KEY,
+    previous_snapshot_id TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    updated_at TEXT NOT NULL DEFAULT '',
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS review_revision_dispatches_pending
+    ON review_revision_dispatches(state, updated_at, snapshot_id);
+
 CREATE TABLE IF NOT EXISTS review_sync_candidates (
     task_id TEXT PRIMARY KEY,
     snapshot_id TEXT NOT NULL UNIQUE

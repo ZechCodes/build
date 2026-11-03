@@ -7,6 +7,7 @@ pub(super) fn job(f: &Fixture) -> MergeJob {
     let review = f.review();
     let snapshot = review.snapshots.last().unwrap();
     MergeJob {
+        caller: crate::tracker::Actor::User,
         project_path: f.request.project_path.clone(),
         request_id: "merge-1".into(),
         request: ReviewMergeRequest {
@@ -454,5 +455,89 @@ fn partial_repository_merge_retries_only_missing_source_without_replaying_succes
             .filter(|action| action.directory_id == "directory-1")
             .count(),
         1
+    );
+}
+
+#[test]
+fn agent_merge_refuses_open_and_changes_requested_then_accepts_approved() {
+    let f = Fixture::new();
+    f.commit("agent-merge.txt");
+    f.push();
+    f.sync();
+    let actor = Actor::Agent {
+        agent_id: "author".into(),
+    };
+    let mut unapproved = job(&f);
+    unapproved.request.actor = actor.clone();
+    unapproved.caller = actor.clone();
+    assert!(merge(&f.store, &unapproved, || {})
+        .unwrap_err()
+        .contains("Approved"));
+    assert!(f
+        .store
+        .load_review_merge_intent(&unapproved.project_path, &unapproved.request_id)
+        .unwrap()
+        .is_none());
+    for (index, verdict) in ["request_changes", "approve"].into_iter().enumerate() {
+        let review = f.review();
+        let comment: crate::tracker::TaskComment = serde_json::from_value(serde_json::json!({
+            "id":format!("verdict-{index}"), "task_id":f.task_id(), "author":{"kind":"user"},
+            "body":"Deciding review", "created_at":format!("2026-11-03T12:00:0{index}Z"),
+            "opinion":{"snapshot_id":review.snapshots.last().unwrap().id,"verdict":verdict}
+        }))
+        .unwrap();
+        f.store
+            .record_review_opinion(f.task_id(), review.version, &comment)
+            .unwrap();
+        let mut selected = job(&f);
+        selected.request.actor = actor.clone();
+        selected.caller = actor.clone();
+        if verdict == "request_changes" {
+            assert!(merge(&f.store, &selected, || {})
+                .unwrap_err()
+                .contains("Approved"));
+        } else {
+            assert_eq!(
+                merge(&f.store, &selected, || {})
+                    .unwrap()
+                    .pull_request
+                    .unwrap()
+                    .status,
+                PullRequestStatus::Merged
+            );
+        }
+    }
+}
+
+#[test]
+fn current_caller_cannot_bypass_approval_with_a_saved_user_merge_plan() {
+    let f = Fixture::new();
+    f.commit("saved-user-plan.txt");
+    f.push();
+    f.sync();
+    let mut saved = job(&f);
+    f.store
+        .reserve_review_merge(
+            &saved.project_path,
+            &saved.request_id,
+            saved.request.clone(),
+        )
+        .unwrap();
+    saved.caller = Actor::Agent {
+        agent_id: "author".into(),
+    };
+    assert_eq!(saved.request.actor, Actor::User);
+    assert!(merge(&f.store, &saved, || {})
+        .unwrap_err()
+        .contains("Approved"));
+    assert!(f.review().actions.is_empty());
+    saved.caller = Actor::User;
+    assert_eq!(
+        merge(&f.store, &saved, || {})
+            .unwrap()
+            .pull_request
+            .unwrap()
+            .status,
+        PullRequestStatus::Merged
     );
 }

@@ -342,7 +342,10 @@ impl Store {
                                  ELSE posted_sequence END \
                              ELSE posted_sequence END \
                      ELSE message_start_sequence END, \
-                 delivery = CASE WHEN ?3 = 'delivered' THEN \
+                 delivery = CASE WHEN ?3 = 'delivered' AND ?4 IS NOT NULL \
+                     AND EXISTS(SELECT 1 FROM review_verdict_deliveries v \
+                                WHERE v.operation_id = operations.operation_id) THEN delivery \
+                     WHEN ?3 = 'delivered' THEN \
                      CASE WHEN json_valid(delivery) THEN \
                          CASE WHEN json_extract(delivery, '$.owner_id') != entity_id \
                              OR json_extract(delivery, '$.agent_id') != agent_id \

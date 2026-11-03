@@ -1,0 +1,1 @@
+Revision {number} is ready; read `since` from revision {previous_number} (snapshot {previous_snapshot_id}) to revision {number} (snapshot {snapshot_id}) with get_review/read_review. Review the new revision and post your verdict on task #{task_number}.

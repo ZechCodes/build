@@ -12,6 +12,7 @@ const NOW: &str = "2026-10-08T00:00:00Z";
 
 fn request(workspace: &str) -> ReviewOpeningRequest {
     ReviewOpeningRequest {
+        author: None,
         for_task_id: None,
         workspace_id: workspace.into(),
         title: "Review feature".into(),
@@ -461,7 +462,7 @@ fn upgrading_real_v14_shape_preserves_legacy_header_and_snapshot_bytes() {
     }
     drop(store);
     let store = Store::new(dir.path()).unwrap();
-    assert_eq!(SCHEMA_VERSION, 20);
+    assert_eq!(SCHEMA_VERSION, 21);
     let review = store.load_review(&task.id).unwrap().unwrap();
     assert_eq!(review.mode, ReviewMode::Snapshot);
     assert!(review.pull_request.is_none());
@@ -1077,7 +1078,7 @@ fn schema_fifteen_reopen_restores_additive_sync_candidate_table_without_rewritin
         store.load_review_sync_candidate(&review.task_id).unwrap(),
         None
     );
-    assert_eq!(SCHEMA_VERSION, 20);
+    assert_eq!(SCHEMA_VERSION, 21);
 }
 
 #[test]
@@ -1150,4 +1151,58 @@ fn sync_task_page_work_is_bounded_with_large_active_inactive_and_candidate_sets(
     assert_eq!(page[0], "task-03900");
     let steps = store.review_sync_scan_steps();
     assert!(steps < 5000, "one late keyset page must avoid scanning all 14000 reviews and 2000 candidates; VM steps={steps}");
+}
+
+#[test]
+fn received_revision_for_user_reviewer_mentions_user_even_when_already_in_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    let mut task = store.load_tracker_task(&review.task_id).unwrap().unwrap();
+    task.assignee = Some(crate::tracker::Assignee::User);
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    let (snapshot, bindings) = received_snapshot();
+    store
+        .save_review_received_snapshot(&review.task_id, review.version, snapshot, &bindings)
+        .unwrap();
+    let timeline = store.load_tracker_timeline(&review.task_id).unwrap();
+    assert!(timeline.iter().any(|row| matches!(row, crate::tracker::TimelineEntry::Comment(comment) if comment.mentions_user && comment.body.contains("Revision 2 is ready"))));
+}
+
+#[test]
+fn received_agent_revision_dispatch_survives_restart_and_settles_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    let mut task = store.load_tracker_task(&review.task_id).unwrap().unwrap();
+    task.assignee = Some(crate::tracker::Assignee::Agent {
+        agent_id: "reviewer".into(),
+    });
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    let (snapshot, bindings) = received_snapshot();
+    store
+        .save_review_received_snapshot(&review.task_id, review.version, snapshot, &bindings)
+        .unwrap();
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    let pending = store.pending_review_revision_dispatches().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].task_id, review.task_id);
+    assert_eq!(pending[0].snapshot_id, "snapshot-received");
+    assert_eq!(pending[0].previous_snapshot_id, "snapshot-1");
+    assert_eq!(pending[0].number, 2);
+    store
+        .settle_review_revision_dispatch("snapshot-received", Some("retryable failure"))
+        .unwrap();
+    assert_eq!(store.pending_review_revision_dispatches().unwrap().len(), 1);
+    store
+        .settle_review_revision_dispatch("snapshot-received", None)
+        .unwrap();
+    store
+        .settle_review_revision_dispatch("snapshot-received", None)
+        .unwrap();
+    assert!(store
+        .pending_review_revision_dispatches()
+        .unwrap()
+        .is_empty());
 }

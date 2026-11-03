@@ -1,0 +1,1 @@
+Nobody received the verdict on revision {revision} (comment {verdict_comment}): the author is gone and this workspace has no current agent. Add an agent to this workspace, then retry this verdict delivery.

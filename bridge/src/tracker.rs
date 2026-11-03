@@ -532,6 +532,9 @@ impl Task {
 /// One comment on one task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskComment {
+    /// Structured bridge review reminder; ordinary Build comments carry none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_notice: Option<ReviewNoticeKind>,
     pub id: String,
     pub task_id: String,
     pub author: Actor,
@@ -566,6 +569,14 @@ pub struct TaskComment {
     /// written before it had a reading, and on every comment before #68.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_context: Option<crate::thread::ContextReading>,
+}
+
+/// Review service comments that deliberately ask the user for attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewNoticeKind {
+    RevisionReady,
+    VerdictUndelivered,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -640,6 +651,7 @@ impl From<ReviewOpinionInput> for ReviewOpinion {
 pub enum ReviewVerdict {
     Approve,
     RequestChanges,
+    Reject,
 }
 
 fn is_false(value: &bool) -> bool {

@@ -127,6 +127,9 @@ impl AppState {
             BridgeAction::TrackerReopenReview { params } => {
                 self.review_reopen(params.clone(), actor)
             }
+            BridgeAction::TrackerRetryReviewDelivery { params } => {
+                self.review_retry_verdict_delivery(params.clone(), actor)
+            }
             BridgeAction::TrackerRefreshReview { params } => {
                 self.review_refresh(params.clone(), actor)
             }
@@ -161,6 +164,9 @@ fn review_task_id(action: &BridgeAction) -> Option<&str> {
         }
         | BridgeAction::TrackerRefreshReview {
             params: crate::api::v1::reviews::ReviewVersionParams { task_id, .. },
+        }
+        | BridgeAction::TrackerRetryReviewDelivery {
+            params: crate::api::v1::reviews::ReviewRetryDeliveryParams { task_id, .. },
         } => Some(task_id),
         _ => None,
     }

@@ -15,7 +15,7 @@ pub(in crate::store::task_summaries) fn context() -> String {
     )
 }
 
-const RESULT_COLUMNS: &str = "unread_count,unread_agent_comments,unread_mentions,session_started_ms,last_activity_ms,done_at";
+const RESULT_COLUMNS: &str = "unread_count,unread_agent_comments,unread_mentions,unread_service_mentions,session_started_ms,last_activity_ms,done_at";
 
 pub(in crate::store::task_summaries) fn refresh(id: &str) -> String {
     format!(
@@ -39,6 +39,8 @@ fn full() -> String {
             AND (c.read_ulid IS NULL OR f.ulid>c.read_ulid)) ELSE 0 END unread_agent_comments,
         CASE WHEN c.watched=1 THEN (SELECT COUNT(*) FROM tracker_task_summary_facts f WHERE f.task_id=c.task_id AND f.mentions=1
             AND (c.read_ulid IS NULL OR f.ulid>c.read_ulid)) ELSE 0 END unread_mentions,
+        CASE WHEN c.watched=1 THEN (SELECT COUNT(*) FROM tracker_task_summary_facts f WHERE f.task_id=c.task_id AND f.service_mention=1
+            AND (c.read_ulid IS NULL OR f.ulid>c.read_ulid)) ELSE 0 END unread_service_mentions,
         CASE WHEN c.watched=1 THEN (SELECT COALESCE(MAX(CASE WHEN prev IS NOT NULL AND ts-prev>=28800000 THEN ts END),
             c.session_start,MIN(ts)) FROM (SELECT ts,LAG(ts) OVER (ORDER BY ts) prev FROM (
                 SELECT c.session_last ts UNION SELECT ts FROM tracker_task_summary_facts WHERE task_id=c.task_id AND activity=1
@@ -59,6 +61,7 @@ pub(in crate::store::task_summaries) fn append_update() -> String {
             (COALESCE(c.watch_ulid,(SELECT MAX(ulid) FROM tracker_task_summary_facts WHERE task_id=c.task_id AND watched=1)) IS NULL OR f.ulid>COALESCE(c.watch_ulid,(SELECT MAX(ulid) FROM tracker_task_summary_facts WHERE task_id=c.task_id AND watched=1)))),
         unread_agent_comments=c.unread_agent_comments+(c.watched=1 AND f.agent_comment=1 AND (c.read_ulid IS NULL OR f.ulid>c.read_ulid)),
         unread_mentions=c.unread_mentions+(c.watched=1 AND f.mentions=1 AND (c.read_ulid IS NULL OR f.ulid>c.read_ulid)),
+        unread_service_mentions=c.unread_service_mentions+(c.watched=1 AND f.service_mention=1 AND (c.read_ulid IS NULL OR f.ulid>c.read_ulid)),
         session_started_ms=CASE WHEN c.watched=1 THEN CASE WHEN f.activity=1 AND f.ts IS NOT NULL THEN
             CASE WHEN c.session_started_ms IS NULL OR c.last_activity_ms IS NULL OR f.ts-c.last_activity_ms>=28800000 THEN f.ts ELSE c.session_started_ms END
             ELSE c.session_started_ms END END,
@@ -70,9 +73,9 @@ pub(in crate::store::task_summaries) fn append_update() -> String {
 
 pub(in crate::store::task_summaries) fn patch_card(id: &str) -> String {
     format!("UPDATE tracker_task_summaries SET record=(SELECT CASE WHEN c.watched=1 THEN json_set(tracker_task_summaries.record,
-        '$.unread_count',c.unread_count,'$.unread_agent_comments',c.unread_agent_comments,'$.unread_mentions',c.unread_mentions,
+        '$.unread_count',c.unread_count,'$.unread_agent_comments',c.unread_agent_comments,'$.unread_mentions',c.unread_mentions,'$.unread_service_mentions',c.unread_service_mentions,
         '$.session_started_ms',c.session_started_ms,'$.last_activity_ms',c.last_activity_ms,'$.done_at',c.done_at)
-        ELSE json_set(json_remove(tracker_task_summaries.record,'$.unread_count','$.unread_agent_comments','$.unread_mentions','$.session_started_ms','$.last_activity_ms'),
+        ELSE json_set(json_remove(tracker_task_summaries.record,'$.unread_count','$.unread_agent_comments','$.unread_mentions','$.unread_service_mentions','$.session_started_ms','$.last_activity_ms'),
             '$.done_at',c.done_at) END FROM tracker_task_summary_context c WHERE c.task_id={id}) WHERE task_id={id};")
 }
 

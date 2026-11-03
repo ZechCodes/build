@@ -156,10 +156,13 @@ fn ensure_retryable_running(
 ) -> Result<(), String> {
     if Some(review.version) != intent.execution_version
         || (!publication_only && historical_snapshot(review, intent))
-        || review
-            .pull_request
-            .as_ref()
-            .is_none_or(|pr| !publication_only && pr.status == PullRequestStatus::Closed)
+        || review.pull_request.as_ref().is_none_or(|pr| {
+            !publication_only
+                && matches!(
+                    pr.status,
+                    PullRequestStatus::Closed | PullRequestStatus::Rejected
+                )
+        })
     {
         return Err("stale: PR changed during admitted merge".into());
     }

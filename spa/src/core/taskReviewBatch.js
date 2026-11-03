@@ -56,6 +56,13 @@ function recoverableFailure(bad, rows) {
   return !rows.some((row) => row?.unresolved || (row?.transportAttempted && !recoverablySettled(row)));
 }
 
+function legacyBatchValue(legacy, uuid) {
+  if (typeof legacy?.body !== "string" || !legacy.body.trim()) return null;
+  if (!legacy.anchor && !legacy.replyTo) return { ...empty(), summary: legacy.body };
+  return { ...empty(), drafts: [{ id: uuid(), body: legacy.body, anchor: legacy.anchor || null,
+    replyTo: legacy.replyTo || null, view: "changes" }] };
+}
+
 function removeSent(state, submission, acknowledgedIds) {
   const sent = submission.drafts.filter((draft, index) => acknowledgedIds.has(submission.operations[index]?.operationId));
   return { ...state, drafts: state.drafts.filter((draft) => !sent.some((held) => held.id === draft.id && same(held, draft))),
@@ -91,7 +98,14 @@ export function createTaskReviewBatch(options) {
     value = { ...empty(), ...held?.value };
     onChange(read());
   }
-  const ready = hydrate().then(async () => {
+  async function adoptLegacyDraft() {
+    const oldAddress = uiAddress({ deviceId, entityId: projectId, kind: "draft", view: "task-review-feedback", sub: `${taskId}:${snapshot.id}` });
+    const [current, legacy] = await Promise.all([readUiRecord(address), readUiRecord(oldAddress)]);
+    if (current) return;
+    const migrated = legacyBatchValue(legacy?.value, uuid);
+    if (migrated) await updateUiRecord(address, (held) => held === undefined ? migrated : held);
+  }
+  const ready = adoptLegacyDraft().then(hydrate).then(async () => {
     if (!disposed && value.submission && writeOperations?.enqueueBatch) {
       try { await enqueuePersisted(value.submission); }
       catch { /* The retained enqueue error makes this submission retryable. */ }

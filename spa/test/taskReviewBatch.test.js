@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { createTaskReviewBatch } from "../src/core/taskReviewBatch.js";
+import { uiAddress } from "../src/core/localUiState.js";
+import { readUiRecord, writeUiRecord } from "../src/core/localUiStore.js";
 
 const anchor = { snapshot_id: "snapshot", directory_id: "dir:one", path: "src/a.js", side: "new", line: 3 };
 const defaults = { deviceId: "D", projectId: "P", taskId: "T", taskNumber: 970, snapshot: { id: "snapshot", number: 2 } };
@@ -10,6 +12,48 @@ const settle = async () => { for (let n = 0; n < 40; n++) await new Promise(reso
 beforeEach(() => { globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange; });
 
 describe("review batch drafts", () => {
+  it("imports an old anchored feedback draft once without overwriting it or submitting its verdict", async () => {
+    const taskId = "legacy-anchored";
+    const oldAddress = uiAddress({ deviceId: "D", entityId: "P", kind: "draft", view: "task-review-feedback", sub: `${taskId}:snapshot` });
+    const legacy = { body: "Preserve this old thought", anchor: { ...anchor, commit: "a".repeat(40) }, replyTo: "parent", verdict: "request_changes" };
+    await writeUiRecord(oldAddress, legacy);
+    const callRpc = vi.fn();
+    const model = create({ taskId, callRpc });
+    await model.ready;
+    expect(model.read().drafts).toEqual([expect.objectContaining({ body: legacy.body, anchor: legacy.anchor, replyTo: "parent" })]);
+    expect(model.read().summary).toBe("");
+    expect(model.read().submission).toBeNull();
+    expect(callRpc).not.toHaveBeenCalled();
+    expect((await readUiRecord(oldAddress)).value).toEqual(legacy);
+    const importedId = model.read().drafts[0].id;
+    await model.edit(importedId, { body: "Edited in the new tray" });
+    model.dispose();
+    await writeUiRecord(oldAddress, { ...legacy, body: "A late legacy write" });
+    const restored = create({ taskId, callRpc });
+    await restored.ready;
+    expect(restored.read().drafts).toEqual([expect.objectContaining({ id: importedId, body: "Edited in the new tray" })]);
+    expect(callRpc).not.toHaveBeenCalled();
+    restored.dispose();
+  });
+
+  it("imports an old general feedback body as summary and preserves an existing empty new record", async () => {
+    for (const authoritativeNew of [false, true]) {
+      const taskId = `legacy-general-${authoritativeNew}`;
+      const oldAddress = uiAddress({ deviceId: "D", entityId: "P", kind: "draft", view: "task-review-feedback", sub: `${taskId}:snapshot` });
+      await writeUiRecord(oldAddress, { body: "My earlier summary", verdict: "approve", anchor: null, replyTo: null });
+      if (authoritativeNew) {
+        const newAddress = uiAddress({ deviceId: "D", entityId: "P", kind: "draft", view: "task-review-batch", sub: JSON.stringify([taskId, "snapshot"]) });
+        await writeUiRecord(newAddress, { drafts: [], summary: "", submission: null });
+      }
+      const model = create({ taskId });
+      await model.ready;
+      expect(model.read().drafts).toEqual([]);
+      expect(model.read().summary).toBe(authoritativeNew ? "" : "My earlier summary");
+      expect(model.read().submission).toBeNull();
+      model.dispose();
+    }
+  });
+
   it("durably edits and removes drafts and restores them on the same revision only", async () => {
     const model = create({ taskId: "restore" });
     await model.ready;

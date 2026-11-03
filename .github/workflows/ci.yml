@@ -152,6 +152,41 @@ jobs:
       - name: Vendored webrtc
         run: cargo test --locked --manifest-path vendor/Cargo.toml --lib
 
+  # This independent workspace is not discovered by the bridge's test command.
+  bridge-http-runtime:
+    name: HTTP runtime harness
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-bridge-http-runtime
+      cancel-in-progress: true
+    needs: [changes]
+    if: ${{ needs.changes.outputs.bridge == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            bridge/tests/http_runtime_harness/target
+          key: ${{ runner.os }}-cargo-http-runtime-${{ hashFiles('bridge/tests/http_runtime_harness/Cargo.lock') }}
+
+      - name: Format
+        run: nice -n 10 cargo fmt --check --manifest-path bridge/tests/http_runtime_harness/Cargo.toml
+
+      - name: Clippy
+        run: nice -n 10 cargo clippy --locked --manifest-path bridge/tests/http_runtime_harness/Cargo.toml --all-targets -- -D warnings
+
+      - name: Test
+        run: nice -n 10 cargo test --locked --manifest-path bridge/tests/http_runtime_harness/Cargo.toml
+
   bridge-macos:
     name: macOS bridge release check
     concurrency:
@@ -556,7 +591,7 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build-app
       cancel-in-progress: true
-    needs: [changes, spa, landing, skriftapp, scripts, shell, buildctl, bridge, bridge-macos, interop, transport, secrets]
+    needs: [changes, spa, landing, skriftapp, scripts, shell, buildctl, bridge, bridge-macos, bridge-http-runtime, interop, transport, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -567,6 +602,7 @@ jobs:
           && (needs.changes.outputs.bridge != 'true'
               || (needs.bridge.result == 'success'
                   && needs['bridge-macos'].result == 'success'
+                  && needs['bridge-http-runtime'].result == 'success'
                   && needs.interop.result == 'success'))
           && needs.spa.result == 'success'
           && needs.landing.result == 'success'
@@ -609,7 +645,7 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build-relay
       cancel-in-progress: true
-    needs: [changes, bridge, bridge-macos, interop, transport, web, web-e2e, buildctl, secrets]
+    needs: [changes, bridge, bridge-macos, bridge-http-runtime, interop, transport, web, web-e2e, buildctl, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -619,6 +655,7 @@ jobs:
               || needs.transport.result == 'success')
           && needs.bridge.result == 'success'
           && needs['bridge-macos'].result == 'success'
+          && needs['bridge-http-runtime'].result == 'success'
           && needs.interop.result == 'success'
           && needs.web.result == 'success'
           && needs['web-e2e'].result == 'success'
@@ -656,7 +693,7 @@ jobs:
   # suites may skip; any failed or cancelled prerequisite blocks both rollouts.
   validation:
     name: All production validation
-    needs: [changes, bridge, bridge-macos, interop, transport, web, web-e2e, spa, landing, scripts, skriftapp, shell, buildctl, desktop, secrets]
+    needs: [changes, bridge, bridge-macos, bridge-http-runtime, interop, transport, web, web-e2e, spa, landing, scripts, skriftapp, shell, buildctl, desktop, secrets]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:

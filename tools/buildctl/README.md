@@ -121,9 +121,9 @@ Bind must be an explicit IPv4 address or bracketed IPv6 address and a nonzero
 port. Origins must use HTTPS with no path (including a trailing slash), query,
 fragment, credentials, wildcard or port 0. The same origin rules apply to the
 optional allowlist, passed as comma-separated `BRIDGE_HTTP_ALLOWED_ORIGINS`.
-Hosts follow the bridge's canonical-origin rules: DNS names have at most 253
-ASCII characters after IDNA conversion, with 1..63-character labels that start
-and end alphanumeric and contain only alphanumerics or hyphens. Trailing dots
+Origins and allowlist entries must be ASCII-only; Unicode and `xn--` punycode
+labels are refused. DNS names have at most 253 characters, with 1..63-character
+labels that start and end alphanumeric and contain only alphanumerics or hyphens. Trailing dots
 and IPv4 aliases such as `127.1` are refused; bracketed IPv6 is accepted.
 Origins are limited to 2048 UTF-8 bytes and cannot contain whitespace or controls.
 Certificate and key paths must name existing regular files inside the state

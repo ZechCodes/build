@@ -11,6 +11,9 @@ from urllib.parse import urlsplit
 from .runtime import BuildctlError
 
 REQUIRED = {"bind", "origin", "tls_cert", "tls_key"}
+ASCII_ORIGIN_ERROR = (
+    "HTTP origin host must be an ASCII DNS name, IPv4 or bracketed IPv6 address"
+)
 
 
 def load_http_settings(env):
@@ -103,6 +106,8 @@ def validate_bind(value):
 def validate_origin(value):
     if not isinstance(value, str) or len(value.encode("utf-8")) > 2048:
         raise BuildctlError("HTTP origins must be strings of at most 2048 bytes")
+    if not value.isascii():
+        raise BuildctlError(ASCII_ORIGIN_ERROR)
     if any(char in value for char in "*@\\%,"):
         raise BuildctlError("HTTP origins must be exact HTTPS origins without a path")
     if any(
@@ -129,7 +134,7 @@ def validate_origin(value):
 
 
 def validate_origin_host(url):
-    """Mirror CanonicalOrigin host checks, including WHATWG IPv4 aliases."""
+    """Validate ASCII hosts while rejecting WHATWG IPv4 aliases."""
     host = url.hostname
     if url.netloc.startswith("["):
         if not re.fullmatch(r"\[[0-9a-fA-F:.]+\](?::[0-9]+)?", url.netloc):
@@ -141,10 +146,6 @@ def validate_origin_host(url):
                 "HTTP origin host must be a valid IPv6 address"
             ) from None
         return
-    try:
-        host = host.encode("idna").decode("ascii")
-    except UnicodeError:
-        raise BuildctlError("HTTP origin host must be a valid DNS name") from None
     validate_dns_host(host)
     # URL's IPv4 parser treats numeric and hexadecimal final labels as IPs.
     last_label = host.rsplit(".", 1)[-1]
@@ -160,6 +161,8 @@ def validate_origin_host(url):
 
 
 def validate_dns_host(host):
+    if any(part.lower().startswith("xn--") for part in host.split(".")):
+        raise BuildctlError(ASCII_ORIGIN_ERROR)
     label = r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
     if len(host) > 253 or not all(
         re.fullmatch(label, part) for part in host.split(".")

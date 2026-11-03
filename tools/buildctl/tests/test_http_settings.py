@@ -280,7 +280,7 @@ def test_invalid_origin_host(configured, field, host):
 
 @pytest.mark.parametrize("field", ["origin", "allowed_origins"])
 @pytest.mark.parametrize(
-    "host", ["localhost", "127.0.0.1", "[::1]", "dev.getbuild.ing", "bücher.example"]
+    "host", ["localhost", "127.0.0.1", "[::1]", "dev.getbuild.ing", "foo.ts.net"]
 )
 def test_valid_origin_host(configured, field, host):
     env, values = configured
@@ -353,3 +353,44 @@ def test_status_reports_invalid_http_and_remains_usable(configured, capsys):
     assert captured.err == ""
     assert "secret_value" not in captured.out
     assert not (env.state_root / "buildctl.lock").exists()
+
+
+@pytest.mark.parametrize("field", ["origin", "allowed_origins"])
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://a\u200db.com",
+        "https://a\u200cb.com",
+        "https://bücher.example",
+        "https://xn--bcher-kva.example",
+        "https://XN--abc.example",
+        "https://a\uff0eb",
+        "https://app.example/é",
+        "https://app.example?é",
+        "https://app.example#é",
+    ],
+)
+def test_ascii_only_origins(configured, field, origin):
+    env, values = configured
+    values[field] = [origin] if field == "allowed_origins" else origin
+    write_config(env, values)
+    with pytest.raises(BuildctlError) as result:
+        env.bridge_env({})
+    assert (
+        "HTTP origin host must be an ASCII DNS name, IPv4 or bracketed IPv6 address"
+        in str(result.value)
+    )
+    assert origin not in str(result.value)
+    assert_refused_without_mutation(env)
+
+
+def test_nonascii_rejected_before_urlsplit(monkeypatch):
+    from buildctl.http_settings import validate_origin
+
+    parser = Mock(
+        side_effect=AssertionError("non-ASCII input must not reach URL parsing")
+    )
+    monkeypatch.setattr("buildctl.http_settings.urlsplit", parser)
+    with pytest.raises(BuildctlError, match="ASCII DNS name"):
+        validate_origin("https://a\u200db.com")
+    parser.assert_not_called()

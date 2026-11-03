@@ -261,11 +261,14 @@ Session expiry/revocation retires the exact opening; the daemon's coalesced
 cleanup pass releases dead producer resources without per-close task spawning.
 
 The HTTP adapter reserves buffers from two pools in `bridge/src/http/limits.rs`.
-RPCs reserve their request and response maxima from the 32 MiB
-`TOTAL_BUFFER_BYTES` budget. Each SSE stream reserves its 1 MiB queue
+RPCs reserve their full request and response maxima before execution from the 288 MiB
+`TOTAL_BUFFER_BYTES` budget. Each authenticated credential family and each opening
+is capped at 144 MiB: sixteen default 1 MiB-in/8 MiB-out calls, leaving half the
+pool for other clients. The higher worst-case allowance guarantees reply capacity
+after execution, including mutations. Desktop mirrors these limits. Each SSE stream reserves its 1 MiB queue
 (`MAX_QUEUED_BYTES`) from the separate 32 MiB `STREAM_BUFFER_BYTES` pool, so at
 most thirty-two streams are open at once. Queued adapter bytes are therefore
-bounded by 32 MiB of RPC plus 32 MiB of stream buffers, before parse and encode
+bounded by 288 MiB of RPC plus 32 MiB of stream buffers, before parse and encode
 copies. One credential family holds at most eight live streams
 (`MAX_FAMILY_STREAMS`), so no family can fill more than a quarter of the pool. The
 stream reservation, and the family's count, are held until the stream's body

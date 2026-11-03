@@ -94,6 +94,19 @@ describe("HTTP session adapter and fences", () => {
     session.close();
   });
 
+  it("keeps overloaded refusals retryable and the session usable", async () => {
+    const { endpoint } = make({ request: vi.fn()
+      .mockResolvedValueOnce({ error: "Overloaded", error_code: "overloaded", retryable: true })
+      .mockResolvedValueOnce({ ok: true, result: { alive: true }, bridge_epoch: "epoch" }) });
+    const lost = vi.fn();
+    const session = await open(endpoint, { onLost: lost });
+    await expect(session.rawCall("ping")).rejects.toMatchObject({ error_code: "overloaded", retryable: true, uncertain: false });
+    expect(lost).not.toHaveBeenCalled();
+    expect(endpoint.close).not.toHaveBeenCalled();
+    expect(await session.rawCall("ping")).toEqual({ alive: true });
+    session.close();
+  });
+
   it("retires credentials-closed streams as authorization loss", async () => {
     const { endpoint, event } = make(); const lost = vi.fn();
     const session = await open(endpoint, { onLost: lost });

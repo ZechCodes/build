@@ -738,3 +738,18 @@ test("retired owner handles never authorize a new opening or subscription", asyn
     false,
   );
 });
+
+
+test("HTTP 429 overloaded remains retryable and leaves the opening usable", async (t) => {
+  let calls = 0;
+  const refused = { error: "Overloaded", error_code: "overloaded", retryable: true };
+  const h = harness(t, { fetch: async (url) => {
+    if (!url.endsWith("/task-queries")) return;
+    calls++;
+    return calls === 1 ? json(refused, 429) : json({ ok: true, result: { alive: true } });
+  } });
+  const identity = await h.bridge.discover(h.owner, "https://bridge.test");
+  await h.bridge.open(h.owner, identity.handle, "1");
+  assert.deepEqual(await h.bridge.request(h.owner, identity.handle, "listTasks", { project_id: "p" }), refused);
+  assert.deepEqual(await h.bridge.request(h.owner, identity.handle, "listTasks", { project_id: "p" }), { ok: true, result: { alive: true } });
+});

@@ -143,6 +143,7 @@ export function createBridgeHttp({
           requestMax: options.maxBody ?? MAX_JSON_BYTES,
           responseMax: options.maxBytes ?? MAX_JSON_BYTES,
           opening: handle,
+          family: handle.mint.family_id,
         },
       );
     } catch (error) {

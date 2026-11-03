@@ -263,7 +263,7 @@ export function mountTaskPage(host, options) {
    *  agent's state does, a draft write comes back through the cache on every
    *  pause in typing, and a part stood up again under the reader takes their
    *  caret, and the height of every picture in it, with it (#153). */
-  const held = { main: new Map(), rail: new Map(), timeline: new Map() };
+  const held = { main: new Map(), rail: new Map(), timeline: new Map(), comments: new Map() };
   /** Whether the host holds the task page's frame, or something else (the
    *  missing notice, or nothing yet). */
   let framed = false;
@@ -385,6 +385,7 @@ export function mountTaskPage(host, options) {
       stopHeadMeasurement = mountMeasuredHeight(host.querySelector(".task-page-head"), host, "--task-page-head-height");
     }
     patchParts(host.querySelector(".task-rail"), held.rail, parts.rail).forEach((name) => painted.add(name));
+    if (reviewTemplate) patchParts(host.querySelector('[data-review-task-composer]'), held.comments, parts.comments).forEach((name) => painted.add(name));
     if (patchTimeline(parts.timeline, painted.has("timeline"))) painted.add("timeline");
     wire(painted);
     syncCommentBox();
@@ -942,7 +943,7 @@ export function mountTaskPage(host, options) {
   function wireReview() {
     reviewPage?.dispose();
     reviewPage = mountTaskReviewPage(host.querySelector('[data-task-review]'), {
-      ...options, task: () => state.task, rows: () => state.rows, workspaces: projectWorkspaces, onTaskChanged: refresh,
+      ...options, dedicated: reviewTemplate, feedbackHost: host.querySelector('[data-review-feedback-host]'), task: () => state.task, rows: () => state.rows, workspaces: projectWorkspaces, onTaskChanged: refresh,
       generationOf: () => deviceSession(state.deviceId),
       keepReadingPlace,
     });

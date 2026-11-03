@@ -118,3 +118,14 @@
 @media (max-width: 640px) {
   .task-review [data-review-content] .trf-labels { display: flex; }
 }
+.task-review-create { margin: 24px 0; border-top: 1px solid var(--line); padding-top: 16px; }
+.task-review-create[hidden] { display: none; }
+.task-review-create > header { display: flex; align-items: center; gap: 12px; }
+.task-review-description { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
+.task-review-description > summary { cursor: pointer; color: var(--muted); }
+.review-task-template .task-review-navigation, .review-task-template .task-review-centre, .review-task-template .task-review-comments { grid-row: 3; }
+.task-review-standalone-feedback { grid-column: 2; min-width: 0; }
+@media (max-width: 640px) {
+  .review-task-template .task-review-comments { grid-row: 4; }
+  .task-review-standalone-feedback { grid-column: 1; }
+}

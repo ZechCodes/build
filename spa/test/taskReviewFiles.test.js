@@ -129,9 +129,11 @@ describe("task review Files", () => {
     await vi.waitFor(() => expect(host.querySelector(".trf-preview")?.textContent).toContain("first line"));
     expect(callRpc.mock.calls.some(([, params]) => params.range?.offset === 0)).toBe(true);
     view.dispose();
-    const remount = mount(git, vi.fn(async () => { throw new Error("offline"); }), { path: "large.txt" });
+    const offline = vi.fn(async () => { throw new Error("offline"); });
+    const remount = mount(git, offline, { path: "large.txt" });
     await vi.waitFor(() => expect(remount.host.querySelector(".trf-preview")?.textContent).toContain("first line"));
-    await vi.waitFor(() => expect(remount.host.querySelector(".trf-status")?.textContent).toContain("offline"));
+    await tick();
+    expect(offline).not.toHaveBeenCalled();
   });
 
   it("shows an empty committed tree when a saved Git head has no commits", async () => {

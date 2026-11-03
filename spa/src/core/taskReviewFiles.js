@@ -104,7 +104,17 @@ export function mountTaskReviewFiles(host, options) {
   let paged = null;
   let selectedAnchor = anchor;
   let anchorScrolled = false;
-  let anchorSeeking = false;
+  let anchorSeeking = null;
+  let selectionGeneration = 0;
+  let tabSelection = null;
+  let shownFile = null;
+  let shownSource = false;
+  const navigationCurrent = (generation) => !disposed && generation === selectionGeneration;
+  const beginSelection = (target = null) => {
+    selectedAnchor = target;
+    anchorScrolled = false;
+    return ++selectionGeneration;
+  };
 
   host.classList.add("task-review-files");
   host.innerHTML = `<div class="trf-labels">${live ? '<span>Not a Git repository</span><span>Live files — not saved with this review</span>' : '<span>Files at saved commit</span>'}</div><div class="trf-status" role="status"></div><div class="trf-layout"><div class="trf-tree" role="tree" aria-label="Review files"></div><div class="trf-right"><div class="trf-tabs"></div><div class="trf-preview"></div></div></div>`;
@@ -161,15 +171,16 @@ export function mountTaskReviewFiles(host, options) {
     anchorScrolled = true;
     return true;
   };
-  const seekAnchor = async () => {
-    if (anchorSeeking || !selectedAnchor || selectedAnchor.path !== selected) return;
-    anchorSeeking = true;
+  const anchorIsSelected = () => Boolean(selectedAnchor) && selectedAnchor.path === selected;
+  const seekAnchor = async (generation = selectionGeneration) => {
+    if (anchorSeeking === generation || !anchorIsSelected()) return;
+    anchorSeeking = generation;
     try {
       for (let page = 0; page < 32 && paged; page++) {
-        if (disposed || paintAnchor()) break;
+        if (!navigationCurrent(generation) || paintAnchor()) break;
         if (!(await paged.more())) break;
       }
-    } finally { anchorSeeking = false; }
+    } finally { if (anchorSeeking === generation) anchorSeeking = null; }
   };
   const paintLineMetadata = () => {
     wireCommentLines(preview);
@@ -192,6 +203,8 @@ export function mountTaskReviewFiles(host, options) {
     paged = null;
     preview.querySelectorAll("img, audio, video").forEach(releaseMediaSource);
     const showSource = showSourceFor(name, file);
+    shownFile = file;
+    shownSource = showSource;
     preview.innerHTML = previewHtml(name, file, Boolean(onComment), showSource);
     paintLineMetadata();
     if (!file.paged) {
@@ -251,45 +264,76 @@ export function mountTaskReviewFiles(host, options) {
     }
   };
 
-  const showFile = (name) => keepReadingPlace(() => {
-    selected = name;
-    onSelectPath?.(name || "");
-    const serial = ++fileSerial;
-    void paintFailure();
-    unwatchFile?.();
-    unwatchFile = null;
-    paged?.dispose();
-    paged = null;
-    tree.setOpenPath(name);
-    if (!name) { preview.innerHTML = '<div class="fpidle">Choose a file</div>'; return; }
-    if (!safePath(name)) { setFileFailure(name, "Invalid file path"); return; }
-    preview.innerHTML = '<div class="throbber" role="status" aria-label="loading"></div>';
-    unwatchFile = subscribeCache(address(fileKind(live), name), () => void paintHeldFile(name, serial));
-    void paintHeldFile(name, serial).then(() => {
-      if (disposed || selected !== name || serial !== fileSerial) return;
-      void refreshFile(name);
+  const fileNeedsRefresh = (held, failure) => live || !held?.value?.file || Boolean(failure?.value?.message);
+  const readShownFile = async (name, serial) => {
+    const held = await paintHeldFile(name, serial);
+    const failure = await readCached(fileFailureAddress(name));
+    if (disposed || selected !== name || serial !== fileSerial) return;
+    if (fileNeedsRefresh(held, failure)) void refreshFile(name);
+  };
+  const acceptTabSelection = (name) => {
+    if (tabSelection?.name === name) return navigationCurrent(tabSelection.generation);
+    beginSelection();
+    return !disposed;
+  };
+  const showFile = (name) => {
+    if (!acceptTabSelection(name)) return;
+    keepReadingPlace(() => {
+      selected = name;
+      onSelectPath?.(name || "");
+      const serial = ++fileSerial;
+      shownFile = null;
+      shownSource = false;
+      void paintFailure();
+      unwatchFile?.();
+      unwatchFile = null;
+      paged?.dispose();
+      paged = null;
+      tree.setOpenPath(name);
+      if (!name) { preview.innerHTML = '<div class="fpidle">Choose a file</div>'; return; }
+      if (!safePath(name)) { setFileFailure(name, "Invalid file path"); return; }
+      preview.innerHTML = '<div class="throbber" role="status" aria-label="loading"></div>';
+      unwatchFile = subscribeCache(address(fileKind(live), name), () => void paintHeldFile(name, serial));
+      void readShownFile(name, serial);
     });
-  });
+  };
 
   const tree = mountFileTree(treeEl, {
     listingAddress: (name) => address(treeKind(live), name),
     stateAddress: address("ui-task-review-files", "expanded"),
-    readsForItself: () => true,
+    readsForItself: () => live,
     keepHeldOnError: true, keepReadingPlace,
     listDirectory: async (name) => {
       try { const listing = await listDirectory(name); setTreeFailure(""); return listing; }
       catch (error) { setTreeFailure(readError(error)); throw error; }
     },
     finePointer: () => window.matchMedia?.("(pointer: fine)").matches === true,
-    onOpen: (name) => void tabs.open(name),
+    onOpen: (name) => void open(name),
   });
   const tabs = mountFileTabs(host.querySelector(".trf-tabs"), {
     stateAddress: null,
     dirtyPaths: () => new Set(), confirmClose: async () => true, onClose: () => {}, onShow: showFile,
-    initial: safePath(path) ? path : null, keepReadingPlace,
+    keepReadingPlace,
   });
-  if (safePath(path)) void tree.reveal(path);
   if (sourceUnavailable) setTreeFailure("Source unavailable");
+  const onTabSelection = (event) => {
+    if (event.target.closest("[data-tab-path], [data-tab-close]")) beginSelection();
+  };
+  host.querySelector(".trf-tabs").addEventListener("click", onTabSelection, true);
+  const selectTab = async (name, generation) => {
+    await tabs.ready;
+    if (!navigationCurrent(generation)) return false;
+    tabSelection = { name, generation };
+    try { await tabs.open(name); }
+    finally { if (tabSelection?.generation === generation) tabSelection = null; }
+    return navigationCurrent(generation);
+  };
+  const open = async (name) => {
+    if (!safePath(name) || disposed) return;
+    const generation = beginSelection();
+    await tree.reveal(name);
+    if (navigationCurrent(generation)) await selectTab(name, generation);
+  };
 
   const onPreviewClick = (event) => {
     const line = event.target.closest?.("[data-review-file-comment]");
@@ -321,27 +365,27 @@ export function mountTaskReviewFiles(host, options) {
 
   const reveal = async (target) => {
     if (!safePath(target?.path) || disposed) return false;
-    selectedAnchor = target;
-    anchorScrolled = false;
-    await tabs.open(target.path);
+    const generation = beginSelection(target);
+    await tree.reveal(target.path);
+    if (!navigationCurrent(generation) || !(await selectTab(target.path, generation))) return false;
     await paintHeldFile(target.path, fileSerial);
+    if (!navigationCurrent(generation)) return false;
     if (paintAnchor()) return true;
-    await seekAnchor();
-    return paintAnchor();
+    await seekAnchor(generation);
+    return navigationCurrent(generation) && paintAnchor();
   };
   if (anchor?.path) void reveal(anchor);
+  else if (safePath(path)) void open(path);
 
   return {
     reveal,
     updateComments(next) {
       comments = next || [];
-      if (selected) void paintHeldFile(selected, fileSerial);
+      if (disposed) return;
+      if (shownFile && !shownSource && showSourceFor(selected, shownFile)) paintFile(selected, shownFile);
+      else keepReadingPlace(paintLineMetadata);
     },
-    async open(name) {
-      if (!safePath(name) || disposed) return;
-      await tree.reveal(name);
-      await tabs.open(name);
-    },
+    open,
     refresh() {
       if (disposed) return;
       tree.relist();
@@ -349,12 +393,14 @@ export function mountTaskReviewFiles(host, options) {
     },
     dispose() {
       disposed = true;
+      selectionGeneration++;
       fileSerial += 1;
       unwatchFile?.();
       unwatchTreeFailure();
       unwatchFileFailure();
       liveWatcher?.dispose();
       preview.removeEventListener("click", onPreviewClick);
+      host.querySelector(".trf-tabs").removeEventListener("click", onTabSelection, true);
       paged?.dispose();
       preview.querySelectorAll("img, audio, video").forEach(releaseMediaSource);
       tabs.dispose();

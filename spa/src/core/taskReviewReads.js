@@ -11,6 +11,7 @@ const address = (scope, kind, sub) => ({ deviceId: scope.deviceId, entityId: sco
 const modeOf = (comparison) => comparison?.mode || "changes";
 const selectionOf = (comparison) => modeOf(comparison) === "commit" ? comparison.commit : comparison.from_snapshot_id;
 const errorMessage = (error) => String(error?.message || "Source unavailable");
+const successfulCommitList = (value) => Array.isArray(value?.commits) && !value.read_error;
 const commitOid = (row) => row.sha || row.oid;
 const commitsParams = (scope, cursor) => ({ ...reviewDiffParams(scope), mode: "commits", ...(cursor ? { cursor } : {}) });
 
@@ -49,6 +50,18 @@ async function keepReadFailure(at, error, readOrder, accepts) {
     ? { ...held, read_error: errorMessage(error), read_order: readOrder } : null);
 }
 
+function refreshedCommits(held, answer) {
+  if (!held?.commits?.length) return answer;
+  const merged = appendedCommits(held, answer);
+  const preserveProgress = held.commits.length > (answer.commits || []).length;
+  const result = { ...answer, commits: merged.commits };
+  if (preserveProgress) {
+    result.commits_truncated = held.commits_truncated;
+    result.next_cursor = held.next_cursor;
+  }
+  return result;
+}
+
 function appendedCommits(held, answer) {
   const commits = new Map((held?.commits || []).map((row) => [commitOid(row), row]));
   for (const row of answer.commits || []) commits.set(commitOid(row), row);
@@ -68,11 +81,13 @@ export function createReviewCommitsReader({ callRpc, onChange = () => {}, active
     if (!current()) return;
     value = publicValue(saved?.value);
     onChange(value);
+    return value;
   };
   const keepAnswer = async (answer, cursor, readOrder, accepts) => {
     if (!answer || !accepts()) return false;
-    const previous = cursor ? (await readCached(at))?.value : null;
-    await keepRead(at, cursor ? appendedCommits(previous, answer) : answer, readOrder, accepts);
+    const previous = (await readCached(at))?.value;
+    const next = cursor ? appendedCommits(previous, answer) : refreshedCommits(previous, answer);
+    await keepRead(at, next, readOrder, accepts);
     await hydrate();
     return true;
   };
@@ -95,7 +110,7 @@ export function createReviewCommitsReader({ callRpc, onChange = () => {}, active
   const refresh = trailingRead(() => read(), { generationOf });
   const unwatch = subscribeCache(at, () => void hydrate());
   const ready = hydrate();
-  void ready.then(() => current() && refresh());
+  void ready.then((held) => { if (current() && !successfulCommitList(held)) return refresh(); });
   return { ready, refresh, more: () => value?.next_cursor ? read(value.next_cursor) : Promise.resolve(false), dispose() { disposed = true; sequence++; unwatch(); } };
 }
 
@@ -109,21 +124,36 @@ function cachedSelection(record) {
   return { taskId: sub[0], snapshot: { id: sub[1] }, directory: { id: sub[2] }, comparison };
 }
 
-/** Reconnect only refreshes reads the reader has visited. It never publishes. */
-export async function refreshCachedReviewReads({ deviceId, projectId, taskId, callRpc, support, active = () => true }) {
+const taskIsSelected = (taskId, options) => options.taskIds ? options.taskIds.includes(taskId) : !options.taskId || options.taskId === taskId;
+function needsReadRefresh(record, selection, latestSnapshotIds) {
+  if (record.value?.read_error) return true;
+  return selection.comparison.mode === "commits" && latestSnapshotIds?.get(selection.taskId) === selection.snapshot.id;
+}
+
+async function refreshReadRecord(record, selection, { rpc, active }) {
+  const at = record.address;
+  const readOrder = await nextTaskRead();
+  const fence = pushFence();
+  const accepts = () => active() && !removedSince(at, fence);
+  try {
+    const isCommits = selection.comparison.mode === "commits";
+    const answer = await rpc("tasks.review.diff", { ...reviewDiffParams(selection, selection.comparison), ...(isCommits ? {} : { patch: false }) });
+    if (!answer) return;
+    const next = isCommits ? refreshedCommits((await readCached(at))?.value, answer) : answer;
+    await keepRead(at, next, readOrder, accepts);
+  } catch (error) { await keepReadFailure(at, error, readOrder, accepts); }
+}
+
+/** One project-wide reconnect scan retries failures and refreshes only the
+ * latest rail. Published successful comparison lists are immutable. */
+export async function refreshCachedReviewReads({ deviceId, projectId, callRpc, support, active = () => true, latestSnapshotIds, ...options }) {
   const groups = await Promise.all(LIST_KINDS.map((kind) => cachedRecords({ deviceId, entityId: projectId, kind })));
   const rpc = reviewMutationRpc(deviceId, callRpc);
   for (const record of groups.flat()) {
     if (!active()) return;
     const selection = cachedSelection(record);
-    if (!selection || selection.taskId !== taskId || !canReviewRead(support, selection.comparison)) continue;
-    const at = { deviceId, entityId: projectId, kind: record.address.kind, sub: record.address.sub };
-    const readOrder = await nextTaskRead();
-    const fence = pushFence();
-    const accepts = () => active() && !removedSince(at, fence);
-    try {
-      const answer = await rpc("tasks.review.diff", { ...reviewDiffParams(selection, selection.comparison), ...(selection.comparison.mode === "commits" ? {} : { patch: false }) });
-      if (answer) await keepRead(at, answer, readOrder, accepts);
-    } catch (error) { await keepReadFailure(at, error, readOrder, accepts); }
+    if (!selection || !taskIsSelected(selection.taskId, options)) continue;
+    if (!canReviewRead(support, selection.comparison) || !needsReadRefresh(record, selection, latestSnapshotIds)) continue;
+    await refreshReadRecord(record, selection, { rpc, active });
   }
 }

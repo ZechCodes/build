@@ -30,6 +30,8 @@ describe("snapshot Changes", () => {
     document.body.append(host);
     const callRpc = vi.fn().mockRejectedValue(new Error("Source unavailable"));
     const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc });
+    await waitForFile(host);
+    await pane.refresh();
     await vi.waitFor(() => {
       expect(host.textContent).toContain("src/a.js");
       expect(host.textContent).toContain("Source unavailable");
@@ -330,6 +332,51 @@ describe("since comparison comment positions", () => {
       callRpc: async (_method, params) => params.paths ? { ...answer, patch } : answer });
     await vi.waitFor(() => expect(host.textContent).toContain("Current head position"));
     expect(host.textContent.includes("Old range position")).toBe(showOld);
+    pane.dispose();
+  });
+});
+
+describe("kept review diff panes", () => {
+  it("updates only inline threads while preserving open sections, source rows and scroll", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const callRpc = vi.fn(async (_method, params) => params.paths ? { ...list, patch } : list);
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory,
+      path: "src/a.js", callRpc });
+    await waitForPatch(host);
+    const section = host.querySelector("[data-review-path]");
+    const sourceRow = host.querySelector('tr[data-side="new"]');
+    const scroll = host.querySelector(".task-review-diff-scroll");
+    scroll.scrollTop = 37;
+    scroll.scrollLeft = 19;
+    const calls = callRpc.mock.calls.length;
+    const anchor = { snapshot_id: snapshot.id, directory_id: directory.id, path: "src/a.js", side: "new", line: 1 };
+    pane.updateComments([{ id: "kept-comment", body: "Fresh comment", anchor }]);
+    expect(host.textContent).toContain("Fresh comment");
+    expect(host.querySelector("[data-review-path]")).toBe(section);
+    expect(host.querySelector('tr[data-side="new"]')).toBe(sourceRow);
+    expect(scroll.scrollTop).toBe(37);
+    expect(scroll.scrollLeft).toBe(19);
+    expect(host.querySelector("[data-review-expand]").getAttribute("aria-expanded")).toBe("true");
+    expect(callRpc.mock.calls).toHaveLength(calls);
+    pane.updateComments([]);
+    expect(host.querySelector("[data-review-inline]")).toBeNull();
+    pane.dispose();
+  });
+
+  it("opens cached immutable comparisons and bodies without refreshing them", async () => {
+    const comparison = { mode: "commit", commit: "a".repeat(40) };
+    const { reviewDiffAddress } = await import("../src/core/taskReviewReads.js");
+    const scope = { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory };
+    await writeCached(reviewDiffAddress(scope, comparison), list);
+    await writeCached(reviewDiffAddress(scope, comparison, "src/a.js"), { patch, content_key: "v1" });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const callRpc = vi.fn();
+    const pane = mountTaskReviewChanges(host, { ...scope, comparison, path: "src/a.js", callRpc });
+    await waitForPatch(host);
+    await pane.selectPath("src/a.js");
+    expect(callRpc).not.toHaveBeenCalled();
     pane.dispose();
   });
 });

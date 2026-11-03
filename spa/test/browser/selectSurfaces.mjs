@@ -161,8 +161,8 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
     const review = m.review.mountTaskReviewPage(root, { ...scope, callRpc, workspaces: () => [{ id: "workspace-1", name: "Select styling" }], task: () => ({ id: "task-1" }) });
     disposers.push(review.dispose);
   }
-  // The review page is read-only. Keep the legacy feedback fields covered as
-  // their own mounted component until the commenting slice replaces them.
+  // Measure the retained feedback fields independently of their placement in
+  // the review page until the commenting slice replaces the component.
   if (name === "review feedback") {
     const feedback = m.reviewFeedback.mountTaskReviewFeedback(root, {
       ...scope, snapshot: savedReview.snapshots[0], callRpc,

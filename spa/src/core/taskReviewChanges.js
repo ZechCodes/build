@@ -17,6 +17,7 @@ const FILE_LIMIT = 1_000;
 const MAX_REVEAL_PAGES = 32;
 const displayError = (error) => String(error?.message || error || "Source unavailable");
 
+const successfulChanges = (value) => Array.isArray(value?.files) && !value.read_error;
 const sinceBaselineOf = (list) => list?.since_baseline;
 const oldAnchorMatches = (context) => context.comparisonMode !== "since" || context.sinceBaseline === "base";
 
@@ -25,6 +26,24 @@ function inlineThreads(row, context) {
   const old = row.o > 0 && oldAnchorMatches(context) ? inlineReviewRowsHtml(comments, { ...scope, side: "old", line: row.o }) : "";
   const newer = row.n > 0 ? inlineReviewRowsHtml(comments, { ...scope, side: "new", line: row.n }) : "";
   return old + newer;
+}
+
+function updateInlineThreads(host, context) {
+  host.querySelectorAll(".task-review-file").forEach((section) => {
+    const scroll = section.querySelector(".task-review-diff-scroll");
+    if (!scroll) return;
+    const top = scroll.scrollTop;
+    const left = scroll.scrollLeft;
+    scroll.querySelectorAll("[data-review-inline]").forEach((row) => row.remove());
+    scroll.querySelectorAll("tr[data-side]").forEach((row) => {
+      const lines = { o: Number(row.dataset.oldLine), n: Number(row.dataset.newLine) };
+      // The shared inline renderer escapes scalars and sanitizes markdown.
+      // nosemgrep: typescript.react.security.audit.react-unsanitized-method.react-unsanitized-method
+      row.insertAdjacentHTML("afterend", inlineThreads(lines, { ...context, path: section.dataset.reviewPath }));
+    });
+    scroll.scrollTop = top;
+    scroll.scrollLeft = left;
+  });
 }
 
 function lineActions(file, commentable, context) {
@@ -235,6 +254,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     state.error = record?.value?.read_error || "";
     paint();
     if (state.list?.files && initialSelection) await openInitialPath();
+    return record;
   };
   const clearPatchError = async (address) => {
     const latest = (await readCached(address))?.value;
@@ -368,7 +388,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
   host.addEventListener("click", onClick);
   const unwatchList = subscribeCache(listAddress, () => void readList());
   const initialRead = readList();
-  void initialRead.then(refresh);
+  void initialRead.then((held) => { if (!successfulChanges(held?.value)) return refresh(); });
   const reveal = async (target) => {
     await initialRead;
     if (!alive || !validAnchor(target)) return false;
@@ -389,6 +409,11 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     refresh,
     reveal,
     selectPath: (name) => selectPath(name),
+    updateComments(rows) {
+      if (!alive) return;
+      state.context.comments = rows;
+      keepReadingPlace(() => updateInlineThreads(host, state.context));
+    },
     dispose() {
       alive = false;
       generation += 1;

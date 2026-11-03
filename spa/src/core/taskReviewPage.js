@@ -9,17 +9,19 @@ import { mountTaskReviewControls } from "./taskReviewControls.js";
 import { mountTaskReviewActions } from "./taskReviewActions.js";
 import { mountTaskReviewChanges } from "./taskReviewChanges.js";
 import { mountTaskReviewFiles } from "./taskReviewFiles.js";
-import { openTaskReviewer } from "./taskReviewFeedback.js";
+import { mountTaskReviewCreate } from "./taskReviewCreate.js";
+import { mountTaskReviewFeedback, openTaskReviewer } from "./taskReviewFeedback.js";
 import { wireDirectoryTabs } from "./workspaceDirectoryTabs.js";
 import { readTaskRecord, taskAddress } from "./trackerCache.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { refreshFeed } from "./taskFeed.js";
 
-const FRAME = `<header class="task-review-header"><div data-review-head></div><details class="task-review-more" data-review-more><summary>More</summary><div class="task-review-more-body"><div data-review-controls></div><div data-review-git-actions></div><div data-review-task-details></div></div></details></header><aside class="task-review-navigation" aria-label="Review commits"><button type="button" class="task-review-sheet-close btn" data-review-commits-close>Close commits</button><div data-review-directories></div><nav data-review-rail></nav></aside><section class="task-review-centre"><div class="task-review-views" role="group" aria-label="Directory view"><button class="btn" type="button" data-review-view="changes">Changes</button><button class="btn" type="button" data-review-view="files">Files</button><button class="btn task-review-comments-tab" type="button" data-review-view="comments">Comments</button></div><p data-review-newer-snapshot class="warn" role="status" hidden></p><p data-review-error class="warn" role="status" hidden></p><div data-review-content></div></section>`;
+const FRAME = `<header class="task-review-header"><div data-review-head></div><details class="task-review-more" data-review-more><summary>More</summary><div class="task-review-more-body"><div data-review-controls></div><div data-review-git-actions></div><div data-review-task-details></div></div></details></header><aside class="task-review-navigation" aria-label="Review commits"><button type="button" class="task-review-sheet-close btn" data-review-commits-close>Close commits</button><div data-review-directories></div><nav data-review-rail></nav></aside><section class="task-review-centre"><div class="task-review-views" role="group" aria-label="Directory view"><button class="btn" type="button" data-review-view="changes">Changes</button><button class="btn" type="button" data-review-view="files">Files</button><button class="btn task-review-comments-tab" type="button" data-review-view="comments">Comments</button></div><p data-review-newer-snapshot class="warn" role="status" hidden></p><p data-review-error class="warn" role="status" hidden></p><div data-review-content></div></section><div data-review-feedback-host class="task-review-standalone-feedback"></div>`;
 const setHtml = (node, html) => { if (node.__reviewHtml !== html) { node.innerHTML = html; node.__reviewHtml = html; } };
 
 /** Saved review content is drawn from cache; the URL owns the reading place. */
 export function mountTaskReviewPage(host, options) {
+  if (options.dedicated === false) return mountTaskReviewCreate(host, options);
   const { deviceId, projectId, taskId, callRpc } = options;
   const scope = { deviceId, projectId, taskId };
   const repository = createTaskReviewRepository({ ...scope, callRpc, generationOf: options.generationOf });
@@ -31,6 +33,9 @@ export function mountTaskReviewPage(host, options) {
   let commitsReader = null;
   let commitsKey = "";
   let disposed = false;
+  let selectionGeneration = 0;
+  let feedback = null;
+  let feedbackKey = "";
   let canonicalized = Boolean(options.commentId);
   let readSerial = 0;
   let cachePaint = Promise.resolve();
@@ -59,10 +64,11 @@ export function mountTaskReviewPage(host, options) {
 
   function choose(changes, transition = {}) {
     if (disposed) return;
+    selectionGeneration++;
     selection = selectionForReview(review(), switchReviewSelection(selection, changes, transition));
     if (!selection) return;
     paint();
-    options.navigate?.({ name: "trackerTask", ...scope, commentId: undefined, review: routeReviewSelection(selection) }, { newEntry: true });
+    options.markReviewRoute?.({ name: "trackerTask", ...scope, review: routeReviewSelection(selection) });
   }
 
   function paintHead(saved) {
@@ -119,6 +125,23 @@ export function mountTaskReviewPage(host, options) {
     });
   }
 
+
+  function paintFeedback(saved) {
+    const allowOpinion = !isPr() || support.pullRequests;
+    const key = support.comments && saved ? JSON.stringify([saved.id, allowOpinion]) : "";
+    if (key === feedbackKey) return feedback?.update();
+    feedbackKey = key;
+    feedback?.dispose();
+    feedback = null;
+    const target = options.feedbackHost || node("feedback-host");
+    target.innerHTML = "";
+    if (key) feedback = mountTaskReviewFeedback(target, {
+      ...scope, snapshot: saved, callRpc, allowOpinion, feed: options.feed, projectKey: options.projectKey,
+      keepReadingPlace: options.keepReadingPlace,
+      onSent: async () => { await repository.refresh(); await options.onTaskChanged?.(); },
+      latestSnapshotId: () => review()?.pull_request?.latest_published_snapshot_id,
+    });
+  }
 
   function openFiles(path = "") { choose({ view: "files", path, side: null, line: null }); }
 
@@ -187,7 +210,7 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function paintPane(saved, dir, view) {
-    const key = JSON.stringify([saved?.id, dir?.id, view, support.diff, comparison(), rows]);
+    const key = JSON.stringify([saved?.id, dir?.id, view, support.diff, comparison()]);
     if (key !== paneKey) {
       paneKey = key;
       panePlace = "";
@@ -200,6 +223,7 @@ export function mountTaskReviewPage(host, options) {
       panePlace = JSON.stringify([selection.path, selection.anchor]);
       return;
     }
+    pane?.updateComments?.(rows);
     paintPanePlace(view);
   }
 
@@ -233,6 +257,7 @@ export function mountTaskReviewPage(host, options) {
     paintHead(saved);
     paintControls(saved);
     paintGitActions(saved);
+    paintFeedback(saved);
     paintDirectories(saved, dir);
     paintCommits(saved, dir);
     paintRail();
@@ -278,7 +303,7 @@ export function mountTaskReviewPage(host, options) {
     canonicalized = true;
     const target = routeReviewSelection(selection);
     if (JSON.stringify(target) === JSON.stringify(routeReviewSelection(options.reviewRoute))) return;
-    options.navigate?.({ name: "trackerTask", ...scope, review: target });
+    options.markReviewRoute?.({ name: "trackerTask", ...scope, review: target });
   }
   async function anchorSelection(anchor) {
     const saved = review()?.snapshots.find((row) => row.id === anchor.snapshot_id);
@@ -295,18 +320,21 @@ export function mountTaskReviewPage(host, options) {
   const onKey = (event) => { if (event.key === "Escape") setSheet(false); };
   host.addEventListener("keydown", onKey);
   const ready = readForPaint().then(async () => {
-    await Promise.all([controls?.ready, gitActions?.ready, commitsReader?.ready]);
+    await Promise.all([controls?.ready, gitActions?.ready, commitsReader?.ready, feedback?.ready]);
     void repository.refresh();
   });
   return {
     ready,
     whenPainted: () => cachePaint,
     feedMoved: paint,
-    refresh() { void repository.refresh(); void pane?.refresh(); void commitsReader?.refresh(); },
+    // Reconnect refreshes comparison failures/latest rails through the shared
+    // cache service. A task invalidation only needs fresh review metadata.
+    refresh() { void repository.refresh(); },
     async openAnchor(anchor) {
       if (disposed) return false;
+      const generation = ++selectionGeneration;
       const target = await anchorSelection(anchor);
-      if (disposed) return false;
+      if (disposed || generation !== selectionGeneration) return false;
       if (!target) {
         notice = "Original review context unavailable. The comment remains in the task timeline.";
         paint();
@@ -317,9 +345,17 @@ export function mountTaskReviewPage(host, options) {
       await pane?.reveal?.(anchor);
       return true;
     },
-    async reply(comment) { if (comment.anchor) await this.openAnchor(comment.anchor); },
+    async reply(comment) {
+      const view = selection.view;
+      const available = comment.anchor && await this.openAnchor(comment.anchor);
+      if (disposed) return;
+      if (view === "comments" && available) choose({ view });
+      feedback?.comment(available ? comment.anchor : null, comment.id);
+    },
     dispose() {
       disposed = true;
+      selectionGeneration++;
+      feedback?.dispose();
       unwatchRecord(); unwatchSupport(); unwatchTask();
       host.removeEventListener("keydown", onKey);
       pane?.dispose(); controls?.dispose(); gitActions?.dispose(); commitsReader?.dispose(); picker?.close();

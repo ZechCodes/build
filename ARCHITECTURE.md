@@ -1985,14 +1985,20 @@ commit rail; `trackerTaskPage.js` places the existing task timeline beside it.
 Desktop has commits, Changes/Files and comments in three columns. At widths up
 to 640px, Changes, Files and Comments become tabs and the header opens the
 commit rail as a sheet. Existing lifecycle, merge and reclaim controls remain
-under More. This slice reads existing comments inline but does not mount a
-review composer or verdict controls.
+under More. The existing comment/reply composer and saved-revision feedback
+controls remain available; the pending tray and redesigned verdict bar belong
+to the next slice. Task description and body remain accessible in the header's
+Description disclosure.
 
 `router.js` and `taskReviewSelection.js` address the reading place as
 `#/device/<d>/project/<p>/tasks/<id>/review/r<N>/<all|since|commit/<sha>>/<directory>/<path>?side=new&line=42`.
 The optional `view=files|comments` query retains the selected tab. Selection
-lives in the URL; viewed marks and action drafts retain their separate local
-UI records. Revision switches preserve path and line, and a commit switch
+lives in the URL; in-page selections replace the current URL through
+`markRoute` while keeping the mounted task and its reading place. An embedded
+workspace task uses its ordinary navigator to leave for the dedicated review
+URL rather than relabeling the workspace still on screen. Viewed marks and
+action drafts retain their separate local UI records. Revision switches preserve
+path and line, and a commit switch
 preserves the path while that commit's file list includes it. A selected
 revision stays pinned when a newer one arrives. Timeline anchor chips and
 `/c/<commentId>` links select the anchor's revision, optional commit and line.
@@ -3797,7 +3803,9 @@ Per-comparison patch records use `task-review-commit-patch` and
 `task-review-since-patch`, while whole-range patches keep `task-review-patch`.
 Every identity includes the task, saved revision and directory, with the
 commit or since baseline added for those comparisons; Files keeps its saved
-head tree and body records. Mounts read these replicas before refreshing.
+head tree and body records. Mounts paint successful saved comparisons, trees
+and bodies directly, fetching missing or failed reads; non-Git live directories
+retain their refresh behavior.
 `refreshCachedReviews` refreshes metadata and previously visited commit and
 comparison listings on reconnect, using the current capability check, read
 ordering and removal fences. Refresh failures retain cached content, and

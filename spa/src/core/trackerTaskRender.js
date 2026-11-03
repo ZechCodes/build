@@ -313,17 +313,19 @@ export const taskPageFrame = (review) => review
   ? '<div class="task-page review-task-template"><div class="task-page-main"></div><aside class="task-rail" aria-label="About this task"></aside></div>' : TASK_PAGE_FRAME;
 
 function reviewPageParts(task, context) {
-  const timeline = timelineParts(context.rows, { ...context, readOnlyReview: true });
+  const timeline = timelineParts(context.rows, context);
   return {
     main: [
       { name: "review", html: '<section data-task-review></section>', key: "review" },
-      { name: "timeline", html: `<aside class="task-review-comments" aria-label="Review comments"><h2>Comments</h2>${timeline.frame}</aside>` },
+      { name: "body", html: `<details class="task-review-description"><summary>Description</summary>${taskBodyHtml(task, context)}${taskAttachmentsHtml(task.attachments)}</details>` },
+      { name: "timeline", key: "review-comments", html: '<aside class="task-review-comments" aria-label="Review comments"><h2>Comments</h2><ul class="task-timeline"></ul><div data-review-task-composer></div><div data-review-feedback-host></div></aside>' },
     ],
     rail: [
       { name: "rail", html: taskRailDetailsHtml(task, context) },
       { name: "waiting", html: waitingOnRegion, key: "waiting" },
       { name: "state", html: stateControlHtml(task, context.busy) },
     ],
+    comments: [{ name: "composer", html: composerHtml(context.draft, context.sending, context.hasFiles), key: "composer" }],
     timeline: timeline.rows,
   };
 }
@@ -357,7 +359,7 @@ export function taskPageParts(task, context) {
 export function taskPageHtml(task, context) {
   if (isReviewTask(task, context)) {
     const parts = reviewPageParts(task, context);
-    const main = parts.main.map((part) => part.name === "timeline" ? part.html.replace("</ul>", `${parts.timeline.map((row) => row.html).join("")}</ul>`) : part.html).join("");
+    const main = parts.main.map((part) => part.name === "timeline" ? part.html.replace("</ul>", `${parts.timeline.map((row) => row.html).join("")}</ul>`).replace('<div data-review-task-composer></div>', `<div data-review-task-composer>${parts.comments[0].html}</div>`) : part.html).join("");
     return `<div class="task-page review-task-template"><div class="task-page-main">${main}</div>${taskRailHtml(task, context)}</div>`;
   }
   return `<div class="task-page">

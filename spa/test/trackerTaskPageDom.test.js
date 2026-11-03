@@ -191,7 +191,7 @@ describe("comment header reply", () => {
     expect(host.querySelector("#comment-tc-plain [data-review-reply]")).toBeNull();
   });
 
-  it("keeps review comments read-only through task cache refreshes", async () => {
+  it("retains review comment forms and replies through task cache refreshes", async () => {
     const scope = { deviceId: "dev-1", projectId: "proj-1", taskId: "task-1" };
     const { rememberReviewSupport } = await import("../src/core/taskReviewSupport.js");
     const { writeReviewRecord } = await import("../src/core/taskReviewCache.js");
@@ -202,10 +202,10 @@ describe("comment header reply", () => {
     call = vi.fn(async (method) => method === "tasks.review.get" ? { review } : answer);
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answer);
     await mount({}, { waitForPaint: false });
-    await painted(() => host.querySelector('.review-task-template #comment-tc-icon'), host);
-    expect(host.querySelector('[data-review-reply]')).toBeNull();
-    expect(host.querySelector('[data-review-feedback]')).toBeNull();
-    expect(host.querySelector('[data-task-composer]')).toBeNull();
+    await painted(() => host.querySelector('.review-task-template #comment-tc-icon') && host.querySelector('[data-review-feedback]'), host);
+    expect(host.querySelector('[data-review-reply]')).not.toBeNull();
+    expect(host.querySelector('[data-review-feedback]')).not.toBeNull();
+    expect(host.querySelector('[data-task-composer]')).not.toBeNull();
     expect(listed('tasks.comment')).toHaveLength(0);
   });
 });

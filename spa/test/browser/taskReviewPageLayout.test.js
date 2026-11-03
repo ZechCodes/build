@@ -54,7 +54,7 @@ async function mountReviewTask(page, basePath) {
     const listing = { files: changed, stat: { files_changed: 1, insertions: 2, deletions: 1 }, diff_key: "base:head", files_truncated: false };
     await tasks.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, detail);
     await reviews.writeReviewRecord(scope, saved, 1);
-    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, commits: true, commit: true, since: true, anchorCommit: true } });
+    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, comments: true, commits: true, commit: true, since: true, anchorCommit: true } });
     await local.writeCached(reads.reviewCommitsAddress(identity), { commits: [
       { oid: commit, parents: ["1".repeat(40)], subject: "Preserve review selection", author_name: "Ada", time: 1789012345, insertions: 2, deletions: 1, files_changed: 1 },
     ], commits_truncated: false });
@@ -76,6 +76,7 @@ async function mountReviewTask(page, basePath) {
       callRpc: () => unanswered, catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }),
       feed: () => ({ projects: [{ id: "p1", projectKey: `${scope.deviceId}|p1`, name: "Build" }], items: [], workspaces: [] }),
       navigate: (route) => { window.__reviewNavigation.push(route); },
+      markReviewRoute: (route) => { window.__reviewNavigation.push(route); },
     });
   }, { saved, detail, commit, path });
   await page.waitForSelector(".review-task-template");
@@ -100,7 +101,13 @@ for (const { label, width } of [{ label: "desktop", width: 1440 }, { label: "pho
     await withLayoutPage(async ({ page, basePath }) => {
       await mountReviewTask(page, basePath);
       expect(await page.locator(".task-review-title").textContent()).toContain("Make review navigation useful");
-      expect(await page.locator("[data-review-feedback], [data-task-composer]").count()).toBe(0);
+      expect(await page.locator(".task-review-comments [data-task-composer]").count()).toBe(1);
+      expect(await page.locator(".task-review-comments [data-review-feedback]").count()).toBe(1);
+      expect(await page.locator("[data-review-comment], [data-review-file-comment]").count()).toBe(0);
+      const description = page.locator(".task-review-description");
+      await description.locator("summary").click();
+      expect(await description.locator(".task-page-body").isVisible()).toBe(true);
+      await description.locator("summary").click();
       expect(await page.locator("[data-review-snapshot]").textContent()).toContain("Revision 2 of 2");
       if (phone) {
         expect(await page.locator("[data-review-commits-open]").isVisible()).toBe(true);
@@ -129,6 +136,7 @@ for (const { label, width } of [{ label: "desktop", width: 1440 }, { label: "pho
       await page.waitForFunction(() => document.querySelector(".trf-preview")?.textContent.includes('selection = "preserved"'));
       await page.waitForSelector(".trf-preview .task-review-inline");
       expect(await page.locator(".trf-preview .task-review-inline").textContent()).toContain("Keep the selected file");
+      expect(await page.locator("[data-review-comment], [data-review-file-comment]").count()).toBe(0);
       await assertNoOverflow(page);
       await captureLayout(page, `review-page-files-${label}.png`);
 

@@ -11,7 +11,7 @@ it('chooses the review template from a task summary or a cached review', () => {
   expect(isReviewTask(task, { review: { snapshots: [] } })).toBe(true);
   expect(taskPageFrame(true)).toContain('review-task-template');
   const parts = taskPageParts({ ...task, review_summary: { status: 'open' } }, context);
-  expect(parts.main.map(part => part.name)).toEqual(['review', 'timeline']);
+  expect(parts.main.map(part => part.name)).toEqual(['review', 'body', 'timeline']);
   expect(parts.main.find(part => part.name === 'timeline').html).toContain('task-review-comments');
 });
 it('shows only All changes without independent commit capabilities', () => {

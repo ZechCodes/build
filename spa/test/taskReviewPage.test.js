@@ -10,14 +10,14 @@ import fixture from "../../fixtures/api/v1/tasks.review.get.json";
 import prFixture from "../../fixtures/api/v1/tasks.review.open.json";
 import { painted } from "./waits.js";
 
-const panes = vi.hoisted(() => ({ changes: vi.fn(), files: vi.fn() }));
+const panes = vi.hoisted(() => ({ changes: vi.fn(), files: vi.fn(), refresh: vi.fn() }));
 vi.mock("../src/core/taskReviewChanges.js", () => ({ mountTaskReviewChanges: (host, options) => {
   panes.changes(options); host.textContent = `Changes ${options.directory.id}`;
-  return { dispose() {}, refresh() {} };
+  return { dispose() {}, refresh: panes.refresh };
 } }));
 vi.mock("../src/core/taskReviewFiles.js", () => ({ mountTaskReviewFiles: (host, options) => {
   panes.files(options); host.textContent = `Files ${options.directory.id} ${options.path || ""}`;
-  return { dispose() {}, refresh() {}, open: vi.fn() };
+  return { dispose() {}, refresh: panes.refresh, open: vi.fn() };
 } }));
 
 const scope = { deviceId: "review-page", projectId: "proj-1", taskId: "task-1" };
@@ -101,9 +101,9 @@ it("does not call review verbs or draw actions without cached support", async ()
   expect(document.querySelector('[data-review-update]')).toBeNull();
 });
 
-it("keeps the saved page read-only and places lifecycle controls in More", async () => {
+it("retains existing feedback and places lifecycle controls in More", async () => {
   await mount(review, { ...support, comments: true });
-  expect(document.querySelector('[data-review-feedback]')).toBeNull();
+  expect(document.querySelector('[data-review-feedback]')).not.toBeNull();
   expect(document.querySelector('[data-review-more] [data-review-save]')).not.toBeNull();
   expect(document.querySelector('[data-review-more] [data-review-complete]')).not.toBeNull();
 });
@@ -116,7 +116,7 @@ it("restores a URL selection offline and preserves path and line when changing r
   await writeReviewRecord(scope, saved, 1);
   const navigate = vi.fn();
   page = mountTaskReviewPage(document.querySelector('#review'), {
-    ...scope, callRpc: vi.fn(() => new Promise(() => {})), navigate,
+    ...scope, callRpc: vi.fn(() => new Promise(() => {})), markReviewRoute: navigate,
     reviewRoute: { revision: 1, mode: 'all', directoryId: 'dir-api', path: 'cached.js', side: 'new', line: 42 },
   });
   await page.ready;
@@ -154,10 +154,18 @@ it('falls back to an all-changes URL when a linked comparison is unsupported', a
   await writeReviewRecord(scope, review, 1);
   const navigate = vi.fn();
   page = mountTaskReviewPage(document.querySelector('#review'), {
-    ...scope, callRpc: vi.fn(() => new Promise(() => {})), navigate,
+    ...scope, callRpc: vi.fn(() => new Promise(() => {})), markReviewRoute: navigate,
     reviewRoute: { revision: 1, mode: 'commit', commit: 'a'.repeat(40), directoryId: 'dir-api', path: 'a.js' },
   });
   await page.ready;
   expect(document.querySelector('[data-review-range="all"]').getAttribute('aria-pressed')).toBe('true');
   expect(navigate.mock.calls.at(-1)[0].review).toMatchObject({ mode: 'all', path: 'a.js' });
+});
+
+it("keeps automatic refresh metadata-only while an explicit Refresh can retry the pane", async () => {
+  await mount();
+  page.refresh();
+  expect(panes.refresh).not.toHaveBeenCalled();
+  document.querySelector('[data-review-refresh]').click();
+  expect(panes.refresh).toHaveBeenCalledTimes(1);
 });

@@ -10,7 +10,7 @@ vi.mock("../src/core/localCache.js", async (original) => {
   const cache = await original();
   return { ...cache, readCached: async (address) => {
     if (address.kind === "task-review") await delayed.review;
-    if (address.kind === "task-review-commits") await delayed.commits;
+    if (address.kind === "task-review-commits") await (typeof delayed.commits === "function" ? delayed.commits(address) : delayed.commits);
     const held = await cache.readCached(address);
     if (address.kind === "task-review-commits") delayed.commitReads++;
     return held;
@@ -79,7 +79,7 @@ function mount(options = {}) {
   const navigate = vi.fn();
   page = mountTaskPage(host, { ...scope, projectKey: `${scope.deviceId}|${scope.projectId}`,
     feed: () => ({ items: [], workspaces: [] }), catalog: () => ({ providers: [] }),
-    refreshCatalog: async () => ({ providers: [] }), callRpc: () => new Promise(() => {}), navigate, ...options,
+    refreshCatalog: async () => ({ providers: [] }), callRpc: () => new Promise(() => {}), navigate, markReviewRoute: navigate, ...options,
   });
   return navigate;
 }
@@ -90,7 +90,7 @@ describe("cached review task template", () => {
     mount();
     await vi.waitFor(() => expect(host.querySelector(".review-task-template")).toBeTruthy());
     await vi.waitFor(() => expect(host.querySelector("[data-review-commit]")?.textContent).toContain("Saved change"));
-    expect(host.querySelector("[data-task-composer]")).toBeNull();
+    expect(host.querySelector(".task-review-comments [data-task-composer]")).toBeTruthy();
     expect(host.querySelector(".task-review-comments #comment-anchored-comment")).toBeTruthy();
     expect(host.querySelector("[data-review-task-details] .task-rail")).toBeTruthy();
   });
@@ -108,7 +108,7 @@ describe("cached review task template", () => {
     const navigate = mount({ commentId: "anchored-comment" });
     await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ review: expect.objectContaining({
       revision: 1, mode: "commit", commit, path, side: "new", line: 1,
-    }) }), expect.anything()));
+    }) })));
     await vi.waitFor(() => expect(host.querySelector(".task-review-anchor")).toBeTruthy());
   });
 
@@ -122,7 +122,7 @@ describe("cached review task template", () => {
     await vi.waitFor(() => expect(host.querySelector(".review-task-template")).toBeTruthy());
     await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ review: expect.objectContaining({
       mode: "commit", commit, path, line: 1,
-    }) }), expect.anything()));
+    }) })));
   });
 
   it("cannot navigate from a disposed page when a clicked anchor's cache read finishes", async () => {
@@ -139,4 +139,91 @@ describe("cached review task template", () => {
     await vi.waitFor(() => expect(delayed.commitReads).toBeGreaterThan(completed));
     expect(navigate).not.toHaveBeenCalled();
   });
+  it("keeps ordinary Create review controls without dedicated chrome on capable devices", async () => {
+    await seed({ review: false });
+    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, snapshot: true, diff: true, comments: true } });
+    mount();
+    await vi.waitFor(() => expect(host.querySelector('[data-review-save]')).toBeTruthy());
+    expect(host.querySelector('[data-task-composer]')).toBeTruthy();
+    expect(host.querySelector('.review-task-template')).toBeNull();
+    expect(host.querySelector('.task-review-navigation')).toBeNull();
+    expect(host.querySelector('.task-review-title')).toBeNull();
+    expect(host.querySelector('[data-review-view]')).toBeNull();
+    expect(host.querySelector('[data-review-more]')).toBeNull();
+    expect(host.querySelector('[data-review-snapshot-form] summary').textContent).toBe('Create review');
+  });
+
+  it("retains Description, attachments, both comment forms and reply actions", async () => {
+    await seed({ summary: true });
+    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, comments: true } });
+    const detail = await tasks.readTaskRecord(scope.deviceId, scope.projectId, scope.taskId);
+    detail.task.body = 'The review brief stays available.';
+    detail.task.attachments = [{ filename: 'brief.txt', path: 'brief.txt', mime: 'text/plain', size: 4 }];
+    await tasks.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, detail);
+    mount();
+    await vi.waitFor(() => expect(host.querySelector('[data-review-feedback]')).toBeTruthy());
+    expect(host.querySelector('.task-review-description').textContent).toContain('The review brief stays available.');
+    expect(host.querySelector('.task-review-description .task-page-attachments')).toBeTruthy();
+    expect(host.querySelector('.task-review-comments [data-task-composer]')).toBeTruthy();
+    expect(host.querySelector('.task-review-comments [data-review-opinion]')).toBeTruthy();
+    expect(host.querySelector('[data-review-reply]')).toBeTruthy();
+    host.querySelector('[data-review-view="comments"]').click();
+    host.querySelector('[data-review-reply]').click();
+    await vi.waitFor(() => {
+      expect(host.querySelector('.review-task-template').dataset.reviewView).toBe('comments');
+      expect(document.activeElement).toBe(host.querySelector('[data-review-feedback] textarea'));
+    });
+  });
+
+  it("ignores an earlier anchor lookup after a rail selection", async () => {
+    await seed({ summary: true });
+    const mark = mount();
+    await vi.waitFor(() => expect(host.querySelector('[data-review-commit]')).toBeTruthy());
+    mark.mockClear();
+    const pending = Promise.withResolvers(); delayed.commits = pending.promise;
+    const completed = delayed.commitReads;
+    host.querySelector('[data-review-anchor]').click();
+    host.querySelector('[data-review-range="all"]').click();
+    pending.resolve();
+    await vi.waitFor(() => expect(delayed.commitReads).toBeGreaterThan(completed));
+    expect(mark).toHaveBeenCalledTimes(1);
+    expect(mark.mock.calls[0][0].review.mode).toBe('all');
+  });
+
+  it("keeps the later anchor when lookups complete in reverse order", async () => {
+    await seed({ summary: true });
+    const mark = mount();
+    await vi.waitFor(() => expect(host.querySelector('[data-review-commit]')).toBeTruthy());
+    mark.mockClear();
+    const first = Promise.withResolvers(), second = Promise.withResolvers();
+    const queue = [first.promise, second.promise]; delayed.commits = () => queue.shift();
+    const button = host.querySelector('[data-review-anchor]');
+    button.click(); button.dataset.reviewAnchor = JSON.stringify({ ...anchor, line: 2 }); button.click();
+    second.resolve();
+    await vi.waitFor(() => expect(mark).toHaveBeenCalledTimes(1));
+    const completed = delayed.commitReads; first.resolve();
+    await vi.waitFor(() => expect(delayed.commitReads).toBeGreaterThan(completed));
+    expect(mark).toHaveBeenCalledTimes(1);
+    expect(mark.mock.calls[0][0].review.line).toBe(2);
+  });
+
+  it("updates inline threads after timeline writes without remounting the open diff", async () => {
+    await seed({ summary: true });
+    mount();
+    await vi.waitFor(() => expect(host.querySelector('.task-review-file tr[data-new-line]')).toBeTruthy());
+    const section = host.querySelector('.task-review-file');
+    const source = section.querySelector('tr[data-new-line]');
+    const scroll = section.querySelector('.task-review-diff-scroll');
+    scroll.scrollTop = 37;
+    const detail = await tasks.readTaskRecord(scope.deviceId, scope.projectId, scope.taskId);
+    const { commit: _commit, ...rangeAnchor } = anchor;
+    detail.timeline.push(comment({ id: 'later-comment', body: 'A newly arrived thread.', anchor: rangeAnchor }));
+    await tasks.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, detail);
+    await vi.waitFor(() => expect(section.querySelector('[data-review-inline-comment="later-comment"]')).toBeTruthy());
+    expect(host.querySelector('.task-review-file')).toBe(section);
+    expect(section.querySelector('tr[data-new-line]')).toBe(source);
+    expect(section.querySelector('[data-review-expand]').getAttribute('aria-expanded')).toBe('true');
+    expect(scroll.scrollTop).toBe(37);
+  });
+
 });

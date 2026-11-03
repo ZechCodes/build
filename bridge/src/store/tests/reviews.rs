@@ -337,3 +337,43 @@ fn completion_task_capture_failure_rolls_back_review_task_and_events() {
     assert_eq!(store.load_tracker_task(&task.id).unwrap().unwrap(), task);
     assert!(task_events(&store, &task.id).is_empty());
 }
+
+#[test]
+fn legacy_workspace_marker_uses_saved_workspace_and_default_or_explicit_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let work = task(&store);
+    assert!(!store.workspace_has_legacy_review("ws-retained").unwrap());
+    store
+        .save_review_snapshot(&work.id, "ws-retained", 0, snapshot("legacy-marker"))
+        .unwrap();
+    assert!(store.workspace_has_legacy_review("ws-retained").unwrap());
+    assert!(!store.workspace_has_legacy_review("ws-unrelated").unwrap());
+    assert!(store
+        .load_tracker_task(&work.id)
+        .unwrap()
+        .unwrap()
+        .links
+        .workspace_ids
+        .is_empty());
+    store
+        .connection()
+        .execute(
+            "UPDATE reviews SET record=json_set(record,'$.mode','snapshot') WHERE task_id=?1",
+            [&work.id],
+        )
+        .unwrap();
+    assert!(store.workspace_has_legacy_review("ws-retained").unwrap());
+    store
+        .finish_review(&work.id, 1, &Actor::User, "Closed legacy history")
+        .unwrap();
+    assert!(store.workspace_has_legacy_review("ws-retained").unwrap());
+    store
+        .connection()
+        .execute(
+            "UPDATE reviews SET record=json_set(record,'$.mode','pull_request') WHERE task_id=?1",
+            [&work.id],
+        )
+        .unwrap();
+    assert!(!store.workspace_has_legacy_review("ws-retained").unwrap());
+}

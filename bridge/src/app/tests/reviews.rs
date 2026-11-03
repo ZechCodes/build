@@ -5,6 +5,7 @@ use super::tracker::{filed, tracked};
 use super::*;
 
 mod for_task_invalidation;
+mod legacy_workspaces;
 mod lifecycle_observations;
 mod maintenance_observations;
 mod merge_contracts;

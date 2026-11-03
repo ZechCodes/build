@@ -155,7 +155,10 @@ fn opening_assigns_user_or_named_agent_without_changing_the_work_task() {
 fn publication_supersedes_legacy_review_atomically_and_retry_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let work = work_task(&store, "/repo");
+    let mut work = work_task(&store, "/repo");
+    work.status = "in_progress".into();
+    work.track("agent-kept").unwrap();
+    store.save_tracker_task_activity(&work, &[], &[]).unwrap();
     let mut legacy_snapshot = snapshot();
     legacy_snapshot.id = "legacy-snapshot".into();
     let legacy = store
@@ -191,6 +194,11 @@ fn publication_supersedes_legacy_review_atomically_and_retry_is_idempotent() {
         format!("Superseded by #{}", opening.task.number)
     );
     assert_eq!(superseded.snapshots, legacy.snapshots);
+    assert_eq!(
+        store.load_tracker_task(&work.id).unwrap().unwrap(),
+        work,
+        "superseding the review must not finish or untrack its work task"
+    );
     let timeline = store.load_tracker_timeline(&work.id).unwrap();
     assert_eq!(
         store
@@ -200,6 +208,8 @@ fn publication_supersedes_legacy_review_atomically_and_retry_is_idempotent() {
     );
     assert_eq!(store.load_review(&work.id).unwrap().unwrap(), superseded);
     assert_eq!(store.load_tracker_timeline(&work.id).unwrap(), timeline);
+    assert_eq!(store.load_tracker_task(&work.id).unwrap(), Some(work));
+    assert_eq!(timeline.iter().filter(|entry| matches!(entry, crate::tracker::TimelineEntry::Event(event) if event.kind == crate::tracker::TaskEventKind::ReviewCompleted)).count(),1);
 }
 
 #[test]

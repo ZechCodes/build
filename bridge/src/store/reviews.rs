@@ -60,6 +60,19 @@ impl Store {
         load_review(&self.connection(), task_id)
     }
 
+    /// Retained legacy identity belongs to the saved review's workspace,
+    /// independently of optional work-task links or completion state.
+    pub fn workspace_has_legacy_review(&self, workspace_id: &str) -> Result<bool, StoreError> {
+        self.connection()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM reviews WHERE workspace_id=?1
+                AND COALESCE(json_extract(record,'$.mode'),'snapshot')='snapshot')",
+                [workspace_id],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)
+    }
+
     /// Append one already-captured snapshot. The caller minted its unique ID
     /// before pinning Git refs; this transaction alone assigns its display
     /// number and checks the version. A losing caller can clean only its refs.

@@ -93,7 +93,7 @@ async function mount(kind) {
   });
   await vi.waitFor(() => expect(runtime.gets).toHaveLength(1));
   await runtime.reads[0];
-  await vi.waitFor(() => expect(document.querySelector(".task-page-title")?.textContent).toBe(held.title));
+  await vi.waitFor(() => expect(document.querySelector(".task-review-title h1")?.textContent).toBe(held.title));
 }
 
 async function optimisticRetirement() {

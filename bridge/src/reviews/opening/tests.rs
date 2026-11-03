@@ -108,6 +108,7 @@ fn request(home: &Path, source: &Path) -> OpenReviewRequest {
         request_id: "open-1".into(),
         receiver_root: home.join("receivers"),
         request: ReviewOpeningRequest {
+            for_task_id: None,
             workspace_id: workspace.id.clone(),
             title: "Improve review flow".into(),
             description: "Review committed changes".into(),

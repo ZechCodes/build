@@ -790,7 +790,9 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.28.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.29.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.29.0 adds optional work-task links to workspace review opening, independently
+  announced by `tasks.review.forTask` (#971).
   3.28.0 adds independently negotiated revision commit lists, single-commit
   diffs, diffs since a previous revision, path filters on `git.show` and commit
   anchors on review comments (#968).
@@ -2071,6 +2073,29 @@ Clients name stable IDs and branches, never repository paths or actors. The
 bridge attributes RPC calls to the user and MCP calls to the authenticated
 agent in that project.
 
+**Workspace creation (#971).** The Changes header, workspace menu and toolbar
+all offer Request review and open the same form. It retains title, description,
+per-directory bases and exclusions, with Reviewer defaulting to You and allowing
+an existing agent anywhere in the project. For task is optional and preselects
+an eligible task linked to the workspace. Its independent
+`tasks.review.forTask` capability gates that field. Bridges without
+`tasks.review.pullRequests` show “Update the bridge to request reviews”.
+Published reviews offer View review. Task-side snapshot creation/update and the
+workspace snapshot dialog are removed; legacy review reading and Mark complete
+remain available.
+
+`tasks.review.open` and MCP `open_review` accept optional `for_task_id`, naming
+a same-project, open task without a review. The opening journal retains it;
+publication rechecks the target and sets the new review task's `parent_task_id`
+in the same transaction as its first revision. Retrying the original request
+keeps that link. Review summaries and workspace `active_review` expose
+`for_task_id`. Task detail adds `linked_reviews`, the newest 20 child review
+summaries, and an explicit truncation flag. Child review status changes invalidate
+the parent task detail so its cached projection refreshes. The ordinary task page
+uses those cached summaries for “Review #N · <status>” links, independently gated
+by `tasks.review.forTask`. Without a child review, a linked workspace instead
+offers “Request a review from @workspace”, leading to its Changes view.
+
 Review opening and the explicit lifecycle jobs load their workspace review
 observations from SQLite off the app mutex, after durable publication.
 Invalidation installs the owned observation before publishing its workspace
@@ -2096,7 +2121,7 @@ settles its captured task and completion notices once.
 
 | RPC verb | MCP tool | Contract |
 | --- | --- | --- |
-| `tasks.review.open` | `open_review` | Workspace, request ID, title/description, optional reviewer, per-directory bases and excluded Git IDs. Returns the published task/review, reviewer delivery state and explicit local push instructions. |
+| `tasks.review.open` | `open_review` | Workspace, request ID, title/description, optional user/agent reviewer and `for_task_id`, per-directory bases and excluded Git IDs. Returns the published task/review, reviewer delivery state and explicit local push instructions. |
 | `tasks.review.push` | `push_review` | Review version and selected directory/head OIDs; explicit force-with-lease also names the expected received head. Returns independent per-directory publication outcomes. |
 | `tasks.review.update` | `update_review_base` | Review version and per-directory base branches. Publishes a fresh snapshot against the updated targets. |
 | `tasks.review.merge` | `merge_review` | Review version, latest snapshot, every included directory's expected target head and optional remote/branch publication. Uses the durable merge service. |

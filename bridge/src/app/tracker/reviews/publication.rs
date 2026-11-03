@@ -125,7 +125,7 @@ impl AppState {
                 .collect(),
         };
         self.defer_publication(PublicationJob {
-            observation: ReviewInvalidation::new(self, &workspace.id),
+            observation: ReviewInvalidation::new(self, &review),
             store: self.tracker_store()?.clone(),
             project_id,
             task_id: params.task_id,
@@ -169,7 +169,7 @@ impl AppState {
                 .collect(),
         };
         self.defer_publication(PublicationJob {
-            observation: ReviewInvalidation::new(self, &workspace.id),
+            observation: ReviewInvalidation::new(self, &review),
             store: self.tracker_store()?.clone(),
             project_id,
             task_id: params.task_id,

@@ -165,10 +165,17 @@ impl AppState {
         workspace: &str,
         observed: Option<crate::app::snapshot_projection::WorkspaceReviewObservation>,
     ) {
+        let parent = observed
+            .as_ref()
+            .and_then(|observation| observation.for_task_id(task))
+            .map(str::to_owned);
         if let Some(observed) = observed {
             self.install_workspace_review_observation(workspace, observed);
         }
         self.note_tasks_changed(project, task);
+        if let Some(parent) = parent {
+            self.changes.note_tasks(project, &[parent]);
+        }
     }
 
     pub(super) fn pull_request(&mut self, task_id: &str) -> Result<(String, Task, Review), String> {
@@ -231,7 +238,7 @@ impl AppState {
                 .collect(),
         };
         self.defer_review_sync(SyncJob {
-            observation: ReviewInvalidation::new(self, &review.workspace_id),
+            observation: ReviewInvalidation::new(self, &review),
             store: self.tracker_store()?.clone(),
             project_id,
             workspace_id: review.workspace_id,
@@ -252,7 +259,7 @@ impl AppState {
         let (project_id, _, review) = self.pull_request(&params.task_id)?;
         version(&review, params.expected_version)?;
         self.defer_review_sync(SyncJob {
-            observation: ReviewInvalidation::new(self, &review.workspace_id),
+            observation: ReviewInvalidation::new(self, &review),
             store: self.tracker_store()?.clone(),
             project_id,
             workspace_id: review.workspace_id,

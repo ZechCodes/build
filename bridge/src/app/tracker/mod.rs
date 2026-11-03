@@ -467,6 +467,14 @@ impl AppState {
         let mut changed = Vec::new();
         for observation in observations {
             changed.push(observation.task.id.clone());
+            if let Some(parent) = observation
+                .review
+                .as_ref()
+                .and_then(|review| review.for_task_id.as_ref())
+            {
+                changed.push(parent.clone());
+            }
+
             if self.snapshot_projection_initialized() {
                 let row = self.watched_task_observation_row(project, observation);
                 self.install_snapshot_watched_task(project, &observation.task.id, row);
@@ -483,6 +491,10 @@ impl AppState {
     /// reclaim when completion moved a linked task into Done.
     fn publish_task_write(&mut self, project_id: &str, write: &TaskWrite) {
         self.note_tasks_changed(project_id, &write.task.id);
+        if let Some(parent) = &write.task.links.parent_task_id {
+            self.changes
+                .note_tasks(project_id, std::slice::from_ref(parent));
+        }
         self.deliver_task_write(write);
     }
 

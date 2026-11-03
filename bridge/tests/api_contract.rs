@@ -369,7 +369,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.28.0");
+    assert_eq!(API_VERSION, "3.29.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -525,7 +525,7 @@ fn the_harness_inventory_is_announced_with_its_push() {
 #[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.28.0");
+    assert_eq!(API_VERSION, "3.29.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1481,7 +1481,7 @@ fn thread_page_activity_mode_is_typed_and_optional() {
 
 #[test]
 fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
-    assert_eq!(API_VERSION, "3.28.0");
+    assert_eq!(API_VERSION, "3.29.0");
     assert!(capabilities(false).contains(&"threads.leanActivity"));
     let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
     assert_eq!(fixture["lean_activity"]["since"], "3.20.0");
@@ -1664,7 +1664,7 @@ fn project_source_changes_are_announced_with_a_scope_and_an_item() {
 /// accepts. The legacy shape is the pinned coordinator alone.
 #[test]
 fn project_workers_are_announced_with_their_roster_read_and_purposes() {
-    assert_eq!(API_VERSION, "3.28.0");
+    assert_eq!(API_VERSION, "3.29.0");
     let advertised = capabilities(false);
     assert!(advertised.contains(&"agents.projectWorkers"));
     assert!(advertised.contains(&"agent.list"));
@@ -1752,7 +1752,7 @@ fn sync_base_path_precondition_is_announced_and_typed() {
 /// echoes the client's id.
 #[test]
 fn project_worker_assignment_is_announced_with_its_kind_and_operation_id() {
-    assert_eq!(API_VERSION, "3.28.0");
+    assert_eq!(API_VERSION, "3.29.0");
     assert!(capabilities(false).contains(&"tasks.assignProjectAgent"));
     let assign = read_json(&fixtures_root().join("v1/tasks.assign.json"));
     let example = &assign["project_agent_assignment"];
@@ -2120,4 +2120,54 @@ fn since_review_fixtures_expose_previous_head_and_base_fallback() {
         let encoded = serde_json::to_value(result).unwrap();
         assert_eq!(encoded["since_baseline"], baseline);
     }
+}
+
+#[test]
+fn review_open_work_task_link_has_an_independent_capability() {
+    assert!(capabilities(false).contains(&"tasks.review.forTask"));
+    let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
+    assert!(greeting["result"]["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "tasks.review.forTask"));
+    let fixture = read_json(&fixtures_root().join("v1/tasks.review.open.json"));
+    let params: v1::reviews::ReviewOpenParams =
+        serde_json::from_value(fixture["params"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(params).unwrap()["for_task_id"],
+        "task-work-1"
+    );
+    assert_eq!(
+        fixture["result"]["task"]["links"]["parent_task_id"],
+        "task-work-1"
+    );
+    let opened: v1::reviews::ReviewOpenResult =
+        serde_json::from_value(fixture["result"].clone()).unwrap();
+    let encoded = serde_json::to_value(opened).unwrap();
+    assert_eq!(
+        encoded["review"]["pull_request"]["for_task_id"],
+        "task-work-1"
+    );
+    let workspace = read_json(&fixtures_root().join("v1/workspace.get.json"));
+    let detail: v1::workspace::WorkspaceDetail =
+        serde_json::from_value(workspace["result"].clone()).unwrap();
+    let encoded = serde_json::to_value(detail).unwrap();
+    assert_eq!(
+        encoded["active_review"]["for_task_id"],
+        "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+    );
+}
+
+#[test]
+fn work_task_detail_fixture_preserves_bounded_child_review_links() {
+    let fixture = read_json(&fixtures_root().join("v1/tasks.get.json"));
+    let detail: v1::tasks::TaskDetail = serde_json::from_value(fixture["result"].clone()).unwrap();
+    let encoded = serde_json::to_value(detail).unwrap();
+    assert_eq!(encoded["task"]["linked_reviews"][0]["number"], 13);
+    assert_eq!(
+        encoded["task"]["linked_reviews"][0]["for_task_id"],
+        encoded["task"]["id"]
+    );
+    assert!(encoded["task"].get("linked_reviews_truncated").is_none());
 }

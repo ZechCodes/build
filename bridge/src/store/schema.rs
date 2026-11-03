@@ -258,6 +258,10 @@ CREATE INDEX IF NOT EXISTS tracker_tasks_by_status
     ON tracker_tasks(project_key, status, number DESC);
 CREATE INDEX IF NOT EXISTS tracker_tasks_by_state_status
     ON tracker_tasks(project_key, state, status, number DESC);
+-- Detail-only work-task review discovery seeks one parent and bounds child rows.
+CREATE INDEX IF NOT EXISTS tracker_tasks_by_parent
+    ON tracker_tasks(project_key, CASE WHEN json_valid(record) THEN json_extract(record, '$.links.parent_task_id') END, number DESC);
+
 
 CREATE TABLE IF NOT EXISTS tracker_comments (
     id         TEXT PRIMARY KEY,

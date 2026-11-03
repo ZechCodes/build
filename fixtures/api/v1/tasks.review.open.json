@@ -21,7 +21,8 @@
     ],
     "excluded_git_directory_ids": [
       "dir-missing"
-    ]
+    ],
+    "for_task_id": "task-work-1"
   },
   "result": {
     "task": {
@@ -49,7 +50,7 @@
         ],
         "commits": [],
         "conversation_ids": [],
-        "parent_task_id": null
+        "parent_task_id": "task-work-1"
       },
       "trackers": [],
       "identities": {},
@@ -167,7 +168,8 @@
             "kind": "excluded",
             "reason": "Excluded when opening this review."
           }
-        ]
+        ],
+        "for_task_id": "task-work-1"
       },
       "bindings": [
         {
@@ -535,5 +537,10 @@
         }
       }
     }
-  ]
+  ],
+  "work_task_link": {
+    "since": "3.29.0",
+    "capability": "tasks.review.forTask",
+    "note": "for_task_id must name an open non-review task in this project. Opening publishes its parent link atomically and retains it across retries."
+  }
 }

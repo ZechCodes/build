@@ -67,6 +67,7 @@ task_queries! {
     load_tracker_timeline(id: &str) -> Vec<TimelineEntry>;
     load_tracker_timelines(ids: &[String]) -> HashMap<String, Vec<TimelineEntry>>;
     load_review_summary(id: &str) -> Option<ReviewSummary>;
+    load_linked_review_summaries(project: &str, parent: &str) -> (Vec<ReviewSummary>, bool);
     waiting_on_summary(project: &str, id: &str) -> DependencySummary;
     waiting_on_blocks(project: &str, id: &str, limit: usize, cursor: Option<&str>) -> DependentsPage;
     current_delivery_intent(id: &str) -> Option<DeliveryIntent>;

@@ -104,6 +104,11 @@ impl AppState {
                 .then_some(params.reviewer.as_ref())
                 .flatten(),
         )?;
+        if existing.is_none() {
+            store
+                .validate_review_for_task(&project_path, params.for_task_id.as_deref())
+                .map_err(errors::opening_selection)?;
+        }
         let (directories, base_branches) = selections(&workspace, &params)?;
         let watch = matches!(actor, Actor::User)
             || self.watch_agent_filed_tasks
@@ -138,6 +143,7 @@ impl AppState {
                 request_id: params.request_id,
                 receiver_root: self.state_root.join("review-receivers"),
                 request: ReviewOpeningRequest {
+                    for_task_id: params.for_task_id,
                     workspace_id: params.workspace_id,
                     title: params.title,
                     description: params.description,
@@ -248,6 +254,10 @@ impl DeferredGitWork for OpeningJob {
         app.note_board_changed();
         if let Some(task_id) = observed.task_id {
             app.note_tasks_changed(&self.project_id, &task_id);
+            if let Some(parent) = &self.request.request.for_task_id {
+                app.changes
+                    .note_tasks(&self.project_id, std::slice::from_ref(parent));
+            }
         }
     }
     fn invalidates_on_error(&self) -> bool {

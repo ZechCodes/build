@@ -99,7 +99,7 @@ impl AppState {
             params,
             actor,
             completion: RefCell::default(),
-            observation: ReviewInvalidation::new(self, &review.workspace_id),
+            observation: ReviewInvalidation::new(self, &review),
         };
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(job),

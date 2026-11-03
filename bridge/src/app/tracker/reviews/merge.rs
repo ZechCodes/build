@@ -68,6 +68,8 @@ impl MergeWork {
                 std::slice::from_ref(&self.job.request.task_id),
             );
         }
+        self.observation
+            .invalidate_parent(&self.changes, &self.project_id);
         self.changes
             .note_kind(&self.workspace_id, crate::changes::Kind::State);
         self.changes
@@ -90,7 +92,7 @@ impl AppState {
         let (request_id, request, refresh) = resolve_plan(&store, &review, &params, actor)?;
         let sources = self.review_action_sources(&project_id, &review);
         let work = MergeWork {
-            observation: ReviewInvalidation::new(self, &review.workspace_id),
+            observation: ReviewInvalidation::new(self, &review),
             store,
             project_id,
             workspace_id: review.workspace_id.clone(),

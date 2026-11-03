@@ -9,6 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 mod merge;
 pub(super) use merge::publication_pending;
+mod linked;
 mod opening;
 mod sync;
 mod tracking;
@@ -69,6 +70,8 @@ fn header_summary(header: ReviewHeader) -> Option<ReviewSummary> {
         version: header.version,
         status: metadata.status,
         latest_published_snapshot_id: metadata.latest_published_snapshot_id,
+        for_task_id: metadata.for_task_id,
+        number: None,
     })
 }
 

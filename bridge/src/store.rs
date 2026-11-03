@@ -249,6 +249,11 @@ pub enum StoreError {
     },
     #[error("invalid pull request: {0}")]
     ReviewPullRequestInvalid(String),
+    #[error("review work task {task_id} is unavailable ({reason})")]
+    ReviewForTaskInvalid {
+        task_id: String,
+        reason: &'static str,
+    },
 }
 
 /// The schema this build writes. A stored value ahead of this one means the

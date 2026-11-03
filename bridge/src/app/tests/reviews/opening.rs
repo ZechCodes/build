@@ -2,7 +2,7 @@ use super::*;
 use crate::api::v1::reviews::{ReviewOpenParams, ReviewReviewer};
 use crate::tracker::Actor;
 
-fn open_direct(state: &mut AppState, params: ReviewOpenParams, actor: Actor) -> Value {
+pub(super) fn open_direct(state: &mut AppState, params: ReviewOpenParams, actor: Actor) -> Value {
     state.review_open(params, actor).unwrap();
     let done = state.take_deferred().unwrap().run();
     state
@@ -10,13 +10,14 @@ fn open_direct(state: &mut AppState, params: ReviewOpenParams, actor: Actor) -> 
         .unwrap()
 }
 
-fn params(workspace_id: &str) -> ReviewOpenParams {
+pub(super) fn params(workspace_id: &str) -> ReviewOpenParams {
     ReviewOpenParams {
         workspace_id: workspace_id.into(),
         request_id: "open-1".into(),
         title: "Review this change".into(),
         description: "The proposed change".into(),
         reviewer: None,
+        for_task_id: None,
         bases: vec![],
         excluded_git_directory_ids: vec![],
     }
@@ -370,4 +371,84 @@ fn explicitly_excluded_git_and_live_sources_remain_members_when_their_sources_di
         .any(|member| member["directory_id"] == excluded_id && member["kind"] == "excluded"));
     assert!(memberships.iter().any(|member| member["kind"] == "live"));
     assert_eq!(opened["review"]["bindings"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn user_reviewer_is_assigned_without_agent_dispatch_and_keeps_the_work_task_link() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut state, project) = tracked(home.path());
+    let workspace_id = workspace(&mut state, &project, "user reviewer");
+    let work = filed(&mut state, &project, "Implement the feature");
+    let mut value = serde_json::to_value(params(&workspace_id)).unwrap();
+    value["for_task_id"] = work["id"].clone();
+    value["reviewer"] = json!({"kind":"user"});
+    let asked = serde_json::from_value(value).unwrap();
+    let before = review_call(&mut state, "tasks.get", json!({"task_id":work["id"]}));
+    assert!(before["task"].get("linked_reviews").is_none());
+    let first = open_direct(&mut state, asked, Actor::User);
+    let linked = review_call(&mut state, "tasks.get", json!({"task_id":work["id"]}));
+    assert_eq!(
+        linked["task"]["linked_reviews"][0]["task_id"],
+        first["task"]["id"]
+    );
+    assert_eq!(
+        linked["task"]["linked_reviews"][0]["number"],
+        first["task"]["number"]
+    );
+    assert_eq!(linked["task"]["linked_reviews"][0]["status"], "open");
+    assert_eq!(first["task"]["assignee"], json!({"kind":"user"}));
+    assert_eq!(first["task"]["links"]["parent_task_id"], work["id"]);
+    assert_eq!(first["reviewer_dispatch"]["state"], "not_requested");
+    let ws = review_call(
+        &mut state,
+        "workspace.get",
+        json!({"workspace_id":workspace_id}),
+    );
+    assert_eq!(ws["active_review"]["for_task_id"], work["id"]);
+    let task = review_call(
+        &mut state,
+        "tasks.get",
+        json!({"task_id":first["task"]["id"]}),
+    );
+    assert_eq!(task["task"]["review_summary"]["for_task_id"], work["id"]);
+}
+
+#[test]
+fn a_named_project_agent_can_review_with_one_journaled_delivery() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut state, project) = tracked(home.path());
+    let workspace_id = workspace(&mut state, &project, "named reviewer");
+    let (owner, _) = project_agent(&mut state, &project);
+    let added = state.handle(req("agent.add", json!({"entity_id":owner})));
+    let agent = added["result"]["agent"]["id"].as_str().unwrap().to_owned();
+    let mut asked = params(&workspace_id);
+    asked.reviewer = Some(ReviewReviewer::Agent {
+        agent_id: agent.clone(),
+    });
+    let first = open_direct(&mut state, asked.clone(), Actor::User);
+    assert_eq!(
+        first["task"]["assignee"],
+        json!({"kind":"agent","agent_id":agent})
+    );
+    assert_eq!(first["reviewer_dispatch"]["state"], "delivered");
+    assert_eq!(open_direct(&mut state, asked, Actor::User), first);
+}
+
+#[test]
+fn work_task_refusals_have_structured_details_before_scheduling_git_work() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut state, project) = tracked(home.path());
+    let workspace_id = workspace(&mut state, &project, "work target refusal");
+    let mut value = serde_json::to_value(params(&workspace_id)).unwrap();
+    value["for_task_id"] = json!("missing-task");
+    let error = crate::api::ApiError::classify(
+        state
+            .review_open(serde_json::from_value(value).unwrap(), Actor::User)
+            .unwrap_err(),
+    );
+    assert_eq!(error.code(), "invalid_params");
+    assert_eq!(error.details().unwrap()["for_task_id"], "missing-task");
+    assert_eq!(error.details().unwrap()["reason"], "for_task_scope");
+    assert!(error.details().unwrap()["recovery"].as_str().is_some());
+    assert!(state.deferred_work.is_none());
 }

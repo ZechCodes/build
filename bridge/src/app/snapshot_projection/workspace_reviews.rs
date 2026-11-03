@@ -10,6 +10,14 @@ pub(in crate::app) struct WorkspaceReviewObservation {
 }
 
 impl WorkspaceReviewObservation {
+    pub(in crate::app) fn for_task_id(&self, review_task: &str) -> Option<&str> {
+        let summary = self.value.get("active_review")?;
+        if summary.get("task_id")?.as_str()? != review_task {
+            return None;
+        }
+        summary.get("for_task_id")?.as_str()
+    }
+
     /// Allocate the observation generation after the service's durable write,
     /// before querying SQL. Later producers fence this result at installation.
     pub(in crate::app) fn load(

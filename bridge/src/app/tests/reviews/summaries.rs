@@ -17,6 +17,7 @@ fn opened(state: &mut AppState, project_id: &str, workspace_id: &str) -> String 
         request_id: "summary-opening".into(),
         receiver_root: workspace.root.parent().unwrap().join("receivers"),
         request: ReviewOpeningRequest {
+            for_task_id: None,
             workspace_id: workspace.id.clone(),
             title: "Review discovery".into(),
             description: "Show the same durable review link on every discovery surface".into(),

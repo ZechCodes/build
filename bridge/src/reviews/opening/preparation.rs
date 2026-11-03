@@ -98,7 +98,7 @@ pub(super) fn prepare(
                     snapshot.clone(),
                     &[event],
                 )
-                .map_err(|error| error.to_string())
+                .map_err(errors::opening_store)
         },
     )
 }

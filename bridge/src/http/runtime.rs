@@ -33,6 +33,7 @@ use crate::execution::{
     ExecutionService, Invocation, RequestMetadata,
 };
 
+mod discovery;
 mod renewal;
 mod subscriptions;
 
@@ -117,6 +118,7 @@ struct HttpState {
     openings: Arc<Mutex<HashMap<String, MountedOpening>>>,
     accepting: Arc<AtomicBool>,
     buffers: Arc<super::limits::BufferBudget>,
+    discovery: Option<Arc<discovery::Discovery>>,
     #[cfg(test)]
     output_observer: Arc<Mutex<Option<OutputObserver>>>,
     #[cfg(test)]
@@ -228,8 +230,15 @@ pub fn mount(execution: Arc<ExecutionService>, verifier: HttpAuthVerifier) -> Ht
 }
 
 impl HttpRuntime {
+    /// Attach the same configured signer used for endpoint registration.
+    pub fn with_discovery(mut self, signer: Arc<super::discovery::DeviceProofSigner>) -> Self {
+        self.state.discovery = Some(Arc::new(discovery::Discovery::new(signer)));
+        self
+    }
+
     pub fn router(&self) -> Router {
         let router = Router::new()
+            .route("/.well-known/build-bridge", post(discovery::discover))
             .route("/v1/sessions", post(open_session))
             .route(
                 "/v1/sessions/{session_id}",
@@ -274,6 +283,7 @@ fn runtime_with(execution: Arc<ExecutionService>, verifier: Arc<dyn GrantVerifie
             openings: Arc::new(Mutex::new(HashMap::new())),
             accepting: Arc::new(AtomicBool::new(true)),
             buffers: Arc::new(super::limits::BufferBudget::default()),
+            discovery: None,
             #[cfg(test)]
             output_observer: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -857,17 +867,18 @@ fn grant_expiry(deadline: Instant) -> String {
 }
 
 fn body_refusal(error: super::body::BodyError) -> Response {
+    let (status, code) = body_error(error);
+    refusal(status, code)
+}
+
+fn body_error(error: super::body::BodyError) -> (StatusCode, &'static str) {
     match error {
-        super::body::BodyError::TooLarge => {
-            refusal(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large")
-        }
-        super::body::BodyError::Timeout => refusal(StatusCode::REQUEST_TIMEOUT, "timeout"),
-        super::body::BodyError::Unauthorized => {
-            refusal(StatusCode::UNAUTHORIZED, "invalid_credential")
-        }
+        super::body::BodyError::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "request_too_large"),
+        super::body::BodyError::Timeout => (StatusCode::REQUEST_TIMEOUT, "timeout"),
+        super::body::BodyError::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_credential"),
         super::body::BodyError::InvalidJson
         | super::body::BodyError::Disconnected
-        | super::body::BodyError::Encoding => refusal(StatusCode::BAD_REQUEST, "invalid_request"),
+        | super::body::BodyError::Encoding => (StatusCode::BAD_REQUEST, "invalid_request"),
     }
 }
 
@@ -980,20 +991,20 @@ fn auth_refusal(error: AuthError) -> Response {
 }
 
 fn refusal(status: StatusCode, code: &'static str) -> Response {
-    let retryable = matches!(code, "overloaded" | "unavailable" | "timeout");
-    (
-        status,
-        axum::Json(json!({
-            "error": code,
-            "error_code": code,
-            "retryable": retryable,
-        })),
-    )
-        .into_response()
+    (status, axum::Json(error_body(code))).into_response()
+}
+
+fn error_body(code: &'static str) -> serde_json::Value {
+    json!({
+        "error": code,
+        "error_code": code,
+        "retryable": matches!(code, "overloaded" | "unavailable" | "timeout"),
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    mod discovery;
     mod subscriptions;
 
     use super::*;

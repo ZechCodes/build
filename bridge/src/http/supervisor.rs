@@ -90,14 +90,14 @@ impl PreparedHttp {
         );
         let verifier = HttpAuthVerifier::new(signer.clone())
             .map_err(|error| format!("cannot construct HTTP verifier: {error}"))?;
-        let registrar = EndpointRegistrar::new(signer)
+        let registrar = EndpointRegistrar::new(signer.clone())
             .map_err(|error| format!("cannot construct endpoint registrar: {error}"))?;
         register_generation(&registrar, &record, true)
             .await
             .map_err(|error| format!("HTTP endpoint registration failed: {error}"))?;
         acknowledge_record(&state_path, record).await?;
 
-        let runtime = runtime::mount(execution, verifier);
+        let runtime = runtime::mount(execution, verifier).with_discovery(signer);
         Ok(Self {
             listener,
             tls,

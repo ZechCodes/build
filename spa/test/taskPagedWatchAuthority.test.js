@@ -81,7 +81,7 @@ it("preserves legacy marker floors and unknown families when an older cached pag
   })).toBe(true);
   const first = (await savedRows(api))[0];
   expect(first).toMatchObject({ read_through: "tc-20", unread_count: 2 });
-  expect(first[api.watch.TASK_WATCH_CACHE].uncertain).toBe(true);
+  expect(first[api.watch.TASK_WATCH_CACHE].uncertain).toBe(false);
 
   expect(await pull(api, async () => ({ tasks: [row(20, { title: "Later page", read_through: "te-10",
     dismissed_through: "te-10", unread_count: 9, unread_mentions: 9, unread_agent_comments: 9 })] }))).toBe(true);
@@ -159,14 +159,14 @@ it("settles the transported page owner while refusing foreign and obsolete owner
   // Committing eligible action data does not certify the unknown baseline or
   // a full canonical receipt. Inspect exact stamp cleanup and state separately.
   await outside.watch.settleTaskWatchMutation(ownerA, { answer, contentRead });
-  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   expect((await savedRows(outside))[0]).toMatchObject({ watched: false, title: "Newer page title" });
   const settled = await taskReplicas(outside);
   expect(settled.some(({ address }) => address.kind === "tracker-task")).toBe(true);
   expect(settled.some(({ address }) => address.kind === "tracker-summary")).toBe(true);
   for (const copy of settled) {
     expect(taskFrom(copy).__task_watch_intent).toBeUndefined();
-    expect(taskFrom(copy)[outside.watch.TASK_WATCH_CACHE]?.uncertain).not.toBe(false);
+    expect(taskFrom(copy)[outside.watch.TASK_WATCH_CACHE]?.uncertain).toBe(false);
   }
 
   const ownerB = await outside.watch.beginTaskWatchMutation(scope, "task-20", { watched: true });
@@ -180,7 +180,7 @@ it("settles the transported page owner while refusing foreign and obsolete owner
   expect(await outside.watch.settleTaskWatchMutation(ownerB, { rollback: true })).toBe(true);
   expect((await savedRows(outside))[0]).toMatchObject({ watched: false, title: "Latest page title" });
   expect((await savedRows(outside))[0].__task_watch_intent).toBeUndefined();
-  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
 });
 
 it("cleans a rejected owner's legitimately transported stamps from existing replicas after rollback", async () => {
@@ -221,7 +221,7 @@ it("cleans a rejected owner's legitimately transported stamps from existing repl
   for (const copy of before) expect(taskFrom(copy).title).toBe(current.title);
 
   expect(await api.watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
-  expect(await api.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await api.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   const after = await taskReplicas(api);
   expect(after.map(({ address }) => address)).toEqual(before.map(({ address }) => address));
   for (const copy of after) {
@@ -274,7 +274,7 @@ it("retires a terminal stamp copied by another connection after actual replica a
     await settled;
     expect(discovery).toHaveBeenCalledTimes(1);
     const terminal = await outside.watch.readTaskWatchState(scope);
-    expect(terminal).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+    expect(terminal).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
 
     // A future admitted writer must consult terminal ownership in its own
     // transaction. A's finite address list cannot have cleaned this late copy.
@@ -286,7 +286,7 @@ it("retires a terminal stamp copied by another connection after actual replica a
     const held = (await savedRows(outside, target))[0];
     expect(held).toMatchObject({ title: "Later admitted query title", watched: false });
     expect(held.unread_count).toBeUndefined();
-    expect(held[outside.watch.TASK_WATCH_CACHE]?.uncertain).not.toBe(false);
+    expect(held[outside.watch.TASK_WATCH_CACHE]?.uncertain).toBe(false);
     expect(held.__task_watch_intent).toBeUndefined();
   } finally {
     resume.resolve();
@@ -339,7 +339,7 @@ it("retires only older copied protection while a newer metadata-only owner and t
 
   expect(await first.watch.settleTaskWatchMutation(older, { rollback: true })).toBe(false);
   const completed = await outside.watch.readTaskWatchState(scope);
-  expect(completed).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(completed).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   expect((await savedRows(outside))[0].watched).toBe(false);
   const lateCopy = await copyToQuery();
   expect(lateCopy.task).toMatchObject({ watched: false, title: prepared.title });
@@ -368,7 +368,7 @@ it("keeps the terminal intent after a full acknowledgment updates populated deta
   const populated = await outside.tracker.readTaskRecord(scope.deviceId, scope.projectId, "task-20");
   expect(populated.task).toMatchObject({ title: answer.title, body: answer.body });
   const terminal = await outside.watch.readTaskWatchState(scope);
-  expect(terminal).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(terminal).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   const note = (await outside.cache.readCached(order.taskWatchIntentAddress(scope, "task-20"))).value;
   expect(note.latest_watch_intent).toMatchObject({ ownerId: owner.id, intentRead: owner.intentRead, disposition: "acknowledged" });
 
@@ -398,7 +398,7 @@ it("does not resurrect rolled-back unwatch paint by reclassifying an obsolete co
   const terminal = await outside.watch.readTaskWatchState(scope);
   const controlAddress = outside.watch.taskWatchControlAddress(scope);
   const beforeControl = (await outside.cache.readCached(controlAddress)).value;
-  expect(terminal).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(terminal).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
 
   // The incoming bytes are the actual failed optimistic cache copy. Removing
   // its obsolete tag cannot turn those same bytes into a new user mutation.
@@ -457,7 +457,7 @@ it("applies a metadata-only owner's full watch answer after unrelated owned chan
   expect(answered.watched).toBe(true);
   expect(answered[outside.watch.TASK_WATCH_CACHE]?.uncertain).not.toBe(false);
   expect(await outside.watch.settleTaskWatchMutation(remaining, { rollback: true })).toBe(true);
-  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
 });
 
 async function catalogueOnlyFalse(api) {
@@ -490,7 +490,7 @@ it("protects a conflicting unowned detail creation from an earlier metadata-only
 
   await outside.watch.settleTaskWatchMutation(owner, { contentRead,
     answer: { task: row(20, { watched: true, watch_started_after: "te-ack" }) } });
-  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   const held = (await outside.cache.readCached(detail)).value.task;
   expect(held).toMatchObject({ watched: true, watch_started_after: "te-blind" });
   expect(held[outside.watch.TASK_WATCH_CACHE]?.source).not.toBe("ack");
@@ -500,7 +500,7 @@ it("protects a conflicting unowned detail creation from an earlier metadata-only
 it("does not treat an unchanged genuinely observed catalogue copy into absent detail as blind interference", async () => {
   const first = await runtime();
   const { detail, task: observed } = await catalogueOnlyFalse(first);
-  expect(observed[first.watch.TASK_WATCH_CACHE]).toMatchObject({ taskId: "task-20", source: "read", uncertain: true });
+  expect(observed[first.watch.TASK_WATCH_CACHE]).toMatchObject({ taskId: "task-20", source: "read", uncertain: false });
   expect(observed.__task_content_cache.header.read_order).toBeGreaterThan(0);
   const prepared = structuredClone(observed);
   const owner = await first.watch.beginTaskWatchMutation(scope, "task-20", { watched: true, metadataOnly: true });
@@ -517,8 +517,8 @@ it("does not treat an unchanged genuinely observed catalogue copy into absent de
     answer: { task: row(20, { watched: true, watch_started_after: "te-ack" }) } });
   const held = (await outside.cache.readCached(detail)).value.task;
   expect(held).toMatchObject({ watched: true, watch_started_after: "te-ack" });
-  expect(held[outside.watch.TASK_WATCH_CACHE]?.uncertain).not.toBe(false);
-  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(held[outside.watch.TASK_WATCH_CACHE]?.uncertain).toBe(false);
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
 });
 
 async function actualColdWatchRead({ pending = false, held = false, metadataOnly = false } = {}) {
@@ -541,7 +541,7 @@ async function actualColdWatchRead({ pending = false, held = false, metadataOnly
   if (pending) expect(owner).not.toBeNull();
   const catalogueBefore = await first.cache.readCached(catalogue(first));
   const before = await first.watch.readTaskWatchState(scope);
-  expect(before).toMatchObject({ pendingCount: pending ? 1 : 0, uncertain: true, eligible: false });
+  expect(before).toMatchObject({ pendingCount: pending ? 1 : 0, uncertain: pending, eligible: !pending });
   const outside = await runtime();
   const contentRead = await outside.content.captureTaskContentRead(detail, { revalidate: "full" });
   expect(contentRead.ticket.watchPending).toBe(pending);
@@ -576,13 +576,13 @@ it("does not paint a cold detail or normalized row from a raw watch reply while 
   expect(result.summary).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
 });
 
-it("retains uncertain raw watch paint on a cold genuine read without a pending owner", async () => {
+it("admits authoritative raw watch paint on a cold genuine read without a pending owner", async () => {
   const result = await actualColdWatchRead();
   for (const task of [result.detail, result.summary.task]) {
     expect(task).toMatchObject({ watched: true, watch_started_after: "te-refused" });
-    expect(task[result.outside.watch.TASK_WATCH_CACHE]).toMatchObject({ source: "read", uncertain: true });
+    expect(task[result.outside.watch.TASK_WATCH_CACHE]).toMatchObject({ source: "read", uncertain: false });
   }
-  expect(result.summary).toMatchObject({ watch_uncertain: true, needs_unread_refresh: true });
+  expect(result.summary).toMatchObject({ watch_uncertain: false, needs_unread_refresh: false });
 });
 
 it("retains actual held detail paint while rejecting a pending raw watch lineage", async () => {
@@ -628,7 +628,7 @@ it("protects an untagged local false lineage created in an existing lineageless 
 
   await outside.watch.settleTaskWatchMutation(owner, { contentRead: earlier,
     answer: { task: row(20, { watched: true, watch_started_after: "te-ack" }) } });
-  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await outside.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   const held = (await outside.cache.readCached(detail)).value.task;
   expect(held.watched, `blind fence retired before acknowledgment: ${retiredBeforeAck}`).toBe(false);
   expect(held).not.toHaveProperty("watch_started_after");

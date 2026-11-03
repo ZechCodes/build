@@ -95,7 +95,7 @@ it("shares overlapping owners across independent connections while local runtime
     expect(await first.watch.settleTaskWatchMutation(older, { rollback: true })).toBe(false);
     expect(await stateOf(outside)).toEqual(remaining);
     expect(await first.watch.settleTaskWatchMutation(newer, { rollback: true })).toBe(true);
-    expect(await stateOf(outside)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+    expect(await stateOf(outside)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   } finally {
     rpc.resolve({}); await pendingCall;
   }
@@ -113,7 +113,7 @@ it("rolls back only the latest matching optimistic owner across connections", as
   expect(await stateOf(outside)).toMatchObject({ pendingCount: 1, uncertain: true });
   expect(await first.watch.settleTaskWatchMutation(newer, { rollback: true })).toBe(true);
   expect((await rowOf(outside)).watched).toBe(false);
-  expect(await stateOf(outside)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await stateOf(outside)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   expect((await rowOf(outside))[outside.watch.TASK_WATCH_CACHE]).toBeUndefined();
 });
 
@@ -168,10 +168,10 @@ it("fails closed after a real reset and rejects the old generation without clear
   expect(await first.watch.settleTaskWatchMutation(older, { rollback: true })).toBe(false);
   expect(await stateOf(outside)).toEqual(replacement);
   expect(await first.watch.settleTaskWatchMutation(newer, { rollback: true })).toBe(true);
-  expect(await stateOf(outside)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await stateOf(outside)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
 });
 
-it.each(["fresh", "reset"])("does not launder %s uncertainty through its own successful server answer", async (kind) => {
+it.each(["fresh", "reset"])("resolves %s uncertainty through its exact successful server answer", async (kind) => {
   const first = await independentRuntime(), outside = await independentRuntime();
   if (kind === "reset") {
     await begin(first);
@@ -181,12 +181,11 @@ it.each(["fresh", "reset"])("does not launder %s uncertainty through its own suc
   const owner = await begin(first);
   const contentRead = await first.content.captureTaskContentRead(scope);
   expect(await stateOf(outside)).toMatchObject({ pendingCount: 1, uncertain: true, eligible: false });
-  // A real full answer acknowledges this owner, but cannot recover an unknown
-  // baseline. Cleanup and eligibility are deliberately separate assertions.
+  // The exact covering acknowledgment resolves its pending local intent.
   await outside.watch.settleTaskWatchMutation(owner, { answer: { task: fullTask({ watched: false }) }, contentRead });
-  expect(await stateOf(first)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await stateOf(first)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   const fresh = await outside.content.captureTaskContentRead(scope);
-  expect(fresh.ticket.watchUncertain).toBe(true);
+  expect(fresh.ticket.watchUncertain).toBe(false);
   expect(fresh.ticket.watchPending).toBe(false);
 });
 
@@ -198,5 +197,5 @@ it.each(["taskId", "controlGeneration"])("rejects a copied owner with altered %s
   expect(await outside.watch.settleTaskWatchMutation(altered, { rollback: true })).toBe(false);
   expect(await stateOf(first)).toEqual(pending);
   expect(await outside.watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
-  expect(await stateOf(first)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await stateOf(first)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
 });

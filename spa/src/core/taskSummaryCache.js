@@ -12,7 +12,7 @@ import { summaryPatch, fullTaskSummary } from "./taskSummaryProjection.js";
 import { reconcileTaskReadFacts, hasTaskWatchSnapshot, TASK_WATCH_CACHE, TASK_FAMILY_CACHE } from "./taskWatchFacts.js";
 import { blindTaskWatchInterference, retireTaskWatchFacts } from "./taskWatchAuthority.js";
 import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent } from "./taskWatchIntents.js";
-import { snapshotPageEvidence, snapshotContinuationEligible, summaryPageReadRetired } from "./taskSummarySnapshot.js";
+import { snapshotPageEvidence, snapshotContinuationEligible, summaryPageReadRetired, summarySnapshotRetired } from "./taskSummarySnapshot.js";
 export { reconcileTaskReadFacts } from "./taskWatchFacts.js";
 
 export const TASK_SUMMARY_KIND = "tracker-summary";
@@ -547,7 +547,7 @@ export async function readSummaryQuery(scope, filters) {
     missing_ids: missingIds,
     snapshot_continuation_eligible: snapshotContinuationEligible(held, { scope, filters, context,
       overtaken: queryChanged }),
-    stale: missingIds.length > 0 || queryWatchOvertaken(held, context)
+    stale: missingIds.length > 0 || queryWatchOvertaken(held, context) || summarySnapshotRetired(held, context)
       || queryChanged || rowsOvertaken(held, records),
     tasks: records.slice(0, held.ids.length).flatMap((record, index) => record?.value?.task
       ? [{ ...record.value.task, ...held.row_fields?.[held.ids[index]] }] : []),

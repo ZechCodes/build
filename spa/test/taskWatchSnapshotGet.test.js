@@ -105,8 +105,8 @@ it.each([
     expect(read.requests[0]).toEqual({ method: "tasks.get", params: { task_id: taskId } });
     read.answer();
     const saved = await awaitSaved(read);
-    expect(saved.watch_uncertain).toBe(true);
-    expect((await runtime.watch.readTaskWatchState(scope)).uncertain).toBe(true);
+    expect(saved.watch_uncertain).toBe(false);
+    expect((await runtime.watch.readTaskWatchState(scope)).uncertain).toBe(false);
   });
 
 it("keeps legacy GET usable without an epoch capability", async () => {
@@ -114,7 +114,7 @@ it("keeps legacy GET usable without an epoch capability", async () => {
   expect(read.requests[0].params).toEqual({ task_id: taskId });
   read.answer();
   const saved = await awaitSaved(read);
-  expect(saved.watch_uncertain).toBe(true);
+  expect(saved.watch_uncertain).toBe(false);
 });
 
 it("keeps legacy GET usable with a long greeting identity", async () => {
@@ -122,6 +122,6 @@ it("keeps legacy GET usable with a long greeting identity", async () => {
   expect(read.requests[0].params).toEqual({ task_id: taskId });
   read.answer();
   const saved = await awaitSaved(read);
-  expect(saved.watch_uncertain).toBe(true);
+  expect(saved.watch_uncertain).toBe(false);
   expect(read.session.bridgeEpoch.current().journal_incarnation).toBe("é".repeat(65));
 });

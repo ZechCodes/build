@@ -8,6 +8,8 @@ const nonempty = (value) => typeof value === "string" && value.length > 0;
 const queryKey = (filters) => JSON.stringify(canonicalSummaryFilters(filters));
 const sameLifetime = (proof, context) => lifetimeFields.every((field) =>
   nonempty(proof?.[field]) && proof[field] === context?.[field]);
+export const summarySnapshotRetired = (query, context) => Boolean(query?.snapshot_membership
+  && !sameLifetime(query.snapshot_membership, context));
 const sameScope = (left, right) => left?.deviceId === right?.deviceId && left?.projectId === right?.projectId;
 const sameIds = (before, after) => Array.isArray(before) && Array.isArray(after)
   && before.length === after.length && before.every((id, index) => id === after[index]);

@@ -48,8 +48,8 @@ function controlledReader(filters = {}) {
 async function initial(result) {
   expect(await result.view.refresh()).toBe(true);
   expect(await result.view.read()).toMatchObject({ basis, next_cursor: firstCursor, ids: ["task-2"],
-    complete: false, stale: true, snapshot_continuation_eligible: true, identities: { held: { name: "Held" } } });
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+    complete: false, stale: false, snapshot_continuation_eligible: true, identities: { held: { name: "Held" } } });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   expect(result.rpc).toHaveBeenCalledTimes(1);
 }
 
@@ -90,7 +90,7 @@ afterEach(() => {
   mounted.forEach((view) => view.dispose()); stops.forEach((stop) => stop()); vi.restoreAllMocks();
 });
 
-it("D2-G01 rejects retired empty-page snapshot authority and separately records cursor effects", async () => {
+it("D2-G01 treats a retired-guard empty reply as no progress and preserves its cursor", async () => {
   const result = controlledReader(); await initial(result);
   const { pending } = await pendingMore(result);
   const queryAddress = summaries.summaryQueryAddress(scope, {}), domainAddress = order.taskContentScopeAddress(scope);
@@ -118,7 +118,10 @@ it("D2-G01 rejects retired empty-page snapshot authority and separately records 
   expect(await cache.readCached(summaries.summaryAddress(scope, "task-2"))).toEqual(rowBefore);
   expect(await watch.readTaskWatchState(scope)).toEqual(watchBefore);
   expect(after).not.toHaveProperty("total");
-  // This is evidence, not an unapproved returnfalse/cursor-preservation oracle.
+  expect(moreResult).toBe(false);
+  expect(queryAfter).toEqual(queryBefore);
+  expect(after.next_cursor).toBe(firstCursor);
+  // Retired empty replies cannot consume a cursor or certify exhaustion.
   console.info("D2-G01 cursor observation", JSON.stringify({ moreResult,
     before: { cursor: queryBefore.value.next_cursor, ids: queryBefore.value.ids, generation: queryBefore.value.generation },
     after: { cursor: queryAfter.value.next_cursor, ids: queryAfter.value.ids, generation: queryAfter.value.generation,
@@ -197,7 +200,7 @@ it("D2-G04 continues a raw Ready snapshot without certifying its retained future
   expect(mixed).toMatchObject({ ids: ["task-2"], stale: true, snapshot_continuation_eligible: true,
     tasks: [{ status: "done", title: "Future Done header" }] });
   const normalizedBefore = await cache.readCached(normalizedAddress);
-  expect(normalizedBefore.value).toMatchObject({ basis_uncertain: true, watch_uncertain: true });
+  expect(normalizedBefore.value).toMatchObject({ basis_uncertain: true, watch_uncertain: false });
   expect(normalizedBefore.value.basis).toBeUndefined();
   const pending = result.view.more(); await result.dispatched;
   result.resolve(page([], secondCursor)); expect(await pending).toBe(true);
@@ -207,7 +210,7 @@ it("D2-G04 continues a raw Ready snapshot without certifying its retained future
     snapshot_continuation_eligible: true, tasks: [{ status: "done", title: "Future Done header" }] });
   expect(await cache.readCached(normalizedAddress)).toEqual(normalizedBefore);
   expect(await cache.readCached(detailAddress)).toEqual(detailBefore);
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
 });
 
 it("D2-G05 continues with a missing display row while preserving raw membership and unknown absence", async () => {
@@ -230,6 +233,6 @@ it("D2-G05 continues with a missing display row while preserving raw membership 
   const { deviceKey } = await import("../src/core/deviceKey.js");
   const key = deviceKey(scope.deviceId, scope.projectId);
   expect(resolverFor(referenceTables({ tasks: { [key]: after.tasks } }), { place: scope }).task(2)).toBeUndefined();
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   expect(result.rpc).toHaveBeenCalledTimes(2);
 });

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 // D2 is an independent raw query snapshot lane. These tests deliberately keep
-// real fresh-store watch authority UNKNOWN; they do not repair the original22.
+// watch authority UNKNOWN through a genuine pending local intent.
 let cache, summaries, queries, readers, watch;
 const scope = { deviceId: "d2-snapshot-891", projectId: "proj-1" };
 const basis = "store:opaque-D2-snapshot";
@@ -63,7 +63,7 @@ function setupEmptyReader(filters) {
 async function expectUnknown(view) {
   const result = await view.read();
   expect(result.stale).toBe(true);
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true, eligible: false });
   for (const id of result.ids) {
     const row = (await cache.readCached(summaries.summaryAddress(scope, id))).value;
     expect(row.watch_uncertain).toBe(true);
@@ -83,6 +83,7 @@ beforeEach(async () => {
   queries = await import("../src/core/taskSummaryQuery.js");
   readers = await import("../src/core/taskSummaryReader.js");
   watch = await import("../src/core/taskWatchAuthority.js");
+  expect(await watch.beginTaskWatchMutation(scope, "d2-local-pending", { watched: false, metadataOnly: true })).not.toBeNull();
 });
 
 it("D2 advances default-number raw snapshot only after explicit more while watch authority stays UNKNOWN", async () => {

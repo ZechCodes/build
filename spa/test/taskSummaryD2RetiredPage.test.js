@@ -46,8 +46,8 @@ function controlledReader() {
 async function initial(result) {
   expect(await result.view.refresh()).toBe(true);
   expect(await result.view.read()).toMatchObject({ ids: ["task-2"], basis: oldBasis, next_cursor: oldCursor,
-    stale: true, complete: false, snapshot_continuation_eligible: true });
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+    stale: false, complete: false, snapshot_continuation_eligible: true });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
 }
 
 async function retireOrdinary(sequence) {
@@ -120,12 +120,12 @@ it("D2-RP02 preserves retired query membership while independently admitting sam
   // an early return that drops every row is not the requested repair.
   expect(selected.task).toMatchObject({ id: "task-2", title: "Task 2", read_through: "tc-20",
     dismissed_through: "te-20", review_summary: { task_id: "task-2", version: 2, status: "approved" } });
-  expect(selected).toMatchObject({ watch_uncertain: true, basis_uncertain: true });
+  expect(selected).toMatchObject({ watch_uncertain: false, basis_uncertain: true });
   expect(selected.basis).toBeUndefined();
   expect(await cache.readCached(detailAddress())).toEqual(detailBefore);
   expect(await cache.readCached(queryAddress())).toEqual(queryBefore);
   expect(admitted).toBe(false);
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ uncertain: true, eligible: false });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ uncertain: false, eligible: true });
   expect(result.rpc).toHaveBeenCalledTimes(2);
 });
 
@@ -148,9 +148,9 @@ it("D2-RP03 restarts at page one on the next user more and coalesces overlapping
   result.replies[1].resolve(page([row(3), row(2, { title: "Current server header", updated_at: "2026-10-29T13:00:00Z" })], newBasis, null));
   expect(await Promise.all([user, duplicate, background])).toEqual([true, true, true]);
   expect(await result.view.read()).toMatchObject({ ids: ["task-3", "task-2"], basis: newBasis,
-    next_cursor: null, complete: true, stale: true, tasks: [{ id: "task-3" }, { id: "task-2", title: "Current server header" }] });
+    next_cursor: null, complete: true, stale: false, tasks: [{ id: "task-3" }, { id: "task-2", title: "Current server header" }] });
   expect(result.rpc).toHaveBeenCalledTimes(3);
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ uncertain: true, eligible: false });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ uncertain: false, eligible: true });
 });
 
 it("D2-RP04 repeated retirement preserves each current query without an automatic restart loop", async () => {

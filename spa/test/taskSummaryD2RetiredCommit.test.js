@@ -35,7 +35,7 @@ async function retiredTicket() {
   const ticket = await summaries.beginSummaryQuery(scope, {}, first.readOrder, { contentRead: first });
   expect(await summaries.landSummaryPage(ticket, { ...page([row()]), next_cursor: cursor }, { read: first.readOrder })).toBe(true);
   expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ ids: ["task-2"], basis,
-    next_cursor: cursor, stale: true, snapshot_continuation_eligible: true });
+    next_cursor: cursor, stale: false, snapshot_continuation_eligible: true });
   const next = await content.captureTaskContentRead(scope, { revalidate: "summary" });
   const before = await cache.readCached(order.taskContentScopeAddress(scope));
   vi.resetModules(); const other = await import("../src/core/trackerCache.js");

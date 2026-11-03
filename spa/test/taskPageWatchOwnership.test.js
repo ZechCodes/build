@@ -109,7 +109,7 @@ it("registers a native page watch before RPC so an independent cache reader obse
   expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.watch")).toHaveLength(1);
 });
 
-it("keeps fresh metadata-only begin and cleanup notifications uncertain without refilling page reads", async () => {
+it("returns metadata-only cleanup to known zero and requests one covering page read", async () => {
   const mounted = await mountPage();
   const read = vi.spyOn(runtime.watch, "readTaskWatchState");
   const before = mounted.call.mock.calls.filter(([method]) => method === "tasks.get").length;
@@ -119,8 +119,8 @@ it("keeps fresh metadata-only begin and cleanup notifications uncertain without 
   await vi.waitFor(() => expect(runtime.fence.taskMutationsPending(deviceId)).toBe(0));
   await vi.waitFor(() => expect(read.mock.calls.length).toBeGreaterThanOrEqual(2));
   await read.mock.results.at(-1).value;
-  expect(await runtime.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
-  expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.get")).toHaveLength(before);
+  expect(await runtime.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
+  await vi.waitFor(() => expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.get")).toHaveLength(before + 1));
 });
 
 it("cleans up a native watch owner after session replacement without publishing its obsolete acknowledgment", async () => {
@@ -133,7 +133,7 @@ it("cleans up a native watch owner after session replacement without publishing 
   response.resolve({ task: { ...mounted.row, watched: true, title: "Obsolete acknowledgment" } });
   await vi.waitFor(() => expect(runtime.fence.taskMutationsPending(deviceId)).toBe(0));
   expect(await cache.readCanonicalCached(mounted.address)).toEqual(before);
-  expect(await runtime.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await runtime.watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   expect(mounted.call.mock.calls.filter(([method]) => method === "tasks.watch")).toHaveLength(1);
 });
 

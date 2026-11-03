@@ -148,6 +148,6 @@ it("retains the legacy no-task inbox acknowledgment without fabricating a full t
   expect((await runtime.tracker.readTasksRecord(deviceId, projectId)).tasks[0].watched).toBe(false);
   const shared = await watch.readTaskWatchState({ deviceId, projectId });
   expect(shared.pendingCount).toBe(0);
-  expect(shared.uncertain).toBe(true);
-  expect(shared.eligible).toBe(false);
+  expect(shared.uncertain).toBe(false);
+  expect(shared.eligible).toBe(true);
 });

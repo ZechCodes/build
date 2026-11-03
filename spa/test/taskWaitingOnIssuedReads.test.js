@@ -29,7 +29,7 @@ it.each([
   const actions = createTaskWaitingOnActions({ deviceId: "d", projectId: "p", taskId: "task", call });
   await actions[action](...args);
   expect(mock.callOrder).toEqual([["issued", 1], [method]]);
-  expect(mock.capture).toHaveBeenCalledWith({ deviceId: "d", projectId: "p" });
+  expect(mock.capture).toHaveBeenCalledWith({ deviceId: "d", entityId: "p", kind: "tracker-task", sub: "task" }, { revalidate: "full" });
   expect(mock.cache).toHaveBeenCalledWith("d", "p", { task: { id: "task" } }, expect.objectContaining({ issuedRead: 1,
     contentRead: mock.tickets[0] }));
   expect(mock.cache.mock.calls[0][3].contentRead).toBe(mock.tickets[0]);

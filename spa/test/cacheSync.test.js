@@ -1615,7 +1615,7 @@ describe("a refresh requested during a pass", () => {
     if (kind === "tasks") {
       const task = value.tasks[0];
       expect(task.__task_watch_cache).toMatchObject({
-        scope: { deviceId: "dev-1", projectId: "new-owner" }, taskId: "new-task", source: "read", uncertain: true,
+        scope: { deviceId: "dev-1", projectId: "new-owner" }, taskId: "new-task", source: "read", uncertain: false,
         lineage: [["watched", true, false], ["watch_started_after", false, undefined]],
       });
       expect(task.__task_watch_cache.observed_read_order).toBeGreaterThan(0);

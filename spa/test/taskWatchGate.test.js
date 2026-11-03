@@ -243,7 +243,7 @@ describe("the page, on top of that gate", () => {
     await greet(WATCHING);
     await mount();
     expect(host.querySelector(".rail-watch")).not.toBeNull();
-    expect(listed("tasks.read_through")[0][1]).toEqual({ task_id: "task-1", event_id: "tc-1" });
+    await vi.waitFor(() => expect(listed("tasks.read_through")[0]?.[1]).toEqual({ task_id: "task-1", event_id: "tc-1" }));
   });
 
   it("and presses through to the verb itself", async () => {

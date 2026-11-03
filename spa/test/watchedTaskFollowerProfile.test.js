@@ -2,6 +2,8 @@
 // Aggregate attribution for #858, using synthetic cache-only records.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { IDBFactory, IDBKeyRange, IDBObjectStore, IDBDatabase } from "fake-indexeddb";
 const deviceId = "follower-profile-device";
 const address = (entityId, kind) => ({ deviceId, entityId, kind });
@@ -98,7 +100,7 @@ it("profiles six warmed project followers on row invalidations and no-op bursts"
   result.push(counters("12 paced no-op row announcements"));
   expect(follower.entries()).toEqual(before);
   expect(follower.runningProjectKeys().size).toBe(6);
-  writeFileSync("/tmp/858-follower-unit-profile.json", JSON.stringify({ projects: 6, rows: 1, watchedTasks: 6, warm: true, scenarios: result }, null, 2));
+  writeFileSync(join(tmpdir(), "858-follower-unit-profile.json"), JSON.stringify({ projects: 6, rows: 1, watchedTasks: 6, warm: true, scenarios: result }, null, 2));
   console.log("FOLLOWER_PROFILE", JSON.stringify(result));
 });
 
@@ -329,6 +331,47 @@ it("waits for the initial task source after actual policy and agent sources load
   finally { release(); }
   await vi.waitFor(() => expect(follower.entries()).toHaveLength(1));
   expect(follower.runningProjectKeys().has(projects[0].projectKey)).toBe(true);
+});
+
+it("admits an unchanged first task list after broad invalidation during display hydration", async () => {
+  follower.dispose();
+  calls.readTasksRecord.mockClear();
+  const displays = await import("../src/core/taskUnreadDisplay.js");
+  const createDisplay = displays.createTaskUnreadDisplayOwner;
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let updateTasks;
+  vi.spyOn(displays, "createTaskUnreadDisplayOwner").mockImplementation((options) => {
+    const display = createDisplay(options);
+    const update = display.updateTasks;
+    updateTasks = vi.spyOn(display, "updateTasks").mockImplementationOnce(async (next) => {
+      await update(next);
+      await held;
+    });
+    return display;
+  });
+  const { followWatchedTasks } = await import("../src/core/watchedTaskFollower.js");
+  onChange = vi.fn();
+  follower = followWatchedTasks({ onChange });
+  follower.follow(projects.slice(0, 1));
+  try {
+    await vi.waitFor(() => expect(updateTasks).toHaveBeenCalledTimes(1));
+    await idle();
+    expect(follower.entries()).toEqual([]);
+    expect(onChange).not.toHaveBeenCalled();
+    const first = await calls.readTasksRecord.mock.results[0].value;
+    cache.announceCacheEvidence({ deviceId, entityId: projects[0].id });
+    release();
+    await vi.waitFor(() => expect(calls.readTasksRecord).toHaveBeenCalledTimes(2));
+    const trailing = await calls.readTasksRecord.mock.results[1].value;
+    expect(trailing.tasks).toEqual(first.tasks);
+    await vi.waitFor(() => expect(follower.entries()).toHaveLength(1));
+    // Notifications and sources are both gated on tasksReady and policy.
+    expect(onChange).toHaveBeenCalled();
+    expect(updateTasks).toHaveBeenCalledTimes(2);
+    expect(follower.entries()[0]).toMatchObject({ taskId: "task-p0", projectId: projects[0].id });
+    expect(follower.runningProjectKeys().has(projects[0].projectKey)).toBe(true);
+  } finally { release(); }
 });
 
 it("waits for a pending changed policy before publishing a project joining a warm device", async () => {

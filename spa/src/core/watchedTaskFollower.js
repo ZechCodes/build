@@ -65,10 +65,10 @@ function followProject(project, onChange, dependencies) {
     const next = record?.tasks || [];
     const signature = JSON.stringify(next);
     if (signature === taskSignature) return;
+    await display.updateTasks(next);
+    if (!currentRead(before, session)) return;
     taskSignature = signature;
     tasks = next;
-    await display.updateTasks(tasks);
-    if (!currentRead(before, session)) return;
     tasksReady = true;
     notify();
     await details.updateTasks(tasks.filter(followsDetail));

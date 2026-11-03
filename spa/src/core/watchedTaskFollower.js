@@ -54,19 +54,21 @@ function followProject(project, onChange, dependencies) {
     active: () => !disposed, sessionOf: () => sessionOf(deviceId), onChange: notify });
   const details = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc: callOn(deviceId), onChange: notify });
 
+  const currentRead = (before, session) => !disposed && before === invalidation && session === sessionOf(deviceId);
+
   async function readTasks() {
     if (disposed) return;
     const session = sessionOf(deviceId);
     const before = invalidation;
     const record = await readTasksRecord(deviceId, projectId);
-    if (disposed || before !== invalidation || session !== (sessionOf(deviceId))) return;
+    if (!currentRead(before, session)) return;
     const next = record?.tasks || [];
     const signature = JSON.stringify(next);
     if (signature === taskSignature) return;
     taskSignature = signature;
     tasks = next;
     await display.updateTasks(tasks);
-    if (disposed || before !== invalidation || session !== sessionOf(deviceId)) return;
+    if (!currentRead(before, session)) return;
     tasksReady = true;
     notify();
     await details.updateTasks(tasks.filter(followsDetail));

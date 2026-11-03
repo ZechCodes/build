@@ -501,7 +501,7 @@ function selectedListRecord(held, record, rows, results, admitsMembership, posit
   const prior = held?.tasks || [], priorIds = new Set(prior.map((task) => task.id));
   const positive = positiveOnly ? rows.filter((task) => !priorIds.has(task.id)) : [];
   const tasks = admitsMembership ? rows : [...prior.map((task) => byId.get(task.id) || task), ...positive];
-  const removed = admitsMembership && (held?.tasks || []).some((task) => !byId.has(task.id));
+  const removed = admitsMembership && prior.some((task) => !byId.has(task.id));
   return { record: preserveListSummaries(held, { ...(admitsMembership || !held ? record : held), tasks }),
     retire: removed || results.some((result) => result.retired) };
 }

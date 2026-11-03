@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
+import { rememberTaskUnreadDisplay } from "./taskUnreadDisplayFixture.js";
 
 let cache, tracker, summaries, actions, order, content;
 const scope = { deviceId: "action-replica-900", projectId: "proj-1" }, taskId = "task-1";
@@ -63,10 +64,24 @@ it.each([
   ["tc-\ue000", "te-\u{10000}", "te-\u{10000}", 9],
 ])("pairs canonical full-action read floor %j/%j with its counters in every replica", async (heldRead, incomingRead, expectedRead, count) => {
   await seed(task({ read_through: heldRead, dismissed_through: heldRead }));
+  const display = await rememberTaskUnreadDisplay(scope, (await replicas())[0]);
   await publish(task({ title: "Fresh content", read_through: incomingRead, dismissed_through: incomingRead,
     unread_count: 9, unread_mentions: 9, unread_agent_comments: 9, updated_at: "2026-10-29T12:01:00Z" }));
-  for (const replica of await replicas()) expect(replica).toMatchObject({ title: "Fresh content", read_through: expectedRead,
-    dismissed_through: expectedRead, unread_count: count, unread_mentions: count, unread_agent_comments: count });
+  for (const replica of await replicas()) {
+    expect(replica).toMatchObject({ title: "Fresh content", read_through: expectedRead, dismissed_through: expectedRead });
+    if (count === 0) {
+      for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) expect(replica).not.toHaveProperty(field);
+      expect(replica.__task_family_cache.unknown.total).toBeDefined();
+      expect(display(replica)).toBe(0);
+    } else expect(replica).toMatchObject({ unread_count: count, unread_mentions: count, unread_agent_comments: count });
+  }
+  await publish(task({ read_through: expectedRead, dismissed_through: expectedRead,
+    unread_count: 4, unread_mentions: 1, unread_agent_comments: 2, updated_at: "2026-10-29T12:02:00Z" }));
+  for (const replica of await replicas()) {
+    expect(replica.unread_count).toBe(4);
+    expect(replica.__task_family_cache.unknown?.total).toBeUndefined();
+    expect(display(replica)).toBe(4);
+  }
 });
 
 it.each([
@@ -78,13 +93,15 @@ it.each([
     { read_through: "tc-20", watch_started_after: "te-05", unread_count: 4, unread_mentions: 0, unread_agent_comments: 0 }, [], false],
   [{ read_through: "tc-20", watch_started_after: "te-30", unread_count: 2 },
     { read_through: "tc-10", watch_started_after: "te-30", unread_count: 0, unread_mentions: 3, unread_agent_comments: 4 },
-    { read_through: "tc-20", watch_started_after: "te-30", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 }, [], true],
+    { read_through: "tc-20", watch_started_after: "te-30", unread_count: 0 }, ["unread_mentions", "unread_agent_comments"], true],
 ])("keeps read-only attention counters separate from the combined read/watch count family %#", async (held, incoming, expected, unknown, uncertain) => {
   await seed(task(held));
+  const display = await rememberTaskUnreadDisplay(scope, (await replicas())[0]);
   await publish(task({ ...incoming, updated_at: "2026-10-29T12:01:00Z" }));
   for (const replica of await replicas()) {
     expect(replica).toMatchObject(expected);
     for (const field of unknown) expect(replica).not.toHaveProperty(field);
+    expect(display(replica)).toBe(expected.unread_count);
   }
   expect((await value(summaries.summaryAddress(scope, taskId))).needs_unread_refresh).toBe(uncertain);
 });

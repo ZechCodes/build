@@ -121,10 +121,12 @@ function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, pro
   };
 }
 
+const activeWatchedTask = (task) => task.watched === true && !isFinished(task);
+
 function entriesFromSource({ project, tasks = [], details = new Map(), askedOnly = false, runningAgentIds = new Set(), projectAgentId = null, workspaces, unreadOf = taskUnreadCount }) {
   const entries = [];
   for (const task of tasks) {
-    if (task.watched !== true || isFinished(task)) continue;
+    if (!activeWatchedTask(task)) continue;
     const detail = details.get(task.id) || null;
     const reasons = watchedTaskReasons(task, detail, askedOnly);
     entries.push(toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces, unreadOf));

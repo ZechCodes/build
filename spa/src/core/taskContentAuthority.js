@@ -21,9 +21,10 @@ const scopeOf = (place) => ({ deviceId: place.deviceId, projectId: place.project
 const cacheOf = (task) => task?.[TASK_CONTENT_CACHE] || {};
 const validScope = (scope) => typeof scope.deviceId === "string" && typeof scope.projectId === "string";
 
-export async function captureTaskContentRead(place, { revalidate = false } = {}) {
+export async function captureTaskContentRead(place, { revalidate = false, action = false } = {}) {
   const { scope, address } = capturePlace(place, revalidate);
-  const localMutation = captureLocalTaskMutation(scope, address);
+  // An action owns its mutation; only background reads defer behind it.
+  const localMutation = action ? null : captureLocalTaskMutation(scope, address);
   const allocation = await nextTaskReadTicket(scope, { address });
   const readOrder = allocation?.readOrder ?? await nextTaskRead();
   const read = capturedRead(allocation, address, revalidate, readOrder);
@@ -103,9 +104,11 @@ export function withTaskWatchIntentNote(context, taskId, note) {
   return { ...context, watchIntentOf: (id) => id === taskId ? note : context.watchIntentOf?.(id) };
 }
 
-const retiredWatchControl = (record) => ({ ...(record?.value || initialTaskWatchControl()),
-  uncertain: record?.value?.uncertain !== false || !record?.value?.blindRetirementEpoch,
-  watchRetirementEpoch: randomToken(), blindRetirementEpoch: randomToken() });
+const retiredWatchControl = (record) => {
+  const control = record?.value || initialTaskWatchControl();
+  return { ...control, uncertain: control.uncertain !== false || !control.blindRetirementEpoch,
+    watchRetirementEpoch: randomToken(), blindRetirementEpoch: randomToken() };
+};
 
 function contentContext([store, domain, control]) {
   const held = domain?.value || {}, watch = control?.value || {};

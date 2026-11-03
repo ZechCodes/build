@@ -14,6 +14,8 @@ const records = new Map(); // key → { at, value }
 let writeCount = 0;
 const listeners = new Set(); // { parts, listener }
 
+export const recordWriteOf = (record) => record ? record.write ?? `${record.at}:${record.order}` : null;
+
 export const DEVICES_ADDRESS = Object.freeze({ deviceId: "", entityId: "", kind: "devices" });
 
 const recordKey = ({ deviceId, entityId, kind, sub = "" }) =>

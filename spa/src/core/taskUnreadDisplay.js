@@ -20,9 +20,11 @@ const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const input = (task, detail) => JSON.stringify([task, detail]);
 const detailAddress = (scope, id) => ({ deviceId: scope.deviceId, entityId: scope.projectId, kind: "tracker-task", sub: id });
 const lifetimeAddresses = (scope) => [TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress(scope), taskWatchControlAddress(scope)];
-const contextOf = ([store, domain, control]) => ({ storeGeneration: store?.value?.generation,
-  scopeGeneration: domain?.value?.generation, watchGeneration: control?.value?.generation,
-  watchEpoch: control?.value?.watchRetirementEpoch, pending: control?.value?.pendingCount });
+const contextOf = ([store, domain, control]) => {
+  const watch = control?.value || {};
+  return { storeGeneration: store?.value?.generation, scopeGeneration: domain?.value?.generation,
+    watchGeneration: watch.generation, watchEpoch: watch.watchRetirementEpoch, pending: watch.pendingCount };
+};
 const lifetime = (context) => [context?.storeGeneration, context?.scopeGeneration];
 const validLifetime = (context) => lifetime(context).every(nonempty);
 const reportFailure = (error) => console.info("Task unread display persistence unavailable", error);

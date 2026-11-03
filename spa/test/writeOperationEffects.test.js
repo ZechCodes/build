@@ -71,18 +71,23 @@ describe("typed durable write effects", () => {
     expect(normalized.reservedIds).toMatchObject({ task_id: success.result.task.id, comment_id: success.result.comment.id });
     await operations.confirm(record.operationId, { ...normalized, confirmation: success, revision: success.revision });
     expect((await cache.readCached(address)).value.timeline).toEqual([{ ...success.result.comment, type: "comment" }]);
-    const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
-    const { captureTaskDetailRead } = await import("../src/core/trackerCache.js");
-    const contentRead = await captureTaskContentRead(address, { revalidate: "full" });
-    const detailBasis = await captureTaskDetailRead(address.deviceId, address.entityId, address.sub);
-    const canonical = { task: success.result.task, timeline: [{ ...success.result.comment, type: "comment" }] };
-    await operations.observePublication({ canonical: [{ address, value: canonical, publication: success.published,
-      contentRead, guard: { written: contentRead.written, detailBasis } }] });
+    const canonical = { task: { watched: false, ...success.result.task }, timeline: [{ ...success.result.comment, type: "comment" }] };
+    const { refreshWriteOperation } = await import("../src/core/writeOperationRefresh.js");
+    const frame = { ...success, refresh: [{ kind: "task", id: canonical.task.id }] };
+    await operations.update(record.operationId, (row) => ({ ...row, confirmation: frame, refreshPending: true }));
+    const { TASK_READ_COUNT_ADDRESS } = await import("../src/core/taskReadOrder.js");
+    let issued;
+    expect(await refreshWriteOperation({ cache: operations, frame, record: await operations.get(record.operationId),
+      authority: { active: () => true, call: vi.fn(async () => {
+        issued = (await cache.readCanonicalCached(TASK_READ_COUNT_ADDRESS)).value;
+        return canonical;
+      }) } })).toMatchObject({ complete: true });
     const painted = (await cache.readCached(address)).value;
-    const { __task_content_cache: proof, ...publicTask } = painted.task;
-    expect({ ...painted, task: publicTask }).toEqual(canonical);
-    expect(proof.header.read_order).toBe(contentRead.readOrder);
-    expect(proof.body.read_order).toBe(contentRead.readOrder);
+    const proof = painted.task.__task_content_cache;
+    expect(Object.fromEntries(Object.entries(painted.task).filter(([key]) => !key.startsWith("__")))).toEqual(canonical.task);
+    expect(painted.timeline).toEqual(canonical.timeline);
+    expect(proof.header.read_order).toBe(issued);
+    expect(proof.body.read_order).toBe(issued);
     expect((await operations.get(record.operationId)).overlayActive).toBe(false);
   });
 

@@ -13,7 +13,7 @@ import { comment, event, task as wireTask, taskDetail } from "./trackerWireFixtu
 import { announced } from "./waits.js";
 
 const NOW = Date.parse("2026-09-24T12:00:00Z");
-const task = (over = {}) => wireTask({ created_at: "2026-09-24T00:00:00Z", updated_at: "2026-09-24T01:00:00Z", ...over });
+const task = (over = {}) => wireTask({ project_id: "proj-1", created_at: "2026-09-24T00:00:00Z", updated_at: "2026-09-24T01:00:00Z", ...over });
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
@@ -75,8 +75,13 @@ async function boot({ greet = true, tasks = [review], rule = null, hello = GREET
   await modules.cache.writeCached(address("workspaces"), workspaces);
   await modules.cache.writeCached(address("agent-lineage-support"), { namesMakers });
   for (const row of agentRows) await modules.cache.writeCached({ deviceId: DEVICE, entityId: row.run_id, kind: "row" }, row);
-  await modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord(tasks, []));
-  for (const one of tasks) await modules.tracker.writeTaskRecord(DEVICE, PROJECT, one.id, taskDetail(one, timelines[one.id] || []));
+  const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+  const listRead = await captureTaskContentRead(modules.tracker.tasksAddress(DEVICE, PROJECT), { revalidate: "full" });
+  await modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord(tasks, []), { contentRead: listRead });
+  for (const one of tasks) {
+    const contentRead = await captureTaskContentRead(modules.tracker.taskAddress(DEVICE, PROJECT, one.id), { revalidate: "full" });
+    await modules.tracker.writeTaskRecord(DEVICE, PROJECT, one.id, taskDetail(one, timelines[one.id] || []), { contentRead });
+  }
   if (rule) await modules.needsYouRule.rememberNeedsYouRule(DEVICE, rule);
   if (greet) {
     const context = modules.deviceContexts.adoptDeviceSession({

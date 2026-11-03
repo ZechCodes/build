@@ -1,10 +1,11 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { rememberTaskUnreadDisplay } from "./taskUnreadDisplayFixture.js";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 
 let cache, summaries, content;
 const scope = { deviceId: "device-891", projectId: "proj-1" };
 const query = { states: ["open"] };
-const row = (id, extra = {}) => ({ id, number: Number(id.slice(-1)), title: id, updated_at: "2026-10-29T12:00:00Z", ...extra });
+const row = (id, extra = {}) => ({ id, number: Number(id.slice(-1)), title: id, ...(Object.hasOwn(extra, "unread_count") ? { watched: true, unread_mentions: 0, unread_agent_comments: 0 } : {}), updated_at: "2026-10-29T12:00:00Z", ...extra });
 const page = (tasks = [], extra = {}) => ({ summary: true, tasks, ...extra });
 const open = (filters = query, read = 1) => summaries.beginSummaryQuery(scope, filters, read);
 const land = (ticket, answer, read = ticket.generation) => summaries.landSummaryPage(ticket, answer, { read });
@@ -30,7 +31,7 @@ it("canonicalizes sets and aliases while preserving opaque ID and non-ASCII labe
 });
 
 it("checks action acceptance in the same transaction as invalidation and preserves full-task absences", async () => {
-  await land(await open(), page([row("task-1", { watched: true, done_at: "yesterday" })]));
+  await land(await open(), page([row("task-1", { watched: true, unread_count: 0, done_at: "yesterday" })]));
   expect(await summaries.writeSummaryTask(scope, { id: "task-1", title: "rejected" }, 2, { accept: () => false })).toBe(false);
   expect((await summaries.readSummaryQuery(scope, query)).stale).toBe(false);
   const contentRead = await content.captureTaskContentRead(scope);
@@ -142,16 +143,23 @@ it("checks refresh reservation acceptance inside the cache transaction", async (
 it("merges stronger markers from an older read independently of ordinary fields", async () => {
   const older = await open({}, 1);
   await land(await open(query, 3), page([row("task-1", { title: "held", read_through: "tc-01", unread_count: 5 })]));
+  const display = await rememberTaskUnreadDisplay(scope, (await summaries.readSummaryQuery(scope, query)).tasks[0]);
   await land(older, page([row("task-1", { title: "old", read_through: "tc-03", unread_count: 0 })]));
-  expect((await summaries.readSummaryQuery(scope, query)).tasks[0]).toMatchObject({ title: "held", read_through: "tc-03", unread_count: 0 });
+  const held = await summaries.readSummaryQuery(scope, query);
+  expect(held.tasks[0]).toMatchObject({ title: "held", read_through: "tc-03" });
+  expect(held.tasks[0]).not.toHaveProperty("unread_count");
+  expect(display(held.tasks[0])).toBe(5);
 });
 
 it("requires revalidation when stronger marks arrive with an older content snapshot", async () => {
   const older = await open({}, 1);
   await land(await open(query, 3), page([row("task-1", { watched: true, updated_at: "2026-10-29T13:00:00Z", read_through: "tc-01", unread_count: 5 })]));
+  const display = await rememberTaskUnreadDisplay(scope, (await summaries.readSummaryQuery(scope, query)).tasks[0]);
   await land(older, page([row("task-1", { watched: true, updated_at: "2026-10-29T12:00:00Z", read_through: "tc-03", unread_count: 0 })]));
   const held = await summaries.readSummaryQuery(scope, query);
-  expect(held.tasks[0]).toMatchObject({ read_through: "tc-03", unread_count: 5 });
+  expect(held.tasks[0]).toMatchObject({ read_through: "tc-03" });
+  expect(held.tasks[0]).not.toHaveProperty("unread_count");
+  expect(display(held.tasks[0])).toBe(5);
   expect(held.stale).toBe(true);
 });
 
@@ -217,8 +225,12 @@ it("fences late pages with an immediate write while retaining query metadata for
 
 it("preserves marker and unread floors even when a later dispatched read carries older marks", async () => {
   await land(await open(), page([row("task-1", { watched: true, read_through: "tc-03", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 })]));
+  const display = await rememberTaskUnreadDisplay(scope, (await summaries.readSummaryQuery(scope, query)).tasks[0]);
   await land(await open(query, 2), page([row("task-1", { watched: true, read_through: "tc-01", unread_count: 5, unread_mentions: 1, unread_agent_comments: 3 })]));
-  expect((await summaries.readSummaryQuery(scope, query)).tasks[0]).toMatchObject({ read_through: "tc-03", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 });
+  const held = (await summaries.readSummaryQuery(scope, query)).tasks[0];
+  expect(held.read_through).toBe("tc-03");
+  for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) expect(held).not.toHaveProperty(field);
+  expect(display(held)).toBe(0);
 });
 
 it("does not collapse unsupported selectors or malformed actors into a known query", () => {

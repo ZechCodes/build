@@ -244,7 +244,7 @@ export function createWriteOperationService(options) {
     const stored = await cache.confirm(row.operationId, { ...effects, confirmation: frame, revision: frame.revision,
       owners: row.owners || frame.published, published: frame.published || [],
       refreshPending: Boolean(frame.refresh?.length), accept: () => current(held) });
-    if (!current(held) || stored?.revision !== frame.revision || !stored.refreshPending) return;
+    if (!confirmedRefreshCurrent(stored, frame, held)) return;
     if (options.onRefresh) {
       if (refreshes.has(row.operationId)) detachRefresh(refreshes.get(row.operationId));
       const entry = { frame, row: stored, held, running: false };
@@ -252,6 +252,8 @@ export function createWriteOperationService(options) {
       startRefresh(entry);
     }
   }
+  const confirmedRefreshCurrent = (stored, frame, held) => current(held)
+    && stored?.revision === frame.revision && stored.refreshPending;
   function confirmationNormalizer(frame, row) {
     if (options.normalizeConfirmation) return options.normalizeConfirmation;
     if (!row.acknowledged && frame.state === "succeeded") return options.normalizeAckEffects;

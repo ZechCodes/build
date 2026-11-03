@@ -402,7 +402,7 @@ export async function landSummaryPage(ticket, page, { read, accept = () => true,
     queryRetired = summaryPageReadRetired(ticket.contentRead, read, context);
     const rows = tasks.map((task, index) => pageRow(records[index]?.value, task, read, page.basis, { context, address: summaryAddress(ticket.scope, task.id),
       written: recordWriteOf(records[index]), contentRead: ticket.contentRead, scope: ticket.scope }));
-    if (!queryRetired && rows.some((row) => !row.task?.id)) return null;
+    if (invalidPageRows(queryRetired, rows)) return null;
     const actors = identities.map(([, identity], index) => records[tasks.length + index]?.value?.read_order > read
       ? null : { identity, read_order: read });
     // Independent row families keep their own admission rules. They cannot
@@ -414,6 +414,8 @@ export async function landSummaryPage(ticket, page, { read, accept = () => true,
     onCommit: () => { if (queryRetired && accept()) onQueryRetired?.(); } });
   return written && !queryRetired;
 }
+
+const invalidPageRows = (retired, rows) => !retired && rows.some((row) => !row.task?.id);
 
 /** Immediate action result or optimistic patch. The shared row and project
  * invalidation commit together, fencing every older query without enumerating
@@ -524,7 +526,8 @@ function validateSummaryMutation(scope, task, read, fullTask, confirmedAction) {
 
 /** Cache-only reconstruction. Loaded membership never claims a project total
  * and an absent entity is never inferred to be deleted by a partial query. */
-const rowOvertaken = (held, row, read) => row?.needs_unread_refresh || row?.watch_uncertain || row?.basis_uncertain || differentBasis(held, row)
+const rowIncomplete = (row) => row?.needs_unread_refresh || row?.watch_uncertain || row?.basis_uncertain;
+const rowOvertaken = (held, row, read) => rowIncomplete(row) || differentBasis(held, row)
   || (row?.read_order || 0) > read && !unchangedBasis(held, row);
 const differentBasis = (held, row) => Boolean(held.basis && row?.basis && held.basis !== row.basis);
 const rowsOvertaken = (held, records) => held.ids.some((id, index) => rowOvertaken(held, records[index]?.value, held.row_reads?.[id] || 0));
@@ -547,8 +550,7 @@ export async function readSummaryQuery(scope, filters) {
     missing_ids: missingIds,
     snapshot_continuation_eligible: snapshotContinuationEligible(held, { scope, filters, context,
       overtaken: queryChanged }),
-    stale: missingIds.length > 0 || queryWatchOvertaken(held, context) || summarySnapshotRetired(held, context)
-      || queryChanged || rowsOvertaken(held, records),
+    stale: missingIds.length > 0 || queryChanged || summaryRowsStale(held, context, records),
     tasks: records.slice(0, held.ids.length).flatMap((record, index) => record?.value?.task
       ? [{ ...record.value.task, ...held.row_fields?.[held.ids[index]] }] : []),
     identities: Object.fromEntries(ids.flatMap((id, index) => {
@@ -557,6 +559,9 @@ export async function readSummaryQuery(scope, filters) {
     })),
   };
 }
+
+const summaryRowsStale = (held, context, records) => queryWatchOvertaken(held, context)
+  || summarySnapshotRetired(held, context) || rowsOvertaken(held, records);
 
 const queryOvertaken = (held, invalidation, observation) => invalidatedQuery(held, invalidation)
   || observedNewBasis(held, observation);

@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { columns, task } from "./trackerWireFixture.js";
+import { columns, task as wireTask } from "./trackerWireFixture.js";
 
 vi.mock("../src/core/changeEvents.js", () => ({
   bridgeCapabilities: () => ({ tasks: { waitingOn: true } }),
@@ -12,6 +12,7 @@ vi.mock("../src/core/deviceReconnect.js", () => ({
   deviceWatch: () => ({ away: () => false, reconnecting: () => false, moved: () => () => {} }),
 }));
 
+const task = (over = {}) => wireTask({ project_id: "project", ...over });
 const actor = { kind: "agent", agent_id: "AgentA\0suffix" };
 const feed = {
   projects: [{ projectKey: "device|project", projectRoster: { agents: [
@@ -34,7 +35,9 @@ const expectShown = async (shown) => {
   await vi.waitFor(() => expect(titles()).toEqual(shown ? [held.title] : []), { timeout: 10_000 });
 };
 const store = async () => {
-  await listCache.writeTasksRecord("device", "project", listCache.tasksRecord([held], columns(), await readOrder.nextTaskRead()));
+  const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+  const contentRead = await captureTaskContentRead(listCache.tasksAddress("device", "project"), { revalidate: "full" });
+  await listCache.writeTasksRecord("device", "project", listCache.tasksRecord([held], columns(), contentRead.readOrder), { contentRead });
 };
 
 beforeEach(async () => {

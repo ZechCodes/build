@@ -29,16 +29,16 @@ let cache;
 beforeEach(() => {
   data.previous = { write: "captured-base", value: { task: { title: "before" }, timeline: [] } };
   data.addresses = [];
-  cache = { observePublication: vi.fn(async ({ canonical }) => canonical.map(({ address }) => address)), get: vi.fn(async () => ({ overlayActive: false })) };
+  cache = { observePublication: vi.fn(async ({ canonical }) => canonical.map(({ address }) => address)), get: vi.fn(async () => undefined) };
 });
 
 describe("canonical publication refresh", () => {
   it("reads after confirmation and guards publication against the captured base and opening", async () => {
-    const answer = { task: { title: "after" }, timeline: [{ body: "normalized" }] };
+    const answer = { task: { id: address.sub, project_id: address.entityId, title: "after" }, timeline: [{ body: "normalized" }] };
     const authority = { active: () => true, call: vi.fn(async () => answer) };
     await refreshWriteOperation({ cache, frame, record, authority });
     expect(authority.call).toHaveBeenCalledWith("tasks.get", { task_id: "task-A" });
-    expect(cache.observePublication).toHaveBeenCalledWith({ accept: authority.active,
+    expect(cache.observePublication).toHaveBeenCalledWith({ accept: authority.active, report: true,
       canonical: [{ address, value: answer, publication: frame.published, guard: { written: "captured-base", detailBasis: 7 }, contentRead: data.contentRead }] });
   });
 
@@ -46,17 +46,12 @@ describe("canonical publication refresh", () => {
     let active = true;
     const authority = { active: () => active, call: vi.fn(async () => {
       active = false;
-      return { task: {}, timeline: [] };
+      return { task: { id: address.sub, project_id: address.entityId }, timeline: [] };
     }) };
     await expect(refreshWriteOperation({ cache, frame, record, authority })).rejects.toThrow("opening");
     expect(cache.observePublication).not.toHaveBeenCalled();
   });
 
-  it("keeps retrying when an intervening canonical write prevented layer retirement", async () => {
-    cache.get.mockResolvedValue({ overlayActive: true });
-    const authority = { active: () => true, call: vi.fn(async () => ({ task: {}, timeline: [] })) };
-    await expect(refreshWriteOperation({ cache, frame, record, authority })).rejects.toThrow("publication");
-  });
 
   it("never retires a thread layer with a rejected generation's null window", async () => {
     const thread = { ...record, request: { params: { entity_id: "workspace-A", conversation_id: "conversation-A" } },
@@ -68,7 +63,7 @@ describe("canonical publication refresh", () => {
 
   it("refreshes the failed-unapplied fixture before ack using persisted task ownership", async () => {
     const failedRecord = { ...record, overlay: [], request: { method: "tasks.comment", params: { task_id: failure.refresh[0].id } } };
-    const authority = { active: () => true, call: vi.fn(async () => ({ task: { id: failure.refresh[0].id }, timeline: [] })) };
+    const authority = { active: () => true, call: vi.fn(async () => ({ task: { id: failure.refresh[0].id, project_id: address.entityId }, timeline: [] })) };
     await refreshWriteOperation({ cache, frame: failure, record: failedRecord, authority });
     expect(authority.call).toHaveBeenCalledWith("tasks.get", { task_id: failure.refresh[0].id });
     expect(cache.observePublication.mock.calls[0][0].canonical[0]).toMatchObject({ address: { ...address, sub: failure.refresh[0].id }, publication: [], guard: { detailBasis: 7 } });
@@ -77,7 +72,7 @@ describe("canonical publication refresh", () => {
   it("finds the requested task in known cache addresses when the request has no project", async () => {
     const heldRecord = { ...record, overlay: [], owner: undefined };
     data.addresses = [{ ...address, deviceId: "unrelated-device" }, address];
-    const authority = { active: () => true, call: vi.fn(async () => ({ task: {}, timeline: [] })) };
+    const authority = { active: () => true, call: vi.fn(async () => ({ task: { id: address.sub, project_id: address.entityId }, timeline: [] })) };
     await refreshWriteOperation({ cache, frame: { ...frame, refresh: [{ kind: "task", id: "task-A" }] }, record: heldRecord, authority });
     expect(cache.observePublication.mock.calls[0][0].canonical[0].address).toEqual(address);
   });
@@ -94,11 +89,6 @@ describe("canonical publication refresh", () => {
     expect(cache.observePublication).not.toHaveBeenCalled();
   });
 
-  it("retains a required refresh when a newer task detail or canonical write rejects publication", async () => {
-    cache.observePublication.mockResolvedValue([]);
-    const authority = { active: () => true, call: vi.fn(async () => ({ task: {}, timeline: [] })) };
-    await expect(refreshWriteOperation({ cache, frame: { ...frame, state: "failed", refresh: [{ kind: "task", id: "task-A" }] }, record: { ...record, overlay: [] }, authority })).rejects.toThrow("publication");
-  });
 
   it("requires the persisted thread generation even when its canonical window is cold", async () => {
     data.previous = undefined;

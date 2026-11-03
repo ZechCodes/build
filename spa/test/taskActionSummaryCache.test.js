@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
+import { rememberTaskUnreadDisplay } from "./taskUnreadDisplayFixture.js";
 
 let cache, tracker, summaries, actions, order, content;
 const scope = { deviceId: "action-summary-900", projectId: "proj-1" };
@@ -162,7 +163,8 @@ it("preserves newer ordinary task fields and exact marker/counter authority whil
     review_summary: { task_id: taskId, version: 6, status: "closed", mode: "pull_request" } }));
   const row = (await value(summaries.summaryAddress(scope, taskId))).task;
   expect(row).toMatchObject({ title: "Newer content", read_through: "tc-21\0", watch_started_after: "te-30", dismissed_through: "te-40",
-    unread_count: 0, unread_mentions: 0, unread_agent_comments: 0, review_summary: { version: 6, status: "closed" } });
+    unread_count: 0, review_summary: { version: 6, status: "closed" } });
+  expect(row).not.toHaveProperty("unread_mentions"); expect(row).not.toHaveProperty("unread_agent_comments");
   expect((await tracker.readTaskRecord(scope.deviceId, scope.projectId, taskId)).task.title).toBe("Newer content");
   expect((await summaries.readSummaryQuery(scope, filters)).stale).toBe(true);
 });
@@ -200,11 +202,14 @@ it("exposes a guarded bounded mutation fragment that can share a caller transact
 
 it("retains incomplete full-action counter families until a complete covering summary arrives", async () => {
   await seed();
+  const display = await rememberTaskUnreadDisplay(scope, (await value(summaries.summaryAddress(scope, taskId))).task);
   const answer = full({ read_through: "tc-20", updated_at: "2026-10-29T12:01:00Z" });
   for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) delete answer[field];
   await action(answer);
   let held = await value(summaries.summaryAddress(scope, taskId));
-  expect(held).toMatchObject({ needs_unread_refresh: true, task: { read_through: "tc-20", unread_count: 3, unread_mentions: 1, unread_agent_comments: 2 } });
+  expect(held).toMatchObject({ needs_unread_refresh: true, task: { read_through: "tc-20" } });
+  for (const field of ["unread_count", "unread_mentions", "unread_agent_comments"]) expect(held.task).not.toHaveProperty(field);
+  expect(display(held.task)).toBe(3);
   async function refresh(task) {
     const contentRead = await content.captureTaskContentRead(scope, { revalidate: "summary" });
     const read = contentRead.readOrder, ticket = await summaries.beginSummaryQuery(scope, filters, read, { contentRead });
@@ -218,6 +223,7 @@ it("retains incomplete full-action counter families until a complete covering su
   held = await value(summaries.summaryAddress(scope, taskId));
   expect(held.needs_unread_refresh).toBe(false);
   expect(held.task).toMatchObject({ unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 });
+  expect(display(held.task)).toBe(0);
 });
 
 it("compares raw full-action floors before merging held values and never certifies weaker counters", async () => {
@@ -227,15 +233,19 @@ it("compares raw full-action floors before merging held values and never certifi
   // This legacy absent-floor observation has no confirmed watch-lineage
   // dispatch authority; it must retain stronger held floors and counters.
   await unguardedAction(answer);
-  expect(await value(summaries.summaryAddress(scope, taskId))).toMatchObject({ needs_unread_refresh: true,
+  expect(await value(summaries.summaryAddress(scope, taskId))).toMatchObject({ needs_unread_refresh: false,
     task: { read_through: "tc-20", unread_count: 0, unread_mentions: 0, unread_agent_comments: 0 } });
 });
 
 it("marks counter authority incomplete when a compact patch advances its floor without paired counters", async () => {
   await seed();
+  const display = await rememberTaskUnreadDisplay(scope, (await value(summaries.summaryAddress(scope, taskId))).task);
   await summaries.writeSummaryTask(scope, { id: taskId, read_through: "tc-20" }, await order.nextTaskRead());
   expect(await value(summaries.summaryAddress(scope, taskId))).toMatchObject({ needs_unread_refresh: true,
-    task: { read_through: "tc-20", unread_count: 3, unread_mentions: 1, unread_agent_comments: 2 } });
+    task: { read_through: "tc-20" } });
+  const unknown = (await value(summaries.summaryAddress(scope, taskId))).task;
+  expect(unknown).not.toHaveProperty("unread_count");
+  expect(display(unknown)).toBe(3);
   await action(full({ watched: false, updated_at: "2026-10-29T12:01:00Z" }));
   expect((await value(summaries.summaryAddress(scope, taskId))).needs_unread_refresh).toBe(false);
 });

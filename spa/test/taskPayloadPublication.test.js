@@ -70,6 +70,13 @@ async function seedTask(runtime, id = "payload-task", overrides = {}, timeline =
   return { address, row };
 }
 
+async function seedUncertainTask(runtime, ...args) {
+  const target = await seedTask(runtime, ...args);
+  expect(await runtime.watch.beginTaskWatchMutation(scope, target.row.id,
+    { watched: false, metadataOnly: true })).not.toBeNull();
+  return target;
+}
+
 async function confirmedOperation(runtime, targets, { operationId = "payload-operation", overlay = true, generation = 2 } = {}) {
   const first = targets[0], published = publication(generation);
   const effects = overlay ? [{ address: first.address, kind: "upsert", path: ["timeline"], key: "id",
@@ -157,8 +164,15 @@ async function startService(runtime, answer, calls = [], { waitForRefresh = true
   });
   const drain = async () => {
     while (pending.size) await Promise.allSettled([...pending]);
-    // A real store turn also passes the service's promise-finally callbacks.
-    await runtime.local.transactWriteOperations("readonly", () => null);
+    // Observe the service consuming the committed refresh state, not just the
+    // inner publication callback returning before finishTaskRefresh runs.
+    const expected = await runtime.operations.list();
+    const consumed = () => sameValues(service.readOperations(), expected);
+    if (!consumed()) await new Promise((resolve) => {
+      const stop = service.subscribe(() => { if (consumed()) { stop(); resolve(); } });
+      if (consumed()) { stop(); resolve(); }
+    });
+    await Promise.resolve();
   };
   const running = { service, session, calls, timers, drain, pending };
   services.push(running);
@@ -247,7 +261,7 @@ function timerBoundaryObservation(runtime, expected) {
 
 it("publishes admitted task payload under unknown watch authority without a receipt or completion", async () => {
   const writer = await independentRuntime(), observer = await independentRuntime();
-  const target = await seedTask(writer), { record, frame } = await confirmedOperation(writer, [target]);
+  const target = await seedUncertainTask(writer), { record, frame } = await confirmedOperation(writer, [target]);
   expect(await writer.watch.readTaskWatchState(scope)).toMatchObject({ uncertain: true, eligible: false });
   const beforeBasis = await writer.tracker.captureTaskDetailRead(scope.deviceId, scope.projectId, target.row.id);
   const answer = answerFor(target);
@@ -434,7 +448,7 @@ it("cannot park a newer confirmed obligation while its original session remains 
 });
 
 it("retains a blocked refresh across reopen without retrying or blocking a new user write", async () => {
-  const writer = await independentRuntime(), target = await seedTask(writer);
+  const writer = await independentRuntime(), target = await seedUncertainTask(writer);
   await confirmedOperation(writer, [target]);
   const calls = [], running = await startService(writer, () => answerFor(target), calls);
   expect(calls.filter(({ method }) => method === "tasks.get")).toHaveLength(1);
@@ -457,7 +471,7 @@ it("retains a blocked refresh across reopen without retrying or blocking a new u
 });
 
 it("does not retain a retry timer after the blocked refresh is observed by the service", async () => {
-  const writer = await independentRuntime(), target = await seedTask(writer);
+  const writer = await independentRuntime(), target = await seedUncertainTask(writer);
   const { record, frame } = await confirmedOperation(writer, [target]);
   const expected = { record, frame, keys: [writer.keys.recordKey(target.address)] };
   const observation = timerBoundaryObservation(writer, expected);
@@ -527,7 +541,7 @@ it("does not retain a retry timer after the blocked refresh is observed by the s
 });
 
 it("does not wake a blocked obligation for unrelated or still unknown cache evidence", async () => {
-  const writer = await independentRuntime(), target = await seedTask(writer);
+  const writer = await independentRuntime(), target = await seedUncertainTask(writer);
   await confirmedOperation(writer, [target]);
   const calls = [], running = await startService(writer, () => answerFor(target), calls);
   await writer.local.writeCached({ deviceId: scope.deviceId, entityId: scope.projectId, kind: "unrelated" }, { value: 1 });
@@ -540,8 +554,7 @@ it("does not wake a blocked obligation for unrelated or still unknown cache evid
   await running.service.checkAgain("payload-operation"); await running.drain();
   expect(calls.filter(({ method }) => method === "tasks.get")).toHaveLength(1);
   await operationUnfinished(writer);
-  // Genuine positive D3-08 receipt integration is NOT RUN: its supported D1
-  // as-of producer is not implemented. No private known-zero seed replaces it.
+  // The genuine pending owner keeps this obligation blocked.
 });
 
 it.each(["fresh", "reset", "orphan"])("does not turn %s ordinary proof or an empty overlay into a full task receipt", async (kind) => {
@@ -553,13 +566,13 @@ it.each(["fresh", "reset", "orphan"])("does not turn %s ordinary proof or an emp
     if (kind === "reset") { await writer.local.wipeCache(); target = await seedTask(writer); }
   }
   const entry = await capturedEntry(writer, target);
-  expect(entry.contentRead.ticket.watchUncertain).toBe(true);
+  expect(entry.contentRead.ticket.watchUncertain).toBe(kind === "orphan");
   await writer.operations.observePublication({ canonical: [entry] });
   const held = await writer.local.readCanonicalCached(target.address);
   expect(held.value.task.body).toBe(entry.value.task.body);
   expect(held.publication || []).toEqual([]);
   await operationUnfinished(writer, "payload-operation", record.overlayActive);
-  expect(await writer.watch.readTaskWatchState(scope)).toMatchObject({ uncertain: true, eligible: false });
+  expect(await writer.watch.readTaskWatchState(scope)).toMatchObject({ uncertain: kind === "orphan", eligible: kind !== "orphan" });
 });
 
 it("keeps multi-target completion pending across generation changes and reopen", async () => {
@@ -640,7 +653,7 @@ it("does not retire another operation from a preexisting vector during a partial
 
 it("aborts queued partial task publication when its accept guard retires during the detail put", async () => {
   const writer = await independentRuntime(), observer = await independentRuntime();
-  const target = await seedTask(writer);
+  const target = await seedUncertainTask(writer);
   await confirmedOperation(writer, [target]);
   const entry = await capturedEntry(writer, target), before = await snapshot(observer, [target]);
   expect(await writer.watch.readTaskWatchState(scope)).toMatchObject({ uncertain: true, eligible: false });
@@ -671,7 +684,7 @@ it("aborts queued partial task publication when its accept guard retires during 
 
 it("commits partial task publication while its accept guard remains current", async () => {
   const writer = await independentRuntime(), observer = await independentRuntime();
-  const target = await seedTask(writer);
+  const target = await seedUncertainTask(writer);
   await confirmedOperation(writer, [target]);
   const entry = await capturedEntry(writer, target);
   const heard = [];
@@ -753,7 +766,7 @@ async function blockedOwnedOperation(runtime, targets, { frame, record }) {
 }
 
 it("persists an exact owned partial outcome together with admitted task payload", async () => {
-  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedTask(writer);
+  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedUncertainTask(writer);
   const confirmed = await confirmedOperation(writer, [target]), answer = answerFor(target);
   const reading = ownedReading(writer, confirmed, async () => answer);
   await reading.done;
@@ -769,7 +782,7 @@ it("persists an exact owned partial outcome together with admitted task payload"
 });
 
 it("rolls an owned partial outcome and payload back when the summary put aborts", async () => {
-  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedTask(writer);
+  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedUncertainTask(writer);
   const confirmed = await confirmedOperation(writer, [target]), answer = answerFor(target);
   const detailKey = writer.keys.recordKey(target.address), summaryKey = writer.keys.recordKey(writer.summaries.summaryAddress(scope, target.row.id));
   const originalPut = IDBObjectStore.prototype.put;
@@ -797,7 +810,7 @@ it("rolls an owned partial outcome and payload back when the summary put aborts"
 });
 
 it.each(["current", "retired"])("recomputes an owned partial outcome after transient abort with a %s session", async (kind) => {
-  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedTask(writer);
+  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedUncertainTask(writer);
   const confirmed = await confirmedOperation(writer, [target]), answer = answerFor(target);
   const originalPut = IDBObjectStore.prototype.put, detailKey = writer.keys.recordKey(target.address);
   let active = true, attempted = 0, dispatched, stop = () => {};
@@ -837,7 +850,7 @@ it.each(["current", "retired"])("recomputes an owned partial outcome after trans
 });
 
 it("rejects an older same-generation refresh attempt before the newer response writes", async () => {
-  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedTask(writer);
+  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedUncertainTask(writer);
   const confirmed = await confirmedOperation(writer, [target]), firstReply = deferred(), nextReply = deferred();
   const active = () => true;
   const first = ownedReading(writer, confirmed, () => firstReply.promise, active);
@@ -861,7 +874,7 @@ it("rejects an older same-generation refresh attempt before the newer response w
 });
 
 it("fences a real replaced service opening from parking its current refresh", async () => {
-  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedTask(writer);
+  const writer = await independentRuntime(), observer = await independentRuntime(), target = await seedUncertainTask(writer);
   const confirmed = await confirmedOperation(writer, [target]), oldReply = deferred(), nextReply = deferred();
   let reads = 0;
   const calls = [], running = await startService(writer, () => ++reads === 1 ? oldReply.promise : nextReply.promise, calls, { waitForRefresh: false });
@@ -887,7 +900,7 @@ it("fences a real replaced service opening from parking its current refresh", as
 });
 
 it("dispatches an independent user write without reviving parked task refresh work", async () => {
-  const writer = await independentRuntime(), target = await seedTask(writer);
+  const writer = await independentRuntime(), target = await seedUncertainTask(writer);
   await confirmedOperation(writer, [target]);
   const calls = [], running = await startService(writer, () => answerFor(target), calls);
   expect(calls.filter(({ method }) => method === "tasks.get")).toHaveLength(1);
@@ -904,7 +917,7 @@ it("dispatches an independent user write without reviving parked task refresh wo
 });
 
 it("parks every owned target once and preserves its obligation across an actual reopen", async () => {
-  const writer = await independentRuntime(), first = await seedTask(writer, "owned-first"), second = await seedTask(writer, "owned-second");
+  const writer = await independentRuntime(), first = await seedUncertainTask(writer, "owned-first"), second = await seedUncertainTask(writer, "owned-second");
   const targets = [first, second], confirmed = await confirmedOperation(writer, targets);
   const reading = ownedReading(writer, confirmed, async (_method, { task_id }) => answerFor(targets.find(({ row }) => row.id === task_id)));
   await reading.done;
@@ -926,7 +939,7 @@ it("parks every owned target once and preserves its obligation across an actual 
 
 it("rejects old owned multi-target responses after a newer confirmation is admitted", async () => {
   const writer = await independentRuntime(), observer = await independentRuntime();
-  const first = await seedTask(writer, "old-owned-target"), second = await seedTask(writer, "new-owned-target");
+  const first = await seedUncertainTask(writer, "old-owned-target"), second = await seedUncertainTask(writer, "new-owned-target");
   const old = await confirmedOperation(writer, [first, second]), oldReply = deferred(), nextReply = deferred();
   const stale = ownedReading(writer, old, () => oldReply.promise);
   await vi.waitFor(() => expect(stale.authority.call).toHaveBeenCalledTimes(1));
@@ -980,8 +993,8 @@ async function confirmedThreadOperation(runtime, { operationId, taskTarget, task
 }
 
 it.each([true, false])("refreshes every task and thread target of a mixed named obligation with taskFirst=%s", async (taskFirst) => {
-  const writer = await independentRuntime(), target = await seedTask(writer, "mixed-task");
-  const other = await seedTask(writer, "mixed-other-task");
+  const writer = await independentRuntime(), target = await seedUncertainTask(writer, "mixed-task");
+  const other = await seedUncertainTask(writer, "mixed-other-task");
   await confirmedOperation(writer, [other], { operationId: "mixed-other-operation" });
   const unrelated = await snapshot(writer, [other], "mixed-other-operation");
   const mixed = await confirmedThreadOperation(writer, { operationId: "mixed-operation", taskTarget: target, taskFirst });
@@ -1077,7 +1090,7 @@ it.each(["copied", "serialized", "foreign-runtime"])("does not qualify an owned 
 });
 
 it("does not convert a nonowned thread publication into an owned mixed receipt", async () => {
-  const writer = await independentRuntime(), target = await seedTask(writer, "nonowned-thread-task");
+  const writer = await independentRuntime(), target = await seedUncertainTask(writer, "nonowned-thread-task");
   const mixed = await confirmedThreadOperation(writer, { operationId: "nonowned-thread-operation", taskTarget: target });
   const cache = { get: writer.operations.get, openRefresh: writer.operations.openRefresh,
     observePublication: async (input) => {
@@ -1130,7 +1143,7 @@ async function cachedTaskMatches(runtime, id) {
 }
 
 it("refreshes a projectless operation through its unique genuine cached task address", async () => {
-  const writer = await independentRuntime(), target = await seedTask(writer, "projectless-task");
+  const writer = await independentRuntime(), target = await seedUncertainTask(writer, "projectless-task");
   const confirmed = await projectlessConfirmedOperation(writer, target);
   expect(await cachedTaskMatches(writer, target.row.id)).toEqual([target.address]);
   expect(await writer.watch.readTaskWatchState(scope)).toMatchObject({ uncertain: true, eligible: false });
@@ -1188,4 +1201,44 @@ it("refuses a caller supplied project that differs from the unique cached task s
   expect(await writer.local.readCanonicalCached(target.address)).toEqual(before);
   expect(await writer.local.readCanonicalCached(wrong)).toBeUndefined();
   expect(await writer.operations.get(confirmed.record.operationId)).toEqual(confirmed.record);
+});
+
+// These inherited refresh contracts now exercise the real service and cache;
+// a resolved partial result cannot retire either the obligation or its layer.
+it.each([
+  "keeps retrying when an intervening canonical write prevented layer retirement",
+  "retains a required refresh when a newer task detail or canonical write rejects publication",
+])("%s", async () => {
+  const writer = await independentRuntime(), target = await seedTask(writer);
+  await confirmedOperation(writer, [target]);
+  const newer = { ...target.row, title: "Newer canonical title", body: "Newer canonical body",
+    updated_at: "2026-11-01T00:00:00Z" };
+  const contentRead = await writer.content.captureTaskContentRead(target.address, { revalidate: "full" });
+  await writer.tracker.writeTaskRecord(scope.deviceId, scope.projectId, target.row.id,
+    writer.tracker.taskRecord(newer, []), { contentRead });
+  const parked = vi.spyOn(writer.operations, "watchRefresh");
+  let observed, stop;
+  const consumed = Promise.withResolvers();
+  const running = await startService(writer, () => answerFor(target), [], {
+    observation: { errors: [], refreshed: ({ result }) => { observed = result; },
+      created: ({ service }) => { stop = service.subscribe((rows) => {
+        if (observed) queueMicrotask(() => consumed.resolve(structuredClone(rows)));
+      }); } },
+  });
+  const rows = await consumed.promise; stop();
+  expect(rows).toMatchObject([{ refreshPending: true, overlayActive: true }]);
+  expect(parked).toHaveBeenCalledExactlyOnceWith({ operationId: "payload-operation",
+    generation: rows[0].refreshState.generation }, expect.any(Function));
+  expect(observed).toMatchObject({ complete: false, refresh: { state: "blocked" },
+    outcomes: [{ historyWritten: true, receiptPublished: false }] });
+  await operationUnfinished(writer);
+  const saved = await writer.local.readCanonicalCached(target.address);
+  expect(saved.value.task).toMatchObject({ title: newer.title, body: newer.body });
+  expect(saved.value.timeline).toEqual(answerFor(target).timeline);
+  expect(saved.publication || []).toEqual([]);
+  expect(running.timers.size).toBe(0);
+  await running.service.reconcile(); await running.drain();
+  expect(running.calls.filter(({ method }) => method === "tasks.get")).toHaveLength(1);
+  await operationUnfinished(writer);
+  expect((await writer.local.readCanonicalCached(target.address)).value.timeline).toEqual(answerFor(target).timeline);
 });

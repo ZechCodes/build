@@ -79,6 +79,8 @@ async function requiredAddress(item, frame, record) {
   return REFRESH_ADDRESSES[item.kind](item, frame, record);
 }
 
+const publicationReport = (task, refresh) => task || refresh ? { report: true } : {};
+
 async function refreshAddresses(frame, record) {
   const addresses = new Map();
   for (const item of frame.refresh || []) {
@@ -113,7 +115,7 @@ async function refreshAddress(address, { cache, frame, record, authority, refres
   const result = await cache.observePublication({
     accept: active,
     ...(refresh ? { refresh } : {}),
-    ...(task || refresh ? { report: true } : {}),
+    ...publicationReport(task, refresh),
     canonical: [entry],
   });
   assertActive(authority);

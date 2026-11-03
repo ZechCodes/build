@@ -10,6 +10,7 @@ function memoryCache() {
     update: async (id, update, options={}) => { if(options.accept && !options.accept()) return rows.get(id); const row = update(rows.get(id)); if (row) rows.set(id, row); return rows.get(id); },
     accept: async (id, fields) => { const row = rows.get(id); Object.assign(row, fields, {acknowledged:true,state:'accepted'}); return row; },
     confirm: async (id, fields) => { const row = rows.get(id); Object.assign(row, fields, {acknowledged:true,state:fields.confirmation.state}); return row; },
+    reevaluateRefresh: async ({operationId}) => { const row=rows.get(operationId); if(row) row.refreshPending=true; },
     acquireLease: async () => true, renewLease: async () => true, releaseLease: async () => true,
   };
 }
@@ -278,7 +279,10 @@ it('persists a refresh obligation for failure before ack without an overlay',asy
 });
 
 it('retries persisted refresh obligations after reload even with a retired overlay',async()=>{
-  const refresh=vi.fn().mockResolvedValue(undefined);
+  const refresh=vi.fn(async () => {
+    cache.rows.get('failed').refreshPending=false;
+    return {complete:true};
+  });
   const {service,cache,bind}=setup(async()=>({operations:[]}),{onRefresh:refresh});
   const frame=confirmation('failed',{state:'failed',effect:'unknown',refresh:[{kind:'task',id:'T'}]});
   await cache.put({operationId:'failed',request:{method:'tasks.update',params:{task_id:'T'}},state:'failed',revision:2,acknowledged:true,overlayActive:false,overlay:[],unresolved:true,refreshPending:true,confirmation:frame,journalIncarnation:'journal-A'});
@@ -289,7 +293,10 @@ it('retries persisted refresh obligations after reload even with a retired overl
 });
 
 it('checks an uncertain result with a fresh named read after an earlier refresh completed',async()=>{
-  const refresh=vi.fn().mockResolvedValue(undefined);
+  const refresh=vi.fn(async () => {
+    cache.rows.get('uncertain').refreshPending=false;
+    return {complete:true};
+  });
   const {service,cache,bind}=setup(async()=>({operations:[]}),{onRefresh:refresh});
   const frame=confirmation('uncertain',{state:'failed',effect:'partial',refresh:[{kind:'task',id:'T'}]});
   await cache.put({operationId:'uncertain',request:{method:'tasks.update',params:{task_id:'T'}},state:'failed',revision:2,acknowledged:true,overlayActive:false,overlay:[],unresolved:true,refreshPending:false,confirmation:frame,journalIncarnation:'journal-A'});

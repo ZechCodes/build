@@ -91,7 +91,7 @@ function normalizedAction(summary, shared, guards) {
 
 export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { accept = () => true, issuedRead, contentRead, watchOwner } = {}) {
   const task = answer?.task;
-  if (!task?.id || !watchOwner && !accept()) return false;
+  if (!acceptsActionStart(task, watchOwner, accept)) return false;
   if (!matchingWatchScope(watchOwner, deviceId, projectId, task.id)) return false;
   validateTaskActionOrder(issuedRead);
   const listed = (await cachedAddresses({ deviceId, entityId: projectId })).filter((address) => listKinds.has(address.kind));
@@ -101,12 +101,16 @@ export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { 
   const read = await nextTaskRead();
   const summary = summaryTaskMutation({ deviceId, projectId }, task, read,
     { accept, fullTask: true, confirmedAction: issuedRead !== undefined, issuedRead, contentRead, rawObservation: true });
-  const settlement = watchOwner ? taskWatchSettlementFragment(watchOwner) : null;
+  const settlement = watchSettlement(watchOwner);
   const config = { addresses, listed, summary, settlement, watchOwner, accept, issuedRead, contentRead, answer, task, read, published: false };
   const written = await mergeCachedRecordsTogether([...addresses, ...summary.addresses, ...(settlement?.addresses || [])],
     (records) => actionResponseValues(records, config));
   return written && config.published;
 }
+
+const watchSettlement = (owner) => owner ? taskWatchSettlementFragment(owner) : null;
+
+const acceptsActionStart = (task, owner, accept) => Boolean(task?.id) && (Boolean(owner) || accept());
 
 const matchingWatchScope = (owner, deviceId, projectId, taskId) => !owner || owner.scope.deviceId === deviceId
   && owner.scope.projectId === projectId && owner.taskId === taskId;
@@ -118,16 +122,23 @@ function actionResponseValues(all, config) {
   const { addresses, summary, settlement, contentRead, accept } = config;
   const records = all.slice(0, addresses.length), shared = all.slice(addresses.length, addresses.length + summary.addresses.length);
   const context = summary.context(shared), note = records.at(-1);
-  const settled = settlement?.reduce(all.slice(addresses.length + summary.addresses.length), { context, note, contentRead, accept });
+  const settled = reduceActionSettlement(settlement, all, addresses.length + summary.addresses.length, { context, note, contentRead, accept });
   if (settlement && !settled) return null;
   if (settled) records[records.length - 1] = { ...note, value: settled.note };
-  const cleanup = settled ? [...records.map((record, index) => index === records.length - 1 ? settled.note : ownerStampCleanup(record?.value, settled.owner)),
-    ...shared.map((record) => ownerStampCleanup(record?.value, settled.owner)), ...settled.values] : null;
+  const cleanup = settled ? actionCleanup(records, shared, settled) : null;
   if (!actionDataAccepted(config, note, settled)) return cleanup;
-  const values = acceptedActionValues(records, shared, config, settled?.context || context, settled?.acknowledgment);
+  const after = settled || { context };
+  const values = acceptedActionValues(records, shared, config, after.context, after.acknowledgment);
   if (!values) return cleanup;
   config.published = true;
-  return [...values, ...(settled?.values || [])];
+  return [...values, ...(after.values || [])];
+}
+
+const reduceActionSettlement = (settlement, records, offset, options) => settlement?.reduce(records.slice(offset), options);
+
+function actionCleanup(records, shared, settled) {
+  return [...records.map((record, index) => index === records.length - 1 ? settled.note : ownerStampCleanup(record?.value, settled.owner)),
+    ...shared.map((record) => ownerStampCleanup(record?.value, settled.owner)), ...settled.values];
 }
 
 const actionDataAccepted = (config, note, settled) => config.accept() && !olderAction(note?.value, config.issuedRead)
@@ -169,6 +180,7 @@ export async function cleanupTaskWatchMutation(owner, { rollback, accept }) {
   const replicas = [taskAddress(deviceId, projectId, owner.taskId), summaryAddress(scope, owner.taskId), ...listed];
   const noteAddress = readsAddress(replicas[0]), fragment = taskContentFragment(scope), settlement = taskWatchSettlementFragment(owner);
   const addresses = [...replicas, noteAddress, ...fragment.addresses, ...settlement.addresses];
+  const read = await nextTaskRead();
   let restored = false;
   const written = await mergeCachedRecordsTogether(addresses, (records) => {
     restored = false;
@@ -177,13 +189,13 @@ export async function cleanupTaskWatchMutation(owner, { rollback, accept }) {
     const settled = settlement.reduce(records.slice(-settlement.addresses.length), { context, note, accept });
     if (!settled) return null;
     restored = Boolean(rollback && settled.canRestore);
-    const values = records.slice(0, replicas.length).map((record) => settledWatchReplica(record?.value, settled.owner, restored));
+    const values = records.slice(0, replicas.length).map((record) => settledWatchReplica(record?.value, settled.owner, restored, read));
     return [...values, settled.note, ...fragment.finish([]), ...settled.values];
   });
   return written && restored;
 }
 
-function settledWatchReplica(value, owner, restore) {
+function settledWatchReplica(value, owner, restore, read) {
   const clean = (task) => settledWatchTask(task, owner, restore);
   if (value?.task) {
     const task = clean(value.task);
@@ -194,7 +206,7 @@ function settledWatchReplica(value, owner, restore) {
   }
   if (!value?.tasks) return null;
   const tasks = value.tasks.map(clean);
-  return tasks.some((task, index) => task !== value.tasks[index]) ? { ...value, tasks } : null;
+  return tasks.some((task, index) => task !== value.tasks[index]) ? { ...value, tasks, read_order: value.read_order > owner.intentRead ? value.read_order : read } : null;
 }
 
 function settledWatchTask(task, owner, restore) {

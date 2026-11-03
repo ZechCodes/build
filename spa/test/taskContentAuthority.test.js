@@ -735,9 +735,9 @@ it("registers and settles an exact watch owner without upgrading missing coordin
   expect(owner).not.toBeNull();
   expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true, eligible: false });
   expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(false);
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false });
 });
 
 it("cleans only the exact watch owner without publishing malformed or foreign task acknowledgments", async () => {
@@ -752,7 +752,7 @@ it("cleans only the exact watch owner without publishing malformed or foreign ta
     const owner = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false, metadataOnly: true });
     const contentRead = await content.captureTaskContentRead(scope);
     expect(await watch.settleTaskWatchMutation(owner, { answer: { task: answerTask }, contentRead })).toBe(false);
-    expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+    expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
     expect(await cache.readCached(address)).toEqual(before);
     expect(await cache.readCached(summaries.summaryAddress(scope, "task-1"))).toBeUndefined();
     expect(await cache.readCached(summaries.summaryAddress(scope, "foreign-task"))).toBeUndefined();
@@ -760,18 +760,18 @@ it("cleans only the exact watch owner without publishing malformed or foreign ta
   }
 });
 
-it("keeps an exhausted empty summary query uncertified while shared watch coordination is unknown or pending", async () => {
+it("certifies a fresh exhausted empty summary query but keeps actual pending coordination stale", async () => {
   const summaries = await import("../src/core/taskSummaryCache.js");
   const watch = await import("../src/core/taskWatchAuthority.js");
-  const publishEmpty = async () => {
+  const publishEmpty = async (stale) => {
     const ticket = await summaries.beginSummaryQuery(scope, {}, await order.nextTaskRead());
     expect(await summaries.landSummaryPage(ticket, { summary: true, basis: "empty-wire-basis", tasks: [] },
       { read: ticket.generation })).toBe(true);
-    expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ complete: true, ids: [], tasks: [], stale: true });
+    expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ complete: true, ids: [], tasks: [], stale });
   };
-  await publishEmpty();
+  await publishEmpty(false);
   const owner = await watch.beginTaskWatchMutation(scope, "task-1", { watched: false, metadataOnly: true });
-  await publishEmpty();
+  await publishEmpty(true);
   await watch.settleTaskWatchMutation(owner, { rollback: true });
   expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ complete: true, stale: true });
 });
@@ -832,7 +832,7 @@ it("removes only the settled owner stamp and refuses rollback across an interven
   const final = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
   expect(final).toMatchObject({ watched: true, watch_started_after: "te-intervening" });
   expect(final).not.toHaveProperty("__task_watch_intent");
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false });
 });
 
 it("rolls back only its watch paint while retaining a newer ordinary list read and unrelated read-note high water", async () => {
@@ -875,8 +875,8 @@ it("does not let a byte-identical blind list copy lower independent watch or fam
   await tracker.writeTasksRecord(scope.deviceId, scope.projectId, old);
   const row = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
   expect(row.__task_watch_cache.observed_read_order).toBe(current.readOrder);
-  expect(row.__task_family_cache.paint.total.observed_read_order).toBe(current.readOrder);
-  expect(row.__task_family_cache.paint.attention.observed_read_order).toBe(current.readOrder);
+  expect(row.__task_family_cache.total.observed_read_order).toBe(current.readOrder);
+  expect(row.__task_family_cache.attention.observed_read_order).toBe(current.readOrder);
 });
 
 it("uses annotated rows as positive observations without borrowing their tickets to certify omitted list membership", async () => {
@@ -919,7 +919,7 @@ it("preserves coordination counts and uncertainty when a pre-token control canno
   expect((await cache.readCached(controlAddress)).value).toEqual(previousSchema);
   expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(false);
   const after = (await cache.readCached(controlAddress)).value;
-  expect(after).toMatchObject({ generation: stored.generation, pendingGeneration: stored.pendingGeneration, pendingCount: 0, uncertain: true });
+  expect(after).toMatchObject({ generation: stored.generation, pendingGeneration: stored.pendingGeneration, pendingCount: 0, uncertain: false });
   expect(after).not.toHaveProperty("blindRetirementEpoch");
   const row = (await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0];
   expect(row.watched).toBe(false); expect(row).not.toHaveProperty("__task_watch_intent");
@@ -962,8 +962,8 @@ it("keeps newer independent watch and family paint sources when an old normalize
   await summaries.writeSummaryTask(scope, stale, await order.nextTaskRead());
   const row = (await cache.readCached(summaryAddress)).value.task;
   expect(row.__task_watch_cache.observed_read_order).toBe(current.readOrder);
-  expect(row.__task_family_cache.paint.total.observed_read_order).toBe(current.readOrder);
-  expect(row.__task_family_cache.paint.attention.observed_read_order).toBe(current.readOrder);
+  expect(row.__task_family_cache.total.observed_read_order).toBe(current.readOrder);
+  expect(row.__task_family_cache.attention.observed_read_order).toBe(current.readOrder);
 });
 
 it("does not resurrect a retired normalized attention family from an older local summary copy", async () => {
@@ -1034,7 +1034,7 @@ it("preserves the current pending intent note when an unrelated full action publ
   expect(await watch.settleTaskWatchMutation(owner, { answer: { task: { ...raw, watched: false } }, contentRead: acknowledgmentRead })).toBe(true);
   expect((await cache.readCached(order.taskWatchIntentAddress(scope, "task-1"))).value.latest_watch_intent)
     .toMatchObject({ ownerId: owner.id, disposition: "acknowledged" });
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
 });
 
 it("keeps a newer normalized unknown family when an old copy matches the retained effective read floor", async () => {
@@ -1052,7 +1052,7 @@ it("keeps a newer normalized unknown family when an old copy matches the retaine
   expect(before.read_through).toBe("tc-20");
   expect(before).not.toHaveProperty("unread_mentions");
   expect(before.__task_family_cache.unknown.attention.observed_read_order)
-    .toBeGreaterThan(old.__task_family_cache.paint.attention.observed_read_order);
+    .toBeGreaterThan(old.__task_family_cache.attention.observed_read_order);
   await summaries.writeSummaryTask(scope, old, await order.nextTaskRead());
   const after = (await cache.readCached(summaryAddress)).value.task;
   expect(after.read_through).toBe("tc-20");
@@ -1117,7 +1117,7 @@ it.each(["blind ABA", "foreign captured blind token", "missing captured pending 
       expect(task.__task_watch_cache).toBeUndefined();
     }
     expect(detail.timeline).toEqual(["Existing history"]);
-    expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+    expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
     expect(await watch.settleTaskWatchMutation(owner, { answer, contentRead })).toBe(false);
   });
 
@@ -1137,7 +1137,7 @@ it("refuses an obsolete full watch acknowledgment without clearing a newer same-
   expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true, eligible: false });
   expect(await watch.settleTaskWatchMutation(older, { rollback: true })).toBe(false);
   expect(await watch.settleTaskWatchMutation(newer, { answer: { task: raw }, contentRead: newerRead })).toBe(true);
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
   expect((await tracker.readTasksRecord(scope.deviceId, scope.projectId)).tasks[0].watched).toBe(false);
 });
 
@@ -1164,6 +1164,6 @@ it.each(["foreign task", "retired scope"])(
         answer: { task: { ...raw, watched: true, watch_started_after: "te-stale-ack" } } })).toBe(false);
       expect((await cache.readCached(address)).value).toEqual(cold);
     } else expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
-    expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: true, eligible: false });
+    expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
     expect((await cache.readCached(address)).value.task).toMatchObject({ watched: true, watch_started_after: "te-cold" });
   });

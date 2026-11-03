@@ -367,9 +367,11 @@ export function mountTasksPane(host, options) {
    *  it still the older news (#129). */
   const wholeListIsNewer = () => state.wholeAsked >= state.queryAsked;
 
+  const currentQuery = (serial) => !state.disposed && serial === querySerial;
+
   async function paintFromQuery(params, serial = querySerial) {
     const cached = await readTasksQueryCached(state.deviceId, state.projectId, params);
-    if (state.disposed || serial !== querySerial || !cached) return;
+    if (!currentQuery(serial) || !cached) return;
     const record = cached.value;
     queryLoaded = true;
     state.queryAsked = listAskedAt(cached);
@@ -380,7 +382,7 @@ export function mountTasksPane(host, options) {
     state.displayAddress = wholeListIsNewer() ? tasksAddress(state.deviceId, state.projectId)
       : tasksQueryAddress(state.deviceId, state.projectId, params);
     await unreadDisplay.updateTasks(state.shown);
-    if (state.disposed || serial !== querySerial) return;
+    if (!currentQuery(serial)) return;
     details?.updateTasks(state.shown);
     // On a cold device the background whole-list pass may not have landed
     // yet. Until it does, this cache record is still the only cache-derived

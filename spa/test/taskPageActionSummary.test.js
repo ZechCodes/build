@@ -50,7 +50,7 @@ const count = (method) => session.call.mock.calls.filter(([name]) => name === me
 const settle = async () => vi.waitFor(() => expect(taskMutationsPending(scope.deviceId)).toBe(0));
 const replacementSession = () => {
   const replacement = fakeSession(scope.deviceId);
-  replacement.call.mockImplementation((method) => method === "tasks.get" ? Promise.resolve({ task: full(), timeline }) : Promise.resolve({}));
+  replacement.call.mockImplementation((method) => method === "tasks.get" ? new Promise(() => {}) : Promise.resolve({}));
   return replacement;
 };
 
@@ -120,7 +120,7 @@ it("does not let an older same-timestamp watch reply reverse a newer read action
 
 it.each(["session", "context", "account"])("rejects a full acknowledgment after %s authority replacement", async (kind) => {
   const pending = deferred(); session.call.mockImplementation((method) => method === "tasks.get"
-    ? Promise.resolve({ task: full(), timeline }) : pending.promise);
+    ? new Promise(() => {}) : pending.promise);
   const mounted = await mount(); mounted.button().click(); await vi.waitFor(() => expect(count("tasks.watch")).toBe(1));
   const before = await cachedSummary();
   if (kind === "context") retireDeviceContext(scope.deviceId);
@@ -142,7 +142,7 @@ it("keeps acknowledged cache effects after the originating page is disposed", as
 
 it("rejects a full acknowledgment whose transaction waits through a session retarget", async () => {
   const pending = deferred(); session.call.mockImplementation((method) => method === "tasks.get"
-    ? Promise.resolve({ task: full(), timeline }) : pending.promise);
+    ? new Promise(() => {}) : pending.promise);
   const mounted = await mount(); mounted.button().click(); await vi.waitFor(() => expect(count("tasks.watch")).toBe(1));
   const before = await cachedSummary(), original = IDBObjectStore.prototype.get;
   let retargeted = false;
@@ -211,7 +211,7 @@ it.each([{ id: "foreign-task" }, { project_id: "foreign-project" }, { number: 13
 it("refuses a malformed partial task acknowledgment instead of treating it as a legacy no-task reply", async () => {
   observation.carries = true;
   const pending = deferred(); session.call.mockImplementation((method) => method === "tasks.get"
-    ? Promise.resolve({ task: full(), timeline }) : pending.promise);
+    ? new Promise(() => {}) : pending.promise);
   await mount(); await vi.waitFor(() => expect(count("tasks.read_through")).toBe(1));
   const before = await cachedSummary(), detail = await readTaskRecord(scope.deviceId, scope.projectId, taskId);
   pending.resolve({ task: { read_through: "tc-99" } }); await settle();

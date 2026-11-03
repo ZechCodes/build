@@ -30,9 +30,12 @@ beforeEach(async () => {
     const pin = { id: `pin-${project.id}`, conversation_id: `pin-conversation-${project.id}`, working: false };
     const worker = { id: `worker-${project.id}`, conversation_id: `worker-conversation-${project.id}`, working: true };
     await cache.writeCached(address(project.entity_id, "project-agents"), { entity_id: project.entity_id, pinned_agent_id: pin.id, agents: [pin, worker] });
-    const task = { id: `task-${project.id}`, watched: true, status: "backlog", state: "open", updated_at: "2026-10-25T00:00:00Z", assignee: { kind: "agent", agent_id: worker.id } };
-    await tracker.writeTasksRecord(deviceId, project.id, tracker.tasksRecord([task], []));
-    await tracker.writeTaskRecord(deviceId, project.id, task.id, tracker.taskRecord(task, []));
+    const task = { id: `task-${project.id}`, project_id: project.id, body: "Cached full body", watched: true, status: "backlog", state: "open", updated_at: "2026-10-25T00:00:00Z", assignee: { kind: "agent", agent_id: worker.id } };
+    const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+    const listRead = await captureTaskContentRead(tracker.tasksAddress(deviceId, project.id), { revalidate: "full" });
+    await tracker.writeTasksRecord(deviceId, project.id, tracker.tasksRecord([task], []), { contentRead: listRead });
+    const contentRead = await captureTaskContentRead(tracker.taskAddress(deviceId, project.id, task.id), { revalidate: "full" });
+    await tracker.writeTaskRecord(deviceId, project.id, task.id, tracker.taskRecord(task, []), { contentRead });
   }
   row = { kind: "branch", project_id: projects[0].id, entity_id: "standalone-row", branch: "profile", agents: [] };
   await cache.writeCached(address(row.entity_id, "row"), row);
@@ -112,7 +115,7 @@ it("keeps row-only no-op hints out of task and rule dependencies", async () => {
 });
 
 it("publishes finite agent passes under continued hints and lets actions commit while held", async () => {
-  const task = { id: "task-user", project_id: projects[0].id, title: "Assigned immediately", status: "ready",
+  const task = { id: "task-user", project_id: projects[0].id, title: "Assigned immediately", body: "Assigned body", watched: false, done_at: null, deferred_assignment: null, read_through: null, dismissed_through: null, status: "ready",
     assignee: { kind: "agent", agent_id: "worker-p0" }, updated_at: "2026-10-25T00:00:00Z" };
   const actionRpc = vi.fn(async () => ({ task, timeline: [] }));
   const context = contexts.adoptDeviceSession({ deviceId, call: actionRpc, close() {}, peer() {}, onCarrier() {} });
@@ -122,9 +125,11 @@ it("publishes finite agent passes under continued hints and lets actions commit 
   resetCounters();
   const readMany = cache.readCachedMany;
   const releases = [];
-  const heldReads = vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+  const heldReads = vi.fn();
+  vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
     const result = await readMany(addresses);
     if (!addresses.every(({ kind }) => kind === "row" || kind === "project-agents")) return result;
+    heldReads(addresses);
     await new Promise((resolve) => releases.push(resolve));
     return result;
   });
@@ -137,7 +142,8 @@ it("publishes finite agent passes under continued hints and lets actions commit 
   const actions = createTaskWaitingOnActions({ deviceId, projectId: projects[0].id, taskId: task.id, call: context.rpc });
   await actions.assign({ assignee: task.assignee });
   expect(actionRpc).toHaveBeenCalledExactlyOnceWith("tasks.assign", { task_id: task.id, assignee: task.assignee });
-  expect((await cache.readCached(tracker.taskAddress(deviceId, projects[0].id, task.id)))?.value.task).toEqual(task);
+  const saved = (await cache.readCached(tracker.taskAddress(deviceId, projects[0].id, task.id)))?.value.task;
+    expect(Object.fromEntries(Object.entries(saved).filter(([key]) => !key.startsWith("__")))).toEqual(task);
   expect(releases).toHaveLength(1);
   releases[0]();
   try {

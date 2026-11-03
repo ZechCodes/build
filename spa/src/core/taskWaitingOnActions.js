@@ -2,6 +2,7 @@
 // cache records, including after a refusal leaves the form's draft intact.
 import { contextFor, whenGreeted } from "./deviceContexts.js";
 import { bridgeCapabilities } from "./changeEvents.js";
+import { taskAddress } from "./trackerCache.js";
 import { captureTaskContentRead } from "./taskContentAuthority.js";
 import { cacheTaskWaitingOnBlocks, cacheTaskWaitingOnResponse, captureTaskWaitingOnBlocksRead } from "./taskWaitingOnCache.js";
 import { readTaskWaitingOnEverSupported, TASK_WAITING_ON_UPDATE, TASK_WAITING_ON_DOWNGRADED } from "./taskWaitingOnSupport.js";
@@ -21,7 +22,8 @@ export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }
     const assignment = isOrdinaryAssignment(method, params);
     const createsWorkspace = assignment && params.assignee?.kind === "new_workspace";
     const seen = createsWorkspace && await readTaskWaitingOnEverSupported(deviceId);
-    const contentRead = method === "tasks.waiting_on.blocks" ? undefined : await captureTaskContentRead({ deviceId, projectId });
+    const contentRead = method === "tasks.waiting_on.blocks" ? undefined : await captureTaskContentRead(taskId ? taskAddress(deviceId, projectId, taskId) : { deviceId, projectId },
+      taskId ? { revalidate: "full", action: true } : {});
     const issuedRead = contentRead?.readOrder;
     // The greeting may change during the cache read. Recheck its authority,
     // then validate and send without another asynchronous gap.

@@ -1,9 +1,10 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { rememberTaskUnreadDisplay } from "./taskUnreadDisplayFixture.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 let summaries, cache, readers;
 const scope = { deviceId: "basis-device", projectId: "proj-1" };
-const row = (extra = {}) => ({ id: "task-1", number: 1, title: "One", ...extra });
+const row = (extra = {}) => ({ id: "task-1", number: 1, title: "One", ...(Object.hasOwn(extra, "unread_count") ? { watched: true } : {}), ...extra });
 const page = (basis, tasks = [row()], next_cursor) => ({ summary: true, basis, tasks, next_cursor });
 const land = async (filters, generation, answer) => {
   const ticket = await summaries.beginSummaryQuery(scope, filters, generation);
@@ -110,9 +111,15 @@ it.each([
   const older = await summaries.beginSummaryQuery(scope, { states: ["open"] }, 1);
   const newer = await land({}, 3, page("B1", [row({ title: "held", ...before })]));
   expect(older.contentRead.readOrder).toBeLessThan(newer.contentRead.readOrder);
+  const display = await rememberTaskUnreadDisplay(scope, (await summaries.readSummaryQuery(scope, {})).tasks[0]);
   await summaries.landSummaryPage(older, page("B2", [row({ title: "old", ...after })]), { read: 1 });
   const held = await summaries.readSummaryQuery(scope, {});
-  expect(held.tasks[0]).toMatchObject({ title: "held", ...after });
+  const { unread_count: _count, ...facts } = after;
+  expect(held.tasks[0]).toMatchObject({ title: "held", ...facts });
+  if (Object.hasOwn(after, "unread_count")) {
+    expect(held.tasks[0]).not.toHaveProperty("unread_count");
+    expect(display(held.tasks[0])).toBe(before.unread_count);
+  }
   expect(held.tasks[0].__task_content_cache.header.read_order).toBe(newer.contentRead.readOrder);
   expect(held.stale).toBe(true);
   expect((await cache.readCached(summaries.summaryAddress(scope, "task-1"))).value.basis_uncertain).toBe(true);

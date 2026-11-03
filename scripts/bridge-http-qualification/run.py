@@ -18,6 +18,14 @@ import urllib.request
 SCRATCH = Path("/home/zech/Projects/.agent-scratch/976")
 
 
+def install_shutdown_handlers():
+    def shutdown(number, _frame):
+        raise SystemExit(128 + number)
+
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, shutdown)
+
+
 def qualification_binary(raw):
     if not raw:
         raise ValueError("BUILD_HTTP_QUALIFICATION_BINARY must explicitly name the cargo-built binary")
@@ -129,6 +137,7 @@ def run_logged(command, *, env, cwd, log, timeout=300):
 
 
 def main():
+    install_shutdown_handlers()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--issuer-port", type=int, default=18476)

@@ -305,13 +305,19 @@ class Bridge:
                 approve_url=self.env.web_url.rstrip("/") + "/app/#/pair",
             )
 
-    def status(self):
-        http = self.env.http_settings()
+    def http_status(self):
+        try:
+            http = self.env.http_settings()
+        except BuildctlError as error:
+            return {"configured": False, "error": str(error)}
         http_status = {"configured": bool(http)}
         if http:
             http_status.update(
                 origin=http["BRIDGE_HTTP_ORIGIN"], bind=http["BRIDGE_HTTP_BIND"]
             )
+        return http_status
+
+    def status(self):
         record = self.records()
         process = self.service.process()
         running = self.running_status(process)
@@ -323,7 +329,7 @@ class Bridge:
             **record,
             "running": running,
             "paired": identity.is_file(),
-            "http": http_status,
+            "http": self.http_status(),
             "relay": self.relay_lines(),
         }
 

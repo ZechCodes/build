@@ -121,6 +121,11 @@ Bind must be an explicit IPv4 address or bracketed IPv6 address and a nonzero
 port. Origins must use HTTPS with no path (including a trailing slash), query,
 fragment, credentials, wildcard or port 0. The same origin rules apply to the
 optional allowlist, passed as comma-separated `BRIDGE_HTTP_ALLOWED_ORIGINS`.
+Hosts follow the bridge's canonical-origin rules: DNS names have at most 253
+ASCII characters after IDNA conversion, with 1..63-character labels that start
+and end alphanumeric and contain only alphanumerics or hyphens. Trailing dots
+and IPv4 aliases such as `127.1` are refused; bracketed IPv6 is accepted.
+Origins are limited to 2048 UTF-8 bytes and cannot contain whitespace or controls.
 Certificate and key paths must name existing regular files inside the state
 root, with no symlinks in any component. The key must also be owned by the
 current user and mode **0600**. buildctl checks metadata only; it never opens
@@ -136,7 +141,12 @@ file. Removing the file passes no HTTP settings; after the next authorized
 An existing unit only acquires changed settings when it is installed again.
 `bridge status` reports `http.configured`, plus `origin` and `bind` when
 configured. These describe the file, not listener health, and expose no TLS paths
-or contents. Status does not install or start anything.
+or contents. An invalid file is reported in `http.error` with `configured=false`,
+so status remains available during recovery. Mutation errors name `http.toml`
+and explain the remedy: fix it or move it aside to run without HTTPS. Errors
+identify the validation rule without echoing file values. State-root containment
+for TLS paths is enforced by the environment path guard. Status does not install
+or start anything.
 
 ## Prod to dev state cutover
 

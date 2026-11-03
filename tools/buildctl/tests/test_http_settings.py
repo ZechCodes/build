@@ -246,3 +246,110 @@ def test_prod_still_refused(tmp_path):
     with pytest.raises(BuildctlError, match="authorization"):
         env.bridge_env({})
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("field", ["origin", "allowed_origins"])
+@pytest.mark.parametrize(
+    "host",
+    [
+        "bad_host",
+        "localhost.",
+        "127.1",
+        "a..b",
+        "-a.example",
+        "a-.example",
+        "a" * 64 + ".example",
+        ".".join(["a" * 63] * 4),
+        "0x7f.0.0.1",
+        "127。0。0。1",
+        "127.00.0.1",
+        "2130706433",
+        "example.123",
+        "[::1]garbage",
+    ],
+)
+def test_invalid_origin_host(configured, field, host):
+    env, values = configured
+    origin = "https://" + host
+    values[field] = [origin] if field == "allowed_origins" else origin
+    write_config(env, values)
+    assert_refused_without_mutation(env)
+    with pytest.raises(BuildctlError, match="host"):
+        env.bridge_env({})
+
+
+@pytest.mark.parametrize("field", ["origin", "allowed_origins"])
+@pytest.mark.parametrize(
+    "host", ["localhost", "127.0.0.1", "[::1]", "dev.getbuild.ing", "bücher.example"]
+)
+def test_valid_origin_host(configured, field, host):
+    env, values = configured
+    origin = "https://" + host
+    values[field] = [origin] if field == "allowed_origins" else origin
+    write_config(env, values)
+    assert env.bridge_env({})["BRIDGE_HTTP_" + field.upper()] == origin
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["https://" + "a" * 2041, "https://app.example\u0080", "https://app.example:"],
+)
+def test_origin_bounds_and_controls(configured, origin):
+    env, values = configured
+    values["origin"] = origin
+    write_config(env, values)
+    assert_refused_without_mutation(env)
+
+
+@pytest.mark.parametrize("failure", ["host", "syntax", "symlink", "tls_path"])
+def test_http_errors_offer_recovery_without_echoing_config(configured, failure):
+    env, values = configured
+    path = env.state_root / "http.toml"
+    if failure == "host":
+        values["origin"] = "https://secret_value"
+        write_config(env, values)
+    elif failure == "syntax":
+        path.write_text('secret_value = "one"\nsecret_value = "two"')
+    elif failure == "symlink":
+        path.rename(env.state_root / "config-original")
+        path.symlink_to(env.state_root / "config-original")
+    else:
+        values["tls_key"] = "secret_value"
+        write_config(env, values)
+    with pytest.raises(BuildctlError) as result:
+        env.bridge_env({})
+    message = str(result.value)
+    assert str(path) in message
+    assert "fix it or move it aside" in message
+    assert "without HTTPS" in message
+    assert "secret_value" not in message
+    if failure == "tls_path":
+        assert "HTTP TLS paths must be absolute paths;" in message
+    assert_refused_without_mutation(env)
+
+
+def test_status_reports_invalid_http_and_remains_usable(configured, capsys):
+    env, values = configured
+    values["origin"] = "https://secret_value"
+    write_config(env, values)
+    runner = Mock()
+    runner.run.return_value.stdout = "inactive"
+    runner.run.return_value.returncode = 3
+    assert (
+        main(
+            ["--env", "dev", "bridge", "status"],
+            runner=runner,
+            home=env.home,
+            registry_path=REGISTRY,
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    status = json.loads(captured.out)
+    assert status["http"]["configured"] is False
+    assert "host" in status["http"]["error"]
+    assert "fix it or move it aside" in status["http"]["error"]
+    assert status["state"] == "inactive"
+    assert captured.err == ""
+    assert "secret_value" not in captured.out
+    assert not (env.state_root / "buildctl.lock").exists()

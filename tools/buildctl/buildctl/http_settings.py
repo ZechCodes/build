@@ -14,20 +14,34 @@ REQUIRED = {"bind", "origin", "tls_cert", "tls_key"}
 
 
 def load_http_settings(env):
-    path = env.path(env.state_root / "http.toml")
+    path = env.state_root / "http.toml"
+    try:
+        return read_http_settings(env, env.path(path))
+    except BuildctlError as error:
+        reason = str(error)
+    except tomllib.TOMLDecodeError:
+        reason = "invalid TOML syntax"
+    except OSError:
+        reason = "cannot read configuration or inspect TLS files"
+    except (ValueError, TypeError):
+        reason = "invalid address, port or configuration encoding"
+    raise BuildctlError(
+        f"invalid HTTP configuration in {path}: {reason}; "
+        "fix it or move it aside to run without HTTPS"
+    ) from None
+
+
+def read_http_settings(env, path):
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return {}
     except OSError as error:
         raise BuildctlError("cannot open HTTP configuration") from error
-    try:
-        with os.fdopen(descriptor, "rb") as stream:
-            require_private_file(os.fstat(stream.fileno()))
-            raw = tomllib.load(stream)
-        return validate_http_settings(env, raw)
-    except (OSError, ValueError, TypeError) as error:
-        raise BuildctlError("invalid HTTP configuration") from error
+    with os.fdopen(descriptor, "rb") as stream:
+        require_private_file(os.fstat(stream.fileno()))
+        raw = tomllib.load(stream)
+    return validate_http_settings(env, raw)
 
 
 def require_private_file(metadata):
@@ -68,14 +82,10 @@ def validate_http_settings(env, raw):
 
 def tls_path(env, value):
     if not isinstance(value, str) or not value or any(ord(char) < 32 for char in value):
-        raise BuildctlError(
-            "HTTP TLS paths must be absolute paths inside the state root"
-        )
+        raise BuildctlError("HTTP TLS paths must be absolute paths")
     path = Path(value)
     if not path.is_absolute():
-        raise BuildctlError(
-            "HTTP TLS paths must be absolute paths inside the state root"
-        )
+        raise BuildctlError("HTTP TLS paths must be absolute paths")
     return env.path(path)
 
 
@@ -91,9 +101,13 @@ def validate_bind(value):
 
 
 def validate_origin(value):
-    if not isinstance(value, str) or any(char in value for char in "*\\%,"):
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 2048:
+        raise BuildctlError("HTTP origins must be strings of at most 2048 bytes")
+    if any(char in value for char in "*@\\%,"):
         raise BuildctlError("HTTP origins must be exact HTTPS origins without a path")
-    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value):
+    if any(
+        char.isspace() or ord(char) < 32 or 127 <= ord(char) <= 159 for char in value
+    ):
         raise BuildctlError("HTTP origins must be exact HTTPS origins without a path")
     url = urlsplit(value)
     if (
@@ -109,6 +123,49 @@ def validate_origin(value):
     ):
         raise BuildctlError(
             "HTTP origins must be exact HTTPS origins without a path or port 0"
+        )
+
+    validate_origin_host(url)
+
+
+def validate_origin_host(url):
+    """Mirror CanonicalOrigin host checks, including WHATWG IPv4 aliases."""
+    host = url.hostname
+    if url.netloc.startswith("["):
+        if not re.fullmatch(r"\[[0-9a-fA-F:.]+\](?::[0-9]+)?", url.netloc):
+            raise BuildctlError("HTTP origin host must be a bracketed IPv6 address")
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            raise BuildctlError(
+                "HTTP origin host must be a valid IPv6 address"
+            ) from None
+        return
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        raise BuildctlError("HTTP origin host must be a valid DNS name") from None
+    validate_dns_host(host)
+    # URL's IPv4 parser treats numeric and hexadecimal final labels as IPs.
+    last_label = host.rsplit(".", 1)[-1]
+    if re.fullmatch(r"[0-9]+|0[xX][0-9a-fA-F]*", last_label):
+        try:
+            canonical = str(ipaddress.IPv4Address(host))
+        except ValueError:
+            raise BuildctlError(
+                "HTTP origin host must use canonical IPv4 notation"
+            ) from None
+        if url.hostname != canonical:
+            raise BuildctlError("HTTP origin host must use canonical IPv4 notation")
+
+
+def validate_dns_host(host):
+    label = r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+    if len(host) > 253 or not all(
+        re.fullmatch(label, part) for part in host.split(".")
+    ):
+        raise BuildctlError(
+            "HTTP origin host must have DNS labels of 1..63 alphanumerics or hyphens and no trailing dot"
         )
 
 

@@ -112,6 +112,7 @@ tasks.review.open	POST	/v1/reviews
 tasks.review.push	POST	/v1/tasks/{task_id}/review-pushes
 tasks.review.refresh	POST	/v1/tasks/{task_id}/review-refreshes
 tasks.review.reopen	POST	/v1/tasks/{task_id}/review-reopenings
+tasks.review.retryDelivery	POST	/v1/tasks/{task_id}/review-delivery-retries
 tasks.review.snapshot	POST	/v1/tasks/{task_id}/review-snapshots
 tasks.review.update	PATCH	/v1/tasks/{task_id}/review
 tasks.unwatch	DELETE	/v1/tasks/{task_id}/watch

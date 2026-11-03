@@ -12160,7 +12160,7 @@
                       "id": "example",
                       "ok": true,
                       "result": {
-                        "api_version": "3.27.0",
+                        "api_version": "3.30.0",
                         "ack_confirm_methods": [],
                         "capabilities": [
                           "agent.add",
@@ -12235,6 +12235,7 @@
                           "git.push",
                           "git.refs",
                           "git.show",
+                          "git.showPaths",
                           "git.stage",
                           "git.stash",
                           "git.stash_pop",
@@ -12327,18 +12328,27 @@
                           "tasks.read_through",
                           "tasks.reopen",
                           "tasks.review.act",
+                          "tasks.review.anchorCommit",
+                          "tasks.review.author",
                           "tasks.review.close",
+                          "tasks.review.commit",
+                          "tasks.review.commits",
                           "tasks.review.complete",
                           "tasks.review.diff",
+                          "tasks.review.forTask",
                           "tasks.review.get",
                           "tasks.review.merge",
                           "tasks.review.open",
                           "tasks.review.pullRequests",
                           "tasks.review.push",
                           "tasks.review.refresh",
+                          "tasks.review.reject",
                           "tasks.review.reopen",
+                          "tasks.review.retryDelivery",
+                          "tasks.review.since",
                           "tasks.review.snapshot",
                           "tasks.review.update",
+                          "tasks.review.verdictDelivery",
                           "tasks.reviewComments",
                           "tasks.unreadCounts",
                           "tasks.unwatch",
@@ -15322,7 +15332,18 @@
                           "watched": true,
                           "unread_count": 1,
                           "session_started_ms": 1789808400000,
-                          "last_activity_ms": 1789812720000
+                          "last_activity_ms": 1789812720000,
+                          "linked_reviews": [
+                            {
+                              "task_id": "task-review-13",
+                              "number": 13,
+                              "workspace_id": "ws-3f2a91c4",
+                              "version": 1,
+                              "status": "open",
+                              "latest_published_snapshot_id": "snapshot-1",
+                              "parent_task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+                            }
+                          ]
                         },
                         "timeline": [
                           {
@@ -18178,7 +18199,8 @@
                 ],
                 "excluded_git_directory_ids": [
                   "dir-missing"
-                ]
+                ],
+                "for_task_id": "task-work-1"
               }
             }
           }
@@ -18222,9 +18244,11 @@
                             ],
                             "commits": [],
                             "conversation_ids": [],
-                            "parent_task_id": null
+                            "parent_task_id": "task-work-1"
                           },
-                          "trackers": [],
+                          "trackers": [
+                            "agent-author-1"
+                          ],
                           "identities": {},
                           "attachments": [],
                           "created_by": {
@@ -18340,7 +18364,8 @@
                                 "kind": "excluded",
                                 "reason": "Excluded when opening this review."
                               }
-                            ]
+                            ],
+                            "author": "agent-author-1"
                           },
                           "bindings": [
                             {
@@ -19380,6 +19405,299 @@
                             "observed_at": "2026-10-08T17:00:00Z"
                           }
                         ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{task_id}/review-delivery-retries": {
+      "post": {
+        "operationId": "tasks_review_retryDelivery",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Existing opaque selector; encoded as exactly one path segment."
+          },
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to tasks.review.retryDelivery. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method! and v1_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "tasks.review.retryDelivery",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/reviews.rs",
+          "params": "ReviewRetryDeliveryParams",
+          "result": "ReviewResult",
+          "fixture": "fixtures/api/v1/tasks.review.retryDelivery.json"
+        },
+        "x-build-request-max-bytes": 1048576,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "x-build-schema-complete": false
+              },
+              "example": {
+                "comment_id": "comment-verdict-1"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {
+                        "review": {
+                          "task_id": "task-1",
+                          "workspace_id": "workspace-1",
+                          "version": 1,
+                          "state": "open",
+                          "snapshots": [
+                            {
+                              "id": "snapshot-1",
+                              "number": 1,
+                              "created_at": "2026-10-08T17:00:00Z",
+                              "author": {
+                                "kind": "user"
+                              },
+                              "directories": [
+                                {
+                                  "id": "dir-api",
+                                  "source_id": "source-api",
+                                  "name": "API",
+                                  "path": "/workspaces/review/api",
+                                  "source_path": "/sources/api",
+                                  "is_git": true,
+                                  "status": "git",
+                                  "common_git_dir": "/receivers/api.git",
+                                  "branch": "review/1-api",
+                                  "base": {
+                                    "kind": "configured",
+                                    "name": "main",
+                                    "oid": "1111111111111111111111111111111111111111"
+                                  },
+                                  "head": "2222222222222222222222222222222222222222",
+                                  "uncommitted_files": 2
+                                },
+                                {
+                                  "id": "dir-ui",
+                                  "source_id": "source-ui",
+                                  "name": "UI",
+                                  "path": "/workspaces/review/ui",
+                                  "source_path": "/sources/ui",
+                                  "is_git": true,
+                                  "status": "git",
+                                  "common_git_dir": "/receivers/ui.git",
+                                  "branch": "review/1-ui",
+                                  "base": {
+                                    "kind": "configured",
+                                    "name": "main",
+                                    "oid": "1111111111111111111111111111111111111111"
+                                  },
+                                  "head": "2222222222222222222222222222222222222222",
+                                  "uncommitted_files": 0
+                                },
+                                {
+                                  "id": "dir-notes",
+                                  "source_id": "source-notes",
+                                  "name": "Notes",
+                                  "path": "/workspaces/review/notes",
+                                  "source_path": "/sources/notes",
+                                  "is_git": false,
+                                  "status": "not_git"
+                                },
+                                {
+                                  "id": "dir-missing",
+                                  "source_id": "source-missing",
+                                  "name": "Removed source",
+                                  "path": "/workspaces/review/missing",
+                                  "source_path": "/sources/missing",
+                                  "is_git": true,
+                                  "status": "unavailable",
+                                  "reason": "Excluded when opening this review."
+                                }
+                              ]
+                            }
+                          ],
+                          "completion": null,
+                          "actions": [],
+                          "destinations": [],
+                          "mode": "pull_request",
+                          "pull_request": {
+                            "status": "changes_requested",
+                            "creator": {
+                              "kind": "user"
+                            },
+                            "originating_workspace_id": "workspace-1",
+                            "latest_published_snapshot_id": "snapshot-1",
+                            "directories": [
+                              {
+                                "directory_id": "dir-api",
+                                "source_id": "source-api",
+                                "kind": "git"
+                              },
+                              {
+                                "directory_id": "dir-ui",
+                                "source_id": "source-ui",
+                                "kind": "git"
+                              },
+                              {
+                                "directory_id": "dir-notes",
+                                "source_id": "source-notes",
+                                "kind": "live"
+                              },
+                              {
+                                "directory_id": "dir-missing",
+                                "source_id": "source-missing",
+                                "kind": "excluded",
+                                "reason": "Excluded when opening this review."
+                              }
+                            ],
+                            "author": "agent-author-1"
+                          },
+                          "bindings": [
+                            {
+                              "directory_id": "dir-api",
+                              "source_id": "source-api",
+                              "repository_id": "repository-api",
+                              "working_repository": "/workspaces/review/api",
+                              "source_repository": "/sources/api",
+                              "initial_head": "2222222222222222222222222222222222222222",
+                              "original_branch_ref": "refs/heads/build/work",
+                              "dedicated_branch_ref": "refs/heads/review/1-api",
+                              "base_branch_ref": "refs/heads/main",
+                              "receiving_repository": "/receivers/api.git",
+                              "receiving_ref": "refs/heads/review/1-api",
+                              "remote_name": "build-review-api",
+                              "last_received_head": "2222222222222222222222222222222222222222",
+                              "preparation": "ready",
+                              "publication": "published"
+                            },
+                            {
+                              "directory_id": "dir-ui",
+                              "source_id": "source-ui",
+                              "repository_id": "repository-ui",
+                              "working_repository": "/workspaces/review/ui",
+                              "source_repository": "/sources/ui",
+                              "initial_head": "2222222222222222222222222222222222222222",
+                              "original_branch_ref": "refs/heads/build/work",
+                              "dedicated_branch_ref": "refs/heads/review/1-ui",
+                              "base_branch_ref": "refs/heads/main",
+                              "receiving_repository": "/receivers/ui.git",
+                              "receiving_ref": "refs/heads/review/1-ui",
+                              "remote_name": "build-review-ui",
+                              "last_received_head": "2222222222222222222222222222222222222222",
+                              "preparation": "ready",
+                              "publication": "published"
+                            }
+                          ],
+                          "verdict_deliveries": [
+                            {
+                              "comment_id": "comment-verdict-1",
+                              "snapshot_id": "snapshot-1",
+                              "revision": 1,
+                              "verdict": "request_changes",
+                              "batch": [
+                                {
+                                  "comment_id": "comment-anchor-1",
+                                  "anchor": {
+                                    "snapshot_id": "snapshot-1",
+                                    "directory_id": "dir-api",
+                                    "path": "src/lib.rs",
+                                    "side": "new",
+                                    "line": 12,
+                                    "commit": "2222222222222222222222222222222222222222"
+                                  }
+                                }
+                              ],
+                              "state": "pending",
+                              "recipient_agent_id": "agent-author-1",
+                              "attempts": 0,
+                              "error": null,
+                              "created_at": "2026-11-03T11:00:00Z",
+                              "updated_at": "2026-11-03T11:00:00Z"
+                            }
+                          ]
+                        }
                       }
                     }
                   }

@@ -128,6 +128,7 @@
       "tasks_review_push",
       "tasks_review_refresh",
       "tasks_review_reopen",
+      "tasks_review_retryDelivery",
       "tasks_review_snapshot",
       "tasks_review_update",
       "tasks_unwatch",
@@ -2339,6 +2340,26 @@
       "contract": {
         "source": "bridge/src/api/v1/reviews.rs",
         "params": "ReviewVersionParams",
+        "result": "ReviewResult"
+      }
+    },
+    {
+      "method": "tasks.review.retryDelivery",
+      "operationId": "tasks_review_retryDelivery",
+      "verb": "POST",
+      "path": "/v1/tasks/{task_id}/review-delivery-retries",
+      "pathParams": [
+        "task_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/reviews.rs",
+        "params": "ReviewRetryDeliveryParams",
         "result": "ReviewResult"
       }
     },

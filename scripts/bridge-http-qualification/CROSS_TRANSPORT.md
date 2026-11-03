@@ -48,8 +48,9 @@ test failure (exit 101, not a compile error), restores the copy under an EXIT
 trap and verifies it with `cmp`. Each control has an independent `timeout 900`.
 Logs stay under task-977 scratch. Never edit this script while it runs.
 
-The client qualification extends #976 at
-`804819b77f6b420a684bd60839c0b85922ad69f2`. Its `--scratch-task 977` option
+The client qualification extends #976 as merged on dev at
+`6c1f53f954bd60521c8ccfee26b09b22a1fa8b8d` (harness head
+`804819b77f6b420a684bd60839c0b85922ad69f2`). Its `--scratch-task 977` option
 restricts both the supplied binary and every disposable fixture to task-977
 scratch. Task 977 uses a dedicated example that starts the real AppState and
 HTTP supervisor through typed constructors, with no `BRIDGE_*` environment

@@ -191,7 +191,7 @@ def main():
         wait_ready(bridge, fixture["bridgeOrigin"] + "/.well-known/build-bridge", run_dir / "ca.pem", run_dir / "bridge.log")
         client_env = {**env, "BUILD_HTTP_QUALIFICATION_FIXTURE": str(fixture_path),
             "NODE_EXTRA_CA_CERTS": str(run_dir / "ca.pem"), "SCREENSHOT_DIR": str(run_dir / "screenshots")}
-        run_logged([sys.executable, script_dir / "discovery.py", "--repo", repo],
+        run_logged([sys.executable, script_dir / "discovery.py", "--repo", repo, "--scratch-task", args.scratch_task],
             env=client_env, cwd=repo, log=run_dir / "discovery.log")
         run_logged(["node", script_dir / "browser.mjs"], env=client_env, cwd=repo, log=run_dir / "browser.log")
         run_logged(["node", "--test", repo / "desktop/test/bridge-http-qualification.test.mjs"],

@@ -150,6 +150,17 @@ impl BufferBudget {
     }
 }
 
+fn acquire(
+    semaphore: &Arc<Semaphore>,
+    bytes: usize,
+) -> Result<OwnedSemaphorePermit, QuotaExceeded> {
+    let count = u32::try_from(bytes).map_err(|_| QuotaExceeded)?;
+    semaphore
+        .clone()
+        .try_acquire_many_owned(count)
+        .map_err(|_| QuotaExceeded)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,15 +185,4 @@ mod tests {
         assert_eq!(budget.streams_available(), STREAM_BUFFER_BYTES);
         assert!(budget.family_streams.lock().unwrap().is_empty());
     }
-}
-
-fn acquire(
-    semaphore: &Arc<Semaphore>,
-    bytes: usize,
-) -> Result<OwnedSemaphorePermit, QuotaExceeded> {
-    let count = u32::try_from(bytes).map_err(|_| QuotaExceeded)?;
-    semaphore
-        .clone()
-        .try_acquire_many_owned(count)
-        .map_err(|_| QuotaExceeded)
 }

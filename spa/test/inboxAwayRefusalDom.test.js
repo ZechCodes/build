@@ -14,7 +14,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { task, taskDetail } from "./trackerWireFixture.js";
+import { task as wireTask, taskDetail } from "./trackerWireFixture.js";
+const task = (over = {}) => wireTask({ project_id: "proj-1", ...over });
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const DEVICE = "dev-1";

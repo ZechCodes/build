@@ -544,12 +544,19 @@ export function mergeCachedTogether(addresses, merge) {
 
 /** The same, handed each whole record — `{ at, value }`, or undefined — for a
  *  merge that must keep what the cache's stamp on a record says. */
-export function mergeCachedRecordsTogether(addresses, merge) {
+// Only the multi-record reducer recognizes this value. It is never stored;
+// null/undefined retain their existing no-op meaning.
+export const DELETE_CACHED_RECORD = Symbol("delete cached record");
+
+// Optional onCommit is a local synchronous observer after verified commit,
+// before announcements. A committed no-op still returns the legacy false.
+// Metadata-only read allocations can suppress announcements with notify:false.
+export function mergeCachedRecordsTogether(addresses, merge, { onCommit, notify = true } = {}) {
   const keys = addresses.map(recordKey);
-  return inRecoveryWriteOrder(keys, () => mergeTogetherInStore(addresses, keys, merge, (record) => record));
+  return inRecoveryWriteOrder(keys, () => mergeTogetherInStore(addresses, keys, merge, (record) => record, onCommit, notify));
 }
 
-function mergeTogetherInStore(addresses, keys, merge, handed) {
+function mergeTogetherInStore(addresses, keys, merge, handed, onCommit, notify = true) {
   let changed = [];
   return wroteStore((store) => {
     changed = [];
@@ -558,11 +565,16 @@ function mergeTogetherInStore(addresses, keys, merge, handed) {
     const mergeAll = () => {
       try {
         const next = merge(held.map(handed));
+        const present = new Set(keys.filter((_key, index) => held[index] !== undefined));
         for (const [index, key] of keys.entries()) {
+          if (next?.[index] === DELETE_CACHED_RECORD) {
+            if (present.has(key)) { store.delete(key); present.delete(key); changed.push(key); }
+            continue;
+          }
           if (next?.[index] == null) continue;
           const record = withBridgeGeneration(addresses[index], { ...writeStamp(), value: next[index] });
           if (!putOrAbort(store, record, key)) return;
-          changed.push(key);
+          present.add(key); changed.push(key);
         }
       } catch (error) {
         abortForError(store, error);
@@ -578,7 +590,13 @@ function mergeTogetherInStore(addresses, keys, merge, handed) {
     });
     return null;
   }, true).then((committed) => {
-    if (committed) for (const key of changed) announce(partsOfKey(key));
+    if (committed) {
+      // A committed no-op is distinct from an abort. The local observer runs
+      // before subscribers can ask again, without changing legacy booleans.
+      try { onCommit?.(); }
+      catch { /* Observer failure cannot suppress committed announcements. */ }
+      if (notify) for (const key of changed) announce(partsOfKey(key));
+    }
     return Boolean(committed && changed.length);
   });
 }

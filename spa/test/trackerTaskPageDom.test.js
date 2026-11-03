@@ -50,8 +50,9 @@ vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(
 let away = true;
 let reconnecting = true;
 let movedListeners = new Set();
+let currentSession = null;
 vi.mock("../src/core/deviceReconnect.js", () => ({
-  deviceSession: () => null,
+  deviceSession: () => currentSession,
   deviceWatch: () => ({
     away: () => away,
     reconnecting: () => reconnecting,
@@ -101,7 +102,7 @@ const flush = async () => {
 };
 
 const answerFor = (over = {}, timeline = TIMELINE) => ({
-  task: task({ id: "task-1", number: 12, status: "in_progress", ...over }),
+  task: task({ id: "task-1", project_id: "proj-1", number: 12, status: "in_progress", ...over }),
   timeline,
 });
 
@@ -146,6 +147,7 @@ beforeEach(async () => {
   away = true;
   reconnecting = true;
   movedListeners = new Set();
+  currentSession = null;
   notifyError.mockClear();
   openAssigneePicker.mockClear();
   feed.workspaces = [{ id: "ws-1", workspace_id: "ws-1", name: "wire-facade", projectKey: PROJECT_KEY, entity_id: "run-1" }];
@@ -281,7 +283,7 @@ describe("task unread navigation", () => {
       comment({ id: "tc-01M37FGQD48628P29BG1A4BB02", author: { kind: "agent", agent_id: "agent-1" } }),
     ];
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", read_through: timeline[0].id }),
+      task: task({ id: "task-1", project_id: "proj-1", read_through: timeline[0].id }),
       timeline,
     });
     call = vi.fn((method) => method === "tasks.get" ? new Promise(() => {}) : Promise.resolve({}));
@@ -306,7 +308,7 @@ describe("task unread navigation", () => {
       comment({ id: "tc-01M37FGQD48628P29BG1A4BB02", author: { kind: "agent", agent_id: "agent-1" } }),
     ];
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", read_through: timeline[0].id }),
+      task: task({ id: "task-1", project_id: "proj-1", read_through: timeline[0].id }),
       timeline,
     });
     call = vi.fn((method) => method === "tasks.get" ? new Promise(() => {}) : Promise.resolve({}));
@@ -346,7 +348,7 @@ describe("task unread navigation", () => {
       comment({ id: "tc-01M37FGQD48628P29BG1A4BB04", author: { kind: "agent", agent_id: "agent-1" } }),
     ];
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", read_through: timeline[0].id }),
+      task: task({ id: "task-1", project_id: "proj-1", read_through: timeline[0].id }),
       timeline,
     });
     // Keep the live read pending so this assertion can only pass from the
@@ -357,6 +359,7 @@ describe("task unread navigation", () => {
     const line = host.querySelector(".task-unread-line");
     expect(line.nextElementSibling.classList.contains("task-event")).toBe(true);
     expect(line.previousElementSibling.id).toBe(`comment-${timeline[1].id}`);
+    await vi.waitFor(() => expect(listed("tasks.read_through")).toHaveLength(1));
     expect(listed("tasks.read_through")[0][1].event_id).toBe(timeline[3].id);
 
     const hostRect = vi.spyOn(host, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 600 });
@@ -395,9 +398,11 @@ describe("task unread navigation", () => {
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", stale);
     // Leave tasks.get outstanding across both visits: only the cache can
     // paint, and the accepted mark must outlive the first page instance.
-    call = vi.fn((method) => method === "tasks.get" ? new Promise(() => {}) : Promise.resolve({ task: {
-      read_through: timeline[2].id,
-    } }));
+    // tasks.read_through returns a full task (fixtures/api/v1/tasks.read_through.json),
+    // with identity matching the action's captured project/task/number.
+    call = vi.fn((method) => method === "tasks.get" ? new Promise(() => {}) : Promise.resolve(answerFor({
+      project_id: "proj-1", watched: true, read_through: timeline[2].id,
+    }, timeline)));
     await mount({}, { waitForPaint: false });
     await vi.waitFor(() => expect(host.querySelector(".task-unread-line")).not.toBeNull());
     await vi.waitFor(async () => expect((await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1"))?.task.read_through)
@@ -422,7 +427,7 @@ describe("task unread navigation", () => {
     for (const [device, project, id] of [
       ["dev-1", "proj-1", "task-1"], ["dev-2", "proj-1", "task-1"],
       ["dev-1", "proj-2", "task-1"], ["dev-1", "proj-1", "task-2"],
-    ]) await trackerCache.writeTaskRecord(device, project, id, answerFor({ id, read_through: first }));
+    ]) await trackerCache.writeTaskRecord(device, project, id, answerFor({ id, project_id: project, read_through: first }));
     await trackerCache.advanceTaskReadThrough("dev-1", "proj-1", "task-1", later);
     await trackerCache.advanceTaskReadThrough("dev-1", "proj-1", "task-1", first);
     await trackerCache.advanceTaskReadThrough("dev-1", "proj-1", "task-1", "comment-3");
@@ -434,6 +439,24 @@ describe("task unread navigation", () => {
 });
 
 describe("the task", () => {
+  it("refuses a full response from another project without publishing or painting it", async () => {
+    call = vi.fn(async () => answerFor({ project_id: "p1", title: "Foreign task" }));
+    await mount();
+    expect(listed("tasks.get")[0][1]).toEqual({ task_id: "task-1" });
+    expect(host.querySelector(".task-page-title")).toBeNull();
+    expect(await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1")).toBeNull();
+  });
+
+  it("publishes and paints a full response matching the mounted project", async () => {
+    call = vi.fn(async () => answerFor({ project_id: "proj-1", title: "Matching task" }));
+    await mount();
+    expect(host.querySelector(".task-page-title").textContent).toBe("Matching task");
+    const held = await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1");
+    expect(held.task.id).toBe("task-1");
+    expect(held.task.project_id).toBe("proj-1");
+    expect(held.task.title).toBe("Matching task");
+  });
+
   it("reads it by id and draws its title and number", async () => {
     await mount();
     expect(listed("tasks.get")[0][1]).toEqual({ task_id: "task-1" });
@@ -463,7 +486,7 @@ describe("the task", () => {
 
   it("paints from the cache before the bridge answers", async () => {
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", number: 12, title: "From the cache" }),
+      task: task({ id: "task-1", project_id: "proj-1", number: 12, title: "From the cache" }),
       timeline: [],
     });
     let settle;
@@ -510,7 +533,7 @@ describe("the task", () => {
     expect(host.querySelector(".task-page-title")).toBeNull();
 
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", number: 12, title: "Announced detail" }),
+      task: task({ id: "task-1", project_id: "proj-1", number: 12, title: "Announced detail" }),
       timeline: [],
     });
     await flush();
@@ -1240,10 +1263,49 @@ describe("a read that fails because the session dropped", () => {
   const WENT = "your device went offline";
   const cached = () =>
     trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", number: 12, title: "From the cache" }),
+      task: task({ id: "task-1", project_id: "proj-1", number: 12, title: "From the cache" }),
       timeline: [],
     });
   const note = () => host.querySelector(".read-wait")?.textContent ?? null;
+
+  // Call through the production scheduler and RPC implementation. Demand stacks
+  // distinguish startup repair, mount and reconnect without mocking a reducer.
+  const traceReads = async () => {
+    const trace = [];
+    const scheduler = await import("../src/core/trailingRead.js");
+    const schedule = scheduler.trailingRead;
+    const spy = vi.spyOn(scheduler, "trailingRead").mockImplementation((read, options) => {
+      const run = schedule((...args) => {
+        trace.push({ event: "run", session: currentSession?.name ?? null });
+        return read(...args);
+      }, options);
+      return (...args) => {
+        trace.push({ event: "demand", stack: new Error().stack });
+        return run(...args);
+      };
+    });
+    const rpc = call.getMockImplementation();
+    call.mockImplementation((...args) => {
+      trace.push({ event: "rpc", method: args[0], session: currentSession?.name ?? null,
+        away, reconnecting });
+      return rpc(...args);
+    });
+    return () => {
+      console.info("task startup/reconnect trace", JSON.stringify(trace));
+      spy.mockRestore();
+    };
+  };
+
+  const currentCached = async () => {
+    const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+    const address = trackerCache.taskAddress("dev-1", "proj-1", "task-1");
+    const contentRead = await captureTaskContentRead(address, { revalidate: "full" });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answerFor({ title: "Current cached task" }), { contentRead });
+    const stored = await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1");
+    expect(stored.task.__task_content_cache.header.read_order).toBe(contentRead.readOrder);
+    expect(stored.task.__task_content_cache.body.read_order).toBe(contentRead.readOrder);
+    expect(stored.task.__task_content_cache.needs_full_refresh).toBe(false);
+  };
 
   it("keeps the cached copy and says nothing", async () => {
     await cached();
@@ -1263,14 +1325,63 @@ describe("a read that fails because the session dropped", () => {
   it("reads again when the machine is back, with nothing polled in between", async () => {
     await cached();
     refuses = { method: "tasks.get", message: WENT };
-    await mount();
-    expect(listed("tasks.get")).toHaveLength(1);
-    refuses = null;
-    await reconnect();
-    expect(listed("tasks.get")).toHaveLength(2);
-    expect(host.querySelector(".task-page-title").textContent).toBe("Kanban drag does not persist");
-    expect(note()).toBeNull();
-    expect(notifyError).not.toHaveBeenCalled();
+    const finishTrace = await traceReads();
+    try {
+      await mount();
+      expect(listed("tasks.get")).toHaveLength(1);
+      // More event-loop turns without a device event must not poll or retry.
+      await flush();
+      expect(listed("tasks.get")).toHaveLength(1);
+      refuses = null;
+      await reconnect();
+      expect(listed("tasks.get")).toHaveLength(2);
+      expect(host.querySelector(".task-page-title").textContent).toBe("Kanban drag does not persist");
+      expect(note()).toBeNull();
+      expect(notifyError).not.toHaveBeenCalled();
+    } finally { finishTrace(); }
+  });
+
+  it("starts one read from a genuinely current cached full detail", async () => {
+    await currentCached();
+    away = false; reconnecting = false;
+    const finishTrace = await traceReads();
+    try {
+      await mount();
+      expect(listed("tasks.get")).toHaveLength(1);
+      expect(host.querySelector(".task-page-title").textContent).toBe("Kanban drag does not persist");
+      await flush();
+      expect(listed("tasks.get")).toHaveLength(1);
+      expect(notifyError).not.toHaveBeenCalled();
+    } finally { finishTrace(); }
+  });
+
+  it("starts a replacement-session read without waiting for the old startup reply", async () => {
+    await currentCached();
+    currentSession = { name: "old" };
+    away = false; reconnecting = false;
+    let oldReply;
+    call.mockImplementation((method) => method !== "tasks.get" ? Promise.resolve({})
+      : currentSession.name === "old" ? new Promise((resolve) => { oldReply = resolve; })
+        : Promise.resolve(answerFor({ title: "Replacement session task" })));
+    const finishTrace = await traceReads();
+    try {
+      await mount();
+      expect(listed("tasks.get")).toHaveLength(1);
+      expect(oldReply).toBeTypeOf("function");
+      currentSession = { name: "replacement" };
+      watchers.find(({ entity }) => entity === "proj-1").refresh();
+      await vi.waitFor(() => expect(host.querySelector(".task-page-title").textContent).toBe("Replacement session task"));
+      expect(listed("tasks.get")).toHaveLength(2);
+      oldReply(answerFor({ title: "Obsolete startup reply" }));
+      await flush();
+      expect(listed("tasks.get")).toHaveLength(2);
+      expect(host.querySelector(".task-page-title").textContent).toBe("Replacement session task");
+      expect((await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1")).task.title).toBe("Replacement session task");
+      expect(notifyError).not.toHaveBeenCalled();
+    } finally {
+      oldReply?.(answerFor({ title: "Obsolete startup reply" }));
+      finishTrace();
+    }
   });
 
   // The bridge answered. The reader has to hear that, dropped session or not.
@@ -1576,7 +1687,7 @@ describe("the comment box across what arrives while typing", () => {
       comment({ id: `tc-01M37FGQD48628P29BG1A4B${String(at).padStart(3, "0")}`, author: { kind: "user" } }));
     const agent = comment({ id: "tc-01M37FGQD48628P29BG1A4BZZZ", author: { kind: "agent", agent_id: "agent-1" } });
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", read_through: users.at(-1).id }),
+      task: task({ id: "task-1", project_id: "proj-1", read_through: users.at(-1).id }),
       timeline: [...users, agent],
     });
     call = vi.fn((method) => method === "tasks.get" ? new Promise(() => {}) : Promise.resolve({}));
@@ -1586,7 +1697,7 @@ describe("the comment box across what arrives while typing", () => {
     const rows = [...host.querySelectorAll(".task-entry")];
 
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", {
-      task: task({ id: "task-1", read_through: users.at(-1).id }),
+      task: task({ id: "task-1", project_id: "proj-1", read_through: users.at(-1).id }),
       timeline: users,
     });
     await vi.waitFor(() => expect(host.querySelector(".task-unread-line")).toBeNull());

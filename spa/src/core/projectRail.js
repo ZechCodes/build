@@ -13,6 +13,7 @@
 
 import { PROJECT_TABS, paintDirectoryRail, releaseDirectoryRail } from "./directoryRail.js";
 import { followProjectTasksUnread } from "./projectTasksUnread.js";
+import { followProjectTaskCounts } from "./taskCountReaderRuntime.js";
 import { projectSettingsLabel } from "./text.js";
 import { refreshFeed } from "./taskFeed.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
@@ -48,6 +49,7 @@ export function mountProjectRail(host, { route, context, onSelect, navigate }) {
   }
 
   tasks.follow(route.deviceId, route.projectId);
+  const counts = followProjectTaskCounts({ deviceId: route.deviceId, projectId: route.projectId, context });
 
   return {
     paint(active) {
@@ -58,6 +60,7 @@ export function mountProjectRail(host, { route, context, onSelect, navigate }) {
     // it: leaving hands it back empty, or to the next surface where the keyboard
     // is on it.
     dispose() {
+      counts.dispose();
       tasks.dispose();
       releaseDirectoryRail(host);
     },

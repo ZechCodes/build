@@ -7,7 +7,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
-import { columns, comment, event, task } from "./trackerWireFixture.js";
+import { columns, comment, event, task as wireTask } from "./trackerWireFixture.js";
+const task = (over = {}) => wireTask({ project_id: "proj-1", ...over });
 import { painted } from "./waits.js";
 
 vi.mock("../src/core/changeEvents.js", () => ({

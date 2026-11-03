@@ -44,6 +44,13 @@ export function taskUnreadCount(task, detail = null) {
   return timelineIsCurrent || listed === null ? timelineUnread(task, detail) : listed;
 }
 
+/** Per-task display only. Totals and rail arithmetic retain taskUnreadCount. */
+export function taskUnreadDisplayCount(task, detail, { unknown = false, previous } = {}) {
+  if (task?.watched !== true) return 0;
+  if (unknown && Number.isSafeInteger(previous) && previous >= 0) return previous;
+  return taskUnreadCount(task, detail);
+}
+
 /** The bubble a task wears where tasks are listed, and nothing at all for
  *  none. The inbox's own badge, so an unread count reads the same anywhere. */
 export const unreadBubbleHtml = (count) =>

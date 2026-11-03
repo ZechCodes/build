@@ -2,7 +2,7 @@
 // inbox phase. Both phases use the sync layer's task-read serialization;
 // pages still land, read back and fold through trackerPages' authority rules.
 import { createTaskPagePull, foldTasksPage, pagesTasks } from "./trackerPages.js";
-import { nextTaskRead } from "./taskReadOrder.js";
+import { captureTaskContentRead, observeTaskContent } from "./taskContentAuthority.js";
 import { readTasksRecord, tasksAddress, tasksRecord, writeTasksRecord } from "./trackerCache.js";
 import { writeListedUserSession } from "./userSessionCache.js";
 
@@ -30,14 +30,15 @@ async function foldPage(context, projectId, columns, stretch, page) {
 }
 
 async function wholeList(context, projectId, ask, columns, priority) {
-  const read = await nextTaskRead();
+  const contentRead = await captureTaskContentRead(tasksAddress(context.deviceId, projectId), { revalidate: "full" });
   if (!context.active()) return false;
   const answer = await ask(context, "tasks.list", { project_id: projectId }, priority, taskReadScope(context, projectId));
   if (!answer || !context.active()) return false;
   const value = await columns;
   if (!context.active()) return false;
+  const observed = (answer.tasks || []).map((task) => observeTaskContent(task, { contentRead, coverage: "full" }));
   await Promise.all([
-    writeTasksRecord(context.deviceId, projectId, tasksRecord(answer.tasks, value, read)),
+    writeTasksRecord(context.deviceId, projectId, tasksRecord(observed, value, contentRead.readOrder), { accept: () => context.active(), contentRead }),
     writeListedUserSession(context.deviceId, answer),
   ]);
   return true;

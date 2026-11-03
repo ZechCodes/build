@@ -2,7 +2,7 @@ import { loadBrowserModules, mountLayout } from "./layoutHarness.mjs";
 
 /** A fixture bridge with the real greeting authority, cache and task-page code.
  * Only the authenticated device recovery lifecycle is replaced by deviceShim. */
-export async function mountWaitingOnFixture(page, basePath, { theme = "light", assigned = false, failed = false, old = false, legacy = false, cachedOnly = false } = {}) {
+export async function mountWaitingOnFixture(page, basePath, { theme = "light", assigned = false, failed = false, old = false, legacy = false, cachedOnly = false, push = false } = {}) {
   await mountLayout(page, '<main id="task"></main>', {
     basePath,
     styles: `@import url("${basePath}src/styles/tasks.css"); body{display:block;margin:0;padding:12px} #task{height:calc(100dvh - 24px);overflow:auto;max-width:1240px;margin:auto}`,
@@ -11,7 +11,7 @@ export async function mountWaitingOnFixture(page, basePath, { theme = "light", a
     cache: "src/core/trackerCache.js", taskPage: "src/core/trackerTaskPage.js",
     contexts: "src/core/deviceContexts.js", events: "src/core/changeEvents.js",
   }, basePath);
-  await page.evaluate(async ({ theme, assigned, failed, old, legacy, cachedOnly }) => {
+  await page.evaluate(async ({ theme, assigned, failed, old, legacy, cachedOnly, push }) => {
     document.documentElement.dataset.theme = theme;
     const { cache, taskPage, contexts, events } = window.__layoutModules;
     const deviceId = "device-waiting";
@@ -47,7 +47,7 @@ export async function mountWaitingOnFixture(page, basePath, { theme = "light", a
     const fixture = { tasks, current, calls: [], navigations: [], refusal: null, readsHeld: cachedOnly, old };
     fixture.call = async (method, params) => {
       fixture.calls.push({ method, params: structuredClone(params || {}) });
-      if (method === "session.hello") return { api_version: "3.24.0", capabilities: fixture.old ? [] : ["tasks.waitingOn"], push_events: false };
+      if (method === "session.hello") return { api_version: "3.24.0", capabilities: fixture.old ? [] : ["tasks.waitingOn"], push_events: push };
       if (method === "tasks.get") {
         if (fixture.readsHeld) return new Promise(() => {});
         return { task: structuredClone(fixture.current), timeline: [] };
@@ -103,6 +103,8 @@ export async function mountWaitingOnFixture(page, basePath, { theme = "light", a
       navigate: (url) => fixture.navigations.push(url),
     });
     window.__waiting = fixture;
-  }, { theme, assigned, failed, old, legacy, cachedOnly });
+  }, { theme, assigned, failed, old, legacy, cachedOnly, push });
   await page.locator(".task-page-title").waitFor({ timeout: 5000 });
+  // Cached title and waiting-on support hydrate independently.
+  if (!old && !legacy) await page.locator("[data-task-waiting-on]").waitFor({ timeout: 5000 });
 }

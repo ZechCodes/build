@@ -424,15 +424,26 @@ it("distinguishes inferred dependencies from an explicit empty dependency overri
 describe("task publication admission", () => {
   it("fences an older detail read before removing the accepted comment layer", async () => {
     const tracker = await import("../src/core/trackerCache.js");
-    const task = { id: "task-a", updated_at: "2026-10-20T00:00:00Z" };
+    const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+    const task = { id: "task-a", project_id: "project", body: "Canonical full body", updated_at: "2026-10-20T00:00:00Z" };
     const detailAddress = tracker.taskAddress(scope.deviceId, "project", task.id);
     const old = { task, timeline: [] };
     await tracker.writeTaskRecord(scope.deviceId, "project", task.id, old);
     const detailBasis = await tracker.captureTaskDetailRead(scope.deviceId, "project", task.id);
     await operations.put(intent());
     await operations.accept("op-a", { ack: {}, revision: 1, overlay: [{ address: detailAddress, kind: "upsert", path: ["timeline"], value: { id: "comment-a", body: "accepted" } }] });
-    await operations.confirm("op-a", { revision: 2, confirmation: { state: "succeeded", published: publication } });
-    await operations.observePublication({ canonical: [{ address: detailAddress, value: { task, timeline: [{ id: "comment-a", body: "committed" }] }, publication }] });
+    const frame = { operation_id: "op-a", revision: 2, state: "succeeded", published: publication,
+      refresh: [{ kind: "task", id: task.id }] };
+    await operations.confirm("op-a", { revision: 2, confirmation: frame, refreshPending: true });
+    const beforeUnowned = await cache.readCanonicalCached(detailAddress);
+    await operations.observePublication({ canonical: [{ address: detailAddress,
+      value: { task: { ...task, body: "Unowned body" }, timeline: [{ id: "unowned-history" }] }, publication }] });
+    expect(await cache.readCanonicalCached(detailAddress)).toEqual(beforeUnowned);
+    expect((await operations.get("op-a")).overlayActive).toBe(true);
+    const { refreshWriteOperation } = await import("../src/core/writeOperationRefresh.js");
+    const answer = { task, timeline: [{ id: "comment-a", body: "committed" }] };
+    expect(await refreshWriteOperation({ cache: operations, frame, record: await operations.get("op-a"),
+      authority: { active: () => true, call: vi.fn(async () => answer) } })).toMatchObject({ complete: true });
     expect((await operations.get("op-a")).overlayActive).toBe(false);
     const publishedBasis = await tracker.captureTaskDetailRead(scope.deviceId, "project", task.id);
     const { nextTaskRead } = await import("../src/core/taskReadOrder.js");
@@ -444,13 +455,27 @@ describe("task publication admission", () => {
 
   it("preserves accepted task read and review floors during publication", async () => {
     const tracker = await import("../src/core/trackerCache.js");
-    const task = { id: "task-a", updated_at: "2026-10-20T00:00:00Z", read_through: "tc-Z", review_summary: { task_id: "review-a", version: 7 } };
+    const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+    const task = { id: "task-a", body: "Canonical full body", updated_at: "2026-10-20T00:00:00Z", read_through: "tc-Z", review_summary: { task_id: "review-a", version: 7 } };
     const detailAddress = tracker.taskAddress(scope.deviceId, "project", task.id);
     await tracker.writeTaskRecord(scope.deviceId, "project", task.id, { task, timeline: [] });
-    await operations.observePublication({ canonical: [{ address: detailAddress, value: { task: { ...task, read_through: "tc-A", review_summary: { task_id: "review-a", version: 6 } }, timeline: [] }, publication }] });
+    const contentRead = await captureTaskContentRead(detailAddress, { revalidate: "full" });
+    await operations.observePublication({ canonical: [{ address: detailAddress, value: { task: { ...task, read_through: "tc-A", review_summary: { task_id: "review-a", version: 6 } }, timeline: [] }, publication,
+      contentRead, guard: { written: contentRead.written } }] });
     const saved = await tracker.readTaskRecord(scope.deviceId, "project", task.id);
     expect(saved.task.read_through).toBe("tc-Z");
     expect(saved.task.review_summary.version).toBe(7);
+  });
+
+  it("refuses an unguarded full task publication without manufacturing ordinary-body proof", async () => {
+    const tracker = await import("../src/core/trackerCache.js");
+    const task = { id: "task-a", body: "Held full body", updated_at: "2026-10-20T00:00:00Z" };
+    const detailAddress = tracker.taskAddress(scope.deviceId, "project", task.id);
+    await tracker.writeTaskRecord(scope.deviceId, "project", task.id, { task, timeline: [] });
+    const written = await operations.observePublication({ canonical: [{ address: detailAddress,
+      value: { task: { ...task, body: "Unproven body" }, timeline: [] }, publication }] });
+    expect(written).toEqual([]);
+    expect((await tracker.readTaskRecord(scope.deviceId, "project", task.id)).task.body).toBe(task.body);
   });
 
   it("skips a publication whose captured task detail action note was replaced", async () => {
@@ -503,8 +528,10 @@ it("completes a named publication refresh when no local overlay was normalized",
   await operations.accept("op-a", { ack: {}, revision: 1, owners: publication, overlay: [] });
   const record = await operations.confirm("op-a", { revision: 2, confirmation: frame, refreshPending: true });
   const { refreshWriteOperation } = await import("../src/core/writeOperationRefresh.js");
-  const authority = { active: () => true, call: vi.fn(async () => ({ task: { id: "task-a" }, timeline: [] })) };
-  await expect(refreshWriteOperation({ cache: operations, frame, record, authority })).resolves.toBeUndefined();
+  const fixture = JSON.parse(readFileSync(new URL("../../fixtures/api/v1/tasks.get.json", import.meta.url))).result;
+  const task = { ...fixture.task, id: "task-a", project_id: "project" };
+  const authority = { active: () => true, call: vi.fn(async () => ({ task, timeline: [] })) };
+  await expect(refreshWriteOperation({ cache: operations, frame, record, authority })).resolves.toMatchObject({ complete: true });
   expect((await operations.get("op-a")).overlayActive).toBe(false);
   expect(authority.call).toHaveBeenCalledWith("tasks.get", { task_id: "task-a" });
 });

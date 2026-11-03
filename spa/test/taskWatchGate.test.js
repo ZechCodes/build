@@ -28,7 +28,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { columns, comment, task } from "./trackerWireFixture.js";
+import { columns, comment, task as wireTask } from "./trackerWireFixture.js";
+const task = (over = {}) => wireTask({ project_id: "proj-1", ...over });
 
 vi.mock("../src/core/deviceReconnect.js", () => ({
   deviceSession: () => null,
@@ -242,7 +243,7 @@ describe("the page, on top of that gate", () => {
     await greet(WATCHING);
     await mount();
     expect(host.querySelector(".rail-watch")).not.toBeNull();
-    expect(listed("tasks.read_through")[0][1]).toEqual({ task_id: "task-1", event_id: "tc-1" });
+    await vi.waitFor(() => expect(listed("tasks.read_through")[0]?.[1]).toEqual({ task_id: "task-1", event_id: "tc-1" }));
   });
 
   it("and presses through to the verb itself", async () => {

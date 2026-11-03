@@ -25,7 +25,7 @@ import {
   readTasksRecord,
   writeTaskRecord,
 } from "./trackerCache.js";
-import { readCached, subscribeCache } from "./localCache.js";
+import { readCached, readCachedMany, subscribeCache } from "./localCache.js";
 import { mountTaskReviewPage } from "./taskReviewPage.js";
 import { reviewAddress } from "./taskReviewCache.js";
 import { readReviewSupport, reviewSupportAddress } from "./taskReviewSupport.js";
@@ -52,9 +52,16 @@ import { patchParts } from "./partPatch.js";
 import { patchList } from "./patchList.js";
 import { followConversation, paintKeepingPlace, wireReaderMotion } from "./paintKeepingPlace.js";
 import { subscribeReferenceIndex } from "./referenceIndex.js";
+import { mountTaskReferenceLookups } from "./taskReferenceLookups.js";
 import { mountComposerAttachments } from "./composer.js";
 import { taskAttachmentRefusal } from "./taskAttachments.js";
 import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
+import { subscribeTaskMutations, taskMutationsPendingFor, wrapTaskMutationCall } from "./taskMutationFence.js";
+import { cacheTaskWaitingOnResponse } from "./taskWaitingOnCache.js";
+import { contextFor, deviceContextIdentity, onDeviceStateChanged } from "./deviceContexts.js";
+import { captureTaskContentRead, taskFullRefreshKey } from "./taskContentAuthority.js";
+import { beginTaskWatchMutation, settleTaskWatchMutation, readTaskWatchState, taskWatchControlAddress } from "./taskWatchAuthority.js";
+import { summaryAddress } from "./taskSummaryCache.js";
 import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./watchToggle.js";
 import { notifyCommandFailure } from "./commandRefusal.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
@@ -77,6 +84,73 @@ import { provenExpiredFailure } from "./writeOperationIntent.js";
 /** Whether one flush of `tasks` items says anything about this task. */
 const namesTask = (items, taskId) =>
   (items || []).some((item) => item.tasks && (item.tasks.truncated || (item.tasks.task_ids || []).includes(taskId)));
+
+function captureTaskAction(state) {
+  const { deviceId, projectId, taskId, callRpc } = state;
+  const captured = { deviceId, projectId, taskId, callRpc, number: state.task?.number,
+    context: contextFor(deviceId), identity: deviceContextIdentity(deviceId), session: deviceSession(deviceId) };
+  return { ...captured, accept: () => sameTaskVisit(state, captured) && currentTaskOwner(captured) };
+}
+
+const sameTaskVisit = (state, captured) => state.deviceId === captured.deviceId && state.projectId === captured.projectId
+  && state.taskId === captured.taskId && state.callRpc === captured.callRpc;
+const currentTaskOwner = ({ deviceId, context, identity, session }) => contextFor(deviceId) === context
+  && deviceContextIdentity(deviceId) === identity && deviceSession(deviceId) === session
+  && (!context || context.active());
+
+function matchingTaskAction(task, authority) {
+  if (task?.id !== authority.taskId || task.project_id !== authority.projectId || task.number !== authority.number) {
+    throw new Error("Expected a matching full task action response");
+  }
+}
+
+const compactReadAnswer = (through, answer) => through !== undefined
+  && (!Object.hasOwn(answer || {}, "task") || exactCompactReadTask(answer.task, through));
+const exactCompactReadTask = (task, through) => Boolean(task) && Object.keys(task).length === 1
+  && task.read_through === through;
+
+/** Acknowledged effects belong to their captured owner even after the page
+ * leaves. Rendering disposal does not revoke account/device/session authority. */
+async function dispatchTaskAction(authority, method, params, readThrough) {
+  if (method === "tasks.watch" || method === "tasks.unwatch") return dispatchTaskWatchAction(authority, method, params);
+  const contentRead = await captureTaskContentRead(taskAddress(authority.deviceId, authority.projectId, authority.taskId), { revalidate: "full" });
+  const issuedRead = contentRead.readOrder;
+  if (!authority.accept()) throw new Error("This task's session changed before sending the action.");
+  const answer = await authority.callRpc(method, params);
+  if (!authority.accept()) throw new Error("This task's session changed while the action was running.");
+  if (compactReadAnswer(readThrough, answer)) {
+    await advanceTaskReadThrough(authority.deviceId, authority.projectId, authority.taskId, readThrough,
+      { accept: authority.accept, issuedRead });
+    return answer;
+  }
+  if (answer && Object.hasOwn(answer, "task")) {
+    matchingTaskAction(answer.task, authority);
+    await cacheTaskWaitingOnResponse(authority.deviceId, authority.projectId, { task: answer.task }, {
+      accept: authority.accept, issuedRead, contentRead,
+    });
+  }
+  return answer;
+}
+
+async function dispatchTaskWatchAction(authority, method, params) {
+  const scope = { deviceId: authority.deviceId, projectId: authority.projectId };
+  const owner = await beginTaskWatchMutation(scope, authority.taskId, {
+    watched: method === "tasks.watch", metadataOnly: true, accept: authority.accept,
+  });
+  if (!owner) throw new Error("Could not save this task's watch change.");
+  try {
+    const contentRead = await captureTaskContentRead(scope);
+    if (!authority.accept()) throw new Error("This task's session changed before sending the action.");
+    const answer = await authority.callRpc(method, params);
+    if (!authority.accept()) throw new Error("This task's session changed while the action was running.");
+    if (answer && Object.hasOwn(answer, "task")) matchingTaskAction(answer.task, authority);
+    await settleTaskWatchMutation(owner, { answer, contentRead, accept: authority.accept });
+    return answer;
+  } catch (error) {
+    await settleTaskWatchMutation(owner, { rollback: true, accept: authority.accept });
+    throw error;
+  }
+}
 
 /** Mark a routed comment after a cache paint. The row already has a stable ID
  *  for conversation action links; this also moves the task's own scroller. */
@@ -126,6 +200,10 @@ export function mountTaskPage(host, options) {
     // that has to settle into the tray after it.
     files: [],
   };
+  const referenceLookups = mountTaskReferenceLookups(host, { deviceId: state.deviceId, projectId: state.projectId });
+  let attemptedFullRefresh = null;
+  let admittingRepairRead = null;
+  let contentHeader = null;
   let checklistFocus = null;
   const checklist = createTaskChecklist({
     deviceId: state.deviceId, projectId: state.projectId, taskId: state.taskId,
@@ -176,7 +254,7 @@ export function mountTaskPage(host, options) {
   const WATCH_UNSUPPORTED = "This bridge does not support watching tasks.";
   const watch = createWatchToggle({
     taskId: state.taskId,
-    call: (method, params) => state.callRpc(method, params),
+    call: (method, params) => dispatchTaskAction(captureTaskAction(state), method, params),
     onChange: (next) => syncWatchButton(host.querySelector(WATCH_BUTTON_SELECTOR), next),
     onFailure: (error) => notifyCommandFailure(
       error, "Could not change whether you are watching this task", WATCH_UNSUPPORTED,
@@ -223,15 +301,13 @@ export function mountTaskPage(host, options) {
     if (!canMarkRead || !state.task || !readerIsHere()) return;
     const through = readThrough(state.rows);
     if (!through || through === markedThrough) return;
-    markedThrough = through;
-    updateUnread();
-    void Promise.resolve()
-      .then(() => state.callRpc("tasks.read_through", { task_id: state.taskId, event_id: through }))
-      .then((answer) => advanceTaskReadThrough(
-        state.deviceId, state.projectId, state.taskId,
-        latestTaskMark(through, answer?.task?.read_through),
-      ))
-      .catch(() => { if (markedThrough === through) markedThrough = ""; });
+    void wrapTaskMutationCall(state.deviceId, "tasks.read_through", () => {
+      const authority = captureTaskAction(state);
+      markedThrough = through;
+      updateUnread();
+      return dispatchTaskAction(authority, "tasks.read_through", { task_id: authority.taskId, event_id: through }, through)
+        .catch(() => { if (markedThrough === through) markedThrough = ""; });
+    });
   }
 
   /** The reader reached the end of the timeline, which is the only thing that
@@ -549,6 +625,7 @@ export function mountTaskPage(host, options) {
     // route names an id, but only a read knows its number and title.
     state.onTaskRead?.(record.task);
     state.rows = timelineRows(record.timeline);
+    void referenceLookups.update({ body: record.task.body, rows: state.rows });
     // Read the mark while it still says where this visit began. The open
     // mark below advances it, but the held divider must not move with it.
     updateUnread();
@@ -559,6 +636,53 @@ export function mountTaskPage(host, options) {
     watch.settle(watchStateOf(record.task));
     markRead();
   }
+
+  function requestFullContent(task, authority) {
+    const key = taskFullRefreshKey(task, contentHeader);
+    if (!key || key === attemptedFullRefresh || repairIsAdmitting(key)) return;
+    void requestOwnedTaskRead(authority, key);
+  }
+
+  const summaryTarget = summaryAddress({ deviceId: state.deviceId, projectId: state.projectId }, state.taskId);
+  let summaryReadSerial = 0;
+  async function readContentHeader() {
+    const serial = ++summaryReadSerial, authority = captureTaskAction(state);
+    try {
+      const [detail, record] = await readCachedMany([
+        taskAddress(state.deviceId, state.projectId, state.taskId), summaryTarget,
+      ]);
+      if (state.disposed || serial !== summaryReadSerial || !authority.accept()) return;
+      contentHeader = record?.value?.task;
+      requestFullContent(detail?.value?.task, authority);
+    } catch { /* A failed cache snapshot admits no repair or automatic retry. */ }
+  }
+  const contentHeaderWatcher = subscribeCache(summaryTarget, () => void readContentHeader());
+  void readContentHeader();
+
+  let watchControlOwner = null, watchControlSerial = 0, lastWatchControlHint = null;
+  let stopWatchControl = () => {};
+  const sameWatchControlOwner = (owner, next) => owner?.context === next.context
+    && owner?.identity === next.identity && owner?.session === next.session;
+  async function readWatchControl(owner) {
+    const serial = ++watchControlSerial;
+    try {
+      const watch = await readTaskWatchState({ deviceId: state.deviceId, projectId: state.projectId });
+      if (serial !== watchControlSerial || owner !== watchControlOwner || state.disposed || !owner.accept()) return;
+      if (!watch.eligible) return;
+      const hint = JSON.stringify([watch.controlGeneration, watch.watchEpoch]);
+      if (hint === lastWatchControlHint) return;
+      lastWatchControlHint = hint;
+      void requestOwnedTaskRead(owner);
+    } catch { /* A failed/unknown eligibility check admits no read or retry. */ }
+  }
+  function bindWatchControl() {
+    const next = captureTaskAction(state);
+    if (state.disposed || watchControlOwner && sameWatchControlOwner(watchControlOwner, next)) return;
+    stopWatchControl(); watchControlSerial += 1; lastWatchControlHint = null; watchControlOwner = next;
+    stopWatchControl = subscribeCache(taskWatchControlAddress({ deviceId: state.deviceId, projectId: state.projectId }), () => void readWatchControl(next));
+  }
+  bindWatchControl();
+  const stopWatchControlLifetime = onDeviceStateChanged(bindWatchControl);
 
   async function paintFromCache() {
     const [cached, list, at, checklistSupported, waitingOnSupported] = await Promise.all([
@@ -600,6 +724,7 @@ export function mountTaskPage(host, options) {
     const cached = await readTaskRecord(state.deviceId, state.projectId, state.taskId);
     if (state.disposed || !cached) return;
     take(cached, { keepDrafts: Boolean(state.task), live: true });
+    void readContentHeader();
     reads.succeeded();
     paint();
   });
@@ -639,24 +764,106 @@ export function mountTaskPage(host, options) {
    *  read begun before it. A write awaiting this while a read is out settles
    *  with the read after it, so the page paints what was written. */
   let taskReads = null;
+  let queuedOwnedRead = null, queuedRepairRead = null, normalReadDemand = false;
+  let lastTaskReadOwner = null;
+  let deferredTaskRead = null;
+  const ordinaryScope = { deviceId: state.deviceId, projectId: state.projectId };
+  function recoverDeferredTaskRead() {
+    const owner = deferredTaskRead;
+    if (!owner) return;
+    if (state.disposed || !owner.accept()) { deferredTaskRead = null; return; }
+    if (taskMutationsPendingFor(ordinaryScope, state.taskId)) return;
+    deferredTaskRead = null;
+    void requestOwnedTaskRead(owner);
+  }
+  function deferTaskRead(owner) {
+    if (state.disposed || !owner.accept()) return;
+    deferredTaskRead = owner;
+    // Settlement can occur after commit but before the writer's observer.
+    recoverDeferredTaskRead();
+  }
+  const stopOrdinaryMutations = subscribeTaskMutations(state.deviceId, (event) => {
+    if (event.phase === "retired" || event.phase === "session") { deferredTaskRead = null; return; }
+    if (event.task?.projectId !== state.projectId || event.task.taskId !== state.taskId) return;
+    if (event.phase === "settled" && event.task.pending === 0) recoverDeferredTaskRead();
+  });
+  function refreshForMount() {
+    if (state.disposed || lastTaskReadOwner?.accept()) return;
+    return refresh();
+  }
   function refresh() {
+    normalReadDemand = true;
+    return requestTaskRead();
+  }
+  function requestOwnedTaskRead(owner, repairKey = null) {
+    if (!normalReadDemand) queuedOwnedRead = owner;
+    if (repairKey) queuedRepairRead = { owner, key: repairKey };
+    return requestTaskRead();
+  }
+  function requestTaskRead() {
     taskReads ||= trailingRead(readTask, { generationOf: () => deviceSession(state.deviceId) });
     return taskReads();
   }
+  function consumeTaskReadDemand() {
+    // A trailing control or repair hint keeps its captured owner. Ordinary
+    // invalidation demand remains valid through the existing read owner.
+    const owner = queuedOwnedRead, repair = queuedRepairRead, normal = normalReadDemand;
+    queuedOwnedRead = null; queuedRepairRead = null; normalReadDemand = false;
+    if (state.disposed || !normal && owner && !owner.accept()) return null;
+    return { repairKey: repair?.owner.accept() ? repair.key : null };
+  }
+
+  function admitTaskReadOwner() {
+    const authority = captureTaskAction(state);
+    if (state.disposed || !authority.accept()) return null;
+    // Mount joins only a real admitted attempt, including one which failed.
+    // This local scheduling marker confers no cached content/watch authority.
+    lastTaskReadOwner = authority;
+    return authority;
+  }
+
+  function repairIsAdmitting(key) {
+    return admittingRepairRead?.key === key && admittingRepairRead.owner.accept();
+  }
+
+  function reserveRepairRead(owner, key) {
+    if (!key) return null;
+    const reservation = { owner, key };
+    admittingRepairRead = reservation;
+    return reservation;
+  }
+
+  function releaseRepairRead(reservation) {
+    // An older completion cannot clear a replacement owner's reservation.
+    if (admittingRepairRead === reservation) admittingRepairRead = null;
+  }
+
+  function acceptsTaskReadDispatch(authority, demand) {
+    if (state.disposed || !authority.accept()) return false;
+    // Only actual dispatch consumes the coherent snapshot's repair key.
+    // Retirement while capturing read bases must not consume it either.
+    if (demand.repairKey) attemptedFullRefresh = demand.repairKey;
+    return true;
+  }
 
   async function readTask() {
-    if (state.disposed) return;
+    const demand = consumeTaskReadDemand();
+    if (!demand) return;
+    const authority = admitTaskReadOwner();
+    if (!authority) return;
+    const reservation = reserveRepairRead(authority, demand.repairKey);
     try {
-      const [checklistBasis, detailBasis] = await Promise.all([
+      const [checklistBasis, detailBasis, contentRead] = await Promise.all([
         checklist.readBasis(), captureTaskDetailRead(state.deviceId, state.projectId, state.taskId),
+        captureTaskContentRead(taskAddress(state.deviceId, state.projectId, state.taskId), { revalidate: "full" }),
       ]);
-      if (state.disposed) return;
+      if (!acceptsTaskReadDispatch(authority, demand)) return;
       const answer = await state.callRpc("tasks.get", { task_id: state.taskId });
-      if (state.disposed) return;
+      if (state.disposed || !authority.accept()) return;
       // The pull is a writer. The subscription above owns the read and paint.
       await writeTaskRecord(state.deviceId, state.projectId, state.taskId, taskRecord(answer.task, answer.timeline), {
-        accept: (held) => !state.disposed && checklist.acceptsRead(checklistBasis, held),
-        detailBasis,
+        accept: (held) => !state.disposed && authority.accept() && checklist.acceptsRead(checklistBasis, held),
+        detailBasis, contentRead, onOrdinaryDeferred: () => deferTaskRead(authority),
       });
     } catch (error) {
       if (state.disposed) return;
@@ -667,6 +874,8 @@ export function mountTaskPage(host, options) {
       state.loaded = true;
       paint();
       notifyError("Could not read this task", messageOf(error));
+    } finally {
+      releaseRepairRead(reservation);
     }
   }
 
@@ -680,8 +889,16 @@ export function mountTaskPage(host, options) {
     state.busy = true;
     paint();
     try {
-      await state.callRpc(method, params);
-      await refresh();
+      if (method === "tasks.update") {
+        const owner = captureTaskAction(state);
+        await wrapTaskMutationCall(owner.deviceId, method, async () => {
+          await owner.callRpc(method, params);
+          if (!state.disposed && owner.accept()) await requestOwnedTaskRead(owner);
+        }, { projectId: owner.projectId, taskId: owner.taskId });
+      } else {
+        await state.callRpc(method, params);
+        await refresh();
+      }
     } catch (error) {
       if (!state.disposed) notifyError(whatFailed, messageOf(error));
     } finally {
@@ -1033,7 +1250,10 @@ export function mountTaskPage(host, options) {
 
   function wireWatch() {
     const button = host.querySelector(WATCH_BUTTON_SELECTOR);
-    if (button) button.onclick = () => void watch.press();
+    if (button) button.onclick = () => {
+      const method = watch.state().watching ? "tasks.unwatch" : "tasks.watch";
+      void wrapTaskMutationCall(state.deviceId, method, () => watch.press());
+    };
   }
 
   // ---- lifecycle -----------------------------------------------------------
@@ -1049,12 +1269,12 @@ export function mountTaskPage(host, options) {
     restoreDraft: restoreCommentDraft, retry: retryComment, onChange: paint,
   });
   paint();
-  void paintFromCache().then(() => refresh());
+  void paintFromCache().then(refreshForMount);
   // No cadence: nothing in this client polls. An item that names this task
   // is what re-reads it, and the pass behind that (core/cacheSync.js) is the
   // whole of the safety net.
   const watcher = watchChanges({
-    refresh: () => { void refresh(); reviewPage?.refresh(); },
+    refresh: () => { void refresh(); void referenceLookups.refresh(); reviewPage?.refresh(); },
     entity: state.projectId,
     deviceId: state.deviceId,
   // Named only where the bridge carries them (core/trackerPush.js): every
@@ -1063,6 +1283,7 @@ export function mountTaskPage(host, options) {
     kinds: tasksPushKinds(state.deviceId),
     mode: "realtime",
     onChanges: (items) => {
+      void referenceLookups.refresh();
       if (namesTask(items, state.taskId)) { void refresh(); reviewPage?.refresh(); }
     },
   });
@@ -1086,9 +1307,15 @@ export function mountTaskPage(host, options) {
       watcher.dispose();
       stopGreeting();
       taskWatcher?.();
+      contentHeaderWatcher();
+      stopWatchControl();
+      stopWatchControlLifetime();
+      stopOrdinaryMutations();
+      deferredTaskRead = null;
       checklistSupportWatcher();
       reviewWatcher();
       referencesWatcher();
+      referenceLookups.dispose();
       stopReviewCreationSupport();
       reads.dispose();
       unreadMarker.leave();

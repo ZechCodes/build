@@ -33,6 +33,7 @@ import {
   recentToggleHtml,
   workspaceEntryKey,
   workspaceIsRecent,
+  TRACKER_TASK,
 } from "./inbox.js";
 import { navigationUnreadEntries } from "./navigationUnread.js";
 import { NO_TASK_UNREAD } from "./taskUnread.js";
@@ -42,11 +43,13 @@ import { readBranchDelete } from "./branchDeleteSupport.js";
 import { projectOptimistic, reconcileOptimistic, subscribeOptimistic } from "./optimistic.js";
 import { patchFeedRow, removeFeedRow } from "./cachedRows.js";
 import { notifyError } from "./notify.js";
+import { wrapTaskMutationCall } from "./taskMutationFence.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { routeProjectKey } from "./deviceKey.js";
 import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
-import { canAnswer, contextFor, deviceFeedView, onDeviceStateChanged, whenGreeted } from "./deviceContexts.js";
+import { canAnswer, contextFor, deviceContextIdentity, deviceFeedView, onDeviceStateChanged, whenGreeted } from "./deviceContexts.js";
+import { deviceSession } from "./deviceReconnect.js";
 import { filterByDevice, onlyDeviceRows } from "./deviceFilter.js";
 import { awayRefusal, creationCall, paintDeviceState, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, disposeCaptureRows, initCaptureRows, onCaptureInput, onCaptureKeydown,
@@ -70,9 +73,8 @@ import "../styles/shell.css";
 import { publishInboxAttentionCount } from "./inboxAttention.js";
 import { messageOf } from "./text.js";
 import { followWatchedTasks } from "./watchedTaskFollower.js";
-import { tasksAddress } from "./trackerCache.js";
-import { noteWritten } from "./taskReadOrder.js";
-import { mergeCachedAtomically } from "./localCache.js";
+import { captureTaskContentRead } from "./taskContentAuthority.js";
+import { beginTaskWatchMutation, settleTaskWatchMutation } from "./taskWatchAuthority.js";
 import { createInboxClock } from "./inboxClock.js";
 
 let items = [];
@@ -126,9 +128,11 @@ const workspacesBeingFinished = new Set();
 // The watched unfinished tasks, followed through the cache
 // while the rail is mounted.
 let watchedTasks = null;
+const renderedInboxRow = (entry, ui) => entry.kind === TRACKER_TASK && watchedTasks
+  ? watchedTasks.renderEntry(entry, () => inboxRowHtml(entry, ui)) : inboxRowHtml(entry, ui);
 let clock = null;
-// Tasks the user stopped watching from their row, by row key: null while the
-// unwatch is in flight, then the time the bridge stamped it. A list the sync
+// Tasks the user stopped watching from their row, by row key: its exact owner
+// and a null stamp while in flight, then the time the bridge stamped it. A list the sync
 // layer asked for before the unwatch landed still says watched and writes
 // that over the row's optimistic move, so the row stays away until the cached
 // list has moved past the unwatch — a watch made after it brings it back.
@@ -137,7 +141,7 @@ const watchedTaskRows = () => (watchedTasks?.entries() || []).filter((entry) => 
 
 function heldAway(entry) {
   if (!unwatched.has(entry.key)) return false;
-  const stampMs = unwatched.get(entry.key);
+  const { stampMs } = unwatched.get(entry.key);
   if (stampMs == null || entry.updatedMs == null || entry.updatedMs <= stampMs) return true;
   unwatched.delete(entry.key);
   return false;
@@ -274,7 +278,7 @@ function drawWorkspaceList(list, shown, heldActiveKey) {
   const nowMs = Date.now();
   const active = shown.filter((entry) => !workspaceIsRecent(entry, nowMs, heldActiveKey));
   const recent = shown.filter((entry) => workspaceIsRecent(entry, nowMs, heldActiveKey));
-  patchList(list, active, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  patchList(list, active, { keyOf, render: (entry) => renderedInboxRow(entry, ui) });
   paintRecent(list, recent, ui, "inbox");
 }
 
@@ -333,7 +337,7 @@ function drawProjects(list, shown, heldActiveKey) {
   const folded = new Set(blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.projectKey));
   const ui = { ...rowUi(false), folded };
   const frame = projectsFrame(list);
-  patchList(frame.unsorted, unsorted, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  patchList(frame.unsorted, unsorted, { keyOf, render: (entry) => renderedInboxRow(entry, ui) });
   paintBlocks(frame.blocks, blocks, ui);
 }
 
@@ -374,7 +378,7 @@ function paintBlocks(host, blocks, ui) {
       if (element.nextSibling !== anchor) host.insertBefore(element, anchor);
     }
     const rows = element.querySelector(":scope > .inbox-project-rows");
-    patchList(rows, block.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+    patchList(rows, block.entries, { keyOf, render: (entry) => renderedInboxRow(entry, ui) });
     paintRecent(element, block.recent, ui, block.projectKey);
     anchor = element;
   }
@@ -413,7 +417,7 @@ function paintRecent(host, recent, ui, scope) {
   patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(recent, open, scope)));
   // Inbox Recent keeps the project/name/activity shape. Grouped Recent keeps
   // compact workspaces and separate title/reason lines for watched tasks.
-  patchList(section, open ? recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
+  patchList(section, open ? recent : [], { keyOf, render: (entry) => renderedInboxRow(entry, { ...ui, quiet: true }) });
 }
 
 /** A row key is whatever the daemon minted (a worktree's is derived from a
@@ -701,40 +705,51 @@ async function toggleMute(entry) {
 async function unwatchTask(entry) {
   if (!entry) return;
   closeMenu();
+  const context = contextFor(entry.deviceId), identity = deviceContextIdentity(entry.deviceId), session = deviceSession(entry.deviceId);
+  const accept = () => contextFor(entry.deviceId) === context && deviceContextIdentity(entry.deviceId) === identity
+    && deviceSession(entry.deviceId) === session && (!context || context.active());
+  const failureSummary = `Couldn't stop watching ${entry.name}`;
+  let owner;
   await optimisticVerb(entry, {
     write: async () => {
-      unwatched.set(entry.key, null);
-      const undo = await markCachedWatch(entry, false);
-      return () => {
-        unwatched.delete(entry.key);
-        return undo();
+      owner = await markCachedWatch(entry, false, accept);
+      unwatched.set(entry.key, { owner, stampMs: null });
+      return async () => {
+        await settleTaskWatchMutation(owner, { rollback: true, accept });
+        if (unwatched.get(entry.key)?.owner === owner) unwatched.delete(entry.key);
       };
     },
     call: async () => {
+      const contentRead = await captureTaskContentRead({ deviceId: entry.deviceId, projectId: entry.projectId });
+      if (!accept()) throw new Error("This task's session changed before sending the action.");
       const answer = await verbCall(entry, "stop watching this task")("tasks.unwatch", { task_id: entry.taskId });
-      unwatched.set(entry.key, Date.parse(answer?.task?.updated_at || "") || entry.updatedMs);
+      validateUnwatchAnswer(entry, answer);
+      const accepted = await settleTaskWatchMutation(owner, { answer, contentRead, accept });
+      if (unwatched.get(entry.key)?.owner !== owner) return;
+      if (accepted) unwatched.set(entry.key, { owner, stampMs: Date.parse(answer?.task?.updated_at || "") || entry.updatedMs });
+      else unwatched.delete(entry.key);
     },
-    failureSummary: `Couldn't stop watching ${entry.name}`,
+    failureSummary,
+  }).catch((error) => {
+    if (unwatched.get(entry.key)?.owner === owner) unwatched.delete(entry.key);
+    showRowError(entry.key, error);
+    notifyError(failureSummary, messageOf(error));
   });
 }
 
-/** Set one task's watch in its project's cached list; answers the undo.
- *  Each is a list written here, so each takes its number from the read count
- *  (core/taskReadOrder.js) and the list carries it: newer than every read
- *  asked before it, the Tasks tab's own answers included, and a page of an
- *  older pull does not put the old watch back (#129). */
-async function markCachedWatch(entry, watched) {
-  const address = tasksAddress(entry.deviceId, entry.projectId);
-  const setWatched = async (value) => {
-    const writtenAs = await noteWritten([address], [entry.taskId]);
-    return mergeCachedAtomically(address, (held) => held && {
-      ...held,
-      tasks: (held.tasks || []).map((task) => (task.id === entry.taskId ? { ...task, watched: value } : task)),
-      read_order: writtenAs,
-    });
-  };
-  await setWatched(watched);
-  return () => setWatched(!watched);
+function validateUnwatchAnswer(entry, answer) {
+  if (!answer || !Object.hasOwn(answer, "task")) return;
+  const task = answer.task;
+  if (task?.id !== entry.taskId || task.project_id !== entry.projectId || task.watched !== false || typeof task.body !== "string") {
+    throw new Error("Expected a matching full task unwatch response");
+  }
+}
+
+/** Catalogue optimism, its row note and shared watch owner commit together. */
+async function markCachedWatch(entry, watched, accept) {
+  const owner = await beginTaskWatchMutation({ deviceId: entry.deviceId, projectId: entry.projectId }, entry.taskId, { watched, accept });
+  if (!owner) throw new Error("Could not save this task's watch change.");
+  return owner;
 }
 
 /** Move the row to Recent until a new user or agent message. Nothing is
@@ -877,20 +892,26 @@ const acting = new Set();
  * outlives a remount and a reload. A bridge that refuses puts back exactly
  * what was there and says so on the row.
  */
-async function optimisticVerb(entry, { write, call, failureSummary }) {
+export async function optimisticVerb(entry, { write, call, failureSummary }) {
   if (acting.has(entry.key)) return;
-  acting.add(entry.key);
-  errors.delete(entry.key);
-  const undo = await write();
-  try {
-    await call();
-  } catch (error) {
-    await undo();
-    showRowError(entry.key, error);
-    notifyError(failureSummary, messageOf(error));
-  } finally {
-    acting.delete(entry.key);
-  }
+  // Fence the intent before its first awaited cache write, and retain that
+  // authority through rollback even when the nested RPC has already settled.
+  return wrapTaskMutationCall(entry.deviceId, "entity.dismiss", async () => {
+    acting.add(entry.key);
+    errors.delete(entry.key);
+    try {
+      const undo = await write();
+      try {
+        await call();
+      } catch (error) {
+        await undo();
+        showRowError(entry.key, error);
+        notifyError(failureSummary, messageOf(error));
+      }
+    } finally {
+      acting.delete(entry.key);
+    }
+  });
 }
 
 let mounted = false;

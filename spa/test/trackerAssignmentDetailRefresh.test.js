@@ -10,10 +10,12 @@ vi.mock("../src/core/changeEvents.js", () => ({
   bridgeCapabilities: () => ({ tasks: { waitingOn: true }, changes: { kinds: ["tasks"] } }),
   watchChanges: () => ({ dispose() {} }),
 }));
-vi.mock("../src/core/deviceContexts.js", () => ({
-  contextFor: () => ({ adapter: { capabilities: { tasks: { waitingOn: true } } } }),
-  whenGreeted: async (_context, send) => ({ sent: send(() => true), stands: () => true }),
-}));
+vi.mock("../src/core/deviceContexts.js", () => {
+  const context = { adapter: { capabilities: { tasks: { waitingOn: true } } }, active: () => true };
+  return { contextFor: () => context, deviceContextIdentity: () => "assignment-refresh",
+    onDeviceStateChanged: () => () => {},
+    whenGreeted: async (_context, send) => ({ sent: send(() => true), stands: () => true }) };
+});
 vi.mock("../src/core/deviceReconnect.js", () => ({
   deviceSession: () => null,
   deviceWatch: () => ({ away: () => false, reconnecting: () => false, moved: () => () => {} }),
@@ -21,6 +23,11 @@ vi.mock("../src/core/deviceReconnect.js", () => ({
 
 const DEVICE = "assignment-refresh";
 const PROJECT = "project";
+async function seedDetail(tracker, id, record) {
+  const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+  const contentRead = await captureTaskContentRead(tracker.taskAddress(DEVICE, PROJECT, id), { revalidate: "full" });
+  await tracker.writeTaskRecord(DEVICE, PROJECT, id, record, { contentRead });
+}
 let pane, detailFeed;
 beforeEach(() => {
   vi.resetModules();
@@ -46,7 +53,7 @@ it.each([["board", ""], ["list", ""], ["board", "none"], ["list", "none"]])("ref
   const assigned = { ...mentioned, assignee: { kind: "project_agent" } };
   const mention = comment({ id: "tc-02", task_id: old.id, author: { kind: "agent", agent_id: "agent" }, mentions_user: true });
   await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([old], columns(), await nextTaskRead()));
-  await tracker.writeTaskRecord(DEVICE, PROJECT, old.id, tracker.taskRecord(old, []));
+  await seedDetail(tracker, old.id, tracker.taskRecord(old, []));
   await rememberNeedsYouRule(DEVICE, { tasks: { commentUserNotifies: true } });
   await writeUiRecord(uiAddress({ deviceId: DEVICE, entityId: PROJECT, view: `tasks:${DEVICE}|${PROJECT}`, kind: "filters" }),
     { view, filters: { assignee: assigneeFilter } });
@@ -124,7 +131,7 @@ it("keeps a mutation refresh queued at the four-read bound even when a partial r
   await detailFeed.updateTasks(tasks);
   await vi.waitFor(() => expect(replies).toHaveLength(4));
   detailFeed.refresh(tasks[4].id);
-  await tracker.writeTaskRecord(DEVICE, PROJECT, tasks[4].id, tracker.taskRecord(tasks[4], []));
+  await seedDetail(tracker, tasks[4].id, tracker.taskRecord(tasks[4], []));
   await vi.waitFor(() => expect(detailFeed.read().has(tasks[4].id)).toBe(true));
   expect(call).toHaveBeenCalledTimes(4);
   replies[0].resolve({ task: tasks[0], timeline: [] });

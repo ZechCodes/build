@@ -26,7 +26,8 @@
 // transaction as the page it notes (`foldTasksPage`). A page that lands
 // after another tab's newer read reads that tab's word there.
 
-import { mergeCachedAtomically, takeCachedCount } from "./localCache.js";
+import { mergeCachedAtomically, mergeCachedRecordsTogether, recordWriteOf, takeCachedCount } from "./localCache.js";
+import { randomToken } from "./idbRecords.js";
 
 /** The kind of the note of what each read had the say on under a list
  *  record: one note per list, under the list's own device and project. */
@@ -35,6 +36,61 @@ export const TASK_READS_KIND = "tracker-task-reads";
 /** The count every tab takes a read's number from. Under no device and no
  *  entity, like the device list: every list's reads share the one count. */
 export const TASK_READ_COUNT_ADDRESS = Object.freeze({ deviceId: "", entityId: "", kind: "tracker-task-read-count" });
+export const TASK_CONTENT_GENERATION_ADDRESS = Object.freeze({ deviceId: "", entityId: "", kind: "task-content-generation" });
+export const taskWatchControlAddress = ({ deviceId, projectId }) => ({ deviceId, entityId: "", kind: "task-watch-control", sub: projectId });
+export const taskContentScopeAddress = ({ deviceId, projectId }) => ({ deviceId, entityId: projectId, kind: "task-content-scope" });
+
+/** A content observation never certifies a module-local fallback number.
+ * Allocate its shared count and capture its store/scope lifetime and optional
+ * exact canonical baseline in the same transaction, including absence. */
+export async function nextTaskReadTicket(scope, { address } = {}) {
+  const addresses = [TASK_READ_COUNT_ADDRESS, TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress(scope), taskWatchControlAddress(scope), ...(address ? [address] : [])];
+  let ticket = null;
+  let invalid = false;
+  const committed = await mergeCachedRecordsTogether(addresses, ([count, store, domain, watch, baseline]) => {
+    const allocation = sharedContentAllocation(count, store, domain, watch);
+    if (!allocation) { invalid = true; return null; }
+    ticket = { ...allocation.ticket, ...(address ? { written: recordWriteOf(baseline) } : {}) };
+    return [...allocation.values, ...(address ? [null] : [])];
+  }, { notify: false });
+  if (invalid) throw new Error("Invalid shared task content counter allocation");
+  return committed ? ticket : null;
+}
+
+function sharedContentAllocation(count, store, domain, watch) {
+  const held = count ? count.value : 0;
+  if (!Number.isSafeInteger(held) || held < 0) return null;
+  const readOrder = Math.max(held + 1, Date.now());
+  if (!Number.isSafeInteger(readOrder) || readOrder <= 0) return null;
+  return contentAllocationValues(readOrder, store, domain, watch);
+}
+
+// A new local control has no unresolved watch intent to make covering reads uncertain.
+export const initialTaskWatchControl = () => ({ generation: randomToken(), pendingGeneration: randomToken(),
+  watchRetirementEpoch: randomToken(), blindRetirementEpoch: randomToken(), pendingCount: 0, uncertain: false });
+
+export const taskWatchControlUncertain = (control) => control?.uncertain !== false
+  || control?.pendingCount !== 0 || !control?.blindRetirementEpoch;
+
+function contentAllocationValues(readOrder, store, domain, control) {
+  const generation = store?.value?.generation || randomToken();
+  const scopeValue = contentScopeValue(domain?.value), watch = control?.value || initialTaskWatchControl();
+  const ticket = contentScopeTicket(readOrder, generation, scopeValue, watch);
+  return { ticket, values: [readOrder, store ? null : { generation }, domain ? null : scopeValue, control ? null : watch] };
+}
+
+function contentScopeValue(held = {}) {
+  return { ...held, generation: held.generation || randomToken(), retirementEpoch: held.retirementEpoch || randomToken() };
+}
+
+function contentScopeTicket(readOrder, generation, scope, watch) {
+  return { readOrder, storeGeneration: generation, scopeGeneration: scope.generation,
+    retirementEpoch: scope.retirementEpoch, watchGeneration: watch.generation,
+    watchRetirementEpoch: watch.watchRetirementEpoch, watchPendingGeneration: watch.pendingGeneration,
+    watchBlindRetirementEpoch: watch.blindRetirementEpoch,
+    watchPending: !Number.isSafeInteger(watch.pendingCount) || watch.pendingCount !== 0,
+    watchUncertain: taskWatchControlUncertain(watch) };
+}
 
 /** Where the note of what each read had the say on under `address` lives. */
 export const readsAddress = ({ deviceId, entityId, kind, sub = "" }) => ({
@@ -42,6 +98,10 @@ export const readsAddress = ({ deviceId, entityId, kind, sub = "" }) => ({
   entityId,
   kind: TASK_READS_KIND,
   sub: JSON.stringify([kind, sub]),
+});
+
+export const taskWatchIntentAddress = ({ deviceId, projectId }, taskId) => readsAddress({
+  deviceId, entityId: projectId, kind: "tracker-task", sub: taskId,
 });
 
 let uncounted = 0;

@@ -2,6 +2,8 @@
 // Aggregate attribution for #858, using synthetic cache-only records.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { IDBFactory, IDBKeyRange, IDBObjectStore, IDBDatabase } from "fake-indexeddb";
 const deviceId = "follower-profile-device";
 const address = (entityId, kind) => ({ deviceId, entityId, kind });
@@ -30,9 +32,12 @@ beforeEach(async () => {
     const pin = { id: `pin-${project.id}`, conversation_id: `pin-conversation-${project.id}`, working: false };
     const worker = { id: `worker-${project.id}`, conversation_id: `worker-conversation-${project.id}`, working: true };
     await cache.writeCached(address(project.entity_id, "project-agents"), { entity_id: project.entity_id, pinned_agent_id: pin.id, agents: [pin, worker] });
-    const task = { id: `task-${project.id}`, watched: true, status: "backlog", state: "open", updated_at: "2026-10-25T00:00:00Z", assignee: { kind: "agent", agent_id: worker.id } };
-    await tracker.writeTasksRecord(deviceId, project.id, tracker.tasksRecord([task], []));
-    await tracker.writeTaskRecord(deviceId, project.id, task.id, tracker.taskRecord(task, []));
+    const task = { id: `task-${project.id}`, project_id: project.id, body: "Cached full body", watched: true, status: "backlog", state: "open", updated_at: "2026-10-25T00:00:00Z", assignee: { kind: "agent", agent_id: worker.id } };
+    const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+    const listRead = await captureTaskContentRead(tracker.tasksAddress(deviceId, project.id), { revalidate: "full" });
+    await tracker.writeTasksRecord(deviceId, project.id, tracker.tasksRecord([task], []), { contentRead: listRead });
+    const contentRead = await captureTaskContentRead(tracker.taskAddress(deviceId, project.id, task.id), { revalidate: "full" });
+    await tracker.writeTaskRecord(deviceId, project.id, task.id, tracker.taskRecord(task, []), { contentRead });
   }
   row = { kind: "branch", project_id: projects[0].id, entity_id: "standalone-row", branch: "profile", agents: [] };
   await cache.writeCached(address(row.entity_id, "row"), row);
@@ -95,7 +100,7 @@ it("profiles six warmed project followers on row invalidations and no-op bursts"
   result.push(counters("12 paced no-op row announcements"));
   expect(follower.entries()).toEqual(before);
   expect(follower.runningProjectKeys().size).toBe(6);
-  writeFileSync("/tmp/858-follower-unit-profile.json", JSON.stringify({ projects: 6, rows: 1, watchedTasks: 6, warm: true, scenarios: result }, null, 2));
+  writeFileSync(join(tmpdir(), "858-follower-unit-profile.json"), JSON.stringify({ projects: 6, rows: 1, watchedTasks: 6, warm: true, scenarios: result }, null, 2));
   console.log("FOLLOWER_PROFILE", JSON.stringify(result));
 });
 
@@ -112,7 +117,7 @@ it("keeps row-only no-op hints out of task and rule dependencies", async () => {
 });
 
 it("publishes finite agent passes under continued hints and lets actions commit while held", async () => {
-  const task = { id: "task-user", project_id: projects[0].id, title: "Assigned immediately", status: "ready",
+  const task = { id: "task-user", project_id: projects[0].id, title: "Assigned immediately", body: "Assigned body", watched: false, done_at: null, deferred_assignment: null, read_through: null, dismissed_through: null, status: "ready",
     assignee: { kind: "agent", agent_id: "worker-p0" }, updated_at: "2026-10-25T00:00:00Z" };
   const actionRpc = vi.fn(async () => ({ task, timeline: [] }));
   const context = contexts.adoptDeviceSession({ deviceId, call: actionRpc, close() {}, peer() {}, onCarrier() {} });
@@ -122,9 +127,11 @@ it("publishes finite agent passes under continued hints and lets actions commit 
   resetCounters();
   const readMany = cache.readCachedMany;
   const releases = [];
-  const heldReads = vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+  const heldReads = vi.fn();
+  vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
     const result = await readMany(addresses);
     if (!addresses.every(({ kind }) => kind === "row" || kind === "project-agents")) return result;
+    heldReads(addresses);
     await new Promise((resolve) => releases.push(resolve));
     return result;
   });
@@ -137,7 +144,8 @@ it("publishes finite agent passes under continued hints and lets actions commit 
   const actions = createTaskWaitingOnActions({ deviceId, projectId: projects[0].id, taskId: task.id, call: context.rpc });
   await actions.assign({ assignee: task.assignee });
   expect(actionRpc).toHaveBeenCalledExactlyOnceWith("tasks.assign", { task_id: task.id, assignee: task.assignee });
-  expect((await cache.readCached(tracker.taskAddress(deviceId, projects[0].id, task.id)))?.value.task).toEqual(task);
+  const saved = (await cache.readCached(tracker.taskAddress(deviceId, projects[0].id, task.id)))?.value.task;
+    expect(Object.fromEntries(Object.entries(saved).filter(([key]) => !key.startsWith("__")))).toEqual(task);
   expect(releases).toHaveLength(1);
   releases[0]();
   try {
@@ -323,6 +331,47 @@ it("waits for the initial task source after actual policy and agent sources load
   finally { release(); }
   await vi.waitFor(() => expect(follower.entries()).toHaveLength(1));
   expect(follower.runningProjectKeys().has(projects[0].projectKey)).toBe(true);
+});
+
+it("admits an unchanged first task list after broad invalidation during display hydration", async () => {
+  follower.dispose();
+  calls.readTasksRecord.mockClear();
+  const displays = await import("../src/core/taskUnreadDisplay.js");
+  const createDisplay = displays.createTaskUnreadDisplayOwner;
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let updateTasks;
+  vi.spyOn(displays, "createTaskUnreadDisplayOwner").mockImplementation((options) => {
+    const display = createDisplay(options);
+    const update = display.updateTasks;
+    updateTasks = vi.spyOn(display, "updateTasks").mockImplementationOnce(async (next) => {
+      await update(next);
+      await held;
+    });
+    return display;
+  });
+  const { followWatchedTasks } = await import("../src/core/watchedTaskFollower.js");
+  onChange = vi.fn();
+  follower = followWatchedTasks({ onChange });
+  follower.follow(projects.slice(0, 1));
+  try {
+    await vi.waitFor(() => expect(updateTasks).toHaveBeenCalledTimes(1));
+    await idle();
+    expect(follower.entries()).toEqual([]);
+    expect(onChange).not.toHaveBeenCalled();
+    const first = await calls.readTasksRecord.mock.results[0].value;
+    cache.announceCacheEvidence({ deviceId, entityId: projects[0].id });
+    release();
+    await vi.waitFor(() => expect(calls.readTasksRecord).toHaveBeenCalledTimes(2));
+    const trailing = await calls.readTasksRecord.mock.results[1].value;
+    expect(trailing.tasks).toEqual(first.tasks);
+    await vi.waitFor(() => expect(follower.entries()).toHaveLength(1));
+    // Notifications and sources are both gated on tasksReady and policy.
+    expect(onChange).toHaveBeenCalled();
+    expect(updateTasks).toHaveBeenCalledTimes(2);
+    expect(follower.entries()[0]).toMatchObject({ taskId: "task-p0", projectId: projects[0].id });
+    expect(follower.runningProjectKeys().has(projects[0].projectKey)).toBe(true);
+  } finally { release(); }
 });
 
 it("waits for a pending changed policy before publishing a project joining a warm device", async () => {

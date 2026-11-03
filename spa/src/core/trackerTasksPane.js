@@ -14,7 +14,7 @@ import { agentModelsFromFeed } from "./agentModelBadge.js";
 
 import { messageOf } from "./text.js";
 import { hashFromRoute } from "./router.js";
-import { watchChanges } from "./changeEvents.js";
+import { bridgeCapabilities, watchChanges } from "./changeEvents.js";
 import { tasksPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
 import {
@@ -26,10 +26,12 @@ import {
   readTasksQueryCached,
   writeTasksQueryRecord,
   writeTasksRecord,
+  writeTaskListRecords,
 } from "./trackerCache.js";
 import { subscribeCache } from "./localCache.js";
 import { foldTasksPage, pagesTasks, pullTaskPages } from "./trackerPages.js";
 import { nextTaskRead, noteWritten } from "./taskReadOrder.js";
+import { captureTaskContentRead, observeTaskContent, retireTaskContent } from "./taskContentAuthority.js";
 import { createReadRetry } from "./transientRead.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceSession, deviceWatch } from "./deviceReconnect.js";
@@ -53,16 +55,21 @@ import { readUserSession, userSessionAddress, writeListedUserSession } from "./u
 import { needsYouRuleAddress, readNeedsYouRule } from "./needsYouRule.js";
 import { DEFAULT_DASHBOARD_TAB, dashboardTabIds, paintTaskDashboard } from "./trackerDashboardRender.js";
 import { createTrackerTaskDetailsFeed } from "./trackerTaskDetailsFeed.js";
-import { taskUnreadCount } from "./taskUnread.js";
+import { createTaskUnreadDisplayOwner } from "./taskUnreadDisplay.js";
 import { createTrackerAgentActivityFeed } from "./trackerAgentActivityFeed.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { openTaskComposer } from "./taskComposer.js";
 import { labelsOf } from "./trackerFilters.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { subscribeReferenceIndex } from "./referenceIndex.js";
+import { createTaskPaneChoiceReads } from "./taskPaneSummaryReads.js";
+import { wrapTaskMutationCall } from "./taskMutationFence.js";
+import { writeSummaryTask } from "./taskSummaryCache.js";
 
 export const TASK_PAGE_SIZE = 25;
 const VIEW_IDS = new Set([DASHBOARD_VIEW, LIST_VIEW, BOARD_VIEW]);
+const retireTaskRowHeader = (tasks, taskId) => (tasks || []).map((task) =>
+  task.id === taskId ? retireTaskContent(task, "header") : task);
 
 export function mountTasksPane(host, options) {
   const initialView = VIEW_IDS.has(options.view) ? options.view : options.defaultView || DASHBOARD_VIEW;
@@ -186,6 +193,15 @@ export function mountTasksPane(host, options) {
       saveUi();
     },
   });
+  const remoteChoices = createTaskPaneChoiceReads({
+    scope: { deviceId: state.deviceId, projectId: state.projectId }, host,
+    callRpc: state.callRpc, capabilities: () => bridgeCapabilities(state.deviceId)?.tasks,
+    sessionOf: () => deviceSession(state.deviceId),
+    enabled: () => !state.only && state.view !== DASHBOARD_VIEW,
+    active: () => !state.disposed,
+    onChange: () => paint(),
+    onError: (error) => notifyError("Could not read task filter choices", messageOf(error)),
+  });
 
   const paintContext = () => ({
     columns: state.columns,
@@ -235,12 +251,29 @@ export function mountTasksPane(host, options) {
   ];
   let details;
   let activity;
+  const paintedUnread = new Map();
+  const unreadDisplay = createTaskUnreadDisplayOwner({
+    scope: { deviceId: state.deviceId, projectId: state.projectId }, consumer: "tasks-pane",
+    active: () => !state.disposed, sessionOf: () => deviceSession(state.deviceId), onChange: () => paint(),
+  });
   /** Each watched task's unread, as the bubble on its row, card or dashboard
    *  line says it (#104): off the cached timeline while it is current, and
    *  the list's own count otherwise (core/taskUnread.js). */
   function unreadCounter() {
     const detailById = details?.read() || new Map();
-    return (task) => taskUnreadCount(task, detailById.get(task.id) || null);
+    return (task) => {
+      const detail = detailById.get(task.id) || null;
+      const total = unreadDisplay.preview(task, detail);
+      paintedUnread.set(task.id, { task, detail, total });
+      return total;
+    };
+  }
+  function rememberPaintedUnread() {
+    for (const element of chrome.body.querySelectorAll("[data-task]")) {
+      if (element.closest("[hidden]")) continue;
+      const selected = paintedUnread.get(element.dataset.task);
+      if (selected) unreadDisplay.rendered(selected.task, selected.detail, selected.total, state.displayAddress);
+    }
   }
   const groupedRows = () => {
     const attention = attentionGroups(state.shown, {
@@ -281,11 +314,15 @@ export function mountTasksPane(host, options) {
       // The menus are built from the project's WHOLE list and from the feed:
       // the labels its tasks wear, and every agent standing on one of its
       // workspaces, grouped the way the assignee picker groups them (#44).
-      options: filterOptions(state.all, state.columns, nameActor, groups()),
+      options: remoteChoices.options(filterOptions(state.all, state.columns, nameActor, groups()),
+        filterOptions([], state.columns, nameActor, groups()), state.filters, nameActor),
       filters: state.filters,
     });
+    remoteChoices.paintContinuation();
     const view = VIEWS[state.view] || VIEWS[LIST_VIEW];
+    paintedUnread.clear();
     view.paint(chrome.body, view.entries(), paintContext(), view.wire);
+    rememberPaintedUnread();
     wireColumnDrops();
     focusPendingTask();
   };
@@ -330,9 +367,11 @@ export function mountTasksPane(host, options) {
    *  it still the older news (#129). */
   const wholeListIsNewer = () => state.wholeAsked >= state.queryAsked;
 
+  const currentQuery = (serial) => !state.disposed && serial === querySerial;
+
   async function paintFromQuery(params, serial = querySerial) {
     const cached = await readTasksQueryCached(state.deviceId, state.projectId, params);
-    if (state.disposed || serial !== querySerial || !cached) return;
+    if (!currentQuery(serial) || !cached) return;
     const record = cached.value;
     queryLoaded = true;
     state.queryAsked = listAskedAt(cached);
@@ -340,6 +379,10 @@ export function mountTasksPane(host, options) {
       ? filterTasks(state.unscoped, shownFilters())
       : sortTasks(record.tasks);
     state.shown = kept(state.unscopedShown);
+    state.displayAddress = wholeListIsNewer() ? tasksAddress(state.deviceId, state.projectId)
+      : tasksQueryAddress(state.deviceId, state.projectId, params);
+    await unreadDisplay.updateTasks(state.shown);
+    if (!currentQuery(serial)) return;
     details?.updateTasks(state.shown);
     // On a cold device the background whole-list pass may not have landed
     // yet. Until it does, this cache record is still the only cache-derived
@@ -379,7 +422,10 @@ export function mountTasksPane(host, options) {
     if (!queryLoaded || wholeListIsNewer()) {
       state.unscopedShown = filterTasks(state.unscoped, shownFilters());
       state.shown = kept(state.unscopedShown);
+      state.displayAddress = tasksAddress(state.deviceId, state.projectId);
     }
+    await unreadDisplay.updateTasks(state.shown);
+    if (state.disposed) return;
     details?.updateTasks(state.shown);
     reads.seen(at); // this list is as old as the cache's stamp, not as old as now
     paint();
@@ -439,6 +485,7 @@ export function mountTasksPane(host, options) {
 
   async function readList() {
     if (state.disposed) return;
+    void remoteChoices.ensure();
     const filters = shownFilters();
     try {
       const params = taskListParams(state.projectId, filters);
@@ -455,15 +502,29 @@ export function mountTasksPane(host, options) {
   }
 
   async function readWholeList(params, filters) {
-    const read = await nextTaskRead();
+    const session = deviceSession(state.deviceId);
+    const current = () => !state.disposed && deviceSession(state.deviceId) === session;
+    const contentRead = await captureTaskContentRead(tasksQueryAddress(state.deviceId, state.projectId, params), { revalidate: "full" });
+    // One response can update two replicas; each full-body proof needs its
+    // own canonical baseline captured before that same request is dispatched.
+    const wholeRead = narrowsTheRead(filters) ? null
+      : await captureTaskContentRead(tasksAddress(state.deviceId, state.projectId), { revalidate: "full" });
+    if (!current()) return;
     const answer = await state.callRpc("tasks.list", params);
-    if (state.disposed) return;
-    const record = tasksRecord(answer?.tasks, state.columns, read);
+    if (!current()) return;
+    const observed = (answer?.tasks || []).map((task) => observeTaskContent(task, { contentRead, coverage: "full" }));
+    const record = tasksRecord(observed, state.columns, contentRead.readOrder);
     // The fetch is a writer only. The matching cache announcement above is
     // what re-reads this record and repaints the pane.
-    await writeTasksQueryRecord(state.deviceId, state.projectId, params, record);
-    // An unnarrowed answer is also the authoritative whole-list record.
-    if (!narrowsTheRead(filters)) await writeTasksRecord(state.deviceId, state.projectId, record);
+    const entries = [{ address: tasksQueryAddress(state.deviceId, state.projectId, params), record, contentRead }];
+    // Both absence proofs see the same pre-publication scope. Removing a row
+    // from one replica must not retire the sibling response's captured ticket.
+    if (wholeRead) {
+      const whole = (answer?.tasks || []).map((task) => observeTaskContent(task, { contentRead: wholeRead, coverage: "full" }));
+      entries.push({ address: tasksAddress(state.deviceId, state.projectId),
+        record: tasksRecord(whole, state.columns, wholeRead.readOrder), contentRead: wholeRead });
+    }
+    await writeTaskListRecords(state.deviceId, state.projectId, entries, { accept: current });
     await writeListedUserSession(state.deviceId, answer);
   }
 
@@ -503,13 +564,20 @@ export function mountTasksPane(host, options) {
    * A refused move puts it back where it was and says why — a card that stayed
    * put with no word is a card the reader will drag again.
    */
-  async function moveTask(taskId, status) {
+  function moveTask(taskId, status) {
     const task = state.shown.find((candidate) => candidate.id === taskId);
     if (!task || task.status === status) return;
+    return wrapTaskMutationCall(state.deviceId, "tasks.update", () => writeMovedTask(task, status),
+      { projectId: state.projectId, taskId });
+  }
+
+  async function writeMovedTask(task, status) {
+    const taskId = task.id;
+    const scope = { deviceId: state.deviceId, projectId: state.projectId };
     const heldQuery = state.unscopedShown;
     const heldCatalogue = state.unscoped;
-    const movedQuery = withMovedTask(heldQuery, taskId, status);
-    const movedCatalogue = withMovedTask(heldCatalogue, taskId, status);
+    const movedQuery = retireTaskRowHeader(withMovedTask(heldQuery, taskId, status), taskId);
+    const movedCatalogue = retireTaskRowHeader(withMovedTask(heldCatalogue, taskId, status), taskId);
     state.focusTask = taskId;
     const moved = [tasksQueryAddress(state.deviceId, state.projectId, queryParams()), tasksAddress(state.deviceId, state.projectId)];
     // Newer than any page still out, in this tab or another: one landing
@@ -519,6 +587,7 @@ export function mountTasksPane(host, options) {
     await Promise.all([
       writeTasksQueryRecord(state.deviceId, state.projectId, queryParams(), tasksRecord(movedQuery, state.columns, movedAs)),
       writeTasksRecord(state.deviceId, state.projectId, tasksRecord(movedCatalogue, state.columns, movedAs)),
+      writeSummaryTask(scope, { id: taskId, status }, movedAs),
     ]);
     try {
       await state.callRpc("tasks.update", moveParams(taskId, status));
@@ -527,8 +596,9 @@ export function mountTasksPane(host, options) {
       state.focusTask = taskId;
       const restoredAs = await noteWritten(moved, [taskId]);
       await Promise.all([
-        writeTasksQueryRecord(state.deviceId, state.projectId, queryParams(), tasksRecord(heldQuery, state.columns, restoredAs)),
-        writeTasksRecord(state.deviceId, state.projectId, tasksRecord(heldCatalogue, state.columns, restoredAs)),
+        writeTasksQueryRecord(state.deviceId, state.projectId, queryParams(), tasksRecord(retireTaskRowHeader(heldQuery, taskId), state.columns, restoredAs)),
+        writeTasksRecord(state.deviceId, state.projectId, tasksRecord(retireTaskRowHeader(heldCatalogue, taskId), state.columns, restoredAs)),
+        writeSummaryTask(scope, { id: taskId, status: task.status }, restoredAs),
       ]);
       notifyError("Could not move this task", messageOf(error));
     }
@@ -607,15 +677,23 @@ export function mountTasksPane(host, options) {
    * see the thing you just wrote appear in the list you wrote it against. The
    * refresh behind it replaces this record with the bridge's own.
    */
-  async function showTheNewTask(task) {
+  function showTheNewTask(task) {
     if (!task || state.disposed) return;
+    return wrapTaskMutationCall(state.deviceId, "tasks.create", () => cacheNewTask(task));
+  }
+
+  async function cacheNewTask(task) {
+    task = retireTaskContent(task, "full");
+    const filedAs = await nextTaskRead();
+    const summaryWrite = writeSummaryTask({ deviceId: state.deviceId, projectId: state.projectId }, task,
+      filedAs, { fullTask: true });
     const held = kept([task]);
-    if (!held.length) return; // a workspace's tab may not be about this task
+    if (!held.length) return summaryWrite; // a workspace's tab may not be about this task
     const catalogue = sortTasks([...state.unscoped.filter((one) => one.id !== task.id), task]);
     const query = sortTasks([...state.unscopedShown.filter((one) => one.id !== task.id), task]);
     state.focusTask = task.id;
-    const filedAs = await nextTaskRead();
     await Promise.all([
+      summaryWrite,
       writeTasksRecord(state.deviceId, state.projectId, tasksRecord(catalogue, state.columns, filedAs)),
       writeTasksQueryRecord(state.deviceId, state.projectId, queryParams(), tasksRecord(query, state.columns, filedAs)),
     ]);
@@ -740,7 +818,7 @@ export function mountTasksPane(host, options) {
   // this project moved and reads the list again, and the pass behind it
   // (core/cacheSync.js) is the whole of the safety net.
   const watcher = watchChanges({
-    refresh: () => void refresh(),
+    refresh: () => { void remoteChoices.refresh(); void refresh(); },
     entity: state.projectId,
     deviceId: state.deviceId,
   // Named only where the bridge carries them (core/trackerPush.js): every
@@ -768,11 +846,13 @@ export function mountTasksPane(host, options) {
       userSessionWatcher?.();
       ruleWatcher?.();
       details.dispose();
+      unreadDisplay.dispose();
       activity.dispose();
       referencesWatcher();
       queryUnsubscribe?.();
       reads.dispose();
       chrome.dispose();
+      remoteChoices.dispose();
       state.picker?.close?.();
       state.composer?.close?.();
     },

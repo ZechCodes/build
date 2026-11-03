@@ -89,6 +89,7 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
   let options = [];
   let chosen = [];
   let rows = [];
+  const rowForElement = new WeakMap();
   let active = -1;
   let open = false;
   let record = null;
@@ -114,21 +115,28 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
   const paintRows = () => {
     rows = menuRows(options, record ? committedQuery : search.value, chosen, { multi, invent });
     rows.forEach((row, index) => { row.at = index; });
-    patchList(list, rows, {
+    const elements = patchList(list, rows, {
       keyOf: (row) => row.key,
       render: (row) => rowHtml(row, id, row.at),
       wire: (element) => {
         if (element.getAttribute("role") !== "option") return;
         element.onmousedown = (event) => event.preventDefault(); // keep the caret in the search box
-        element.onclick = () => choose(element.dataset.value);
+        element.onclick = () => chooseRow(rowForElement.get(element));
       },
     });
+    // HTML parsing replaces NUL with U+FFFD. Keep choice identity in memory,
+    // and refresh kept elements after every patch, including a reorder.
+    elements.forEach((element, index) => rowForElement.set(element, rows[index]));
     nothing.hidden = rows.length > 0;
     if (rows[active]?.kind !== "option") active = firstActive(rows);
     paintActive();
   };
 
   // ---- the three things a reader does --------------------------------------
+
+  function chooseRow(row) {
+    if (row?.kind === "option") choose(row.value);
+  }
 
   function choose(value) {
     chosen = toggleChoice(chosen, value, { multi });
@@ -190,9 +198,7 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
   const KEYS = {
     ArrowDown: () => step(1),
     ArrowUp: () => step(-1),
-    Enter: () => {
-      if (rows[active]?.kind === "option") choose(rows[active].value);
-    },
+    Enter: () => chooseRow(rows[active]),
     Escape: () => shut({ focusPress: true }),
     Tab: () => shut(),
   };

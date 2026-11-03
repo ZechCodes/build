@@ -1,0 +1,177 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { called, passesSettled } from "./waits.js";
+import { task } from "./trackerWireFixture.js";
+
+const App = { route: { name: "inbox" }, devices: [{ id: "list-content" }] };
+vi.mock("../src/appState.js", () => ({ App }));
+vi.mock("../src/app.js", () => ({ App }));
+let context, watchers;
+vi.mock("../src/core/deviceContexts.js", () => ({
+  contextFor: () => context, liveContexts: () => [context], onDeviceStateChanged: () => () => {},
+  whenGreeted: async (_context, dispatch) => ({ sent: dispatch(() => true), stands: () => true }),
+}));
+vi.mock("../src/core/changeEvents.js", () => ({
+  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "tasks"] }, tasks: {} }),
+  subscriptionsSettledFor: async () => {}, onSubscriptionHeld: () => () => {},
+  watchChanges: (registration) => { watchers.push(registration); return { dispose() {} }; },
+}));
+
+const DEVICE = "list-content", PROJECT = "proj-1";
+const columns = [{ id: "backlog" }, { id: "done" }];
+const row = () => task({ id: "content-1", project_id: PROJECT, number: 1, title: "wire title", body: "wire body",
+  updated_at: "2026-10-29T12:00:00.000900Z" });
+const gate = () => { let resolve; const promise = new Promise((yes) => { resolve = yes; }); return { promise, resolve }; };
+let tracker, reads, sync, script;
+const rpc = vi.fn();
+
+beforeEach(async () => {
+  vi.resetModules();
+  globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
+  delete navigator.locks;
+  watchers = []; script = {};
+  rpc.mockReset().mockImplementation(async (method, params = {}) => {
+    if (script[method]) return script[method](params);
+    if (method === "board.list") return { items: [] };
+    if (method === "project.list") return { projects: [{ project_id: PROJECT, name: "Build" }] };
+    if (method === "workspace.list") return { workspaces: [] };
+    if (method === "tasks.columns") return { columns };
+    if (method === "tasks.list") return { tasks: [] };
+    return {};
+  });
+  context = { deviceId: DEVICE, session: {}, greeted: Promise.resolve(), active: () => true,
+    cacheScope: { deviceId: DEVICE, active: () => true }, rpc };
+  tracker = await import("../src/core/trackerCache.js");
+  reads = await import("../src/core/taskReadOrder.js");
+});
+
+afterEach(async () => { if (sync) { sync.stopCacheSync(); await passesSettled(sync, DEVICE); sync = null; } });
+
+function expectFullObservation(record, boundary) {
+  const observed = record.tasks[0].__task_content_cache;
+  expect(observed?.header).toEqual({ read_order: record.read_order, updated_at: row().updated_at });
+  expect(observed?.body).toEqual({ read_order: record.read_order, updated_at: row().updated_at });
+  expect(observed.header.read_order).toBeLessThan(boundary);
+}
+
+it("annotates actual sync phase legacy full rows with the clock captured before RPC dispatch", async () => {
+  const { createTaskPhases } = await import("../src/core/syncTaskPhases.js");
+  const response = gate(), dispatched = gate();
+  const ask = vi.fn(async (_context, method) => {
+    if (method === "tasks.columns") return { columns };
+    dispatched.resolve(); return response.promise;
+  });
+  const pass = createTaskPhases(context, { ask, readReviews: async () => {} });
+  const first = pass.first(PROJECT);
+  await dispatched.promise;
+  const afterDispatch = await reads.nextTaskRead();
+  response.resolve({ tasks: [row()] }); await first;
+  expectFullObservation(await tracker.readTasksRecord(DEVICE, PROJECT), afterDispatch);
+  expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(1);
+});
+
+it("annotates actual task push legacy full rows with the clock captured before RPC dispatch", async () => {
+  sync = await import("../src/core/cacheSync.js");
+  sync.startCacheSync(); await passesSettled(sync, DEVICE);
+  const response = gate();
+  script["tasks.list"] = () => response.promise;
+  rpc.mockClear();
+  const watcher = watchers.find(({ kinds }) => kinds.includes("thread"));
+  const pending = watcher.onChanges([{ entity_id: PROJECT, tasks: { task_ids: ["content-1"] } }]);
+  await called(rpc, () => rpc.mock.calls.some(([method]) => method === "tasks.list"));
+  const afterDispatch = await reads.nextTaskRead();
+  response.resolve({ tasks: [row()] }); await pending;
+  expectFullObservation(await tracker.readTasksRecord(DEVICE, PROJECT), afterDispatch);
+  expect(rpc.mock.calls.filter(([method]) => method === "tasks.list")).toHaveLength(1);
+});
+
+async function actualListReader(source) {
+  if (source === "sync phase") {
+    const { createTaskPhases } = await import("../src/core/syncTaskPhases.js");
+    return () => createTaskPhases(context, {
+      ask: (_context, method, params) => rpc(method, params), readReviews: async () => {},
+    }).first(PROJECT);
+  }
+  sync = await import("../src/core/cacheSync.js");
+  sync.startCacheSync(); await passesSettled(sync, DEVICE);
+  const watcher = watchers.find(({ kinds }) => kinds.includes("thread"));
+  return () => watcher.onChanges([{ entity_id: PROJECT, tasks: { task_ids: ["content-1"] } }]);
+}
+
+it.each(["sync phase", "task push"])("retains blind-created membership against an empty stale %s reply and accepts fresh absence", async (source) => {
+  const read = await actualListReader(source);
+  script["tasks.list"] = async () => ({ tasks: [row()] });
+  await read();
+  const response = gate(), dispatched = gate();
+  script["tasks.list"] = () => { dispatched.resolve(); return response.promise; };
+  const pending = read(); await dispatched.promise;
+  const held = await tracker.readTasksRecord(DEVICE, PROJECT);
+  const local = { ...row(), id: "local-created", number: 2, title: "Local creation", body: "Local body" };
+  const localColumns = [...columns, { id: "local-column" }];
+  await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([local, ...held.tasks], localColumns, await reads.nextTaskRead()));
+  response.resolve({ tasks: [] }); await pending;
+  const kept = await tracker.readTasksRecord(DEVICE, PROJECT);
+  expect(kept.tasks.map(({ id }) => id)).toEqual(["local-created", "content-1"]);
+  expect(kept.columns).toEqual(localColumns);
+  expect(kept.tasks.find(({ id }) => id === local.id)).toMatchObject({ title: "Local creation", body: "Local body" });
+  script["tasks.list"] = async () => ({ tasks: [] });
+  await read();
+  expect((await tracker.readTasksRecord(DEVICE, PROJECT)).tasks).toEqual([]);
+});
+
+it.each(["sync phase", "task push"])("retains omitted membership and independent facts from a nonempty stale %s reply", async (source) => {
+  const read = await actualListReader(source);
+  const original = { ...row(), read_through: "tc-10", review_summary: { task_id: "content-1", version: 1, status: "open" } };
+  script["tasks.list"] = async () => ({ tasks: [original] });
+  await read();
+  const response = gate(), dispatched = gate();
+  script["tasks.list"] = () => { dispatched.resolve(); return response.promise; };
+  const pending = read(); await dispatched.promise;
+  const held = await tracker.readTasksRecord(DEVICE, PROJECT);
+  const local = { ...row(), id: "local-created", number: 2, title: "Local creation", body: "Local body" };
+  const localColumns = [...columns, { id: "local-column" }];
+  await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([local, ...held.tasks], localColumns, await reads.nextTaskRead()));
+  response.resolve({ tasks: [{ ...original, title: "Rejected stale title", body: "Rejected stale body", read_through: "tc-20",
+    review_summary: { task_id: "content-1", version: 2, status: "open" } }, { ...row(), id: "stale-only" }] });
+  await pending;
+  const kept = await tracker.readTasksRecord(DEVICE, PROJECT);
+  expect(kept.tasks.map(({ id }) => id)).toEqual(["local-created", "content-1"]);
+  expect(kept.columns).toEqual(localColumns);
+  expect(kept.tasks.find(({ id }) => id === original.id)).toMatchObject({ title: original.title, body: original.body,
+    read_through: "tc-20", review_summary: { version: 2 } });
+  expect(kept.tasks.find(({ id }) => id === local.id)).toMatchObject({ title: "Local creation", body: "Local body" });
+});
+
+it("a genuine task push admits a blocker release after an issued assignment", async () => {
+  const content = await import("../src/core/taskContentAuthority.js");
+  const actions = await import("../src/core/taskWaitingOnCache.js");
+  const local = await import("../src/core/localCache.js");
+  const waiting = { ...row(), status: "ready", dependencies: { blocked: true, waiting_on_count: 1,
+    waiting_on: [{ task_id: "prerequisite", state: "open", status: "ready", resolved: false }] },
+    deferred_assignment: { id: "assignment", state: "waiting", target: { kind: "new_workspace" } } };
+  script["tasks.list"] = async () => ({ tasks: [waiting] });
+  const read = await actualListReader("task push");
+  await read();
+  const address = tracker.taskAddress(DEVICE, PROJECT, waiting.id);
+  const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+  expect(await actions.cacheTaskWaitingOnResponse(DEVICE, PROJECT, { task: waiting },
+    { contentRead, issuedRead: contentRead.readOrder })).toBe(true);
+  const note = reads.readsAddress(address);
+  expect((await local.readCached(note)).value.action_read).toBe(contentRead.readOrder);
+
+  const released = { ...waiting, status: "in_progress", updated_at: "2026-10-29T12:00:01.000Z",
+    dependencies: { blocked: false, waiting_on_count: 1,
+      waiting_on: [{ task_id: "prerequisite", state: "open", status: "done", resolved: true, resolved_by: "done" }] },
+    deferred_assignment: { ...waiting.deferred_assignment, state: "delivered" } };
+  expect(await actions.cacheTaskWaitingOnResponse(DEVICE, PROJECT, { task: released })).toBe(false);
+  expect((await tracker.readTasksRecord(DEVICE, PROJECT)).tasks[0].dependencies.blocked).toBe(true);
+  script["tasks.list"] = async () => ({ tasks: [released] });
+  await read();
+  const listed = (await tracker.readTasksRecord(DEVICE, PROJECT)).tasks;
+  expect(listed).toHaveLength(1);
+  expect(listed[0]).toMatchObject({ id: waiting.id, status: "in_progress",
+    dependencies: { blocked: false, waiting_on: [{ resolved: true, resolved_by: "done" }] },
+    deferred_assignment: { id: "assignment", state: "delivered" } });
+  expect((await local.readCached(note)).value.action_read).toBe(contentRead.readOrder);
+});

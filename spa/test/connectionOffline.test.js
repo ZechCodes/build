@@ -252,6 +252,7 @@ function fakeSession(deviceId, onLost = () => {}) {
       if (method === "board.list") return { items: [boardRows.get(deviceId) || {
         id: `${deviceId}-row`, project_id: "proj-1", title: "Work",
       }] };
+      if (method === "tasks.list") return { tasks: [], columns: [] };
       if (method === "project.list") return { projects: [{ project_id: "proj-1", name: `${deviceId} repo` }] };
       // The rail lists workspaces, so a machine with none paints no rows at
       // all: each one keeps a checkout of the project both machines name.

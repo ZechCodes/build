@@ -8,6 +8,10 @@ import { TRACKER_TASK_KIND, taskAddress, taskRecord, writeTaskRecord, captureTas
 import { changedSince } from "./trackerModel.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceSession } from "./deviceReconnect.js";
+import { contextFor, deviceContextIdentity, onDeviceStateChanged } from "./deviceContexts.js";
+import { captureTaskContentRead, taskFullRefreshKey } from "./taskContentAuthority.js";
+import { readTaskWatchState, taskWatchControlAddress } from "./taskWatchAuthority.js";
+import { subscribeTaskMutations, taskMutationsPendingFor } from "./taskMutationFence.js";
 
 const MAX_READS = 4;
 
@@ -28,10 +32,17 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   const refreshRequested = new Set();
   const refreshTasks = new Map(); // explicitly refreshed tasks can leave the active filter
   const attempted = new Map(); // one failed or stale response per list version
+  const controlReadOrigins = new Map(); // admitted id -> queued control owner
+  const normalReadDemand = new Set();
+  const deferredReads = new Map(); // committed deferral -> captured read owner
+  const deferredReadOrigins = new Map(); // queued recovery keeps its owner until dispatch
+  const ordinaryScope = { deviceId, projectId };
   let signature = null;
   let generation = 0;
   let readSerial = 0;
   let disposed = false;
+  let controlOwner = null, controlSerial = 0, lastControlHint = null;
+  let stopControl = () => {};
 
   const address = (id) => taskAddress(deviceId, projectId, id);
   const nextEpoch = (id) => {
@@ -46,6 +57,9 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     return changedSince(refreshed, { task }) ? refreshed || task : task;
   }
   const stillWanted = (id, version) => !disposed && Boolean(taskForRead(id)) && version === versionOf(taskForRead(id));
+  const attemptKey = (id, detail = cached.get(id)?.value) => JSON.stringify([
+    versionOf(taskForRead(id)), taskFullRefreshKey(detail?.task, taskForRead(id)),
+  ]);
   const detailReads = trailingRead(fetchDetail, { generationOf: () => deviceSession(deviceId) });
 
   function startRead(id) {
@@ -60,15 +74,6 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     return reading;
   }
 
-  function currentRecordWins(current, before, answer) {
-    if ((current?.at || 0) > before) return true;
-    const heldTask = current?.value?.task;
-    const answerTask = answer?.task;
-    return Boolean(heldTask && answerTask
-      && !changedSince(answerTask, current.value)
-      && heldTask.updated_at !== answerTask.updated_at);
-  }
-
   function pump() {
     if (disposed) return;
     for (const [id, version] of pending) {
@@ -77,31 +82,45 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
       pending.delete(id);
       if (!stillWanted(id, version)) continue;
       refreshRequested.delete(id);
-      attempted.set(id, version);
+      attempted.set(id, attemptKey(id));
       startRead(id);
     }
   }
 
-  async function writeAnswer(id, version, answer, before, detailBasis) {
-    if (!stillWanted(id, version)) return;
+  async function writeAnswer(id, answer, basis, acceptsRead) {
+    if (!acceptsRead()) return;
     if (answer?.task?.id !== id) return;
-    // A page or another tab may have written a newer detail while this read
-    // was in flight. Leave its record in place rather than replacing it.
-    const current = await readCached(address(id));
-    if (!stillWanted(id, version) || currentRecordWins(current, before, answer)) return;
-    await writeTaskRecord(deviceId, projectId, id, taskRecord(answer?.task, answer?.timeline), { detailBasis });
+    // The transaction selects ordinary content and independent read/watch/PR
+    // families separately, retaining newer content without dropping new facts.
+    await writeTaskRecord(deviceId, projectId, id, taskRecord(answer?.task, answer?.timeline), {
+      detailBasis: basis.detailBasis, contentRead: basis.contentRead,
+      accept: acceptsRead, onOrdinaryDeferred: () => deferRead(id, acceptsRead),
+    });
+  }
+
+  function acceptsQueuedRead(id) {
+    const origin = controlReadOrigins.get(id), recovery = deferredReadOrigins.get(id);
+    const normal = normalReadDemand.has(id);
+    controlReadOrigins.delete(id); deferredReadOrigins.delete(id); normalReadDemand.delete(id);
+    if (normal) return true;
+    if (origin && !currentControlOwner(origin)) return false;
+    return !recovery || recovery();
   }
 
   async function fetchDetail(id) {
+    if (!acceptsQueuedRead(id)) return;
     const version = versionOf(taskForRead(id));
+    const context = contextFor(deviceId), identity = deviceContextIdentity(deviceId), session = deviceSession(deviceId);
+    const acceptsOwner = () => !disposed && contextFor(deviceId) === context && deviceContextIdentity(deviceId) === identity
+      && deviceSession(deviceId) === session && (!context || context.active());
     try {
-      const detailBasis = await captureTaskDetailRead(deviceId, projectId, id);
-      // A trailing read can start before the prior answer's cache observer
-      // finishes. Capture its baseline from the store, not that observer.
-      const before = (await readCached(address(id)))?.at || 0;
-      if (!stillWanted(id, version)) return;
+      const [detailBasis, contentRead] = await Promise.all([
+        captureTaskDetailRead(deviceId, projectId, id),
+        captureTaskContentRead(address(id), { revalidate: "full" }),
+      ]);
+      if (!acceptsOwner() || !stillWanted(id, version)) return;
       const answer = await callRpc("tasks.get", { task_id: id });
-      await writeAnswer(id, version, answer, before, detailBasis);
+      await writeAnswer(id, answer, { detailBasis, contentRead }, () => acceptsOwner() && stillWanted(id, version));
     } catch {
       // The list remains useful offline. A later list version can retry.
     }
@@ -111,14 +130,54 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
    * its timeline. Ask after that response even at the same task version;
    * an outstanding read trails once and retains the mutation read fence. */
   function refresh(id, task = null) {
+    return queueRefresh(id, task, null);
+  }
+
+  function queueRefresh(id, task, origin) {
     if (disposed || !callRpc) return;
     if (task?.id === id) refreshTasks.set(id, task);
     if (!taskForRead(id)) return;
+    if (origin) {
+      if (!normalReadDemand.has(id)) {
+        controlReadOrigins.set(id, origin); deferredReadOrigins.delete(id);
+      }
+    } else {
+      normalReadDemand.add(id); controlReadOrigins.delete(id); deferredReadOrigins.delete(id);
+    }
+    return enqueueRefresh(id);
+  }
+
+  function enqueueRefresh(id) {
     if (active.has(id)) return startRead(id);
     refreshRequested.add(id);
     pending.set(id, versionOf(taskForRead(id)));
     pump();
   }
+
+  function recoverDeferredRead(id) {
+    const acceptsRead = deferredReads.get(id);
+    if (!acceptsRead) return;
+    if (!acceptsRead() || !taskForRead(id)) { deferredReads.delete(id); return; }
+    if (taskMutationsPendingFor(ordinaryScope, id)) return;
+    deferredReads.delete(id);
+    if (!normalReadDemand.has(id)) {
+      deferredReadOrigins.set(id, acceptsRead); controlReadOrigins.delete(id);
+    }
+    enqueueRefresh(id);
+  }
+
+  function deferRead(id, acceptsRead) {
+    if (!acceptsRead()) return;
+    deferredReads.set(id, acceptsRead);
+    // This check also closes settlement between commit and observer delivery.
+    recoverDeferredRead(id);
+  }
+
+  const stopOrdinaryMutations = subscribeTaskMutations(deviceId, (event) => {
+    if (event.phase === "retired" || event.phase === "session") { deferredReads.clear(); return; }
+    if (event.task?.projectId !== projectId) return;
+    if (event.phase === "settled" && event.task.pending === 0) recoverDeferredRead(event.task.taskId);
+  });
 
   function queueIfBehind(id, detail) {
     if (!callRpc) return;
@@ -128,12 +187,13 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
       pump();
       return;
     }
-    if (!changedSince(task, detail)) {
+    if (!changedSince(task, detail) && !taskFullRefreshKey(detail?.task, task)) {
       pending.delete(id);
       return;
     }
     const version = versionOf(task);
-    if (attempted.get(id) === version) return;
+    if (attempted.get(id) === attemptKey(id, detail)) return;
+    normalReadDemand.add(id); controlReadOrigins.delete(id); deferredReadOrigins.delete(id);
     pending.set(id, version);
     pump();
   }
@@ -165,6 +225,36 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     else if (!changed.sub) void scan(); // project eviction may remove every detail
   });
 
+  const controlLifetime = () => ({ context: contextFor(deviceId), identity: deviceContextIdentity(deviceId), session: deviceSession(deviceId) });
+  const sameControlLifetime = (owner, next = controlLifetime()) => owner?.context === next.context
+    && owner?.identity === next.identity && owner?.session === next.session;
+  const currentControlOwner = (owner) => !disposed && owner === controlOwner && sameControlLifetime(owner)
+    && (!owner.context || owner.context.active());
+
+  async function readWatchControl(owner) {
+    const serial = ++controlSerial;
+    try {
+      const watch = await readTaskWatchState({ deviceId, projectId });
+      if (serial !== controlSerial || !currentControlOwner(owner) || !watch.eligible) return;
+      const hint = JSON.stringify([watch.controlGeneration, watch.watchEpoch]);
+      if (hint === lastControlHint) return;
+      lastControlHint = hint;
+      // The existing queue owns admission and its four-read bound. A control
+      // notification never adds a task which this mounted feed did not admit.
+      for (const id of listed.keys()) queueRefresh(id, null, owner);
+    } catch { /* Unknown eligibility is not a reason to retry or ask the wire. */ }
+  }
+
+  function bindWatchControl() {
+    if (typeof callRpc !== "function") return;
+    const next = controlLifetime();
+    if (disposed || controlOwner && sameControlLifetime(controlOwner, next)) return;
+    stopControl(); controlSerial += 1; lastControlHint = null; controlOwner = next;
+    stopControl = subscribeCache(taskWatchControlAddress({ deviceId, projectId }), () => void readWatchControl(next));
+  }
+  bindWatchControl();
+  const stopControlLifetime = typeof callRpc === "function" ? onDeviceStateChanged(bindWatchControl) : () => {};
+
   async function scan() {
     if (disposed) return;
     const current = generation;
@@ -180,7 +270,9 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   async function updateTasks(tasks) {
     if (disposed) return;
     const next = new Map((tasks || []).filter((task) => task?.id).map((task) => [task.id, task]));
-    const nextSignature = JSON.stringify([...next].map(([id, task]) => [id, versionOf(task)]));
+    const nextSignature = JSON.stringify([...next].map(([id, task]) => [
+      id, versionOf(task), taskFullRefreshKey(cached.get(id)?.value?.task, task),
+    ]));
     if (signature === nextSignature) return;
     signature = nextSignature;
     generation += 1;
@@ -194,6 +286,8 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
         refreshRequested.delete(id);
       }
       attempted.delete(id);
+      deferredReads.delete(id);
+      controlReadOrigins.delete(id); deferredReadOrigins.delete(id); normalReadDemand.delete(id);
       removed = true;
     }
     listed.clear();
@@ -213,7 +307,12 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
       pending.clear();
       refreshRequested.clear();
       refreshTasks.clear();
+      controlReadOrigins.clear(); normalReadDemand.clear();
+      deferredReads.clear(); deferredReadOrigins.clear();
+      stopOrdinaryMutations();
       unsubscribe();
+      stopControl();
+      stopControlLifetime();
     },
   };
 }

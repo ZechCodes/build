@@ -31,12 +31,12 @@ export function identifier(value, code = "invalid_params") {
 }
 export const segment = (value) => encodeURIComponent(identifier(value));
 
-export function verifiedMint(value, expected = {}) {
+export function verifiedMint(value, expected = {}, issuer = HOSTED_ORIGIN) {
   object(value, "invalid_response");
   for (const name of ["account_id", "device_id", "endpoint_epoch", "family_id"])
     identifier(value[name], "invalid_response");
   if (
-    value.issuer !== HOSTED_ORIGIN ||
+    value.issuer !== issuer ||
     canonicalOrigin(value.origin) !== value.origin
   )
     fail("binding_mismatch");

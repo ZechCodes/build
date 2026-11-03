@@ -119,9 +119,9 @@ it("preselects a linked task outside the catalogue from bounded query pages and 
   const linked = { id: "linked-old", number: 1, title: "Old linked work", state: "open", matched_memberships: { linked_workspace_id: scope.workspaceId } };
   const rpc = mount(vi.fn(async (method, params) => {
     expect(method).toBe("tasks.list");
-    if (params.linked_workspace_id) return { tasks: [linked] };
-    return params.cursor ? { tasks: [{ id: "older", number: 2, title: "Older choice", state: "open" }] }
-      : { tasks: [{ id: "recent", number: 500, title: "Recent choice", state: "open" }], next_cursor: "next-page" };
+    if (params.linked_workspace_id) return { summary: true, tasks: [linked] };
+    return params.cursor ? { summary: true, tasks: [{ id: "older", number: 2, title: "Older choice", state: "open" }] }
+      : { summary: true, tasks: [{ id: "recent", number: 500, title: "Recent choice", state: "open" }], next_cursor: "next-page" };
   }));
   await openForm();
   await painted(() => document.querySelector("[data-review-for-task]")?.value === "linked-old");

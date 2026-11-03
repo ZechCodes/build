@@ -217,3 +217,57 @@ fn ordinary_tasks_still_move_to_done_from_rpc_and_mcp() {
     .unwrap();
     assert_eq!(mcp["task"]["status"], "done");
 }
+
+#[test]
+fn review_comment_anchor_accepts_only_commits_in_its_saved_directory_range() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, project_id) = tracked(tmp.path());
+    let (_repo_home, repo_path) = init_repo();
+    let repo = git2::Repository::open(&repo_path).unwrap();
+    let base = repo.head().unwrap().target().unwrap();
+    std::fs::write(repo_path.join("file.txt"), "new line\n").unwrap();
+    git_in(&repo_path, &["add", "."]);
+    git_in(&repo_path, &["commit", "-m", "anchored change"]);
+    let head = repo.head().unwrap().target().unwrap();
+    let task_id = filed(&mut state, &project_id, "commit anchors")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let snapshot: ReviewSnapshot = serde_json::from_value(json!({
+        "id":"anchor-snapshot", "number":0, "created_at":crate::store::now_rfc3339(),
+        "author":{"kind":"user"}, "directories":[{
+            "id":"anchor-directory", "source_id":"source", "name":"repo", "path":repo_path,
+            "source_path":repo_path, "is_git":true, "status":"git", "common_git_dir":repo.commondir(),
+            "base":{"kind":"configured", "name":"main", "oid":base.to_string()}, "head":head.to_string()
+        }]
+    })).unwrap();
+    state
+        .tracker_store()
+        .unwrap()
+        .save_review_snapshot(&task_id, "anchor-workspace", 0, snapshot)
+        .unwrap();
+    let mut anchor = json!({"snapshot_id":"anchor-snapshot", "directory_id":"anchor-directory", "path":"file.txt", "side":"new", "line":1});
+    for commit in [
+        None,
+        Some(head.to_string()),
+        Some(base.to_string()),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+    ] {
+        anchor.as_object_mut().unwrap().remove("commit");
+        if let Some(commit) = &commit {
+            anchor["commit"] = json!(commit);
+        }
+        let response = state.handle(req(
+            "tasks.comment",
+            json!({"task_id":task_id,"body":"line comment","anchor":anchor}),
+        ));
+        let valid = commit.is_none() || commit.as_deref() == Some(head.to_string().as_str());
+        assert_eq!(response["ok"], valid, "{response}");
+        if valid {
+            assert_eq!(
+                response["result"]["comment"]["anchor"]["commit"],
+                json!(commit)
+            );
+        }
+    }
+}

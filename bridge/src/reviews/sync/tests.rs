@@ -326,6 +326,10 @@ fn workspace_and_source_removal_leave_snapshot_pins_readable() {
             paths: Vec::new(),
             range: None,
             patch: false,
+            commit: None,
+            from_snapshot_id: None,
+            limit: None,
+            cursor: None,
         },
     )
     .unwrap();

@@ -218,9 +218,16 @@ impl MixedReadContext {
                 ApiError::classify(format!("unknown directory_id: {}", params.directory_id))
             })?
             .clone();
+        let earlier = crate::api::v1::reviews::earlier_directory(&review, &params)
+            .map_err(ApiError::classify)?;
         Ok(self.job(MixedFence::Task(fence), move || {
-            let result =
-                crate::reviews::read::read(&directory, &params.read).map_err(ApiError::classify)?;
+            let result = match earlier.as_ref() {
+                Some(earlier) => {
+                    crate::reviews::read::read_since(&directory, earlier, &params.read)
+                }
+                None => crate::reviews::read::read(&directory, &params.read),
+            }
+            .map_err(ApiError::classify)?;
             serde_json::to_value(result).map_err(|error| ApiError::internal(error.to_string()))
         }))
     }

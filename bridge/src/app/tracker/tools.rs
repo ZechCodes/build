@@ -123,6 +123,7 @@ impl AppState {
                     mentions_user: mention_user.unwrap_or(false),
                     notifies_user: notify_user.unwrap_or(false),
                     metadata: Value::Null,
+                    post: None,
                 },
             ),
             BridgeAction::TrackerReviewCommentTask {
@@ -146,6 +147,14 @@ impl AppState {
                     mentions_user: mention_user.unwrap_or(false),
                     notifies_user: notify_user.unwrap_or(false),
                     metadata: json!({"anchor": anchor, "reply_to": reply_to, "opinion": opinion}),
+                    post: anchor
+                        .as_ref()
+                        .filter(|anchor| anchor.commit.is_some())
+                        .map(|_| DeferredCommentPost {
+                            scope: scope.clone(),
+                            action: action.clone(),
+                            watch_baseline: watch_baseline.clone(),
+                        }),
                 },
             ),
             BridgeAction::TrackerAssignTask {
@@ -580,6 +589,15 @@ impl AppState {
                 .agent_id()
                 .and_then(|agent_id| self.agent_context_reading(&scope.entity_id, agent_id)),
         };
+        if let Some(check) = metadata.commit_check {
+            return self.defer_task_comment(super::comments::DeferredCommentWrite {
+                project_id: scope.project_id.clone(),
+                comment,
+                expected_review_version: metadata.expected_review_version,
+                check,
+                post: asks.post,
+            });
+        }
         let mut write = TaskWrite::by(scope.actor.clone(), task);
         write.expected_review_version = metadata.expected_review_version;
         write.comments.push(comment.clone());
@@ -762,6 +780,43 @@ struct CommentAsks {
     mentions_user: bool,
     notifies_user: bool,
     metadata: Value,
+    post: Option<DeferredCommentPost>,
+}
+
+/// Original caller and post-write hooks carried across commit validation.
+pub(super) struct DeferredCommentPost {
+    scope: TaskScope,
+    action: BridgeAction,
+    watch_baseline: Option<String>,
+}
+
+impl AppState {
+    pub(super) fn validate_deferred_comment_caller(
+        &self,
+        post: &DeferredCommentPost,
+        task_id: &str,
+    ) -> Result<(), String> {
+        let agent = post.scope.actor.agent_id().ok_or("comment has no agent")?;
+        let current = self.task_scope(&post.scope.entity_id, agent)?;
+        if current.project_id != post.scope.project_id {
+            return Err(format!("unknown task_id: {task_id}"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn finish_deferred_comment_post(
+        &mut self,
+        post: &DeferredCommentPost,
+        result: Value,
+    ) -> Result<Value, String> {
+        let tracked = self.also_track(&post.scope, &post.action, Ok(result));
+        self.also_watch(
+            &post.scope,
+            &post.action,
+            tracked,
+            post.watch_baseline.as_deref(),
+        )
+    }
 }
 
 /// Whether a tool call asked for the user to be told. Absent is no.
@@ -872,6 +927,7 @@ fn is_a_task_tool(action: &BridgeAction) -> bool {
 }
 
 /// Who is calling, and what that lets them reach.
+#[derive(Clone)]
 struct TaskScope {
     project_id: String,
     /// The calling agent's conversation owner, for a delivery it asks for.

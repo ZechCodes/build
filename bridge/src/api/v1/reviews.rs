@@ -95,6 +95,60 @@ pub struct ReviewDiffParams {
     pub read: ReviewReadRequest,
 }
 
+/// Resolve a prior revision inside the same review before dispatching Git work.
+pub(crate) fn earlier_directory(
+    review: &Review,
+    params: &ReviewDiffParams,
+) -> Result<Option<crate::reviews::model::ReviewDirectory>, String> {
+    use crate::reviews::read::ReviewReadMode;
+    if params.read.mode != ReviewReadMode::Since {
+        return Ok(None);
+    }
+    let from = params.read.from_snapshot_id.as_deref().ok_or_else(|| {
+        errors::encode(
+            "invalid_params",
+            "since requires from_snapshot_id",
+            serde_json::json!({}),
+        )
+    })?;
+    let current = review
+        .snapshots
+        .iter()
+        .find(|snapshot| snapshot.id == params.snapshot_id)
+        .ok_or_else(|| format!("unknown snapshot_id: {}", params.snapshot_id))?;
+    let earlier = review
+        .snapshots
+        .iter()
+        .find(|snapshot| snapshot.id == from)
+        .ok_or_else(|| {
+            errors::encode(
+                "not_found",
+                "Earlier revision was not found in this review",
+                serde_json::json!({"from_snapshot_id":from}),
+            )
+        })?;
+    if earlier.number >= current.number {
+        return Err(errors::encode(
+            "invalid_params",
+            "from_snapshot_id must name an earlier revision",
+            serde_json::json!({"from_snapshot_id":from}),
+        ));
+    }
+    earlier
+        .directories
+        .iter()
+        .find(|directory| directory.id == params.directory_id)
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| {
+            errors::encode(
+                "not_found",
+                "Directory was not present in the earlier revision",
+                serde_json::json!({"directory_id":params.directory_id,"from_snapshot_id":from}),
+            )
+        })
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ReviewCompleteParams {
     pub task_id: String,
@@ -316,6 +370,30 @@ fn act(app: &mut AppState, params: ReviewActParams) -> Result<Answer<ReviewResul
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn since_revision_selection_is_task_scoped_ordered_and_directory_scoped() {
+        let mut review: Review = serde_json::from_value(json!({
+            "task_id":"task-1","workspace_id":"ws-1","version":2,"state":"open","completion":null,
+            "snapshots":[
+                {"id":"old","number":1,"created_at":"now","author":{"kind":"user"},"directories":[]},
+                {"id":"new","number":2,"created_at":"now","author":{"kind":"user"},"directories":[]}
+            ]
+        })).unwrap();
+        let params: ReviewDiffParams = serde_json::from_value(json!({
+            "task_id":"task-1","snapshot_id":"new","directory_id":"dir-1","mode":"since","from_snapshot_id":"old"
+        })).unwrap();
+        let error = ApiError::classify(earlier_directory(&review, &params).unwrap_err());
+        assert_eq!(error.code(), "not_found");
+        // Another task's snapshot ID cannot resolve through this review.
+        review.snapshots[0].id = "foreign".into();
+        let error = ApiError::classify(earlier_directory(&review, &params).unwrap_err());
+        assert_eq!(error.code(), "not_found");
+        review.snapshots[0].id = "old".into();
+        review.snapshots[0].number = 3;
+        let error = ApiError::classify(earlier_directory(&review, &params).unwrap_err());
+        assert_eq!(error.code(), "invalid_params");
+    }
 
     #[test]
     fn pull_request_verbs_are_registered_and_refuse_undeclared_parameters() {

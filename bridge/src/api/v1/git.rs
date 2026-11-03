@@ -218,6 +218,10 @@ pub struct GitShowParams {
     pub scope: SourceScopeParams,
     /// A 4–40 character lowercase hex object-id prefix, never a revspec.
     pub hash: String,
+    /// Optional literal repository-relative paths to include in the diff.
+    /// Absent or empty includes every changed path; at most 50 paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
     /// The most patch this answer may carry, clamped server-side to
     /// `1024..=`[`COMMIT_PATCH_MAX_BYTES`]. A larger patch comes back as the
     /// commit's file headers with `truncated` set, and the client fetches the

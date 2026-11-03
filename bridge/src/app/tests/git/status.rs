@@ -584,3 +584,76 @@ fn git_commit_rejects_empty_messages_and_an_empty_stage() {
     assert_eq!(nothing["ok"], false, "{nothing:?}");
     assert_eq!(nothing["error"], "nothing staged to commit");
 }
+
+#[test]
+fn git_show_filters_paths_before_stats_caps_and_paging() {
+    let (dir, repo) = init_repo();
+    std::fs::write(repo.join("selected[1].txt"), "selected\n").unwrap();
+    std::fs::write(repo.join("other.txt"), "other\n".repeat(20_000)).unwrap();
+    git_in(&repo, &["add", "."]);
+    git_in(&repo, &["commit", "-m", "two files"]);
+    let hash = git2::Repository::open(&repo)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap()
+        .to_string();
+    let mut state = git_gui_state(&dir, &repo);
+    let project_id = state.project_at(0).id.clone();
+    let read = |state: &mut AppState, options: Value| {
+        let mut params =
+            json!({"project_id": project_id, "hash": hash, "paths": ["selected[1].txt"]});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(options.as_object().unwrap().clone());
+        let response = state.handle(req("git.show", params));
+        assert_eq!(response["ok"], true, "{response}");
+        response["result"].clone()
+    };
+    let whole = read(&mut state, json!({"max_bytes": 1024}));
+    assert_eq!(whole["stat"]["files_changed"], 1);
+    assert_eq!(whole["stat"]["insertions"], 1);
+    assert_eq!(whole["truncated"], false);
+    let patch = whole["patch"].as_str().unwrap();
+    assert!(patch.contains("+selected"));
+    assert!(!patch.contains("other.txt"));
+    let page = read(&mut state, json!({"range": {"offset": 0, "bytes": 65_536}}));
+    assert_eq!(page["patch"], whole["patch"]);
+    assert_eq!(page["range"]["total"], whole["patch_bytes"]);
+    let empty = read(&mut state, json!({"paths": ["missing.txt"]}));
+    assert_eq!(empty["patch"], "");
+    assert_eq!(empty["stat"]["files_changed"], 0);
+    let all = read(&mut state, json!({"paths": []}));
+    assert_eq!(all["stat"]["files_changed"], 2);
+}
+
+#[test]
+fn git_show_rejects_invalid_path_filters() {
+    let (dir, repo) = init_repo();
+    let hash = git2::Repository::open(&repo)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap()
+        .to_string();
+    let mut state = git_gui_state(&dir, &repo);
+    let project_id = state.project_at(0).id.clone();
+    for paths in [
+        json!(["../outside"]),
+        json!(["/absolute"]),
+        json!([""]),
+        json!([1]),
+        json!("file"),
+        json!(vec!["a"; 51]),
+    ] {
+        let response = state.handle(req(
+            "git.show",
+            json!({"project_id": project_id, "hash": hash, "paths": paths}),
+        ));
+        assert_eq!(response["ok"], false, "{response}");
+        assert_eq!(response["error_code"], "invalid_params", "{response}");
+    }
+}

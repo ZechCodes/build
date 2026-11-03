@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.27.0",
+    "api_version": "3.28.0",
     "ack_confirm_methods": [],
     "capabilities": [
       "agent.add",
@@ -78,6 +78,7 @@
       "git.push",
       "git.refs",
       "git.show",
+      "git.showPaths",
       "git.stage",
       "git.stash",
       "git.stash_pop",
@@ -170,7 +171,10 @@
       "tasks.read_through",
       "tasks.reopen",
       "tasks.review.act",
+      "tasks.review.anchorCommit",
       "tasks.review.close",
+      "tasks.review.commit",
+      "tasks.review.commits",
       "tasks.review.complete",
       "tasks.review.diff",
       "tasks.review.get",
@@ -180,6 +184,7 @@
       "tasks.review.push",
       "tasks.review.refresh",
       "tasks.review.reopen",
+      "tasks.review.since",
       "tasks.review.snapshot",
       "tasks.review.update",
       "tasks.reviewComments",
@@ -324,6 +329,16 @@
       "tasks.listOrder",
       "tasks.listReadiness",
       "tasks.listExcludeAssignee"
+    ]
+  },
+  "review_commit_reads": {
+    "since": "3.28.0",
+    "capabilities": [
+      "tasks.review.commits",
+      "tasks.review.commit",
+      "tasks.review.since",
+      "git.showPaths",
+      "tasks.review.anchorCommit"
     ]
   }
 }

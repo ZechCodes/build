@@ -245,8 +245,14 @@ impl AppState {
             .find(|directory| directory.id == params.directory_id)
             .ok_or_else(|| format!("unknown directory_id: {}", params.directory_id))?
             .clone();
+        let earlier = crate::api::v1::reviews::earlier_directory(&review, &params)?;
         self.deferred_work = Some(DeferredWork::External(Box::new(move || {
-            let read = crate::reviews::read::read(&directory, &params.read)?;
+            let read = match earlier.as_ref() {
+                Some(earlier) => {
+                    crate::reviews::read::read_since(&directory, earlier, &params.read)?
+                }
+                None => crate::reviews::read::read(&directory, &params.read)?,
+            };
             serde_json::to_value(read).map_err(|error| error.to_string())
         })));
         Ok(Value::Null)

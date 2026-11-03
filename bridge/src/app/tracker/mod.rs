@@ -308,6 +308,15 @@ impl AppState {
             created_at: now.clone(),
             author_context: None,
         };
+        if let Some(check) = metadata.commit_check {
+            return self.defer_task_comment(comments::DeferredCommentWrite {
+                project_id,
+                comment,
+                expected_review_version: metadata.expected_review_version,
+                check,
+                post: None,
+            });
+        }
         let mut write = TaskWrite::by(Actor::User, task);
         write.expected_review_version = metadata.expected_review_version;
         write.comments.push(comment.clone());

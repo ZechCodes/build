@@ -272,6 +272,10 @@ pub(super) fn review_actions(fixture: &Fixture) -> Vec<BridgeAction> {
             task_id: fixture.task.clone(),
             snapshot_id: snapshot["id"].as_str().unwrap().into(),
             directory_id: snapshot["directories"][0]["id"].as_str().unwrap().into(),
+            commit: None,
+            from_snapshot_id: None,
+            limit: None,
+            cursor: None,
             mode: crate::reviews::read::ReviewReadMode::Blob,
             path: Some("README.md".into()),
             paths: Vec::new(),
@@ -434,6 +438,10 @@ async fn mcp_history_review_foreign_project_ids_match_unknown_refusals() {
             task_id: foreign_task,
             snapshot_id: "snapshot-foreign".into(),
             directory_id: "directory-foreign".into(),
+            commit: None,
+            from_snapshot_id: None,
+            limit: None,
+            cursor: None,
             mode: crate::reviews::read::ReviewReadMode::Changes,
             path: None,
             paths: Vec::new(),
@@ -719,4 +727,45 @@ async fn mcp_history_router_preserves_message_failure_tail_but_rejects_invalid_m
         assert_no_drain(&fixture, &before);
         assert_eq!(turns.len(), 2);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_since_review_reads_match_legacy_without_writer_turns() {
+    let fixture = Fixture::new();
+    let actions = review_actions(&fixture);
+    let (older, newer, directory) = {
+        let app = fixture.state.lock().unwrap();
+        let store = app.tracker_store().unwrap();
+        let review = store.load_review(&fixture.task).unwrap().unwrap();
+        let older = review.snapshots[0].id.clone();
+        let directory = review.snapshots[0].directories[0].id.clone();
+        let mut next = review.snapshots[0].clone();
+        next.id = "since-next-revision".into();
+        let newer = next.id.clone();
+        store
+            .save_review_snapshot(&fixture.task, &fixture.workspace, review.version, next)
+            .unwrap();
+        (older, newer, directory)
+    };
+    let action = BridgeAction::TrackerReadReview {
+        task_id: fixture.task.clone(),
+        snapshot_id: newer,
+        directory_id: directory,
+        mode: crate::reviews::read::ReviewReadMode::Since,
+        from_snapshot_id: Some(older),
+        commit: None,
+        limit: None,
+        cursor: None,
+        path: None,
+        paths: Vec::new(),
+        patch: true,
+        range: None,
+    };
+    let expected = legacy_review(&fixture, action.clone()).await;
+    assert_eq!(expected["ok"], true, "{expected}");
+    assert_eq!(expected["result"]["stat"]["files_changed"], 0);
+    let held = fixture.held_turns().await;
+    assert_eq!(fixture.reply(fixture.frame(action)).await, expected);
+    assert_eq!(held.len(), 2);
+    drop(actions);
 }

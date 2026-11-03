@@ -15,8 +15,9 @@ pub use branches::{
     branch_origin, checkout_ref, ref_list, BranchOrigin, CurrentRef, RefKind, RefListing, RefRow,
 };
 pub use history::{
-    log_page, show_commit, show_commit_page, truncate_at_utf8_boundary, LogHighlight,
-    GIT_BODY_MAX_BYTES, GIT_SHOW_MAX_PATCH_BYTES, GIT_STATUS_MAX_FILES, GIT_SUBJECT_MAX_BYTES,
+    log_page, show_commit, show_commit_filtered, show_commit_page, show_commit_page_filtered,
+    truncate_at_utf8_boundary, LogHighlight, GIT_BODY_MAX_BYTES, GIT_SHOW_MAX_PATCH_BYTES,
+    GIT_STATUS_MAX_FILES, GIT_SUBJECT_MAX_BYTES,
 };
 pub use mutations::{
     commit_staged, discard_paths, merge_abort, stage_paths, stash_pop, stash_push,

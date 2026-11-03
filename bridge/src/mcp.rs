@@ -484,6 +484,14 @@ pub enum BridgeAction {
         mode: crate::reviews::read::ReviewReadMode,
         path: Option<String>,
         paths: Vec<String>,
+        #[serde(default)]
+        commit: Option<String>,
+        #[serde(default)]
+        from_snapshot_id: Option<String>,
+        #[serde(default)]
+        limit: Option<u32>,
+        #[serde(default)]
+        cursor: Option<String>,
         patch: bool,
         range: Option<crate::body_page::FileRange>,
     },
@@ -1190,7 +1198,8 @@ impl DoneServer {
                         "anchor": {"type": "object", "description": "Line in a saved task review, including unchanged Files content.", "properties": {
                             "snapshot_id": {"type": "string"}, "directory_id": {"type": "string"},
                             "path": {"type": "string"}, "side": {"type": "string", "enum": ["old", "new"]},
-                            "line": {"type": "integer", "minimum": 1}
+                            "line": {"type": "integer", "minimum": 1},
+                            "commit": {"type": "string", "description": "Full commit OID in this saved directory revision’s base..head range."}
                         }, "required": ["snapshot_id", "directory_id", "path", "side", "line"]},
                         "reply_to": {"type": "string", "description": "Comment ID on this task to reply to."},
                         "opinion": {"type": "object", "description": "Opinion on one saved snapshot; any reviewer may give one.", "properties": {
@@ -3284,6 +3293,40 @@ mod tests {
                 "{params}"
             );
         }
+    }
+
+    #[test]
+    fn comment_task_anchor_commit_is_optional_and_advertised() {
+        for owner in ["agent-01H", "project-01H"] {
+            let tools = DoneServer::for_owner(owner).tools();
+            let tool = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "comment_task")
+                .unwrap();
+            let anchor = &tool["inputSchema"]["properties"]["anchor"];
+            assert_eq!(anchor["properties"]["commit"]["type"], "string");
+            assert!(!anchor["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("commit")));
+        }
+        let anchor = json!({"snapshot_id":"snap-1", "directory_id":"dir-1", "path":"README.md", "side":"new", "line":1,
+            "commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"});
+        let params = json!({"arguments":{"task_id":"task-1", "body":"line", "anchor":anchor}});
+        let action = comment_task_action(Some(&params)).unwrap();
+        let BridgeAction::TrackerReviewCommentTask {
+            anchor: Some(saved),
+            ..
+        } = action
+        else {
+            panic!("anchored comment expected");
+        };
+        assert_eq!(
+            serde_json::to_value(saved).unwrap()["commit"],
+            anchor["commit"]
+        );
     }
 
     #[test]

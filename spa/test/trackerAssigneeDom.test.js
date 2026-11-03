@@ -190,6 +190,7 @@ describe("the picker", () => {
     await choose("project_agent");
     press("[data-assign-go]");
     await flush();
+    await vi.waitFor(() => expect(onAssigned).toHaveBeenCalledTimes(1));
     expect(onAssigned.mock.calls[0][0].dispatch.workspace_id).toBe("ws-9");
     handle = null; // the dialog closed itself
   });

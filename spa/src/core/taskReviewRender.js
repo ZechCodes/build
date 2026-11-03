@@ -9,7 +9,7 @@ export const reviewDirectory = (snapshot, id) => snapshot?.directories.find((dir
 export const defaultReviewView = (directory) => directory?.status === "not_git" ? "files" : "changes";
 
 const legacyStatusHtml = (review) => `<span class="task-review-summary">${review?.state === "completed" ? "Completed" : "Open"}</span>`;
-const reviewTitleHtml = (task) => `<div class="task-review-title"><span>Review${task.number ? ` #${Number(task.number)}` : ""}</span><h1 class="task-page-title">${esc(task.title || "Review")}</h1></div>`;
+const reviewTitleHtml = (task, dedicated) => `<div class="task-review-title"><span>Review${task.number ? ` #${Number(task.number)}` : ""}</span><h1${dedicated ? ' class="task-page-title"' : ""}>${esc(task.title || "Review")}</h1></div>`;
 const sinceCountHtml = (count) => Number.isSafeInteger(count) ? `<span>${count} commits since your review</span>` : "";
 function workTaskHtml(review, task, scope) {
   const id = task.links?.parent_task_id || review?.for_task_id;
@@ -20,12 +20,12 @@ function headerActionsHtml(snapshot, support, isPr) {
   const refresh = support.get && !isPr ? '<button class="btn" data-review-refresh>Refresh</button>' : "";
   return `<div data-review-header-actions>${reviewer}${refresh}</div>`;
 }
-export function reviewHeadHtml(review, snapshot, support, { task = {}, scope = {}, sinceCount = null } = {}) {
+export function reviewHeadHtml(review, snapshot, support, { task = {}, scope = {}, sinceCount = null, dedicated = false } = {}) {
   const picker = snapshot ? snapshotPickerHtml(review, snapshot) : "";
   const isPr = review?.mode === "pull_request";
   const status = isPr ? reviewStatusHtml(review) : legacyStatusHtml(review);
   const facts = isPr ? reviewBranchesHtml(review, snapshot) : completionHtml(review);
-  return `${reviewTitleHtml(task)}<div class="task-review-head">${status}${picker}${sinceCountHtml(sinceCount)}${workTaskHtml(review, task, scope)}<button class="btn task-review-phone-commits" data-review-commits-open type="button" aria-expanded="false">Commits</button></div><div class="task-review-header-facts">${facts}</div>${headerActionsHtml(snapshot, support, isPr)}`;
+  return `${reviewTitleHtml(task, dedicated)}<div class="task-review-head">${status}${picker}${sinceCountHtml(sinceCount)}${workTaskHtml(review, task, scope)}<button class="btn task-review-phone-commits" data-review-commits-open type="button" aria-expanded="false">Commits</button></div><div class="task-review-header-facts">${facts}</div>${headerActionsHtml(snapshot, support, isPr)}`;
 }
 
 const completionHtml = (review) => review?.completion ? `<p class="task-review-completion">Completed: ${esc(review.completion.description)}</p>` : "";

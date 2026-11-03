@@ -15,6 +15,7 @@ import { wireDirectoryTabs } from "./workspaceDirectoryTabs.js";
 import { readTaskRecord, taskAddress } from "./trackerCache.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { resolveReviewFileReference } from "./reviewFileReference.js";
+import { hasReviewCommitPrefix, resolveReviewCommitReference } from "./reviewCommitReference.js";
 import { installReviewLinkNavigation } from "./reviewLinkNavigation.js";
 import { refreshFeed } from "./taskFeed.js";
 
@@ -34,6 +35,8 @@ export function mountTaskReviewPage(host, options) {
   let commits = null;
   let commitsReader = null;
   let commitsKey = "";
+  let commitPageCursor = null;
+  let commitPending = false;
   let disposed = false;
   let selectionGeneration = 0;
   let feedback = null;
@@ -56,8 +59,8 @@ export function mountTaskReviewPage(host, options) {
   const review = () => record?.review || null;
   const isPr = () => review()?.mode === "pull_request";
   const controlState = () => isPr() ? "" : review()?.state;
-  const snapshot = () => selection.fileRef
-    ? review()?.snapshots.find((row) => row.number === selection.revision) : reviewSnapshot(review(), selection.snapshotId);
+  const snapshot = () => selection.fileRef || hasReviewCommitPrefix(selection)
+    ? review()?.snapshots?.find((row) => row.number === selection.revision) : reviewSnapshot(review(), selection.snapshotId);
   const directory = () => reviewDirectory(snapshot(), selection.directoryId);
   const workspaces = () => options.workspaces?.() || [];
   const taskIdentities = () => options.task?.()?.identities;
@@ -70,7 +73,7 @@ export function mountTaskReviewPage(host, options) {
     selectionGeneration++;
     const next = switchReviewSelection(selection, changes, transition);
     const resolved = resolveFileReference(next);
-    selection = resolved.fileRef ? resolved : selectionForReview(review(), resolved) || resolved;
+    selection = normalizeSelection(resolved);
     if (!selection) return;
     paint();
     options.markReviewRoute?.({ name: "trackerTask", ...scope, review: routeReviewSelection(selection) });
@@ -181,9 +184,16 @@ export function mountTaskReviewPage(host, options) {
     commitsReader?.dispose();
     commitsReader = null;
     commits = null;
+    commitPageCursor = null;
     commitsKey = key;
     if (key) commitsReader = createReviewCommitsReader({ ...identity(), callRpc, generationOf: options.generationOf,
-      onChange: (value) => { commits = value; paintRail(); paintHead(snapshot()); } });
+      active: () => !disposed && commitsKey === key,
+      onChange: (value) => {
+        if (disposed || commitsKey !== key) return;
+        commits = value;
+        paint();
+        canonicalizeRoute();
+      } });
   }
 
   function comparison() {
@@ -215,14 +225,14 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function paintPane(saved, dir, view) {
-    const key = JSON.stringify([saved?.id, dir?.id, view, support.diff, comparison()]);
+    const key = JSON.stringify([saved?.id, dir?.id, view, support.diff, commitPending, comparison()]);
     if (key !== paneKey) {
       paneKey = key;
       panePlace = "";
       pane?.dispose();
       pane = null;
       node("content").innerHTML = "";
-      mountPane(saved, dir, view);
+      if (!commitPending && !selection.fileRef) mountPane(saved, dir, view);
       // Each pane restores the supplied path/anchor during its own cache read.
       // Starting a second open here can outlive a subsequent tree selection.
       panePlace = JSON.stringify([selection.path, selection.anchor]);
@@ -257,10 +267,31 @@ export function mountTaskReviewPage(host, options) {
     return result.selection;
   }
 
+  function normalizeSelection(target) {
+    if (target.fileRef || (hasReviewCommitPrefix(target) && !review()?.snapshots?.some((row) => row.number === Number(target.revision)))) return target;
+    return selectionForReview(review(), target) || target;
+  }
+
+  function resolveCommitReference() {
+    const result = resolveReviewCommitReference(selection, commits);
+    commitPending = Boolean(result.pending);
+    if (commitPending && commits?.next_cursor && commitPageCursor !== commits.next_cursor) {
+      commitPageCursor = commits.next_cursor;
+      void commitsReader?.more();
+    }
+    if (result.selection === selection) return;
+    selection = normalizeSelection(result.selection);
+    if (result.missing) notice = result.missing === "ambiguous"
+      ? "This commit prefix is ambiguous. Showing all changes for this revision."
+      : "This commit was not found. Showing all changes for this revision.";
+    options.markReviewRoute?.({ name: "trackerTask", ...scope, review: routeReviewSelection(selection) });
+    canonicalized = true;
+  }
+
   function paintContent() {
     host.hidden = !support.get && !review();
     selection = resolveFileReference(selection);
-    if (!selection.fileRef) selection = selectionForReview(review(), selection) || selection;
+    selection = normalizeSelection(selection);
     normalizeComparison();
     const saved = snapshot();
     const dir = directory();
@@ -272,6 +303,7 @@ export function mountTaskReviewPage(host, options) {
     paintFeedback(saved);
     paintDirectories(saved, dir);
     paintCommits(saved, dir);
+    resolveCommitReference();
     paintRail();
     host.querySelectorAll('[data-review-view]').forEach((button) => {
       button.setAttribute("aria-pressed", String(button.dataset.reviewView === view));
@@ -311,7 +343,7 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function canonicalizeRoute() {
-    if (canonicalized || !selection.revision || !review() || selection.fileRef) return;
+    if (canonicalized || !selection.revision || !review() || selection.fileRef || commitPending) return;
     canonicalized = true;
     const target = routeReviewSelection(selection);
     if (JSON.stringify(target) === JSON.stringify(routeReviewSelection(options.reviewRoute))) return;

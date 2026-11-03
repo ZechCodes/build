@@ -162,3 +162,146 @@ it("opens All changes with a short notice when a linked directory is unknown", a
   expect(App.route.review.fileRef).toBeUndefined();
   expect(App.route.review.path).toBeUndefined();
 });
+
+async function mountPrefix(commitPrefix, { revision = 1, rpc } = {}) {
+  const reviewRoute = { revision, mode: "commit", commit: commitPrefix, directoryId: directory.id,
+    path: paths[1], side: "new", line: 1 };
+  App.route = { ...route, review: reviewRoute };
+  history.replaceState(null, "", hashFromRoute(App.route));
+  const callRpc = rpc || vi.fn(() => new Promise(() => {}));
+  const markReviewRoute = vi.fn(markRoute);
+  page = mountTaskReviewPage(host, { ...scope, callRpc, markReviewRoute, reviewRoute });
+  await page.ready;
+  return { callRpc, markReviewRoute };
+}
+
+const shortCommitReads = (mock) => mock.mock.calls.filter(([method, params]) => method === "tasks.review.diff"
+  && params.mode === "commit" && params.commit.length < 40);
+
+it("lands a unique short commit link on the cached full-OID patch and canonicalizes in place", async () => {
+  const { callRpc } = await mountPrefix(commit.slice(0, 7));
+  await painted(() => host.querySelector("tr.task-review-anchor"));
+  expect(host.querySelector("[data-review-content]").textContent).toContain("const cached = true");
+  expect(App.route.review).toMatchObject({ commit, path: paths[1], side: "new", line: 1 });
+  expect(location.hash).toContain(`/commit/${commit}/`);
+  expect(shortCommitReads(callRpc)).toEqual([]);
+});
+
+it.each(["ambiguous", "missing"])("falls back to cached All changes when a short commit is %s", async (reason) => {
+  await writeCached(reviewCommitsAddress(identity), { commits: reason === "ambiguous"
+    ? [{ oid: commit }, { oid: `${commit.slice(0, 7)}${"3".repeat(33)}` }] : [{ oid: "3".repeat(40) }] });
+  const { callRpc } = await mountPrefix(commit.slice(0, 7));
+  await painted(() => host.querySelector("[data-review-error]")?.textContent.includes("Showing all changes"));
+  expect(App.route.review.mode).toBe("all");
+  expect(host.querySelector("[data-review-error]").textContent).toContain(reason === "ambiguous" ? "ambiguous" : "not found");
+  expect(shortCommitReads(callRpc)).toEqual([]);
+});
+
+it("defers a commit prefix until its selected revision and cached commits arrive", async () => {
+  await deleteCached([reviewAddress(scope), reviewCommitsAddress(identity)]);
+  const { callRpc } = await mountPrefix(commit.slice(0, 7));
+  expect(host.querySelector(".task-review-changes")).toBeNull();
+  expect(App.route.review.commit).toBe(commit.slice(0, 7));
+  await writeReviewRecord(scope, saved, 1);
+  await page.whenPainted();
+  expect(host.querySelector(".task-review-changes")).toBeNull();
+  await writeCached(reviewCommitsAddress(identity), { commits: [{ oid: commit }] });
+  await painted(() => host.querySelector("tr.task-review-anchor"));
+  expect(App.route.review.commit).toBe(commit);
+  expect(shortCommitReads(callRpc)).toEqual([]);
+});
+
+it("waits for the complete commit list before treating a prefix as unique", async () => {
+  await writeCached(reviewCommitsAddress(identity), { commits: [{ oid: commit }], commits_truncated: true, next_cursor: "page-2" });
+  const { callRpc } = await mountPrefix(commit.slice(0, 7));
+  expect(host.querySelector(".task-review-changes")).toBeNull();
+  expect(App.route.review.commit).toBe(commit.slice(0, 7));
+  await writeCached(reviewCommitsAddress(identity), { commits: [{ oid: commit }], commits_truncated: false });
+  await painted(() => host.querySelector("tr.task-review-anchor"));
+  expect(App.route.review.commit).toBe(commit);
+  expect(shortCommitReads(callRpc)).toEqual([]);
+});
+
+it("keeps a missing requested revision pending instead of resolving against the latest cached revision", async () => {
+  const { callRpc } = await mountPrefix(commit.slice(0, 7), { revision: 2 });
+  expect(host.querySelector(".task-review-changes")).toBeNull();
+  expect(App.route.review.revision).toBe(2);
+  expect(App.route.review.commit).toBe(commit.slice(0, 7));
+  const next = { ...snapshot, id: "snapshot-later", number: 2 };
+  const later = { ...identity, snapshot: next };
+  const comparison = { mode: "commit", commit };
+  await writeCached(reviewCommitsAddress(later), { commits: [{ oid: commit }] });
+  await writeCached(reviewDiffAddress(later, comparison), { files: [{ path: paths[1], content_key: paths[1] }] });
+  await writeCached(reviewDiffAddress(later, comparison, paths[1]), (await readCached(reviewDiffAddress(identity, comparison, paths[1]))).value);
+  await writeReviewRecord(scope, { ...saved, version: 2, snapshots: [...saved.snapshots, next] }, 2);
+  await painted(() => host.querySelector("tr.task-review-anchor"));
+  expect(App.route.review).toMatchObject({ revision: 2, commit });
+  expect(shortCommitReads(callRpc)).toEqual([]);
+});
+
+it("canonicalizes a prefix followed within an already mounted review", async () => {
+  const { callRpc, markReviewRoute } = await mount({ revision: 1, mode: "all", directoryId: directory.id, path: paths[0] });
+  const header = host.querySelector(".task-review-header");
+  const link = document.createElement("a");
+  link.className = "md-ref";
+  link.href = hashFromRoute({ ...route, review: { revision: 1, mode: "commit", commit: commit.slice(0, 7),
+    directoryId: directory.id, path: paths[1], side: "new", line: 1 } });
+  document.body.append(link);
+  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  await painted(() => host.querySelector("tr.task-review-anchor"));
+  expect(App.route.review.commit).toBe(commit);
+  expect(markReviewRoute.mock.calls.at(-1)[0].review.commit).toBe(commit);
+  expect(host.querySelector(".task-review-header")).toBe(header);
+  expect(shortCommitReads(callRpc)).toEqual([]);
+  link.remove();
+});
+
+it("does not apply a deferred prefix from a directory after the reader switches", async () => {
+  await deleteCached([reviewCommitsAddress(identity)]);
+  const otherDirectory = { ...directory, id: "other-directory", name: "Other" };
+  await writeReviewRecord(scope, { ...saved, version: 2, snapshots: [{ ...snapshot, directories: [directory, otherDirectory] }] }, 2);
+  const { callRpc } = await mountPrefix(commit.slice(0, 7));
+  expect(host.querySelector(".task-review-changes")).toBeNull();
+  host.querySelector('[data-directory="other-directory"]').click();
+  const otherIdentity = { ...identity, directory: otherDirectory };
+  const otherCommit = `${commit.slice(0, 7)}${"4".repeat(33)}`;
+  await writeCached(reviewCommitsAddress(identity), { commits: [{ oid: commit }] });
+  expect(App.route.review.commit).toBe(commit.slice(0, 7));
+  await writeCached(reviewCommitsAddress(otherIdentity), { commits: [{ oid: otherCommit }] });
+  await vi.waitFor(() => expect(App.route.review.commit).toBe(otherCommit));
+  expect(App.route.review.directoryId).toBe(otherDirectory.id);
+  expect(callRpc.mock.calls.some(([method, params]) => method === "tasks.review.diff" && params.mode === "commit"
+    && params.directory_id === directory.id)).toBe(false);
+  expect(shortCommitReads(callRpc)).toEqual([]);
+});
+
+it("loads later commit pages to resolve a prefix beyond the first page", async () => {
+  await deleteCached([reviewCommitsAddress(identity)]);
+  const callRpc = vi.fn((method, params) => {
+    if (method !== "tasks.review.diff" || params.mode !== "commits") return new Promise(() => {});
+    if (!params.cursor) return Promise.resolve({ commits: [{ oid: "3".repeat(40), subject: "First page" }], next_cursor: "second-page", commits_truncated: true });
+    return Promise.resolve({ commits: [{ oid: commit, subject: "Later commit" }], commits_truncated: false });
+  });
+  await mountPrefix(commit.slice(0, 7), { rpc: callRpc });
+  await painted(() => host.querySelector("tr.task-review-anchor"));
+  expect(App.route.review.commit).toBe(commit);
+  expect(host.querySelector("[data-review-content]").textContent).toContain("const cached = true");
+  expect(callRpc.mock.calls.filter(([, params]) => params?.mode === "commits").map(([, params]) => params.cursor || null))
+    .toEqual([null, "second-page"]);
+  expect(shortCommitReads(callRpc)).toEqual([]);
+});
+
+it("does not retry an unchanged failed commit page while resolving a prefix", async () => {
+  await writeCached(reviewCommitsAddress(identity), { commits: [{ oid: "3".repeat(40) }], next_cursor: "unavailable-page", commits_truncated: true });
+  const callRpc = vi.fn((method, params) => {
+    if (method === "tasks.review.diff" && params.mode === "commits" && params.cursor) return Promise.reject(new Error("Page unavailable"));
+    return new Promise(() => {});
+  });
+  await mountPrefix(commit.slice(0, 7), { rpc: callRpc });
+  await painted(() => host.querySelector("[data-review-rail]")?.textContent.includes("Page unavailable"));
+  page.feedMoved();
+  page.feedMoved();
+  expect(callRpc.mock.calls.filter(([, params]) => params?.cursor === "unavailable-page")).toHaveLength(1);
+  expect(App.route.review.commit).toBe(commit.slice(0, 7));
+  expect(shortCommitReads(callRpc)).toEqual([]);
+});

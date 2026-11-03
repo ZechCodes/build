@@ -40,7 +40,7 @@ async function mountReviewLinks(page, basePath) {
       reviews: { [projectKey]: { [scope.taskId]: saved } },
     });
     document.querySelector("#references").innerHTML = markdown.markdownHtml(
-      `**Review a precise change:** [[#969:r1:commit/${commit}:${directory.id}:${path}#L2]]\n\n**Compare the removed line:** [[#969:r1:all:${path}#old-L1]]`, { place: scope },
+      `**Review a precise change:** [[#969:r1:commit/${commit.slice(0, 8)}:${directory.id}:${path}#L2]]\n\n**Compare the removed line:** [[#969:r1:all:${path}#old-L1]]`, { place: scope },
     );
     for (const comparison of [{}, { mode: "commit", commit }]) {
       await local.writeCached(reads.reviewDiffAddress(identity, comparison), {
@@ -83,7 +83,7 @@ for (const { label, width } of [{ label: "desktop", width: 1440 }, { label: "pho
       await mountReviewLinks(page, basePath);
       expect(await page.locator("#references a.md-ref").count()).toBe(2);
       const href = await page.locator("#references a.md-ref").first().getAttribute("href");
-      expect(href).toContain(`/review/r1/commit/${commit}/dir-api/${path}?side=new&line=2`);
+      expect(href).toContain(`/review/r1/commit/${commit.slice(0, 8)}/dir-api/${path}?side=new&line=2`);
       await assertNoOverflow(page);
       await captureLayout(page, `diff-link-review-rendered-${label}.png`);
       await page.evaluate(() => { window.__requests = []; window.__reviewHeader = document.querySelector(".task-review-header"); });

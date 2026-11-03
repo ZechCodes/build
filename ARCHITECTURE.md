@@ -3804,6 +3804,12 @@ when the record arrives and canonicalizes to the normal directory/path URL. An
 unknown directory opens that revision’s All changes view with a short file-not-found
 notice. The reference index observes saved review metadata changes; known tasks
 retain clickable review references before that metadata arrives.
+Abbreviated review commit SHAs resolve against the selected revision and
+directory's cached commit list before reading a diff or selecting a patch cache
+key. A unique match from a complete list becomes the full OID in the canonical
+URL through `markRoute`; the message text remains unchanged. Missing metadata
+or a partial commit list keeps resolution pending. Ambiguous or missing matches
+open All changes with a notice.
 Both side anchors work in review links. References to the mounted task review
 select and reveal in place through `markRoute`, keeping the task page mounted.
 

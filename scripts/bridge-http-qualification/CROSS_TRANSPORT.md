@@ -20,16 +20,19 @@ Each test states its pass criterion in its doc comment:
 | Reservation drop order | A synchronized blocked family cleanup cannot expose returned pool permits first; no sleep or scheduling race decides this assertion |
 | Stalled revocation | All 32 pending writers end within 25 ms of local authority invalidation, alongside teardown of all four RTC carriers |
 | Idle revocation | An already waiting stream must end within the same 25 ms without another event or heartbeat |
+| Cleanup reentry | Reaper notification can synchronously re-enter cleanup without a registry-lock deadlock; the body then closes and returns its reservation |
 | Composed drain | HTTP shutdown plus RTC carrier close and the production dedicated-runtime stop refuses old/new HTTP openings and old carrier traffic, cancels fresh RTC admission on the stopped driver, joins every stream task within 5 s, fences in-flight output and returns both pools |
 
-The idle-revocation assertion intentionally retains the task's 25 ms requirement
-and runs the mounted production reaper. Its one-second interval cannot establish
-a 25 ms cleanup guarantee. An initial body-only probe observed the separate 15 s
-heartbeat wake; the final acceptance probe includes mounted session cleanup and
-all 32 streams. The 25 ms socket authority timer applies to pending writes. No
-threshold is enlarged to turn this test green. The scripted authority
-invalidation measures **local fences**, not hosted revocation propagation
-latency; carrier closure is supplied explicitly.
+The idle-revocation assertion retains the task's 25 ms requirement. It first
+measured 1 s mounted cleanup (15 s for the earlier body-only probe). The contained
+HTTP fix gives the body an independent 25 ms authority tick and reaps expired
+sessions when the body finishes. All 32 idle streams/session entries now end in
+25 ms. The ordinary reaper interval and healthy 15 s heartbeat, 10 s stalled-write
+deadline and 25 ms socket check remain unchanged. Reaped bindings close outside
+the registry mutex; a deliberately reentrant notification tests that handoff
+under an external real-time watchdog. The scripted authority invalidation
+measures **local fences**, not hosted revocation propagation latency; carrier
+closure is supplied explicitly.
 
 Use these environment settings for every Rust command:
 
@@ -41,10 +44,10 @@ nice -n 10 cargo test --manifest-path bridge/Cargo.toml --lib cross_transport --
 nice -n 10 cargo test --manifest-path bridge/Cargo.toml --lib buffer_reservation_releases_family
 ```
 
-`scripts/bridge-cross-transport-controls.sh` serially runs eight negative controls:
+`scripts/bridge-cross-transport-controls.sh` serially runs ten negative controls:
 carrier admission, family admission, byte-pool charging, call cancellation,
 reservation field drop order, authority recheck, HTTP shutdown retirement and
-WebRTC driver shutdown. Each
+WebRTC driver shutdown, the idle wake and reentrant registry locking. Each
 copies exactly one source file, changes the mechanism, requires an executed
 test failure (exit 101, not a compile error), restores the copy under an EXIT
 trap and verifies it with `cmp`. Each control has an independent `timeout 900`.

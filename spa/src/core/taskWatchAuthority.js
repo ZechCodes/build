@@ -5,7 +5,7 @@ import { watchIntentBinding, withTaskWatchIntent, sameWatchIntent, reconcileTask
 import { withTaskWatchIntentNote } from "./taskContentAuthority.js";
 import { randomToken } from "./idbRecords.js";
 import { nextTaskReadTicket, readsAddress, withWritten, TASK_CONTENT_GENERATION_ADDRESS,
-  taskContentScopeAddress, taskWatchControlAddress, initialTaskWatchControl } from "./taskReadOrder.js";
+  taskContentScopeAddress, taskWatchControlAddress, initialTaskWatchControl, taskWatchControlUncertain } from "./taskReadOrder.js";
 export { taskWatchControlAddress };
 import { TASK_WATCH_CACHE, TASK_FAMILY_CACHE } from "./taskWatchFacts.js";
 export { TASK_WATCH_CACHE, TASK_FAMILY_CACHE };
@@ -61,7 +61,7 @@ export async function readTaskWatchState(scope) {
     watchEpoch: valid ? control.watchRetirementEpoch : null,
     pendingGeneration: valid ? control.pendingGeneration : null,
     controlGeneration: valid ? control.generation : null,
-    uncertain: !valid || !validBlindEpoch(control) || control.uncertain !== false,
+    uncertain: !valid || taskWatchControlUncertain(control),
     eligible: valid && validBlindEpoch(control) && control.uncertain === false && control.pendingCount === 0 };
 }
 
@@ -171,7 +171,7 @@ const currentOwnerData = (owner, context) => owner.storeGeneration === context.s
 const matchingBlindEpoch = (owner, control) => validBlindEpoch(owner) && owner.blindRetirementEpoch === control.blindRetirementEpoch;
 const settledWatchContext = (context, control) => ({ ...context, watchGeneration: control.generation,
   watchRetirementEpoch: control.watchRetirementEpoch, watchPendingCount: control.pendingCount,
-  watchUncertain: control.uncertain !== false || !validBlindEpoch(control) });
+  watchUncertain: taskWatchControlUncertain(control) });
 
 // Admission epochs also rotate for other owners. Only a verified own reply
 // can use the independently captured blind fence; ordinary reads cannot.

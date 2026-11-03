@@ -47,10 +47,20 @@ it("protects an in-flight watch intent and admits the next covering read after s
   const owner = await watch.beginTaskWatchMutation(scope, taskId, { watched: false, metadataOnly: true });
   expect(owner).not.toBeNull();
   expect(await publish(full({ unread_count: 9 }))).toMatchObject({ watch_uncertain: true });
-  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, eligible: false });
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 1, uncertain: true, eligible: false });
   await watch.settleTaskWatchMutation(owner, { rollback: true });
   expect(await publish(full({ read_through: "tc-20", unread_count: 0 }))).toMatchObject({
     watch_uncertain: false, needs_unread_refresh: false, task: { watched: true, unread_count: 0 } });
+});
+
+it("uses an exact successful watch acknowledgment to resolve its pending uncertainty", async () => {
+  await publish(full());
+  const owner = await watch.beginTaskWatchMutation(scope, taskId, { watched: false, metadataOnly: true });
+  const contentRead = await content.captureTaskContentRead(scope);
+  expect(await watch.settleTaskWatchMutation(owner, { contentRead, answer: { task: full({ watched: false }) } })).toBe(true);
+  expect(await watch.readTaskWatchState(scope)).toMatchObject({ pendingCount: 0, uncertain: false, eligible: true });
+  expect((await cache.readCanonicalCached(summaries.summaryAddress(scope, taskId))).value).toMatchObject({
+    watch_uncertain: false, task: { watched: false } });
 });
 
 it("admits an omitted native false watch value from a covering summary page", async () => {

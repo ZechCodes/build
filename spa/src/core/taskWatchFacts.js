@@ -97,7 +97,7 @@ function observedSource(scope, task, contentRead, context, acknowledged) {
   const ticket = contentRead.ticket;
   const normalized = task.watched === false ? clearWatchDependents(task) : task;
   const proof = { ...sourceIdentity(scope, task, context, contentRead.readOrder),
-    source: acknowledged ? "ack" : "read", uncertain: ticket.watchUncertain !== false || context.watchUncertain !== false,
+    source: acknowledged ? "ack" : "read", uncertain: (!acknowledged && ticket.watchUncertain !== false) || context.watchUncertain !== false,
     lineage: lineage(normalized) };
   return { task: normalized, proof, observed: true };
 }

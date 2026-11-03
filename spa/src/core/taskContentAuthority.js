@@ -4,7 +4,7 @@ import { mergeCachedRecordsTogether } from "./localCache.js";
 import { randomToken } from "./idbRecords.js";
 import { taskMutationsPending, taskMutationsPendingFor } from "./taskMutationFence.js";
 import { nextTaskRead, nextTaskReadTicket, TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress, taskWatchControlAddress, initialTaskWatchControl,
-  taskWatchIntentAddress } from "./taskReadOrder.js";
+  taskWatchIntentAddress, taskWatchControlUncertain } from "./taskReadOrder.js";
 export { TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress, taskWatchControlAddress };
 export const TASK_CONTENT_CACHE = "__task_content_cache";
 const OBSERVATION = "__task_content_observation";
@@ -112,7 +112,7 @@ function contentContext([store, domain, control]) {
   return { storeGeneration: store?.value?.generation, scopeGeneration: held.generation, retirementEpoch: held.retirementEpoch,
     watchGeneration: watch.generation, watchRetirementEpoch: watch.watchRetirementEpoch,
     watchPendingGeneration: watch.pendingGeneration,
-    watchPendingCount: watch.pendingCount ?? null, watchUncertain: watch.uncertain !== false || !watch.blindRetirementEpoch };
+    watchPendingCount: watch.pendingCount ?? null, watchUncertain: taskWatchControlUncertain(watch) };
 }
 
 function retirementDomain(held) {

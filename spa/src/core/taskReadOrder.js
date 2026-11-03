@@ -69,6 +69,9 @@ function sharedContentAllocation(count, store, domain, watch) {
 export const initialTaskWatchControl = () => ({ generation: randomToken(), pendingGeneration: randomToken(),
   watchRetirementEpoch: randomToken(), blindRetirementEpoch: randomToken(), pendingCount: 0, uncertain: false });
 
+export const taskWatchControlUncertain = (control) => control?.uncertain !== false
+  || control?.pendingCount !== 0 || !control?.blindRetirementEpoch;
+
 function contentAllocationValues(readOrder, store, domain, control) {
   const generation = store?.value?.generation || randomToken();
   const scopeValue = contentScopeValue(domain?.value), watch = control?.value || initialTaskWatchControl();
@@ -86,7 +89,7 @@ function contentScopeTicket(readOrder, generation, scope, watch) {
     watchRetirementEpoch: watch.watchRetirementEpoch, watchPendingGeneration: watch.pendingGeneration,
     watchBlindRetirementEpoch: watch.blindRetirementEpoch,
     watchPending: !Number.isSafeInteger(watch.pendingCount) || watch.pendingCount !== 0,
-    watchUncertain: watch.uncertain !== false || !watch.blindRetirementEpoch };
+    watchUncertain: taskWatchControlUncertain(watch) };
 }
 
 /** Where the note of what each read had the say on under `address` lives. */

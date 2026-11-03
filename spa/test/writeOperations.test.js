@@ -588,6 +588,15 @@ describe("offline review batches", () => {
     await service.close();
   });
 
+  it("never transports descendants of an expired failed predecessor", async () => {
+    const { service, cache, session, bind } = setup(async (method, params) => ({ operations: params.operation_ids.map(operation_id => ({ operation_id, state: "not_found" })) }));
+    await service.enqueueBatch(batch);
+    await cache.update("note", row => ({ ...row, state: "result_expired", acknowledged: true, outcome: "failed", effect: "unapplied", journalIncarnation: "journal-A", transportAttempted: true }));
+    await bind();
+    expect(session.callRaw.mock.calls.filter(([method]) => method === "tasks.comment")).toHaveLength(0);
+    await service.close();
+  });
+
   it("never sends a partially persisted batch and keeps unsupported offline verbs refused", async () => {
     const { service, cache, session, bind } = setup(async () => ({ operations: [] }));
     await expect(service.enqueueBatch([{ method: "tasks.update", params: {} }])).rejects.toMatchObject({ error_code: "write_unsupported" });

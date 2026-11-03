@@ -221,7 +221,7 @@ export function createWriteOperationService(options) {
   async function predecessorsAccepted(row) {
     for (const id of row.after || []) {
       const predecessor = await cache.get(id);
-      if (!predecessor?.acknowledged || predecessor.state === "failed" || predecessor.unresolved) return false;
+      if (!predecessor?.acknowledged || ["failed", "result_expired"].includes(predecessor.state) || predecessor.unresolved) return false;
     }
     return true;
   }

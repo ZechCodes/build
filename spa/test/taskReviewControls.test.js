@@ -29,81 +29,14 @@ it("renders cached PR status read-only even when legacy mutations are advertised
   expect(document.querySelector('[data-review-read-only]').textContent).toContain("Changes requested");
 });
 
-it("keeps explicit snapshot-mode reviews editable on a PR-capable device", () => {
-  mount({ mutate: vi.fn() }, { review: { ...review, mode: "snapshot" },
-    support: { snapshot: true, complete: true, pullRequests: true, open: true } });
-  expect(document.querySelector('[data-review-save]')).not.toBeNull();
-  expect(document.querySelector('[data-review-update]').textContent).toBe("Save revision");
-  expect(document.querySelector('[data-review-complete]')).not.toBeNull();
-  expect(document.querySelector('[data-review-read-only]')).toBeNull();
-});
-
-it("keeps a saved base override on the next snapshot update", async () => {
-  const repository = { mutate: vi.fn(async () => {}) };
-  mount(repository);
-  const field = document.querySelector('[data-review-base="dir-api"]');
-  expect(field.value).toBe(""); // Configured bases still use Automatic.
-  field.value = "release/candidate"; field.dispatchEvent(new Event("input"));
-  document.querySelector('[data-review-save]').dispatchEvent(new Event("submit", { cancelable: true }));
-  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledTimes(1));
-
-  const snapshot = { ...options.snapshot, id: "snapshot-2", number: 2,
-    directories: options.snapshot.directories.map((directory) => directory.id === "dir-api"
-      ? { ...directory, base: { ...directory.base, kind: "override", name: "release/candidate" } } : directory) };
-  controls.dispose();
-  mount(repository, { snapshot, review: { ...review, version: 2, snapshots: [...review.snapshots, snapshot] } });
-  expect(document.querySelector('[data-review-base="dir-api"]').value).toBe("release/candidate");
-  document.querySelector('[data-review-save]').dispatchEvent(new Event("submit", { cancelable: true }));
-  await vi.waitFor(() => expect(repository.mutate).toHaveBeenLastCalledWith("snapshot", {
-    workspace_id: "workspace-1", expected_version: 2, base_overrides: { "dir-api": "release/candidate" },
-  }));
-
-  const savedField = document.querySelector('[data-review-base="dir-api"]');
-  savedField.value = ""; savedField.dispatchEvent(new Event("input"));
-  document.querySelector('[data-review-save]').dispatchEvent(new Event("submit", { cancelable: true }));
-  await vi.waitFor(() => expect(repository.mutate).toHaveBeenLastCalledWith("snapshot", {
-    workspace_id: "workspace-1", expected_version: 2, base_overrides: {},
-  }));
-});
-
-it("sends one snapshot with exact per-directory base overrides and preserves a stale draft", async () => {
-  let reject;
-  const repository = { mutate: vi.fn(() => new Promise((_, fail) => { reject = fail; })) };
-  mount(repository);
-  const field = document.querySelector('[data-review-base="dir-api"]');
-  field.value = "release/candidate"; field.dispatchEvent(new Event("input"));
-  const form = document.querySelector('[data-review-save]');
-  form.dispatchEvent(new Event("submit", { cancelable: true }));
-  form.dispatchEvent(new Event("submit", { cancelable: true }));
-  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledTimes(1));
-  expect(repository.mutate).toHaveBeenCalledWith("snapshot", { workspace_id: "workspace-1", expected_version: 1, base_overrides: { "dir-api": "release/candidate" } });
-  reject(Object.assign(new Error("Review changed; refresh and try again"), { code: "stale_version" }));
-  await vi.waitFor(() => expect(document.querySelector('[data-review-action-error]').textContent).toContain("Review changed"));
-  controls.dispose(); mount(repository);
-  await vi.waitFor(() => expect(document.querySelector('[data-review-base="dir-api"]').value).toBe("release/candidate"));
-});
-
-it("does not send old directory overrides when replacing the review workspace", async () => {
-  const repository = { mutate: vi.fn(async () => {}) };
-  mount(repository, { workspaces: [{ id: "workspace-2", name: "Other source" }] });
-  const field = document.querySelector('[data-review-base="dir-api"]');
-  field.value = "topic"; field.dispatchEvent(new Event("input"));
-  const workspace = document.querySelector('[data-review-workspace]');
-  workspace.value = "workspace-2"; workspace.dispatchEvent(new Event("change"));
-  document.querySelector('[data-review-save]').dispatchEvent(new Event("submit", { cancelable: true }));
-  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("snapshot", { workspace_id: "workspace-2", base_overrides: {}, expected_version: 1 }));
-});
-
-it("disables ignored base fields for another workspace and restores them when switching back", () => {
-  mount({ mutate: vi.fn() }, { workspaces: [{ id: "workspace-2", name: "Other source" }] });
-  const field = document.querySelector('[data-review-base="dir-api"]');
-  field.value = "release/candidate"; field.dispatchEvent(new Event("input"));
-  const workspace = document.querySelector('[data-review-workspace]');
-  workspace.value = "workspace-2"; workspace.dispatchEvent(new Event("change"));
-  expect([...document.querySelectorAll('[data-review-base]')].every((input) => input.disabled)).toBe(true);
-  workspace.value = "workspace-1"; workspace.dispatchEvent(new Event("change"));
-  expect(field.disabled).toBe(false);
-  expect(field.value).toBe("release/candidate");
+it.each([null, { ...review, mode: "snapshot" }])("never offers task-side snapshot creation or updates: %j", (saved) => {
+  const repository = { mutate: vi.fn() };
+  mount(repository, { review: saved, support: { snapshot: true, complete: true, pullRequests: true, open: true } });
+  expect(document.querySelector('[data-review-save]')).toBeNull();
+  expect(document.querySelector('[data-review-snapshot-form]')).toBeNull();
+  expect(document.querySelector('[data-review-workspace]')).toBeNull();
+  expect(Boolean(document.querySelector('[data-review-complete]'))).toBe(Boolean(saved));
+  expect(repository.mutate).not.toHaveBeenCalled();
 });
 
 it("completes with the user's description only and leaves completed review history readable", async () => {

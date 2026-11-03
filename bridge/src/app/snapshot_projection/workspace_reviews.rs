@@ -6,10 +6,40 @@ use crate::store::Store;
 
 pub(in crate::app) struct WorkspaceReviewObservation {
     version: u64,
+    /// A task-link write can update this field without refreshing SQL status.
+    /// Keep its generation separate so it cannot fence out a prepared status.
+    parent_version: u64,
     pub(super) value: Value,
 }
 
 impl WorkspaceReviewObservation {
+    pub(in crate::app) fn parent_task_id(&self, review_task: &str) -> Option<&str> {
+        let summary = self.value.get("active_review")?;
+        if summary.get("task_id")?.as_str()? != review_task {
+            return None;
+        }
+        summary.get("parent_task_id")?.as_str()
+    }
+
+    fn set_parent(&mut self, parent: Option<&str>) {
+        let active = self.value["active_review"]
+            .as_object_mut()
+            .expect("accepted review summary");
+        active.remove("parent_task_id");
+        if let Some(parent) = parent {
+            active.insert("parent_task_id".into(), json!(parent));
+        }
+    }
+
+    fn preserve_newer_parent(&mut self, current: &Self) {
+        if self.value["active_review"]["task_id"] == current.value["active_review"]["task_id"]
+            && current.parent_version > self.parent_version
+        {
+            self.set_parent(current.value["active_review"]["parent_task_id"].as_str());
+            self.parent_version = current.parent_version;
+        }
+    }
+
     /// Allocate the observation generation after the service's durable write,
     /// before querying SQL. Later producers fence this result at installation.
     pub(in crate::app) fn load(
@@ -27,7 +57,11 @@ impl WorkspaceReviewObservation {
         {
             value["active_review"] = json!(summary);
         }
-        Ok(Self { version, value })
+        Ok(Self {
+            version,
+            parent_version: version,
+            value,
+        })
     }
 }
 
@@ -35,18 +69,19 @@ impl AppState {
     pub(in crate::app) fn install_workspace_review_observation(
         &mut self,
         id: &str,
-        observed: WorkspaceReviewObservation,
+        mut observed: WorkspaceReviewObservation,
     ) {
         if self.workspaces.get(id).is_none() {
             return;
         }
         let observations = &mut self.snapshot_observations.workspace_reviews;
-        if observations
-            .get(id)
-            .is_none_or(|current| current.version < observed.version)
-        {
-            observations.insert(id.to_owned(), observed);
+        if let Some(current) = observations.get(id) {
+            if current.version >= observed.version {
+                return;
+            }
+            observed.preserve_newer_parent(current);
         }
+        observations.insert(id.to_owned(), observed);
     }
 
     #[cfg(test)]
@@ -55,6 +90,30 @@ impl AppState {
             Ok(observed) => self.install_workspace_review_observation(id, observed),
             Err(error) => eprintln!("workspace review observation {id}: {error}"),
         }
+    }
+
+    /// A task-link write already carries its canonical parent. Update only
+    /// that field in the accepted workspace observation, without a SQL read.
+    pub(in crate::app) fn install_workspace_review_parent(
+        &mut self,
+        summary: &crate::reviews::records::ReviewSummary,
+    ) -> bool {
+        let Some(current) = self
+            .snapshot_observations
+            .workspace_reviews
+            .get_mut(&summary.workspace_id)
+        else {
+            return false;
+        };
+        if current.value["active_review"]["task_id"] != summary.task_id
+            || current.value["active_review"]["parent_task_id"].as_str()
+                == summary.parent_task_id.as_deref()
+        {
+            return false;
+        }
+        current.set_parent(summary.parent_task_id.as_deref());
+        current.parent_version = self.read_view.next_version();
+        true
     }
 
     pub(in crate::app) fn snapshot_workspace_review(&self, id: &str, row: &mut Value) {

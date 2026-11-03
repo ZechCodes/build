@@ -18,6 +18,7 @@ use super::model::{
 };
 use super::records::Review;
 use super::{publication, receivers};
+use crate::api::v1::reviews::errors;
 use crate::store::Store;
 use crate::tracker::{Task, TaskEvent, TaskEventKind};
 use crate::workspace::Workspace;
@@ -97,7 +98,7 @@ pub fn open(
             &request.request_id,
             request.request.clone(),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(errors::opening_selection)?;
     if opening.state == ReviewOpeningState::Cancelled {
         return Err("conflict: review opening was cancelled; use a new request_id".into());
     }

@@ -8,7 +8,7 @@ const verbsByMethod = new Map(Object.entries(REVIEW_METHODS).map(([verb, method]
 
 export const NO_REVIEW_SUPPORT = Object.freeze({
   get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
-  commits: false, commit: false, since: false, anchorCommit: false,
+  commits: false, commit: false, since: false, anchorCommit: false, forTask: false, taskChoices: false, linkedTaskChoices: false,
   pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false,
 });
 export const reviewSupportAddress = (deviceId) => ({ deviceId, entityId: "", kind: "task-review-support" });
@@ -48,6 +48,12 @@ export function canReviewRead(support, params = {}) {
 
 const unsupportedOperation = () => new ApiError("unknown_method", "Update this device's bridge to use this review operation.");
 
+function supportedRequest(support, verb, params) {
+  if (!canReviewOperation(support, verb)) return false;
+  if (verb === "diff") return canReviewRead(support, params);
+  return verb !== "open" || !params?.for_task_id || support.forTask === true;
+}
+
 /** A cache-backed surface may hold an older greeting. Recheck the session's
  * compatible greeting at dispatch, passing the wire shape and result intact.
  * Load the dispatcher only when called so cache readers stay transport-free. */
@@ -58,8 +64,7 @@ export function reviewRpc(context, callRpc = (...asked) => context.rpc(...asked)
     const { whenGreeted } = await import("./deviceContexts.js");
     const request = await whenGreeted(context, () => {
       const support = context?.adapter?.capabilities?.reviews;
-      if (!canReviewOperation(support, verb)) throw unsupportedOperation();
-      if (verb === "diff" && !canReviewRead(support, asked[1])) throw unsupportedOperation();
+      if (!supportedRequest(support, verb, asked[1])) throw unsupportedOperation();
       return callRpc(...asked);
     });
     if (!request) throw new Error("This machine is unavailable.");

@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.28.0",
+    "api_version": "3.29.0",
     "ack_confirm_methods": [],
     "capabilities": [
       "agent.add",
@@ -177,6 +177,7 @@
       "tasks.review.commits",
       "tasks.review.complete",
       "tasks.review.diff",
+      "tasks.review.forTask",
       "tasks.review.get",
       "tasks.review.merge",
       "tasks.review.open",

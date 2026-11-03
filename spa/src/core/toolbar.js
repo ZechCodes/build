@@ -646,9 +646,10 @@ function workspaceReviewMenuEntry() {
   const support = reviewSupportFor(null, reviewSupport);
   const review = workspace.active_review;
   if (review?.task_id && review.workspace_id === workspace.id) {
-    return support.pullRequests && support.get ? reviewMenuEntry("View pull request", "Open this workspace’s task review", review.task_id) : null;
+    return support.pullRequests && support.get ? reviewMenuEntry("View review", "Open this workspace’s task review", review.task_id) : null;
   }
-  return support.open ? reviewMenuEntry("Open review", "Publish this workspace as a pull request") : null;
+  if (support.open) return reviewMenuEntry("Request review", "Create a review task for this workspace");
+  return support.pullRequests ? null : { html: '<p class="sub">Update the bridge to request reviews</p>' };
 }
 
 const reviewMenuEntry = (label, description, taskId = null) => ({

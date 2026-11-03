@@ -41,8 +41,9 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
 
 pub(super) fn tools() -> Vec<Value> {
     vec![
-        tool("open_review", "Open a PR task from a managed workspace in your project. Build creates dedicated branches and durable local receivers, publishes the committed heads, and records you as creator. Included Git directories use their configured base unless you select another local source branch; explicitly exclude any Git directory outside the PR. Non-Git directories stay live. Reuse request_id only for the identical opening to recover a lost response. An optional reviewer is dispatched after publication. Read the returned push instructions before your next push.", json!({
+        tool("open_review", "Open a PR task from a managed workspace in your project. Build creates dedicated branches and durable local receivers, publishes the committed heads, and records you as creator. Included Git directories use their configured base unless you select another local source branch; explicitly exclude any Git directory outside the PR. Non-Git directories stay live. Reuse request_id only for the identical opening to recover a lost response. An optional reviewer is the user or an agent of this project; agent reviewers are dispatched after publication. Optionally link this review to an open non-review work task with for_task_id. Read the returned push instructions before your next push.", json!({
             "workspace_id":string(),"request_id":string(),
+            "for_task_id":{"type":"string","minLength":1,"maxLength":200,"description":"An open non-review task in your project. The new review task links to it as its parent."},
             "title":{"type":"string","minLength":1,"description":"One nonempty line, at most 200 UTF-8 bytes."},
             "description":{"type":"string","description":"Task description, at most 32000 UTF-8 bytes."},
             "reviewer":{"oneOf":[
@@ -89,7 +90,8 @@ fn params<T: DeserializeOwned + Serialize>(params: Option<&Value>) -> Result<T, 
 
 pub(super) fn handle_call(id: &Value, name: &str, arguments: Option<&Value>) -> Option<Handled> {
     let action = match name {
-        "open_review" => params::<ReviewOpenParams>(arguments).and_then(|params| {
+        "open_review" => params::<ReviewOpenParams>(arguments).and_then(|mut params| {
+            params.for_task_id = params.for_task_id.map(|task_id| current_id(&task_id));
             params.validate()?;
             Ok(BridgeAction::TrackerOpenReview { params })
         }),

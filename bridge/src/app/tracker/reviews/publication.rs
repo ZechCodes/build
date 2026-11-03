@@ -105,7 +105,7 @@ impl AppState {
             )
         };
         params.validate().map_err(refusal)?;
-        let (project_id, review, workspace) = self
+        let (project_id, task, review, workspace) = self
             .review_publication_context(&params.task_id)
             .map_err(refusal)?;
         super::lifecycle::version(&review, params.expected_version)?;
@@ -125,7 +125,7 @@ impl AppState {
                 .collect(),
         };
         self.defer_publication(PublicationJob {
-            observation: ReviewInvalidation::new(self, &workspace.id),
+            observation: ReviewInvalidation::new(self, &review, &task),
             store: self.tracker_store()?.clone(),
             project_id,
             task_id: params.task_id,
@@ -151,7 +151,7 @@ impl AppState {
             )
         };
         params.validate().map_err(refusal)?;
-        let (project_id, review, workspace) = self
+        let (project_id, task, review, workspace) = self
             .review_publication_context(&params.task_id)
             .map_err(refusal)?;
         super::lifecycle::version(&review, params.expected_version)?;
@@ -169,7 +169,7 @@ impl AppState {
                 .collect(),
         };
         self.defer_publication(PublicationJob {
-            observation: ReviewInvalidation::new(self, &workspace.id),
+            observation: ReviewInvalidation::new(self, &review, &task),
             store: self.tracker_store()?.clone(),
             project_id,
             task_id: params.task_id,
@@ -196,8 +196,8 @@ impl AppState {
     fn review_publication_context(
         &mut self,
         task_id: &str,
-    ) -> Result<(String, Review, Workspace), String> {
-        let (project_id, _) = self.tracker_task(task_id)?;
+    ) -> Result<(String, crate::tracker::Task, Review, Workspace), String> {
+        let (project_id, task) = self.tracker_task(task_id)?;
         let review = self
             .tracker_store()?
             .load_review(task_id)
@@ -234,6 +234,6 @@ impl AppState {
             self.refuse_writers_while_reserved(&directory.path)?;
             self.refuse_writers_while_reserved(&binding.source_repository)?;
         }
-        Ok((project_id, review, workspace))
+        Ok((project_id, task, review, workspace))
     }
 }

@@ -17,10 +17,10 @@ async function mountWorkspaceReview(page, basePath, { published = false, rejecte
     review: "src/core/taskReviewCache.js", local: "src/core/localCache.js",
     directory: "src/core/directoryScope.js", model: "src/core/workspaceModel.js",
     motion: "src/core/motion.js",
-    drafts: "src/core/taskReviewDrafts.js", ui: "src/core/localUiStore.js",
+    tracker: "src/core/trackerCache.js", drafts: "src/core/taskReviewDrafts.js", ui: "src/core/localUiStore.js",
   }, basePath);
   await page.evaluate(async ({ opened, pushed, published, rejectedOpen }) => {
-    const { entry, support, review, local, directory, model } = window.__layoutModules;
+    const { entry, support, review, local, directory, model, tracker } = window.__layoutModules;
     const scope = { deviceId: "workspace-review-layout", projectId: "layout-project", workspaceId: "workspace-1" };
     const directories = opened.review.snapshots[0].directories.map((row) => ({ ...row, base_branch: "main", branch: "build/work" }));
     const workspace = { id: scope.workspaceId, workspace_id: scope.workspaceId, project_id: scope.projectId, name: "API and UI changes", directories };
@@ -38,7 +38,8 @@ async function mountWorkspaceReview(page, basePath, { published = false, rejecte
         refs: ["main", "release", row.branch].map((name) => ({ kind: "branch", full_ref: `refs/heads/${name}`, name })),
       });
     }
-    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, snapshot: true, pullRequests: true, open: true, push: true } });
+    await tracker.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [{ id: "work-task", number: 42, title: "API and UI changes", state: "open", links: { workspace_ids: [scope.workspaceId] } }] });
+    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, snapshot: true, pullRequests: true, open: true, push: true, forTask: true } });
     window.__reviewCalls = [];
     window.__reviewNavigations = [];
     window.__reviewScope = scope;
@@ -87,7 +88,7 @@ for (const { label, width, hasTouch } of sizes) {
     await withLayoutPage(async ({ page, basePath }) => {
       await mountWorkspaceReview(page, basePath);
       const open = page.locator("[data-workspace-review]");
-      expect(await open.textContent()).toContain("Open review");
+      expect(await open.textContent()).toContain("Request review");
       await expectFitsViewport(page);
       await captureLayout(page, `workspace-review-entry-${label}.png`);
       if (hasTouch) await open.tap();
@@ -100,6 +101,8 @@ for (const { label, width, hasTouch } of sizes) {
       expect(await page.evaluate(() => window.__reviewCalls)).toEqual([]);
       await page.locator("[data-review-title]").fill("Review API and UI changes");
       await page.locator("[data-review-description]").fill("Publish the committed API and UI changes.");
+      expect(await page.locator("#review-create-assignee").inputValue()).toBe("user");
+      expect(await page.locator("[data-review-for-task]").inputValue()).toBe("work-task");
       await page.locator("#review-create-assignee").selectOption("project_agent");
       await page.locator('[data-review-base="dir-api"]').fill("main");
       await page.locator('[data-review-base="dir-ui"]').fill("release");
@@ -123,20 +126,21 @@ for (const { label, width, hasTouch } of sizes) {
       const calls = await page.evaluate(() => window.__reviewCalls.filter((call) => call.method === "tasks.review.open"));
       expect(calls).toHaveLength(1);
       expect(calls[0].params).toMatchObject({ workspace_id: "workspace-1", title: "Review API and UI changes",
-        description: "Publish the committed API and UI changes.", reviewer: { kind: "project_agent" },
+        description: "Publish the committed API and UI changes.", reviewer: { kind: "project_agent" }, for_task_id: "work-task",
         bases: [{ directory_id: "dir-api", branch: "main" }, { directory_id: "dir-ui", branch: "release" }],
         excluded_git_directory_ids: ["dir-missing"] });
       expect(calls[0].params.request_id).toEqual(expect.any(String));
       expect(await page.locator("#review-entry").textContent()).toContain("review/1-api");
       await expectFitsViewport(page);
       await captureLayout(page, `workspace-review-created-${label}.png`);
-      await page.locator("[data-review-link]").click();
+      expect(await page.locator("[data-review-view]").textContent()).toBe("View review");
+      await page.locator("[data-review-view]").click();
       expect(await page.evaluate(() => window.__reviewNavigations)).toEqual([{ name: "trackerTask", deviceId: "workspace-review-layout", projectId: "layout-project", taskId: "task-1" }]);
       await page.evaluate(() => window.__workspaceReview.dispose());
     }, { width, height: 844, hasTouch });
   }, 60_000);
 
-  it(`keeps a rejected Open review draft editable and durable on ${label}`, async () => {
+  it(`keeps a rejected Request review draft editable and durable on ${label}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       await mountWorkspaceReview(page, basePath, { rejectedOpen: true });
       await page.locator("[data-workspace-review]").click();
@@ -163,7 +167,7 @@ for (const { label, width, hasTouch } of sizes) {
       await captureLayout(page, `workspace-review-rejected-${label}.png`);
       await page.locator("[data-review-title]").fill("Review revised API and UI changes");
       await page.locator("[data-review-description]").fill("Use the revised publication description.");
-      await page.locator("#review-create-assignee").selectOption("none");
+      await page.locator("#review-create-assignee").selectOption("user");
       await page.locator('[data-review-base="dir-api"]').fill("release");
       await page.waitForFunction(async () => {
         const { drafts, ui } = window.__layoutModules;
@@ -176,7 +180,7 @@ for (const { label, width, hasTouch } of sizes) {
       await page.locator("[data-review-title]").waitFor({ state: "visible" });
       expect(await page.locator("[data-review-title]").inputValue()).toBe("Review revised API and UI changes");
       expect(await page.locator("[data-review-description]").inputValue()).toBe("Use the revised publication description.");
-      expect(await page.locator("#review-create-assignee").inputValue()).toBe("none");
+      expect(await page.locator("#review-create-assignee").inputValue()).toBe("user");
       expect(await page.locator('[data-review-base="dir-api"]').inputValue()).toBe("release");
       expect(await page.locator('[data-review-base="dir-api"]').isEnabled()).toBe(true);
       expect(await page.locator('[data-review-base="dir-missing"]').isEnabled()).toBe(false);

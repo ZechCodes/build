@@ -139,18 +139,18 @@ describe("cached review task template", () => {
     await vi.waitFor(() => expect(delayed.commitReads).toBeGreaterThan(completed));
     expect(navigate).not.toHaveBeenCalled();
   });
-  it("keeps ordinary Create review controls without dedicated chrome on capable devices", async () => {
+  it("keeps ordinary tasks free of review creation controls on capable devices", async () => {
     await seed({ review: false });
     await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, snapshot: true, diff: true, comments: true } });
     mount();
-    await vi.waitFor(() => expect(host.querySelector('[data-review-save]')).toBeTruthy());
+    await vi.waitFor(() => expect(host.querySelector('[data-task-composer]')).toBeTruthy());
     expect(host.querySelector('[data-task-composer]')).toBeTruthy();
     expect(host.querySelector('.review-task-template')).toBeNull();
     expect(host.querySelector('.task-review-navigation')).toBeNull();
     expect(host.querySelector('.task-review-title')).toBeNull();
     expect(host.querySelector('[data-review-view]')).toBeNull();
     expect(host.querySelector('[data-review-more]')).toBeNull();
-    expect(host.querySelector('[data-review-snapshot-form] summary').textContent).toBe('Create review');
+    expect(host.querySelector('[data-review-snapshot-form]')).toBeNull();
   });
 
   it("retains Description, attachments, pending review comments and inline replies", async () => {

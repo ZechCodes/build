@@ -8,6 +8,7 @@ const NOW: &str = "2026-10-08T00:00:00Z";
 // Copied bounded Store-level PR fixtures; no git process or live receiver is used.
 fn request(workspace: &str) -> ReviewOpeningRequest {
     ReviewOpeningRequest {
+        for_task_id: None,
         workspace_id: workspace.into(),
         title: "Review feature".into(),
         description: "Committed work".into(),

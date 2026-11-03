@@ -154,6 +154,31 @@ fn reason(message: &str) -> Option<&'static str> {
         .map(|(_, _, reason)| *reason)
 }
 
+/// Selection refusals happen before any opening identity is reserved.
+pub(crate) fn opening_selection(error: crate::store::StoreError) -> String {
+    work_task_error(
+        error,
+        "invalid_params",
+        "Select an open non-review task in this project, or request a review without a task link.",
+    )
+}
+
+/// Publication already owns its journaled arguments: recovery retains that link.
+pub(crate) fn opening_store(error: crate::store::StoreError) -> String {
+    work_task_error(error, "conflict", "Restore the linked task to an open non-review task and retry the same request_id, or cancel this opening before requesting another review.")
+}
+
+fn work_task_error(error: crate::store::StoreError, code: &str, recovery: &str) -> String {
+    match error {
+        crate::store::StoreError::ReviewForTaskInvalid { task_id, reason } => encode(
+            code,
+            "Review requests must link to an open work task in this project.",
+            serde_json::json!({"for_task_id":task_id, "reason":reason, "recovery":recovery}),
+        ),
+        error => error.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +239,32 @@ mod tests {
             assert_eq!(error.code(), code, "{message}");
             assert_eq!(error.details().unwrap()["reason"], reason, "{message}");
             assert_eq!(error.details().unwrap()["directory_id"], "dir-1");
+        }
+    }
+}
+
+#[cfg(test)]
+mod opening_tests {
+    use super::*;
+
+    #[test]
+    fn work_task_selection_is_editable_but_reserved_publication_keeps_its_original_link() {
+        for reason in ["for_task_scope", "for_task_closed", "for_task_review"] {
+            let refusal = || crate::store::StoreError::ReviewForTaskInvalid {
+                task_id: "task-work".into(),
+                reason,
+            };
+            let selection = ApiError::classify(opening_selection(refusal()));
+            assert_eq!(selection.code(), "invalid_params");
+            assert_eq!(selection.details().unwrap()["for_task_id"], "task-work");
+            assert_eq!(selection.details().unwrap()["reason"], reason);
+            let publication = ApiError::classify(opening_store(refusal()));
+            assert_eq!(publication.code(), "conflict");
+            assert_eq!(publication.details().unwrap()["reason"], reason);
+            assert!(publication.details().unwrap()["recovery"]
+                .as_str()
+                .unwrap()
+                .contains("same request_id"));
         }
     }
 }

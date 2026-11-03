@@ -609,6 +609,7 @@ mod tests {
 
     fn write_by(actor: Actor) -> TaskWrite {
         TaskWrite {
+            previous_parent_task_id: None,
             expected_review_version: None,
             content_changed: false,
             task: task(),

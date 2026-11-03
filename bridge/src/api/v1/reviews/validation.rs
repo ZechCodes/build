@@ -53,6 +53,9 @@ impl ReviewOpenParams {
     pub fn validate(&self) -> Result<(), String> {
         identifier(&self.workspace_id)?;
         identifier(&self.request_id)?;
+        if let Some(task_id) = &self.for_task_id {
+            identifier(task_id)?;
+        }
         if self.title.trim().is_empty()
             || self.title.len() > crate::tracker::MAX_TITLE_BYTES
             || self.title.contains(['\n', '\r', '\0'])

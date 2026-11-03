@@ -827,6 +827,12 @@ pub struct TaskView {
     /// Durable PR discovery link (3.15.0), retained after the review closes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_summary: Option<crate::reviews::records::ReviewSummary>,
+    /// The newest 20 child PR reviews, newest task number first (3.29.0).
+    /// Detail reads only; omitted for a task without child reviews.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub linked_reviews: Vec<crate::reviews::records::ReviewSummary>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub linked_reviews_truncated: bool,
 }
 
 /// One attachment as every ANSWER carries it — what `tasks.attach` says it

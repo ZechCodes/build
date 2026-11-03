@@ -26,7 +26,7 @@ import { formatReviewSinceNote, pendingReviewText } from "../src/core/workspaceR
 import { writeTaskRecord, writeTasksRecord, taskRecord } from "../src/core/trackerCache.js";
 import { directoryCacheId } from "../src/core/directoryScope.js";
 import { workspaceScope } from "../src/core/workspaceModel.js";
-import { reviewAddress, writeReviewReply } from "../src/core/taskReviewCache.js";
+import { reviewAddress, writeReviewRecord, writeReviewReply } from "../src/core/taskReviewCache.js";
 import { mountWorkspaceReviewEntry } from "../src/core/workspaceReviewEntry.js";
 import opened from "../../fixtures/api/v1/tasks.review.open.json";
 import pushed from "../../fixtures/api/v1/tasks.review.push.json";
@@ -46,7 +46,7 @@ beforeEach(async () => {
   await writeCached(workspaceAddress, [workspace]);
 });
 afterEach(() => entry?.dispose());
-const enable = (extra = {}) => rememberReviewSupport(scope.deviceId, { reviews: { get: true, snapshot: true, pullRequests: true, open: true, push: true, ...extra } });
+const enable = (extra = {}) => rememberReviewSupport(scope.deviceId, { reviews: { get: true, snapshot: true, pullRequests: true, open: true, push: true, forTask: true, ...extra } });
 const mount = (callRpc = vi.fn()) => { entry = mountWorkspaceReviewEntry(document.querySelector("#entry"), { ...scope, callRpc }); return callRpc; };
 const openForm = async () => {
   await painted(() => document.querySelector("[data-workspace-review]"));
@@ -56,25 +56,90 @@ const openForm = async () => {
 };
 const type = (selector, value) => { const field = document.querySelector(selector); field.value = value; field.dispatchEvent(new Event("input", { bubbles: true })); };
 
-it("requires the exact Open capability and PR feature, with no render RPC", async () => {
+it("requires exact Request review capabilities, without snapshot fallback or render RPC", async () => {
   await enable({ pullRequests: false }); const rpc = mount();
-  await painted(() => document.querySelector("[data-workspace-review]"));
-  expect(document.querySelector("#entry").textContent).not.toContain("Open review");
+  await painted(() => document.querySelector("#entry")?.textContent.includes("Update the bridge to request reviews"));
+  expect(document.querySelector("[data-workspace-review]")).toBeNull();
   await enable();
-  await painted(() => document.querySelector("#entry")?.textContent.includes("Open review"));
+  await painted(() => document.querySelector("#entry")?.textContent.includes("Request review"));
   expect(rpc).not.toHaveBeenCalled();
 });
 
-it("keeps pure-folder workspaces on the legacy snapshot form on PR-capable bridges", async () => {
+it("uses the single form for folder-only workspaces without a snapshot fallback", async () => {
   await enable();
   await writeCached(workspaceAddress, [{ ...workspace, directories: [workspace.directories[1]] }]);
-  await writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [{ id: "legacy-task", number: 8, title: "Review live files" }] });
-  const rpc = mount();
-  await painted(() => document.querySelector("[data-workspace-review]"));
-  expect(document.querySelector("[data-workspace-review]").textContent).toBe("Create snapshot review");
-  document.querySelector("[data-workspace-review]").click();
-  await painted(() => document.querySelector("[data-review-task]"));
+  const rpc = mount(); await openForm();
+  expect(document.querySelector("[data-review-task]")).toBeNull();
+  type("[data-review-title]", "Review live files");
+  document.querySelector("[data-open-review-submit]").click();
+  expect(document.querySelector("[data-review-form-error]").textContent).toContain("include at least one Git directory");
   expect(rpc).not.toHaveBeenCalled();
+});
+
+it("offers You and existing project agents and preselects the linked eligible work task", async () => {
+  await enable();
+  await writeCached({ deviceId: scope.deviceId, entityId: "", kind: "projects" }, [{ id: scope.projectId, entity_id: "project-owner", name: "Build" }]);
+  await writeCached({ deviceId: scope.deviceId, entityId: "", kind: "project-agents-support" }, { projectWorkers: true });
+  await writeCached({ deviceId: scope.deviceId, entityId: "project-owner", kind: "project-agents" }, {
+    entity_id: "project-owner", pinned_agent_id: "pinned", agents: [{ id: "pinned", name: "Lead" }, { id: "worker", name: "API reviewer", project_role: "worker" }],
+  });
+  await writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [
+    { id: "closed", number: 1, title: "Closed", state: "closed", links: { workspace_ids: [scope.workspaceId] } },
+    { id: "review", number: 2, title: "Review", state: "open", review_summary: { mode: "snapshot" }, links: { workspace_ids: [scope.workspaceId] } },
+    { id: "work", number: 3, title: "Export CSV", state: "open", links: { workspace_ids: [scope.workspaceId] } },
+    { id: "foreign", number: 4, title: "Foreign", project_id: "other", state: "open" },
+  ] });
+  const rpc = mount(vi.fn(async () => { throw new Error("Unavailable"); })); await openForm();
+  const reviewer = document.querySelector("#review-create-assignee");
+  expect(reviewer.value).toBe("user");
+  expect([...reviewer.options].map((option) => option.value)).toEqual(["user", "project_agent", "agent:worker"]);
+  const task = document.querySelector("[data-review-for-task]");
+  expect(task.value).toBe("work");
+  expect([...task.options].map((option) => option.value)).toEqual(["", "work"]);
+  reviewer.value = "agent:worker"; reviewer.dispatchEvent(new Event("change", { bubbles: true }));
+  type("[data-review-title]", "Review CSV"); document.querySelector("[data-open-review-submit]").click();
+  await called(rpc);
+  expect(rpc.mock.calls[0][1]).toMatchObject({ for_task_id: "work", reviewer: { kind: "agent", agent_id: "worker" } });
+});
+
+it("sends a user reviewer and omits work task without its independent capability", async () => {
+  await enable({ forTask: false });
+  await writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [{ id: "work", number: 3, title: "Export CSV", state: "open", links: { workspace_ids: [scope.workspaceId] } }] });
+  const rpc = mount(vi.fn(async () => { throw new Error("Unavailable"); })); await openForm();
+  expect(document.querySelector("[data-review-for-task]")).toBeNull();
+  type("[data-review-title]", "Review CSV"); document.querySelector("[data-open-review-submit]").click();
+  await called(rpc);
+  expect(rpc.mock.calls[0][1].reviewer).toEqual({ kind: "user" });
+  expect(rpc.mock.calls[0][1]).not.toHaveProperty("for_task_id");
+});
+
+it("preselects a linked task outside the catalogue from bounded query pages and loads more choices", async () => {
+  await enable({ taskChoices: true, linkedTaskChoices: true });
+  await writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [{ id: "newer", number: 1000, title: "Recent", state: "open" }] });
+  const linked = { id: "linked-old", number: 1, title: "Old linked work", state: "open", matched_memberships: { linked_workspace_id: scope.workspaceId } };
+  const rpc = mount(vi.fn(async (method, params) => {
+    expect(method).toBe("tasks.list");
+    if (params.linked_workspace_id) return { tasks: [linked] };
+    return params.cursor ? { tasks: [{ id: "older", number: 2, title: "Older choice", state: "open" }] }
+      : { tasks: [{ id: "recent", number: 500, title: "Recent choice", state: "open" }], next_cursor: "next-page" };
+  }));
+  await openForm();
+  await painted(() => document.querySelector("[data-review-for-task]")?.value === "linked-old");
+  await vi.waitFor(() => expect(document.querySelector("[data-review-tasks-more]")?.disabled).toBe(false));
+  expect(document.querySelector("[data-review-tasks-more]").hidden).toBe(false);
+  document.querySelector("[data-review-tasks-more]").click();
+  await painted(() => [...(document.querySelector("[data-review-for-task]")?.options || [])].some((option) => option.value === "older"));
+  expect(rpc).toHaveBeenCalledWith("tasks.list", { project_id: scope.projectId, summary: true, state: "open", linked_workspace_id: scope.workspaceId, limit: 100 });
+  expect(rpc).toHaveBeenCalledWith("tasks.list", { project_id: scope.projectId, summary: true, state: "open", limit: 100, cursor: "next-page" });
+  expect(document.querySelector("[data-review-for-task]").value).toBe("linked-old");
+});
+
+it("excludes legacy snapshot tasks known through their cached review header", async () => {
+  await enable();
+  await writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [{ id: "legacy", number: 1, title: "Snapshot task", state: "open" }] });
+  await writeReviewRecord({ ...scope, taskId: "legacy" }, { task_id: "legacy", mode: "snapshot", version: 1, snapshots: [] }, 1);
+  mount(); await openForm();
+  expect([...document.querySelector("[data-review-for-task]").options].map((option) => option.value)).not.toContain("legacy");
 });
 
 it("previews committed sources and restores the exact submitted opening after failure", async () => {

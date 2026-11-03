@@ -132,7 +132,7 @@ it("makes a definitively rejected opening editable and restores its durable fiel
   expect(document.querySelector('[data-review-base="dir-api"]').disabled).toBe(false);
   expect(document.querySelector('[data-review-base="dir-missing"]').disabled).toBe(true);
   expect(document.querySelector('[data-review-exclude="dir-missing"]').disabled).toBe(false);
-  expect(document.querySelector("[data-open-review-submit]").textContent).toBe("Open review");
+  expect(document.querySelector("[data-open-review-submit]").textContent).toBe("Request review");
   const recovered = (await readUiRecord(address)).value;
   expect(recovered.title).toBe("Confirmed review");
   expect(recovered.bases[0].branch).toBe("bad base");

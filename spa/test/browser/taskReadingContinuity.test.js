@@ -75,7 +75,7 @@ async function mountReadingPage(page, basePath, commentId = null, omitTarget = f
       reviewRoute: savedReview ? { revision: 6, mode: "all", view: "comments" } : null,
       callRpc: (method) => {
         if (method === "tasks.attachment") return Promise.resolve(attachment);
-        if (method === "tasks.review.snapshot") return new Promise((resolve, reject) => { window.__reading.rejectSnapshot = reject; });
+        if (method === "tasks.review.complete") return new Promise((resolve, reject) => { window.__reading.rejectComplete = reject; });
         return new Promise(() => {});
       },
       catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), navigate: () => {},
@@ -637,10 +637,10 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
   it(`keeps visible ${label} task history still through review draft painters and delayed control failure`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       await mountReadingPage(page, basePath);
-      await mountDelayedReview(page, { act: true, comments: true, snapshot: true });
+      await mountDelayedReview(page, { act: true, comments: true, complete: true });
       await page.locator("[data-review-more]").evaluate((sheet) => { sheet.open = true; });
       await page.locator("[data-review-act-sheet]").evaluate((sheet) => { sheet.open = true; });
-      await page.locator("[data-review-snapshot-form]").evaluate((sheet) => { sheet.open = true; });
+      await page.locator("[data-review-complete]").evaluate((form) => { form.closest("details").open = true; });
       await settle(page);
       await page.locator('[data-review-push-branch="dir-async"]').evaluate((input) => {
         input.focus({ preventScroll: true });
@@ -683,10 +683,11 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
       await measure(page, before, `${label}/feedback-draft`);
       expect(await page.evaluate(() => document.activeElement.id)).toBe("task-comment");
       before = await parkReader(page);
-      await page.locator("[data-review-save]").evaluate((form) => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
-      await page.waitForFunction(() => typeof window.__reading.rejectSnapshot === "function");
+      await page.locator("[data-review-description]").evaluate((field) => { field.value = "Merged to dev"; field.dispatchEvent(new Event("input")); });
+      await page.locator("[data-review-complete]").evaluate((form) => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+      await page.waitForFunction(() => typeof window.__reading.rejectComplete === "function");
       await settle(page);
-      await page.evaluate(() => window.__reading.rejectSnapshot(new Error("Delayed snapshot refusal. ".repeat(30))));
+      await page.evaluate(() => window.__reading.rejectComplete(new Error("Delayed completion refusal. ".repeat(30))));
       await page.waitForFunction(() => !document.querySelector("[data-review-action-error]").hidden);
       await measure(page, before, `${label}/controls-failure`);
       expect(await page.evaluate(() => document.activeElement.id)).toBe("task-comment");

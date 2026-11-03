@@ -418,6 +418,35 @@ mod tests {
     }
 
     #[test]
+    fn open_review_advertises_and_preserves_optional_work_task_link() {
+        let listed = tools();
+        let schema = &listed
+            .iter()
+            .find(|tool| tool["name"] == "open_review")
+            .unwrap()["inputSchema"];
+        assert_eq!(schema["properties"]["for_task_id"]["type"], "string");
+        assert!(!schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("for_task_id")));
+        let mut args: Value = serde_json::from_str(PR_CALLS[0].1).unwrap();
+        args["for_task_id"] = json!("task-work-1");
+        let action = call(
+            super::super::McpSurface::Coding,
+            "open_review",
+            args.clone(),
+        )
+        .action
+        .unwrap();
+        let encoded = serde_json::to_value(action).unwrap();
+        assert_eq!(encoded["params"]["for_task_id"], "task-work-1");
+        args["for_task_id"] = json!("");
+        assert!(call(super::super::McpSurface::Coding, "open_review", args)
+            .action
+            .is_none());
+    }
+
+    #[test]
     fn pr_tools_share_project_bound_surfaces_and_typed_actions() {
         use super::super::{DoneServer, McpSurface};
         for &(name, raw) in PR_CALLS {

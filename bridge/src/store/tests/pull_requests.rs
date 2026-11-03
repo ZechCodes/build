@@ -4,12 +4,15 @@ use crate::reviews::records::ReviewState;
 use crate::tracker::{Actor, Task};
 use std::collections::BTreeMap;
 
+mod for_task;
 mod lifecycle;
+mod linked;
 
 const NOW: &str = "2026-10-08T00:00:00Z";
 
 fn request(workspace: &str) -> ReviewOpeningRequest {
     ReviewOpeningRequest {
+        for_task_id: None,
         workspace_id: workspace.into(),
         title: "Review feature".into(),
         description: "Committed work".into(),

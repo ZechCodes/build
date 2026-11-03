@@ -10,7 +10,7 @@ const saved = { ...fixture.result.review, snapshots: [{ ...fixture.result.review
   directories: [fixture.result.review.snapshots[0].directories[0]],
 }] };
 
-async function mountReviewLinks(page, basePath) {
+async function mountReviewLinks(page, basePath, pendingCommits = false) {
   await mountLayout(page, '<main id="diff-link-demo"><header id="toolbar">Build · Diff references</header><article id="references" class="md"></article><section id="review"></section></main>', {
     basePath,
     styles: "html,body{height:100%;margin:0}body{display:block}#diff-link-demo{box-sizing:border-box;min-height:100vh;padding:20px;max-width:1440px;margin:auto}#toolbar{position:static;display:block;height:auto;min-height:0;padding:0 0 12px;background:none;border:0}#references{padding:12px 0 20px}#review{min-width:0} .task-review-diff-scroll{max-height:62vh}",
@@ -24,7 +24,7 @@ async function mountReviewLinks(page, basePath) {
     support: "src/core/taskReviewSupport.js", local: "src/core/localCache.js", markdown: "src/core/markdown.js",
     references: "src/core/referenceIndex.js", router: "src/core/router.js",
   }, basePath);
-  await page.evaluate(async ({ saved, commit, path, start }) => {
+  await page.evaluate(async ({ saved, commit, path, start, pendingCommits }) => {
     const { review, reviews, reads, support, local, markdown, references, router } = window.__layoutModules;
     const scope = { deviceId: "diff-link-browser", projectId: "p1", taskId: "task-1" };
     const route = { name: "trackerTask", ...scope };
@@ -54,21 +54,29 @@ async function mountReviewLinks(page, basePath) {
         });
       }
     }
-    await local.writeCached(reads.reviewCommitsAddress(identity), {
+    if (!pendingCommits) await local.writeCached(reads.reviewCommitsAddress(identity), {
       commits: [{ oid: commit, subject: "Preserve review selection", author_name: "Ada", time: 1789012345 }], commits_truncated: false,
     });
     history.replaceState(null, "", router.hashFromRoute(route));
     window.__requests = [];
     window.__navigations = [];
     window.__reviewPage = review.mountTaskReviewPage(document.querySelector("#review"), {
-      ...scope, callRpc: (method) => { window.__requests.push(method); return new Promise(() => {}); },
-      reviewRoute: { revision: 1, mode: "all", directoryId: directory.id, path: start },
+      ...scope, callRpc: (method, params) => {
+        window.__requests.push(method);
+        if (pendingCommits && method === "tasks.review.diff" && params.mode === "commits") {
+          if (!window.__failCommits) return new Promise((resolve, reject) => { window.__failCommits = () => reject(new Error("Source unavailable")); });
+          return Promise.resolve({ commits: [{ oid: commit }], commits_truncated: false });
+        }
+        return new Promise(() => {});
+      },
+      reviewRoute: { revision: 1, mode: pendingCommits ? "commit" : "all", commit: pendingCommits ? commit.slice(0, 8) : null,
+        directoryId: directory.id, path: start },
       task: () => ({ id: scope.taskId, title: "Link directly to a review diff" }),
       markReviewRoute: (next) => { window.__navigations.push(next); history.replaceState(null, "", router.hashFromRoute(next)); },
     });
     await window.__reviewPage.ready;
-  }, { saved, commit, path, start });
-  await page.waitForSelector(`[data-review-path="${start}"]`);
+  }, { saved, commit, path, start, pendingCommits });
+  await page.waitForSelector(pendingCommits ? "[data-review-notice]:not([hidden])" : `[data-review-path="${start}"]`);
   await page.waitForSelector("#references a.md-ref");
 }
 
@@ -78,6 +86,28 @@ async function assertNoOverflow(page) {
 }
 
 for (const { label, width } of [{ label: "desktop", width: 1440 }, { label: "phone", width: 390 }]) {
+  it(`explains a failed first commit-list read and clears the notice on recovery on ${label}`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountReviewLinks(page, basePath, true);
+      const notice = page.locator("[data-review-notice]");
+      expect(await notice.textContent()).toBe("Waiting for this revision’s commits…");
+      await page.waitForFunction(() => Boolean(window.__failCommits));
+      await page.evaluate(() => window.__failCommits());
+      await page.waitForFunction(() => document.querySelector("[data-review-notice]")?.textContent.includes("Couldn’t load"));
+      expect(await notice.isVisible()).toBe(true);
+      expect(await notice.textContent()).toBe("Couldn’t load this revision’s commits. Waiting for a successful refresh.");
+      expect(await page.locator("[data-review-content]").textContent()).toBe("");
+      await assertNoOverflow(page);
+      await captureLayout(page, `review-sha-notice-${label}.png`);
+      await page.locator("[data-review-refresh]").click();
+      await page.waitForSelector(`[data-review-path="${start}"]`);
+      expect(await notice.isVisible()).toBe(false);
+      expect(await notice.textContent()).toBe("");
+      expect(await page.evaluate(() => window.__navigations.at(-1).review.commit)).toBe(commit);
+      await page.evaluate(() => window.__reviewPage.dispose());
+    }, { width, height: 900, plugins: [deviceShim] });
+  }, 90_000);
+
   it(`follows rendered review diff links from cache in place on ${label}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       await mountReviewLinks(page, basePath);

@@ -53,27 +53,30 @@ async fn cross_transport_idle_revocation_within_one_authority_recheck() {
     .await
     .expect("the production mounted reaper starts");
     let mut ended = tokio::task::JoinSet::new();
+    let waiting = Arc::new(AtomicUsize::new(0));
     for client in f.http.drain(..) {
+        let waiting = waiting.clone();
         ended.spawn(async move {
             let mut events = client.events;
-            assert!(matches!(events.next().await, None | Some(Err(_))));
+            let next = events.next();
+            tokio::pin!(next);
+            assert!(futures_util::poll!(&mut next).is_pending());
+            waiting.fetch_add(1, Ordering::SeqCst);
+            assert!(matches!(next.await, None | Some(Err(_))));
         });
     }
-    tokio::task::yield_now().await;
+    tokio::time::timeout(fixture::WATCHDOG, async {
+        while waiting.load(Ordering::SeqCst) != POOL_STREAMS {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("all 32 bodies are pending before revocation");
     tokio::time::pause();
     let revoked = Instant::now();
     f.live.store(false, Ordering::SeqCst);
     f.close_rtc();
     tokio::time::advance(Duration::from_millis(25)).await;
-    for _ in 0..10 {
-        tokio::task::yield_now().await;
-    }
-    let mut closed = 0;
-    while let Some(result) = ended.try_join_next() {
-        result.unwrap();
-        closed += 1;
-    }
-    let finished = closed == POOL_STREAMS && f.runtime.opening_count() == 0;
     tokio::time::timeout(Duration::from_secs(2), async {
         while let Some(result) = ended.join_next().await {
             result.unwrap();
@@ -91,7 +94,7 @@ async fn cross_transport_idle_revocation_within_one_authority_recheck() {
     mounted.shutdown().await;
     println!("mounted runtime idle revocation: {POOL_STREAMS} streams ended after {elapsed:?}; required <=25ms");
     assert!(
-        finished,
+        elapsed <= Duration::from_millis(25),
         "idle revocation exceeded one 25 ms AUTHORITY_RECHECK (family limit {MAX_FAMILY_STREAMS})"
     );
 }

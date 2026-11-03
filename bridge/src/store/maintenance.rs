@@ -88,6 +88,7 @@ fn finish_vacuum_checkpoint(connection: &Connection) -> Result<(), StoreError> {
 
 #[derive(Debug)]
 pub struct StorageMaintenanceProgress {
+    pub sync: super::sync::GcProgress,
     pub scanned_operations: usize,
     pub cleared_deliveries: usize,
     pub cleanup_complete: bool,
@@ -100,6 +101,7 @@ impl StoreWriter {
     /// The durable cursor advances in the same transaction as payload removal.
     /// Callers must run this outside app/domain guards, on a blocking thread.
     pub fn maintain_storage_batch(&self) -> Result<StorageMaintenanceProgress, StoreError> {
+        let sync = self.sync_gc_batch(super::sync::now_ms())?;
         let mut connection = self.connection();
         let transaction = connection.transaction()?;
         let (scanned_operations, cleared_deliveries, cleanup_complete) =
@@ -118,6 +120,7 @@ impl StoreWriter {
         let remaining_free_pages: u32 =
             connection.pragma_query_value(None, "freelist_count", |row| row.get(0))?;
         Ok(StorageMaintenanceProgress {
+            sync,
             scanned_operations,
             cleared_deliveries,
             cleanup_complete,
@@ -202,7 +205,11 @@ fn maintenance_delay(
     result: Result<Result<StorageMaintenanceProgress, StoreError>, tokio::task::JoinError>,
 ) -> Duration {
     match result {
-        Ok(Ok(progress)) if !progress.cleanup_complete || progress.remaining_free_pages > 0 => {
+        Ok(Ok(progress))
+            if !progress.cleanup_complete
+                || progress.remaining_free_pages > 0
+                || progress.sync.pending =>
+        {
             Duration::from_millis(250)
         }
         Ok(Ok(_)) => Duration::from_secs(60),

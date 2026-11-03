@@ -15,9 +15,10 @@ pub(crate) enum ReadClass {
     Comment,
     ReviewSummary,
     ReviewContents,
+    SyncRecovery,
 }
 
-const CLASSES: usize = ReadClass::ReviewContents as usize + 1;
+const CLASSES: usize = ReadClass::SyncRecovery as usize + 1;
 // Three task pages plus two task details and two history reads leave at least
 // one SQL reader for other classes. This is not a reservation against all types.
 const READS_PER_CLASS: usize = READ_CONNECTIONS / 4;

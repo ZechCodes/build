@@ -105,4 +105,6 @@ export async function mountWaitingOnFixture(page, basePath, { theme = "light", a
     window.__waiting = fixture;
   }, { theme, assigned, failed, old, legacy, cachedOnly, push });
   await page.locator(".task-page-title").waitFor({ timeout: 5000 });
+  // Cached title and waiting-on support hydrate independently.
+  if (!old && !legacy) await page.locator("[data-task-waiting-on]").waitFor({ timeout: 5000 });
 }

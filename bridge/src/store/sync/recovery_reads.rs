@@ -6,12 +6,28 @@ use crate::store::{ReadTransaction, TaskSummaryCandidate};
 use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
 
+pub enum CursorSequence {
+    Current(Sequence),
+    Foreign,
+}
+
 impl ReadTransaction<'_> {
-    pub fn sync_sequence(&self, scope: &Scope, token: &str) -> Result<Sequence, SyncError> {
+    pub fn sync_cursor_sequence(
+        &self,
+        scope: &Scope,
+        token: &str,
+    ) -> Result<CursorSequence, SyncError> {
         let (incarnation, key) = schema::identity(self.connection())?;
         match cursor::decode(token, &incarnation, &key, scope)? {
-            cursor::Position::Retained(seq) => Ok(seq),
-            cursor::Position::Foreign => Err(SyncError::MalformedCursor),
+            cursor::Position::Retained(seq) => Ok(CursorSequence::Current(seq)),
+            cursor::Position::Foreign => Ok(CursorSequence::Foreign),
+        }
+    }
+
+    pub fn sync_sequence(&self, scope: &Scope, token: &str) -> Result<Sequence, SyncError> {
+        match self.sync_cursor_sequence(scope, token)? {
+            CursorSequence::Current(seq) => Ok(seq),
+            CursorSequence::Foreign => Err(SyncError::MalformedCursor),
         }
     }
     pub fn sync_revision(&self, entity: &Entity) -> Result<Sequence, SyncError> {

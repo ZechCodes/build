@@ -16,6 +16,7 @@ pub(super) use task_publication::{collect as collect_tasks, touch as touch_task}
 
 pub use journal::PublicationBatch;
 pub use reads::{Head, HeadResult, SyncReadConnection};
+pub use recovery_reads::CursorSequence;
 pub use retention::{
     GcProgress, GC_ROWS, MAX_JOURNAL_AGE_MS, MAX_JOURNAL_BYTES, MAX_JOURNAL_ENTRIES,
 };

@@ -194,6 +194,61 @@ async fn changes_continuation_keeps_fixed_head_and_refuses_retention_gap() {
 }
 
 #[tokio::test]
+async fn continuation_retention_uses_applied_position_and_accepts_floor_equality() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let scope =
+        TaskSyncScope::project("synthetic-project", "/synthetic-project", &json!({})).unwrap();
+    let mut read = store.read_pool().acquire_sync().await;
+    let base = snapshot(&mut read, &scope, None, 10);
+    create(&store, "one");
+    create(&store, "two");
+    let first = changes(&mut read, &scope, base["cursor"].as_str().unwrap(), None, 1);
+    let after = first["changes"][0]["seq"]
+        .as_str()
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    store
+        .writer_for_test()
+        .execute(
+            "UPDATE sync_stream_state SET floor=?1 WHERE stream_kind='project_tasks'",
+            [after],
+        )
+        .unwrap();
+
+    let retained = changes(
+        &mut read,
+        &scope,
+        base["cursor"].as_str().unwrap(),
+        first["continuation"].as_str(),
+        1,
+    );
+    assert_eq!(retained["status"], "ok", "floor == applied position");
+
+    let initial_gap = changes(&mut read, &scope, base["cursor"].as_str().unwrap(), None, 1);
+    assert_eq!(initial_gap["status"], "resync_required");
+    assert_eq!(initial_gap["reason"], "retention_expired");
+
+    store
+        .writer_for_test()
+        .execute(
+            "UPDATE sync_stream_state SET floor=?1 WHERE stream_kind='project_tasks'",
+            [after + 1],
+        )
+        .unwrap();
+    let continuation_gap = changes(
+        &mut read,
+        &scope,
+        base["cursor"].as_str().unwrap(),
+        first["continuation"].as_str(),
+        1,
+    );
+    assert_eq!(continuation_gap["status"], "resync_required");
+    assert_eq!(continuation_gap["reason"], "retention_expired");
+}
+
+#[tokio::test]
 async fn nul_pending_presence_and_exact_actor_bytes_survive_every_summary_surface() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();

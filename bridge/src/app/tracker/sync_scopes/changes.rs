@@ -1,5 +1,5 @@
 use super::*;
-use crate::store::sync::{Continuation, Sequence};
+use crate::store::sync::{Continuation, CursorSequence, Sequence};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -45,16 +45,27 @@ impl TaskSyncScope {
                 "changes limit must be 1 to 100".into(),
             ));
         }
-        let head = match self.checked_head(read, Some(cursor), epoch, now)? {
+        let head = match self.checked_head(read, None, epoch, now)? {
             Ok(head) => head,
             Err(reset) => return Ok(reset),
         };
-        let origin = read.sync_sequence(&self.scope, cursor)?;
+        let origin = match read.sync_cursor_sequence(&self.scope, cursor)? {
+            CursorSequence::Current(origin) => origin,
+            CursorSequence::Foreign => {
+                return Ok(self.resync(&head, ResyncReason::IncarnationChanged))
+            }
+        };
+        if origin > head.head {
+            return Err(SyncError::FutureCursor);
+        }
         self.ensure_supported(read)?;
         let run = match self.run_position(read, origin, continuation, &head)? {
             Ok(run) => run,
             Err(reset) => return Ok(reset),
         };
+        if run.after < head.retention_floor {
+            return Ok(self.resync(&head, ResyncReason::RetentionExpired));
+        }
         let bytes = run.bytes()?;
         let events = read.sync_events(&self.scope, run.after, run.head, MAX_RECOVERY_EVENTS + 1)?;
         if run.events as usize + events.len() > MAX_RECOVERY_EVENTS {

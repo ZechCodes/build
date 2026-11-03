@@ -12,7 +12,7 @@ import { langForPath } from "./highlight.js";
 import { isDotenvPath } from "./secrets.js";
 import { reviewDiffAddress, reviewDiffParams } from "./taskReviewReads.js";
 import { reviewMutationRpc } from "./taskReviewSupport.js";
-import { inlineReviewRowsHtml, placeReviewComposer, reviewReplyAt } from "./taskReviewInline.js";
+import { inlineReviewRowsHtml, placeReviewComposer, reviewComposerMatches, reviewReplyAt } from "./taskReviewInline.js";
 
 const FILE_LIMIT = 1_000;
 const MAX_REVEAL_PAGES = 32;
@@ -445,7 +445,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
   return {
     refresh,
     reveal,
-    placeComposer: (row, anchor) => placeReviewComposer(host, row, anchor),
+    placeComposer: (row, anchor) => reviewComposerMatches(anchor, state.context) && placeReviewComposer(host, row, anchor),
     selectPath: (name) => selectPath(name),
     updateComments(rows) {
       if (!alive) return;

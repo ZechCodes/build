@@ -2,7 +2,7 @@ import { esc } from "./text.js";
 import { fieldTraits } from "./fieldTraits.js";
 
 /** The durable batch owns text; this controller owns only the active editor. */
-export function createReviewInlineComposer({ batch, placeComposer }) {
+export function createReviewInlineComposer({ batch, placeComposer, snapshotNumber }) {
   let active = null;
   let serial = 0;
   const close = () => { active?.row.remove(); active = null; };
@@ -17,7 +17,7 @@ export function createReviewInlineComposer({ batch, placeComposer }) {
     row.className = "task-review-composer-row";
     row.dataset.reviewComposerRow = "";
     row.innerHTML = `<td colspan="3"><form class="task-review-inline-composer" data-review-inline-composer>
-      <label>${draft.replyTo ? "Reply" : "Comment"} · ${esc(draft.anchor?.path || "Review")} ${draft.anchor ? `· ${esc(draft.anchor.side)} line ${Number(draft.anchor.line)}` : ""}
+      <label>${draft.replyTo ? "Reply" : "Comment"} · Revision ${Number(snapshotNumber)}${draft.anchor?.commit ? ` · ${esc(draft.anchor.commit.slice(0, 8))}` : ""} · ${esc(draft.anchor?.path || "Review")} ${draft.anchor ? `· ${esc(draft.anchor.side)} line ${Number(draft.anchor.line)}` : ""}
         <textarea rows="3" ${fieldTraits("prose")} aria-label="Review comment" placeholder="Write a comment…"></textarea>
       </label><div class="row"><button class="btn primary" type="submit">Add to review</button><button class="btn" type="button" data-review-composer-close>Close</button></div>
       <p class="sub">Saved as a draft. Submit the batch when you’re ready.</p></form></td>`;

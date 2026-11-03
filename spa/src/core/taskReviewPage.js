@@ -19,7 +19,7 @@ import { hasReviewCommitPrefix, resolveReviewCommitReference } from "./reviewCom
 import { installReviewLinkNavigation } from "./reviewLinkNavigation.js";
 import { refreshFeed } from "./taskFeed.js";
 
-const FRAME = `<header class="task-review-header"><div data-review-head></div><div data-review-verdict-host></div><details class="task-review-more" data-review-more><summary>More</summary><div class="task-review-more-body"><div data-review-controls></div><div data-review-git-actions></div><div data-review-task-details></div></div></details></header><aside class="task-review-navigation" aria-label="Review commits"><button type="button" class="task-review-sheet-close btn" data-review-commits-close>Close commits</button><div data-review-directories></div><nav data-review-rail></nav></aside><section class="task-review-centre"><div class="task-review-views" role="group" aria-label="Directory view"><button class="btn" type="button" data-review-view="changes">Changes</button><button class="btn" type="button" data-review-view="files">Files</button><button class="btn task-review-comments-tab" type="button" data-review-view="comments">Comments <span data-review-pending-badge hidden></span></button></div><p data-review-newer-snapshot class="warn" role="status" hidden></p><p data-review-error class="warn" role="status" hidden></p><div data-review-content></div></section><div data-review-feedback-host class="task-review-standalone-feedback"></div>`;
+const FRAME = `<header class="task-review-header"><div data-review-head></div><div data-review-verdict-host></div><details class="task-review-more" data-review-more><summary>More</summary><div class="task-review-more-body"><div data-review-controls></div><div data-review-git-actions></div><div data-review-task-details></div></div></details></header><aside class="task-review-navigation" aria-label="Review commits"><button type="button" class="task-review-sheet-close btn" data-review-commits-close>Close commits</button><div data-review-directories></div><nav data-review-rail></nav></aside><section class="task-review-centre"><div class="task-review-views" role="group" aria-label="Directory view"><button class="btn" type="button" data-review-view="changes">Changes</button><button class="btn" type="button" data-review-view="files">Files</button><button class="btn task-review-comments-tab" type="button" data-review-view="comments">Comments <span data-review-pending-badge hidden></span></button></div><p data-review-newer-snapshot class="warn" role="status" hidden></p><p data-review-error class="warn" role="status" hidden></p><p data-review-comment-unavailable class="sub" hidden></p><div data-review-content></div></section><div data-review-feedback-host class="task-review-standalone-feedback"></div>`;
 const setHtml = (node, html) => { if (node.__reviewHtml !== html) { node.innerHTML = html; node.__reviewHtml = html; } };
 
 function postedBatchAnchors(rows, snapshotId) {
@@ -236,8 +236,9 @@ export function mountTaskReviewPage(host, options) {
     return { mode: "changes" };
   }
 
+  const canCompose = () => support.comments && (selection.view === "files" || selection.mode !== "commit" || support.anchorCommit);
   function commentCallbacks() {
-    if (!support.comments) return {};
+    if (!canCompose()) return {};
     return {
       onComment: (anchor) => { void feedback?.comment(anchor, null, selection.view); },
       onReply: (comment, anchor) => { void feedback?.comment(anchor, comment.id || comment.key, selection.view); },
@@ -270,7 +271,7 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function paintPane(saved, dir, view) {
-    const key = JSON.stringify([saved?.id, dir?.id, view, support.diff, commitPending, comparison()]);
+    const key = JSON.stringify([saved?.id, dir?.id, view, support.diff, canCompose(), commitPending, comparison()]);
     if (key !== paneKey) {
       paneKey = key;
       panePlace = "";
@@ -372,6 +373,9 @@ export function mountTaskReviewPage(host, options) {
     const latest = review()?.snapshots.at(-1);
     newer.hidden = !saved || saved.id === latest?.id;
     newer.textContent = latest ? `Revision ${latest.number} is ready` : "";
+    const commentNotice = node("comment-unavailable");
+    commentNotice.hidden = canCompose() || !support.comments;
+    commentNotice.textContent = "Update this device’s bridge to comment on individual commits. You can still comment on All changes.";
     const error = node("error");
     error.textContent = notice || record?.error || "";
     error.hidden = !error.textContent;

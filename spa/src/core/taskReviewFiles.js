@@ -15,7 +15,7 @@ import { watchChanges } from "./changeEvents.js";
 import { esc } from "./text.js";
 import { decodeBase64Text, mediaPreviewHtml, previewModeFor, sourcePreviewHtml } from "./filePreview.js";
 import { isDotenvPath, maskDotenvLine, SPOILER_DOTS } from "./secrets.js";
-import { paintInlineReviewRows, placeReviewComposer, reviewReplyAt } from "./taskReviewInline.js";
+import { paintInlineReviewRows, placeReviewComposer, reviewComposerMatches, reviewReplyAt } from "./taskReviewInline.js";
 
 const treeKind = (live) => live ? "task-review-live-tree" : "task-review-tree";
 const fileKind = (live) => live ? "task-review-live-file" : "task-review-file";
@@ -377,7 +377,8 @@ export function mountTaskReviewFiles(host, options) {
 
   return {
     reveal,
-    placeComposer: (row, anchor) => anchor?.path === selected && placeReviewComposer(preview, row, anchor),
+    placeComposer: (row, anchor) => reviewComposerMatches(anchor, { snapshotId: snapshot.id, directoryId: directory.id, allowedCommits: ["", directory.head] })
+      && anchor.path === selected && placeReviewComposer(preview, row, anchor),
     updateComments(next) {
       comments = next || [];
       if (disposed) return;

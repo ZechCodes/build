@@ -2060,6 +2060,8 @@ the tray until terminal success, preserving recovery after an accepted write
 later fails. A failed predecessor holds unsent descendants; Edit pending
 comments cancels only never-attempted descendants and restores failed/unsent
 notes for correction, retaining successful-prefix and uncertain-outcome evidence.
+An outbox enqueue refusal keeps the prepared batch and offers Retry saved review
+with the same operation IDs; it never discards an ambiguously persisted intent.
 
 PR-style opening is a service in `bridge/src/reviews/opening.rs`, exposed by
 wire 3.15.0's typed RPC and MCP adapters (#405). `api/v1/reviews.rs` owns the

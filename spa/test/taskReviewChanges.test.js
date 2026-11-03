@@ -480,3 +480,21 @@ describe('Since line composition', () => {
     pane.dispose();
   });
 });
+
+
+it("does not place an active composer under another commit or directory's matching line", async () => {
+  const commit = 'a'.repeat(40);
+  const anchor = { snapshot_id: snapshot.id, directory_id: directory.id, path: 'src/a.js', side: 'new', line: 1, commit };
+  const contexts = [{ directory, comparison: { mode: 'commit', commit: 'b'.repeat(40) } },
+    { directory: { id: 'other-directory' }, comparison: { mode: 'commit', commit } }];
+  for (const context of contexts) {
+    const host = document.createElement('div'); document.body.append(host);
+    const pane = mountTaskReviewChanges(host, { deviceId: 'dev', projectId: 'project', taskId: 'task', snapshot,
+      path: 'src/a.js', ...context, callRpc: async (_method, params) => params.paths ? { ...list, patch } : list });
+    await waitForPatch(host);
+    const composer = document.createElement('tr'); composer.innerHTML = '<td><textarea>Original context</textarea></td>';
+    expect(pane.placeComposer(composer, anchor)).toBe(false);
+    expect(host.contains(composer)).toBe(false);
+    pane.dispose(); host.remove();
+  }
+});

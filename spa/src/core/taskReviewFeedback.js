@@ -21,6 +21,7 @@ function draftHtml(draft, locked) {
 }
 
 function submissionMessage(state, sending) {
+  if (state.submission?.enqueueError) return `${state.error} Your review is saved here. Retry the saved review to send it.`;
   if (state.error) return `${state.error} The review could not finish. Pending comments are kept here; edit them to try again.`;
   if (state.submission) return 'Review saved. Waiting for acknowledgement; it will send when this device is available.';
   return sending ? 'Saving review…' : '';
@@ -37,7 +38,7 @@ export function mountTaskReviewFeedback(host, options) {
   host.innerHTML = `<section class="task-review-pending" data-review-pending aria-label="Pending review comments">
     <h3>Pending <span data-review-count>0</span></h3><p class="sub" data-review-draft-revision></p>
     <table data-review-reply-composer><tbody></tbody></table><ol data-review-drafts></ol><label class="create-label">Summary (optional)<textarea rows="2" data-review-summary ${fieldTraits("prose")} placeholder="Summarize your review"></textarea></label>
-    <button class="btn" type="button" data-review-comment-batch>Comment</button><p class="sub" data-review-submit-status role="status"></p><button class="btn" type="button" data-review-recover hidden>Edit pending comments</button></section>`;
+    <button class="btn" type="button" data-review-comment-batch>Comment</button><p class="sub" data-review-submit-status role="status"></p><button class="btn" type="button" data-review-recover hidden>Edit pending comments</button><button class="btn" type="button" data-review-retry hidden>Retry saved review</button></section>`;
   const bar = document.createElement("div");
   bar.className = "task-review-verdict-bar";
   bar.innerHTML = '<button class="btn" type="button" data-review-verdict="request_changes">Request changes</button><button class="btn primary" type="button" data-review-verdict="approve">Approve</button>';
@@ -46,10 +47,17 @@ export function mountTaskReviewFeedback(host, options) {
   const historical = () => Boolean(latestSnapshotId()) && latestSnapshotId() !== snapshotIdOf(snapshot);
   const batch = createTaskReviewBatch({ deviceId, projectId, taskId, taskNumber, snapshot, callRpc, writeOperations, priorAnchors,
     onChange: (saved) => { state = saved; paint(); } });
-  const composer = createReviewInlineComposer({ batch, placeComposer: (row, anchor) => {
+  const composer = createReviewInlineComposer({ batch, snapshotNumber: snapshot.number, placeComposer: (row, anchor) => {
     if (!placeComposer?.(row, anchor)) host.querySelector('[data-review-reply-composer] tbody').append(row);
   } });
   const commentButton = host.querySelector('[data-review-comment-batch]');
+
+  function paintSubmission() {
+    host.querySelector('[data-review-submit-status]').textContent = submissionMessage(state, sending);
+    host.querySelector('[data-review-recover]').hidden = state.submission?.status !== 'failed' || Boolean(state.submission?.enqueueError);
+    host.querySelector('[data-review-retry]').hidden = !state.submission?.enqueueError;
+    host.querySelector('[data-review-retry]').disabled = sending;
+  }
 
   function paint() {
     if (disposed) return;
@@ -67,8 +75,7 @@ export function mountTaskReviewFeedback(host, options) {
     });
     commentButton.disabled = busy() || !drafts.length;
     summary.disabled = busy();
-    host.querySelector('[data-review-submit-status]').textContent = submissionMessage(state, sending);
-    host.querySelector('[data-review-recover]').hidden = state.submission?.status !== 'failed';
+    paintSubmission();
     onCount(drafts.length);
   }
 
@@ -101,6 +108,13 @@ export function mountTaskReviewFeedback(host, options) {
   bar.querySelectorAll('[data-review-verdict]').forEach((button) => {
     button.onclick = () => void confirmVerdict(button.dataset.reviewVerdict);
   });
+  host.querySelector('[data-review-retry]').onclick = async () => {
+    if (sending) return;
+    sending = true; paint();
+    try { await batch.retry(); }
+    catch (error) { notifyError("Could not submit review", messageOf(error)); }
+    finally { sending = false; paint(); }
+  };
   host.querySelector('[data-review-recover]').onclick = async () => {
     try { await batch.recover(); }
     catch (error) { notifyError("Could not edit pending comments", messageOf(error)); }
@@ -109,8 +123,9 @@ export function mountTaskReviewFeedback(host, options) {
     const row = event.target.closest('[data-review-draft]');
     if (!row) return;
     const draft = state.drafts.find((draft) => draft.id === row.dataset.reviewDraft);
-    if (!draft || state.submission) return;
-    if (event.target.closest('[data-review-draft-jump]')) onJump?.(draft.anchor, draft.view);
+    if (!draft) return;
+    if (event.target.closest('[data-review-draft-jump]')) { onJump?.(draft.anchor, draft.view); return; }
+    if (state.submission) return;
     if (event.target.closest('[data-review-draft-edit]')) {
       void Promise.resolve(onJump?.(draft.anchor, draft.view)).then(() => { if (!disposed) composer.edit(draft); });
     }

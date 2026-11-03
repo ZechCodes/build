@@ -105,4 +105,3 @@ export async function mountVerdictReviewTask(page, basePath) {
   await page.waitForSelector(`[data-review-commit="${commit}"]`, { state: "attached" });
   await page.waitForSelector(`[data-review-path="${path}"]`);
 }
-

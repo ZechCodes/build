@@ -28,12 +28,12 @@ beforeEach(async () => {
   page?.dispose(); vi.clearAllMocks(); await wipeCache(); await wipeUiRecords();
   document.body.innerHTML = '<div id="review"></div>';
 });
-async function mount(saved = review, cachedSupport = support) {
+async function mount(saved = review, cachedSupport = support, over = {}) {
   await rememberReviewSupport(scope.deviceId, { reviews: cachedSupport });
   if (saved) await writeReviewRecord(scope, saved, 1);
   page = mountTaskReviewPage(document.querySelector("#review"), {
     ...scope, callRpc: vi.fn(() => new Promise(() => {})),
-    workspaces: () => [], task: () => ({ id: scope.taskId }), onTaskChanged: vi.fn(),
+    workspaces: () => [], task: () => ({ id: scope.taskId }), onTaskChanged: vi.fn(), ...over,
   });
   await painted(() => document.querySelector('[data-review-snapshot]'));
 }
@@ -183,4 +183,32 @@ it("enables line composition in both panes and disables verdicts on older revisi
   expect([...document.querySelectorAll('[data-review-verdict]')].every((button) => button.disabled)).toBe(true);
   document.querySelector('[data-review-view="files"]').click();
   expect(panes.files.mock.calls.at(-1)[0].onComment).toBeTypeOf('function');
+});
+
+
+it("gates commit composing independently from commit reads, and still allows Files comments", async () => {
+  const saved = review.snapshots[0];
+  const capability = { ...support, comments: true, commits: true, commit: true, anchorCommit: false };
+  await mount(review, capability, { reviewRoute: { revision: saved.number, mode: 'commit', commit: 'a'.repeat(40), directoryId: 'dir-api' } });
+  expect(panes.changes.mock.calls.at(-1)[0].comparison.mode).toBe('commit');
+  expect(panes.changes.mock.calls.at(-1)[0].onComment).toBeUndefined();
+  expect(document.querySelector('[data-review-comment-unavailable]').hidden).toBe(false);
+  await rememberReviewSupport(scope.deviceId, { reviews: { ...capability, anchorCommit: true } });
+  await vi.waitFor(() => expect(panes.changes.mock.calls.at(-1)[0].onComment).toBeTypeOf('function'));
+  document.querySelector('[data-review-view="files"]').click();
+  expect(panes.files.mock.calls.at(-1)[0].onComment).toBeTypeOf('function');
+});
+
+it("jumps a Files draft back to its unchanged source line in Files", async () => {
+  const markReviewRoute = vi.fn();
+  await mount(review, { ...support, comments: true }, { markReviewRoute });
+  document.querySelector('[data-review-view="files"]').click();
+  const anchor = { snapshot_id: review.snapshots[0].id, directory_id: 'dir-api', path: 'unchanged.js', side: 'new', line: 12 };
+  panes.files.mock.calls.at(-1)[0].onComment(anchor);
+  await painted(() => document.querySelector('[data-review-inline-composer] textarea'));
+  const field = document.querySelector('[data-review-inline-composer] textarea');
+  field.value = 'Unchanged context'; field.dispatchEvent(new Event('input'));
+  await painted(() => document.querySelector('[data-review-draft-jump]'));
+  document.querySelector('[data-review-draft-jump]').click();
+  expect(markReviewRoute.mock.calls.at(-1)[0].review).toMatchObject({ view: 'files', path: 'unchanged.js', side: 'new', line: 12 });
 });

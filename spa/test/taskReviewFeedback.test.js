@@ -127,6 +127,27 @@ describe("task review feedback", () => {
     feedback.dispose();
   });
 
+  it("offers retry when durable enqueue fails without discarding the saved review", async () => {
+    const host = document.createElement('div'); const bar = document.createElement('div'); const inline = document.createElement('div');
+    document.body.append(host, bar, inline);
+    const enqueueBatch = vi.fn().mockRejectedValueOnce(new Error('Local storage is full')).mockResolvedValue([]);
+    const service = { subscribe: () => () => {}, readOperations: () => [], enqueueBatch };
+    const feedback = mount(host, vi.fn(), { taskId: 'enqueue-error', writeOperations: service, verdictHost: bar, placeComposer: (form) => { inline.append(form); return true; } });
+    await feedback.ready; await feedback.comment(anchor);
+    const field = inline.querySelector('textarea'); field.value = 'Keep this draft'; field.dispatchEvent(new Event('input'));
+    await until(() => host.querySelectorAll('[data-review-draft]').length === 1);
+    inline.querySelector('form').dispatchEvent(new Event('submit', { cancelable: true }));
+    host.querySelector('[data-review-comment-batch]').click();
+    await until(() => host.textContent.includes('Local storage is full'));
+    expect(host.querySelector('[data-review-retry]').hidden).toBe(false);
+    expect(host.querySelector('[data-review-recover]').hidden).toBe(true);
+    host.querySelector('[data-review-retry]').click();
+    await until(() => enqueueBatch.mock.calls.length === 2);
+    expect(enqueueBatch.mock.calls[1][0]).toEqual(enqueueBatch.mock.calls[0][0]);
+    expect(host.textContent).toContain('Keep this draft');
+    feedback.dispose();
+  });
+
   it.each(['approve', 'request_changes'])("confirms %s with what happens next and submits pending comments", async (verdict) => {
     const host = document.createElement('div');
     const bar = document.createElement('div');

@@ -1,4 +1,4 @@
-// Saved task comments share one read-only presentation in Changes and Files.
+// Saved task threads and their reply actions share one presentation.
 import "../styles/taskReviewInline.css";
 import { esc } from "./text.js";
 import { markdownHtml } from "./markdown.js";
@@ -64,6 +64,12 @@ export function paintInlineReviewRows(host, comments, context) {
       ...context, side: "new", line: Number(row.dataset.newLine), colspan: context.colspan || 2,
     }));
   });
+}
+
+export function reviewComposerMatches(anchor, context) {
+  if (!anchor || anchor.snapshot_id !== context.snapshotId || anchor.directory_id !== context.directoryId) return false;
+  if (anchor.side === "old" && context.comparisonMode === "since" && context.sinceBaseline !== "base") return false;
+  return matchesCommit(anchor.commit, context);
 }
 
 /** Move the same editor node after a line, preserving focus and typed text. */

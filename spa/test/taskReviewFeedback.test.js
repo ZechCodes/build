@@ -18,7 +18,7 @@ const until = async (ready) => {
 };
 const mount = (host, callRpc = vi.fn(async () => ({})), over = {}) => mountTaskReviewFeedback(host, {
   deviceId: "device", projectId: "project", taskId: "task", snapshot: { id: "snap-1", number: 2 },
-  callRpc, ...over,
+  callRpc, reviewMode: "pull_request", ...over,
 });
 
 beforeEach(() => { document.body.innerHTML = ""; });

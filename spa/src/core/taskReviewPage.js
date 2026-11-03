@@ -173,7 +173,7 @@ export function mountTaskReviewPage(host, options) {
 
   function paintFeedback(saved) {
     const allowOpinion = !isPr() || support.pullRequests;
-    const key = support.comments && saved ? JSON.stringify([saved.id, allowOpinion, support, currentTask().assignee, reviewAuthorLabel(review(), currentTask(), support)]) : "";
+    const key = support.comments && saved ? JSON.stringify([saved.id, allowOpinion, isPr(), support, currentTask().assignee, reviewAuthorLabel(review(), currentTask(), support)]) : "";
     if (key === feedbackKey) return feedback?.update();
     feedbackKey = key;
     feedback?.dispose();
@@ -181,7 +181,7 @@ export function mountTaskReviewPage(host, options) {
     const target = options.feedbackHost || node("feedback-host");
     target.innerHTML = "";
     if (key) feedback = mountTaskReviewFeedback(target, {
-      ...scope, snapshot: saved, callRpc, allowOpinion, support, task: currentTask(), authorLabel: reviewAuthorLabel(review(), currentTask(), support), writeOperations: options.writeOperations, taskNumber: taskNumber(), verdictHost: node("verdict-host"), feed: options.feed, projectKey: options.projectKey,
+      ...scope, snapshot: saved, callRpc, allowOpinion, reviewMode: review()?.mode, support, task: currentTask(), authorLabel: reviewAuthorLabel(review(), currentTask(), support), writeOperations: options.writeOperations, taskNumber: taskNumber(), verdictHost: node("verdict-host"), feed: options.feed, projectKey: options.projectKey,
       keepReadingPlace: options.keepReadingPlace,
       onSent: async () => { await repository.refresh(); await options.onTaskChanged?.(); },
       latestSnapshotId: () => review()?.snapshots.at(-1)?.id,

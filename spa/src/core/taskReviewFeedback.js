@@ -32,8 +32,9 @@ function submissionMessage(state, sending) {
 
 export function mountTaskReviewFeedback(host, options) {
   const { deviceId, projectId, taskId, snapshot, callRpc, writeOperations, taskNumber, priorAnchors,
-    verdictHost = host, allowOpinion = true, support = {}, task = null, reviewer = { kind: "user" }, latestSnapshotId = () => null, onSent, onJump,
+    verdictHost = host, allowOpinion = true, reviewMode, support = {}, task = null, reviewer = { kind: "user" }, latestSnapshotId = () => null, onSent, onJump,
     onCount = () => {}, placeComposer } = options;
+  const canReject = support.reject && reviewMode === "pull_request";
   let disposed = false;
   let sending = false;
   let confirming = false;
@@ -45,7 +46,7 @@ export function mountTaskReviewFeedback(host, options) {
   const bar = document.createElement("div");
   bar.className = "task-review-verdict-bar";
   bar.innerHTML = '<button class="btn" type="button" data-review-verdict="request_changes">Request changes</button><button class="btn primary" type="button" data-review-verdict="approve">Approve</button>';
-  if (support.reject) bar.insertAdjacentHTML("afterbegin", '<button class="btn danger" type="button" data-review-verdict="reject">Reject</button>');
+  if (canReject) bar.insertAdjacentHTML("afterbegin", '<button class="btn danger" type="button" data-review-verdict="reject">Reject</button>');
   verdictHost.append(bar);
   const summary = host.querySelector('[data-review-summary]');
   const historical = () => Boolean(latestSnapshotId()) && latestSnapshotId() !== snapshotIdOf(snapshot);
@@ -89,7 +90,7 @@ export function mountTaskReviewFeedback(host, options) {
   }
 
   const opinionAllowed = () => allowOpinion && !historical();
-  const verdictAllowed = (verdict) => opinionAllowed() && (verdict !== "reject" || support.reject && decidingReviewer(reviewer, task));
+  const verdictAllowed = (verdict) => opinionAllowed() && (verdict !== "reject" || canReject && decidingReviewer(reviewer, task));
   const busy = () => sending || Boolean(state.submission);
   async function send(verdict = "") {
     if (disposed || busy()) return;
@@ -106,7 +107,7 @@ export function mountTaskReviewFeedback(host, options) {
     if (disposed || confirming || busy() || !verdictAllowed(verdict)) return;
     confirming = true; paint();
     const count = state.drafts.filter((draft) => draft.body.trim()).length;
-    const answer = await confirmReviewVerdict({ verdict, revision: snapshot.number, count, summary: state.summary, handoff: support.reject,
+    const answer = await confirmReviewVerdict({ verdict, revision: snapshot.number, count, summary: state.summary, handoff: canReject,
       author: support.author && options.authorLabel ? options.authorLabel : "The author" });
     confirming = false; paint();
     if (!answer.confirmed || disposed) return;

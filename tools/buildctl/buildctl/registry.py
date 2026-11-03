@@ -7,6 +7,7 @@ import re
 import tomllib
 from urllib.parse import urlsplit
 
+from .http_settings import load_http_settings
 from .runtime import BuildctlError
 
 CHANNELS = {
@@ -85,7 +86,11 @@ class Environment:
             BRIDGE_RELAY_URL=self.relay_url,
         )
         child.update(self.migration_roots())
+        child.update(self.http_settings())
         return child
+
+    def http_settings(self):
+        return load_http_settings(self)
 
     def migration_roots(self):
         manifest = self.path(self.state_root / "migration-roots.json")

@@ -106,12 +106,14 @@ const reviewMetadataHtml = (row, context) => {
   return `<div class="task-review-comment-meta"${empty ? " hidden" : ""}>${snapshot}${verdict}${advisoryReviewHtml(row, context)}${place}</div>`;
 };
 
+const reservesReadOnlyReply = (row, context) => context.readOnlyReview && Boolean(row.anchor || row.opinion || row.replyTo);
+
 /// The id an action line in a conversation lands on: a comment is linked as
 /// `#comment-<id>` (core/trackerActionLine.js), so the row has to answer to it.
 const commentHtml = (row, context) => `<li class="task-entry task-comment${row.mentionsUser ? " task-comment-mentioned" : ""}" id="comment-${esc(row.key)}" data-comment-id="${esc(row.key)}">
     ${taskAvatarHtml(row.actor, context)}
     <div class="task-comment-card">
-      <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}${!context.readOnlyReview && (row.anchor || row.opinion || row.replyTo) ? `<button class="task-comment-reply" type="button" data-review-reply="${esc(row.key)}" aria-label="Reply" title="Reply">${ICON_REPLY}</button>` : ""}</div>
+      <div class="task-entry-head"${reservesReadOnlyReply(row, context) ? " data-review-reply-footprint" : ""}><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}${!context.readOnlyReview && (row.anchor || row.opinion || row.replyTo) ? `<button class="task-comment-reply" type="button" data-review-reply="${esc(row.key)}" aria-label="Reply" title="Reply">${ICON_REPLY}</button>` : ""}</div>
       ${reviewMetadataHtml(row, context)}
       ${reviewNoticeText(row, context) ? `<p class="task-review-service-notice">${esc(reviewNoticeText(row, context))}</p>` : ""}
       ${commentReplyHtml(row, context)}

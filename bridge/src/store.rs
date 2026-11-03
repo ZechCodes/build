@@ -92,7 +92,7 @@ pub use reviews::verdict_delivery::{
     ReviewVerdictBatchAnchor, ReviewVerdictBatchComment, ReviewVerdictDelivery,
     ReviewVerdictDeliveryState, ReviewVerdictDeliverySummary, ReviewVerdictRetryContext,
 };
-pub(crate) use reviews::RevisionDispatch;
+pub(crate) use reviews::{RevisionDispatch, RevisionFailureNotice};
 mod schema;
 mod source_sync;
 mod task_observation;

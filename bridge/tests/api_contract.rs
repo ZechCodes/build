@@ -2222,7 +2222,11 @@ fn review_delivery_retry_is_a_strict_typed_mutation() {
 fn review_service_notice_markers_are_additive_read_only_wire_fields() {
     let fixture = read_json(&fixtures_root().join("v1/tasks.get.json"));
     assert_eq!(fixture["review_notices"]["since"], "3.30.0");
-    for marker in ["revision_ready", "verdict_undelivered"] {
+    for marker in [
+        "revision_ready",
+        "verdict_undelivered",
+        "revision_undelivered",
+    ] {
         let example = fixture["examples"]
             .as_array()
             .unwrap()

@@ -149,6 +149,9 @@ pub(crate) const MESSAGE_REVIEW_REVISION_READY: &str =
     template!("messages/review_revision_ready.md");
 /// A recipient without a known delivered baseline must read the whole revision.
 pub(crate) const MESSAGE_REVIEW_REVISION_FULL: &str = template!("messages/review_revision_full.md");
+/// A terminal revision hand-off failure asks the user to restore its reviewer.
+pub(crate) const MESSAGE_REVIEW_REVISION_UNDELIVERED: &str =
+    template!("messages/review_revision_undelivered.md");
 /// Visible reminder for a user-assigned review after publication.
 pub(crate) const MESSAGE_REVIEW_REVISION_USER: &str = template!("messages/review_revision_user.md");
 

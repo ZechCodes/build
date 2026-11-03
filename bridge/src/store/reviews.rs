@@ -19,7 +19,7 @@ mod maintenance;
 mod pull_requests;
 pub(crate) mod verdict_delivery;
 pub(super) use pull_requests::clear_tracking_expectations;
-pub(crate) use pull_requests::revision_dispatch::RevisionDispatch;
+pub(crate) use pull_requests::revision_dispatch::{RevisionDispatch, RevisionFailureNotice};
 pub(crate) use pull_requests::TrackingExpectation;
 
 #[derive(Clone, Serialize, Deserialize)]

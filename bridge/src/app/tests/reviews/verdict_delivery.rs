@@ -659,6 +659,15 @@ fn retrying_superseded_failed_verdict_reports_current_status_without_stale_actio
         .unwrap();
     let retried = store.load_review_verdict_delivery(&old).unwrap().unwrap();
     assert_ne!(retried.operation_id, original.operation_id);
+    assert_eq!(
+        store
+            .operation(&original.operation_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        OperationStatus::Uncertain,
+        "the old unknown outcome remains audit evidence, never queued again"
+    );
     assert_eq!(retried.batch, original.batch);
     assert_eq!(retried.reason, original.reason);
     assert_eq!(retried.comment_id, original.comment_id);

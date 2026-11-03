@@ -577,6 +577,7 @@ pub struct TaskComment {
 pub enum ReviewNoticeKind {
     RevisionReady,
     VerdictUndelivered,
+    RevisionUndelivered,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

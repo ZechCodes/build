@@ -207,10 +207,13 @@ fn permanent_revision_dispatch_failure_is_terminal_and_not_attempted_on_each_dra
     params.reviewer = Some(ReviewReviewer::Agent { agent_id: agent });
     let opened = opening::open_direct(&mut app, params, Actor::User);
     let task_id = opened["task"]["id"].as_str().unwrap();
+    let foreign_source = init_repo_named(home.path(), "foreign-reviewer");
+    let foreign_project = added_project(&mut app, &foreign_source);
+    let (_, foreign_agent) = project_agent(&mut app, &foreign_project);
     let store = app.store.as_ref().unwrap();
     let mut task = store.load_tracker_task(task_id).unwrap().unwrap();
     task.assignee = Some(crate::tracker::Assignee::Agent {
-        agent_id: "removed-reviewer".into(),
+        agent_id: foreign_agent,
     });
     store.save_tracker_task_activity(&task, &[], &[]).unwrap();
     let next = publish_next_revision(&app, task_id);
@@ -232,4 +235,181 @@ fn permanent_revision_dispatch_failure_is_terminal_and_not_attempted_on_each_dra
             .unwrap(),
         failed
     );
+}
+
+#[test]
+fn unavailable_coordinator_retries_when_due_without_writing_on_skipped_polls() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(home.path());
+    let workspace_id = workspace(&mut app, &project, "retry coordinator");
+    let (owner, agent) = project_agent(&mut app, &project);
+    let mut params = opening::params(&workspace_id);
+    params.reviewer = Some(ReviewReviewer::ProjectAgent);
+    let opened = opening::open_direct(&mut app, params, Actor::User);
+    let next = publish_next_revision(&app, opened["task"]["id"].as_str().unwrap());
+    app.runs.get_mut(&owner).unwrap().pinned_agent_id = None;
+    let now = crate::agent::now_ms() as i64;
+    app.drain_review_revision_dispatches_at(now).unwrap();
+    let schedule = app
+        .store
+        .as_ref()
+        .unwrap()
+        .review_revision_dispatch_schedule(&next)
+        .unwrap();
+    assert_eq!((schedule.0, schedule.1), (1, now + 30_000));
+    assert_eq!(
+        app.store
+            .as_ref()
+            .unwrap()
+            .review_revision_dispatch_result(&next)
+            .unwrap()
+            .0,
+        "pending"
+    );
+    let changes = app.store.as_ref().unwrap().revision_dispatch_sql_changes();
+    app.drain_review_revision_dispatches_at(now + 29_999)
+        .unwrap();
+    assert_eq!(
+        app.store.as_ref().unwrap().revision_dispatch_sql_changes(),
+        changes
+    );
+    app.runs.get_mut(&owner).unwrap().pinned_agent_id = Some(agent.clone());
+    app.drain_review_revision_dispatches_at(now + 30_000)
+        .unwrap();
+    assert!(revision_message(&mut app, &owner, &agent, &next).contains("Revision 2 is ready"));
+    assert_eq!(
+        app.store
+            .as_ref()
+            .unwrap()
+            .review_revision_dispatch_result(&next)
+            .unwrap()
+            .0,
+        "delivered"
+    );
+}
+
+#[test]
+fn failed_revision_notice_replays_one_reserved_comment_identity_after_store_reopen() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(home.path());
+    let workspace_id = workspace(&mut app, &project, "revision failure replay");
+    let (_, agent) = project_agent(&mut app, &project);
+    let mut params = opening::params(&workspace_id);
+    params.reviewer = Some(ReviewReviewer::Agent {
+        agent_id: agent.clone(),
+    });
+    let opened = opening::open_direct(&mut app, params, Actor::User);
+    let task_id = opened["task"]["id"].as_str().unwrap();
+    let next = publish_next_revision(&app, task_id);
+    let now = crate::agent::now_ms() as i64;
+    let store = app.store.as_ref().unwrap();
+    store
+        .settle_review_revision_dispatch_at(
+            &next,
+            Some(&agent),
+            Some("reviewer belongs to another project"),
+            false,
+            now,
+        )
+        .unwrap();
+    let reserved = store
+        .review_revision_dispatch_schedule(&next)
+        .unwrap()
+        .2
+        .unwrap();
+    assert!(reserved.starts_with("tc-"));
+    // Restart after the failed row reserved its notice but before the notice write.
+    app.store = Some(crate::store::Store::new(home.path().join("store")).unwrap());
+    assert_eq!(
+        app.store
+            .as_ref()
+            .unwrap()
+            .review_revision_dispatch_schedule(&next)
+            .unwrap()
+            .2
+            .as_deref(),
+        Some(reserved.as_str())
+    );
+    app.drain_review_revision_dispatches_at(now).unwrap();
+    app.drain_review_revision_dispatches_at(now + 1).unwrap();
+    let notes: Vec<_> = app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_tracker_timeline(task_id)
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| match entry {
+            crate::tracker::TimelineEntry::Comment(comment)
+                if comment.review_notice
+                    == Some(crate::tracker::ReviewNoticeKind::RevisionUndelivered) =>
+            {
+                Some(comment)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].id, reserved);
+    assert!(notes[0].mentions_user);
+    assert!(notes[0].body.contains(&format!(
+        "Revision 2 couldn’t be sent to @agent:{agent}: reviewer belongs to another project"
+    )));
+}
+
+#[test]
+fn exhausted_transient_revision_attempts_back_off_to_ten_minutes_then_notify_once() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(home.path());
+    let workspace_id = workspace(&mut app, &project, "exhausted coordinator");
+    let (owner, _) = project_agent(&mut app, &project);
+    let mut params = opening::params(&workspace_id);
+    params.reviewer = Some(ReviewReviewer::ProjectAgent);
+    let opened = opening::open_direct(&mut app, params, Actor::User);
+    let task_id = opened["task"]["id"].as_str().unwrap();
+    let next = publish_next_revision(&app, task_id);
+    app.runs.get_mut(&owner).unwrap().pinned_agent_id = None;
+    let mut now = crate::agent::now_ms() as i64;
+    for (attempt, delay) in [30_000, 60_000, 120_000, 240_000, 480_000, 600_000]
+        .into_iter()
+        .enumerate()
+    {
+        app.drain_review_revision_dispatches_at(now).unwrap();
+        let schedule = app
+            .store
+            .as_ref()
+            .unwrap()
+            .review_revision_dispatch_schedule(&next)
+            .unwrap();
+        assert_eq!((schedule.0, schedule.1), (attempt as i64 + 1, now + delay));
+        now += delay;
+    }
+    app.drain_review_revision_dispatches_at(now).unwrap();
+    app.drain_review_revision_dispatches_at(now + 600_000)
+        .unwrap();
+    assert_eq!(
+        app.store
+            .as_ref()
+            .unwrap()
+            .review_revision_dispatch_schedule(&next)
+            .unwrap()
+            .0,
+        7
+    );
+    assert_eq!(
+        app.store
+            .as_ref()
+            .unwrap()
+            .review_revision_dispatch_result(&next)
+            .unwrap()
+            .0,
+        "failed"
+    );
+    let timeline = app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_tracker_timeline(task_id)
+        .unwrap();
+    assert_eq!(timeline.iter().filter(|entry| matches!(entry,crate::tracker::TimelineEntry::Comment(comment) if comment.review_notice == Some(crate::tracker::ReviewNoticeKind::RevisionUndelivered) && comment.mentions_user)).count(),1);
 }

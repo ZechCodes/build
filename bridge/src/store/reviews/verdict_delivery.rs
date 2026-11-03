@@ -428,6 +428,9 @@ fn superseded_retry_context(
         .then_some(context))
 }
 
+// Uncertain receipts remain audit evidence of an unknown provider outcome.
+// They are never requeued here; the outbox points only to the fresh context
+// attempt. Marking them Delivered would falsely claim that outcome is known.
 fn retire_superseded_retry(tx: &Transaction, operation: &str) -> Result<(), StoreError> {
     let claimed: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM operations WHERE operation_id=?1 AND status='claimed')",

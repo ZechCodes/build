@@ -586,3 +586,31 @@ fn previous_projection_shape_rebuilds_marked_service_mentions_before_reads() {
     );
     assert_matches_history(&store, &task.id);
 }
+
+#[test]
+fn undelivered_revision_notice_counts_as_explicit_service_attention() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = Task::drafted(
+        "/attention",
+        "revision could not be delivered",
+        Actor::User,
+        support::NOW,
+    );
+    task.status = "done".into();
+    task.watched = true;
+    let task = store.create_tracker_task(task, &[]).unwrap();
+    let mut note = comment(&task, 42, true, false);
+    note.author = Actor::Build;
+    note.review_notice = Some(crate::tracker::ReviewNoticeKind::RevisionUndelivered);
+    store
+        .save_tracker_task_activity(&task, &[note], &[])
+        .unwrap();
+    assert_attention(
+        &store,
+        &task.id,
+        (true, false),
+        "marked failed revision asks the user",
+    );
+    assert_matches_history(&store, &task.id);
+}

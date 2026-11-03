@@ -2109,16 +2109,17 @@ operation. A superseded failed verdict gets a new context-only attempt naming
 current status and revision, while preserving its original comment and batch.
 First acceptance uses immutable journal order; polling accepted pending receipts
 rotates without rewriting unchanged rows. Review-service
-mentions use the typed comment `review_notice` marker (`revision_ready` or
-`verdict_undelivered`). Only marked Build mentions raise review-service attention,
+mentions use the typed comment `review_notice` marker (`revision_ready`, `verdict_undelivered` or
+`revision_undelivered`). Only marked Build mentions raise review-service attention,
 including on a finished review; ordinary Build mentions remain ignored. A new revision
 returns a user reviewer to Needs you or dispatches an agent reviewer with the
 revision number and the previous revision to read with `since`. If several
 revisions publish before dispatch, only the latest active revision wakes the
 agent reviewer; superseded pending revision handoffs are settled. The surviving
 handoff keeps that recipient's last delivered revision as its `since` baseline.
-Without a known prior delivery it requests the full current revision. Permanent
-revision-dispatch failures settle as Failed, rather than retrying every second.
+Without a known prior delivery it requests the full current revision. Transient revision-dispatch failures back off without writes on skipped polls.
+Permanent or exhausted failures settle as Failed and post one reserved-identity
+`revision_undelivered` Build mention for the user.
 
 **Workspace creation (#971).** The Changes header, workspace menu and toolbar
 all offer Request review and open the same form. It retains title, description,
@@ -4900,8 +4901,8 @@ before the next list refresh. The task page's New divider also starts after
 the watch baseline (`watch_started_after`, or the legacy watch event).
 
 Review service attention (wire 3.30.0, `tasks.review.verdictDelivery`) uses a
-bridge-only `review_notice` field on task comments. `revision_ready` and
-`verdict_undelivered` are the only marked Build notices that can raise Needs you
+bridge-only `review_notice` field on task comments. `revision_ready`, `verdict_undelivered` and
+`revision_undelivered` are the only marked Build notices that can raise Needs you
 when `mentions_user` is true. Ordinary Build-authored mentions stay ignored.
 Summary rows carry `unread_service_mentions`; those unread marked asks remain
 visible even on a Done review and clear when read. For PRs in Changes requested

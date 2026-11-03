@@ -10,6 +10,15 @@ pub(crate) struct RevisionDispatch {
     pub number: u64,
 }
 
+pub(crate) struct RevisionFailureNotice {
+    pub task_id: String,
+    pub number: u64,
+    pub snapshot_id: String,
+    pub comment_id: String,
+    pub reviewer: String,
+    pub error: String,
+}
+
 pub(super) fn enqueue(
     tx: &Transaction,
     task_id: &str,
@@ -50,7 +59,11 @@ pub(super) fn enqueue(
             append_activity(tx, &[comment], &[])
         }
         Some(Assignee::Agent { .. } | Assignee::ProjectAgent) => {
-            tx.execute("INSERT INTO review_revision_dispatches(task_id,snapshot_id,previous_snapshot_id,number) VALUES (?1,?2,?3,?4)", params![task_id,snapshot.id,previous_snapshot_id,snapshot.number as i64])?;
+            let reviewer = match &task.assignee {
+                Some(Assignee::Agent { agent_id }) => format!("@agent:{agent_id}"),
+                _ => "the project coordinator".into(),
+            };
+            tx.execute("INSERT INTO review_revision_dispatches(task_id,snapshot_id,previous_snapshot_id,number,reviewer) VALUES (?1,?2,?3,?4,?5)", params![task_id,snapshot.id,previous_snapshot_id,snapshot.number as i64,reviewer])?;
             Ok(())
         }
         None => Ok(()),
@@ -58,12 +71,20 @@ pub(super) fn enqueue(
 }
 
 impl Store {
+    #[cfg(test)]
     pub(crate) fn pending_review_revision_dispatches(
         &self,
     ) -> Result<Vec<RevisionDispatch>, StoreError> {
+        self.pending_review_revision_dispatches_at(crate::agent::now_ms() as i64)
+    }
+
+    pub(crate) fn pending_review_revision_dispatches_at(
+        &self,
+        now_ms: i64,
+    ) -> Result<Vec<RevisionDispatch>, StoreError> {
         let conn = self.connection();
-        let mut statement = conn.prepare("SELECT task_id,snapshot_id,number FROM review_revision_dispatches WHERE state='pending' ORDER BY updated_at,snapshot_id LIMIT 32")?;
-        let rows = statement.query_map([], |row| {
+        let mut statement = conn.prepare("SELECT task_id,snapshot_id,number FROM review_revision_dispatches WHERE state='pending' AND retry_after_ms<=?1 ORDER BY retry_after_ms,updated_at,snapshot_id LIMIT 32")?;
+        let rows = statement.query_map([now_ms], |row| {
             Ok(RevisionDispatch {
                 task_id: row.get(0)?,
                 snapshot_id: row.get(1)?,
@@ -104,21 +125,84 @@ impl Store {
         .map_err(StoreError::from)
     }
 
+    #[cfg(test)]
     pub(crate) fn settle_review_revision_dispatch(
         &self,
         snapshot_id: &str,
-        recipient_agent_id: Option<&str>,
+        recipient: Option<&str>,
         error: Option<&str>,
     ) -> Result<(), StoreError> {
-        let state = match (recipient_agent_id, error) {
-            (_, Some(_)) => "failed",
-            (Some(_), None) => "delivered",
-            (None, None) => "superseded",
-        };
+        self.settle_review_revision_dispatch_at(
+            snapshot_id,
+            recipient,
+            error,
+            false,
+            crate::agent::now_ms() as i64,
+        )
+    }
+
+    pub(crate) fn settle_review_revision_dispatch_at(
+        &self,
+        snapshot_id: &str,
+        recipient: Option<&str>,
+        error: Option<&str>,
+        transient: bool,
+        now_ms: i64,
+    ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
-            tx.execute("UPDATE review_revision_dispatches SET state=?2,recipient_agent_id=?3,error=?4,updated_at=?5 WHERE snapshot_id=?1 AND state='pending'", params![snapshot_id,state,recipient_agent_id,error,now_rfc3339()])?;
+            let current: Option<(String,i64)> = tx.query_row("SELECT state,attempts FROM review_revision_dispatches WHERE snapshot_id=?1",[snapshot_id], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
+            let Some((_, attempts)) = current.filter(|(state,_)| state == "pending") else { return Ok(()); };
+            let attempts = attempts + i64::from(recipient.is_some() || error.is_some());
+            let retry = error.is_some() && transient && attempts < 7;
+            let state = if retry { "pending" } else if error.is_some() { "failed" } else if recipient.is_some() { "delivered" } else { "superseded" };
+            let delay = 30_000_i64.saturating_mul(1_i64 << attempts.saturating_sub(1).clamp(0, 5));
+            let retry_after = if retry { now_ms.saturating_add(delay.min(600_000)) } else { 0 };
+            let comment_id = (state == "failed").then(crate::tracker::new_comment_id);
+            tx.execute("UPDATE review_revision_dispatches SET state=?2,recipient_agent_id=COALESCE(?3,recipient_agent_id),error=?4,updated_at=?5,attempts=?6,retry_after_ms=?7,failure_comment_id=COALESCE(failure_comment_id,?8) WHERE snapshot_id=?1 AND state='pending'", params![snapshot_id,state,recipient,error,now_rfc3339(),attempts,retry_after,comment_id])?;
             Ok(())
         })
+    }
+
+    pub(crate) fn failed_review_revision_notices(
+        &self,
+    ) -> Result<Vec<RevisionFailureNotice>, StoreError> {
+        let conn = self.connection();
+        let mut statement = conn.prepare("SELECT task_id,number,snapshot_id,failure_comment_id,COALESCE('@agent:' || recipient_agent_id,reviewer),error FROM review_revision_dispatches WHERE state='failed' AND failure_notice_posted=0 AND failure_comment_id IS NOT NULL ORDER BY updated_at,snapshot_id LIMIT 32")?;
+        let rows = statement.query_map([], |row| {
+            Ok(RevisionFailureNotice {
+                task_id: row.get(0)?,
+                number: row.get::<_, i64>(1)? as u64,
+                snapshot_id: row.get(2)?,
+                comment_id: row.get(3)?,
+                reviewer: row.get(4)?,
+                error: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    pub(crate) fn finish_review_revision_notice(
+        &self,
+        snapshot_id: &str,
+    ) -> Result<(), StoreError> {
+        self.in_transaction(|tx| {
+            tx.execute("UPDATE review_revision_dispatches SET failure_notice_posted=1 WHERE snapshot_id=?1 AND failure_notice_posted=0 AND state='failed'",[snapshot_id])?;
+            Ok(())
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn review_revision_dispatch_schedule(
+        &self,
+        snapshot_id: &str,
+    ) -> Result<(i64, i64, Option<String>), StoreError> {
+        self.connection().query_row("SELECT attempts,retry_after_ms,failure_comment_id FROM review_revision_dispatches WHERE snapshot_id=?1",[snapshot_id],|row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(StoreError::from)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn revision_dispatch_sql_changes(&self) -> u64 {
+        self.connection().total_changes()
     }
 
     #[cfg(test)]

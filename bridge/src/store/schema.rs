@@ -438,12 +438,19 @@ CREATE TABLE IF NOT EXISTS review_revision_dispatches (
     previous_snapshot_id TEXT NOT NULL,
     number INTEGER NOT NULL,
     recipient_agent_id TEXT,
+    reviewer TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    retry_after_ms INTEGER NOT NULL DEFAULT 0,
+    failure_comment_id TEXT,
+    failure_notice_posted INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','delivered','failed','superseded')),
     updated_at TEXT NOT NULL DEFAULT '',
     error TEXT
 );
 CREATE INDEX IF NOT EXISTS review_revision_dispatches_pending
-    ON review_revision_dispatches(state, updated_at, snapshot_id);
+    ON review_revision_dispatches(state, retry_after_ms, updated_at, snapshot_id);
+CREATE INDEX IF NOT EXISTS review_revision_dispatches_notices
+    ON review_revision_dispatches(state, failure_notice_posted, updated_at, snapshot_id);
 CREATE INDEX IF NOT EXISTS review_revision_dispatches_delivered
     ON review_revision_dispatches(task_id, recipient_agent_id, number DESC) WHERE state='delivered';
 

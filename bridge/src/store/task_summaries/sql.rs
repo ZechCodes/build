@@ -88,8 +88,8 @@ pub(super) fn fact_rows(table: &str) -> String {
     let (agent_comment, mentions, service_mention) = if table == "tracker_comments" {
         (
             "json_extract(record,'$.author.kind')='agent'",
-            "(json_extract(record,'$.author.kind')='agent' AND (json_extract(record,'$.mentions_user')=1 OR json_extract(record,'$.notifies_user')=1)) OR (json_extract(record,'$.author.kind')='build' AND json_extract(record,'$.review_notice') IN ('revision_ready','verdict_undelivered') AND json_extract(record,'$.mentions_user')=1)",
-            "json_extract(record,'$.author.kind')='build' AND json_extract(record,'$.review_notice') IN ('revision_ready','verdict_undelivered') AND json_extract(record,'$.mentions_user')=1",
+            "(json_extract(record,'$.author.kind')='agent' AND (json_extract(record,'$.mentions_user')=1 OR json_extract(record,'$.notifies_user')=1)) OR (json_extract(record,'$.author.kind')='build' AND json_extract(record,'$.review_notice') IN ('revision_ready','verdict_undelivered','revision_undelivered') AND json_extract(record,'$.mentions_user')=1)",
+            "json_extract(record,'$.author.kind')='build' AND json_extract(record,'$.review_notice') IN ('revision_ready','verdict_undelivered','revision_undelivered') AND json_extract(record,'$.mentions_user')=1",
         )
     } else {
         ("0", "json_extract(record,'$.kind')='created' AND json_extract(record,'$.actor.kind')='agent' AND json_extract(record,'$.mentions_user')=1", "0")

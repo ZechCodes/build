@@ -71,10 +71,12 @@ revisions send an agent reviewer back to `since` from the previous revision or
 return a user reviewer to Needs you. Superseded pending revision handoffs
 settle without waking an agent reviewer; it receives the latest active revision
 from its last delivered baseline. An unknown baseline requests the full revision.
-Permanent dispatch failures settle as Failed instead of retrying forever.
+Transient dispatch failures back off without writes on skipped polls. Permanent
+or exhausted failures settle as Failed and post exactly one reserved-identity
+`revision_undelivered` Build mention for the user.
 
 Build reminders carry `review_notice: "revision_ready"` or
-`"verdict_undelivered"`. Only those marked Build mentions enter Needs you;
+`"verdict_undelivered"` or `"revision_undelivered"`. Only those marked Build mentions enter Needs you;
 ordinary Build-authored mentions retain their existing ignored behavior.
 
 Wire 3.30.0 announces `tasks.review.author`, `tasks.review.reject` and

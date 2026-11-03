@@ -184,6 +184,7 @@ export function mountTaskReviewFiles(host, options) {
     wireCommentLines(preview);
     paintInlineReviewRows(preview, comments, {
       snapshotId: snapshot.id, directoryId: directory.id, path: selected, deviceId, projectId, identities,
+      reviewSupport: options.reviewSupport, reviewAssignee: options.reviewAssignee,
       allowedCommits: ["", directory.head], replyable: Boolean(onReply),
     });
     if (!paintAnchor()) void seekAnchor();

@@ -4,6 +4,7 @@ import { esc } from "./text.js";
 import { markdownHtml } from "./markdown.js";
 import { actorIdentityHtml } from "./trackerIdentity.js";
 import { ageText } from "./trackerChips.js";
+import { advisoryReviewHtml } from "./taskReviewOpinion.js";
 
 const commentsOf = (comments) => (comments || []).map((row) => row.comment || row)
   .filter((row) => !row.type || row.type === "comment");
@@ -41,7 +42,7 @@ function commentHtml(row, context) {
   });
   // markdownHtml and actorIdentityHtml return escaped markup; all scalar attributes use esc.
   // nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format
-  return `<article class="task-review-inline-comment" data-review-inline-comment="${esc(idOf(row) || "")}"><header><strong>${actorIdentityHtml(row.actor || row.author, context)}</strong>${time}${context.replyable ? `<button class="btn" type="button" data-review-inline-reply="${esc(idOf(row) || "")}">Reply</button>` : ""}</header><div class="markdown">${body}</div></article>`;
+  return `<article class="task-review-inline-comment" data-review-inline-comment="${esc(idOf(row) || "")}"><header><strong>${actorIdentityHtml(row.actor || row.author, context)}</strong>${time}${advisoryReviewHtml(row, context)}${context.replyable ? `<button class="btn" type="button" data-review-inline-reply="${esc(idOf(row) || "")}">Reply</button>` : ""}</header><div class="markdown">${body}</div></article>`;
 }
 
 /** HTML immediately after one source/diff row. Scope includes the comparison's

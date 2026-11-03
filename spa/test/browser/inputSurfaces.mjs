@@ -29,6 +29,7 @@ export const INPUT_SOURCES = {
   "core/taskReviewLifecycle.js": "PR merge",
   "core/taskReviewMerge.js": "PR merge",
   "core/taskReviewInlineComposer.js": "review feedback",
+  "core/taskReviewVerdictConfirm.js": "reject confirmation",
   "core/taskWaitingOnRender.js": "task controls / Waiting on prerequisite search",
   "core/toolbar.js": "toolbar projects / toolbar workspaces",
   "core/trackerAssigneeControl.js": "task controls / assignee note",
@@ -90,6 +91,7 @@ export const INPUT_SURFACES = [
   { name: "project remote", selectSurface: "project settings", selectors: ["#psremoteurl", "#pssourcelabel"] },
   { name: "new project remote", selectSurface: "new project", selectors: ["#nrproject", "[data-source-value]", "[data-source-name]", "[data-source-branch]"] },
   { name: "task review", selectSurface: "task review", selectors: ["[data-review-push-branch]", "[data-review-description]"] },
+  { name: "reject confirmation", selectors: ["[data-review-reject-reason]"] },
   { name: "review feedback", selectors: ["[data-review-summary]", "[data-review-inline-composer] textarea"] },
   { name: "PR merge", selectSurface: "PR merge", selectors: ["[data-pr-merge-branch]", "[data-review-close-description]"] },
   { name: "Request review", selectSurface: "Request review", selectors: ["[data-review-title]", "[data-review-description]", "[data-review-base]", "#review-create-assignee"] },
@@ -121,7 +123,7 @@ const modules = {
   feed: "src/core/taskFeed.js", inbox: "src/core/inbox.js", taskComposer: "src/core/taskComposer.js",
   task: "src/core/trackerTaskRender.js", assignee: "src/core/trackerAssigneePicker.js", pop: "src/commentPop.js",
   fileUploads: "src/core/filesUploadActions.js",
-  changes: "src/core/changesComposer.js", editor: "src/core/fileEditor.js", reviewFeedback: "src/core/taskReviewFeedback.js",
+  changes: "src/core/changesComposer.js", editor: "src/core/fileEditor.js", reviewFeedback: "src/core/taskReviewFeedback.js", reviewConfirm: "src/core/taskReviewVerdictConfirm.js",
   sourceDrafts: "src/core/projectChangesDrafts.js", uiStore: "src/core/localUiStore.js", directoryScope: "src/core/directoryScope.js",
 };
 
@@ -227,6 +229,10 @@ async function seedInputSurface({ name, theme }) {
       dispose(m.sourceDrafts.mountProjectChangesDrafts(root, { deviceId: device.id, project }));
     },
     "file editor"() { dispose(m.editor.mountFileEditor(root, { value: "// The editor preserves its own layout.\nconst styled = true;\n" })); },
+    "reject confirmation": () => {
+      void m.reviewConfirm.confirmReviewVerdict({ verdict: "reject", revision: 2, count: 0, author: "@Builder" });
+      dispose({ dispose() { document.querySelector("[data-confirm-cancel]")?.click(); } });
+    },
     "review feedback": async () => {
       root.innerHTML = '<section id="review-feedback"></section><table><tbody data-review-editor-host></tbody></table>';
       const snapshot = { id: "input-snapshot", number: 1 };

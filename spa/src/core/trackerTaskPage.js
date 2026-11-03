@@ -184,6 +184,7 @@ export function mountTaskPage(host, options) {
     reviewSnapshots: [],
     review: null,
     reviewForTaskSupported: false,
+    reviewSupport: {},
     columns: [],
     draft: "",
     draftOperationId: null,
@@ -391,6 +392,8 @@ export function mountTaskPage(host, options) {
     rows: state.rows,
     reviewSnapshots: state.reviewSnapshots,
     review: state.review,
+    reviewSupport: state.reviewSupport,
+    reviewAssignee: state.task.assignee,
     forTask: state.reviewForTaskSupported,
     unreadFrom,
     links: taskLinkRows(state.task, place(), state.feed()),
@@ -713,6 +716,7 @@ export function mountTaskPage(host, options) {
     const support = await readReviewSupport(state.deviceId);
     if (state.disposed) return;
     state.reviewForTaskSupported = support.forTask;
+    state.reviewSupport = support;
     paint();
   };
   const stopReviewCreationSupport = subscribeCache(reviewSupportAddress(state.deviceId), () => void readReviewCreationSupport());

@@ -16,6 +16,8 @@
 
 import { subscribeCache } from "./localCache.js";
 import { contextFor } from "./deviceContexts.js";
+import { readReviewRowFacts, reviewRowsAddress } from "./taskReviewRowFacts.js";
+import { hasUnreadReviewServiceAsk } from "./trackerAttentionModel.js";
 import { isFinished } from "./trackerAgentTasks.js";
 import { createTrackerTaskDetailsFeed } from "./trackerTaskDetailsFeed.js";
 import { tasksAddress, readTasksRecord } from "./trackerCache.js";
@@ -26,7 +28,10 @@ import { trailingRead } from "./trailingRead.js";
 import { createTaskUnreadDisplayOwner } from "./taskUnreadDisplay.js";
 
 const sessionOf = (deviceId) => contextFor(deviceId)?.session || null;
-const followsDetail = (task) => task?.watched === true && !isFinished(task);
+const incompleteReviewSummary = (task, support) => support.verdictDelivery &&
+  task.unread_service_mentions === undefined && Boolean(task.review_summary);
+const followsDetail = (task, reviewSupport) => task?.watched === true &&
+  (!isFinished(task) || hasUnreadReviewServiceAsk(task, null, reviewSupport) || incompleteReviewSummary(task, reviewSupport));
 
 /** Asks the machine for whatever session it is on when the read is made. */
 const callOn = (deviceId) => (method, params) => {
@@ -40,6 +45,8 @@ function followProject(project, onChange, dependencies) {
   const { deviceId, id: projectId } = project;
   let tasks = [];
   let askedOnly = false;
+  let reviewSupport = {};
+  let reviewFacts = new Map();
   let runningAgentIds = new Set();
   let projectAgentId = null;
   let workspaces = [];
@@ -71,7 +78,7 @@ function followProject(project, onChange, dependencies) {
     tasks = next;
     tasksReady = true;
     notify();
-    await details.updateTasks(tasks.filter(followsDetail));
+    await details.updateTasks(tasks.filter((task) => followsDetail(task, reviewSupport)));
   }
 
   const reread = trailingRead(readTasks, { generationOf: () => sessionOf(deviceId) });
@@ -79,9 +86,22 @@ function followProject(project, onChange, dependencies) {
     if (!address.kind) invalidation += 1;
     void reread();
   });
+  let reviewFactsSerial = 0;
+  async function rereadReviewFacts() {
+    const serial = ++reviewFactsSerial;
+    const session = sessionOf(deviceId);
+    const support = reviewSupport;
+    const next = await readReviewRowFacts(deviceId, projectId, reviewSupport);
+    if (disposed || serial !== reviewFactsSerial || support !== reviewSupport || session !== sessionOf(deviceId)) return;
+    reviewFacts = next;
+    notify();
+  }
+  const unsubscribeReviews = subscribeCache(reviewRowsAddress(deviceId, projectId), () => void rereadReviewFacts());
   const unsubscribeDependencies = dependencies.subscribe(project, (next) => {
     if (disposed) return;
-    ({ askedOnly, runningAgentIds, projectAgentId, workspaces } = next);
+    ({ askedOnly, reviewSupport, runningAgentIds, projectAgentId, workspaces } = next);
+    void rereadReviewFacts();
+    void details.updateTasks(tasks.filter((task) => followsDetail(task, reviewSupport)));
     dependenciesReady = true;
     notify();
   });
@@ -89,7 +109,7 @@ function followProject(project, onChange, dependencies) {
   return {
     // A reconnect is a new session: reads the old one refused are asked again.
     session: sessionOf(deviceId),
-    source: () => ({ project, tasks: ready() ? tasks : [], details: details.read(), askedOnly, runningAgentIds, projectAgentId, workspaces,
+    source: () => ({ project, tasks: ready() ? tasks : [], details: details.read(), askedOnly, reviewSupport, reviewFacts, runningAgentIds, projectAgentId, workspaces,
       unreadOf: display.preview }),
     rendered(entry) {
       const task = tasks.find((one) => one.id === entry.taskId);
@@ -100,6 +120,7 @@ function followProject(project, onChange, dependencies) {
       disposed = true;
       unsubscribe();
       unsubscribeDependencies();
+      unsubscribeReviews();
       details.dispose();
       display.dispose();
     },
@@ -163,7 +184,7 @@ export function followWatchedTasks({ onChange = () => {} } = {}) {
     /** Folded project heads also carry running watched tasks with no Needs-you
      *  row. A task's status alone never says its agent is running. */
     runningProjectKeys: () => new Set(sources()
-      .filter(({ tasks, runningAgentIds, projectAgentId }) => tasks.some((task) => followsDetail(task) && taskAgentIsRunning(task, runningAgentIds, projectAgentId)))
+      .filter(({ tasks, runningAgentIds, projectAgentId }) => tasks.some((task) => task.watched === true && !isFinished(task) && taskAgentIsRunning(task, runningAgentIds, projectAgentId)))
       .map(({ project }) => project.projectKey)),
     dispose() {
       [...followed.keys()].forEach(drop);

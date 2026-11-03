@@ -15,6 +15,7 @@ import { taskAvatarHtml } from "./taskAvatar.js";
 import { actorIdentityHtml, actorHref } from "./trackerIdentity.js";
 import { watchButtonHtml } from "./watchToggle.js";
 import { eventSentence } from "./trackerTimeline.js";
+import { advisoryReviewHtml, reviewNoticeText } from "./taskReviewOpinion.js";
 import { taskUnreadKey } from "./trackerUnread.js";
 import { ageHtml, ageText, assigneeHtml, labelsHtml, numberHtml, stateMarkHtml } from "./trackerChips.js";
 import { composerPartIds } from "./composer.js";
@@ -34,7 +35,7 @@ export const taskHeadHtml = (task, context = {}) => `<header class="task-page-he
     <div class="task-page-marks">
       ${stateMarkHtml(task)}<span class="task-page-state">${esc(stateLabel(task.state))}</span>
       ${numberHtml(task)}
-      ${taskReviewSummaryHtml(task.review_summary)}
+      ${taskReviewSummaryHtml(task.review_summary || context.review, context.reviewSupport)}
       ${ageHtml(task.updated_at)}
       ${context.watch ? watchButtonHtml(context.watch) : ""}
     </div>
@@ -82,9 +83,10 @@ export const taskAttachmentsHtml = (attachments) =>
 
 const whenHtml = (row) => (row.at ? `<span class="task-when" title="${esc(row.at)}">${esc(ageText(row.at))}</span>` : "");
 
-const reviewVerdictHtml = (opinion) => ({
+const reviewVerdictHtml = (opinion, support) => ({
   approve: '<span class="task-review-verdict" data-verdict="approve">Approved</span>',
   request_changes: '<span class="task-review-verdict" data-verdict="request_changes">Requested changes</span>',
+  reject: support?.reject ? '<span class="task-review-verdict" data-verdict="reject">Rejected</span>' : "",
 })[opinion?.verdict] || "";
 const reviewAnchorHtml = (anchor) => anchor
   ? `<button class="btn" type="button" data-review-anchor="${esc(JSON.stringify(anchor))}">` +
@@ -96,12 +98,12 @@ const snapshotLabel = (snapshotId, snapshots) => {
 };
 const reviewMetadataHtml = (row, context) => {
   const snapshotId = row.opinion?.snapshot_id || row.anchor?.snapshot_id;
-  const verdict = reviewVerdictHtml(row.opinion);
+  const verdict = reviewVerdictHtml(row.opinion, context.reviewSupport);
   const label = snapshotLabel(snapshotId, context.reviewSnapshots);
   const snapshot = label ? `<span>${label}</span>` : "";
   const place = reviewAnchorHtml(row.anchor);
   const empty = !snapshot && !verdict && !place;
-  return `<div class="task-review-comment-meta"${empty ? " hidden" : ""}>${snapshot}${verdict}${place}</div>`;
+  return `<div class="task-review-comment-meta"${empty ? " hidden" : ""}>${snapshot}${verdict}${advisoryReviewHtml(row, context)}${place}</div>`;
 };
 
 /// The id an action line in a conversation lands on: a comment is linked as
@@ -111,6 +113,7 @@ const commentHtml = (row, context) => `<li class="task-entry task-comment${row.m
     <div class="task-comment-card">
       <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}${!context.readOnlyReview && (row.anchor || row.opinion || row.replyTo) ? `<button class="task-comment-reply" type="button" data-review-reply="${esc(row.key)}" aria-label="Reply" title="Reply">${ICON_REPLY}</button>` : ""}</div>
       ${reviewMetadataHtml(row, context)}
+      ${reviewNoticeText(row, context) ? `<p class="task-review-service-notice">${esc(reviewNoticeText(row, context))}</p>` : ""}
       ${commentReplyHtml(row, context)}
       <div class="task-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(row.body, context, false, taskMarkdownScope(context, "comment", row.key))}</div>
       ${attachmentListHtml(row.attachments, { className: "task-comment-attachments" }) || '<div class="thread-attachments task-comment-attachments" hidden></div>'}
@@ -165,6 +168,38 @@ const timelineEntryParts = (row, context) => {
   return [{ name: `unread:${row.key}`, html: '<li class="thread-unread-line task-unread-line" role="separator"><span>New</span></li>' }, entry];
 };
 
+const rowSnapshotId = (row) => row?.opinion?.snapshot_id || row?.anchor?.snapshot_id || row?.payload?.snapshot_id;
+function inheritedRevisionId(row, rowIndex) {
+  let current = row;
+  const seen = new Set();
+  while (current && !seen.has(current.key)) {
+    const id = rowSnapshotId(current);
+    if (id) return id;
+    seen.add(current.key);
+    current = rowIndex.get(current.replyTo);
+  }
+  return null;
+}
+
+const rowRevision = (row, snapshots, rowIndex) => {
+  const id = inheritedRevisionId(row, rowIndex);
+  if (id) return snapshots.find((saved) => saved.id === id);
+  if (!row.at) return null;
+  return snapshots.findLast((saved) => saved.created_at && saved.created_at <= row.at);
+};
+
+function revisionTimelineParts(rows, context) {
+  let previous = null;
+  const rowIndex = new Map(rows.map((row) => [row.key, row]));
+  return rows.flatMap((row) => {
+    const parts = timelineEntryParts(row, context);
+    const revision = rowRevision(row, context.reviewSnapshots || [], rowIndex);
+    if (!revision || revision.id === previous) return parts;
+    previous = revision.id;
+    return [{ name: `revision:${revision.id}:${row.key}`, html: `<li class="task-review-revision-divider" role="separator"><span>Revision ${esc(revision.number)}</span></li>` }, ...parts];
+  });
+}
+
 /** Rows retain their nodes while metadata, reference labels and ages change;
  *  the mounted page patches these entries with the shared keyed list painter. */
 export function timelineParts(rows, context) {
@@ -172,7 +207,8 @@ export function timelineParts(rows, context) {
   const index = commentReplyIndex(rows);
   return {
     frame: '<ul class="task-timeline"></ul>',
-    rows: rows.flatMap((row) => timelineEntryParts(row, { ...context, replyIndex: index })),
+    rows: context.reviewSupport?.reject ? revisionTimelineParts(rows, { ...context, replyIndex: index })
+      : rows.flatMap((row) => timelineEntryParts(row, { ...context, replyIndex: index })),
   };
 }
 

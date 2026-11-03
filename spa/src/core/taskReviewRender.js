@@ -8,7 +8,7 @@ export const reviewSnapshot = (review, id) => review?.snapshots.find((snapshot) 
 export const reviewDirectory = (snapshot, id) => snapshot?.directories.find((directory) => directory.id === id) || snapshot?.directories[0] || null;
 export const defaultReviewView = (directory) => directory?.status === "not_git" ? "files" : "changes";
 
-const legacyStatusHtml = (review) => `<span class="task-review-summary">${review?.state === "completed" ? "Completed" : "Open"}</span>`;
+const legacyStatusHtml = (review, support) => support.reject ? '<span class="task-review-summary" data-review-mode="snapshot">Legacy review</span>' : `<span class="task-review-summary">${review?.state === "completed" ? "Completed" : "Open"}</span>`;
 const reviewTitleHtml = (task) => `<div class="task-review-title"><span>Review${task.number ? ` #${Number(task.number)}` : ""}</span><h1>${esc(task.title || "Review")}</h1></div>`;
 const sinceCountHtml = (count) => Number.isSafeInteger(count) ? `<span>${count} commits since your review</span>` : "";
 function workTaskHtml(task, scope) {
@@ -23,13 +23,13 @@ function headerActionsHtml(snapshot, support, isPr) {
 export function reviewHeadHtml(review, snapshot, support, { task = {}, scope = {}, sinceCount = null } = {}) {
   const picker = snapshot ? snapshotPickerHtml(review, snapshot) : "";
   const isPr = review?.mode === "pull_request";
-  const status = isPr ? reviewStatusHtml(review) : legacyStatusHtml(review);
-  const facts = isPr ? reviewBranchesHtml(review, snapshot) : completionHtml(review);
+  const status = isPr ? reviewStatusHtml(review, support) : legacyStatusHtml(review, support);
+  const facts = isPr ? reviewBranchesHtml(review, snapshot) + reviewPeopleHtml(review, task, support) + reviewDeliveryHtml(review, support) : completionHtml(review);
   return `${reviewTitleHtml(task)}<div class="task-review-head">${status}${picker}${sinceCountHtml(sinceCount)}${workTaskHtml(task, scope)}<button class="btn task-review-phone-commits" data-review-commits-open type="button" aria-expanded="false">Commits</button></div><div class="task-review-header-facts">${facts}</div>${headerActionsHtml(snapshot, support, isPr)}`;
 }
 
 const completionHtml = (review) => review?.completion ? `<p class="task-review-completion">Completed: ${esc(review.completion.description)}</p>` : "";
-const reviewStatusHtml = (review) => `<span class="task-review-summary" data-review-pr-status="${esc(review.pull_request?.status)}">${esc(taskReviewStatusLabel(review.pull_request?.status))}</span>`;
+const reviewStatusHtml = (review, support) => review.pull_request?.status === "rejected" && !support.reject ? "" : `<span class="task-review-summary" data-review-pr-status="${esc(review.pull_request?.status)}">${esc(taskReviewStatusLabel(review.pull_request?.status))}</span>`;
 const revisionTime = (value) => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -37,6 +37,35 @@ const revisionTime = (value) => {
 const snapshotPickerHtml = (review, snapshot) => `<label><span class="sr-only">Revision</span><select data-review-snapshot aria-label="Revision">${review.snapshots.map((row) =>
   `<option value="${esc(row.id)}"${row.id === snapshot.id ? " selected" : ""}>Revision ${row.number} of ${review.snapshots.at(-1).number} · ${esc(revisionTime(row.created_at))}</option>`).join("")}</select></label>`;
 const shortBranch = (ref = "") => ref.replace(/^refs\/heads\//, "");
+
+export function reviewAuthorLabel(review, task = {}, support = {}) {
+  const id = support.author && review?.pull_request?.author;
+  return id ? `@${task.identities?.[id]?.name || id}` : "The author";
+}
+
+function reviewerLabel(task) {
+  const id = task.assignee?.agent_id;
+  return id ? `@${task.identities?.[id]?.name || id}` : "You";
+}
+
+function reviewPeopleHtml(review, task, support) {
+  if (!support.author) return "";
+  const author = review.pull_request?.author ? `by ${esc(reviewAuthorLabel(review, task, support))}` : "Author not recorded";
+  const assignee = task.assignee;
+  const reviewer = reviewerLabel(task);
+  return `<p data-review-people>${author} · Deciding reviewer: ${esc(reviewer)}${assignee?.agent_id ? " and you" : ""}</p>`;
+}
+
+export function reviewDeliveryHtml(review, support) {
+  const delivery = support.verdictDelivery && review?.verdict_deliveries?.at(-1);
+  if (!delivery) return "";
+  const labels = { delivered: "Delivered", pending: "Pending (agent unavailable)", failed: "Failed" };
+  const label = labels[delivery.state];
+  if (!label) return "";
+  const retry = delivery.state === "failed" && support.retryDelivery
+    ? `<button type="button" class="btn" data-review-retry-delivery="${esc(delivery.comment_id)}">Retry delivery</button>` : "";
+  return `<p data-review-delivery role="status">Verdict delivery: <span>${label}</span> ${retry}</p>`;
+}
 
 function reviewBranchesHtml(review, snapshot) {
   return `<div class="task-review-branches">${(review.bindings || []).map((binding) => bindingFactsHtml(binding, snapshot)).join("")}</div>`;

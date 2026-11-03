@@ -90,7 +90,7 @@ for (const { label, width } of [{ label: "desktop", width: 1440 }, { label: "pho
       await confirmation.locator("[data-confirm-ok]").waitFor({ state: "visible" });
       await page.evaluate(() => Promise.all(document.querySelector("#confirm-scrim").getAnimations({ subtree: true }).map((animation) => animation.finished.catch(() => {}))));
       expect(await confirmation.isVisible()).toBe(true);
-      expect(await confirmation.textContent()).toContain("The author is told and continues");
+      expect(await confirmation.textContent()).toContain("@Builder is told and continues");
       await assertNoOverflow(page);
       await captureLayout(page, `review-verdict-confirm-${label}.png`);
       await confirmation.locator("[data-confirm-ok]").click();
@@ -114,3 +114,43 @@ for (const { label, width } of [{ label: "desktop", width: 1440 }, { label: "pho
     }, { width, height: 900, plugins: [deviceShim] });
   }, 90_000);
 }
+
+
+it("fits Reject and its required reason confirmation at 390px", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountVerdictReviewTask(page, basePath);
+    const reject = page.locator('[data-review-verdict="reject"]');
+    await reject.waitFor({ state: "visible" });
+    const buttons = await page.locator('.task-review-verdict-bar .btn').evaluateAll((rows) => rows.map((row) => {
+      const rect = row.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, height: rect.height, bottom: rect.bottom, viewport: innerWidth };
+    }));
+    expect(buttons).toHaveLength(3);
+    for (const button of buttons) {
+      expect(button.left).toBeGreaterThanOrEqual(0);
+      expect(button.right).toBeLessThanOrEqual(button.viewport);
+      expect(button.height).toBeGreaterThanOrEqual(44);
+    }
+    await assertNoOverflow(page);
+    await reject.click();
+    const modal = page.locator('#confirm-scrim');
+    await modal.locator('[data-review-reject-reason]').waitFor({ state: 'visible' });
+    expect(await modal.locator('[data-confirm-ok]').isDisabled()).toBe(true);
+    await modal.locator('[data-review-reject-reason]').fill('This approach should stop; retain the previous implementation.');
+    expect(await modal.locator('[data-confirm-ok]').isEnabled()).toBe(true);
+    expect(await modal.textContent()).toContain('is told to stop. You can reopen later.');
+    await page.evaluate(() => Promise.all(document.querySelector('#confirm-scrim').getAnimations({ subtree: true }).map((animation) => animation.finished.catch(() => {}))));
+    await assertNoOverflow(page);
+    await captureLayout(page, 'review-reject-confirm-phone.png');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await assertNoOverflow(page);
+    await captureLayout(page, 'review-reject-confirm-desktop.png');
+    await page.setViewportSize({ width: 390, height: 900 });
+    await modal.locator('[data-confirm-ok]').click();
+    await page.waitForFunction(() => window.__reviewCommentCalls.length === 1);
+    expect(await page.evaluate(() => window.__reviewCommentCalls[0])).toMatchObject({
+      body: expect.stringContaining('This approach should stop; retain the previous implementation.'), opinion: { snapshot_id: 'revision-2', verdict: 'reject' },
+    });
+    await page.evaluate(() => window.__reviewTaskPage.dispose());
+  }, { width: 390, height: 900, plugins: [deviceShim] });
+}, 90_000);

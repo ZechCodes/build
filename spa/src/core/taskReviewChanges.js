@@ -222,14 +222,14 @@ async function seekAnchorPages(host, target, bodies, current) {
 }
 
 /** Mount one saved source's Changes tab. refresh() retries the listing. */
-export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, onReply, onPaint, onBeforePaint, priorRevision, anchor = null, comparison = {}, path = "", onSelectPath = null, onUnreadableCommit = null, comments = [], identities, autoOpen = false, keepReadingPlace = (paint) => paint() }) {
+export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, onReply, onPaint, onBeforePaint, priorRevision, anchor = null, comparison = {}, path = "", onSelectPath = null, onUnreadableCommit = null, comments = [], identities, reviewSupport, reviewAssignee, autoOpen = false, keepReadingPlace = (paint) => paint() }) {
   const scope = { deviceId, projectId, taskId, snapshot, directory };
   const params = reviewDiffParams(scope, comparison);
   const rpc = reviewMutationRpc(deviceId, callRpc);
   const listAddress = reviewDiffAddress(scope, comparison);
   const patchAddress = (path) => reviewDiffAddress(scope, comparison, path);
   const ui = uiAddress({ deviceId, entityId: projectId, view: "task-review-changes", kind: "review", sub: JSON.stringify([taskId, directory.id]) });
-  const state = { list: null, error: "", viewed: new Map(), open: new Set(), loading: new Set(), anchor: null, anchorScrolled: false, selected: path, context: { comments, deviceId, projectId, taskId, priorRevision, identities, snapshotId: snapshot.id, directoryId: directory.id, commit: comparison.commit, comparisonMode: comparison.mode, replyable: Boolean(onReply) } };
+  const state = { list: null, error: "", viewed: new Map(), open: new Set(), loading: new Set(), anchor: null, anchorScrolled: false, selected: path, context: { comments, deviceId, projectId, taskId, priorRevision, identities, reviewSupport, reviewAssignee, snapshotId: snapshot.id, directoryId: directory.id, commit: comparison.commit, comparisonMode: comparison.mode, replyable: Boolean(onReply) } };
   let initialSelection = true;
   let alive = true;
   let generation = 0;

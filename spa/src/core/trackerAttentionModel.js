@@ -15,6 +15,7 @@ import { taskIsBlocked } from "./trackerTaskReadiness.js";
 import { entityIdOf } from "./entityId.js";
 import { projectCoordinatorAgent, projectRosterRows } from "./projectRosterFeed.js";
 import { isFinished } from "./trackerAgentTasks.js";
+import { changedSince } from "./trackerModel.js";
 import { latestTaskMark } from "./trackerUnread.js";
 
 /** Tasks held by an agent the feed lists for this project, mid-turn or not
@@ -47,6 +48,9 @@ const afterMark = (id, mark) => !mark || orderedId(id) > orderedId(mark);
 
 const isAgentComment = (entry) => entry?.type === "comment" && entry.author?.kind === "agent";
 const isAgentCreatedEvent = (entry) => entry?.type === "event" && entry.kind === "created" && entry.actor?.kind === "agent";
+const SERVICE_NOTICES = new Set(["revision_ready", "verdict_undelivered", "revision_undelivered"]);
+const isServiceAsk = (entry) => entry?.type === "comment" && entry.author?.kind === "build" &&
+  entry.mentions_user === true && SERVICE_NOTICES.has(entry.review_notice);
 const asksTheUser = (entry) => entry.mentions_user === true || entry.notifies_user === true;
 
 /** The agent comments the user has not read, from the cached timeline. The
@@ -61,12 +65,13 @@ export function unreadAgentComments(task, detail) {
 
 /** Unread requests for the user: the narrow rule includes a mentioned created
  *  event, and the older rule still counts all unread agent comments. */
-export const unreadAsks = (task, detail, askedOnly = false) => {
+export const unreadAsks = (task, detail, askedOnly = false, reviewSupport = {}) => {
   if (!askedOnly) return unreadAgentComments(task, detail);
   if (!Array.isArray(detail?.timeline)) return [];
   const mark = latestTaskMark(detail.task?.read_through, task?.read_through) || "";
   return detail.timeline.filter((entry) =>
-    (isAgentComment(entry) || isAgentCreatedEvent(entry)) && asksTheUser(entry) && afterMark(entry.id, mark));
+    ((isAgentComment(entry) || isAgentCreatedEvent(entry)) && asksTheUser(entry) ||
+      reviewSupport.verdictDelivery && isServiceAsk(entry)) && afterMark(entry.id, mark));
 };
 
 /** The earlier rule's unread comment. A cached inbox row is proof the user is
@@ -115,12 +120,28 @@ const holdingAgentOf = (task, knownAgents, projectAgent) => {
   return holder ? { ...holder, working: holder.agent.working === true } : null;
 };
 
-const reasonsOf = (task, hasUnreadComment, askedOnly) => {
-  if (isFinished(task)) return [];
+/** Compact summary counts stand in for history until current details are cached. */
+const serviceHistoryIsCurrent = (task, detail) => Array.isArray(detail?.timeline) && !changedSince(task, detail);
+const taskReadMark = (task, detail) => latestTaskMark(detail?.task?.read_through, task?.read_through) || "";
+
+export function hasUnreadReviewServiceAsk(task, detail, reviewSupport = {}) {
+  if (!reviewSupport.verdictDelivery || task?.watched !== true) return false;
+  if (!serviceHistoryIsCurrent(task, detail)) return Number(task.unread_service_mentions) > 0;
+  const mark = taskReadMark(task, detail);
+  return detail.timeline.some((entry) => isServiceAsk(entry) && afterMark(entry.id, mark));
+}
+
+const reviewNeedsAuthor = (task, reviewSupport) => reviewSupport.verdictDelivery &&
+  ["changes_requested", "approved"].includes(task?.review_summary?.status);
+const assignmentNeedsUser = (task, reviewSupport) => task?.assignee?.kind === "user" &&
+  !taskIsBlocked(task) && !reviewNeedsAuthor(task, reviewSupport);
+
+const reasonsOf = (task, hasUnreadComment, askedOnly, serviceAsk, reviewSupport) => {
+  if (isFinished(task)) return serviceAsk ? [ATTENTION_REASONS.inbox] : [];
   const reasons = [];
   if (!askedOnly && task?.status === "in_review") reasons.push(ATTENTION_REASONS.inReview);
-  if (hasUnreadComment) reasons.push(ATTENTION_REASONS.inbox);
-  if (task?.assignee?.kind === "user" && !taskIsBlocked(task)) reasons.push(ATTENTION_REASONS.assigned);
+  if (hasUnreadComment || serviceAsk) reasons.push(ATTENTION_REASONS.inbox);
+  if (assignmentNeedsUser(task, reviewSupport)) reasons.push(ATTENTION_REASONS.assigned);
   return reasons;
 };
 
@@ -130,27 +151,29 @@ const reasonsOf = (task, hasUnreadComment, askedOnly) => {
  *  after an `tasks` push cached the comment that asked, and still be there
  *  long after Stop watching cached `watched: false`. A bridge that announces
  *  the rule always says `watched`, so the task's own is the watch. */
-const hasUnreadAsk = (task, detail, inboxRow, askedOnly) => (askedOnly
-  ? task?.watched === true && unreadAsks(task, detail, true).length > 0
+const hasUnreadAsk = (task, detail, inboxRow, askedOnly, reviewSupport) => (askedOnly
+  ? task?.watched === true && unreadAsks(task, detail, true, reviewSupport).length > 0
   : hasUnreadInboxComment(task, detail, inboxRow));
 
-const attentionReasonsOf = (task, detail, inboxRow, askedOnly) =>
-  reasonsOf(task, hasUnreadAsk(task, detail, inboxRow, askedOnly), askedOnly);
+const attentionReasonsOf = (task, detail, inboxRow, askedOnly, reviewSupport) =>
+  reasonsOf(task, hasUnreadAsk(task, detail, inboxRow, askedOnly, reviewSupport), askedOnly,
+    hasUnreadReviewServiceAsk(task, detail, reviewSupport), reviewSupport);
 
 /** Why a watched task is in the inbox (#125): the same reasons as Needs you,
  *  read from the cached task records alone. The task's own `watched` is the
  *  watch, so no feed row is consulted. None for a task nobody watches. */
-export const watchedTaskReasons = (task, detail, askedOnly = false) =>
-  task?.watched === true ? reasonsOf(task, unreadAsks(task, detail, askedOnly).length > 0, askedOnly) : [];
+export const watchedTaskReasons = (task, detail, askedOnly = false, reviewSupport = {}) =>
+  task?.watched === true ? reasonsOf(task, unreadAsks(task, detail, askedOnly, reviewSupport).length > 0, askedOnly,
+    hasUnreadReviewServiceAsk(task, detail, reviewSupport), reviewSupport) : [];
 
 /** One task's attention, with every reason available to a Dashboard row.
  *  Held by a known agent wins for list placement, but the reasons are retained so the
  *  Dashboard can still explain what needs the user's look. */
 export function taskAttention(task, {
-  knownAgents = new Map(), projectAgent = null, detail = null, inboxRow = null, askedOnly = false,
+  knownAgents = new Map(), projectAgent = null, detail = null, inboxRow = null, askedOnly = false, reviewSupport = {},
 } = {}) {
   const holdingAgent = holdingAgentOf(task, knownAgents, projectAgent);
-  const reasons = attentionReasonsOf(task, detail, inboxRow, askedOnly);
+  const reasons = attentionReasonsOf(task, detail, inboxRow, askedOnly, reviewSupport);
   return { holdingAgent, needsYou: reasons.length > 0, reasons, reason: reasons[0] || null };
 }
 
@@ -164,7 +187,7 @@ const attentionGroupOf = (attention) =>
 /** Stable partition of the list's existing order. `detailById` contains the
  *  cached `{task,timeline}` records, keyed by task id; it may be incomplete
  *  while a task page has never been opened. */
-export function attentionGroups(tasks, { feed = null, projectKey = "", detailById = new Map(), askedOnly = false } = {}) {
+export function attentionGroups(tasks, { feed = null, projectKey = "", detailById = new Map(), askedOnly = false, reviewSupport } = {}) {
   const groups = { [WORKING_GROUP]: [], [NEEDS_YOU_GROUP]: [], [REST_GROUP]: [], attentionById: new Map() };
   const knownAgents = knownAgentsOf(feed, projectKey);
   const projectAgent = projectAgentOf(feed, projectKey);
@@ -176,7 +199,7 @@ export function attentionGroups(tasks, { feed = null, projectKey = "", detailByI
       projectAgent,
       detail,
       inboxRow: inboxRows.get(task.id) || null,
-      askedOnly,
+      askedOnly, reviewSupport,
     });
     groups.attentionById.set(task.id, attention);
     groups[attentionGroupOf(attention)].push(task);

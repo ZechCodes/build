@@ -16,3 +16,5 @@
 .task-work-reviews { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
 .task-work-review-chip { display:inline-flex; max-width:100%; padding:4px 8px; border:1px solid var(--line); border-radius:6px; color:var(--ink2); font-size:12px; }
 .task-work-review-hint { margin:8px 0 0; font-size:12px; overflow-wrap:anywhere; }
+
+.task-review-summary[data-review-status="rejected"] .task-review-icon { color:var(--red); }

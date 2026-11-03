@@ -52,6 +52,8 @@ import { paintGroupedTaskRows, paintTaskBoard } from "./trackerTasksBody.js";
 import { attentionGroups, NEEDS_YOU_GROUP, REST_GROUP, WORKING_GROUP } from "./trackerAttentionModel.js";
 import { dashboardSections, doneSessionStart, doneSinceCutoff } from "./trackerDashboardModel.js";
 import { readUserSession, userSessionAddress, writeListedUserSession } from "./userSessionCache.js";
+import { readReviewSupport, reviewSupportAddress } from "./taskReviewSupport.js";
+import { readReviewRowFacts, reviewRowsAddress } from "./taskReviewRowFacts.js";
 import { needsYouRuleAddress, readNeedsYouRule } from "./needsYouRule.js";
 import { DEFAULT_DASHBOARD_TAB, dashboardTabIds, paintTaskDashboard } from "./trackerDashboardRender.js";
 import { createTrackerTaskDetailsFeed } from "./trackerTaskDetailsFeed.js";
@@ -97,6 +99,8 @@ export function mountTasksPane(host, options) {
     queryAsked: 0,
     wholeAsked: 0,
     userSession: null, // the bridge's, from the device's cache
+    reviewSupport: {},
+    reviewFacts: new Map(),
     askedOnly: false, // the device's cached Needs you rule (#144)
   };
   const uiScope = { deviceId: state.deviceId, entityId: state.projectId, view: `tasks:${state.projectKey || "project"}` };
@@ -205,6 +209,8 @@ export function mountTasksPane(host, options) {
 
   const paintContext = () => ({
     columns: state.columns,
+    reviewSupport: state.reviewSupport,
+    reviewFacts: state.reviewFacts,
     unreadOf: unreadCounter(),
     deviceId: state.deviceId,
     projectId: state.projectId,
@@ -277,7 +283,7 @@ export function mountTasksPane(host, options) {
   }
   const groupedRows = () => {
     const attention = attentionGroups(state.shown, {
-      feed: state.feed(), projectKey: state.projectKey, detailById: details?.read(), askedOnly: state.askedOnly,
+      feed: state.feed(), projectKey: state.projectKey, detailById: details?.read(), askedOnly: state.askedOnly, reviewSupport: state.reviewSupport,
     });
     let remaining = state.visibleCount;
     return groupLabels.map(([id, title]) => {
@@ -299,7 +305,7 @@ export function mountTasksPane(host, options) {
         activityByAgent: activity?.read(),
         doneCutoffMs: carriesDoneSinceLeft() ? doneSinceCutoff(state.userSession) : null,
         sessionStartedMs: carriesDoneSinceLeft() ? doneSessionStart(state.userSession) : null,
-        askedOnly: state.askedOnly,
+        askedOnly: state.askedOnly, reviewSupport: state.reviewSupport,
         columns: state.columns,
       }),
     },
@@ -456,6 +462,23 @@ export function mountTasksPane(host, options) {
   const ruleWatcher = subscribeCache(needsYouRuleAddress(state.deviceId), () => {
     void readRule().then((changed) => changed && paint());
   });
+  let reviewFactsSerial = 0;
+  async function readReviewFacts() {
+    const serial = ++reviewFactsSerial;
+    const session = deviceSession(state.deviceId);
+    const support = await readReviewSupport(state.deviceId);
+    const facts = await readReviewRowFacts(state.deviceId, state.projectId, support);
+    if (state.disposed || serial !== reviewFactsSerial || session !== deviceSession(state.deviceId)) return;
+    state.reviewSupport = support;
+    state.reviewFacts = facts;
+  }
+  const reviewFactsWatcher = subscribeCache(reviewRowsAddress(state.deviceId, state.projectId), () => {
+    void readReviewFacts().then(paint);
+  });
+  const reviewSupportWatcher = subscribeCache(reviewSupportAddress(state.deviceId), () => {
+    void readReviewFacts().then(paint);
+  });
+
 
   details = createTrackerTaskDetailsFeed({
     deviceId: state.deviceId,
@@ -807,7 +830,7 @@ export function mountTasksPane(host, options) {
 
   // ---- lifecycle -----------------------------------------------------------
 
-  void Promise.all([uiRecord.ready, readRule()]).then(() => {
+  void Promise.all([uiRecord.ready, readRule(), readReviewFacts()]).then(() => {
     if (state.disposed) return;
     paint();
     watchQuery();
@@ -845,6 +868,8 @@ export function mountTasksPane(host, options) {
       wholeListWatcher?.();
       userSessionWatcher?.();
       ruleWatcher?.();
+      reviewFactsWatcher();
+      reviewSupportWatcher();
       details.dispose();
       unreadDisplay.dispose();
       activity.dispose();

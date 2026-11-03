@@ -3,7 +3,7 @@ import { readCached, subscribeCache } from "./localCache.js";
 import { reviewSupportAddress, readReviewSupport, reviewSupportFor, NO_REVIEW_SUPPORT } from "./taskReviewSupport.js";
 import { createTaskReviewRepository, reviewAddress } from "./taskReviewCache.js";
 import { createReviewCommitsReader, reviewCommitsAddress } from "./taskReviewReads.js";
-import { reviewSnapshot, reviewDirectory, reviewHeadHtml, reviewDirectoryHtml, reviewRailHtml, reviewBaseline, reviewComparisonBaseline, reviewSinceCount } from "./taskReviewRender.js";
+import { reviewSnapshot, reviewDirectory, reviewHeadHtml, reviewDirectoryHtml, reviewRailHtml, reviewBaseline, reviewComparisonBaseline, reviewSinceCount, reviewAuthorLabel } from "./taskReviewRender.js";
 import { selectionForReview, routeReviewSelection, reviewAnchorSelection, switchReviewSelection } from "./taskReviewSelection.js";
 import { mountTaskReviewControls } from "./taskReviewControls.js";
 import { mountTaskReviewActions } from "./taskReviewActions.js";
@@ -61,6 +61,7 @@ export function mountTaskReviewPage(host, options) {
   let gitActions = null;
   let gitActionsKey = "";
   let picker = null;
+  let retryPending = false;
   host.classList.add("task-review");
   host.innerHTML = FRAME;
   const node = (part) => host.querySelector(`[data-review-${part}]`);
@@ -71,8 +72,9 @@ export function mountTaskReviewPage(host, options) {
     ? review()?.snapshots?.find((row) => row.number === selection.revision) : reviewSnapshot(review(), selection.snapshotId);
   const directory = () => reviewDirectory(snapshot(), selection.directoryId);
   const workspaces = () => options.workspaces?.() || [];
-  const taskIdentities = () => options.task?.()?.identities;
-  const taskNumber = () => options.task?.()?.number;
+  const currentTask = () => options.task?.() || {};
+  const taskIdentities = () => currentTask().identities;
+  const taskNumber = () => currentTask().number;
   const baseline = () => reviewComparisonBaseline(review(), rows, snapshot());
   const identity = () => ({ ...scope, snapshot: snapshot(), directory: directory() });
   const layout = () => host.closest(".review-task-template") || host;
@@ -99,7 +101,7 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function paintHead(saved) {
-    setHtml(node("head"), reviewHeadHtml(review(), saved, support, { task: options.task?.(), scope, sinceCount: reviewSinceCount(record, reviewBaseline(review(), rows), directory()) }));
+    setHtml(node("head"), reviewHeadHtml(review(), saved, support, { task: currentTask(), scope, sinceCount: reviewSinceCount(record, reviewBaseline(review(), rows), directory()) }));
     const select = host.querySelector('[data-review-snapshot]');
     if (select) select.onchange = () => {
       const target = review().snapshots.find((row) => row.id === select.value);
@@ -109,11 +111,26 @@ export function mountTaskReviewPage(host, options) {
     if (refresh) refresh.onclick = () => { void repository.refresh(); void pane?.refresh(); void commitsReader?.refresh(); };
     const assign = host.querySelector('[data-review-reviewer]');
     if (assign) assign.onclick = () => {
-      picker = openTaskReviewer({ ...options, task: options.task?.(), snapshot: saved, onAssigned: options.onTaskChanged });
+      picker = openTaskReviewer({ ...options, task: currentTask(), snapshot: saved, onAssigned: options.onTaskChanged });
       void options.refreshCatalog?.().then((catalog) => picker?.setCatalog(catalog));
     };
+    const retry = host.querySelector('[data-review-retry-delivery]');
+    if (retry) {
+      retry.disabled = retryPending;
+      retry.onclick = () => void retryDelivery(retry.dataset.reviewRetryDelivery);
+    }
     const open = host.querySelector('[data-review-commits-open]');
     if (open) open.onclick = () => setSheet(true);
+  }
+
+  async function retryDelivery(commentId) {
+    if (retryPending) return;
+    retryPending = true;
+    notice = "";
+    paint();
+    try { await repository.mutate("retryDelivery", { comment_id: commentId }); }
+    catch (error) { notice = error.message || "Couldn’t retry delivery."; }
+    finally { retryPending = false; if (!disposed) paint(); }
   }
 
   function setSheet(open) {
@@ -156,7 +173,7 @@ export function mountTaskReviewPage(host, options) {
 
   function paintFeedback(saved) {
     const allowOpinion = !isPr() || support.pullRequests;
-    const key = support.comments && saved ? JSON.stringify([saved.id, allowOpinion]) : "";
+    const key = support.comments && saved ? JSON.stringify([saved.id, allowOpinion, isPr(), support, currentTask().assignee, reviewAuthorLabel(review(), currentTask(), support)]) : "";
     if (key === feedbackKey) return feedback?.update();
     feedbackKey = key;
     feedback?.dispose();
@@ -164,7 +181,7 @@ export function mountTaskReviewPage(host, options) {
     const target = options.feedbackHost || node("feedback-host");
     target.innerHTML = "";
     if (key) feedback = mountTaskReviewFeedback(target, {
-      ...scope, snapshot: saved, callRpc, allowOpinion, writeOperations: options.writeOperations, taskNumber: taskNumber(), verdictHost: node("verdict-host"), feed: options.feed, projectKey: options.projectKey,
+      ...scope, snapshot: saved, callRpc, allowOpinion, reviewMode: review()?.mode, support, task: currentTask(), authorLabel: reviewAuthorLabel(review(), currentTask(), support), writeOperations: options.writeOperations, taskNumber: taskNumber(), verdictHost: node("verdict-host"), feed: options.feed, projectKey: options.projectKey,
       keepReadingPlace: options.keepReadingPlace,
       onSent: async () => { await repository.refresh(); await options.onTaskChanged?.(); },
       latestSnapshotId: () => review()?.snapshots.at(-1)?.id,
@@ -255,7 +272,7 @@ export function mountTaskReviewPage(host, options) {
       return;
     }
     const params = { ...identity(), workspaceId: review().workspace_id, keepReadingPlace: options.keepReadingPlace, callRpc,
-      path: selection.path || "", anchor: selection.anchor, comparison: comparison(), comments: rows, identities: taskIdentities(), autoOpen: true,
+      path: selection.path || "", anchor: selection.anchor, comparison: comparison(), comments: rows, identities: taskIdentities(), autoOpen: true, reviewSupport: support, reviewAssignee: currentTask().assignee,
       onOpenFile: openFiles,
       ...commentCallbacks(), priorRevision: baseline()?.number,
       onBeforePaint: () => feedback?.captureComposerFocus(),
@@ -277,7 +294,7 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function paintPane(saved, dir, view) {
-    const key = JSON.stringify([saved?.id, dir?.id, view, support.diff, canCompose(), commitPending, comparison()]);
+    const key = JSON.stringify([saved?.id, dir?.id, view, support.diff, canCompose(), commitPending, comparison(), support.reject, currentTask().assignee]);
     if (key !== paneKey) {
       paneKey = key;
       panePlace = "";
@@ -384,16 +401,32 @@ export function mountTaskReviewPage(host, options) {
 
   function paintNotices(saved) {
     paintCommitNotice();
-    const newer = node("newer-snapshot");
-    const latest = review()?.snapshots.at(-1);
-    newer.hidden = !saved || saved.id === latest?.id;
-    newer.textContent = latest ? `Revision ${latest.number} is ready` : "";
+    paintNewRevision(saved);
     const commentNotice = node("comment-unavailable");
     commentNotice.hidden = canCompose() || !support.comments;
     commentNotice.textContent = "Update this device’s bridge to comment on individual commits. You can still comment on All changes.";
     const error = node("error");
     error.textContent = notice || record?.error || "";
     error.hidden = !error.textContent;
+  }
+
+  function paintNewRevision(saved) {
+    const newer = node("newer-snapshot");
+    const latest = review()?.snapshots.at(-1);
+    newer.hidden = !saved || saved.id === latest?.id;
+    const canOpen = support.author && latest;
+    const count = newRevisionCount(latest);
+    const countText = Number.isSafeInteger(count) ? ` · ${count} commits` : "";
+    setHtml(newer, latest ? `Revision ${latest.number} is ready${countText}${canOpen ? ' · <button type="button" class="btn" data-review-new-revision>View what changed</button>' : ""}` : "");
+    const jump = newer.querySelector('[data-review-new-revision]');
+    if (jump) jump.onclick = () => selectReview({ snapshotId: latest.id, revision: latest.number,
+      mode: support.since && reviewComparisonBaseline(review(), rows, latest) ? "since" : "all", commit: null });
+  }
+
+  function newRevisionCount(latest) {
+    if (!latest) return null;
+    const dir = reviewDirectory(latest, selection.directoryId);
+    return reviewSinceCount(record, reviewBaseline(review(), rows), dir);
   }
 
   async function hydrate() {

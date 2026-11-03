@@ -59,7 +59,7 @@ const factsHtml = (task, columns, nowMs, reading) =>
     // on a closed task is where it stopped, not where it is.
     closedChipHtml(task.state),
     statusChipHtml(columns, task.status, reviewerWords(task, reading)),
-    taskReviewSummaryHtml(task.review_summary),
+    taskReviewSummaryHtml(task.review_summary || reading.reviewFacts?.get(task.id), reading.reviewSupport),
     ageHtml(task.updated_at, nowMs),
     rowLabelsHtml(task.labels),
   ]

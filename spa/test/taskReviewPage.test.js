@@ -190,3 +190,14 @@ it("jumps a Files draft back to its unchanged source line in Files", async () =>
   document.querySelector('[data-review-draft-jump]').click();
   expect(markReviewRoute.mock.calls.at(-1)[0].review).toMatchObject({ view: 'files', path: 'unchanged.js', side: 'new', line: 12 });
 });
+
+it.each([undefined, "snapshot"])("keeps legacy review mode %s free of PR-only verdict controls and copy", async (mode) => {
+  await mount({ ...review, mode }, { ...support, comments: true, reject: true, author: true, pullRequests: true });
+  expect(document.querySelector('[data-review-verdict="reject"]')).toBeNull();
+  document.querySelector('[data-review-verdict="approve"]').click();
+  await vi.waitFor(() => expect(document.querySelector('#confirm-scrim')).not.toBeNull());
+  const confirmation = document.querySelector('#confirm-scrim');
+  expect(confirmation.textContent).toContain("The author is told and continues.");
+  expect(confirmation.textContent).not.toContain("takes it forward");
+  confirmation.querySelector('[data-confirm-cancel]').click();
+});

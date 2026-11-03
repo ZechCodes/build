@@ -2,7 +2,7 @@
 import { messageOf, esc } from "./text.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { notifyError } from "./notify.js";
-import { confirmAction } from "./confirm.js";
+import { confirmReviewVerdict } from "./taskReviewVerdictConfirm.js";
 import { createTaskReviewBatch } from "./taskReviewBatch.js";
 import { createReviewInlineComposer } from "./taskReviewInlineComposer.js";
 import { assigneeOptions, selectedOptionId, assignableAgents } from "./trackerAssignee.js";
@@ -12,7 +12,8 @@ const snapshotIdOf = (snapshot) => snapshot?.id || snapshot?.snapshot_id || "";
 const validAnchor = (anchor, snapshotId) => !anchor || anchor.snapshot_id === snapshotId
   && typeof anchor.directory_id === "string" && typeof anchor.path === "string"
   && ["old", "new"].includes(anchor.side) && Number.isSafeInteger(anchor.line) && anchor.line > 0;
-const verdictLabel = (verdict) => verdict === "approve" ? "Approve" : "Request changes";
+const decidingReviewer = (reviewer, task) => reviewer.kind === "user"
+  || reviewer.kind === "agent" && task?.assignee?.kind === "agent" && reviewer.agent_id === task.assignee.agent_id;
 
 function draftHtml(draft, locked) {
   const place = draft.anchor ? `${draft.anchor.path}:${draft.anchor.line} · ${draft.anchor.side}` : "Reply";
@@ -31,8 +32,9 @@ function submissionMessage(state, sending) {
 
 export function mountTaskReviewFeedback(host, options) {
   const { deviceId, projectId, taskId, snapshot, callRpc, writeOperations, taskNumber, priorAnchors,
-    verdictHost = host, allowOpinion = true, latestSnapshotId = () => null, onSent, onJump,
+    verdictHost = host, allowOpinion = true, reviewMode, support = {}, task = null, reviewer = { kind: "user" }, latestSnapshotId = () => null, onSent, onJump,
     onCount = () => {}, placeComposer } = options;
+  const canReject = support.reject && reviewMode === "pull_request";
   let disposed = false;
   let sending = false;
   let confirming = false;
@@ -44,6 +46,7 @@ export function mountTaskReviewFeedback(host, options) {
   const bar = document.createElement("div");
   bar.className = "task-review-verdict-bar";
   bar.innerHTML = '<button class="btn" type="button" data-review-verdict="request_changes">Request changes</button><button class="btn primary" type="button" data-review-verdict="approve">Approve</button>';
+  if (canReject) bar.insertAdjacentHTML("afterbegin", '<button class="btn danger" type="button" data-review-verdict="reject">Reject</button>');
   verdictHost.append(bar);
   const summary = host.querySelector('[data-review-summary]');
   const historical = () => Boolean(latestSnapshotId()) && latestSnapshotId() !== snapshotIdOf(snapshot);
@@ -77,7 +80,7 @@ export function mountTaskReviewFeedback(host, options) {
       ? `Drafts belong to earlier revision ${snapshot.number}. Opinions on this earlier revision do not change the current review status.`
       : `Revision ${snapshot.number}`;
     bar.querySelectorAll('[data-review-verdict]').forEach((button) => {
-      button.disabled = !opinionAllowed() || busy() || confirming;
+      button.disabled = !verdictAllowed(button.dataset.reviewVerdict) || busy() || confirming;
       button.title = historical() ? "Choose the latest revision to submit a verdict." : "";
     });
     commentButton.disabled = busy() || !hasComments(drafts, state.summary);
@@ -87,10 +90,11 @@ export function mountTaskReviewFeedback(host, options) {
   }
 
   const opinionAllowed = () => allowOpinion && !historical();
+  const verdictAllowed = (verdict) => opinionAllowed() && (verdict !== "reject" || canReject && decidingReviewer(reviewer, task));
   const busy = () => sending || Boolean(state.submission);
   async function send(verdict = "") {
     if (disposed || busy()) return;
-    if (verdict && !opinionAllowed()) return;
+    if (verdict && !verdictAllowed(verdict)) return;
     sending = true; composer.close(); paint();
     try {
       await batch.submit(verdict);
@@ -100,16 +104,17 @@ export function mountTaskReviewFeedback(host, options) {
     } finally { sending = false; paint(); }
   }
   async function confirmVerdict(verdict) {
-    if (disposed || confirming || busy() || historical()) return;
+    if (disposed || confirming || busy() || !verdictAllowed(verdict)) return;
     confirming = true; paint();
     const count = state.drafts.filter((draft) => draft.body.trim()).length;
-    const confirmed = await confirmAction({ title: verdictLabel(verdict), confirmLabel: verdictLabel(verdict),
-      intro: `Submit revision ${snapshot.number} with ${count} pending ${count === 1 ? "comment" : "comments"}.`,
-      actions: ["Post the pending comments and your verdict.", "The author is told and continues."],
-    });
+    const answer = await confirmReviewVerdict({ verdict, revision: snapshot.number, count, summary: state.summary, handoff: canReject,
+      author: support.author && options.authorLabel ? options.authorLabel : "The author" });
     confirming = false; paint();
-    if (confirmed && !disposed) await send(verdict);
+    if (!answer.confirmed || disposed) return;
+    if (verdict === "reject") await batch.summary(answer.reason);
+    await send(verdict);
   }
+
   summary.oninput = () => { void batch.summary(summary.value); };
   commentButton.onclick = () => void send();
   bar.querySelectorAll('[data-review-verdict]').forEach((button) => {

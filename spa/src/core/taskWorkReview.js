@@ -11,8 +11,8 @@ export function taskWorkReviewHtml(task, context = {}) {
   const children = available.slice(0, 20);
   const truncated = task.linked_reviews_truncated || available.length > children.length;
   if (children.length) return `<div class="task-work-reviews">${children.map((child) => {
-    const label = taskReviewStatusLabel(child.status);
-    return `<a class="task-work-review-chip" data-work-task-review href="${esc(hashFromRoute(parentRoute(context, child.task_id)))}">Review #${esc(child.number)} · ${esc(label)}</a>`;
+    const label = child.status === "rejected" && !context.reviewSupport?.reject ? "" : taskReviewStatusLabel(child.status);
+    return `<a class="task-work-review-chip" data-work-task-review href="${esc(hashFromRoute(parentRoute(context, child.task_id)))}">Review #${esc(child.number)}${label ? ` · ${esc(label)}` : ""}</a>`;
   }).join("")}</div>${truncated ? `<p class="task-work-review-hint">Showing latest ${esc(children.length)} reviews.</p>` : ""}`;
   return workspaceHintHtml(context);
 }

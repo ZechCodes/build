@@ -1985,9 +1985,11 @@ commit rail; `trackerTaskPage.js` places the existing task timeline beside it.
 Desktop has commits, Changes/Files and comments in three columns. At widths up
 to 640px, Changes, Files and Comments become tabs and the header opens the
 commit rail as a sheet. Existing lifecycle, merge and reclaim controls remain
-under More. The existing comment/reply composer and saved-revision feedback
-controls remain available; the pending tray and redesigned verdict bar belong
-to the next slice. Task description and body remain accessible in the header's
+under More. Clicking a Changes or Files line opens an inline comment composer;
+inline threads offer Reply. The Comments column starts with the pending tray,
+whose drafts can be edited, removed or opened at their original line. The
+header offers Request changes and Approve, pinned to the phone's bottom edge;
+the Comments tab carries the pending count. Task description and body remain accessible in the header's
 Description disclosure.
 
 `router.js` and `taskReviewSelection.js` address the reading place as
@@ -2024,6 +2026,40 @@ template, retaining rows, text and loaded attachments. It keeps Comments
 visible at the existing reading width until the reader explicitly selects a
 review view, revision or commit. That temporary width is bounded by the
 viewport; a cold review still opens with the usual responsive columns or tabs.
+
+**Review comment batches (#970).** A batch is the reviewer's anchored task
+comments on one saved revision, posted since their previous verdict on that
+revision, ending with a verdict comment. Plain Comment submissions post notes
+without ending the batch. Request changes and Approve first submit pending
+notes, then one `tasks.comment` with `opinion: {snapshot_id, verdict}`. Its body
+contains the optional summary followed by deduplicated links to the batch's
+anchors, including earlier plain Comment submissions. Links use #961's
+`[[#<task>:r<N>:all:<directory>:<path>#L<line>]]` form; commit anchors use
+`commit/<sha>` in place of `all`, and old-side anchors use `#old-L<line>`.
+Both verdicts share a confirmation stating "The author is told and continues";
+the actual agent continuation belongs to the later bridge slice.
+
+`taskReviewBatch.js` stores drafts and a prepared submission in the durable
+local UI store, keyed by device, project, task and `snapshot_id`. Revision
+changes never retarget them. A newly published revision leaves the reading
+selection pinned, labels older drafts and disables older-revision verdicts.
+Since comparisons accept comments on the current-head side. Under the
+`since_baseline=base` fallback both sides are commentable; otherwise a plain
+sentence links previous-head readers to the prior revision at the same path.
+The anchor wire shape has no since-baseline identity.
+
+`writeOperations.enqueueBatch` is an opt-in outbox path: it atomically persists
+all comment intents with stable operation UUIDs and predecessor dependencies
+before transport, including while offline. It adopts the first authoritative
+journal before an unsent intent's first transport attempt. Each successor is
+sent only after its predecessor is durably acknowledged; bridge dependencies
+also fence execution. Existing `submit` callers retain their behavior. Reload
+and lost acknowledgements reconcile these same IDs through status, so an
+already accepted comment is never posted as a new operation. Drafts remain in
+the tray until terminal success, preserving recovery after an accepted write
+later fails. A failed predecessor holds unsent descendants; Edit pending
+comments cancels only never-attempted descendants and restores failed/unsent
+notes for correction, retaining successful-prefix and uncertain-outcome evidence.
 
 PR-style opening is a service in `bridge/src/reviews/opening.rs`, exposed by
 wire 3.15.0's typed RPC and MCP adapters (#405). `api/v1/reviews.rs` owns the

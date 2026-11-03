@@ -153,7 +153,7 @@ describe("cached review task template", () => {
     expect(host.querySelector('[data-review-snapshot-form] summary').textContent).toBe('Create review');
   });
 
-  it("retains Description, attachments, both comment forms and reply actions", async () => {
+  it("retains Description, attachments, pending review comments and inline replies", async () => {
     await seed({ summary: true });
     await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, comments: true } });
     const detail = await tasks.readTaskRecord(scope.deviceId, scope.projectId, scope.taskId);
@@ -161,17 +161,17 @@ describe("cached review task template", () => {
     detail.task.attachments = [{ filename: 'brief.txt', path: 'brief.txt', mime: 'text/plain', size: 4 }];
     await tasks.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, detail);
     mount();
-    await vi.waitFor(() => expect(host.querySelector('[data-review-feedback]')).toBeTruthy());
+    await vi.waitFor(() => expect(host.querySelector('[data-review-pending]')).toBeTruthy());
     expect(host.querySelector('.task-review-description').textContent).toContain('The review brief stays available.');
     expect(host.querySelector('.task-review-description .task-page-attachments')).toBeTruthy();
     expect(host.querySelector('.task-review-comments [data-task-composer]')).toBeTruthy();
-    expect(host.querySelector('.task-review-comments [data-review-opinion]')).toBeTruthy();
+    expect(host.querySelector('[data-review-verdict]')).toBeTruthy();
     expect(host.querySelector('[data-review-reply]')).toBeTruthy();
     host.querySelector('[data-review-view="comments"]').click();
     host.querySelector('[data-review-reply]').click();
     await vi.waitFor(() => {
-      expect(host.querySelector('.review-task-template').dataset.reviewView).toBe('comments');
-      expect(document.activeElement).toBe(host.querySelector('[data-review-feedback] textarea'));
+      expect(host.querySelector('.review-task-template').dataset.reviewView).toBe('changes');
+      expect(document.activeElement).toBe(host.querySelector('[data-review-inline-composer] textarea'));
     });
   });
 

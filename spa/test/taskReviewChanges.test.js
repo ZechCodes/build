@@ -455,3 +455,28 @@ describe("anchored paths missing from a comparison", () => {
     } finally { pane.dispose(); }
   });
 });
+
+
+describe('Since line composition', () => {
+  it.each([['previous_head', false], ['base', true]])('allows old-side composition only under %s baseline', async (baseline, oldAllowed) => {
+    const host = document.createElement('div'); document.body.append(host);
+    const onComment = vi.fn();
+    const pane = mountTaskReviewChanges(host, { deviceId: 'dev', projectId: 'project', taskId: 'task', snapshot, directory,
+      comparison: { mode: 'since', from_snapshot_id: 'prior' }, priorRevision: 1, onComment, path: 'src/a.js',
+      callRpc: async (_method, params) => ({ ...list, since_baseline: baseline, ...(params.paths ? { patch } : {}) }) });
+    await waitForPatch(host);
+    expect(Boolean(host.querySelector('[data-review-comment][data-side="old"]'))).toBe(oldAllowed);
+    host.querySelector('[data-review-comment][data-side="new"]').click();
+    expect(onComment).toHaveBeenCalledWith({ snapshot_id: snapshot.id, directory_id: directory.id, path: 'src/a.js', side: 'new', line: 1 });
+    if (oldAllowed) {
+      host.querySelector('[data-review-comment][data-side="old"]').click();
+      expect(onComment.mock.calls.at(-1)[0].side).toBe('old');
+    } else {
+      const hint = host.querySelector('[data-review-since-hint]');
+      expect(hint.textContent).toContain('To comment on previous-head lines');
+      expect(hint.querySelector('a').getAttribute('href')).toContain('/review/r1/all/repo-a/src/a.js');
+      expect(host.querySelector('button[disabled][data-side="old"]')).toBeNull();
+    }
+    pane.dispose();
+  });
+});

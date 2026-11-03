@@ -81,8 +81,8 @@ export const taskAttachmentsHtml = (attachments) =>
 const whenHtml = (row) => (row.at ? `<span class="task-when" title="${esc(row.at)}">${esc(ageText(row.at))}</span>` : "");
 
 const reviewVerdictHtml = (opinion) => ({
-  approve: "<span>Approved</span>",
-  request_changes: "<span>Requested changes</span>",
+  approve: '<span class="task-review-verdict" data-verdict="approve">Approved</span>',
+  request_changes: '<span class="task-review-verdict" data-verdict="request_changes">Requested changes</span>',
 })[opinion?.verdict] || "";
 const reviewAnchorHtml = (anchor) => anchor
   ? `<button class="btn" type="button" data-review-anchor="${esc(JSON.stringify(anchor))}">` +
@@ -311,7 +311,7 @@ export const TASK_PAGE_FRAME = '<div class="task-page"><div class="task-page-mai
 export const isReviewTask = (task, context = {}) => Boolean(task?.review_summary || context.review);
 export const taskPageFrame = (review) => review
   ? '<div class="task-page review-task-template"><div class="task-page-main"></div><aside class="task-rail" aria-label="About this task"></aside></div>' : TASK_PAGE_FRAME;
-export const REVIEW_COMMENTS_FRAME = '<aside class="task-review-comments" aria-label="Review comments"><h2>Comments</h2><ul class="task-timeline"></ul><div data-review-task-composer></div><div data-review-feedback-host></div></aside>';
+export const REVIEW_COMMENTS_FRAME = '<aside class="task-review-comments" aria-label="Review comments"><h2>Comments</h2><div data-review-feedback-host></div><ul class="task-timeline"></ul><div data-review-task-composer></div></aside>';
 
 function reviewPageParts(task, context) {
   const timeline = timelineParts(context.rows, context);

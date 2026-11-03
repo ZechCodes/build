@@ -41,7 +41,7 @@ function commentHtml(row, context) {
   });
   // markdownHtml and actorIdentityHtml return escaped markup; all scalar attributes use esc.
   // nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format
-  return `<article class="task-review-inline-comment" data-review-inline-comment="${esc(idOf(row) || "")}"><header><strong>${actorIdentityHtml(row.actor || row.author, context)}</strong>${time}</header><div class="markdown">${body}</div></article>`;
+  return `<article class="task-review-inline-comment" data-review-inline-comment="${esc(idOf(row) || "")}"><header><strong>${actorIdentityHtml(row.actor || row.author, context)}</strong>${time}${context.replyable ? `<button class="btn" type="button" data-review-inline-reply="${esc(idOf(row) || "")}">Reply</button>` : ""}</header><div class="markdown">${body}</div></article>`;
 }
 
 /** HTML immediately after one source/diff row. Scope includes the comparison's
@@ -64,4 +64,42 @@ export function paintInlineReviewRows(host, comments, context) {
       ...context, side: "new", line: Number(row.dataset.newLine), colspan: context.colspan || 2,
     }));
   });
+}
+
+/** Move the same editor node after a line, preserving focus and typed text. */
+export function placeReviewComposer(host, composer, anchor) {
+  if (!anchor) return false;
+  const sections = [...host.querySelectorAll('[data-review-path]')];
+  const section = sections.length ? sections.find((row) => row.dataset.reviewPath === anchor.path) : host;
+  if (!section) return false;
+  const key = anchor.side === "old" ? "oldLine" : "newLine";
+  const line = [...section.querySelectorAll('tr[data-new-line], tr[data-old-line]')]
+    .find((row) => Number(row.dataset[key]) === Number(anchor.line));
+  if (!line) return false;
+  composer.querySelector('td').colSpan = line.children.length;
+  if (line.nextElementSibling !== composer) line.after(composer);
+  return true;
+}
+
+export function reviewReplyAt(event, comments, onReply, anchorOf) {
+  const button = event.target.closest('[data-review-inline-reply]');
+  if (!button || !onReply) return false;
+  const id = button.dataset.reviewInlineReply;
+  const row = commentsOf(comments).find((row) => idOf(row) === id);
+  if (!row) return false;
+  const line = button.closest('[data-review-inline]')?.previousElementSibling;
+  onReply(row, inheritedAnchor(row, comments) || anchorOf(line));
+  return true;
+}
+
+function inheritedAnchor(row, comments) {
+  let parent = row;
+  const seen = new Set();
+  while (!parent.anchor && replyOf(parent) && !seen.has(idOf(parent))) {
+    seen.add(idOf(parent));
+    const previous = commentsOf(comments).find((entry) => idOf(entry) === replyOf(parent));
+    if (!previous) break;
+    parent = previous;
+  }
+  return parent.anchor;
 }

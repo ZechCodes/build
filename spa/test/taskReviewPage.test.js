@@ -65,7 +65,7 @@ it("renders every saved directory and switches Changes to embedded Files in the 
   await mount();
   const viewGroup = document.querySelector('[role="group"][aria-label="Directory view"]');
   expect(viewGroup).not.toBeNull();
-  expect([...viewGroup.querySelectorAll('button')].map((button) => button.textContent)).toEqual(["Changes", "Files", "Comments"]);
+  expect([...viewGroup.querySelectorAll('button')].map((button) => button.textContent.trim())).toEqual(["Changes", "Files", "Comments"]);
   expect([...document.querySelectorAll('[data-directory]')].map((node) => node.textContent)).toEqual(["API", "Notes", "Removed source"]);
   expect(document.querySelector("#review").textContent).toContain("2 uncommitted files not in this review");
   panes.changes.mock.calls[0][0].onOpenFile("unchanged.txt");
@@ -101,9 +101,9 @@ it("does not call review verbs or draw actions without cached support", async ()
   expect(document.querySelector('[data-review-update]')).toBeNull();
 });
 
-it("retains existing feedback and places lifecycle controls in More", async () => {
+it("shows the pending tray and verdict bar and places lifecycle controls in More", async () => {
   await mount(review, { ...support, comments: true });
-  expect(document.querySelector('[data-review-feedback]')).not.toBeNull();
+  expect(document.querySelector('[data-review-pending]')).not.toBeNull();
   expect(document.querySelector('[data-review-more] [data-review-save]')).not.toBeNull();
   expect(document.querySelector('[data-review-more] [data-review-complete]')).not.toBeNull();
 });
@@ -168,4 +168,19 @@ it("keeps automatic refresh metadata-only while an explicit Refresh can retry th
   expect(panes.refresh).not.toHaveBeenCalled();
   document.querySelector('[data-review-refresh]').click();
   expect(panes.refresh).toHaveBeenCalledTimes(1);
+});
+
+
+it("enables line composition in both panes and disables verdicts on older revisions", async () => {
+  const first = { ...review.snapshots[0], id: 'first', number: 1 };
+  const second = { ...first, id: 'second', number: 2 };
+  await mount({ ...review, snapshots: [first, second] }, { ...support, comments: true });
+  expect(panes.changes.mock.calls.at(-1)[0].onComment).toBeTypeOf('function');
+  expect([...document.querySelectorAll('[data-review-verdict]')].every((button) => !button.disabled)).toBe(true);
+  const select = document.querySelector('[data-review-snapshot]');
+  select.value = 'first'; select.dispatchEvent(new Event('change'));
+  await painted(() => document.querySelector('[data-review-draft-revision]')?.textContent.includes('earlier revision'));
+  expect([...document.querySelectorAll('[data-review-verdict]')].every((button) => button.disabled)).toBe(true);
+  document.querySelector('[data-review-view="files"]').click();
+  expect(panes.files.mock.calls.at(-1)[0].onComment).toBeTypeOf('function');
 });

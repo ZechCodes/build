@@ -37,7 +37,7 @@ beforeEach(async () => {
 });
 afterEach(() => page?.dispose());
 
-it("keeps historical drafts, anchors and opinions when a new published snapshot resets cached approval", async () => {
+it("keeps historical drafts and anchors and disables older verdicts when a new published snapshot resets cached approval", async () => {
   const sent = deferred();
   const callRpc = vi.fn((method, params) => {
     if (method === 'tasks.comment') { sent.resolve(params); return new Promise(() => {}); }
@@ -45,14 +45,13 @@ it("keeps historical drafts, anchors and opinions when a new published snapshot 
   });
   await mount(callRpc);
   expect(host.textContent).toContain('main ← review/1-api');
-  const field = host.querySelector('#task-review-feedback-body');
-  field.value = 'Keep this historical thought'; field.dispatchEvent(new Event('input'));
   const anchor = { snapshot_id: snapshot.id, directory_id: 'dir-api', path: 'api.js', side: 'old', line: 2 };
   await page.openAnchor(anchor);
   // This reply binds its draft to the retained snapshot and original anchor.
   await page.reply({ id: 'old-comment', anchor });
-  host.querySelector('[data-review-opinion]').value = 'approve';
-  host.querySelector('[data-review-opinion]').dispatchEvent(new Event('change'));
+  const field = host.querySelector('[data-review-inline-composer] textarea');
+  field.value = 'Keep this historical thought'; field.dispatchEvent(new Event('input'));
+  await whenDom(host, () => host.querySelector('[data-review-draft]')?.textContent.includes('Keep this historical thought'));
   const nextSnapshot = { ...snapshot, id: 'snapshot-2', number: 2 };
   await writeReviewReply(scope, { review: nextReview(2, 'approved') }, 2);
   await page.whenPainted();
@@ -61,30 +60,32 @@ it("keeps historical drafts, anchors and opinions when a new published snapshot 
   await page.whenPainted();
   expect(host.querySelector('[data-review-pr-status]').textContent).toBe('Open');
   expect(host.querySelector('[data-review-snapshot]').value).toBe(snapshot.id);
-  expect(host.querySelector('#task-review-feedback-body')).toBe(field);
+  expect(host.querySelector('[data-review-inline-composer] textarea')).toBe(field);
   expect(field.value).toBe('Keep this historical thought');
   expect(host.querySelector('[data-review-newer-snapshot]').hidden).toBe(false);
-  expect(host.querySelector('[data-review-opinion-target]').textContent).toContain('do not change the current review status');
-  host.querySelector('[data-review-feedback]').dispatchEvent(new Event('submit', { cancelable: true }));
-  expect(await sent.promise).toMatchObject({ opinion: { snapshot_id: snapshot.id, verdict: 'approve' }, anchor, reply_to: 'old-comment' });
+  expect(host.querySelector('[data-review-draft-revision]').textContent).toContain('do not change the current review status');
+  expect([...host.querySelectorAll('[data-review-verdict]')].every((button) => button.disabled)).toBe(true);
+  host.querySelector('[data-review-comment-batch]').click();
+  expect(await sent.promise).toMatchObject({ anchor, reply_to: 'old-comment' });
+  expect((await sent.promise).opinion).toBeUndefined();
   expect(host.querySelector('[data-review-pr-status]').textContent).toBe('Open');
 });
 
 it("restores each snapshot's feedback draft when the picker moves between saved snapshots", async () => {
   await mount();
-  const field = host.querySelector('#task-review-feedback-body');
+  const field = host.querySelector('[data-review-summary]');
   field.value = 'Earlier draft'; field.dispatchEvent(new Event('input'));
   const nextSnapshot = { ...snapshot, id: 'snapshot-2', number: 2 };
   await writeReviewReply(scope, { review: nextReview(2, 'open', [snapshot, nextSnapshot]) }, 2);
   await page.whenPainted();
   const picker = host.querySelector('[data-review-snapshot]');
   picker.value = nextSnapshot.id; picker.dispatchEvent(new Event('change'));
-  await whenDom(host, () => host.querySelector('#task-review-feedback-body') !== field);
-  const newField = host.querySelector('#task-review-feedback-body');
+  await whenDom(host, () => host.querySelector('[data-review-summary]') !== field);
+  const newField = host.querySelector('[data-review-summary]');
   newField.value = 'Latest draft'; newField.dispatchEvent(new Event('input'));
   host.querySelector('[data-review-snapshot]').value = snapshot.id;
   host.querySelector('[data-review-snapshot]').dispatchEvent(new Event('change'));
-  await whenDom(host, () => host.querySelector('#task-review-feedback-body').value === 'Earlier draft');
+  await whenDom(host, () => host.querySelector('[data-review-summary]').value === 'Earlier draft');
   expect(host.querySelector('[data-review-snapshot]').value).toBe(snapshot.id);
 });
 
@@ -105,12 +106,12 @@ it("paints the repository's authoritative Close from cache and the same-version 
   await whenDom(host, () => host.querySelector('[data-review-pr-status]')?.textContent === 'Closed');
   await whenDom(host, () => host.querySelector('[data-review-reopen]')?.disabled === false);
   expect((await readCached(reviewAddress(scope))).value.review.pull_request.status).toBe('closed');
-  const fieldBefore = host.querySelector('#task-review-feedback-body');
+  const fieldBefore = host.querySelector('[data-review-summary]');
   const paints = keepReadingPlace.mock.calls.length;
   await writeReviewReply(scope, answer, 100);
   await page.whenPainted();
   expect(keepReadingPlace).toHaveBeenCalledTimes(paints);
-  expect(host.querySelector('#task-review-feedback-body')).toBe(fieldBefore);
+  expect(host.querySelector('[data-review-summary]')).toBe(fieldBefore);
   expect(host.querySelector('[data-review-reopen]')).not.toBeNull();
   expect(host.textContent).not.toContain('Merged');
 });

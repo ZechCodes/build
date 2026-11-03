@@ -9,14 +9,13 @@ import { fileBodyReading, isMediaPath } from "./fileViewer.js";
 import { mountPagedFile, sourceLinesPainter, wholeBytesPainter } from "./pagedFileView.js";
 import { langForPath } from "./highlight.js";
 import { markdownHtml } from "./markdown.js";
-import { fieldTraits } from "./fieldTraits.js";
 import { attachMediaSource, createMediaBody, releaseMediaSource } from "./mediaBlob.js";
 import { readCached, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
 import { watchChanges } from "./changeEvents.js";
 import { esc } from "./text.js";
 import { decodeBase64Text, mediaPreviewHtml, previewModeFor, sourcePreviewHtml } from "./filePreview.js";
 import { isDotenvPath, maskDotenvLine, SPOILER_DOTS } from "./secrets.js";
-import { paintInlineReviewRows } from "./taskReviewInline.js";
+import { paintInlineReviewRows, placeReviewComposer, reviewReplyAt } from "./taskReviewInline.js";
 
 const treeKind = (live) => live ? "task-review-live-tree" : "task-review-tree";
 const fileKind = (live) => live ? "task-review-live-file" : "task-review-file";
@@ -58,9 +57,8 @@ const previewBodyHtml = (path, file, mode) => {
   return source + (file.truncated ? '<div class="ftrunc">truncated</div>' : "");
 };
 
-const previewHtml = (path, file, commentable, showSource) => {
-  const lineAction = commentable ? `<label>Line <input data-review-line-input type="number" min="1" value="1" ${fieldTraits("identifier")} aria-label="Line to comment on"></label><button type="button" data-review-comment-line>Comment</button>` : "";
-  const head = `<div class="trf-file-head"><span class="mono">${esc(path)}</span><span>${Number(file.size) || 0} bytes</span>${lineAction}</div>`;
+const previewHtml = (path, file, showSource) => {
+  const head = `<div class="trf-file-head"><span class="mono">${esc(path)}</span><span>${Number(file.size) || 0} bytes</span></div>`;
   if (file.paged) return head + '<div class="trf-paged"></div>';
   const mode = showSource ? "source" : previewModeFor(file.mime, file.truncated);
   return head + previewBodyHtml(path, file, mode);
@@ -89,7 +87,7 @@ const pagedPainter = (path, file, showSource) => {
  */
 export function mountTaskReviewFiles(host, options) {
   let { comments = [] } = options;
-  const { deviceId, projectId, taskId, workspaceId, snapshot, directory, callRpc, path, onComment,
+  const { deviceId, projectId, taskId, workspaceId, snapshot, directory, callRpc, path, onComment, onReply, onPaint = () => {},
     anchor, onSelectPath, identities, keepReadingPlace = (paint) => paint() } = {
     path: "", onComment: null, anchor: null, onSelectPath: null, identities: {}, keepReadingPlace: (paint) => paint(), ...options,
   };
@@ -186,9 +184,10 @@ export function mountTaskReviewFiles(host, options) {
     wireCommentLines(preview);
     paintInlineReviewRows(preview, comments, {
       snapshotId: snapshot.id, directoryId: directory.id, path: selected, deviceId, projectId, identities,
-      allowedCommits: ["", directory.head],
+      allowedCommits: ["", directory.head], replyable: Boolean(onReply),
     });
     if (!paintAnchor()) void seekAnchor();
+    onPaint();
   };
   const showSourceFor = (name, file) => {
     if (!["markdown", "html", "svg"].includes(previewModeFor(file.mime, file.truncated))) return false;
@@ -205,7 +204,7 @@ export function mountTaskReviewFiles(host, options) {
     const showSource = showSourceFor(name, file);
     shownFile = file;
     shownSource = showSource;
-    preview.innerHTML = previewHtml(name, file, Boolean(onComment), showSource);
+    preview.innerHTML = previewHtml(name, file, showSource);
     paintLineMetadata();
     if (!file.paged) {
       const media = preview.querySelector("img.trf-media, audio.fmedia, video.fmedia");
@@ -336,10 +335,9 @@ export function mountTaskReviewFiles(host, options) {
   };
 
   const onPreviewClick = (event) => {
+    if (reviewReplyAt(event, comments, onReply, (row) => ({ snapshot_id: snapshot.id, directory_id: directory.id, path: selected, side: "new", line: Number(row?.dataset.newLine) }))) return;
     const line = event.target.closest?.("[data-review-file-comment]");
     if (line) commentAt(Number(line.dataset.reviewFileComment));
-    const target = event.target.closest?.("[data-review-comment-line]");
-    if (target) commentAt(Number(preview.querySelector("[data-review-line-input]")?.value));
   };
   preview.addEventListener("click", onPreviewClick);
 
@@ -379,6 +377,7 @@ export function mountTaskReviewFiles(host, options) {
 
   return {
     reveal,
+    placeComposer: (row, anchor) => anchor?.path === selected && placeReviewComposer(preview, row, anchor),
     updateComments(next) {
       comments = next || [];
       if (disposed) return;

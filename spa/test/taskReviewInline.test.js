@@ -19,6 +19,12 @@ describe("read-only review inline comments", () => {
     expect(host.querySelector("textarea, button, input")).toBeNull();
   });
 
+  it("adds Reply only to commentable threads", () => {
+    const host = document.createElement('tbody');
+    host.innerHTML = inlineReviewRowsHtml([comment('parent')], { ...context, replyable: true });
+    expect(host.querySelector('[data-review-inline-reply]').dataset.reviewInlineReply).toBe('parent');
+  });
+
   it("separates revisions, directories, paths, sides and commits", () => {
     for (const change of [{ snapshotId: "other" }, { directoryId: "other" }, { path: "other" }, { side: "old" }, { line: 3 }, { commit: "abc" }]) {
       expect(inlineReviewRowsHtml([comment("one")], { ...context, ...change })).toBe("");

@@ -102,8 +102,8 @@ for (const { label, width } of [{ label: "desktop", width: 1440 }, { label: "pho
       await mountReviewTask(page, basePath);
       expect(await page.locator(".task-review-title").textContent()).toContain("Make review navigation useful");
       expect(await page.locator(".task-review-comments [data-task-composer]").count()).toBe(1);
-      expect(await page.locator(".task-review-comments [data-review-feedback]").count()).toBe(1);
-      expect(await page.locator("[data-review-comment], [data-review-file-comment]").count()).toBe(0);
+      expect(await page.locator(".task-review-comments [data-review-pending]").count()).toBe(1);
+      expect(await page.locator("[data-review-comment], [data-review-file-comment]").count()).toBeGreaterThan(0);
       const description = page.locator(".task-review-description");
       await description.locator("summary").click();
       expect(await description.locator(".task-page-body").isVisible()).toBe(true);
@@ -136,7 +136,7 @@ for (const { label, width } of [{ label: "desktop", width: 1440 }, { label: "pho
       await page.waitForFunction(() => document.querySelector(".trf-preview")?.textContent.includes('selection = "preserved"'));
       await page.waitForSelector(".trf-preview .task-review-inline");
       expect(await page.locator(".trf-preview .task-review-inline").textContent()).toContain("Keep the selected file");
-      expect(await page.locator("[data-review-comment], [data-review-file-comment]").count()).toBe(0);
+      expect(await page.locator("[data-review-comment], [data-review-file-comment]").count()).toBeGreaterThan(0);
       await assertNoOverflow(page);
       await captureLayout(page, `review-page-files-${label}.png`);
 

@@ -35,7 +35,7 @@ describe.each(Object.entries(renderers))("cached PR summary on the %s", (_name, 
     const mark = doc.querySelector(".task-review-summary");
     expect(mark?.textContent.trim()).toBe(label);
     expect(mark?.querySelector("svg")).not.toBeNull();
-    expect(mark?.getAttribute("aria-label")).toBe(`Pull request: ${label}`);
+    expect(mark?.getAttribute("aria-label")).toBe(`Review: ${label}`);
     expect(mark?.dataset.reviewStatus).toBe(status);
   });
 

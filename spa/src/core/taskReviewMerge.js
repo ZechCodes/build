@@ -113,8 +113,8 @@ function choiceFor(draft, destination, binding) {
 }
 
 function mergeBlock(review, record, snapshot) {
-  if (!activeStatus(review)) return "Merge requires an active PR.";
-  if (snapshot.id !== review.pull_request.latest_published_snapshot_id) return "Select the latest published snapshot to merge.";
+  if (!activeStatus(review)) return "Merge requires an active review.";
+  if (snapshot.id !== review.pull_request.latest_published_snapshot_id) return "Select the latest published revision to merge.";
   if (!review.bindings?.length) return "Included Git sources are unavailable.";
   if (intentsOf(record).some((intent) => intent.state === "running")) return "A merge is already running.";
   return sourceBlock(review, record, snapshot);
@@ -219,7 +219,7 @@ function intentSummary(review, intent) {
 
 function integratedSummary(review, intent) {
   if (unpushed(review, intent)) return "Merged locally; publication failed";
-  if (review.pull_request.status !== "merged") return "Sources integrated; PR merge incomplete";
+  if (review.pull_request.status !== "merged") return "Sources integrated; review merge incomplete";
   return "Merged locally · Publication complete";
 }
 
@@ -235,7 +235,7 @@ function intentHtml(review, intent, support, busy, snapshotId) {
   const retry = support.merge && mayRetry(review, intent);
   const prepare = support.merge && mayPrepareSnapshot(review, intent, snapshotId);
   return `<section class="pr-merge-result" data-pr-merge-result="${esc(intent.request_id)}" data-pr-merge-status="${esc(intent.state)}">
-    <h3>${esc(intentSummary(review, intent))}</h3><p>Snapshot: ${esc(intent.request.snapshot_id)}</p>
+    <h3>${esc(intentSummary(review, intent))}</h3><p>Revision: ${esc(intent.request.snapshot_id)}</p>
     ${intent.state === "interrupted" ? '<p class="warn">Interrupted: inspect the saved Git results before retrying.</p>' : ""}
     ${intent.error ? `<p class="warn">${esc(intent.error)}</p>` : ""}<ul>${rows}</ul>
     ${retry ? `<button class="btn" type="button" data-pr-merge-retry="${esc(intent.request_id)}"${busy ? " disabled" : ""}>${publicationRetry(review, intent) ? "Retry publication" : "Retry saved merge"}</button>` : ""}
@@ -359,7 +359,7 @@ export function mountTaskReviewMerge(host, options) {
 
   function formHtml() {
     if (!support().merge || !activeStatus(review)) return "";
-    if (recoveryPlan(review, record, snapshot) && !recoveryDraft()) return '<p class="sub">This snapshot has retained Git results. Review its saved merge below or prepare a new merge plan.</p>';
+    if (recoveryPlan(review, record, snapshot) && !recoveryDraft()) return '<p class="sub">This revision has retained Git results. Review its saved merge below or prepare a new merge plan.</p>';
     const blocked = mergeBlock(review, record, snapshot);
     return mergeFormHtml(blocked);
   }
@@ -367,13 +367,13 @@ export function mountTaskReviewMerge(host, options) {
   function mergeFormHtml(blocked) {
     const locked = busy || hydrating;
     const prepared = preparedPlan();
-    return `<details data-pr-merge-sheet><summary>Merge PR</summary><form data-pr-merge-form>
+    return `<details data-pr-merge-sheet><summary>Merge review</summary><form data-pr-merge-form>
       <p>Merge every included Git source into its configured base. Only the selected published heads are included.</p>
       <fieldset class="pr-merge-fields"${disabled(locked || draft.submitted)}>
         ${review.bindings.map((binding) => sourceHtml(review, record, snapshot, draft, binding)).join("")}</fieldset>
       ${warningHtml(blocked)}
       ${prepared ? '<p class="sub">Recorded successful merges and requested Push destinations are retained. Confirm the current targets to resume unfinished work.</p>' : savedPlanHtml()}
-      <button class="btn primary" data-pr-merge-submit type="submit"${disabled(locked || blocked)}>${busy ? "Merging…" : draft.submitted ? "Retry saved merge" : "Merge PR"}</button>
+      <button class="btn primary" data-pr-merge-submit type="submit"${disabled(locked || blocked)}>${busy ? "Merging…" : draft.submitted ? "Retry saved merge" : "Merge review"}</button>
       ${draft.submitted && !recoveryDraft() ? `<button class="btn" type="button" data-pr-merge-new${disabled(locked)}>Prepare a new merge plan</button>` : ""}
     </form></details>`;
   }

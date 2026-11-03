@@ -17,9 +17,12 @@ const FILE_LIMIT = 1_000;
 const MAX_REVEAL_PAGES = 32;
 const displayError = (error) => String(error?.message || error || "Source unavailable");
 
+const sinceBaselineOf = (list) => list?.since_baseline;
+const oldAnchorMatches = (context) => context.comparisonMode !== "since" || context.sinceBaseline === "base";
+
 function inlineThreads(row, context) {
   const { comments, ...scope } = context;
-  const old = row.o > 0 ? inlineReviewRowsHtml(comments, { ...scope, side: "old", line: row.o }) : "";
+  const old = row.o > 0 && oldAnchorMatches(context) ? inlineReviewRowsHtml(comments, { ...scope, side: "old", line: row.o }) : "";
   const newer = row.n > 0 ? inlineReviewRowsHtml(comments, { ...scope, side: "new", line: row.n }) : "";
   return old + newer;
 }
@@ -49,8 +52,8 @@ function fileHeaderHtml(file, body, viewed) {
   const status = esc(file.status || "Modified");
   const count = `<span class="task-review-count">+${Number(file.additions ?? 0)} −${Number(file.deletions ?? 0)}</span>`;
   const markLabel = viewed ? "Viewed" : "Mark viewed";
-  const mark = `<button type="button" data-review-viewed aria-pressed="${viewed}" aria-label="${viewed ? "Mark unread" : markLabel}"${file.content_key ? "" : " disabled"}>${markLabel}</button>`;
-  return `<div class="task-review-file-head"><button type="button" data-review-expand aria-expanded="${Boolean(body?.open)}">${path}</button><span>${status}</span>${count}${mark}<button type="button" data-open-file="${path}" aria-label="Open ${path} in Files">Open in Files</button></div>`;
+  const mark = `<button type="button" class="btn" data-review-viewed aria-pressed="${viewed}" aria-label="${viewed ? "Mark unread" : markLabel}"${file.content_key ? "" : " disabled"}>${markLabel}</button>`;
+  return `<div class="task-review-file-head"><button type="button" class="btn" data-review-expand aria-expanded="${Boolean(body?.open)}">${path}</button><span>${status}</span>${count}${mark}<button type="button" class="btn" data-open-file="${path}" aria-label="Open ${path} in Files">Open in Files</button></div>`;
 }
 
 function fileHtml(file, body, viewed, commentable, context) {
@@ -59,7 +62,7 @@ function fileHtml(file, body, viewed, commentable, context) {
   if (!body?.open) return `<section class="task-review-file" data-review-path="${path}">${header}</section>`;
   const table = fileBodyHtml(file, body, commentable, context);
   const more = body.pages && !body.pages.complete
-    ? `<button type="button" data-review-more>Load more lines (${body.pages.end} of ${body.pages.total} bytes)</button>` : "";
+    ? `<button type="button" class="btn" data-review-more>Load more lines (${body.pages.end} of ${body.pages.total} bytes)</button>` : "";
   return `<section class="task-review-file" data-review-path="${path}">${header}${table}${more}</section>`;
 }
 
@@ -186,14 +189,14 @@ async function seekAnchorPages(host, target, bodies) {
 }
 
 /** Mount one saved source's Changes tab. refresh() retries the listing. */
-export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, anchor = null, comparison = {}, path = "", onSelectPath = null, onUnreadableCommit = null, comments = [], autoOpen = false, keepReadingPlace = (paint) => paint() }) {
+export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, anchor = null, comparison = {}, path = "", onSelectPath = null, onUnreadableCommit = null, comments = [], identities, autoOpen = false, keepReadingPlace = (paint) => paint() }) {
   const scope = { deviceId, projectId, taskId, snapshot, directory };
   const params = reviewDiffParams(scope, comparison);
   const rpc = reviewMutationRpc(deviceId, callRpc);
   const listAddress = reviewDiffAddress(scope, comparison);
   const patchAddress = (path) => reviewDiffAddress(scope, comparison, path);
   const ui = uiAddress({ deviceId, entityId: projectId, view: "task-review-changes", kind: "review", sub: JSON.stringify([taskId, directory.id]) });
-  const state = { list: null, error: "", viewed: new Map(), open: new Set(), loading: new Set(), anchor: null, anchorScrolled: false, selected: path, context: { comments, snapshotId: snapshot.id, directoryId: directory.id, commit: comparison.commit } };
+  const state = { list: null, error: "", viewed: new Map(), open: new Set(), loading: new Set(), anchor: null, anchorScrolled: false, selected: path, context: { comments, deviceId, projectId, identities, snapshotId: snapshot.id, directoryId: directory.id, commit: comparison.commit, comparisonMode: comparison.mode } };
   let initialSelection = true;
   let alive = true;
   let generation = 0;
@@ -228,6 +231,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     const record = await readCached(listAddress);
     if (!alive) return;
     state.list = record?.value || null;
+    state.context.sinceBaseline = sinceBaselineOf(state.list);
     state.error = record?.value?.read_error || "";
     paint();
     if (state.list?.files && initialSelection) await openInitialPath();

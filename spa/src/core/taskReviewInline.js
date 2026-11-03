@@ -39,6 +39,8 @@ function commentHtml(row, context) {
   const body = markdownHtml(row.body || "", {
     place: { deviceId: context.deviceId, projectId: context.projectId }, identities: context.identities,
   });
+  // markdownHtml and actorIdentityHtml return escaped markup; all scalar attributes use esc.
+  // nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format
   return `<article class="task-review-inline-comment" data-review-inline-comment="${esc(idOf(row) || "")}"><header><strong>${actorIdentityHtml(row.actor || row.author, context)}</strong>${time}</header><div class="markdown">${body}</div></article>`;
 }
 
@@ -56,6 +58,8 @@ export function inlineReviewRowsHtml(comments, context) {
 export function paintInlineReviewRows(host, comments, context) {
   host.querySelectorAll("[data-review-inline]").forEach((row) => row.remove());
   host.querySelectorAll("tr[data-new-line]").forEach((row) => {
+    // The shared renderer escapes text and uses the application markdown safe tag set.
+    // nosemgrep: typescript.react.security.audit.react-unsanitized-method.react-unsanitized-method
     row.insertAdjacentHTML("afterend", inlineReviewRowsHtml(comments, {
       ...context, side: "new", line: Number(row.dataset.newLine), colspan: context.colspan || 2,
     }));

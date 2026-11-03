@@ -209,6 +209,17 @@ describe("task review Files", () => {
     expect(next.host.querySelector(".trf-preview").textContent).not.toContain("a.txt");
   });
 
+  it("uses optional defaults when a caller explicitly passes undefined", async () => {
+    const callRpc = vi.fn(async (_method, params) => params.mode === "tree"
+      ? { path: "", entries: [{ name: "README.md", kind: "file" }] }
+      : { ...textFile(params.path, "# Saved markdown\n"), mime: "text/markdown" });
+    const { host, view } = mount(git, callRpc, {
+      keepReadingPlace: undefined, comments: undefined, path: undefined, anchor: undefined,
+    });
+    await view.open("README.md");
+    await vi.waitFor(() => expect(host.querySelector(".trf-preview").textContent).toContain("Saved markdown"));
+  });
+
   it("keeps dotenv secrets masked while drawing their line comments", async () => {
     const anchor = { snapshot_id: "snap-1", directory_id: git.id, path: ".env", side: "new", line: 2 };
     const callRpc = vi.fn(async (_method, params) => params.mode === "tree"

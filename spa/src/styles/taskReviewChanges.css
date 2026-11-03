@@ -32,3 +32,6 @@
 .task-review-changed-tree [role="group"] { padding-left: 9px; }
 .task-review-changed-tree [role="group"] button { width: 100%; }
 .task-review-changed-tree [data-review-tree-directory] { padding: 7px 4px 3px; font-size: 11px; color: var(--ink2); font-family: var(--mono); }
+.task-review-diff-scroll td.code { padding-inline-start: 8px; }
+.task-review-changed-tree button { background: transparent; color: var(--ink); border: 0; }
+.task-review-changed-tree button:hover { background: var(--hover); }

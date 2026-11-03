@@ -15,5 +15,5 @@ export const taskReviewStatusLabel = (status) => STATUS_LABELS.get(status) || ""
 export function taskReviewSummaryHtml(summary) {
   const label = taskReviewStatusLabel(summary?.status);
   if (!label) return "";
-  return `<span class="task-review-summary" data-review-status="${esc(summary.status)}" aria-label="Pull request: ${esc(label)}" title="Pull request: ${esc(label)}"><span class="task-review-icon" aria-hidden="true">${ICON_GIT_PULL_REQUEST}</span><span>${esc(label)}</span></span>`;
+  return `<span class="task-review-summary" data-review-status="${esc(summary.status)}" aria-label="Review: ${esc(label)}" title="Review: ${esc(label)}"><span class="task-review-icon" aria-hidden="true">${ICON_GIT_PULL_REQUEST}</span><span>${esc(label)}</span></span>`;
 }

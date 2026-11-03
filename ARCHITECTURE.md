@@ -1978,6 +1978,40 @@ range off-lock, then recheck metadata and write against the current task. An
 opinion retains the review version captured before validation, so a newly
 published revision still refuses the stale opinion.
 
+The SPA gives every task with a `review_summary` or a cached `task-review`
+record a review template (#969), including legacy snapshot-mode reviews.
+`taskReviewPage.js` owns its header, revision picker, directory switcher and
+commit rail; `trackerTaskPage.js` places the existing task timeline beside it.
+Desktop has commits, Changes/Files and comments in three columns. At widths up
+to 640px, Changes, Files and Comments become tabs and the header opens the
+commit rail as a sheet. Existing lifecycle, merge and reclaim controls remain
+under More. This slice reads existing comments inline but does not mount a
+review composer or verdict controls.
+
+`router.js` and `taskReviewSelection.js` address the reading place as
+`#/device/<d>/project/<p>/tasks/<id>/review/r<N>/<all|since|commit/<sha>>/<directory>/<path>?side=new&line=42`.
+The optional `view=files|comments` query retains the selected tab. Selection
+lives in the URL; viewed marks and action drafts retain their separate local
+UI records. Revision switches preserve path and line, and a commit switch
+preserves the path while that commit's file list includes it. A selected
+revision stays pinned when a newer one arrives. Timeline anchor chips and
+`/c/<commentId>` links select the anchor's revision, optional commit and line.
+Unavailable commits fall back to All changes; unavailable revisions leave the
+comment accessible in the timeline with an explanation.
+
+The rail offers All changes, Since my review when the user's last opinion
+establishes an earlier retained baseline, and paginated commits with author, relative
+time and change counts. Cached capability flags independently gate the newer
+reads; an older bridge keeps All changes and the saved Changes/Files views.
+`taskReviewChanges.js` reuses the diff renderer and per-file body cache for
+whole-range, commit and since comparisons, preserving viewed marks, `.env`
+masking and the 1,000-file listing notice. `taskReviewFiles.js` reads the saved
+head, with non-Git directories still explicitly live. `taskReviewInline.js`
+renders cached anchored comments and replies under their matching lines;
+comparison commit identity keeps range and per-commit threads distinct. Since
+comparisons show range anchors on the current head; old-side range anchors
+appear only when the bridge falls back to that revision's base.
+
 PR-style opening is a service in `bridge/src/reviews/opening.rs`, exposed by
 wire 3.15.0's typed RPC and MCP adapters (#405). `api/v1/reviews.rs` owns the
 strict wire selections; `app/tracker/reviews/` resolves project, workspace,
@@ -2365,8 +2399,9 @@ admission; the RPC returns nonretryable `invalid_params`. PR actions use the
 dedicated merge lifecycle service. Existing Snapshot-mode Merge and Push
 behavior is preserved.
 
-The task page embeds the saved review (`spa/src/core/taskReviewPage.js`), with
-every saved directory and Changes/Files views. The Workspace Changes header
+Tasks with saved reviews use the dedicated review template
+(`spa/src/core/taskReviewPage.js`), with every saved directory and Changes/Files
+views beside the existing timeline. The Workspace Changes header
 and workspace-name menu open one shared PR creation form
 (`workspaceReviewEntry.js`, `workspaceReviewForm.js`). It selects a reviewer
 and per-directory bases, previews dedicated branches, and retains the exact
@@ -3753,6 +3788,20 @@ In practice:
   redraw.
 - No view waits on the wire to show what is already known.
 - No view branches on whether a device is connected, connecting or away.
+
+Review pages follow this rule for both legacy and pull-request storage modes.
+Metadata is held in `task-review`; `taskReviewReads.js` adds
+`task-review-commits`, `task-review-commit-changes` and
+`task-review-since-changes` beside the existing `task-review-changes` listing.
+Per-comparison patch records use `task-review-commit-patch` and
+`task-review-since-patch`, while whole-range patches keep `task-review-patch`.
+Every identity includes the task, saved revision and directory, with the
+commit or since baseline added for those comparisons; Files keeps its saved
+head tree and body records. Mounts read these replicas before refreshing.
+`refreshCachedReviews` refreshes metadata and previously visited commit and
+comparison listings on reconnect, using the current capability check, read
+ordering and removal fences. Refresh failures retain cached content, and
+refreshing a read never replays a lifecycle or Git mutation.
 
 Animated agent canvases share a frame loop and retain their measured CSS box
 between frames (`agentCanvas.js`, `canvasGeometry.js`). A ResizeObserver

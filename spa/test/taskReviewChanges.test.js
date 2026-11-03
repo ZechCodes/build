@@ -311,3 +311,25 @@ describe("selected review comparisons", () => {
     pane.dispose();
   });
 });
+
+describe("since comparison comment positions", () => {
+  it.each([
+    ["previous_head", false],
+    ["base", true],
+  ])("only reuses old-side range anchors when since baseline is %s", async (baseline, showOld) => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const anchor = { snapshot_id: snapshot.id, directory_id: directory.id, path: "src/a.js", line: 1 };
+    const comments = [
+      { id: "old-comment", body: "Old range position", anchor: { ...anchor, side: "old" } },
+      { id: "new-comment", body: "Current head position", anchor: { ...anchor, side: "new" } },
+    ];
+    const answer = { ...list, since_baseline: baseline };
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory,
+      comparison: { mode: "since", from_snapshot_id: "prior" }, path: "src/a.js", comments,
+      callRpc: async (_method, params) => params.paths ? { ...answer, patch } : answer });
+    await vi.waitFor(() => expect(host.textContent).toContain("Current head position"));
+    expect(host.textContent.includes("Old range position")).toBe(showOld);
+    pane.dispose();
+  });
+});

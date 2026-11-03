@@ -88,9 +88,9 @@ const pagedPainter = (path, file, showSource) => {
  * a path from Changes; refresh() retries the currently shown tree and file.
  */
 export function mountTaskReviewFiles(host, options) {
-  let { comments } = { comments: [], ...options };
+  let { comments = [] } = options;
   const { deviceId, projectId, taskId, workspaceId, snapshot, directory, callRpc, path, onComment,
-    anchor, onSelectPath, identities, keepReadingPlace } = {
+    anchor, onSelectPath, identities, keepReadingPlace = (paint) => paint() } = {
     path: "", onComment: null, anchor: null, onSelectPath: null, identities: {}, keepReadingPlace: (paint) => paint(), ...options,
   };
   const live = !directory.is_git;

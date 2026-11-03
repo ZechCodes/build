@@ -41,7 +41,8 @@ import {
   canComment,
   COMMENT_INPUT_ID,
   commentSendLabel,
-  TASK_PAGE_FRAME,
+  taskPageFrame,
+  isReviewTask,
   taskMissingHtml,
   taskPageParts,
 } from "./trackerTaskRender.js";
@@ -105,6 +106,7 @@ export function mountTaskPage(host, options) {
     task: null,
     rows: [],
     reviewSnapshots: [],
+    review: null,
     columns: [],
     draft: "",
     draftOperationId: null,
@@ -265,8 +267,10 @@ export function mountTaskPage(host, options) {
   /** Whether the host holds the task page's frame, or something else (the
    *  missing notice, or nothing yet). */
   let framed = false;
+  let reviewTemplate = false;
   let unframed = null;
   let commentFocused = false;
+  let commentAnchorOpened = false;
   let openedAtTop = false;
 
   /** Where the reader is typing when a part is about to be redrawn: which
@@ -306,6 +310,7 @@ export function mountTaskPage(host, options) {
     projectName: projectName(state.feed(), state.projectKey),
     rows: state.rows,
     reviewSnapshots: state.reviewSnapshots,
+    review: state.review,
     unreadFrom,
     links: taskLinkRows(state.task, place(), state.feed()),
     watch: watch.state(),
@@ -332,11 +337,17 @@ export function mountTaskPage(host, options) {
   };
 
   const frame = () => {
-    if (framed) return;
+    const nextTemplate = isReviewTask(state.task, { review: state.review });
+    if (framed && nextTemplate === reviewTemplate) return;
+    reviewPage?.dispose();
+    reviewPage = null;
+    waitingEditor?.dispose();
+    waitingEditor = null;
+    reviewTemplate = nextTemplate;
     framed = true;
     unframed = null;
     Object.values(held).forEach((parts) => parts.clear());
-    host.innerHTML = TASK_PAGE_FRAME;
+    host.innerHTML = taskPageFrame(reviewTemplate);
     reads.mark();
   };
 
@@ -450,10 +461,20 @@ export function mountTaskPage(host, options) {
    *  row is not there yet. */
   function markRoutedComment() {
     if (!state.commentId) return;
+    openRoutedReviewAnchor();
     const found = focusTaskComment(host, state.commentId, { scroll: !commentFocused });
     if (found) commentFocused = true;
     else if (!commentFocused && !openedAtTop) host.scrollTop = 0;
     openedAtTop = true;
+  }
+
+  function openRoutedReviewAnchor() {
+    const row = state.rows.find((entry) => entry.key === state.commentId);
+    if (reviewTemplate && state.review && row?.anchor && !commentAnchorOpened && reviewPage) {
+      commentAnchorOpened = true;
+      const target = reviewPage;
+      void target.ready.then(() => target.openAnchor(row.anchor));
+    }
   }
 
   /** Take one cached `tasks.get` record: the task, its timeline, and the labels the
@@ -540,7 +561,8 @@ export function mountTaskPage(host, options) {
     const serial = ++reviewReadSerial;
     const cached = await readCached(savedReviewAddress);
     if (state.disposed || serial !== reviewReadSerial) return;
-    state.reviewSnapshots = cached?.value?.review?.snapshots || [];
+    state.review = cached?.value?.review || null;
+    state.reviewSnapshots = state.review?.snapshots || [];
     paint();
   };
   const reviewWatcher = subscribeCache(savedReviewAddress, () => void readReviewSnapshots());
@@ -920,10 +942,13 @@ export function mountTaskPage(host, options) {
   function wireReview() {
     reviewPage?.dispose();
     reviewPage = mountTaskReviewPage(host.querySelector('[data-task-review]'), {
-      ...options, task: () => state.task, workspaces: projectWorkspaces, onTaskChanged: refresh,
+      ...options, task: () => state.task, rows: () => state.rows, workspaces: projectWorkspaces, onTaskChanged: refresh,
       generationOf: () => deviceSession(state.deviceId),
       keepReadingPlace,
     });
+    if (reviewTemplate) {
+      host.querySelector('[data-review-task-details]')?.append(host.querySelector('.task-rail'));
+    }
   }
 
   function wireReviewComments() {

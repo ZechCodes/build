@@ -98,15 +98,15 @@ describe("task review feedback", () => {
     const rows = timelineRows([{ type: "comment", id: "tc-2", body: "old", author: { kind: "user" },
       anchor, opinion: { snapshot_id: "snap-1", verdict: "approve" }, reply_to: "tc-1" }]);
     const html = timelineHtml(rows, { reviewSnapshots: [{ id: "snap-1", number: 2 }] });
-    expect(html).toContain("Snapshot 2");
-    expect(html).not.toContain("Snapshot snap-1");
+    expect(html).toContain("Revision 2");
+    expect(html).not.toContain("Revision snap-1");
     expect(html).toContain("Approved");
     expect(html).toContain("data-review-anchor=");
     expect(html).toContain("data-review-reply=\"tc-2\"");
     expect(html).toContain("a&lt;&amp;.js");
     const withoutMetadata = timelineHtml(rows, { reviewSnapshots: [{ id: "new-snapshot", number: 3 }] });
-    expect(withoutMetadata).toContain("Earlier snapshot");
-    expect(withoutMetadata).not.toContain("Snapshot snap-1");
+    expect(withoutMetadata).toContain("Earlier revision");
+    expect(withoutMetadata).not.toContain("Revision snap-1");
   });
 
   it("opens the ordinary assignee picker with the snapshot in its note", async () => {
@@ -116,7 +116,7 @@ describe("task review feedback", () => {
       feed: { items: [], workspaces: [] }, projectKey: "device|project",
       callRpc: vi.fn(),
     });
-    expect(document.querySelector("#task-assign-note").value).toContain("snapshot 2 of task #7");
+    expect(document.querySelector("#task-assign-note").value).toContain("revision 2 of task #7");
     await picker.close();
   });
 

@@ -6,7 +6,7 @@ import { runInNewContext } from "node:vm";
 import { installBridgeHttpIpc } from "../src/bridge-http-ipc.mjs";
 import { APP_URL } from "../src/security-policy.mjs";
 
-function harness(t) {
+function harness(t, overrideFetch) {
   const ipcMain = {
     handle(channel, handler) {
       this.channel = channel;
@@ -22,6 +22,7 @@ function harness(t) {
   const calls = { sent: [], fetch: [] };
   const fetch = async (url, options) => {
     calls.fetch.push({ url, options });
+    if (overrideFetch) return overrideFetch(url, options);
     return new Response(
       JSON.stringify({
         issuer: "https://getbuild.ing",
@@ -163,4 +164,22 @@ test("sandbox preload exposes only typed functions, strips Electron event and re
   assert.equal(event.secret, undefined);
   off();
   assert.equal(events.listenerCount("build:bridge-http-event"), 0);
+});
+
+test("IPC preserves the plain discovery refusal and prevents renderer issuer overrides", async (t) => {
+  const h = harness(t, async (url) => {
+    if (url.endsWith("/challenges")) return new Response(JSON.stringify({
+      issuer: "https://getbuild.ing", challenge_id: "challenge", nonce: "n".repeat(32),
+      expires_at: Math.floor(Date.now() / 1000) + 60,
+    }));
+    if (url.endsWith("/.well-known/build-bridge")) return new Response(JSON.stringify({ proof: "tampered-proof" }));
+    return new Response(null, { status: 403 });
+  });
+  assert.equal((await h.invoke("discover", ["https://bridge.test", { hostedOrigin: "https://attacker.test" }])).error.code, "invalid_params");
+  assert.equal(h.calls.fetch.length, 0);
+  const result = await h.invoke("discover", ["https://bridge.test"]);
+  assert.deepEqual(result, { ok: false, error: {
+    code: "discovery_failed",
+    message: "Build could not verify this HTTPS address. Check the address and try again.",
+  } });
 });

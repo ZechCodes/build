@@ -26,7 +26,9 @@ function trustedUrl(value) {
 }
 
 function safeError(error) {
-  const safe = error.message?.startsWith("Bridge HTTP ")
+  const safe = error.code === "discovery_failed"
+    ? transportError("discovery_failed")
+    : error.message?.startsWith("Bridge HTTP ")
     ? error
     : transportError("request_failed");
   return {

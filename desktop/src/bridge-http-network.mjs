@@ -2,7 +2,10 @@ import { createParser } from "eventsource-parser";
 
 export const MAX_JSON_BYTES = 1024 * 1024;
 export function transportError(code) {
-  return Object.assign(new Error(`Bridge HTTP ${code.replaceAll("_", " ")}.`), {
+  const message = code === "discovery_failed"
+    ? "Build could not verify this HTTPS address. Check the address and try again."
+    : `Bridge HTTP ${code.replaceAll("_", " ")}.`;
+  return Object.assign(new Error(message), {
     code,
   });
 }

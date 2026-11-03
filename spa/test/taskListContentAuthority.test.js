@@ -142,3 +142,36 @@ it.each(["sync phase", "task push"])("retains omitted membership and independent
     read_through: "tc-20", review_summary: { version: 2 } });
   expect(kept.tasks.find(({ id }) => id === local.id)).toMatchObject({ title: "Local creation", body: "Local body" });
 });
+
+it("a genuine task push admits a blocker release after an issued assignment", async () => {
+  const content = await import("../src/core/taskContentAuthority.js");
+  const actions = await import("../src/core/taskWaitingOnCache.js");
+  const local = await import("../src/core/localCache.js");
+  const waiting = { ...row(), status: "ready", dependencies: { blocked: true, waiting_on_count: 1,
+    waiting_on: [{ task_id: "prerequisite", state: "open", status: "ready", resolved: false }] },
+    deferred_assignment: { id: "assignment", state: "waiting", target: { kind: "new_workspace" } } };
+  script["tasks.list"] = async () => ({ tasks: [waiting] });
+  const read = await actualListReader("task push");
+  await read();
+  const address = tracker.taskAddress(DEVICE, PROJECT, waiting.id);
+  const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
+  expect(await actions.cacheTaskWaitingOnResponse(DEVICE, PROJECT, { task: waiting },
+    { contentRead, issuedRead: contentRead.readOrder })).toBe(true);
+  const note = reads.readsAddress(address);
+  expect((await local.readCached(note)).value.action_read).toBe(contentRead.readOrder);
+
+  const released = { ...waiting, status: "in_progress", updated_at: "2026-10-29T12:00:01.000Z",
+    dependencies: { blocked: false, waiting_on_count: 1,
+      waiting_on: [{ task_id: "prerequisite", state: "open", status: "done", resolved: true, resolved_by: "done" }] },
+    deferred_assignment: { ...waiting.deferred_assignment, state: "delivered" } };
+  expect(await actions.cacheTaskWaitingOnResponse(DEVICE, PROJECT, { task: released })).toBe(false);
+  expect((await tracker.readTasksRecord(DEVICE, PROJECT)).tasks[0].dependencies.blocked).toBe(true);
+  script["tasks.list"] = async () => ({ tasks: [released] });
+  await read();
+  const listed = (await tracker.readTasksRecord(DEVICE, PROJECT)).tasks;
+  expect(listed).toHaveLength(1);
+  expect(listed[0]).toMatchObject({ id: waiting.id, status: "in_progress",
+    dependencies: { blocked: false, waiting_on: [{ resolved: true, resolved_by: "done" }] },
+    deferred_assignment: { id: "assignment", state: "delivered" } });
+  expect((await local.readCached(note)).value.action_read).toBe(contentRead.readOrder);
+});

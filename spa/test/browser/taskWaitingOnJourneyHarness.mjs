@@ -5,13 +5,13 @@ import { mountWaitingOnFixture } from "./taskWaitingOnHarness.mjs";
 // task actions, cache writes, task page and dashboard consume them together;
 // the bridge's at-most-once service is covered by the inherited Rust tests.
 export async function mountWaitingJourney(page, basePath) {
-  await mountWaitingOnFixture(page, basePath);
+  await mountWaitingOnFixture(page, basePath, { push: true });
   await loadBrowserModules(page, {
-    pane: "src/core/trackerTasksPane.js", waitingCache: "src/core/taskWaitingOnCache.js",
+    pane: "src/core/trackerTasksPane.js", events: "src/core/changeEvents.js",
   }, basePath);
   await page.evaluate(async () => {
     const fixture = window.__waiting;
-    const { pane, waitingCache } = window.__layoutModules;
+    const { pane, events } = window.__layoutModules;
     const deviceId = "device-waiting", projectId = "proj-1", projectKey = `${deviceId}/${projectId}`;
     const unassigned = { ...structuredClone(fixture.current), id: "unassigned", number: 565,
       title: "Unassigned follow-up", status: "backlog", labels: ["keep-label"] };
@@ -23,7 +23,6 @@ export async function mountWaitingJourney(page, basePath) {
     fixture.provisions = [];
     fixture.deliveries = [];
     fixture.notices = [];
-    const publish = (task) => waitingCache.cacheTaskWaitingOnResponse(deviceId, projectId, { task: structuredClone(task) });
     const originalCall = fixture.call;
     fixture.call = async (method, params) => {
       if (method === "tasks.get") {
@@ -51,14 +50,16 @@ export async function mountWaitingJourney(page, basePath) {
           }
           if (!task.dependencies.blocked && task.id === unassigned.id) fixture.notices.push({ task_id: task.id, mentions_user: false });
           task.updated_at = new Date(Date.now() + fixture.calls.length * 1000).toISOString();
-          await publish(task);
         }
-        await publish(prerequisite);
+        // The service announces every affected task; mounted production
+        // readers fetch and publish their own covering list/detail responses.
+        events.dispatchChangeEvent({ type: "changes", items: [{ entity_id: projectId,
+          tasks: { task_ids: [fixture.current, unassigned, ...retired, prerequisite].map((task) => task.id), truncated: false },
+        }] }, deviceId);
         return { task: structuredClone(prerequisite) };
       }
       return originalCall(method, params);
     };
-    for (const task of [unassigned, ...retired]) await publish(task);
     const host = document.createElement("section");
     host.id = "journey-dashboard";
     document.body.appendChild(host);

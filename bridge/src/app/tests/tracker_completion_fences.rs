@@ -139,7 +139,7 @@ impl DispatchedTask {
             .operation_id
     }
 
-    fn assert_complete_reviews_task(&mut self) {
+    fn assert_finish_reviews_task(&mut self) {
         self.app
             .move_held_task_on_complete(&self.entity_id, &self.agent_id);
         let after = self
@@ -253,7 +253,7 @@ fn completion_fence_rejects_pre_reset_receipt_reconstruction() {
         json!({"assignee":{"kind":"agent","agent_id":task.agent_id}}),
     );
     task.consume_turn();
-    task.assert_complete_reviews_task();
+    task.assert_finish_reviews_task();
 }
 
 #[test]
@@ -301,7 +301,7 @@ fn completion_fence_keeps_consumed_pending_task_when_another_assignment_is_accep
     let second = task.assign_another_task("task B already consumed");
     task.consume_turn();
     let third = task.assign_another_task("task C still unconsumed");
-    task.assert_complete_reviews_task();
+    task.assert_finish_reviews_task();
     task.app
         .record_agent_working_since(&task.entity_id, &task.agent_id, None);
     task.app
@@ -319,7 +319,7 @@ fn completion_fence_two_queued_assignments_keep_unrelated_turn_fenced() {
     let mut task = DispatchedTask::new();
     // Finish A, then start a turn with no task completion authority.
     task.consume_turn();
-    task.assert_complete_reviews_task();
+    task.assert_finish_reviews_task();
     task.app.record_agent_working_since(
         &task.entity_id,
         &task.agent_id,
@@ -366,7 +366,7 @@ fn completion_fence_requires_delivery_consumption() {
     let mut task = DispatchedTask::new();
     task.assert_complete_leaves_task("in_progress");
     task.consume_turn();
-    task.assert_complete_reviews_task();
+    task.assert_finish_reviews_task();
 }
 
 #[test]
@@ -391,7 +391,7 @@ fn completion_fence_receipt_replay_cannot_rearm_a_completed_turn() {
     task.app
         .record_native_operation_seen(&task.entity_id, &task.agent_id, &operation)
         .unwrap();
-    task.assert_complete_reviews_task();
+    task.assert_finish_reviews_task();
     task.call("tasks.update", json!({"status":"in_progress"}));
     task.app
         .record_native_operation_seen(&task.entity_id, &task.agent_id, &operation)
@@ -414,7 +414,7 @@ fn completion_fence_reconstructs_from_checked_native_receipt() {
     task.app
         .record_native_operation_seen(&task.entity_id, &task.agent_id, &operation)
         .unwrap();
-    task.assert_complete_reviews_task();
+    task.assert_finish_reviews_task();
 }
 
 #[test]
@@ -449,7 +449,7 @@ fn completion_fence_promotes_seen_pending_on_next_working_boundary() {
         .record_agent_working_since(&task.entity_id, &task.agent_id, None);
     task.app
         .record_agent_working_since(&task.entity_id, &task.agent_id, Some("new turn".into()));
-    task.assert_complete_reviews_task();
+    task.assert_finish_reviews_task();
 }
 
 #[test]
@@ -611,5 +611,5 @@ fn delivered_receipt_reconstructs_completion_authority_without_payload() {
     task.app.dispatched_task.clear();
     task.app
         .consume_task_completion_operation(&task.entity_id, &task.agent_id, &operation);
-    task.assert_complete_reviews_task();
+    task.assert_finish_reviews_task();
 }

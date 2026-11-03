@@ -465,13 +465,6 @@ pub enum BridgeAction {
         parent_task_id: Option<String>,
         track: Option<bool>,
     },
-    /// Save the committed state of every directory in one workspace for this task.
-    TrackerSnapshotReview {
-        task_id: String,
-        workspace_id: String,
-        expected_version: u64,
-        base_overrides: std::collections::BTreeMap<String, String>,
-    },
     /// Review metadata and its saved directory snapshots.
     TrackerGetReview {
         task_id: String,
@@ -494,16 +487,6 @@ pub enum BridgeAction {
         cursor: Option<String>,
         patch: bool,
         range: Option<crate::body_page::FileRange>,
-    },
-    /// Run selected Git steps against the saved review snapshot.
-    TrackerActReview {
-        params: crate::reviews::actions::ReviewActParams,
-    },
-    /// Report what was done and finish the task's review.
-    TrackerCompleteReview {
-        task_id: String,
-        expected_version: u64,
-        description: String,
     },
     /// Open a PR task from a managed workspace in the caller's project.
     TrackerOpenReview {
@@ -605,11 +588,8 @@ impl BridgeAction {
             BridgeAction::TrackerLinkTask { .. } => "link_task",
             BridgeAction::TrackerTrackTask { .. } => "track_task",
             BridgeAction::TrackerUntrackTask { .. } => "untrack_task",
-            BridgeAction::TrackerSnapshotReview { .. } => "snapshot_review",
             BridgeAction::TrackerGetReview { .. } => "get_review",
             BridgeAction::TrackerReadReview { .. } => "read_review",
-            BridgeAction::TrackerActReview { .. } => "act_review",
-            BridgeAction::TrackerCompleteReview { .. } => "complete_review",
             BridgeAction::TrackerOpenReview { .. } => "open_review",
             BridgeAction::TrackerPushReview { .. } => "push_review",
             BridgeAction::TrackerUpdateReviewBase { .. } => "update_review_base",
@@ -686,11 +666,8 @@ impl BridgeAction {
             | BridgeAction::TrackerLinkTask { .. }
             | BridgeAction::TrackerTrackTask { .. }
             | BridgeAction::TrackerUntrackTask { .. }
-            | BridgeAction::TrackerSnapshotReview { .. }
             | BridgeAction::TrackerGetReview { .. }
             | BridgeAction::TrackerReadReview { .. }
-            | BridgeAction::TrackerActReview { .. }
-            | BridgeAction::TrackerCompleteReview { .. }
             | BridgeAction::TrackerOpenReview { .. }
             | BridgeAction::TrackerPushReview { .. }
             | BridgeAction::TrackerUpdateReviewBase { .. }
@@ -1278,7 +1255,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "move_task",
-                "description": "Move a task to another column. Move it to In review when you report Complete: that says the work is ready to be looked at, not that it is accepted. Moving a task with an open review to Done also records review completion as 'Marked done', attributed to the mover. Use complete_review when you want to describe the action taken.",
+                "description": "Move a task to another column. Move it to In review when you report Complete: that says the work is ready to be looked at, not that it is accepted. Moving a task with an open review to Done also records review completion as 'Marked done', attributed to the mover.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "task_id": task_id, "status": status, "track": track },
@@ -3407,7 +3384,7 @@ mod tests {
     /// The task tracker and review inventory shared between the two
     /// working surfaces — and for the same reason: both agents are bound to a
     /// project, and a project has one board.
-    const TASK_TOOLS: [&str; 27] = [
+    const TASK_TOOLS: [&str; 24] = [
         "list_tasks",
         "get_task",
         "read_comment",
@@ -3422,11 +3399,8 @@ mod tests {
         "untrack_task",
         "unlink_task",
         "list_task_dependents",
-        "snapshot_review",
         "get_review",
         "read_review",
-        "act_review",
-        "complete_review",
         "open_review",
         "push_review",
         "merge_review",
@@ -3966,22 +3940,21 @@ mod tests {
     }
 
     #[test]
-    fn review_tools_are_available_only_to_project_bound_agents() {
-        let names = [
-            "snapshot_review",
-            "get_review",
-            "read_review",
-            "act_review",
-            "complete_review",
-        ];
+    fn review_tools_expose_only_reads_and_pr_lifecycle() {
         for surface in [&server(), &project()] {
             let listed = tool_names(surface);
-            for name in names {
+            for name in ["get_review", "read_review"] {
                 assert!(listed.contains(&name.to_string()), "{name} absent");
+            }
+            for verb in ["snapshot", "act", "complete"] {
+                let name = format!("{verb}_review");
+                assert!(!listed.contains(&name), "retired tool {name} listed");
+                let frame = json!({"jsonrpc":"2.0","id":77,"method":"tools/call","params":{"name":name,"arguments":{}}});
+                assert!(surface.handle_message(&frame.to_string()).action.is_none());
             }
         }
         let routed = tool_names(&router());
-        for name in names {
+        for name in ["get_review", "read_review"] {
             assert!(!routed.contains(&name.to_string()), "router sees {name}");
         }
     }
@@ -3995,18 +3968,8 @@ mod tests {
                 ))
             };
             assert!(matches!(
-                call("snapshot_review", r#"{"task_id":"task-1","workspace_id":"ws-1","expected_version":0,"base_overrides":{"dir-1":"main"},"project_id":"elsewhere","author":"forged"}"#).action,
-                Some(BridgeAction::TrackerSnapshotReview { ref task_id, ref workspace_id, expected_version: 0, ref base_overrides })
-                    if task_id == "task-1" && workspace_id == "ws-1" && base_overrides.get("dir-1").map(String::as_str) == Some("main")
-            ));
-            assert!(matches!(
                 call("get_review", r#"{"task_id":"task-1"}"#).action,
                 Some(BridgeAction::TrackerGetReview { ref task_id }) if task_id == "task-1"
-            ));
-            assert!(matches!(
-                call("complete_review", r#"{"task_id":"task-1","expected_version":2,"description":"merged API to dev"}"#).action,
-                Some(BridgeAction::TrackerCompleteReview { ref task_id, expected_version: 2, ref description })
-                    if task_id == "task-1" && description == "merged API to dev"
             ));
             assert!(matches!(
                 call("read_review", r#"{"task_id":"task-1","snapshot_id":"snap-2","directory_id":"dir-1","mode":"blob","path":"src/lib.rs","range":{"offset":10,"bytes":4096,"raw":true}}"#).action,
@@ -4017,57 +3980,8 @@ mod tests {
     }
 
     #[test]
-    fn review_action_calls_carry_selected_steps_or_leave_unchanged() {
-        for surface in [server(), project()] {
-            let call = |name: &str, arguments: &str| {
-                surface.handle_message(&format!(
-                    r#"{{"jsonrpc":"2.0","id":77,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
-                ))
-            };
-            assert!(matches!(
-                call("act_review", r#"{"task_id":"task-1","expected_version":2,"snapshot_id":"snap-2","sources":[{"directory_id":"dir-1","merge":{"branch":"main"}}],"project_id":"forged","actor":"forged"}"#).action,
-                Some(BridgeAction::TrackerActReview { ref params })
-                    if params.task_id == "task-1" && params.sources.len() == 1 && params.sources[0].directory_id == "dir-1"
-            ));
-            assert!(matches!(
-                call("act_review", r#"{"task_id":"task-1","expected_version":2,"snapshot_id":"snap-2","sources":[{"directory_id":"dir-1"}]}"#).action,
-                Some(BridgeAction::TrackerActReview { ref params })
-                    if params.sources[0].merge.is_none() && params.sources[0].push.is_none()
-            ));
-        }
-    }
-
-    #[test]
     fn malformed_review_calls_stop_at_the_mcp_boundary() {
         for (name, args) in [
-            (
-                "snapshot_review",
-                r#"{"task_id":"task-1","workspace_id":"ws-1"}"#,
-            ),
-            (
-                "snapshot_review",
-                r#"{"task_id":"task-1","workspace_id":"ws-1","expected_version":-1}"#,
-            ),
-            (
-                "snapshot_review",
-                r#"{"task_id":"task-1","workspace_id":"ws-1","expected_version":0,"base_overrides":{"dir-1":42}}"#,
-            ),
-            (
-                "complete_review",
-                r#"{"task_id":"task-1","expected_version":1,"description":"  "}"#,
-            ),
-            (
-                "act_review",
-                r#"{"task_id":"task-1","expected_version":1,"snapshot_id":"snap-1","sources":[]}"#,
-            ),
-            (
-                "act_review",
-                r#"{"task_id":"task-1","expected_version":-1,"snapshot_id":"snap-1","sources":[{"directory_id":"dir-1","merge":{"branch":"main"}}]}"#,
-            ),
-            (
-                "act_review",
-                r#"{"task_id":"task-1","expected_version":1,"snapshot_id":"snap-1","sources":[{"directory_id":"dir-1","push":{"remote":"origin"}}]}"#,
-            ),
             (
                 "read_review",
                 r#"{"task_id":"task-1","snapshot_id":"snap-1","directory_id":"dir-1","mode":"blob"}"#,

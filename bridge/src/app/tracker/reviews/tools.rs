@@ -1,4 +1,4 @@
-use crate::api::v1::reviews::{ReviewCompleteParams, ReviewDiffParams, ReviewSnapshotParams};
+use crate::api::v1::reviews::ReviewDiffParams;
 use crate::app::AppState;
 use crate::mcp::BridgeAction;
 use crate::reviews::read::ReviewReadRequest;
@@ -61,20 +61,6 @@ impl AppState {
             agent_id: agent_id.to_string(),
         };
         match action {
-            BridgeAction::TrackerSnapshotReview {
-                task_id,
-                workspace_id,
-                expected_version,
-                base_overrides,
-            } => self.review_snapshot(
-                ReviewSnapshotParams {
-                    task_id: task_id.clone(),
-                    workspace_id: workspace_id.clone(),
-                    expected_version: *expected_version,
-                    base_overrides: base_overrides.clone(),
-                },
-                actor,
-            ),
             BridgeAction::TrackerGetReview { task_id } => self.review_get(task_id),
             BridgeAction::TrackerReadReview {
                 task_id,
@@ -105,19 +91,6 @@ impl AppState {
                     patch: *patch,
                 },
             }),
-            BridgeAction::TrackerCompleteReview {
-                task_id,
-                expected_version,
-                description,
-            } => self.review_complete(
-                ReviewCompleteParams {
-                    task_id: task_id.clone(),
-                    expected_version: *expected_version,
-                    description: description.clone(),
-                },
-                actor,
-            ),
-            BridgeAction::TrackerActReview { params } => self.review_act(params.clone(), actor),
             BridgeAction::TrackerPushReview { params } => self.review_push(params.clone(), actor),
             BridgeAction::TrackerUpdateReviewBase { params } => {
                 self.review_update(params.clone(), actor)
@@ -140,13 +113,8 @@ impl AppState {
 
 fn review_task_id(action: &BridgeAction) -> Option<&str> {
     match action {
-        BridgeAction::TrackerSnapshotReview { task_id, .. }
-        | BridgeAction::TrackerGetReview { task_id }
+        BridgeAction::TrackerGetReview { task_id }
         | BridgeAction::TrackerReadReview { task_id, .. }
-        | BridgeAction::TrackerActReview {
-            params: crate::reviews::actions::ReviewActParams { task_id, .. },
-        }
-        | BridgeAction::TrackerCompleteReview { task_id, .. }
         | BridgeAction::TrackerPushReview {
             params: crate::api::v1::reviews::ReviewPushParams { task_id, .. },
         }

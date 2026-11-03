@@ -36,10 +36,10 @@ impl Fixture {
         assert_eq!(linked["ok"], true, "{linked}");
         let comment = app.handle(req("tasks.comment", json!({"task_id":task,"body":COMMENT})));
         assert_eq!(comment["ok"], true, "{comment}");
-        let saved = app.handle(req(
-            "tasks.review.snapshot",
+        let saved = crate::app::tests::reviews::legacy_review_reply(
+            app,
             json!({"task_id":task,"workspace_id":workspace,"expected_version":0}),
-        ));
+        );
         assert_eq!(saved["ok"], true, "{saved}");
         let snapshot = saved["result"]["review"]["snapshots"]
             .as_array()

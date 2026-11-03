@@ -36,7 +36,7 @@ fn request(f: &Fixture) -> ReopenRequest {
 
 fn close(f: &Fixture) {
     f.store
-        .complete_review(
+        .finish_review(
             f.task_id(),
             f.review().version,
             &Actor::User,

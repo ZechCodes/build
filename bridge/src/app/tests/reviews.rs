@@ -28,8 +28,79 @@ fn review_call(state: &mut AppState, method: &str, params: Value) -> Value {
     answer["result"].clone()
 }
 
+/// Seed retained data through the capture service, bypassing retired wire writes.
+pub(crate) fn legacy_review(state: &mut AppState, params: Value) -> Value {
+    let params: crate::api::v1::reviews::ReviewSnapshotParams =
+        serde_json::from_value(params).unwrap();
+    let workspace = state.workspaces.get(&params.workspace_id).unwrap().clone();
+    let review = crate::reviews::service::snapshot(
+        state.tracker_store().unwrap(),
+        &crate::reviews::service::SnapshotRequest {
+            task_id: params.task_id,
+            workspace,
+            expected_version: params.expected_version,
+            base_overrides: params.base_overrides,
+            author: crate::tracker::Actor::User,
+        },
+    )
+    .unwrap();
+    json!({"review":review})
+}
+
+pub(crate) fn legacy_review_reply(state: &mut AppState, params: Value) -> Value {
+    json!({"ok":true,"result":legacy_review(state,params)})
+}
+
 #[test]
-fn review_snapshot_rpc_keeps_task_position_and_completion_is_explicit() {
+fn retired_snapshot_and_action_writes_refuse_new_and_legacy_reviews() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = tracked(tmp.path());
+    let workspace_id = workspace(&mut state, &project, "legacy");
+    let task = filed(&mut state, &project, "Retained review");
+    for version in [0, 1] {
+        let refusal = state.handle(req(
+            "tasks.review.snapshot",
+            json!({"task_id":task["id"], "workspace_id":workspace_id, "expected_version":version}),
+        ));
+        assert_eq!(refusal["error_code"], "invalid_params", "{refusal}");
+        assert_eq!(
+            refusal["details"]["reason"], "snapshot_retired",
+            "{refusal}"
+        );
+        assert_eq!(refusal["details"]["replacement"], "tasks.review.open");
+        assert_eq!(
+            refusal["details"]["recovery"],
+            "Request a review from the workspace (tasks.review.open)"
+        );
+        assert_eq!(refusal["retryable"], false);
+        if version == 0 {
+            legacy_review(
+                &mut state,
+                json!({"task_id":task["id"], "workspace_id":workspace_id,"expected_version":0}),
+            );
+        }
+    }
+    let before = review_call(
+        &mut state,
+        "tasks.review.get",
+        json!({"task_id":task["id"]}),
+    );
+    let snapshot = &before["review"]["snapshots"][0];
+    let refused = state.handle(req("tasks.review.act",json!({"task_id":task["id"],"expected_version":1,"snapshot_id":snapshot["id"],"sources":[{"directory_id":snapshot["directories"][0]["id"],"merge":{"branch":"main"}}]})));
+    assert_eq!(refused["error_code"], "invalid_params", "{refused}");
+    assert_eq!(refused["details"]["reason"], "snapshot_retired");
+    assert_eq!(
+        review_call(
+            &mut state,
+            "tasks.review.get",
+            json!({"task_id":task["id"]})
+        ),
+        before
+    );
+}
+
+#[test]
+fn retained_legacy_review_is_readable_and_completion_is_explicit() {
     let tmp = tempfile::tempdir().unwrap();
     let (_repo, mut state, project) = tracked(tmp.path());
     let workspace_id = workspace(&mut state, &project, "review");
@@ -37,9 +108,8 @@ fn review_snapshot_rpc_keeps_task_position_and_completion_is_explicit() {
     let task_id = task["id"].as_str().unwrap();
     let before = review_call(&mut state, "tasks.review.get", json!({"task_id": task_id}));
     assert!(before["review"].is_null());
-    let saved = review_call(
+    let saved = legacy_review(
         &mut state,
-        "tasks.review.snapshot",
         json!({
             "task_id": task_id, "workspace_id": workspace_id, "expected_version": 0,
         }),
@@ -76,47 +146,6 @@ fn review_snapshot_rpc_keeps_task_position_and_completion_is_explicit() {
     );
     assert_eq!(timeline[timeline.len() - 1]["kind"], "review_completed");
     assert!(state.workspaces.get(&workspace_id).is_some());
-}
-
-#[test]
-fn review_act_rpc_merges_a_saved_temp_checkout_and_keeps_its_workspace() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (_repo, mut state, project) = tracked(tmp.path());
-    let workspace_id = workspace(&mut state, &project, "action");
-    let checkout = state.workspaces.get(&workspace_id).unwrap().directories[0]
-        .path
-        .clone();
-    std::fs::write(checkout.join("review-action.txt"), "saved work\n").unwrap();
-    git_in(&checkout, &["add", "review-action.txt"]);
-    git_in(&checkout, &["commit", "-m", "review action fixture"]);
-    let task = filed(&mut state, &project, "Merge the saved checkout");
-    let task_id = task["id"].as_str().unwrap();
-    let saved = review_call(
-        &mut state,
-        "tasks.review.snapshot",
-        json!({
-            "task_id": task_id, "workspace_id": workspace_id, "expected_version": 0,
-        }),
-    );
-    let snapshot = &saved["review"]["snapshots"][0];
-    let acted = review_call(
-        &mut state,
-        "tasks.review.act",
-        json!({
-            "task_id": task_id, "expected_version": 1, "snapshot_id": snapshot["id"],
-            "sources": [{"directory_id": snapshot["directories"][0]["id"],
-                         "merge": {"branch": "main"}}],
-        }),
-    );
-    assert_eq!(
-        acted["review"]["actions"][0]["status"], "succeeded",
-        "{acted}"
-    );
-    assert_eq!(acted["review"]["actions"][0]["actor"]["kind"], "user");
-    assert!(state.workspaces.get(&workspace_id).is_some());
-    assert!(checkout.join("review-action.txt").exists());
-    let held = review_call(&mut state, "tasks.get", json!({"task_id": task_id}));
-    assert_eq!(held["task"]["status"], "backlog");
 }
 
 #[test]
@@ -161,15 +190,32 @@ fn review_act_rpc_refuses_a_pr_as_nonretryable_invalid_params_without_admission(
 }
 
 #[test]
+fn legacy_complete_rpc_refuses_pr_mode_without_changing_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = tracked(tmp.path());
+    let workspace_id = workspace(&mut state, &project, "pr-complete");
+    let opened = wire_actions::open(&mut state, &workspace_id);
+    let refusal = state.handle(req("tasks.review.complete",json!({"task_id":opened["task"]["id"],"expected_version":opened["review"]["version"],"description":"Close it"})));
+    assert_eq!(refusal["error_code"], "invalid_params", "{refusal}");
+    assert_eq!(refusal["details"]["replacement"], "tasks.review.close");
+    let current = review_call(
+        &mut state,
+        "tasks.review.get",
+        json!({"task_id":opened["task"]["id"]}),
+    );
+    assert_eq!(current["review"]["state"], "open");
+    assert_eq!(current["review"]["version"], opened["review"]["version"]);
+}
+
+#[test]
 fn review_comment_metadata_round_trips_and_rejects_foreign_context() {
     let tmp = tempfile::tempdir().unwrap();
     let (_repo, mut state, project) = tracked(tmp.path());
     let workspace_id = workspace(&mut state, &project, "comments");
     let task = filed(&mut state, &project, "Comment on review");
     let task_id = task["id"].as_str().unwrap();
-    let saved = review_call(
+    let saved = legacy_review(
         &mut state,
-        "tasks.review.snapshot",
         json!({
             "task_id": task_id, "workspace_id": workspace_id, "expected_version": 0,
         }),
@@ -269,9 +315,8 @@ fn review_comment_metadata_round_trips_and_rejects_foreign_context() {
         }),
     ));
     assert_eq!(empty_reply["error_code"], "invalid_params", "{empty_reply}");
-    let second_snapshot = review_call(
+    let second_snapshot = legacy_review(
         &mut state,
-        "tasks.review.snapshot",
         json!({
             "task_id": task_id, "workspace_id": workspace_id, "expected_version": 1,
         }),
@@ -289,9 +334,8 @@ fn review_comment_metadata_round_trips_and_rejects_foreign_context() {
         "{mismatched_opinion}"
     );
     let replacement_workspace = workspace(&mut state, &project, "replacement");
-    review_call(
+    legacy_review(
         &mut state,
-        "tasks.review.snapshot",
         json!({
             "task_id": task_id, "workspace_id": replacement_workspace, "expected_version": 2,
         }),
@@ -321,9 +365,8 @@ fn mcp_review_comment_mention_watches_the_task_and_uses_the_same_metadata_writer
     );
     assert_ne!(unwatched["task"]["watched"], true);
     let (owner, agent) = project_agent(&mut state, &project);
-    let saved = review_call(
+    let saved = legacy_review(
         &mut state,
-        "tasks.review.snapshot",
         json!({
             "task_id": task["id"], "workspace_id": workspace_id, "expected_version": 0,
         }),
@@ -369,9 +412,8 @@ fn review_anchor_path_is_bounded_in_utf8_bytes() {
     let (_repo, mut state, project) = tracked(tmp.path());
     let workspace_id = workspace(&mut state, &project, "path bound");
     let task = filed(&mut state, &project, "Review path bound");
-    let saved = review_call(
+    let saved = legacy_review(
         &mut state,
-        "tasks.review.snapshot",
         json!({
             "task_id": task["id"], "workspace_id": workspace_id, "expected_version": 0,
         }),
@@ -405,9 +447,8 @@ fn review_rpc_reads_whole_saved_files_and_refuses_caller_supplied_locations() {
     let (_repo, mut state, project) = tracked(tmp.path());
     let workspace_id = workspace(&mut state, &project, "files");
     let task = filed(&mut state, &project, "Read unchanged files");
-    let saved = review_call(
+    let saved = legacy_review(
         &mut state,
-        "tasks.review.snapshot",
         json!({
             "task_id": task["id"], "workspace_id": workspace_id, "expected_version": 0,
         }),
@@ -445,23 +486,10 @@ fn agent_review(
 }
 
 #[test]
-fn review_mcp_authenticates_actor_and_fences_both_task_and_workspace_projects() {
+fn review_mcp_get_fences_task_projects() {
     let tmp = tempfile::tempdir().unwrap();
     let (_repo, mut state, project) = tracked(tmp.path());
-    let workspace_id = workspace(&mut state, &project, "tools");
-    let task = filed(&mut state, &project, "Any agent may review");
     let (owner, agent) = project_agent(&mut state, &project);
-    let saved = agent_review(
-        &mut state,
-        &owner,
-        &agent,
-        json!({
-            "action": "tracker_snapshot_review", "base_overrides": {}, "task_id": task["id"],
-            "workspace_id": workspace_id, "expected_version": 0,
-        }),
-    )
-    .unwrap();
-    assert_eq!(saved["review"]["snapshots"][0]["author"]["agent_id"], agent);
     let (_other_home, other_repo) = init_repo();
     let other_project = added_project(&mut state, &other_repo);
     let other_task = filed(&mut state, &other_project, "Another project's task");
@@ -469,87 +497,8 @@ fn review_mcp_authenticates_actor_and_fences_both_task_and_workspace_projects() 
         &mut state,
         &owner,
         &agent,
-        json!({
-            "action": "tracker_get_review", "task_id": other_task["id"],
-        }),
+        json!({"action":"tracker_get_review","task_id":other_task["id"]}),
     )
     .unwrap_err();
     assert!(refused.starts_with("unknown task_id"), "{refused}");
-    let refused = agent_review(
-        &mut state,
-        &owner,
-        &agent,
-        json!({
-            "action": "tracker_act_review", "params": {
-                "task_id": other_task["id"], "expected_version": 1,
-                "snapshot_id": "foreign-snapshot", "sources": [{
-                    "directory_id": "foreign-directory", "merge": {"branch": "main"}
-                }]
-            }
-        }),
-    )
-    .unwrap_err();
-    assert!(refused.starts_with("unknown task_id"), "{refused}");
-    let other_workspace = workspace(&mut state, &other_project, "foreign");
-    let refused = agent_review(
-        &mut state,
-        &owner,
-        &agent,
-        json!({
-            "action": "tracker_snapshot_review", "base_overrides": {}, "task_id": task["id"],
-            "workspace_id": other_workspace, "expected_version": 1,
-        }),
-    )
-    .unwrap_err();
-    assert!(refused.starts_with("unknown workspace_id"), "{refused}");
-    let saved_snapshot = &saved["review"]["snapshots"][0];
-    let acted = agent_review(
-        &mut state,
-        &owner,
-        &agent,
-        json!({
-            "action": "tracker_act_review", "params": {
-                "task_id": task["id"], "expected_version": 1,
-                "snapshot_id": saved_snapshot["id"], "sources": [{
-                    "directory_id": saved_snapshot["directories"][0]["id"],
-                    "merge": {"branch": "main"}
-                }]
-            }
-        }),
-    )
-    .unwrap();
-    assert_eq!(acted["review"]["actions"][0]["actor"]["agent_id"], agent);
-    let completed = agent_review(
-        &mut state,
-        &owner,
-        &agent,
-        json!({
-            "action": "tracker_complete_review", "task_id": task["id"],
-            "expected_version": acted["review"]["version"], "description": "Reviewed and merged using my tools",
-        }),
-    )
-    .unwrap();
-    assert_eq!(
-        completed["review"]["completion"]["actor"]["agent_id"],
-        agent
-    );
-    let held = review_call(&mut state, "tasks.get", json!({"task_id": task["id"]}));
-    let timeline = held["timeline"].as_array().unwrap();
-    assert_eq!(timeline[timeline.len() - 2]["kind"], "moved");
-    assert_eq!(timeline[timeline.len() - 2]["actor"]["agent_id"], agent);
-    assert_eq!(timeline[timeline.len() - 1]["kind"], "review_completed");
-    let conversation = state.handle(req(
-        "thread.page",
-        json!({"entity_id": owner, "agent_id": agent, "limit": 50}),
-    ));
-    assert_eq!(conversation["ok"], true, "{conversation}");
-    let actions: Vec<_> = conversation["result"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|item| item["data"]["task_action"].as_object())
-        .collect();
-    assert_eq!(actions.len(), 1, "{conversation}");
-    assert_eq!(actions[0]["action"], "moved");
-    assert_eq!(actions[0]["to"], "done");
 }

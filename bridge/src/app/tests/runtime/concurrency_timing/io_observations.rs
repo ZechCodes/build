@@ -233,11 +233,11 @@ fn review_requests(
     workspace: &str,
 ) -> Vec<(&'static str, Value)> {
     let task = &sample.task_ids[0];
-    let saved = app.handle(req(
-        "tasks.review.snapshot",
+    let saved = crate::app::tests::reviews::legacy_review_reply(
+        app,
         json!({
         "task_id":task,"workspace_id":workspace,"expected_version":0}),
-    ));
+    );
     assert_eq!(saved["ok"], true, "{saved}");
     let snapshot = &saved["result"]["review"]["snapshots"][0];
     vec![

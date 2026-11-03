@@ -150,3 +150,82 @@ fn opening_assigns_user_or_named_agent_without_changing_the_work_task() {
         assert_eq!(store.load_tracker_task(&work.id).unwrap(), Some(work));
     }
 }
+
+#[test]
+fn publication_supersedes_legacy_review_atomically_and_retry_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let work = work_task(&store, "/repo");
+    let mut legacy_snapshot = snapshot();
+    legacy_snapshot.id = "legacy-snapshot".into();
+    let legacy = store
+        .save_review_snapshot(&work.id, "ws-1", 0, legacy_snapshot)
+        .unwrap()
+        .0;
+    let mut opening = store
+        .reserve_review_opening("/repo", "replacement", linked_request("ws-1", &work.id))
+        .unwrap();
+    opening.bindings.push(binding());
+    let opening = store
+        .save_review_opening(&opening, opening.version)
+        .unwrap();
+    store.connection().execute_batch("CREATE TRIGGER reject_published_opening BEFORE UPDATE ON review_openings WHEN NEW.state = 'published' BEGIN SELECT RAISE(ABORT, 'injected late failure'); END;").unwrap();
+    assert!(store
+        .publish_review_opening("/repo", "replacement", opening.version, snapshot(), &[])
+        .is_err());
+    assert_eq!(store.load_review(&work.id).unwrap().unwrap(), legacy);
+    assert_eq!(store.load_tracker_task(&work.id).unwrap().unwrap(), work);
+    assert!(store.load_tracker_task(&opening.task.id).unwrap().is_none());
+    store
+        .connection()
+        .execute_batch("DROP TRIGGER reject_published_opening")
+        .unwrap();
+    let published = store
+        .publish_review_opening("/repo", "replacement", opening.version, snapshot(), &[])
+        .unwrap();
+    let superseded = store.load_review(&work.id).unwrap().unwrap();
+    assert_eq!(superseded.state, ReviewState::Completed);
+    assert_eq!(superseded.version, legacy.version + 1);
+    assert_eq!(
+        superseded.completion.as_ref().unwrap().description,
+        format!("Superseded by #{}", opening.task.number)
+    );
+    assert_eq!(superseded.snapshots, legacy.snapshots);
+    let timeline = store.load_tracker_timeline(&work.id).unwrap();
+    assert_eq!(
+        store
+            .publish_review_opening("/repo", "replacement", 1, snapshot(), &[])
+            .unwrap(),
+        published
+    );
+    assert_eq!(store.load_review(&work.id).unwrap().unwrap(), superseded);
+    assert_eq!(store.load_tracker_timeline(&work.id).unwrap(), timeline);
+}
+
+#[test]
+fn publication_preserves_a_legacy_review_that_was_already_completed() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let work = work_task(&store, "/repo");
+    let mut legacy_snapshot = snapshot();
+    legacy_snapshot.id = "legacy-snapshot".into();
+    store
+        .save_review_snapshot(&work.id, "ws-1", 0, legacy_snapshot)
+        .unwrap();
+    let completed = store
+        .finish_review(&work.id, 1, &Actor::User, "Already checked")
+        .unwrap();
+    let mut opening = store
+        .reserve_review_opening("/repo", "replacement", linked_request("ws-1", &work.id))
+        .unwrap();
+    opening.bindings.push(binding());
+    let opening = store
+        .save_review_opening(&opening, opening.version)
+        .unwrap();
+    let timeline = store.load_tracker_timeline(&work.id).unwrap();
+    store
+        .publish_review_opening("/repo", "replacement", opening.version, snapshot(), &[])
+        .unwrap();
+    assert_eq!(store.load_review(&work.id).unwrap().unwrap(), completed);
+    assert_eq!(store.load_tracker_timeline(&work.id).unwrap(), timeline);
+}

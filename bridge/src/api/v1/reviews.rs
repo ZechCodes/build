@@ -1,4 +1,4 @@
-//! Saved workspace reviews, independently usable by agents (wire 3.6.0).
+//! Workspace pull requests and retained read-only legacy review history.
 
 use super::{answer, Answer};
 use crate::api::ApiError;
@@ -81,7 +81,8 @@ pub fn methods() -> &'static [(&'static str, super::Handler)] {
 pub struct ReviewSnapshotParams {
     pub task_id: String,
     pub workspace_id: String,
-    /// Zero creates the review; later calls use the version returned by get.
+    /// Compatibility PR refresh uses the version returned by get.
+    /// Absent and legacy snapshot reviews refuse this mutation.
     pub expected_version: u64,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub base_overrides: BTreeMap<String, String>,
@@ -155,6 +156,7 @@ pub(crate) fn earlier_directory(
         })
 }
 
+/// Explicit closure for retained legacy snapshot reviews only.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ReviewCompleteParams {
     pub task_id: String,

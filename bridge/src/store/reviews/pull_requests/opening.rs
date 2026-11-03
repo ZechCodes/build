@@ -1,6 +1,6 @@
 use super::*;
 use crate::store::now_rfc3339;
-use crate::store::reviews::{load_review, snapshot_exists, write_header};
+use crate::store::reviews::{finish_review_requested, load_review, snapshot_exists, write_header};
 use crate::store::tracker::{append_activity, next_task_number, write_tracker_task};
 use crate::tracker::{Task, TaskEvent, IN_REVIEW_STATUS};
 use std::collections::{BTreeMap, BTreeSet};
@@ -177,6 +177,7 @@ impl Store {
                 ],
             )?;
             append_activity(tx, &[], events)?;
+            supersede_legacy_review(tx, &opening)?;
             opening.version += 1;
             opening.state = ReviewOpeningState::Published;
             opening.updated_at = now_rfc3339();
@@ -500,8 +501,29 @@ fn validate_for_task(
     if task.state != crate::tracker::TaskState::Open {
         return Err(refusal("for_task_closed"));
     }
-    if load_header(conn, task_id)?.is_some() {
+    if load_header(conn, task_id)?.is_some_and(|review| review.mode == ReviewMode::PullRequest) {
         return Err(refusal("for_task_review"));
+    }
+    Ok(())
+}
+
+fn supersede_legacy_review(tx: &Transaction, opening: &ReviewOpening) -> Result<(), StoreError> {
+    let Some(task_id) = opening.request.for_task_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(legacy) = load_header(tx, task_id)? else {
+        return Ok(());
+    };
+    if legacy.mode == ReviewMode::Snapshot
+        && legacy.state == crate::reviews::records::ReviewState::Open
+    {
+        finish_review_requested(
+            tx,
+            task_id,
+            legacy.version,
+            &opening.request.creator,
+            &format!("Superseded by #{}", opening.task.number),
+        )?;
     }
     Ok(())
 }

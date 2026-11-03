@@ -30,6 +30,18 @@ pub(crate) fn encode(code: &str, message: impl Into<String>, mut details: Value)
     )
 }
 
+/// The retained snapshot format has no mutation path beyond explicit closure.
+pub(crate) fn snapshot_retired(task_id: &str) -> String {
+    encode(
+        "invalid_params",
+        "Request a review from the workspace (tasks.review.open)",
+        serde_json::json!({
+            "task_id":task_id,"reason":"snapshot_retired","replacement":"tasks.review.open",
+            "recovery":"Request a review from the workspace (tasks.review.open)"
+        }),
+    )
+}
+
 pub(crate) fn decode(message: &str) -> Option<ApiError> {
     let refusal: Refusal = serde_json::from_str(message.strip_prefix(PREFIX)?).ok()?;
     let message = refusal.message;
@@ -159,13 +171,13 @@ pub(crate) fn opening_selection(error: crate::store::StoreError) -> String {
     work_task_error(
         error,
         "invalid_params",
-        "Select an open non-review task in this project, or request a review without a task link.",
+        "Select an open task without a pull request in this project, or request a review without a task link.",
     )
 }
 
 /// Publication already owns its journaled arguments: recovery retains that link.
 pub(crate) fn opening_store(error: crate::store::StoreError) -> String {
-    work_task_error(error, "conflict", "Restore the linked task to an open non-review task and retry the same request_id, or cancel this opening before requesting another review.")
+    work_task_error(error, "conflict", "Restore the linked task to an open task without a pull request and retry the same request_id, or cancel this opening before requesting another review.")
 }
 
 fn work_task_error(error: crate::store::StoreError, code: &str, recovery: &str) -> String {

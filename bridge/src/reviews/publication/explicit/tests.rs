@@ -224,7 +224,7 @@ fn review_version_change_under_receiver_locks_fences_final_publication() {
         if checks.get() == 3 {
             fixture
                 .store
-                .complete_review(
+                .finish_review(
                     fixture.task_id(),
                     before.version,
                     &Actor::User,
@@ -305,7 +305,7 @@ fn retarget_stale_final_transaction_retains_old_binding_and_history() {
         if checks.get() == 2 {
             fixture
                 .store
-                .complete_review(
+                .finish_review(
                     fixture.task_id(),
                     before.version,
                     &Actor::User,

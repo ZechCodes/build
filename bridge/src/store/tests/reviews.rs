@@ -93,7 +93,7 @@ fn completion_writes_review_task_and_timeline_in_one_transaction() {
         agent_id: "agent-1".into(),
     };
     let review = store
-        .complete_review(&task.id, 1, &actor, "merged API to dev")
+        .finish_review(&task.id, 1, &actor, "merged API to dev")
         .unwrap();
     assert_eq!(review.version, 2);
     assert_eq!(review.state, ReviewState::Completed);
@@ -108,7 +108,7 @@ fn completion_writes_review_task_and_timeline_in_one_transaction() {
     assert!(task.done_at.is_some());
     assert_completion_timeline(&store, &task.id);
     assert!(matches!(
-        store.complete_review(&task.id, 1, &Actor::User, "again"),
+        store.finish_review(&task.id, 1, &Actor::User, "again"),
         Err(StoreError::ReviewVersionConflict { .. })
     ));
 }
@@ -125,7 +125,7 @@ fn completing_an_already_done_task_does_not_claim_another_move() {
         .save_review_snapshot(&task.id, "ws-1", 0, snapshot("rs-first"))
         .unwrap();
     store
-        .complete_review(&task.id, 1, &Actor::User, "checked completed work")
+        .finish_review(&task.id, 1, &Actor::User, "checked completed work")
         .unwrap();
     let after = store.load_tracker_task(&task.id).unwrap().unwrap();
     assert_eq!(after.done_at, task.done_at);
@@ -148,7 +148,7 @@ fn failed_completion_leaves_every_record_untouched() {
         .unwrap();
     store.fail_next_write();
     assert!(store
-        .complete_review(&task.id, 1, &Actor::User, "used own tools")
+        .finish_review(&task.id, 1, &Actor::User, "used own tools")
         .is_err());
     assert_eq!(store.load_review(&task.id).unwrap().unwrap(), before);
     assert_eq!(store.load_tracker_task(&task.id).unwrap().unwrap(), task);
@@ -164,7 +164,7 @@ fn fresh_snapshot_reopens_review_without_moving_or_reopening_task() {
         .save_review_snapshot(&task.id, "ws-1", 0, snapshot("rs-first"))
         .unwrap();
     store
-        .complete_review(&task.id, 1, &Actor::User, "used own tools")
+        .finish_review(&task.id, 1, &Actor::User, "used own tools")
         .unwrap();
     let task_before = store.load_tracker_task(&task.id).unwrap().unwrap();
     let (review, _) = store
@@ -190,7 +190,7 @@ fn done_move_uses_review_state_inside_the_write_transaction() {
         .save_review_snapshot(&task.id, "ws-1", 0, snapshot("rs-first"))
         .unwrap();
     store
-        .complete_review(&task.id, 1, &Actor::User, "first completion")
+        .finish_review(&task.id, 1, &Actor::User, "first completion")
         .unwrap();
 
     let mut candidate = store.load_tracker_task(&task.id).unwrap().unwrap();
@@ -209,7 +209,7 @@ fn done_move_uses_review_state_inside_the_write_transaction() {
         NOW,
     );
     let completion = store
-        .complete_review_with_task_activity(&candidate, &[], &[moved], &Actor::User, NOW)
+        .finish_review_with_task_activity(&candidate, &[], &[moved], &Actor::User, NOW)
         .unwrap();
     assert!(
         completion.is_none(),
@@ -240,7 +240,7 @@ fn done_move_uses_review_state_inside_the_write_transaction() {
         NOW,
     );
     let completion = store
-        .complete_review_with_task_activity(&candidate, &[], &[moved], &Actor::User, NOW)
+        .finish_review_with_task_activity(&candidate, &[], &[moved], &Actor::User, NOW)
         .unwrap();
     assert_eq!(completion.unwrap().payload["snapshot_id"], "rs-second");
     let review = store.load_review(&task.id).unwrap().unwrap();
@@ -257,7 +257,7 @@ fn completion_requires_a_brief_action_description() {
         .save_review_snapshot(&task.id, "ws-1", 0, snapshot("rs-first"))
         .unwrap();
     assert!(matches!(
-        store.complete_review(&task.id, 1, &Actor::User, "  "),
+        store.finish_review(&task.id, 1, &Actor::User, "  "),
         Err(StoreError::ReviewDescriptionInvalid)
     ));
     assert_eq!(store.load_review(&task.id).unwrap().unwrap().version, 1);
@@ -304,7 +304,7 @@ fn store_completion_description_boundary_counts_utf8_bytes() {
         store
             .save_review_snapshot(&task.id, "ws-1", 0, snapshot("rs-first"))
             .unwrap();
-        let result = store.complete_review(&task.id, 1, &Actor::User, &description);
+        let result = store.finish_review(&task.id, 1, &Actor::User, &description);
         assert_eq!(
             result.is_ok(),
             accepted,
@@ -327,7 +327,7 @@ fn completion_task_capture_failure_rolls_back_review_task_and_events() {
         .unwrap();
     store.connection().execute_batch("CREATE TRIGGER corrupt_completed_task AFTER UPDATE OF status ON tracker_tasks WHEN NEW.status = 'done' BEGIN UPDATE tracker_tasks SET record = '{}' WHERE id = NEW.id; END;").unwrap();
     assert!(store
-        .complete_review_with_task(&task.id, 1, &Actor::User, "Closed")
+        .finish_review_with_task(&task.id, 1, &Actor::User, "Closed")
         .is_err());
     assert_eq!(
         store.load_review(&task.id).unwrap().unwrap().version,

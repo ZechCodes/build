@@ -142,7 +142,7 @@ fn completion_and_snapshot_replacement_do_not_erase_inflight_facts() {
         .start_review_actions(&task, 1, &[row.clone()])
         .unwrap();
     store
-        .complete_review(&task, 2, &Actor::User, "Handled externally")
+        .finish_review(&task, 2, &Actor::User, "Handled externally")
         .unwrap();
     row.status = ActionStatus::Failed;
     row.steps[0].status = StepStatus::Failed;

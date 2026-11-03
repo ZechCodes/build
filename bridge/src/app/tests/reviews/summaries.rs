@@ -110,9 +110,8 @@ fn legacy_task_and_workspace_reads_omit_pr_summary_fields() {
     let (_repo, mut state, project) = tracked(tmp.path());
     let workspace_id = workspace(&mut state, &project, "legacy-summary");
     let task = filed(&mut state, &project, "Legacy snapshot review");
-    review_call(
+    legacy_review(
         &mut state,
-        "tasks.review.snapshot",
         json!({
             "task_id": task["id"], "workspace_id": workspace_id, "expected_version": 0,
         }),

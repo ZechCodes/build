@@ -64,10 +64,6 @@ pub struct GcProgress {
     pub removed_journal: usize,
     pub removed_routes: usize,
     pub removed_revisions: usize,
-    pub removed_leases: usize,
-    pub removed_projection_versions: usize,
-    pub removed_projection_rows: usize,
-    pub removed_projection_keys: usize,
     pub changed_rows: u64,
     pub pending: bool,
 }
@@ -110,59 +106,10 @@ fn gc(tx: &Transaction<'_>, now: i64) -> Result<GcProgress, StoreError> {
         progress.removed_journal += tx.execute("DELETE FROM sync_journal WHERE seq=?1", [seq])?;
         bytes += record_bytes;
     }
-    let remaining = || (GC_ROWS - 1).saturating_sub((tx.total_changes() - before) as usize);
-    progress.removed_revisions = tx.execute("DELETE FROM sync_revisions WHERE (entity_kind,entity_key) IN (SELECT entity_kind,entity_key FROM sync_revisions WHERE deleted=1 AND seq<=?1 ORDER BY seq LIMIT ?2)",params![floor,remaining() as i64])?;
-    progress.removed_leases = tx.execute(
-        "DELETE FROM sync_leases WHERE id IN
-         (SELECT id FROM sync_leases WHERE expires_at_ms<=?1 ORDER BY expires_at_ms,id LIMIT ?2)",
-        params![now, remaining() as i64],
-    )?;
-    let oldest_lease: Option<i64> = tx.query_row(
-        "SELECT MIN(seq) FROM sync_leases WHERE expires_at_ms>?1",
-        [now],
-        |row| row.get(0),
-    )?;
-    let projection_floor = oldest_lease.map_or(floor, |lease| floor.min(lease));
-    progress.removed_projection_versions = tx.execute(
-        "DELETE FROM sync_projection_versions WHERE (kind,key,from_seq) IN
-         (SELECT kind,key,from_seq FROM sync_projection_versions WHERE to_seq<=?1
-          ORDER BY to_seq,kind,key,from_seq LIMIT ?2)",
-        params![projection_floor, remaining() as i64],
-    )?;
-    let tombstone_limit = remaining() / 2;
-    let tombstones = tx
-        .prepare(
-            "SELECT kind,key FROM sync_projection p WHERE deleted=1 AND from_seq<=?1
-             AND NOT EXISTS(SELECT 1 FROM sync_projection_versions v
-                 WHERE v.kind=p.kind AND v.key=p.key)
-             ORDER BY from_seq,kind,key LIMIT ?2",
-        )?
-        .query_map(params![floor, tombstone_limit as i64], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    for (kind, key) in tombstones {
-        progress.removed_projection_rows += tx.execute(
-            "DELETE FROM sync_projection WHERE kind=?1 AND key=?2",
-            params![kind, key],
-        )?;
-        progress.removed_projection_keys += tx.execute(
-            "DELETE FROM sync_projection_keys WHERE kind=?1 AND key=?2",
-            params![kind, key],
-        )?;
-    }
+    let remaining = (GC_ROWS - 1).saturating_sub((tx.total_changes() - before) as usize);
+    progress.removed_revisions = tx.execute("DELETE FROM sync_revisions WHERE (entity_kind,entity_key) IN (SELECT entity_kind,entity_key FROM sync_revisions WHERE deleted=1 AND seq<=?1 ORDER BY seq LIMIT ?2)",params![floor,remaining as i64])?;
     tx.execute("UPDATE sync_state SET floor=?1,total_bytes=total_bytes-?2 WHERE id=1 AND (floor<>?1 OR ?2<>0)",params![floor,bytes])?;
     progress.changed_rows = tx.total_changes() - before;
-    progress.pending = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sync_journal WHERE seq<=?1)
-         OR EXISTS(SELECT 1 FROM sync_revisions WHERE deleted=1 AND seq<=?1)
-         OR EXISTS(SELECT 1 FROM sync_leases WHERE expires_at_ms<=?2)
-         OR EXISTS(SELECT 1 FROM sync_projection_versions WHERE to_seq<=?3)
-         OR EXISTS(SELECT 1 FROM sync_projection p WHERE deleted=1 AND from_seq<=?1
-             AND NOT EXISTS(SELECT 1 FROM sync_projection_versions v
-                 WHERE v.kind=p.kind AND v.key=p.key))",
-        params![floor, now, projection_floor],
-        |r| r.get(0),
-    )?;
+    progress.pending = tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_journal WHERE seq<=?1) OR EXISTS(SELECT 1 FROM sync_revisions WHERE deleted=1 AND seq<=?1)",[floor],|r|r.get(0))?;
     Ok(progress)
 }

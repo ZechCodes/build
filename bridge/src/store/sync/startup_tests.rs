@@ -112,23 +112,12 @@ fn f1_meta_with_missing_table_refuses_without_repair() {
 }
 
 #[test]
-fn c3_v2_metadata_with_device_tables_missing_refuses_without_repair() {
-    refuses_without_repair(
-        "DROP TABLE sync_dirty;
-         DROP TABLE sync_leases;
-         DROP TABLE sync_projection_versions;
-         DROP TABLE sync_projection;
-         DROP TABLE sync_projection_keys;",
-    );
-}
-
-#[test]
 fn f1_pristine_upgrade_preserves_existing_data() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path()).unwrap();
     drop(store);
     let conn = Connection::open(root.path().join("build.db")).unwrap();
-    conn.execute_batch("DROP TABLE sync_dirty; DROP TABLE sync_leases; DROP TABLE sync_projection_versions; DROP TABLE sync_projection; DROP TABLE sync_projection_keys; DROP TABLE sync_routes; DROP TABLE sync_stream_state; DROP TABLE sync_revisions; DROP TABLE sync_journal; DROP TABLE sync_state; DELETE FROM meta WHERE key IN ('sync_incarnation','sync_cursor_key','sync_schema','sync_file_binding'); INSERT INTO meta(key,value) VALUES('synthetic_pre_sync','kept');").unwrap();
+    conn.execute_batch("DROP TABLE sync_routes; DROP TABLE sync_stream_state; DROP TABLE sync_revisions; DROP TABLE sync_journal; DROP TABLE sync_state; DELETE FROM meta WHERE key IN ('sync_incarnation','sync_cursor_key','sync_schema','sync_file_binding'); INSERT INTO meta(key,value) VALUES('synthetic_pre_sync','kept');").unwrap();
     drop(conn);
     let upgraded = Store::new(root.path()).unwrap();
     assert_eq!(
@@ -150,58 +139,6 @@ fn f1_pristine_upgrade_preserves_existing_data() {
             .unwrap(),
         1
     );
-}
-
-#[test]
-fn c3_v1_journal_upgrades_to_device_storage_and_rotates_incarnation() {
-    let root = tempfile::tempdir().unwrap();
-    let store = Store::new(root.path()).unwrap();
-    let old_incarnation: String = store
-        .connection()
-        .query_row(
-            "SELECT value FROM meta WHERE key='sync_incarnation'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    drop(store);
-    let conn = Connection::open(root.path().join("build.db")).unwrap();
-    conn.execute_batch(
-        "DROP TABLE sync_dirty;
-         DROP TABLE sync_leases;
-         DROP TABLE sync_projection_versions;
-         DROP TABLE sync_projection;
-         DROP TABLE sync_projection_keys;
-         UPDATE meta SET value='sync-journal-1' WHERE key='sync_schema';",
-    )
-    .unwrap();
-    drop(conn);
-
-    let upgraded = Store::new(root.path()).unwrap();
-    let conn = upgraded.connection();
-    let new_incarnation: String = conn
-        .query_row(
-            "SELECT value FROM meta WHERE key='sync_incarnation'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_ne!(new_incarnation, old_incarnation);
-    for table in [
-        "sync_dirty",
-        "sync_leases",
-        "sync_projection",
-        "sync_projection_keys",
-        "sync_projection_versions",
-    ] {
-        assert!(conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
-                [table],
-                |row| row.get::<_, bool>(0),
-            )
-            .unwrap());
-    }
 }
 #[test]
 fn f4_sqlite_busy_is_not_reported_as_structural_corruption() {

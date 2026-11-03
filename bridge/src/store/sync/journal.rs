@@ -146,18 +146,6 @@ fn publish_one(
         .ok_or_else(|| invalid("byte counter exhausted"))?;
     let seq: i64 = tx.prepare_cached("INSERT INTO sync_journal(at_ms,entity_kind,entity_key,operation,record_bytes,cumulative_bytes) VALUES(?1,?2,?3,?4,?5,?6) RETURNING seq")?.query_row(params![at,entity.kind,entity.key,operation.as_str(),bytes,next],|r|r.get(0))?;
     write_routes(tx, &routes, seq)?;
-    let device = Stream::device();
-    if old_streams.contains(&device) || current_streams.contains(&device) {
-        super::device::apply_projection(
-            tx,
-            entity,
-            current_streams
-                .contains(&device)
-                .then_some(publication.record.as_ref())
-                .flatten(),
-            seq,
-        )?;
-    }
     let streams = serde_json::to_string(current_streams).expect("routes serialize");
     tx.prepare_cached("INSERT INTO sync_revisions(entity_kind,entity_key,seq,deleted,fingerprint,streams) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(entity_kind,entity_key) DO UPDATE SET seq=excluded.seq,deleted=excluded.deleted,fingerprint=excluded.fingerprint,streams=excluded.streams")?.execute(params![entity.kind,entity.key,seq,deleted,fingerprint,streams])?;
     Ok(Some((

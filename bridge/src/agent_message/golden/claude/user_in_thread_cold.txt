@@ -59,4 +59,4 @@ The user wrote this in the thread. Reply there with `mcp__build__post_thread_mes
 
 <system-reminder>
 Build tools load on demand: call ToolSearch with `select:mcp__build__post_thread_message` before you use them.
-</system-reminder>[201~
+</system-reminder>[201~

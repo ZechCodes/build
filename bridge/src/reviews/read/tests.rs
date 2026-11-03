@@ -712,3 +712,44 @@ fn commit_list_display_fields_are_bounded_at_utf8_boundaries() {
     assert!(oversized.starts_with(&commit.subject));
     assert!(oversized.starts_with(&commit.author_name));
 }
+
+#[test]
+fn since_unavailable_earlier_capture_uses_recorded_base() {
+    let (_temp, repo) = init_repo();
+    let directory = saved_directory(&repo);
+    let mut earlier = directory.clone();
+    earlier.status = ReviewDirectoryStatus::Unavailable;
+    earlier.head = None;
+    earlier.base = None;
+    earlier.common_git_dir = None;
+    let mut req = request(ReviewReadMode::Since, None);
+    req.from_snapshot_id = Some("unavailable-earlier".into());
+    let ReviewReadResult::Changes(changes) = read_since(&directory, &earlier, &req).unwrap() else {
+        panic!()
+    };
+    assert!(changes.rewritten);
+    assert_eq!(changes.since_baseline, Some(SinceBaseline::Base));
+    assert_eq!(changes.files.len(), 1);
+    assert_eq!(changes.files[0].path, "new.txt");
+    assert_eq!(changes.stat.files_changed, 1);
+    assert!(!changes.patch.unwrap().contains("README.md"));
+}
+
+#[test]
+fn since_genuinely_unborn_earlier_revision_uses_empty_previous_tree() {
+    let (_temp, repo) = init_repo();
+    let directory = saved_directory(&repo);
+    let mut earlier = directory.clone();
+    earlier.status = ReviewDirectoryStatus::NoCommits;
+    earlier.head = None;
+    earlier.base = None;
+    let mut req = request(ReviewReadMode::Since, None);
+    req.from_snapshot_id = Some("unborn-earlier".into());
+    let ReviewReadResult::Changes(changes) = read_since(&directory, &earlier, &req).unwrap() else {
+        panic!()
+    };
+    assert!(!changes.rewritten);
+    assert_eq!(changes.since_baseline, Some(SinceBaseline::PreviousHead));
+    assert_eq!(changes.files.len(), 2);
+    assert!(changes.files.iter().any(|file| file.path == "README.md"));
+}

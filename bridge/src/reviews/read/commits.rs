@@ -247,9 +247,13 @@ pub fn read_since(
             .and_then(|commit| commit.tree())
             .is_ok()
     });
-    let rewritten = earlier.head.is_some()
-        && (!readable
-            || !previous.is_some_and(|oid| {
+    let unborn = earlier.is_git
+        && earlier.status == super::super::model::ReviewDirectoryStatus::NoCommits
+        && earlier.head.is_none();
+    let fallback = !readable && !unborn;
+    let rewritten = fallback
+        || (readable
+            && !previous.is_some_and(|oid| {
                 directory
                     .head
                     .as_deref()
@@ -257,7 +261,7 @@ pub fn read_since(
                     .is_some_and(|head| descends_from(&repo, head, oid))
             }));
     let mut selection = directory.clone();
-    if readable || earlier.head.is_none() {
+    if !fallback {
         selection.base = Some(ReviewBase {
             kind: if readable {
                 ReviewBaseKind::Configured
@@ -271,7 +275,7 @@ pub fn read_since(
     let mut result = read_changes(&selection, request, git_dir)?;
     if let ReviewReadResult::Changes(changes) = &mut result {
         changes.rewritten = rewritten;
-        changes.since_baseline = Some(if earlier.head.is_some() && !readable {
+        changes.since_baseline = Some(if fallback {
             SinceBaseline::Base
         } else {
             SinceBaseline::PreviousHead

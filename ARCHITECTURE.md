@@ -1956,7 +1956,10 @@ with the selected revision's head and reports `since_baseline: "previous_head"`.
 Rewritten history sets `rewritten: true`. If the prior head is unreadable, its
 unavailable tree cannot be reconstructed: the read falls back to the current
 revision's recorded `base..head` diff, sets `rewritten: true` and reports
-`since_baseline: "base"` so the comparison remains explicit.
+`since_baseline: "base"` so the comparison remains explicit. An unavailable
+capture with no recorded head takes that same fallback. Only an explicitly
+unborn Git capture (`no_commits`) uses an empty previous tree, retaining
+`since_baseline: "previous_head"` without claiming rewritten history.
 Both reuse the `changes` response: counts, up to 1,000 file rows with
 `files_truncated`, a `diff_key`, optional patch and byte-range paging. `paths`
 filters before rendering and paging. Reads open the recorded common Git

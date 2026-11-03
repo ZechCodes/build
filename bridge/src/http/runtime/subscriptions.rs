@@ -233,6 +233,7 @@ async fn streamed(
         .map_err(|_| refusal(StatusCode::INTERNAL_SERVER_ERROR, "internal"))?;
     let stream = bind_stream(state, &opening, &subscription_id, sender)?;
     Ok(event_response(
+        state,
         opening,
         subscription_id,
         stream,
@@ -297,6 +298,7 @@ fn bind_stream(
 }
 
 fn event_response(
+    state: &HttpState,
     opening: StreamOpening,
     subscription_id: String,
     stream: HttpStream,
@@ -313,12 +315,17 @@ fn event_response(
         deadline.clone(),
         opening.session.opening().clone(),
     )));
-    let heartbeat_every = opening.output.heartbeat_interval();
+    let timing = opening.output.stream_timing();
     let streams = opening.streams.clone();
+    let session = opening.session.clone();
+    let cleanup = state.clone();
     let close = Arc::new(move || {
         streams.release(&subscription_id);
         if let Some(ticket) = ticket.lock().unwrap().take() {
             ticket.release();
+        }
+        if !session.is_live() {
+            cleanup.reap_ended();
         }
     });
     let body = sse_stream::application_body(
@@ -328,7 +335,7 @@ fn event_response(
         check,
         deadline,
         close,
-        heartbeat_every,
+        timing,
     );
     let mut response = Response::new(body);
     let headers = response.headers_mut();

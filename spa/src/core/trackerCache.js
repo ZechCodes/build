@@ -19,9 +19,17 @@
 // record is written through by the task page itself on first open, which is
 // how every other detail surface warms its own cache.
 
-import { mergeCachedAtomically, mergeCachedRecordsTogether, readCached } from "./localCache.js";
+import { mergeCachedAtomically, mergeCachedRecordsTogether, readCached, readCachedMany, recordWriteOf } from "./localCache.js";
 import { taskUnreadKey, latestTaskMark } from "./trackerUnread.js";
 import { readsAddress } from "./taskReadOrder.js";
+import { mergeTaskContentRecordsTogether, observeTaskContent, reconcileTaskContentWrite,
+  taskNeedsFullRefresh, TASK_CONTENT_CACHE, withTaskContentComponents, acceptsTaskContentRead,
+  isObservedTaskContent, taskContentObservationOf, withTaskWatchIntentNote } from "./taskContentAuthority.js";
+import { summaryTaskReadMutation, withTaskReadFacts, sameTaskReadFacts } from "./taskSummaryCache.js";
+import { reconcileTaskReadFacts, hasTaskWatchSnapshot } from "./taskWatchFacts.js";
+import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent, selectTaskWatchIntentGuard } from "./taskWatchIntents.js";
+import { blindTaskWatchInterference, retireTaskWatchFacts } from "./taskWatchAuthority.js";
+const normalizedAddress = (deviceId, projectId, taskId) => ({ deviceId, entityId: projectId, kind: "tracker-summary", sub: taskId });
 
 export const TRACKER_TASKS_KIND = "tracker-tasks";
 export const TRACKER_TASKS_QUERY_KIND = "tracker-tasks-query";
@@ -387,9 +395,16 @@ export async function readTasksRecord(deviceId, projectId) {
   return record?.value || null;
 }
 
+function detailWithHeaderBarrier(value, header) {
+  if (!value?.task || !taskNeedsFullRefresh(value.task, header)) return value || null;
+  return { ...value, task: { ...value.task, [TASK_CONTENT_CACHE]: {
+    ...value.task[TASK_CONTENT_CACHE], needs_full_refresh: true, barrier: header?.[TASK_CONTENT_CACHE],
+  } } };
+}
+
 export async function readTaskRecord(deviceId, projectId, taskId) {
-  const record = await readCached(taskAddress(deviceId, projectId, taskId));
-  return record?.value || null;
+  const [record, summary] = await readCachedMany([taskAddress(deviceId, projectId, taskId), normalizedAddress(deviceId, projectId, taskId)]);
+  return detailWithHeaderBarrier(record?.value, summary?.value?.task);
 }
 
 export async function readTasksQueryRecord(deviceId, projectId, params) {
@@ -411,9 +426,124 @@ export const readTasksCached = (deviceId, projectId) => readListCached(tasksAddr
 export const readTasksQueryCached = (deviceId, projectId, params) =>
   readListCached(tasksQueryAddress(deviceId, projectId, params));
 
-export const writeTasksRecord = (deviceId, projectId, record) =>
-  mergeCachedRecordsTogether([tasksAddress(deviceId, projectId)], ([held]) =>
-    [preserveListSummaries(held?.value, record)]);
+function contentList(held, record, address, context, written, contentRead) {
+  if (contentRead) record = { ...record, read_order: contentRead.readOrder };
+  const { positiveOnly, admitsMembership } = listMembershipAuthority(record, contentRead, address, context, written);
+  if (!admitsMembership && !held && !positiveOnly) return null;
+  const old = new Map((held?.tasks || []).map((task) => [task.id, task]));
+  const incoming = (record.tasks || []).filter((task) => admitsMembership || positiveOnly || old.has(task.id));
+  const blindWatch = (task) => isBlindTaskWatchWrite(old.get(task.id), task, address, context, contentRead);
+  const results = incoming.map((task) => reconcileTaskContentWrite(old.get(task.id),
+    contentRead ? observeTaskContent(task, { contentRead, coverage: "full" }) : task, { context, address, heldWritten: written }));
+  const rows = results.flatMap((result, index) => {
+    if (!result.task) return [];
+    const raw = incoming[index];
+    const facts = taskFactsForWrite(old.get(raw.id), raw, address, context, contentRead);
+    const task = withTaskContentComponents(facts, result.task);
+    return [listObservedReview(old.get(raw.id), task, contentRead ?? taskContentObservationOf(raw)?.contentRead, held)];
+  });
+  return { ...selectedListRecord(held, record, rows, results, admitsMembership, positiveOnly), retireWatch: incoming.some(blindWatch) };
+}
+
+function listObservedReview(held, task, contentRead, record) {
+  if (!contentRead) return task;
+  return preserveTaskReviewSummary(held, task, { readOrder: contentRead.readOrder,
+    allowMissing: contentRead.readOrder > (record?.read_order || 0),
+    keepHeld: contentRead.readOrder < (record?.read_order || 0) });
+}
+
+function listMembershipAuthority(record, contentRead, address, context, written) {
+  const positiveOnly = contentRead === undefined && (record.tasks || []).some(isObservedTaskContent);
+  const admitsMembership = contentRead === undefined ? !positiveOnly : acceptsTaskContentRead(contentRead, { context, address, heldWritten: written });
+  return { positiveOnly, admitsMembership };
+}
+
+function taskFactsForWrite(held, raw, address, context, contentRead, watchGuard) {
+  const scope = { deviceId: address.deviceId, projectId: address.entityId };
+  const blind = isBlindTaskWatchWrite(held, raw, address, context, contentRead);
+  const intent = reconcileTaskWatchIntent(scope, raw, context.watchIntentOf?.(raw.id), context);
+  raw = intent.task;
+  if (blind) return retireTaskWatchFacts(protectBlindTaskIntent(scope, held, raw, context));
+  if (untrackedTaskFacts(held, raw, intent, contentRead)) return protectBlindTaskIntent(scope, held, raw, context);
+  const annotation = taskContentObservationOf(raw);
+  return reconcileTaskReadFacts(scope, held, taskFactsSource(raw, contentRead, annotation),
+    { context, contentRead: contentRead ?? annotation?.contentRead, watchGuard, markerPolicy: "legacy" }).task;
+}
+
+const untrackedTaskFacts = (held, raw, intent, contentRead) => !contentRead && !isObservedTaskContent(raw)
+  && !intent.retired && !sameTaskReadFacts(held, raw) && !hasTaskWatchMetadata(raw);
+const taskFactsSource = (raw, contentRead, annotation) => contentRead || annotation?.coverage === "full"
+  ? { watched: false, read_through: null, watch_started_after: null, dismissed_through: null, ...raw } : raw;
+
+function protectBlindTaskIntent(scope, held, raw, context) {
+  const protection = selectTaskWatchIntentGuard(scope, raw.id, [held, raw], context.watchIntentOf?.(raw.id), context);
+  if (!protection.guard) return raw;
+  const next = { ...raw };
+  for (const field of ["__task_watch_intent", TASK_WATCH_INTENT_CACHE]) {
+    if (Object.hasOwn(protection.guard, field)) next[field] = protection.guard[field];
+  }
+  return next;
+}
+
+function isBlindTaskWatchWrite(held, raw, address, context, contentRead) {
+  if (contentRead || isObservedTaskContent(raw)) return false;
+  const scope = { deviceId: address.deviceId, projectId: address.entityId };
+  const intent = reconcileTaskWatchIntent(scope, raw, context.watchIntentOf?.(raw.id), context);
+  return !intent.retired && blindTaskWatchInterference(scope, held, raw, context) && !hasTaskWatchSnapshot(raw);
+}
+
+
+const hasTaskWatchMetadata = (task) => ["__task_watch_cache", "__task_family_cache", "__task_watch_intent", TASK_WATCH_INTENT_CACHE]
+  .some((field) => Object.hasOwn(task || {}, field));
+
+function selectedListRecord(held, record, rows, results, admitsMembership, positiveOnly) {
+  const byId = new Map(rows.map((task) => [task.id, task]));
+  const prior = held?.tasks || [], priorIds = new Set(prior.map((task) => task.id));
+  const positive = positiveOnly ? rows.filter((task) => !priorIds.has(task.id)) : [];
+  const tasks = admitsMembership ? rows : [...prior.map((task) => byId.get(task.id) || task), ...positive];
+  const removed = admitsMembership && prior.some((task) => !byId.has(task.id));
+  return { record: preserveListSummaries(held, { ...(admitsMembership || !held ? record : held), tasks }),
+    retire: removed || results.some((result) => result.retired) };
+}
+
+function writeContentLists(deviceId, projectId, entries, accept) {
+  const watchTaskIds = [...new Set(entries.flatMap(({ record }) => (record.tasks || []).map((task) => task.id)))];
+  return mergeTaskContentRecordsTogether({ deviceId, projectId }, entries.map(({ address }) => address), (held, context) => {
+    if (!accept()) return null;
+    const results = entries.map(({ address, record, contentRead }, index) => contentList(held[index]?.value, record,
+      address, context, recordWriteOf(held[index]), contentRead));
+    return { values: results.map((result) => result?.record || null), retire: results.some((result) => result?.retire),
+      retireWatch: results.some((result) => result?.retireWatch) };
+  }, { watchTaskIds });
+}
+
+function writeContentList(deviceId, projectId, address, record, { accept = () => true, contentRead } = {}) {
+  return writeContentLists(deviceId, projectId, [{ address, record, contentRead }], accept);
+}
+
+/** The pane's existing query/catalogue replicas publish under one old scope
+ * fence, so the first accepted removal cannot revoke the second one's ticket. */
+export function writeTaskListRecords(deviceId, projectId, entries, { accept = () => true } = {}) {
+  validateListPublications(deviceId, projectId, entries);
+  return writeContentLists(deviceId, projectId, entries, accept);
+}
+
+const localListAddress = (address, deviceId, projectId) => address?.deviceId === deviceId
+  && address.entityId === String(projectId) && [TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND].includes(address.kind);
+
+function validateListPublications(deviceId, projectId, entries) {
+  if (!Array.isArray(entries) || entries.length < 1 || entries.length > 2) throw new Error("Expected one or two task list replicas");
+  const keys = new Set();
+  for (const { address, contentRead } of entries) {
+    if (!localListAddress(address, deviceId, projectId)) throw new Error("Foreign task list publication");
+    const key = JSON.stringify([address.kind, address.sub || ""]);
+    if (keys.has(key) || !contentRead) throw new Error("Expected distinct addressed task list captures");
+    keys.add(key);
+  }
+}
+
+export const writeTasksRecord = (deviceId, projectId, record, options) =>
+  writeContentList(deviceId, projectId, tasksAddress(deviceId, projectId), record, options);
 
 /** Capture the accepted action note before asking for a detail. Ordinary reads
  * leave the note in place, so another read cannot erase a mutation fence. */
@@ -426,31 +556,99 @@ export async function captureTaskDetailRead(deviceId, projectId, taskId) {
  * accepted. Keep the accepted mark in the cached task while replacing its
  * other fields and timeline with the newest pull. The transaction makes two
  * tabs' writes obey the same floor. */
-export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = () => true, detailBasis } = {}) => {
-  const address = taskAddress(deviceId, projectId, taskId);
-  return mergeCachedRecordsTogether([address, readsAddress(address)], ([detail, note]) => {
-    const held = detail?.value;
-    // A writer can be superseded while waiting for the cache transaction.
-    if (!accept(held) || detailBasis !== undefined && detailBasis !== (note?.value?.rows?.[taskId] || 0)) return null;
-    return [preserveTaskFloors(held, record), null];
+const detailAccepted = (held, note, taskId, options) => options.accept(held)
+  && (options.detailBasis === undefined || options.detailBasis === (note?.value?.rows?.[taskId] || 0));
+
+function publishedDetail(held, record, result, contentRead, facts) {
+  const timeline = result.acceptedBody || !contentRead ? record.timeline : held?.timeline;
+  const independent = facts || record.task;
+  const next = preserveTaskFloors(held, { ...record, task: withTaskContentComponents(independent, result.task), timeline: timeline || [] });
+  return next;
+}
+
+function contentDetail(detail, record, headerBarrier, context, address, contentRead, projection) {
+  const held = detail?.value;
+  const result = detailContentSelection(detail, record, headerBarrier, context, address, contentRead);
+  if (!usableDetailSelection(result, held, contentRead)) return null;
+  const retireWatch = blindDetailWatchChanged(held, record, contentRead, address, context);
+  const facts = taskFactsForWrite(held?.task, record.task, address, context, contentRead, projection || headerBarrier);
+  return { values: [publishedDetail(held, record, result, contentRead, facts), null, null], retire: result.retired, retireWatch,
+    ordinaryDeferred: result.ordinaryDeferred };
+}
+
+function detailContentSelection(detail, record, headerBarrier, context, address, contentRead) {
+  const task = contentRead ? observeTaskContent(record.task, { contentRead, coverage: "full" }) : record.task;
+  return reconcileTaskContentWrite(detail?.value?.task, task, { context, address,
+    heldWritten: recordWriteOf(detail), headerBarrier });
+}
+
+const usableDetailSelection = (result, held, contentRead) => Boolean(result.task)
+  && !(contentRead && !held && typeof result.task.body !== "string");
+const blindDetailWatchChanged = (held, record, contentRead, address, context) =>
+  isBlindTaskWatchWrite(held?.task, record.task, address, context, contentRead);
+
+const addressedFullRead = (read, address) => read?.revalidate === "full"
+  && ["deviceId", "entityId", "kind", "sub"].every((key) => (read.address?.[key] ?? "") === (address[key] ?? ""));
+
+function fullReadDetail(detail, shared, record, context, address, contentRead, mutation) {
+  // An addressed baseline is an ordinary-content guard. Independent fields
+  // retain their established authority when a local write changed that guard.
+  const ordinaryRead = contentRead.written === recordWriteOf(detail) ? contentRead : { ...contentRead, ticket: null };
+  let ordinaryDeferred = false;
+  const normalized = mutation.reduce(shared, { context, headerBarrier: detail?.value?.task, ordinaryRead,
+    onOrdinaryDeferred: () => { ordinaryDeferred = true; } });
+  if (!normalized) return null;
+  const next = contentDetail(detail, record, normalized[0].task, context, address, contentRead, normalized[0].task);
+  const selected = next ? { ...next, values: [...next.values.slice(0, 2), ...normalized] } : { values: [null, null, ...normalized] };
+  return { ...selected, ordinaryDeferred: ordinaryDeferred || next?.ordinaryDeferred === true };
+}
+
+/** onOrdinaryDeferred is a local scheduling hint after a committed write,
+ * never authority. Its mounted caller still checks its captured owner. */
+export const writeTaskRecord = async (deviceId, projectId, taskId, record,
+  { accept = () => true, detailBasis, contentRead, onOrdinaryDeferred } = {}) => {
+  const address = taskAddress(deviceId, projectId, taskId), scope = { deviceId, projectId };
+  const mutation = addressedFullRead(contentRead, address) ? summaryTaskReadMutation(scope, record.task, contentRead) : null;
+  const shared = mutation?.addresses || [normalizedAddress(deviceId, projectId, taskId)];
+  let ordinaryDeferred = false;
+  const written = await mergeTaskContentRecordsTogether(scope, [address, readsAddress(address), ...shared], ([detail, note, ...records], context) => {
+    ordinaryDeferred = false;
+    if (!detailAccepted(detail?.value, note, taskId, { accept, detailBasis })) return null;
+    const current = withTaskWatchIntentNote(context, taskId, note?.value);
+    const selected = mutation ? fullReadDetail(detail, records, record, current, address, contentRead, mutation)
+      : contentDetail(detail, record, records[0]?.value?.task, current, address, contentRead);
+    ordinaryDeferred = selected?.ordinaryDeferred === true;
+    return selected;
   });
+  if (written && ordinaryDeferred) {
+    try { onOrdinaryDeferred?.(); }
+    catch { /* A local refresh observer cannot change a committed write. */ }
+  }
+  return written;
 };
 
 /** Only an accepted read report may raise the cached floor. Do not touch the
  * timeline, and never accept a synthetic key as a read mark. */
-export const advanceTaskReadThrough = (deviceId, projectId, taskId, mark) => {
+const acceptsTaskReadFloor = (held, note, issuedRead, accept) => accept() && Boolean(held?.task)
+  && !(note?.value?.action_read > issuedRead);
+
+export const advanceTaskReadThrough = (deviceId, projectId, taskId, mark, { accept = () => true, issuedRead } = {}) => {
   if (taskUnreadKey(mark) === null) return Promise.resolve(false);
-  return mergeCachedAtomically(taskAddress(deviceId, projectId, taskId), (held) => {
-    if (!held?.task) return null;
+  const address = taskAddress(deviceId, projectId, taskId);
+  return mergeTaskContentRecordsTogether({ deviceId, projectId }, [address, readsAddress(address)], ([detail, note], context) => {
+    const held = detail?.value;
+    if (!acceptsTaskReadFloor(held, note, issuedRead, accept)) return null;
     const floor = latestTaskMark(held.task.read_through, mark);
     if (floor === held.task.read_through) return null;
-    return { ...held, task: { ...held.task, read_through: floor } };
+    const facts = reconcileTaskReadFacts({ deviceId, projectId }, held.task, { id: taskId, read_through: floor },
+      { context: withTaskWatchIntentNote(context, taskId, note?.value), markerPolicy: "legacy" });
+    return { values: [{ ...held, task: withTaskReadFacts(held.task, facts.task) },
+      issuedRead === undefined ? null : { ...note?.value, action_read: issuedRead }] };
   });
 };
 
-export const writeTasksQueryRecord = (deviceId, projectId, params, record) =>
-  mergeCachedRecordsTogether([tasksQueryAddress(deviceId, projectId, params)], ([held]) =>
-    [preserveListSummaries(held?.value, record)]);
+export const writeTasksQueryRecord = (deviceId, projectId, params, record, options) =>
+  writeContentList(deviceId, projectId, tasksQueryAddress(deviceId, projectId, params), record, options);
 
 /** When the cache last took an answer for a record, or 0 for one it has never
  *  held. A surface showing a cached copy says when that copy was read

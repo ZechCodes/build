@@ -36,8 +36,8 @@ const sameText = (left, right) =>
 // (core/referenceIndex.js). It is only caches: the feed, and the task lists
 // the tracker has written.
 //
-// Each answer is one of three things. A place is a link. `null` means the list
-// that would hold it is held and it is not in it: the reader is told so
+// Each answer is one of three things. A place is a link. For tasks, `null`
+// requires an authoritative bounded point miss: the reader is told so
 // (core/markdownLinks.js). `undefined` means nothing here can tell — no
 // project to read `#42` in, a task list never read — and the reference is left
 // as the words that were typed, exactly as before there was an index.
@@ -101,13 +101,15 @@ function projectAgentsOf(feed) {
 const projectRostersOf = (feed) => new Map((feed?.projects || []).filter((project) => project.projectRoster)
   .map((project) => [project.projectKey, project.projectRoster]));
 
-export function referenceTables({ feed = null, tasks = {}, reviews = {} } = {}) {
+const taskSources = ({ tasks = {}, taskLookups = {}, taskRowReads = {} }) => ({ tasks: tasks || {}, taskLookups, taskRowReads });
+
+export function referenceTables({ feed = null, reviews = {}, ...taskOptions } = {}) {
   const workspaces = (feed?.workspaces || []).filter((workspace) => workspace.projectKey).map(workspaceEntry);
   const projects = (feed?.projects || []).filter((project) => project.projectKey).map((project) => ({
     ...placeOfKey(project.projectKey), projectKey: project.projectKey, name: String(project.name || project.id || ""),
   }));
   return { workspaces, projects, agents: agentsOf(feed, workspaces), projectAgents: projectAgentsOf(feed), projectRosters: projectRostersOf(feed),
-    tasks: tasks || {}, reviews, held: Boolean(feed) };
+    ...taskSources(taskOptions), reviews, held: Boolean(feed) };
 }
 
 /** The one row a reader meant, out of those that answer to what they wrote:
@@ -170,12 +172,44 @@ function projectAgentTarget(tables, id, here, identities) {
   return projectAgent(tables, id, { place: here, identities });
 }
 
-function taskTarget(tables, here, number) {
-  const list = here && tables.tasks[here.projectKey];
-  if (!Array.isArray(list)) return undefined;
-  const found = list.find((task) => Number(task.number) === Number(number));
-  return found?.id ? { deviceId: here.deviceId, projectId: here.projectId, taskId: found.id, title: found.title || "" } : null;
+function pointIsNewer(tables, here, number, point) {
+  const listedRead = tables.taskRowReads[here.projectKey]?.[number];
+  const pointRead = point?.published_result_read_order;
+  return Number.isSafeInteger(listedRead) && listedRead > 0 && Number.isSafeInteger(pointRead) && pointRead > listedRead;
 }
+
+function fresherBody(left, right) {
+  const leftAt = Date.parse(left.updated_at), rightAt = Date.parse(right.updated_at);
+  if (!Number.isFinite(leftAt) || !Number.isFinite(rightAt) || leftAt === rightAt) return null;
+  return leftAt > rightAt ? left : right;
+}
+
+function sameTaskContent(point, listed) {
+  if (point?.status !== "found") return null;
+  if (!listed?.id || point.task?.id !== listed.id) return null;
+  return fresherBody(point.task, listed);
+}
+
+function preferredTask(tables, here, number, point, listed) {
+  const content = sameTaskContent(point, listed);
+  if (content) return content;
+  // Unknown read clocks cannot revoke a known positive or roll its title back.
+  if (listed?.id && !pointIsNewer(tables, here, number, point)) return listed;
+  if (point?.status === "missing") return null;
+  return point?.status === "found" ? point.task : listed;
+}
+
+function taskTarget(tables, here, number) {
+  if (!Number.isSafeInteger(number) || number <= 0) return undefined;
+  if (!here) return undefined;
+  const point = tables.taskLookups[here.projectKey]?.[number];
+  const listed = tables.tasks[here.projectKey]?.find((task) => Number(task.number) === Number(number));
+  const found = preferredTask(tables, here, number, point, listed);
+  return found === null ? null : taskPlace(here, found);
+}
+
+const taskPlace = (here, found) => found?.id
+  ? { deviceId: here.deviceId, projectId: here.projectId, taskId: found.id, title: found.title || "" } : undefined;
 
 // Keep the raw reference in the URL until the saved revision can settle its
 // directory boundary. The page uses this same mapping when metadata arrives.

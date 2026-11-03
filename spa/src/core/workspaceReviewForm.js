@@ -9,6 +9,9 @@ import { readReviewTaskChoices, readReviewTaskPage, preselectedReviewTask, refre
 import { fieldTraits } from "./fieldTraits.js";
 import { mergeCachedAtomically, deleteCached } from "./localCache.js";
 import { writeTaskRecord, taskRecord } from "./trackerCache.js";
+import { captureTaskContentRead } from "./taskContentAuthority.js";
+import { contextFor, deviceContextIdentity } from "./deviceContexts.js";
+import { deviceSession } from "./deviceReconnect.js";
 import { readWorkspaceReviewContext, reviewBranchPreview, shortReviewRef, sourcePushDestination, workspaceReviewListAddress, boundSourceFacts, canPushSource, pushSourceParams } from "./workspaceReviewState.js";
 
 const PREFIX = "review-create";
@@ -111,8 +114,8 @@ function createRequest(scope, context, draft) {
     excluded_git_directory_ids: draft.excluded_git_directory_ids };
 }
 
-async function keepOpenedWorkspace(scope, context, answer) {
-  if (answer.task) await writeTaskRecord(scope.deviceId, scope.projectId, answer.task.id, taskRecord(answer.task));
+async function keepOpenedWorkspace(scope, context, answer, contentRead, accept) {
+  if (answer.task) await writeTaskRecord(scope.deviceId, scope.projectId, answer.task.id, taskRecord(answer.task), { contentRead, accept });
   const bindings = answer.review.bindings || [];
   await mergeCachedAtomically(workspaceReviewListAddress(scope), (held) => (held || []).map((workspace) => {
     if ((workspace.workspace_id || workspace.id) !== scope.workspaceId) return workspace;
@@ -124,6 +127,12 @@ async function keepOpenedWorkspace(scope, context, answer) {
     }) };
   }));
   await deleteCached(context.sources.map((source) => ({ deviceId: scope.deviceId, entityId: source.entityId, kind: "refs" })));
+}
+
+function captureOpeningOwner({ deviceId }) {
+  const context = contextFor(deviceId), identity = deviceContextIdentity(deviceId), session = deviceSession(deviceId);
+  return () => contextFor(deviceId) === context && deviceContextIdentity(deviceId) === identity
+    && deviceSession(deviceId) === session && (!context || context.active());
 }
 
 // Each explicit retry keeps the exact operation. Hydration never submits it.
@@ -191,10 +200,16 @@ export async function openReviewCreateForm(scope) {
     try {
       await writer.write(sent);
       captured = await captureMatchingDraft(reviewCreateDraftAddress(scope), sent);
-      const repository = createTaskReviewRepository(scope);
+      const accept = captureOpeningOwner(scope);
+      // Opening discovers its task ID. This is action dispatch authority;
+      // it cannot claim an addressed full-body revalidation baseline.
+      const contentRead = await captureTaskContentRead(scope);
+      if (!accept()) throw new Error("This machine's session changed before opening the review.");
+      const repository = createTaskReviewRepository({ ...scope, active: accept });
       const answer = await repository.mutate("open", sent.submitted);
+      if (!accept()) throw new Error("This machine's session changed while opening the review.");
       if (answer.opening_state !== "published") throw new Error("Opening is incomplete. Retry this saved opening to resume.");
-      await keepOpenedWorkspace(scope, context, answer);
+      await keepOpenedWorkspace(scope, context, answer, contentRead, accept);
       await settleCreateDraft(scope, sent, captured, answer);
       await modal.close();
     } catch (failure) {

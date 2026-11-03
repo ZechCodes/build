@@ -83,11 +83,11 @@ function inboxTaskRoute(project, task, detail, workspaces) {
     deviceId: project.deviceId, project_id: project.id, identities, workspaces });
 }
 
-function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces) {
+function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces, unreadOf) {
   const group = taskIsHeld(task) ? taskActivityGroup(task, taskAgentIsRunning(task, runningAgentIds, projectAgentId)) : "backlog";
   const activity = taskHasReadiness(task) ? { working: "Working", assigned: "Assigned", blocked: "Blocked" }[group] : "";
   const facts = [activity, taskWaitingText(task), ...reasons.map((reason) => reasonWord(reason, askedOnly))].filter(Boolean).join(" · ");
-  const unreadCount = taskUnreadCount(task, detail);
+  const unreadCount = unreadOf(task, detail);
   const working = taskAgentIsRunning(task, runningAgentIds, projectAgentId);
   return {
     ...NOT_A_CHECKOUT,
@@ -121,13 +121,15 @@ function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, pro
   };
 }
 
-function entriesFromSource({ project, tasks = [], details = new Map(), askedOnly = false, runningAgentIds = new Set(), projectAgentId = null, workspaces }) {
+const activeWatchedTask = (task) => task.watched === true && !isFinished(task);
+
+function entriesFromSource({ project, tasks = [], details = new Map(), askedOnly = false, runningAgentIds = new Set(), projectAgentId = null, workspaces, unreadOf = taskUnreadCount }) {
   const entries = [];
   for (const task of tasks) {
-    if (task.watched !== true || isFinished(task)) continue;
+    if (!activeWatchedTask(task)) continue;
     const detail = details.get(task.id) || null;
     const reasons = watchedTaskReasons(task, detail, askedOnly);
-    entries.push(toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces));
+    entries.push(toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces, unreadOf));
   }
   return entries;
 }

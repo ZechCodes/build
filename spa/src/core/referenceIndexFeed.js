@@ -1,60 +1,110 @@
-// What fills the reference index (#229): the feed as core/taskFeed.js delivers
-// it, and every project's task list as the tracker has written it to the
-// cache. Each is a cache read and nothing else — the sync layer is the one
-// reader of the wire — and each write the cache announces is re-read, so a list
-// that lands after a paint still reaches every surface that subscribed to the
-// index (core/referenceIndex.js).
-//
-// The feed's subscription is handed in, so this runs without the app around it
-// (views/gate.js starts it beside the feed).
-
+// Cache-only reference sources. Point records are read only for explicitly
+// admitted mounted content; this feed never discovers or dispatches lookups.
 import { deviceKey } from "./deviceKey.js";
-import { cachedRecords, subscribeCache } from "./localCache.js";
-import { readTasksRecord, tasksAddress } from "./trackerCache.js";
+import { cachedRecords, readCached, readCachedMany, subscribeCache } from "./localCache.js";
+import { tasksAddress } from "./trackerCache.js";
+import { lastSayIn, readsAddress } from "./taskReadOrder.js";
+import { taskLookupAddress } from "./taskAggregateReads.js";
+import { subscribeTaskReferenceDemand } from "./taskReferenceDemand.js";
 import { holdReferenceSources } from "./referenceIndex.js";
 
-/**
- * Keep the index filled until the returned stop is called.
- *
- * `subscribeFeed` is core/taskFeed.js's: it hands every listener the merge of
- * every machine's records, now and on each change.
- */
+const positiveRead = (read) => Number.isSafeInteger(read) && read > 0 ? read : 0;
+
+function rowAuthority(cached, note) {
+  const own = note?.rows || {};
+  const spanRead = lastSayIn({ stretches: note?.stretches || [] });
+  const catalogueRead = positiveRead(cached?.value?.read_order);
+  return (row) => {
+    if (cached?.accepted) return 0;
+    const explicit = positiveRead(own[row.id]);
+    const span = spanRead(row);
+    // An unnoted rewrite cannot inherit an older span's observation. Explicit
+    // per-ID notes remain independent of a later unrelated catalogue maximum.
+    const coherentSpan = catalogueRead > 0 && catalogueRead <= span ? span : 0;
+    // Losing a newer span's lineage must not move a positive backward to an
+    // older explicit note and resurrect a point miss between those reads.
+    if (!coherentSpan && span > explicit) return 0;
+    return Math.max(explicit, coherentSpan);
+  };
+}
+
 export function feedReferenceIndex({ subscribeFeed }) {
   let feed = null;
   let stopped = false;
-  const tasks = {};
-  const reviews = {};
-  const watched = new Map(); // project key → its task list's cache subscription
-
+  const tasks = {}, taskLookups = {}, taskRowReads = {}, reviews = {};
+  const watched = new Map();
+  const points = new Map();
   const publish = () => {
-    if (!stopped) holdReferenceSources({ feed, tasks: { ...tasks }, reviews: { ...reviews } });
+    if (!stopped) holdReferenceSources({ feed, tasks: { ...tasks }, taskLookups: { ...taskLookups }, taskRowReads: { ...taskRowReads }, reviews: { ...reviews } });
   };
 
-  const reread = async (deviceId, projectId) => {
-    const record = await readTasksRecord(deviceId, projectId);
-    if (stopped || !Array.isArray(record?.tasks)) return;
-    tasks[deviceKey(deviceId, projectId)] = record.tasks;
-    publish();
-  };
-
-  const rereadReviews = async (deviceId, projectId) => {
-    const records = await cachedRecords({ deviceId, entityId: projectId, kind: "task-review" });
-    if (stopped) return;
-    reviews[deviceKey(deviceId, projectId)] = Object.fromEntries(records.map(({ address, value }) => [address.sub, value?.review]));
-    publish();
-  };
-
-  const watch = (project) => {
+  function watch(project) {
     const key = project.projectKey;
     if (!key || watched.has(key)) return;
     const { deviceId, id: projectId } = project;
-    const stopTasks = subscribeCache(tasksAddress(deviceId, projectId), () => void reread(deviceId, projectId));
-    const stopReviews = subscribeCache({ deviceId, entityId: projectId, kind: "task-review" }, () => void rereadReviews(deviceId, projectId));
-    watched.set(key, () => { stopTasks(); stopReviews(); });
-    void reread(deviceId, projectId);
-    void rereadReviews(deviceId, projectId);
-  };
+    const address = tasksAddress(deviceId, projectId);
+    let serial = 0, reviewSerial = 0;
+    const reread = async () => {
+      const read = ++serial;
+      const [cached, note] = await readCachedMany([address, readsAddress(address)]);
+      const record = cached?.value;
+      if (stopped || !watched.has(key) || read !== serial) return;
+      if (Array.isArray(record?.tasks)) tasks[key] = record.tasks;
+      else delete tasks[key];
+      const rowRead = rowAuthority(cached, note?.value);
+      taskRowReads[key] = Object.fromEntries((record?.tasks || []).map((row) => [row.number, rowRead(row)]));
+      publish();
+    };
+    const rereadReviews = async () => {
+      const read = ++reviewSerial;
+      const records = await cachedRecords({ deviceId, entityId: projectId, kind: "task-review" });
+      if (stopped || !watched.has(key) || read !== reviewSerial) return;
+      reviews[key] = Object.fromEntries(records.map(({ address, value }) => [address.sub, value?.review]));
+      publish();
+    };
+    const unsubscribes = [subscribeCache(address, () => void reread()), subscribeCache(readsAddress(address), () => void reread()),
+      subscribeCache({ deviceId, entityId: projectId, kind: "task-review" }, () => void rereadReviews())];
+    watched.set(key, () => { serial += 1; reviewSerial += 1; unsubscribes.forEach((unsubscribe) => unsubscribe()); });
+    void reread();
+    void rereadReviews();
+  }
 
+  function watchPoint(scope, number) {
+    const address = taskLookupAddress(scope, number);
+    const key = JSON.stringify(address);
+    if (points.has(key)) return;
+    const owner = deviceKey(scope.deviceId, scope.projectId);
+    let serial = 0;
+    const reread = async () => {
+      const read = ++serial;
+      const record = await readCached(address);
+      if (stopped || !points.has(key) || read !== serial) return;
+      const result = record?.value?.result;
+      if (!result) return; // Refusal, reservation and cache failure retain known answers.
+      taskLookups[owner] = { ...taskLookups[owner], [number]: { ...result, published_result_read_order: record.value.published_result_read_order } };
+      publish();
+    };
+    points.set(key, { owner, number, unsubscribe: () => { serial += 1; unsubscribe(); } });
+    const unsubscribe = subscribeCache(address, () => void reread());
+    void reread();
+  }
+
+  const unsubscribeDemand = subscribeTaskReferenceDemand((demands) => {
+    const wanted = new Set(demands.flatMap(({ scope, numbers }) => numbers.map((number) => JSON.stringify(taskLookupAddress(scope, number)))));
+    let removed = false;
+    for (const [key, point] of points) {
+      if (wanted.has(key)) continue;
+      point.unsubscribe();
+      points.delete(key);
+      const retained = { ...taskLookups[point.owner] };
+      delete retained[point.number];
+      if (Object.keys(retained).length) taskLookups[point.owner] = retained;
+      else delete taskLookups[point.owner];
+      removed = true;
+    }
+    if (removed) publish();
+    for (const { scope, numbers } of demands) for (const number of numbers) watchPoint(scope, number);
+  });
   const unsubscribeFeed = subscribeFeed((next) => {
     if (stopped) return;
     feed = next;
@@ -65,7 +115,10 @@ export function feedReferenceIndex({ subscribeFeed }) {
   return () => {
     stopped = true;
     unsubscribeFeed();
+    unsubscribeDemand();
     watched.forEach((unsubscribe) => unsubscribe());
+    points.forEach((point) => point.unsubscribe());
     watched.clear();
+    points.clear();
   };
 }

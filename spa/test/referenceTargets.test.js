@@ -89,7 +89,7 @@ describe("a reference in a chat message", () => {
     expect(anchors(html)).toEqual([]);
     expect(hostOf(html).textContent).toContain("@workspace:no-such-workspace");
     expect(hostOf(html).textContent).toContain("#9999");
-    expect(hostOf(html).querySelectorAll(".md-ref-missing")).toHaveLength(2);
+    expect(hostOf(html).querySelectorAll(".md-ref-missing")).toHaveLength(1);
   });
 
   // A message explaining the syntax is mostly examples.

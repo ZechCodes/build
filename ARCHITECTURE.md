@@ -1106,7 +1106,11 @@ and its controls are
   (`add_hoisted_column`) and the tests' old-version fixtures. The substantive steps live beside
   their tables: `migrate_agents_to_v6` in `bridge/src/store/entities.rs` and
   `ensure_operation_receipt_columns` in `bridge/src/store/operations.rs`. The
-  store refuses to open a newer schema.
+  store refuses to open a newer schema. Task-summary initialization and its
+  completion marker run during Store startup before the writer and read pool are
+  published. Concurrent normal daemon opens of the same store are unsupported;
+  there is no single-instance lock here that makes them impossible. Backup is a
+  separate supported open and must not run startup maintenance.
 - **JSON files**: projects and settings in `~/.build/config.json`
   (`bridge/src/app/config/`), the device identity in `~/.build/identity.json`
   (`bridge/src/identity.rs`), workspace manifests `.build-workspace.json`

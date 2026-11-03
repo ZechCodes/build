@@ -92,7 +92,7 @@ describe("the adapter a greeting selects", () => {
       forTask: false, taskChoices: false, linkedTaskChoices: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
       // A greeting that names no task feature carries none of them.
-      tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
+      tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, counts: false, lookup: false, listWatched: false, listAttention: false, listLinkedWorkspace: false, listTracked: false, listReviewMode: false, listOrder: false, listReadiness: false, listExcludeAssignee: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
       compaction: { harnessThresholds: false },
       conversations: { settings: false, reset: false },
       github: { repos: false },

@@ -1,25 +1,56 @@
 // Request-review task choices keep the project catalogue separate from their
 // bounded query pages. Every option is read back from cache after a pull.
 import { cachedAddresses, readCachedMany } from "./localCache.js";
-import { TRACKER_TASK_KIND, TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, readTasksQueryRecord, writeTasksQueryRecord } from "./trackerCache.js";
-import { nextTaskRead } from "./taskReadOrder.js";
+import { TRACKER_TASK_KIND, TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND } from "./trackerCache.js";
+import { TASK_SUMMARY_KIND, beginSummaryQuery, landSummaryPage, readSummaryQuery, summaryQueryAddress } from "./taskSummaryCache.js";
+import { canonicalSummaryFilters } from "./taskSummaryQuery.js";
+import { captureTaskContentRead, TASK_CONTENT_CACHE } from "./taskContentAuthority.js";
+import { taskMutationEpoch, taskMutationsPending } from "./taskMutationFence.js";
 
-const listKinds = new Set([TRACKER_TASK_KIND, TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, "task-review"]);
+const listKinds = new Set([TRACKER_TASK_KIND, TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TASK_SUMMARY_KIND, "task-review"]);
 const eligible = (task, projectId) => task.state === "open" && !task.review_summary && (!task.project_id || task.project_id === projectId);
-const newest = (held, next) => !held || (Date.parse(next.updated_at) || 0) >= (Date.parse(held.updated_at) || 0);
 export const reviewTaskQuery = (scope) => ({ project_id: scope.projectId, summary: true, state: "open" });
 const linkedQuery = (scope) => ({ ...reviewTaskQuery(scope), linked_workspace_id: scope.workspaceId });
+const filtersOf = ({ project_id: _project, summary: _summary, ...filters }) => canonicalSummaryFilters(filters);
+const incomplete = () => ({ complete: false, blocked: true });
 
+function newerChoice(held, task, normalized, read) {
+  if (read !== held.read) return read > held.read;
+  if (normalized !== held.normalized) return normalized;
+  // Migrated legacy-only records have no issued order. Retain dev's
+  // fallback there; it never outranks an admitted normalized header.
+  return normalized || read > 0 || (Date.parse(task.updated_at) || 0) >= (Date.parse(held.task.updated_at) || 0);
+}
+
+function selectChoice(tasks, task, normalized) {
+  const read = task[TASK_CONTENT_CACHE]?.header?.read_order || 0;
+  const held = tasks.get(task.id);
+  if (!held || newerChoice(held, task, normalized, read)) {
+    tasks.set(task.id, { task, read, normalized });
+  }
+}
+
+function linkedChoice(source, linked) {
+  const { matched_memberships: _memberships, ...task } = source.task;
+  return linked?.snapshot_membership_current === true && linked.ids.includes(task.id)
+    ? { ...task, matched_memberships: linked.row_fields?.[task.id]?.matched_memberships } : task;
+}
+
+/** Prefer admitted header read orders, then filter eligibility. Legacy-only
+ * cached options remain available before a normalized page has been loaded. */
 export async function readReviewTaskChoices(scope) {
   const addresses = (await cachedAddresses({ deviceId: scope.deviceId, entityId: scope.projectId })).filter((address) => listKinds.has(address.kind));
-  const records = await readCachedMany(addresses);
+  const [records, linked] = await Promise.all([readCachedMany(addresses),
+    scope.workspaceId ? readSummaryQuery(scope, filtersOf(linkedQuery(scope))) : null]);
   const tasks = new Map();
-  for (const record of records.filter(Boolean).sort((a, b) => a.at - b.at)) {
+  const sources = records.map((record, index) => record && { ...record, address: addresses[index] });
+  for (const record of sources.filter(Boolean).sort((a, b) => a.at - b.at)) {
     const rows = record.value?.task ? [record.value.task] : record.value?.tasks || [];
-    for (const task of rows) if (newest(tasks.get(task.id), task)) tasks.set(task.id, task);
+    for (const task of rows) selectChoice(tasks, task, record.address.kind === TASK_SUMMARY_KIND);
   }
   const reviews = new Set(records.filter((record) => record?.value?.review).map((record) => record.value.review.task_id));
-  return [...tasks.values()].filter((task) => !reviews.has(task.id) && eligible(task, scope.projectId)).sort((a, b) => b.number - a.number);
+  return [...tasks.values()].map((source) => linkedChoice(source, linked))
+    .filter((task) => !reviews.has(task.id) && eligible(task, scope.projectId)).sort((a, b) => b.number - a.number);
 }
 
 export function preselectedReviewTask(context, tasks) {
@@ -27,50 +58,82 @@ export function preselectedReviewTask(context, tasks) {
   return tasks.find((task) => task.links?.workspace_ids?.includes(workspaceId) || task.matched_memberships?.linked_workspace_id === workspaceId)?.id || "";
 }
 
+/** The loaded normalized query, including its cursor and stale/complete flags. */
 export async function readReviewTaskPage(scope) {
-  return readTasksQueryRecord(scope.deviceId, scope.projectId, reviewTaskQuery(scope));
+  return readSummaryQuery(scope, filtersOf(reviewTaskQuery(scope)));
 }
 
-async function readTaskChoicesPage(scope, params) {
-  const { contextFor, whenGreeted } = await import("./deviceContexts.js");
+async function pullChoicePage(scope, params, cursor, active) {
+  const { contextFor, deviceContextIdentity, whenGreeted } = await import("./deviceContexts.js");
+  const { deviceSession } = await import("./deviceReconnect.js");
   const context = contextFor(scope.deviceId);
-  if (!context) return scope.callRpc("tasks.list", params);
-  const request = await whenGreeted(context, () => {
+  const identity = deviceContextIdentity(scope.deviceId), session = deviceSession(scope.deviceId);
+  const epoch = taskMutationEpoch(scope.deviceId);
+  const accept = () => active() && contextFor(scope.deviceId) === context
+    && deviceContextIdentity(scope.deviceId) === identity && deviceSession(scope.deviceId) === session
+    && taskMutationEpoch(scope.deviceId) === epoch && taskMutationsPending(scope.deviceId) === 0;
+  if (!context) return publishChoicePage(scope, params, cursor, accept);
+  const request = await whenGreeted(context, (stands) => {
     const support = context.adapter?.capabilities?.reviews;
     if (!support?.taskChoices || params.linked_workspace_id && !support.linkedTaskChoices) throw new Error("Update the bridge to choose review tasks.");
-    return scope.callRpc("tasks.list", params);
+    return publishChoicePage(scope, params, cursor, () => accept() && context.active() && stands());
   });
   if (!request) throw new Error("This machine is unavailable.");
   return request.sent;
 }
 
-async function pullChoicePage(scope, params, cursor, active) {
-  const read = await nextTaskRead();
-  const answer = await readTaskChoicesPage(scope, { ...params, limit: 100, ...(cursor ? { cursor } : {}) });
-  if (!active()) return null;
-  const prior = cursor ? await readTasksQueryRecord(scope.deviceId, scope.projectId, params) : null;
-  const tasks = new Map((prior?.tasks || []).map((task) => [task.id, task]));
-  for (const task of answer.tasks || []) tasks.set(task.id, task);
-  await writeTasksQueryRecord(scope.deviceId, scope.projectId, params, { tasks: [...tasks.values()], next_cursor: answer.next_cursor || null, read_order: read });
-  return readTasksQueryRecord(scope.deviceId, scope.projectId, params);
+async function choiceTicket(scope, filters, cursor, contentRead, accept) {
+  if (!cursor) return beginSummaryQuery(scope, filters, contentRead.readOrder, { contentRead, accept });
+  const held = await readSummaryQuery(scope, filters);
+  if (!held || held.refreshing || held.complete || held.next_cursor !== cursor) return null;
+  if (held.stale && held.snapshot_continuation_eligible !== true) return null;
+  return { scope, filters, address: summaryQueryAddress(scope, filters), generation: held.generation, cursor, contentRead };
+}
+
+async function publishedChoicePage(scope, filters, ticket, read) {
+  const page = await readSummaryQuery(scope, filters);
+  if (!page || page.refreshing || page.generation !== ticket.generation || page.observed_read_order !== read) return incomplete();
+  return { complete: true, page };
+}
+
+async function publishChoicePage(scope, params, cursor, accept) {
+  if (!accept()) return incomplete();
+  const contentRead = await captureTaskContentRead(scope, { revalidate: "summary" });
+  const filters = filtersOf(params);
+  const ticket = await choiceTicket(scope, filters, cursor, contentRead, accept);
+  if (!ticket || !accept()) return incomplete();
+  const answer = await scope.callRpc("tasks.list", { ...params, limit: 100, ...(cursor ? { cursor } : {}) });
+  if (!accept()) return incomplete();
+  if (cursor && answer.next_cursor === cursor) return { ...incomplete(), stalled: true };
+  const complete = await landSummaryPage(ticket, answer, { read: contentRead.readOrder, accept });
+  return complete ? publishedChoicePage(scope, filters, ticket, contentRead.readOrder) : incomplete();
 }
 
 async function refreshLinkedChoices(scope, active, changed) {
   let cursor = null;
   do {
-    const page = await pullChoicePage(scope, linkedQuery(scope), cursor, active);
-    if (!page) return;
+    const outcome = await pullChoicePage(scope, linkedQuery(scope), cursor, active);
+    if (!outcome.complete && !outcome.stalled) return outcome;
     await changed();
-    const next = page.next_cursor;
+    const next = outcome.stalled ? cursor : outcome.page.next_cursor;
     if (next === cursor) break;
     cursor = next;
   } while (cursor && active());
+  return { complete: true };
 }
 
+/** Linked pages retain automatic continuation; ordinary pages remain demand
+ * driven. complete reports admitted publication, not exhausted membership.
+ * Refused publications return incomplete; unavailable greetings and
+ * RPC/protocol failures reject. */
 export async function refreshReviewTaskChoices(scope, support, active, changed, cursor = null) {
-  if (!support.taskChoices) return;
-  if (!cursor && support.linkedTaskChoices) await refreshLinkedChoices(scope, active, changed);
-  if (!active()) return;
-  await pullChoicePage(scope, reviewTaskQuery(scope), cursor, active);
-  if (active()) await changed();
+  if (!support.taskChoices) return incomplete();
+  if (!cursor && support.linkedTaskChoices) {
+    const linked = await refreshLinkedChoices(scope, active, changed);
+    if (!linked.complete) return linked;
+  }
+  if (!active()) return incomplete();
+  const outcome = await pullChoicePage(scope, reviewTaskQuery(scope), cursor, active);
+  if (outcome.complete && active()) await changed();
+  return outcome;
 }

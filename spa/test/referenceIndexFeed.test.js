@@ -21,7 +21,7 @@ beforeEach(async () => {
 });
 
 let stop = () => {};
-afterEach(() => stop());
+afterEach(() => { stop(); vi.restoreAllMocks(); });
 
 /** A feed that delivers when told, the way core/taskFeed.js does. */
 function feedSource() {
@@ -72,7 +72,6 @@ describe("the reference index's feed", () => {
   });
 });
 
-
 it("resolves omitted review directories from cached metadata, including later writes", async () => {
   await cache.writeCached(tracker.tasksAddress("dev-1", "proj-1"), { tasks: [{ id: "task-1", number: 1 }] });
   const address = { deviceId: "dev-1", entityId: "proj-1", kind: "task-review", sub: "task-1" };
@@ -86,4 +85,31 @@ it("resolves omitted review directories from cached metadata, including later wr
   expect(html).toContain('href="#/device/dev-1/project/proj-1/tasks/task-1/review/r3/all/dir-1/src/a.js?side=old&amp;line=42"');
   await cache.writeCached(address, { review: { snapshots: [{ number: 3, directories: [{ id: "dir-2" }] }] } });
   await vi.waitFor(() => expect(index.referenceResolver({ place }).review(1, 3, undefined, "src/a.js")?.directoryId).toBe("dir-2"));
+});
+
+it("keeps newer review directory metadata when an older cache reread finishes late", async () => {
+  await cache.writeCached(tracker.tasksAddress("dev-1", "proj-1"), { tasks: [{ id: "task-1", number: 1 }] });
+  const address = { deviceId: "dev-1", entityId: "proj-1", kind: "task-review", sub: "task-1" };
+  const review = (id) => ({ review: { snapshots: [{ number: 3, directories: [{ id }] }] } });
+  await cache.writeCached(address, review("dir-old"));
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  const read = cache.cachedRecords;
+  const rereads = vi.spyOn(cache, "cachedRecords").mockImplementationOnce(async (...args) => {
+    const records = await read(...args);
+    entered.resolve();
+    await release.promise;
+    return records;
+  });
+  const source = feedSource();
+  stop = feedIndex({ subscribeFeed: source.subscribeFeed });
+  source.deliver(feed);
+  await entered.promise;
+  try {
+    await cache.writeCached(address, review("dir-new"));
+    const resolve = () => index.referenceResolver({ place }).review(1, 3, undefined, "src/a.js");
+    await vi.waitFor(() => expect(resolve()?.directoryId).toBe("dir-new"));
+    release.resolve();
+    await rereads.mock.results[0].value;
+    expect(resolve()?.directoryId).toBe("dir-new");
+  } finally { release.resolve(); }
 });

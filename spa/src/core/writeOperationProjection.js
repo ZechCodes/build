@@ -37,11 +37,28 @@ export function requiredPublication(operation) {
 
 export function layerPublished(operation, records) {
   if (operation.state !== "succeeded") return false;
+  if (pendingOwnedRefresh(operation)) return false;
   const required = requiredPublication(operation);
   const effects = operation.overlay || [];
   return effects.length > 0 && effects.every(({ address }) =>
     publicationCovers(records.get(recordKey(address))?.publication || [], required));
 }
+
+function pendingOwnedRefresh(operation) {
+  const state = operation.refreshState;
+  if (operation.refreshPending !== true || state?.version !== 1) return false;
+  return currentOwnedRefresh(operation, state) && Array.isArray(state.targets)
+    && state.targets.length > 0 && state.targets.every(exactRefreshTarget);
+}
+
+function currentOwnedRefresh(operation, state) {
+  if (operation.namespace !== operationNamespace(operation) || !operation.operationId) return false;
+  return state.revision === operation.revision && operation.confirmation?.revision === operation.revision
+    && typeof state.generation === "string" && state.generation.length > 0
+    && JSON.stringify(state.required) === JSON.stringify(requiredPublication(operation));
+}
+
+const exactRefreshTarget = (target) => Boolean(target.address && target.key === recordKey(target.address));
 
 const valueAtPath = (value, path) => path.reduce((held, part) => held?.[part], value);
 

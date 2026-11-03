@@ -335,3 +335,152 @@ fn maximum_opaque_agent_choice_pages_and_round_trips_without_restricting_ids() {
         );
     }
 }
+
+fn assert_pending_wire_fact(row: &Value, state: Option<&str>, assigned: bool) {
+    let assignee = if assigned {
+        json!({"kind":"agent","agent_id":"Actual\0suffix"})
+    } else {
+        Value::Null
+    };
+    assert_eq!(row["assignee"], assignee, "{row}");
+    let expected_state = match state {
+        Some("provisioning") => Some("queued"),
+        Some(state @ ("waiting" | "queued" | "failed")) => Some(state),
+        _ => None,
+    };
+    match expected_state {
+        Some(state) => {
+            assert!(row["deferred_assignment"].is_object(), "{row}");
+            assert_eq!(row["deferred_assignment"]["state"], state, "{row}");
+        }
+        None => assert!(row["deferred_assignment"].is_null(), "{row}"),
+    }
+}
+
+type PendingWireCase = (Task, Option<&'static str>, Value, bool);
+
+fn import_pending_wire_cases(
+    app: &AppState,
+    project: &str,
+    connection: &rusqlite::Connection,
+) -> Vec<PendingWireCase> {
+    let mut cases = Vec::new();
+    for state in [
+        None,
+        Some("waiting"),
+        Some("queued"),
+        Some("provisioning"),
+        Some("failed"),
+        Some("consumed"),
+        Some("cancelled"),
+    ] {
+        for target in [Value::Null, json!({}), json!({"kind":""})] {
+            for assigned in [false, true] {
+                let task = seed(
+                    app,
+                    project,
+                    assigned.then_some("Actual\0suffix"),
+                    "api",
+                    "backlog",
+                );
+                if let Some(state) = state {
+                    let id = format!("wire-intent-{}", task.number);
+                    // Import complete typed canonical metadata into the isolated
+                    // fixture, then use the supported projection repair surface.
+                    // API assignment admission rejects malformed targets; read
+                    // semantics still preserve an already-saved Value target.
+                    let intent = crate::store::DeliveryIntent {
+                        id: id.clone(),
+                        task_id: task.id.clone(),
+                        project_path: task.project_path.clone(),
+                        generation: 1,
+                        target: target.clone(),
+                        actor: Actor::User,
+                        sender: None,
+                        note: None,
+                        operation_id: format!("wire-operation-{}", task.number),
+                        state: state.into(),
+                        reservation: Value::Null,
+                        admitted: None,
+                        error: None,
+                    };
+                    connection.execute("INSERT INTO tracker_delivery_intents(id,task_id,project_key,generation,operation_id,state,record) VALUES(?1,?2,?3,1,?4,?5,?6)",
+                        rusqlite::params![id,task.id,task.project_path,intent.operation_id,state,serde_json::to_string(&intent).unwrap()]).unwrap();
+                }
+                cases.push((task, state, target.clone(), assigned));
+            }
+        }
+    }
+    cases
+}
+
+fn assert_pending_wire_lists(app: &mut AppState, project: &str, cases: &[PendingWireCase]) {
+    for summary in [false, true] {
+        let answer = call(
+            app,
+            "tasks.list",
+            json!({"project_id":project,"summary":summary,"limit":100}),
+        );
+        assert!(answer.get("next_cursor").is_none());
+        let rows = answer["tasks"].as_array().unwrap();
+        assert_eq!(rows.len(), cases.len());
+        for (task, state, target, assigned) in cases {
+            let row = rows.iter().find(|row| row["id"] == task.id).unwrap();
+            assert_pending_wire_fact(row, *state, *assigned);
+            if !summary && row["deferred_assignment"].is_object() {
+                assert_eq!(row["deferred_assignment"]["target"], *target);
+            }
+        }
+    }
+}
+
+fn assert_pending_wire_gets(app: &mut AppState, cases: &[PendingWireCase]) {
+    for (task, state, target, assigned) in cases {
+        let answer = call(app, "tasks.get", json!({"task_id":task.id}));
+        let row = &answer["task"];
+        assert_pending_wire_fact(row, *state, *assigned);
+        if row["deferred_assignment"].is_object() {
+            assert_eq!(row["deferred_assignment"]["target"], *target);
+        }
+    }
+}
+
+#[test]
+fn pending_presence_wire_survives_null_and_missing_kind_across_list_get_summary() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let connection = rusqlite::Connection::open(root.path().join("store/build.db")).unwrap();
+    let cases = import_pending_wire_cases(&app, &project, &connection);
+    let ids = cases
+        .iter()
+        .map(|(task, ..)| task.id.clone())
+        .collect::<Vec<_>>();
+    app.tracker_store()
+        .unwrap()
+        .repair_task_summaries(&ids)
+        .unwrap();
+    assert_pending_wire_lists(&mut app, &project, &cases);
+    assert_pending_wire_gets(&mut app, &cases);
+    for want in [
+        json!("any"),
+        json!("none"),
+        json!({"kind":"agent","agent_id":"Actual\0suffix"}),
+    ] {
+        let expected = cases
+            .iter()
+            .filter(|(_, state, _, assigned)| {
+                let pending = matches!(
+                    state,
+                    Some("waiting" | "queued" | "provisioning" | "failed")
+                );
+                match want.as_str() {
+                    Some("any") => *assigned || pending,
+                    Some("none") => !*assigned && !pending,
+                    _ => *assigned,
+                }
+            })
+            .map(|(task, ..)| task.id.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(selected(&mut app, &project, "assignee", want), expected);
+    }
+}

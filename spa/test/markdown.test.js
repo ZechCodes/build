@@ -180,6 +180,7 @@ describe("references an agent writes", () => {
       items: [],
     },
     tasks: { "d1/p1": [{ id: "i-42", number: 42, title: "Rebuild" }] },
+    taskLookups: { "d1/p1": { 999: { status: "missing", published_result_read_order: 1 } } },
   }));
   afterEach(() => holdReferenceSources({}));
 
@@ -240,6 +241,7 @@ describe("the modes of the one renderer", () => {
   beforeEach(() => holdReferenceSources({
     feed: { projects: [], workspaces: [{ id: "ws-1", workspace_id: "ws-1", name: "board", projectKey: "d1/p1" }], items: [] },
     tasks: { "d1/p1": [{ id: "i-42", number: 42, title: "Rebuild" }] },
+    taskLookups: { "d1/p1": { 999: { status: "missing", published_result_read_order: 1 } } },
   }));
   afterEach(() => holdReferenceSources({}));
 

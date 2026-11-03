@@ -1,12 +1,16 @@
 // The project Tasks tab's count (#104): "For the project it is all unreads" —
 // the unread of every watched task in the project that is not finished
-// (#183), read off its cached list and task details (core/taskUnread.js).
+// (#183), from authoritative cached counts when available. Older bridges use
+// the cached list and task details (core/taskUnread.js).
 //
 // A task page's accepted read updates its detail before the list refreshes.
-// Follow both records so this badge agrees with Inbox throughout that gap.
+// The legacy path follows both records so its badge agrees with Inbox in that gap.
 // Cache announcements supply every update; this follower asks for no reads.
+// Once a capable device has supplied authoritative project totals, those totals
+// own the badge; loaded task pages never reconstruct or adjust an aggregate.
 
 import { subscribeCache } from "./localCache.js";
+import { createTaskCountFollower } from "./taskCountFollower.js";
 import { tasksAddress, readTasksRecord } from "./trackerCache.js";
 import { countsInTotals, watchedTasksUnread } from "./taskUnread.js";
 import { createTrackerTaskDetailsFeed } from "./trackerTaskDetailsFeed.js";
@@ -22,13 +26,24 @@ export function followProjectTasksUnread(onChange = () => {}) {
   function stop() {
     standing?.unsubscribe();
     standing?.details.dispose();
+    standing?.aggregate.dispose();
     standing = null;
   }
 
   function recount(current) {
     if (standing !== current) return;
+    const aggregate = current.aggregate.read();
+    if (current.aggregate.supported() && aggregate !== null) current.authoritative = true;
+    if (current.authoritative) {
+      if (aggregate !== null) updateCount(current, aggregate.watched_unread_total);
+      return;
+    }
     const details = current.details.read();
     const count = watchedTasksUnread(current.tasks, { detailOf: (task) => details.get(task.id) });
+    updateCount(current, count);
+  }
+
+  function updateCount(current, count) {
     if (count === current.count) return;
     current.count = count;
     onChange();
@@ -41,6 +56,9 @@ export function followProjectTasksUnread(onChange = () => {}) {
     if (!key) return;
     const current = { key, count: 0, reads: 0, tasks: [], unsubscribe: () => {} };
     standing = current;
+    current.aggregate = createTaskCountFollower({
+      scope: { deviceId, projectId }, onChange: () => recount(current),
+    });
     current.details = createTrackerTaskDetailsFeed({
       deviceId, projectId, onChange: () => recount(current),
     });

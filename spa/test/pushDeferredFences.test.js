@@ -170,7 +170,7 @@ it("retains the source removal fence for a final project review read", async () 
 
 it("commits a user assignment while both background workers and queued enrichment are held", async () => {
   const held = gate(), previous = context.rpc.getMockImplementation();
-  const task = { id: "task-user", project_id: "p1", title: "Assigned immediately", status: "ready",
+  const task = { id: "task-user", project_id: "p1", title: "Assigned immediately", body: "Assigned body", watched: false, done_at: null, deferred_assignment: null, read_through: null, dismissed_through: null, status: "ready",
     assignee: { kind: "agent", agent_id: "agent-0" }, updated_at: "2026-10-25T00:00:00Z" };
   context.rpc.mockClear();
   context.rpc.mockImplementation((method, params) => {
@@ -187,7 +187,8 @@ it("commits a user assignment while both background workers and queued enrichmen
     const actions = createTaskWaitingOnActions({ deviceId: "dev-1", projectId: "p1", taskId: task.id, call: context.rpc });
     await actions.assign({ assignee: task.assignee });
     expect(context.rpc.mock.calls.some(([method]) => method === "tasks.assign")).toBe(true);
-    expect((await cache.readCached(address("p1", "tracker-task", task.id)))?.value.task).toEqual(task);
+    const saved = (await cache.readCached(address("p1", "tracker-task", task.id)))?.value.task;
+    expect(Object.fromEntries(Object.entries(saved).filter(([key]) => !key.startsWith("__")))).toEqual(task);
     expect(sync.pushWorkInFlight("dev-1").backgroundRunning).toBe(2);
     expect(sync.pushWorkInFlight("dev-1").backgroundPending).toBeGreaterThan(0);
   } finally { held.release({ tasks: [] }); await blockers; await queued; }

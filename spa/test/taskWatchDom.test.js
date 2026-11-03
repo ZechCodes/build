@@ -13,7 +13,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { columns, comment, event, task } from "./trackerWireFixture.js";
+import { columns, comment, event, task as wireTask } from "./trackerWireFixture.js";
+const task = (over = {}) => wireTask({ project_id: "proj-1", ...over });
 
 let watchers = [];
 vi.mock("../src/core/changeEvents.js", () => ({
@@ -104,6 +105,10 @@ beforeEach(async () => {
   };
   call = vi.fn(async (method) => {
     if (refuses === method) throw new Error("the bridge said no");
+    if (method === "tasks.watch" || method === "tasks.unwatch") {
+      answer.task = { ...answer.task, watched: method === "tasks.watch" };
+      return { task: answer.task };
+    }
     return method === "tasks.get" ? answer : {};
   });
 });
@@ -185,6 +190,7 @@ describe("the watch switch", () => {
     await mount();
     const field = host.querySelector("#task-comment");
     field.value = "half a thought";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
     field.focus();
     button().click();
     await flush();

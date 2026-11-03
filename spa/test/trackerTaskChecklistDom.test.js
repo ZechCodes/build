@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { createHash, webcrypto } from "node:crypto";
-import { columns, comment, task } from "./trackerWireFixture.js";
+import { columns, comment, task as wireTask } from "./trackerWireFixture.js";
+const task = (over = {}) => wireTask({ project_id: "proj-1", ...over });
 
 let watchers = [];
 vi.mock("../src/core/changeEvents.js", () => ({
@@ -17,10 +18,11 @@ vi.mock("../src/core/deviceReconnect.js", () => ({
   deviceSession: () => null,
   deviceWatch: () => ({ away: () => true, reconnecting: () => true, moved: () => () => {} }),
 }));
-vi.mock("../src/core/deviceContexts.js", async (original) => ({
-  ...await original(), contextFor: () => ({}),
-  whenGreeted: async (_context, dispatch) => ({ sent: dispatch(() => true), stands: () => true }),
-}));
+vi.mock("../src/core/deviceContexts.js", async (original) => {
+  const context = { active: () => true };
+  return { ...await original(), contextFor: () => context,
+    whenGreeted: async (_context, dispatch) => ({ sent: dispatch(() => true), stands: () => true }) };
+});
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
 
@@ -65,8 +67,11 @@ beforeEach(async () => {
   host = document.querySelector("#pane");
   cache = await import("../src/core/trackerCache.js");
   saved = wire();
-  await cache.writeTaskRecord(DEVICE, PROJECT, TASK, saved);
-  await cache.writeTasksRecord(DEVICE, PROJECT, cache.tasksRecord([saved.task], columns()));
+  const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+  const contentRead = await captureTaskContentRead(cache.taskAddress(DEVICE, PROJECT, TASK), { revalidate: "full" });
+  await cache.writeTaskRecord(DEVICE, PROJECT, TASK, saved, { contentRead });
+  const listRead = await captureTaskContentRead(cache.tasksAddress(DEVICE, PROJECT), { revalidate: "full" });
+  await cache.writeTasksRecord(DEVICE, PROJECT, cache.tasksRecord([saved.task], columns()), { contentRead: listRead });
   const { rememberTaskChecklistSupport } = await import("../src/core/taskChecklistSupport.js");
   await rememberTaskChecklistSupport(DEVICE, { tasks: { bodyPrecondition: true } });
   call = vi.fn((method, params) => {
@@ -272,7 +277,9 @@ it.each(["edge addition", "saved assignment"])("a pre-mutation detail read canno
   const waiting = await import("../src/core/taskWaitingOnCache.js");
   const next = { ...saved.task, dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } };
   if (kind === "saved assignment") next.deferred_assignment = { id: "saved-assignment", state: "waiting", assignee: { kind: "user" }, user_note: "Continue after release" };
-  await waiting.cacheTaskWaitingOnResponse(DEVICE, PROJECT, { task: next });
+  const { captureTaskContentRead } = await import("../src/core/taskContentAuthority.js");
+  const contentRead = await captureTaskContentRead({ deviceId: DEVICE, projectId: PROJECT });
+  await waiting.cacheTaskWaitingOnResponse(DEVICE, PROJECT, { task: next }, { contentRead, issuedRead: contentRead.readOrder });
   const admission = vi.spyOn(cache, "writeTaskRecord");
   reads[0].resolve(saved);
   await vi.waitFor(() => expect(admission).toHaveBeenCalled());

@@ -110,14 +110,16 @@ async function dispatchTaskAction(authority, method, params, readThrough) {
   if (!authority.accept()) throw new Error("This task's session changed before sending the action.");
   const answer = await authority.callRpc(method, params);
   if (!authority.accept()) throw new Error("This task's session changed while the action was running.");
+  if (readThrough !== undefined && !answer?.task?.id) {
+    await advanceTaskReadThrough(authority.deviceId, authority.projectId, authority.taskId, readThrough,
+      { accept: authority.accept, issuedRead });
+    return answer;
+  }
   if (answer && Object.hasOwn(answer, "task")) {
     matchingTaskAction(answer.task, authority);
     await cacheTaskWaitingOnResponse(authority.deviceId, authority.projectId, { task: answer.task }, {
       accept: authority.accept, issuedRead, contentRead,
     });
-  } else if (readThrough !== undefined) {
-    await advanceTaskReadThrough(authority.deviceId, authority.projectId, authority.taskId, readThrough,
-      { accept: authority.accept, issuedRead });
   }
   return answer;
 }

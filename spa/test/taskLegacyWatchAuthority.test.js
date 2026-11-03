@@ -52,3 +52,25 @@ it("protects an in-flight watch intent and admits the next covering read after s
   expect(await publish(full({ read_through: "tc-20", unread_count: 0 }))).toMatchObject({
     watch_uncertain: false, needs_unread_refresh: false, task: { watched: true, unread_count: 0 } });
 });
+
+it("admits an omitted native false watch value from a covering summary page", async () => {
+  const read = await content.captureTaskContentRead(scope, { revalidate: "summary" });
+  const ticket = await summaries.beginSummaryQuery(scope, {}, read.readOrder, { contentRead: read });
+  await summaries.landSummaryPage(ticket, { summary: true, basis: "native-unwatched", tasks: [
+    { id: taskId, project_id: scope.projectId, number: 1, title: "Unwatched" },
+  ], next_cursor: "next" }, { read: read.readOrder });
+  expect(await summaries.readSummaryQuery(scope, {})).toMatchObject({ stale: false, next_cursor: "next",
+    tasks: [{ watched: false }] });
+});
+
+it("keeps metadata initialization quiet while announcing real local watch changes", async () => {
+  const changed = vi.fn();
+  const stop = cache.subscribeCache(watch.taskWatchControlAddress(scope), changed);
+  try {
+    await publish(full());
+    expect(changed).not.toHaveBeenCalled();
+    const owner = await watch.beginTaskWatchMutation(scope, taskId, { watched: false, metadataOnly: true });
+    expect(changed).toHaveBeenCalled();
+    await watch.settleTaskWatchMutation(owner, { rollback: true });
+  } finally { stop(); }
+});

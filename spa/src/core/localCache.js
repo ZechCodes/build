@@ -550,12 +550,13 @@ export const DELETE_CACHED_RECORD = Symbol("delete cached record");
 
 // Optional onCommit is a local synchronous observer after verified commit,
 // before announcements. A committed no-op still returns the legacy false.
-export function mergeCachedRecordsTogether(addresses, merge, { onCommit } = {}) {
+// Metadata-only read allocations can suppress announcements with notify:false.
+export function mergeCachedRecordsTogether(addresses, merge, { onCommit, notify = true } = {}) {
   const keys = addresses.map(recordKey);
-  return inRecoveryWriteOrder(keys, () => mergeTogetherInStore(addresses, keys, merge, (record) => record, onCommit));
+  return inRecoveryWriteOrder(keys, () => mergeTogetherInStore(addresses, keys, merge, (record) => record, onCommit, notify));
 }
 
-function mergeTogetherInStore(addresses, keys, merge, handed, onCommit) {
+function mergeTogetherInStore(addresses, keys, merge, handed, onCommit, notify = true) {
   let changed = [];
   return wroteStore((store) => {
     changed = [];
@@ -594,7 +595,7 @@ function mergeTogetherInStore(addresses, keys, merge, handed, onCommit) {
       // before subscribers can ask again, without changing legacy booleans.
       try { onCommit?.(); }
       catch { /* Observer failure cannot suppress committed announcements. */ }
-      for (const key of changed) announce(partsOfKey(key));
+      if (notify) for (const key of changed) announce(partsOfKey(key));
     }
     return Boolean(committed && changed.length);
   });

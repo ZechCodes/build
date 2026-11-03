@@ -52,7 +52,7 @@ export async function nextTaskReadTicket(scope, { address } = {}) {
     if (!allocation) { invalid = true; return null; }
     ticket = { ...allocation.ticket, ...(address ? { written: recordWriteOf(baseline) } : {}) };
     return [...allocation.values, ...(address ? [null] : [])];
-  });
+  }, { notify: false });
   if (invalid) throw new Error("Invalid shared task content counter allocation");
   return committed ? ticket : null;
 }

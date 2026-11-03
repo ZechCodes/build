@@ -421,7 +421,7 @@ fn reject_review(
                     && opinion.snapshot_id == snapshot_id
             })
         })
-        .expect("a new deciding rejection exists");
+        .ok_or_else(|| invalid("rejection requires a new deciding verdict comment"))?;
     let (_, events) = complete_review_in_tx(
         tx,
         CompletionWrite {

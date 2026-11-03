@@ -430,21 +430,24 @@ CREATE TABLE IF NOT EXISTS review_branch_bindings (
     UNIQUE (repository_id, dedicated_ref),
     UNIQUE (receiving_repository, receiving_ref)
 );
--- One outstanding sync capture; retained after task closure for bounded recovery.
--- Revision hand-offs are enqueued with the saved revision, then retried by
+-- Revision hand-offs are enqueued with the saved revision, then settled by
 -- the daemon independently of connected clients.
 CREATE TABLE IF NOT EXISTS review_revision_dispatches (
     task_id TEXT NOT NULL,
     snapshot_id TEXT NOT NULL PRIMARY KEY,
     previous_snapshot_id TEXT NOT NULL,
     number INTEGER NOT NULL,
-    state TEXT NOT NULL DEFAULT 'pending',
+    recipient_agent_id TEXT,
+    state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','delivered','failed','superseded')),
     updated_at TEXT NOT NULL DEFAULT '',
     error TEXT
 );
 CREATE INDEX IF NOT EXISTS review_revision_dispatches_pending
     ON review_revision_dispatches(state, updated_at, snapshot_id);
+CREATE INDEX IF NOT EXISTS review_revision_dispatches_delivered
+    ON review_revision_dispatches(task_id, recipient_agent_id, number DESC) WHERE state='delivered';
 
+-- One outstanding sync capture; retained after task closure for bounded recovery.
 CREATE TABLE IF NOT EXISTS review_sync_candidates (
     task_id TEXT PRIMARY KEY,
     snapshot_id TEXT NOT NULL UNIQUE

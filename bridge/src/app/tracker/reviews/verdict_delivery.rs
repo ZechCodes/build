@@ -15,9 +15,10 @@ impl AppState {
         let Some(store) = self.store.clone() else {
             return Ok(());
         };
-        let deliveries = store
-            .pending_review_verdict_deliveries(DELIVERY_PAGE)
+        let (deliveries, next) = store
+            .review_verdict_delivery_page(DELIVERY_PAGE, self.review_verdict_poll_after)
             .map_err(|error| error.to_string())?;
+        self.review_verdict_poll_after = next;
         for delivery in deliveries {
             if let Err(error) = self.deliver_review_verdict(&delivery) {
                 store
@@ -64,12 +65,7 @@ impl AppState {
                 OperationStatus::Delivered => Err(receipt
                     .execution_error
                     .unwrap_or_else(|| "Verdict delivery failed.".into())),
-                OperationStatus::Queued | OperationStatus::Claimed => {
-                    self.tracker_store()?
-                        .bind_review_verdict_delivery(&delivery.comment_id, &receipt.agent_id)
-                        .map_err(|error| error.to_string())?;
-                    Ok(())
-                }
+                OperationStatus::Queued | OperationStatus::Claimed => Ok(()),
             };
         }
         let (project, task) = self.tracker_task(&delivery.task_id)?;
@@ -82,9 +78,17 @@ impl AppState {
         self.tracker_store()?
             .bind_review_verdict_delivery(&delivery.comment_id, &agent)
             .map_err(|error| error.to_string())?;
+        let mut outgoing = delivery.clone();
+        if outgoing.retry_context.is_some() {
+            outgoing.retry_context = Some(
+                self.tracker_store()?
+                    .current_review_verdict_retry_context(&outgoing.task_id)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
         let params = self.current_thread_params(&json!({
             "entity_id":owner,"agent_id":agent,"operation_id":delivery.operation_id,
-            "messages":verdict_messages(&verdict_message(delivery)),
+            "messages":verdict_messages(&verdict_message(&outgoing)),
         }))?;
         self.thread_post_frozen_task(&json!({
             "params":params,"envelope":super::super::dispatch::envelope_of(&task),
@@ -216,6 +220,10 @@ impl AppState {
         store
             .retry_review_verdict_delivery(&params.task_id, &params.comment_id)
             .map_err(|error| error.to_string())?;
+        let delivery = store
+            .load_review_verdict_delivery(&params.comment_id)
+            .map_err(|error| error.to_string())?
+            .ok_or("Unknown verdict delivery")?;
         if let Some(receipt) = self.operation_receipt(&delivery.operation_id)? {
             if matches!(
                 receipt.status,
@@ -272,10 +280,12 @@ fn verdict_message(delivery: &ReviewVerdictDelivery) -> String {
         "snapshot_id":delivery.snapshot_id,"revision":delivery.revision,
         "verdict":delivery.verdict,"verdict_comment_id":delivery.comment_id,
         "reason":delivery.reason,"reviewer":delivery.reviewer,
+        "retry_context":delivery.retry_context,
         "batch":delivery.batch.iter().map(|comment|json!({
             "comment_id":comment.comment_id,"anchor":comment.anchor,
         })).collect::<Vec<_>>(),
     });
+    let instruction = verdict_instruction(delivery);
     crate::templates::fill(
         crate::templates::MESSAGE_REVIEW_VERDICT,
         &[
@@ -283,11 +293,10 @@ fn verdict_message(delivery: &ReviewVerdictDelivery) -> String {
             ("revision", &delivery.revision.to_string()),
             (
                 "verdict",
-                &serde_json::to_value(delivery.verdict)
+                serde_json::to_value(delivery.verdict)
                     .expect("verdict serializes")
                     .as_str()
-                    .unwrap()
-                    .to_string(),
+                    .unwrap(),
             ),
             ("comment_id", &delivery.comment_id),
             ("anchors", &anchors),
@@ -295,7 +304,7 @@ fn verdict_message(delivery: &ReviewVerdictDelivery) -> String {
                 "payload",
                 &serde_json::to_string_pretty(&payload).expect("delivery serializes"),
             ),
-            ("instruction", verdict_instruction(delivery)),
+            ("instruction", &instruction),
         ],
     )
 }
@@ -320,12 +329,22 @@ fn verdict_messages(body: &str) -> Vec<Value> {
     messages
 }
 
-fn verdict_instruction(delivery: &ReviewVerdictDelivery) -> &'static str {
+fn verdict_instruction(delivery: &ReviewVerdictDelivery) -> String {
+    if let Some(context) = &delivery.retry_context {
+        let status = serde_json::to_value(context.current_status).expect("status serializes");
+        return crate::templates::fill(
+            crate::templates::MESSAGE_REVIEW_VERDICT_SUPERSEDED,
+            &[
+                ("status", status.as_str().expect("status is a string")),
+                ("revision", &context.current_revision.to_string()),
+            ],
+        );
+    }
     match delivery.verdict {
         crate::tracker::ReviewVerdict::RequestChanges => "Fix each comment, commit, `push_review`; reply on comments you disagree with.",
         crate::tracker::ReviewVerdict::Approve => "Approved. Take this forward as the work requires (for example `merge_review`, a deploy, or closing the work task), then comment on the review what you did.",
         crate::tracker::ReviewVerdict::Reject => "Rejected: stop work on this; do not merge. The rejection reason is in the verdict payload below.",
-    }
+    }.into()
 }
 
 #[cfg(test)]

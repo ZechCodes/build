@@ -2104,14 +2104,21 @@ a stopped author and usage limits. A deleted author falls back to the workspace'
 current agent; no recipient produces a task comment mentioning the user.
 The latest 100 delivery summaries (state, comment IDs and anchors, without
 repeated comment bodies) are exposed on the review, with failures offering an explicit
-`tasks.review.retryDelivery` / `retry_review_delivery` action. Review-service
+`tasks.review.retryDelivery` / `retry_review_delivery` action. Normal failed retries reuse their
+operation. A superseded failed verdict gets a new context-only attempt naming
+current status and revision, while preserving its original comment and batch.
+First acceptance uses immutable journal order; polling accepted pending receipts
+rotates without rewriting unchanged rows. Review-service
 mentions use the typed comment `review_notice` marker (`revision_ready` or
 `verdict_undelivered`). Only marked Build mentions raise review-service attention,
 including on a finished review; ordinary Build mentions remain ignored. A new revision
 returns a user reviewer to Needs you or dispatches an agent reviewer with the
 revision number and the previous revision to read with `since`. If several
 revisions publish before dispatch, only the latest active revision wakes the
-agent reviewer; superseded pending revision handoffs are settled.
+agent reviewer; superseded pending revision handoffs are settled. The surviving
+handoff keeps that recipient's last delivered revision as its `since` baseline.
+Without a known prior delivery it requests the full current revision. Permanent
+revision-dispatch failures settle as Failed, rather than retrying every second.
 
 **Workspace creation (#971).** The Changes header, workspace menu and toolbar
 all offer Request review and open the same form. It retains title, description,

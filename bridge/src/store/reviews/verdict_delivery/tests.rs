@@ -181,6 +181,9 @@ fn pending_binding_and_terminal_receipts_are_idempotent_and_retry_is_explicit() 
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
     let task = fixture(&store);
+    // This journal-unit fixture bypasses lifecycle status calculation. Keep
+    // its current status aligned with the one verdict being retried.
+    store.connection().execute("UPDATE reviews SET record=json_set(record,'$.pull_request.status','changes_requested') WHERE task_id=?1",[&task.id]).unwrap();
     accept(
         &store,
         &task,
@@ -189,6 +192,15 @@ fn pending_binding_and_terminal_receipts_are_idempotent_and_retry_is_explicit() 
     store
         .bind_review_verdict_delivery("verdict", "author")
         .unwrap();
+    let changes = store.connection().total_changes();
+    store
+        .bind_review_verdict_delivery("verdict", "author")
+        .unwrap();
+    assert_eq!(
+        store.connection().total_changes(),
+        changes,
+        "an unchanged binding must not rewrite journal or summaries"
+    );
 
     let fallback = store
         .reserve_review_verdict_fallback_comment("verdict")
@@ -270,7 +282,7 @@ fn verdict_acceptance_and_journal_roll_back_together() {
 }
 
 #[test]
-fn journal_keeps_each_verdict_and_rotates_deferred_work_fairly() {
+fn journal_keeps_each_verdict_in_acceptance_order_after_binding_and_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
     let task = fixture(&store);
@@ -300,7 +312,13 @@ fn journal_keeps_each_verdict_and_rotates_deferred_work_fairly() {
         .unwrap();
     assert_eq!(
         store.pending_review_verdict_deliveries(1).unwrap()[0].comment_id,
-        "v2"
+        "v1"
+    );
+    drop(store);
+    let reopened = Store::new(dir.path()).unwrap();
+    assert_eq!(
+        reopened.pending_review_verdict_deliveries(1).unwrap()[0].comment_id,
+        "v1"
     );
 }
 

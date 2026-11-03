@@ -3432,8 +3432,8 @@ mod tests {
         "merge_review",
         "close_review",
         "reopen_review",
-        "refresh_review",
         "retry_review_delivery",
+        "refresh_review",
         "update_review_base",
     ];
 

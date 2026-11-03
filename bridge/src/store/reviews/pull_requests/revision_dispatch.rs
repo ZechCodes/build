@@ -7,7 +7,6 @@ use crate::tracker::{Actor, Assignee, TaskComment};
 pub(crate) struct RevisionDispatch {
     pub task_id: String,
     pub snapshot_id: String,
-    pub previous_snapshot_id: String,
     pub number: u64,
 }
 
@@ -63,27 +62,76 @@ impl Store {
         &self,
     ) -> Result<Vec<RevisionDispatch>, StoreError> {
         let conn = self.connection();
-        let mut statement = conn.prepare("SELECT task_id,snapshot_id,previous_snapshot_id,number FROM review_revision_dispatches WHERE state='pending' ORDER BY updated_at,snapshot_id LIMIT 32")?;
+        let mut statement = conn.prepare("SELECT task_id,snapshot_id,number FROM review_revision_dispatches WHERE state='pending' ORDER BY updated_at,snapshot_id LIMIT 32")?;
         let rows = statement.query_map([], |row| {
             Ok(RevisionDispatch {
                 task_id: row.get(0)?,
                 snapshot_id: row.get(1)?,
-                previous_snapshot_id: row.get(2)?,
-                number: row.get::<_, i64>(3)? as u64,
+                number: row.get::<_, i64>(2)? as u64,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }
 
+    /// A comparison baseline belongs to the recipient who actually received it.
+    /// Coalesced/failed attempts never advance it; a new reviewer gets full range.
+    pub(crate) fn review_revision_baseline(
+        &self,
+        task_id: &str,
+        recipient_agent_id: &str,
+        number: u64,
+    ) -> Result<Option<(String, u64)>, StoreError> {
+        let conn = self.connection();
+        let delivered = conn.query_row(
+            "SELECT snapshot_id,number FROM review_revision_dispatches WHERE task_id=?1 AND recipient_agent_id=?2 AND state='delivered' AND number<?3 ORDER BY number DESC LIMIT 1",
+            params![task_id,recipient_agent_id,number as i64],
+            |row| Ok((row.get(0)?, row.get::<_,i64>(1)? as u64)),
+        ).optional()?;
+        if delivered.is_some() {
+            return Ok(delivered);
+        }
+        let opening = ReadTransaction::new(&conn).operation(&format!("review-open-{task_id}"))?;
+        if !opening.is_some_and(|operation| operation.delivery_target().1 == recipient_agent_id) {
+            return Ok(None);
+        }
+        conn.query_row(
+            "SELECT id,number FROM review_snapshots WHERE task_id=?1 ORDER BY number LIMIT 1",
+            [task_id],
+            |row| Ok((row.get(0)?, row.get::<_, i64>(1)? as u64)),
+        )
+        .optional()
+        .map_err(StoreError::from)
+    }
+
     pub(crate) fn settle_review_revision_dispatch(
         &self,
         snapshot_id: &str,
+        recipient_agent_id: Option<&str>,
         error: Option<&str>,
     ) -> Result<(), StoreError> {
+        let state = match (recipient_agent_id, error) {
+            (_, Some(_)) => "failed",
+            (Some(_), None) => "delivered",
+            (None, None) => "superseded",
+        };
         self.in_transaction(|tx| {
-            tx.execute("UPDATE review_revision_dispatches SET state=?2,error=?3,updated_at=?4 WHERE snapshot_id=?1 AND state='pending'", params![snapshot_id,if error.is_some() { "pending" } else { "delivered" },error,now_rfc3339()])?;
+            tx.execute("UPDATE review_revision_dispatches SET state=?2,recipient_agent_id=?3,error=?4,updated_at=?5 WHERE snapshot_id=?1 AND state='pending'", params![snapshot_id,state,recipient_agent_id,error,now_rfc3339()])?;
             Ok(())
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn review_revision_dispatch_result(
+        &self,
+        snapshot_id: &str,
+    ) -> Result<(String, Option<String>), StoreError> {
+        self.connection()
+            .query_row(
+                "SELECT state,error FROM review_revision_dispatches WHERE snapshot_id=?1",
+                [snapshot_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(StoreError::from)
     }
 }

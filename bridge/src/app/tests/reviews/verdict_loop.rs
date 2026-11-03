@@ -39,6 +39,95 @@ fn inbox_verdict(
     messages[0].to_string()
 }
 
+fn assert_changes_batch(
+    state: &AppState,
+    changes: &Value,
+    first_comment: &Value,
+    second_comment: &Value,
+    first: &Value,
+    received_changes: &str,
+) {
+    let directory = &first["directories"][0];
+    let journal = state
+        .store
+        .as_ref()
+        .unwrap()
+        .load_review_verdict_delivery(changes["comment"]["id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(journal.revision, 1);
+    assert_eq!(journal.batch.len(), 2);
+    assert_eq!(journal.batch[0].comment_id, first_comment["comment"]["id"]);
+    assert_eq!(journal.batch[0].body, "Keep the original heading.");
+    assert_eq!(journal.batch[0].anchor.line, 1);
+    assert_eq!(journal.batch[1].comment_id, second_comment["comment"]["id"]);
+    assert_eq!(journal.batch[1].body, "Describe the behavior in this line.");
+    assert_eq!(journal.batch[1].anchor.line, 2);
+    assert_eq!(
+        journal.batch[1].anchor.commit.as_deref(),
+        directory["head"].as_str()
+    );
+    for expected in [
+        first["id"].as_str().unwrap(),
+        first_comment["comment"]["id"].as_str().unwrap(),
+        second_comment["comment"]["id"].as_str().unwrap(),
+        "README.md:1",
+        "README.md:2",
+        "old",
+        "new",
+        directory["head"].as_str().unwrap(),
+    ] {
+        assert!(received_changes.contains(expected), "{received_changes}");
+    }
+}
+
+fn push_addressed_revision(
+    state: &mut AppState,
+    owner: &str,
+    author: &str,
+    working: &std::path::Path,
+    opened: &Value,
+    current: &Value,
+) -> (Value, String) {
+    let task_id = opened["task"]["id"].as_str().unwrap();
+    let directory = &opened["review"]["snapshots"][0]["directories"][0];
+    std::fs::write(
+        working.join("README.md"),
+        "# project\nThe revised behavior.\nsecond change\n",
+    )
+    .unwrap();
+    git_in(working, &["add", "README.md"]);
+    git_in(working, &["commit", "-m", "Address both review comments"]);
+    let head = git2::Repository::open(working)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap()
+        .to_string();
+    let pushed = tool(
+        state,
+        owner,
+        author,
+        "push_review",
+        json!({"task_id":task_id,"expected_version":current["review"]["version"],
+            "sources":[{"directory_id":directory["id"],"expected_head":head,
+                "expected_received_head":opened["review"]["bindings"][0]["last_received_head"]}]}),
+    );
+    assert_eq!(pushed["sources"][0]["status"], "published", "{pushed}");
+    assert_eq!(pushed["review"]["snapshots"][1]["number"], 2);
+    let rereview = review_call(state, "tasks.get", json!({"task_id":task_id}));
+    assert_eq!(rereview["task"]["status"], "in_review");
+    assert!(
+        rereview["timeline"].as_array().unwrap().iter().any(|item| {
+            item["mentions_user"] == true
+                && item["body"] == "Revision 2 is ready; read since from revision 1."
+        }),
+        "{rereview}"
+    );
+    (pushed, head)
+}
+
 #[test]
 fn author_receives_two_anchored_changes_then_approval_on_revision_two() {
     let home = tempfile::tempdir().unwrap();
@@ -101,77 +190,22 @@ fn author_receives_two_anchored_changes_then_approval_on_revision_two() {
         changes["comment"]["id"].as_str().unwrap(),
         change_instruction,
     );
-    let journal = state
-        .store
-        .as_ref()
-        .unwrap()
-        .load_review_verdict_delivery(changes["comment"]["id"].as_str().unwrap())
-        .unwrap()
-        .unwrap();
-    assert_eq!(journal.revision, 1);
-    assert_eq!(journal.batch.len(), 2);
-    assert_eq!(journal.batch[0].comment_id, first_comment["comment"]["id"]);
-    assert_eq!(journal.batch[0].body, "Keep the original heading.");
-    assert_eq!(journal.batch[0].anchor.line, 1);
-    assert_eq!(journal.batch[1].comment_id, second_comment["comment"]["id"]);
-    assert_eq!(journal.batch[1].body, "Describe the behavior in this line.");
-    assert_eq!(journal.batch[1].anchor.line, 2);
-    assert_eq!(
-        journal.batch[1].anchor.commit.as_deref(),
-        directory["head"].as_str()
+    assert_changes_batch(
+        &state,
+        &changes,
+        &first_comment,
+        &second_comment,
+        first,
+        &received_changes,
     );
-    for expected in [
-        first["id"].as_str().unwrap(),
-        first_comment["comment"]["id"].as_str().unwrap(),
-        second_comment["comment"]["id"].as_str().unwrap(),
-        "README.md:1",
-        "README.md:2",
-        "old",
-        "new",
-        directory["head"].as_str().unwrap(),
-    ] {
-        assert!(received_changes.contains(expected), "{received_changes}");
-    }
     let current = review_call(&mut state, "tasks.review.get", json!({"task_id":task_id}));
     assert_eq!(
         current["review"]["pull_request"]["status"],
         "changes_requested"
     );
-    std::fs::write(
-        working.join("README.md"),
-        "# project\nThe revised behavior.\nsecond change\n",
-    )
-    .unwrap();
-    git_in(&working, &["add", "README.md"]);
-    git_in(&working, &["commit", "-m", "Address both review comments"]);
-    let head = git2::Repository::open(&working)
-        .unwrap()
-        .head()
-        .unwrap()
-        .target()
-        .unwrap()
-        .to_string();
-    let pushed = tool(
-        &mut state,
-        &owner,
-        &author,
-        "push_review",
-        json!({"task_id":task_id,"expected_version":current["review"]["version"],
-            "sources":[{"directory_id":directory["id"],"expected_head":head,
-                "expected_received_head":opened["review"]["bindings"][0]["last_received_head"]}]}),
-    );
-    assert_eq!(pushed["sources"][0]["status"], "published", "{pushed}");
+    let (pushed, head) =
+        push_addressed_revision(&mut state, &owner, &author, &working, &opened, &current);
     let second = &pushed["review"]["snapshots"][1];
-    assert_eq!(second["number"], 2);
-    let rereview = review_call(&mut state, "tasks.get", json!({"task_id":task_id}));
-    assert_eq!(rereview["task"]["status"], "in_review");
-    assert!(
-        rereview["timeline"].as_array().unwrap().iter().any(|item| {
-            item["mentions_user"] == true
-                && item["body"] == "Revision 2 is ready; read since from revision 1."
-        }),
-        "{rereview}"
-    );
     let approved = review_call(
         &mut state,
         "tasks.comment",

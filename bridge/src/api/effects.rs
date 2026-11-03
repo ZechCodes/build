@@ -181,6 +181,7 @@ const WRITE_METHODS: &[&str] = &[
     "tasks.review.push",
     "tasks.review.refresh",
     "tasks.review.reopen",
+    "tasks.review.retryDelivery",
     "tasks.review.snapshot",
     "tasks.review.update",
     "tasks.unwatch",

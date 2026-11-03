@@ -63,10 +63,15 @@ to the workspace's current agent; if none exists, a task comment mentions the
 user because nobody received the verdict. Failed delivery is explicit and
 retryable with `tasks.review.retryDelivery` / `retry_review_delivery`. Review
 reads carry the latest 100 delivery summaries with state and comment anchors;
-comment bodies remain in the timeline and durable journal. New
+comment bodies remain in the timeline and durable journal. First acceptance is
+ordered independently of mutable timestamps. Polling accepted pending deliveries
+rotates without write churn. A superseded failed-verdict retry retains its batch
+but reports current status as context only, without stale action instructions. New
 revisions send an agent reviewer back to `since` from the previous revision or
 return a user reviewer to Needs you. Superseded pending revision handoffs
-settle without waking an agent reviewer; it receives the latest active revision.
+settle without waking an agent reviewer; it receives the latest active revision
+from its last delivered baseline. An unknown baseline requests the full revision.
+Permanent dispatch failures settle as Failed instead of retrying forever.
 
 Build reminders carry `review_notice: "revision_ready"` or
 `"verdict_undelivered"`. Only those marked Build mentions enter Needs you;

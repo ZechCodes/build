@@ -511,6 +511,13 @@ fn two_pending_verdicts_for_stopped_author_arrive_in_order_without_coalescing() 
         .unwrap();
     assert_eq!(first.state, ReviewVerdictDeliveryState::Pending);
     assert_eq!(second.state, ReviewVerdictDeliveryState::Pending);
+    // Crash after recipient binding, before thread.post acceptance. The
+    // mutable update timestamp must not put the newer approval first.
+    store
+        .bind_review_verdict_delivery(&first.comment_id, &author)
+        .unwrap();
+    assert!(store.operation(&first.operation_id).unwrap().is_none());
+    state.store = Some(crate::store::Store::new(home.path().join("store")).unwrap());
     state.drain_review_verdict_deliveries().unwrap();
     let received = state
         .agent_conversation(&owner, Some(&author))
@@ -561,6 +568,173 @@ fn two_pending_verdicts_for_stopped_author_arrive_in_order_without_coalescing() 
     assert_eq!(
         store
             .load_review_verdict_delivery(&second.comment_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        ReviewVerdictDeliveryState::Delivered
+    );
+}
+
+#[test]
+fn polling_same_queued_or_claimed_recipient_does_not_rewrite_sqlite() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = tracked(home.path());
+    let (_, _, review) = author_review(&mut state, &project);
+    let comment = verdict(&mut state, &review, "approve");
+    state.drain_review_verdict_deliveries().unwrap();
+    let store = state.store.as_ref().unwrap().clone();
+    let delivery = store
+        .load_review_verdict_delivery(&comment)
+        .unwrap()
+        .unwrap();
+    let before = store.review_verdict_total_changes_for_test();
+    for _ in 0..3 {
+        state.drain_review_verdict_deliveries().unwrap();
+    }
+    assert_eq!(store.review_verdict_total_changes_for_test(), before);
+    state
+        .transition_delivery_operation(
+            &delivery.operation_id,
+            OperationStatus::Queued,
+            OperationStatus::Claimed,
+            None,
+        )
+        .unwrap();
+    let before = store.review_verdict_total_changes_for_test();
+    for _ in 0..3 {
+        state.drain_review_verdict_deliveries().unwrap();
+    }
+    assert_eq!(store.review_verdict_total_changes_for_test(), before);
+}
+
+#[test]
+fn retrying_superseded_failed_verdict_reports_current_status_without_stale_action() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = tracked(home.path());
+    let (owner, author, review) = author_review(&mut state, &project);
+    let old = verdict(&mut state, &review, "request_changes");
+    state.drain_review_verdict_deliveries().unwrap();
+    let store = state.store.as_ref().unwrap().clone();
+    let original = store.load_review_verdict_delivery(&old).unwrap().unwrap();
+    state
+        .transition_delivery_operation(
+            &original.operation_id,
+            OperationStatus::Queued,
+            OperationStatus::Uncertain,
+            Some("receipt lost"),
+        )
+        .unwrap();
+    state.drain_review_verdict_deliveries().unwrap();
+    let approval = verdict(&mut state, &review, "approve");
+    state.drain_review_verdict_deliveries().unwrap();
+    let approved = store
+        .load_review_verdict_delivery(&approval)
+        .unwrap()
+        .unwrap();
+    state
+        .transition_delivery_operation(
+            &approved.operation_id,
+            OperationStatus::Queued,
+            OperationStatus::Delivered,
+            None,
+        )
+        .unwrap();
+    state.drain_review_verdict_deliveries().unwrap();
+    assert_eq!(
+        store
+            .load_review_verdict_delivery(&approval)
+            .unwrap()
+            .unwrap()
+            .state,
+        ReviewVerdictDeliveryState::Delivered
+    );
+    state
+        .review_retry_verdict_delivery(
+            crate::api::v1::reviews::ReviewRetryDeliveryParams {
+                task_id: original.task_id.clone(),
+                comment_id: old.clone(),
+            },
+            crate::tracker::Actor::User,
+        )
+        .unwrap();
+    let retried = store.load_review_verdict_delivery(&old).unwrap().unwrap();
+    assert_ne!(retried.operation_id, original.operation_id);
+    assert_eq!(retried.batch, original.batch);
+    assert_eq!(retried.reason, original.reason);
+    assert_eq!(retried.comment_id, original.comment_id);
+    let context = retried.retry_context.as_ref().unwrap();
+    assert_eq!(
+        context.current_status,
+        crate::reviews::model::PullRequestStatus::Approved
+    );
+    assert_eq!(context.current_revision, 1);
+    let messages = state
+        .agent_conversation(&owner, Some(&author))
+        .unwrap()
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            crate::thread::ThreadItem::Message(message)
+                if message.operation_id.as_deref() == Some(&retried.operation_id) =>
+            {
+                Some(message)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(messages.len(), 1);
+    let body = &messages[0].body;
+    assert!(body.contains("SUPERSEDED"), "{body}");
+    assert!(body.contains("CURRENT STATUS: approved"), "{body}");
+    assert!(body.contains("CURRENT REVISION: 1"), "{body}");
+    assert!(!body.contains("Fix each comment, commit"), "{body}");
+    assert_eq!(
+        state
+            .operation_receipt(&original.operation_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        OperationStatus::Uncertain
+    );
+    assert_eq!(
+        store
+            .load_review(&original.task_id)
+            .unwrap()
+            .unwrap()
+            .pull_request
+            .unwrap()
+            .status,
+        crate::reviews::model::PullRequestStatus::Approved
+    );
+}
+
+#[test]
+fn accepted_receipt_polling_rotates_past_a_page_of_stopped_authors() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = tracked(home.path());
+    let (_, _, review) = author_review(&mut state, &project);
+    let mut last = String::new();
+    for _ in 0..21 {
+        last = verdict(&mut state, &review, "approve");
+    }
+    state.drain_review_verdict_deliveries().unwrap();
+    state.drain_review_verdict_deliveries().unwrap();
+    let store = state.store.as_ref().unwrap().clone();
+    let last = store.load_review_verdict_delivery(&last).unwrap().unwrap();
+    state
+        .transition_delivery_operation(
+            &last.operation_id,
+            OperationStatus::Queued,
+            OperationStatus::Delivered,
+            None,
+        )
+        .unwrap();
+    for _ in 0..2 {
+        state.drain_review_verdict_deliveries().unwrap();
+    }
+    assert_eq!(
+        store
+            .load_review_verdict_delivery(&last.comment_id)
             .unwrap()
             .unwrap()
             .state,

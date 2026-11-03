@@ -1189,20 +1189,24 @@ fn received_agent_revision_dispatch_survives_restart_and_settles_once() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].task_id, review.task_id);
     assert_eq!(pending[0].snapshot_id, "snapshot-received");
-    assert_eq!(pending[0].previous_snapshot_id, "snapshot-1");
+    let previous: String = store.connection().query_row("SELECT previous_snapshot_id FROM review_revision_dispatches WHERE snapshot_id='snapshot-received'", [], |row| row.get(0)).unwrap();
+    assert_eq!(previous, "snapshot-1");
     assert_eq!(pending[0].number, 2);
     store
-        .settle_review_revision_dispatch("snapshot-received", Some("retryable failure"))
-        .unwrap();
-    assert_eq!(store.pending_review_revision_dispatches().unwrap().len(), 1);
-    store
-        .settle_review_revision_dispatch("snapshot-received", None)
+        .settle_review_revision_dispatch("snapshot-received", Some("reviewer"), None)
         .unwrap();
     store
-        .settle_review_revision_dispatch("snapshot-received", None)
+        .settle_review_revision_dispatch("snapshot-received", Some("reviewer"), None)
         .unwrap();
     assert!(store
         .pending_review_revision_dispatches()
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn revision_dispatch_journal_rejects_unknown_states() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    assert!(store.connection().execute("INSERT INTO review_revision_dispatches(task_id,snapshot_id,previous_snapshot_id,number,state) VALUES('task','snapshot','previous',2,'invalid')",[]).is_err());
 }

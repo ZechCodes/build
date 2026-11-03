@@ -717,7 +717,7 @@ fn deferred_reviewer_resolution_recomputes_status_and_returns_lifecycle_events()
         ReviewVerdict::RequestChanges,
     );
     store
-        .save_tracker_task_activity(&task, &[verdict.clone()], &[])
+        .save_tracker_task_activity(&task, std::slice::from_ref(&verdict), &[])
         .unwrap();
     let intent = crate::store::DeliveryIntent {
         id: String::new(),
@@ -799,4 +799,42 @@ fn deferred_reviewer_resolution_recomputes_status_and_returns_lifecycle_events()
         store.pending_review_verdict_deliveries(100).unwrap().len(),
         1
     );
+}
+
+#[test]
+fn reassignment_with_legacy_advisory_rejection_returns_error_without_panicking() {
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::new(home.path()).unwrap();
+    let review = publish(&store);
+    let before = store.load_tracker_task(&review.task_id).unwrap().unwrap();
+    let actor = Actor::Agent {
+        agent_id: "legacy-reviewer".into(),
+    };
+    let legacy = opinion(&before.id, actor.clone(), ReviewVerdict::Reject);
+    // Simulate historical data saved before reject admission was enforced.
+    store
+        .in_transaction(|tx| crate::store::tracker::append_activity(tx, &[legacy], &[]))
+        .unwrap();
+    let mut reassigned = before.clone();
+    reassigned.assignee = Some(crate::tracker::Assignee::Agent {
+        agent_id: "legacy-reviewer".into(),
+    });
+    let event = TaskEvent::new(
+        &before.id,
+        Actor::User,
+        TaskEventKind::Assigned,
+        serde_json::json!({"assignee":reassigned.assignee}),
+        NOW,
+    );
+    let error = store
+        .save_tracker_task_activity(&reassigned, &[], &[event])
+        .unwrap_err();
+    assert!(
+        matches!(error, StoreError::ReviewPullRequestInvalid(message) if message.contains("new deciding verdict comment"))
+    );
+    assert_eq!(
+        store.load_tracker_task(&before.id).unwrap().unwrap(),
+        before
+    );
+    assert_eq!(status(&store, &before.id), PullRequestStatus::Open);
 }

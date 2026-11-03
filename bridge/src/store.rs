@@ -90,7 +90,7 @@ pub use retention::{
 };
 pub use reviews::verdict_delivery::{
     ReviewVerdictBatchAnchor, ReviewVerdictBatchComment, ReviewVerdictDelivery,
-    ReviewVerdictDeliveryState, ReviewVerdictDeliverySummary,
+    ReviewVerdictDeliveryState, ReviewVerdictDeliverySummary, ReviewVerdictRetryContext,
 };
 pub(crate) use reviews::RevisionDispatch;
 mod schema;

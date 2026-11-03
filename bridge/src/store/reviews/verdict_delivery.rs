@@ -57,6 +57,12 @@ pub struct ReviewVerdictDeliverySummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewVerdictRetryContext {
+    pub current_status: crate::reviews::model::PullRequestStatus,
+    pub current_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewVerdictDelivery {
     pub comment_id: String,
     pub task_id: String,
@@ -74,7 +80,10 @@ pub struct ReviewVerdictDelivery {
     pub recipient_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_comment_id: Option<String>,
-    /// Explicit retries and safe redirects. Only a safe redirect changes the operation identity.
+    /// A superseded retry reports current context without repeating stale instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_context: Option<ReviewVerdictRetryContext>,
+    /// Safe redirects and superseded retries use a fresh operation identity.
     pub attempts: u64,
     pub error: Option<String>,
     pub created_at: String,
@@ -82,6 +91,11 @@ pub struct ReviewVerdictDelivery {
 }
 
 impl Store {
+    #[cfg(test)]
+    pub(crate) fn review_verdict_total_changes_for_test(&self) -> u64 {
+        self.connection().total_changes()
+    }
+
     pub(crate) fn review_verdict_author(
         &self,
         task_id: &str,
@@ -95,7 +109,11 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<ReviewVerdictDelivery>, StoreError> {
         let conn = self.connection();
-        let mut query = conn.prepare("SELECT comment_id, record FROM review_verdict_deliveries WHERE state='pending' ORDER BY updated_at,created_at,comment_id LIMIT ?1")?;
+        // Receipt-less rows have never been accepted by a conversation. Keep
+        // their immutable journal acceptance order even if binding touched an
+        // older row before a crash. Already accepted rows rotate separately;
+        // a stopped author cannot block another review's first acceptance.
+        let mut query = conn.prepare("SELECT d.comment_id,d.record FROM review_verdict_deliveries d LEFT JOIN operations o ON o.operation_id=d.operation_id WHERE d.state='pending' ORDER BY (o.operation_id IS NOT NULL),CASE WHEN o.operation_id IS NULL THEN d.rowid END,d.updated_at,d.rowid LIMIT ?1")?;
         let records = query.query_map([limit.min(100) as i64], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -105,6 +123,41 @@ impl Store {
                 decode(&raw, "review_verdict_deliveries", &id)
             })
             .collect()
+    }
+
+    /// First acceptance is FIFO. Existing receipts are polled in a separate
+    /// rotating page, so fairness requires no writes to delivery state.
+    pub(crate) fn review_verdict_delivery_page(
+        &self,
+        limit: usize,
+        after: i64,
+    ) -> Result<(Vec<ReviewVerdictDelivery>, i64), StoreError> {
+        let conn = self.connection();
+        let mut fresh = conn.prepare("SELECT d.comment_id,d.record FROM review_verdict_deliveries d LEFT JOIN operations o ON o.operation_id=d.operation_id WHERE d.state='pending' AND o.operation_id IS NULL ORDER BY d.rowid LIMIT ?1")?;
+        let mut deliveries = fresh
+            .query_map([limit.min(100) as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .map(|row| {
+                let (id, raw) = row?;
+                decode(&raw, "review_verdict_deliveries", &id)
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        let mut polled = conn.prepare("SELECT d.rowid,d.comment_id,d.record FROM review_verdict_deliveries d JOIN operations o ON o.operation_id=d.operation_id WHERE d.state='pending' ORDER BY (d.rowid <= ?1),d.rowid LIMIT ?2")?;
+        let rows = polled.query_map(params![after, limit.min(100) as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut next = after;
+        for row in rows {
+            let (sequence, id, raw) = row?;
+            deliveries.push(decode(&raw, "review_verdict_deliveries", &id)?);
+            next = sequence;
+        }
+        Ok((deliveries, next))
     }
 
     pub fn load_review_verdict_delivery(
@@ -119,7 +172,7 @@ impl Store {
         task_id: &str,
     ) -> Result<Option<ReviewVerdictDelivery>, StoreError> {
         let conn = self.connection();
-        let id: Option<String> = conn.query_row("SELECT comment_id FROM review_verdict_deliveries WHERE task_id=?1 ORDER BY created_at DESC,comment_id DESC LIMIT 1", [task_id], |row| row.get(0)).optional()?;
+        let id: Option<String> = conn.query_row("SELECT comment_id FROM review_verdict_deliveries WHERE task_id=?1 ORDER BY rowid DESC LIMIT 1", [task_id], |row| row.get(0)).optional()?;
         id.map(|id| load_delivery(&conn, &id))
             .transpose()
             .map(Option::flatten)
@@ -133,12 +186,18 @@ impl Store {
         comment_id: &str,
         agent_id: &str,
     ) -> Result<(), StoreError> {
-        self.update_verdict_delivery(comment_id, |delivery| {
-            if delivery.state != ReviewVerdictDeliveryState::Pending {
+        self.in_transaction(|tx| {
+            let mut delivery = load_delivery(tx, comment_id)?
+                .ok_or_else(|| invalid("unknown verdict delivery"))?;
+            if delivery.state != ReviewVerdictDeliveryState::Pending
+                || delivery.recipient_agent_id.as_deref() == Some(agent_id)
+            {
                 return Ok(());
             }
             delivery.recipient_agent_id = Some(agent_id.into());
-            Ok(())
+            delivery.updated_at = now_rfc3339();
+            write_delivery(tx, &delivery)?;
+            crate::store::task_summaries::metadata_refresh(tx, &delivery.task_id)
         })
     }
 
@@ -196,7 +255,9 @@ impl Store {
         task_id: &str,
         comment_id: &str,
     ) -> Result<(), StoreError> {
-        self.update_verdict_delivery(comment_id, |delivery| {
+        self.in_transaction(|tx| {
+            let mut delivery = load_delivery(tx, comment_id)?
+                .ok_or_else(|| invalid("unknown verdict delivery"))?;
             if delivery.task_id != task_id {
                 return Err(invalid("verdict delivery belongs to another task"));
             }
@@ -204,10 +265,25 @@ impl Store {
                 return Err(invalid("only failed verdict deliveries may be retried"));
             }
             delivery.attempts += 1;
+            delivery.retry_context = superseded_retry_context(tx, &delivery)?;
+            if delivery.retry_context.is_some() {
+                retire_superseded_retry(tx, &delivery.operation_id)?;
+                delivery.operation_id = operation_id(comment_id, delivery.attempts);
+                delivery.recipient_agent_id = None;
+            }
             delivery.state = ReviewVerdictDeliveryState::Pending;
             delivery.error = None;
-            Ok(())
+            delivery.updated_at = now_rfc3339();
+            write_delivery(tx, &delivery)?;
+            crate::store::task_summaries::metadata_refresh(tx, &delivery.task_id)
         })
+    }
+
+    pub(crate) fn current_review_verdict_retry_context(
+        &self,
+        task: &str,
+    ) -> Result<ReviewVerdictRetryContext, StoreError> {
+        current_retry_context(&self.connection(), task)
     }
 
     /// Retire an old target only when its durable operation proves the
@@ -301,6 +377,7 @@ pub(crate) fn enqueue_verdict_deliveries(
             state: ReviewVerdictDeliveryState::Pending,
             recipient_agent_id: None,
             fallback_comment_id: None,
+            retry_context: None,
             attempts: 0,
             error: None,
             created_at: comment.created_at.clone(),
@@ -308,6 +385,59 @@ pub(crate) fn enqueue_verdict_deliveries(
         };
         write_delivery(tx, &delivery)?;
     }
+    Ok(())
+}
+
+fn current_retry_context(
+    conn: &Connection,
+    task: &str,
+) -> Result<ReviewVerdictRetryContext, StoreError> {
+    let metadata = load_header(conn, task)?
+        .and_then(|header| header.pull_request)
+        .ok_or_else(|| invalid("retry requires a published PR"))?;
+    let snapshot = metadata
+        .latest_published_snapshot_id
+        .as_deref()
+        .ok_or_else(|| invalid("PR has no current revision"))?;
+    let revision: i64 = conn.query_row(
+        "SELECT number FROM review_snapshots WHERE task_id=?1 AND id=?2",
+        params![task, snapshot],
+        |row| row.get(0),
+    )?;
+    Ok(ReviewVerdictRetryContext {
+        current_status: metadata.status,
+        current_revision: revision as u64,
+    })
+}
+
+fn superseded_retry_context(
+    conn: &Connection,
+    delivery: &ReviewVerdictDelivery,
+) -> Result<Option<ReviewVerdictRetryContext>, StoreError> {
+    use crate::reviews::model::PullRequestStatus;
+    let context = current_retry_context(conn, &delivery.task_id)?;
+    let newer:bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM review_verdict_deliveries newer WHERE newer.task_id=?1 AND newer.rowid>(SELECT rowid FROM review_verdict_deliveries WHERE comment_id=?2))",params![delivery.task_id,delivery.comment_id],|row|row.get(0))?;
+    let original_status = match delivery.verdict {
+        ReviewVerdict::Approve => PullRequestStatus::Approved,
+        ReviewVerdict::RequestChanges => PullRequestStatus::ChangesRequested,
+        ReviewVerdict::Reject => PullRequestStatus::Rejected,
+    };
+    Ok((newer
+        || context.current_revision != delivery.revision
+        || context.current_status != original_status)
+        .then_some(context))
+}
+
+fn retire_superseded_retry(tx: &Transaction, operation: &str) -> Result<(), StoreError> {
+    let claimed: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM operations WHERE operation_id=?1 AND status='claimed')",
+        [operation],
+        |row| row.get(0),
+    )?;
+    if claimed {
+        return Err(invalid("a claimed verdict operation cannot be replaced"));
+    }
+    tx.execute("UPDATE operations SET status='delivered',execution_error='Superseded verdict retried as context only',updated_at=?2 WHERE operation_id=?1 AND status='queued'",params![operation,now_rfc3339()])?;
     Ok(())
 }
 
@@ -359,7 +489,7 @@ pub(super) fn load_deliveries(
     conn: &Connection,
     task_id: &str,
 ) -> Result<Vec<ReviewVerdictDeliverySummary>, StoreError> {
-    let mut query = conn.prepare("SELECT comment_id,record FROM (SELECT comment_id,created_at,record FROM review_verdict_deliveries WHERE task_id=?1 ORDER BY created_at DESC,comment_id DESC LIMIT 100) ORDER BY created_at,comment_id")?;
+    let mut query = conn.prepare("SELECT comment_id,record FROM (SELECT rowid delivery_sequence,comment_id,record FROM review_verdict_deliveries WHERE task_id=?1 ORDER BY rowid DESC LIMIT 100) ORDER BY delivery_sequence")?;
     let rows = query.query_map([task_id], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;

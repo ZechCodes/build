@@ -340,7 +340,6 @@ fn reopen(
 
 /// Retry one failed verdict delivery without changing its frozen batch.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReviewRetryDeliveryParams {
     pub task_id: String,
     pub comment_id: String,

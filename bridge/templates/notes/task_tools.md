@@ -181,5 +181,7 @@ approval, take the work forward as its context requires and comment what you did
 An agent's `merge_review` requires the current status Approved. Rejection ends
 the review without merging or deleting its workspace; stop work and do not merge.
 A Rejected review can reopen like a Closed review. Read `get_review` for delivery
-state and use `retry_review_delivery` only for a failed handoff. New revisions
+state and use `retry_review_delivery` only for a failed handoff. A superseded
+retry reports current status as historical context; follow the current review
+instead of acting on the old verdict. New revisions
 send the assigned reviewer back to the saved previous revision with `since`.

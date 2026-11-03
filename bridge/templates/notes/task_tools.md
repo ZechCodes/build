@@ -1,7 +1,7 @@
 Your project has a task board, and Build's task tools reach it: `list_tasks`,
 `get_task`, `create_task`, `comment_task`, `assign_task`, `move_task`,
-`close_task` and `link_task`. Reviews on those tasks have `snapshot_review`,
-`get_review`, `read_review`, `act_review` and `complete_review`. A Build task is a card on that board. It is not
+`close_task` and `link_task`. Reviews on those tasks have `get_review`,
+`read_review` and the workspace review tools described below. A Build task is a card on that board. It is not
 your harness's own task or todo list (TaskCreate, TodoWrite, update_plan): that
 one tracks the steps of this conversation, and nothing in it reaches the board.
 The task tools are about YOUR project — there is nothing to pass and no other
@@ -17,7 +17,7 @@ empty and still have `next_cursor`; finish only when `next_cursor` is absent.
 Every listed row remains a full task record. Use `get_task` for its full
 detail and timeline.
 
-PR reviews also have `open_review`, `push_review`, `merge_review`, `close_review`,
+Workspace reviews have `open_review`, `push_review`, `merge_review`, `close_review`,
 `reopen_review`, `refresh_review`, `retry_review_delivery` and `update_review_base`. Use `open_review`
 from a managed workspace to create its PR task: give it a request ID, a title
 and a description. Included Git directories use their configured base unless
@@ -52,8 +52,10 @@ A successful integration marks the PR merged and moves its task to Done.
 and history. `reopen_review` reopens a closed, unmerged PR only when its retained
 workspace and receivers are recoverable. `refresh_review` checks received
 state and health, including retained terminal workspaces. PR branch bindings
-stay fixed; none of these tools unlocks them. Use these PR tools for PR mode;
-the saved snapshot tools below continue to serve snapshot reviews.
+stay fixed; none of these tools unlocks them. Use these tools for the workspace review flow. Legacy snapshot reviews are
+read-only: inspect them with the shared reading tools, and open a new workspace
+review with `for_task_id` naming the legacy task when replacing one. Publication
+closes its open legacy review with “Superseded by #N”.
 
 When a message hands you a task, that task is the work. The message is only a
 notice naming it, so read it with `get_task` before you start — and again if
@@ -67,23 +69,16 @@ with its evidence. The board already shows the task's column and assignee; do
 not comment to say you are still working.
 
 Move it to In review with `move_task` when you report Complete. In review means
-the work is ready to be looked at, not that it is accepted. A task with a saved
-review has a separate finish: `complete_review` records what was done and moves
-it to Done. Moving a task with an open review to Done with `move_task` also
-records the review as “Marked done”, attributed to whoever made that move. Any
-agent in the project may review and complete it.
+the work is ready to be looked at, not that it is accepted. Move an ordinary
+finished task to Done with `move_task`; this also closes an open review as
+“Marked done”, attributed to whoever made that move. PR work has explicit
+`merge_review` and `close_review` lifecycle tools. Legacy reviews have no agent
+capture, Git-action or completion tool; their saved revisions remain readable.
 
-To offer committed workspace work for review, call `snapshot_review` with the
-task, workspace and version from `get_review` (0 for a new review). It saves
-every directory in that workspace, including unchanged, non-Git and unavailable
-ones. Git snapshots keep committed heads and bases; uncommitted files are
-counted but excluded. You may override a directory's base by its ID. A
-snapshot updates only the review: move or reopen the task explicitly if needed.
-Taking a snapshot from another workspace replaces the previous snapshot history
-and releases its pins after the new snapshot is saved.
-Assign the task to its reviewer with `assign_task`, naming the snapshot ID in
-the assignment note. Assignment routes the work; it does not grant exclusive
-rights to review or complete it.
+Offer committed work with `open_review` from the managed workspace. Use
+`for_task_id` when the review belongs to an existing work task, including a task
+with an open legacy review. Its reviewer selection routes the review without
+restricting who can read or leave advisory feedback.
 
 When reviewing, read `get_review`, then `read_review` for each saved Git
 directory. `changes` gives committed changed files and patches, `tree` lists
@@ -97,17 +92,12 @@ and a `verdict` of `approve`, `request_changes` or `reject`. Only the assigned
 reviewer and the user decide status; other agents’ opinions are advisory. Only a
 deciding reviewer may reject, with a nonempty reason in the body. An opinion can stand alone
 without a line anchor. Comments keep their original snapshot context after a
-new snapshot, and any agent in the project may give an opinion. Use
-`act_review` if selected Git work is needed: choose one or more saved directory
-IDs, each with a Merge target branch, a Push remote and destination branch,
-both, or neither to leave it unchanged. Read available destinations from `get_review`; Build resolves the
-configured source path and records each result. Merge runs before Push when
-both are selected. A failed Push leaves a successful Merge recorded, so inspect
-the review before retrying. Actions do not complete the review. Use
-`complete_review` with the latest review version and a short factual account,
-such as “merged API to dev; pushed web”. You can use your own Git tools and
-complete without a Build Git action. Completion leaves the workspace in place
-and does not close the task.
+new snapshot. Any agent may give an advisory opinion on PR work. For PR work,
+use `merge_review` or `close_review` after reading the current
+version and recorded results. Approval hands the next action to the author and
+never merges automatically. Legacy revisions are read-only, including anchored
+feedback and verdicts; ordinary plain task comments remain available. Request a
+new workspace review to continue them.
 
 Hand work off by ASSIGNING the task, not by messaging. Anything beyond a quick
 question or a one-line correction gets a task: file it with the brief in the

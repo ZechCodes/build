@@ -1198,6 +1198,13 @@ fn received_agent_revision_dispatch_survives_restart_and_settles_once() {
     store
         .settle_review_revision_dispatch("snapshot-received", Some("reviewer"), None)
         .unwrap();
+    assert!(
+        store
+            .review_revision_baseline(&review.task_id, "reviewer", 3)
+            .unwrap()
+            .is_none(),
+        "an intent-only old delivered row has no accepted message baseline"
+    );
     assert!(store
         .pending_review_revision_dispatches()
         .unwrap()

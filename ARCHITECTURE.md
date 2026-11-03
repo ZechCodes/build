@@ -2121,10 +2121,16 @@ revision number and the previous revision to read with `since`. If several
 revisions publish before dispatch, only the latest active revision wakes the
 agent reviewer; superseded pending revision handoffs are settled. The surviving
 handoff keeps that recipient's last delivered revision as its `since` baseline.
+Only an accepted message operation counts; a waiting or cancelled assignment
+intent does not advance it. Publishing while blocked retains the existing task
+column until its prerequisites release the reviewer.
 Without a known prior delivery it requests the full current revision. Transient revision-dispatch failures allow seven attempts, with delays of
 30/60/120/240/480/600 seconds and no writes on skipped polls.
 Permanent or exhausted failures settle as Failed and post one reserved-identity
-`revision_undelivered` Build mention for the user.
+`revision_undelivered` Build mention for the user. Failure notices drain
+independently: a failed write cannot hold later notices, and removed projects
+retire their notices. Comments show plain error text; the journal keeps the
+classification prefix.
 
 **Workspace creation (#971).** The Changes header, workspace menu and toolbar
 all offer Request review and open the same form. It retains title, description,

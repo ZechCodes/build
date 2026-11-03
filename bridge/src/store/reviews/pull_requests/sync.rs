@@ -445,6 +445,12 @@ fn move_received_task(tx: &Transaction, task_id: &str, actor: &Actor) -> Result<
     if task.status == IN_REVIEW_STATUS {
         return Ok(());
     }
+    // Publication is allowed while the reviewer hand-off is held on a task
+    // prerequisite. Keep its existing column until ordinary dispatch resumes.
+    let blocked: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM tracker_task_dependencies d JOIN tracker_tasks p ON p.id=d.waiting_on_task_id WHERE d.task_id=?1 AND p.project_key=?2 AND p.state='open' AND p.status<>'done')", params![task_id,task.project_path], |row|row.get(0))?;
+    if blocked {
+        return Ok(());
+    }
     let now = now_rfc3339();
     let event = TaskEvent::new(
         task_id,

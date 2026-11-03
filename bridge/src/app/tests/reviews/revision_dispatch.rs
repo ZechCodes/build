@@ -2,6 +2,8 @@ use super::*;
 use crate::api::v1::reviews::ReviewReviewer;
 use crate::tracker::Actor;
 
+mod recovery;
+
 #[test]
 fn new_revision_redispatches_agent_assignee_once_with_previous_revision_baseline() {
     let home = tempfile::tempdir().unwrap();

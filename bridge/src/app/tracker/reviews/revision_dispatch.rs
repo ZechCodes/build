@@ -46,10 +46,17 @@ impl AppState {
             .failed_review_revision_notices()
             .map_err(|error| error.to_string())?
         {
-            self.post_revision_failure_notice(&notice)?;
-            store
-                .finish_review_revision_notice(&notice.snapshot_id)
-                .map_err(|error| error.to_string())?;
+            let result = self.post_revision_failure_notice(&notice).and_then(|()| {
+                store
+                    .finish_review_revision_notice(&notice.snapshot_id)
+                    .map_err(|error| error.to_string())
+            });
+            if let Err(error) = result {
+                eprintln!(
+                    "review revision failure notice {}: {error}",
+                    notice.snapshot_id
+                );
+            }
         }
         Ok(())
     }
@@ -77,15 +84,21 @@ impl AppState {
         {
             return Ok(());
         }
-        // A deleted task has no timeline left to notify; retire its notice too.
-        if store
+        // Deleted tasks and retired projects have no live destination. Retire
+        // these notices rather than making them poison every startup drain.
+        let Some(mut task) = store
             .load_tracker_task(&notice.task_id)
             .map_err(|error| error.to_string())?
-            .is_none()
-        {
+        else {
             return Ok(());
-        }
-        let (project, mut task) = self.tracker_task(&notice.task_id)?;
+        };
+        let Some(project) = self
+            .projects
+            .find_by_canonical_path(std::path::Path::new(&task.project_path))
+            .map(|project| project.id.clone())
+        else {
+            return Ok(());
+        };
         task.set_watched(true);
         task.dismissed_through = None;
         let now = crate::store::now_rfc3339();
@@ -100,7 +113,7 @@ impl AppState {
                 &[
                     ("number", &notice.number.to_string()),
                     ("reviewer", &notice.reviewer),
-                    ("error", &notice.error),
+                    ("error", revision_error_for_user(&notice.error)),
                 ],
             ),
             anchor: None,
@@ -219,4 +232,17 @@ fn transient_revision_error(error: &str) -> bool {
         || error.starts_with("busy:")
         || error.contains("database is locked")
         || error.contains("usage limit")
+}
+
+fn revision_error_for_user(error: &str) -> &str {
+    let reason = error
+        .strip_prefix("unavailable:")
+        .or_else(|| error.strip_prefix("busy:"))
+        .unwrap_or(error)
+        .trim();
+    match reason {
+        "review reviewer is unavailable" => "the reviewer is unavailable",
+        "review coordinator is unavailable" => "the project coordinator is unavailable",
+        _ => reason,
+    }
 }

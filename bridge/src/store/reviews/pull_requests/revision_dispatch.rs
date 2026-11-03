@@ -96,7 +96,9 @@ impl Store {
     }
 
     /// A comparison baseline belongs to the recipient who actually received it.
-    /// Coalesced/failed attempts never advance it; a new reviewer gets full range.
+    /// A hand-off intent can still be waiting on task dependencies. Only its
+    /// durable message operation proves the recipient received that revision;
+    /// older intent-only "delivered" rows must not advance the baseline.
     pub(crate) fn review_revision_baseline(
         &self,
         task_id: &str,
@@ -105,7 +107,7 @@ impl Store {
     ) -> Result<Option<(String, u64)>, StoreError> {
         let conn = self.connection();
         let delivered = conn.query_row(
-            "SELECT snapshot_id,number FROM review_revision_dispatches WHERE task_id=?1 AND recipient_agent_id=?2 AND state='delivered' AND number<?3 ORDER BY number DESC LIMIT 1",
+            "SELECT d.snapshot_id,d.number FROM review_revision_dispatches d WHERE d.task_id=?1 AND d.recipient_agent_id=?2 AND d.state='delivered' AND d.number<?3 AND EXISTS(SELECT 1 FROM operations o WHERE o.operation_id='review-revision-' || d.snapshot_id AND COALESCE(CASE WHEN json_valid(o.delivery) THEN json_extract(o.delivery,'$.agent_id') END,o.agent_id)=?2) ORDER BY d.number DESC LIMIT 1",
             params![task_id,recipient_agent_id,number as i64],
             |row| Ok((row.get(0)?, row.get::<_,i64>(1)? as u64)),
         ).optional()?;

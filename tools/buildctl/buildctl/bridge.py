@@ -19,6 +19,7 @@ from .service import service_manager
 @contextmanager
 def management_lock(env):
     env.require_mutation()
+    env.http_settings()  # Refuse invalid HTTP settings before creating locks or state.
     root = env.path(env.state_root)
     with migration_lock(root):
         with environment_lock(env, root):
@@ -237,11 +238,11 @@ class Bridge:
 
     def activate(self, sha):
         self.env.require_mutation()
+        child_env = self.env.bridge_env(os.environ)
         record = self.records()
         binary = self.binary(sha)
         expected = digest(binary)
         self.service.prepare_install()
-        child_env = self.env.bridge_env(os.environ)
         result = self.runner.run(
             [str(binary), "install-service"], env=child_env, check=False
         )
@@ -305,6 +306,12 @@ class Bridge:
             )
 
     def status(self):
+        http = self.env.http_settings()
+        http_status = {"configured": bool(http)}
+        if http:
+            http_status.update(
+                origin=http["BRIDGE_HTTP_ORIGIN"], bind=http["BRIDGE_HTTP_BIND"]
+            )
         record = self.records()
         process = self.service.process()
         running = self.running_status(process)
@@ -316,6 +323,7 @@ class Bridge:
             **record,
             "running": running,
             "paired": identity.is_file(),
+            "http": http_status,
             "relay": self.relay_lines(),
         }
 

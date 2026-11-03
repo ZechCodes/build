@@ -101,6 +101,43 @@ pointing at a stale deployment candidate. There is no automatic rollback. Prune
 keeps current, previous, any running managed build, and N newest build directories
 (default 3); it removes only directories inside the environment's binary root.
 
+## Optional dev HTTPS listener
+
+Dev can pass host-local HTTPS settings to the bridge installer from
+`~/.local/state/build-dev/http.toml`. Keep this file out of git, owned by the
+current user and mode **0600**. Example (replace the paths with absolute paths
+under your own dev state root):
+
+```toml
+bind = "127.0.0.1:9443"
+origin = "https://bridge.example:9443"
+tls_cert = "/home/you/.local/state/build-dev/tls/cert.pem"
+tls_key = "/home/you/.local/state/build-dev/tls/key.pem"
+allowed_origins = ["https://dev.getbuild.ing"] # optional, 1..16 exact HTTPS origins
+```
+
+`bind`, `origin`, `tls_cert` and `tls_key` are required; unknown keys are refused.
+Bind must be an explicit IPv4 address or bracketed IPv6 address and a nonzero
+port. Origins must use HTTPS with no path (including a trailing slash), query,
+fragment, credentials, wildcard or port 0. The same origin rules apply to the
+optional allowlist, passed as comma-separated `BRIDGE_HTTP_ALLOWED_ORIGINS`.
+Certificate and key paths must name existing regular files inside the state
+root, with no symlinks in any component. The key must also be owned by the
+current user and mode **0600**. buildctl checks metadata only; it never opens
+certificate or key contents. The bridge loads TLS material.
+
+When present and valid, the file supplies `BRIDGE_HTTP_ENABLED=true`,
+`BRIDGE_HTTP_BIND`, `BRIDGE_HTTP_ORIGIN`, `BRIDGE_HTTP_TLS_CERT` and
+`BRIDGE_HTTP_TLS_KEY` to bridge invocations. Invalid settings fail before a
+bridge operation creates locks, stages a binary or changes the service. Prod
+mutations remain refused. No inherited `BRIDGE_*` variable can override this
+file. Removing the file passes no HTTP settings; after the next authorized
+`bridge deploy` (or rollback), the bridge reconciles the endpoint as disabled.
+An existing unit only acquires changed settings when it is installed again.
+`bridge status` reports `http.configured`, plus `origin` and `bind` when
+configured. These describe the file, not listener health, and expose no TLS paths
+or contents. Status does not install or start anything.
+
 ## Prod to dev state cutover
 
 `buildctl migrate --from prod --to dev` is a reversible state migration. It

@@ -266,11 +266,14 @@ async fn discovery_fails_closed_without_peer_or_signer_and_protects_resources() 
     let req = Request::post("/v1/sessions")
         .body(Body::from("{not-json"))
         .unwrap();
-    response_json(
-        runtime.router().oneshot(req).await.unwrap(),
-        StatusCode::UNAUTHORIZED,
-    )
-    .await;
+    let response = runtime.router().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let bytes = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error_code"], "invalid_credential");
+    assert!(body.get("proof").is_none());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     for content_type in [None, Some("text/plain")] {
         let mut req = request(challenge("bad-type"));

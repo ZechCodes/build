@@ -86,7 +86,10 @@ async fn respond(state: &HttpState, request: Request<Body>) -> HttpResult<Respon
     )
     .await
     .map_err(|_| refusal(StatusCode::REQUEST_TIMEOUT, "timeout"))?
-    .map_err(body_refusal)?;
+    .map_err(|error| {
+        let (status, code) = body_error(error);
+        refusal(status, code)
+    })?;
     let challenge = parse_challenge(body)?;
     ensure_accepting(state)?;
     let proof = discovery.proof(challenge)?;
@@ -134,4 +137,10 @@ fn parse_challenge(body: serde_json::Value) -> HttpResult<Challenge> {
         return Err(refusal(StatusCode::BAD_REQUEST, "invalid_request").into());
     }
     Ok(challenge)
+}
+
+fn refusal(status: StatusCode, code: &'static str) -> Response {
+    let mut body = error_body(code);
+    body["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    (status, axum::Json(body)).into_response()
 }

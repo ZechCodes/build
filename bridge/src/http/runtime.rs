@@ -867,17 +867,18 @@ fn grant_expiry(deadline: Instant) -> String {
 }
 
 fn body_refusal(error: super::body::BodyError) -> Response {
+    let (status, code) = body_error(error);
+    refusal(status, code)
+}
+
+fn body_error(error: super::body::BodyError) -> (StatusCode, &'static str) {
     match error {
-        super::body::BodyError::TooLarge => {
-            refusal(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large")
-        }
-        super::body::BodyError::Timeout => refusal(StatusCode::REQUEST_TIMEOUT, "timeout"),
-        super::body::BodyError::Unauthorized => {
-            refusal(StatusCode::UNAUTHORIZED, "invalid_credential")
-        }
+        super::body::BodyError::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "request_too_large"),
+        super::body::BodyError::Timeout => (StatusCode::REQUEST_TIMEOUT, "timeout"),
+        super::body::BodyError::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_credential"),
         super::body::BodyError::InvalidJson
         | super::body::BodyError::Disconnected
-        | super::body::BodyError::Encoding => refusal(StatusCode::BAD_REQUEST, "invalid_request"),
+        | super::body::BodyError::Encoding => (StatusCode::BAD_REQUEST, "invalid_request"),
     }
 }
 
@@ -990,17 +991,15 @@ fn auth_refusal(error: AuthError) -> Response {
 }
 
 fn refusal(status: StatusCode, code: &'static str) -> Response {
-    let retryable = matches!(code, "overloaded" | "unavailable" | "timeout");
-    (
-        status,
-        axum::Json(json!({
-            "error": code,
-            "error_code": code,
-            "retryable": retryable,
-            "request_id": uuid::Uuid::new_v4().to_string(),
-        })),
-    )
-        .into_response()
+    (status, axum::Json(error_body(code))).into_response()
+}
+
+fn error_body(code: &'static str) -> serde_json::Value {
+    json!({
+        "error": code,
+        "error_code": code,
+        "retryable": matches!(code, "overloaded" | "unavailable" | "timeout"),
+    })
 }
 
 #[cfg(test)]

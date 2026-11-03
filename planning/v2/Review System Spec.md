@@ -71,7 +71,8 @@ revisions send an agent reviewer back to `since` from the previous revision or
 return a user reviewer to Needs you. Superseded pending revision handoffs
 settle without waking an agent reviewer; it receives the latest active revision
 from its last delivered baseline. An unknown baseline requests the full revision.
-Transient dispatch failures back off without writes on skipped polls. Permanent
+Transient dispatch failures allow seven attempts with 30/60/120/240/480/600-second
+backoff delays and no writes on skipped polls. Permanent
 or exhausted failures settle as Failed and post exactly one reserved-identity
 `revision_undelivered` Build mention for the user.
 

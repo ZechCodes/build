@@ -93,6 +93,15 @@ fn user_review_inbox_assignment_yields_after_verdict_and_returns_with_revision()
     assert_eq!(row(&app)["assigned_to_user"], true);
 }
 
+// Successful opening pins a ProjectAgent selection to the concrete coordinator.
+// Exercise recovery of older symbolic assignments by retaining that legacy shape.
+fn retain_symbolic_coordinator(app: &AppState, task_id: &str) {
+    let store = app.store.as_ref().unwrap();
+    let mut task = store.load_tracker_task(task_id).unwrap().unwrap();
+    task.assignee = Some(crate::tracker::Assignee::ProjectAgent);
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+}
+
 fn publish_next_revision(app: &AppState, task_id: &str) -> String {
     let store = app.store.as_ref().unwrap();
     let review = store.load_review(task_id).unwrap().unwrap();
@@ -246,7 +255,9 @@ fn unavailable_coordinator_retries_when_due_without_writing_on_skipped_polls() {
     let mut params = opening::params(&workspace_id);
     params.reviewer = Some(ReviewReviewer::ProjectAgent);
     let opened = opening::open_direct(&mut app, params, Actor::User);
-    let next = publish_next_revision(&app, opened["task"]["id"].as_str().unwrap());
+    let task_id = opened["task"]["id"].as_str().unwrap();
+    retain_symbolic_coordinator(&app, task_id);
+    let next = publish_next_revision(&app, task_id);
     app.runs.get_mut(&owner).unwrap().pinned_agent_id = None;
     let now = crate::agent::now_ms() as i64;
     app.drain_review_revision_dispatches_at(now).unwrap();
@@ -367,6 +378,7 @@ fn exhausted_transient_revision_attempts_back_off_to_ten_minutes_then_notify_onc
     params.reviewer = Some(ReviewReviewer::ProjectAgent);
     let opened = opening::open_direct(&mut app, params, Actor::User);
     let task_id = opened["task"]["id"].as_str().unwrap();
+    retain_symbolic_coordinator(&app, task_id);
     let next = publish_next_revision(&app, task_id);
     app.runs.get_mut(&owner).unwrap().pinned_agent_id = None;
     let mut now = crate::agent::now_ms() as i64;

@@ -2121,7 +2121,8 @@ revision number and the previous revision to read with `since`. If several
 revisions publish before dispatch, only the latest active revision wakes the
 agent reviewer; superseded pending revision handoffs are settled. The surviving
 handoff keeps that recipient's last delivered revision as its `since` baseline.
-Without a known prior delivery it requests the full current revision. Transient revision-dispatch failures back off without writes on skipped polls.
+Without a known prior delivery it requests the full current revision. Transient revision-dispatch failures allow seven attempts, with delays of
+30/60/120/240/480/600 seconds and no writes on skipped polls.
 Permanent or exhausted failures settle as Failed and post one reserved-identity
 `revision_undelivered` Build mention for the user.
 
